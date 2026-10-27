@@ -60,8 +60,8 @@ export function ImageViewerButton(props: { image: ViewerImage; open: OpenImageVi
       tooltip={textTooltip(() => tr('Open full screen'))}
       onPress={inputAction(show, image)}
       style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-      hoverStyle={controlHoverStyle}
-      focusStyle={controlFocusStyle}
+      hoverStyle={controlHoverStyle()}
+      focusStyle={controlFocusStyle()}
     >
       <Icon name="expand" color={C.secondary} />
     </Button>
@@ -204,8 +204,8 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
               borderRadius: 18,
               backgroundColor: '#24262b',
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Icon name="close" color={C.text} />
           </Button>
@@ -266,8 +266,8 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
                     borderRadius: 18,
                     alignItems: 'center',
                   }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                 >
                   <Text style={{ ...captionTextStyle, color: C.text }}>{item().caption()}</Text>
                 </Button>

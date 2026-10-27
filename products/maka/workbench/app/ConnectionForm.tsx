@@ -81,8 +81,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
             enabled: !form().enabled,
           })}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
@@ -121,8 +121,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
               modelId: null,
             })}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.danger }}>
@@ -173,8 +173,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
               accessibilityLabel={tr('Add model manually')}
               onPress={inputAction(owner.editModel, { ...owner.action(), id: null })}
               style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Icon name="plus" color={C.accent} />
@@ -186,8 +186,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                 accessibilityLabel={tr('Fetch models')}
                 onPress={inputAction(owner.discover, owner.action())}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Text style={{ ...captionTextStyle, color: C.accent }}>
@@ -225,8 +225,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
             accessibilityLabel={tr('Manage models')}
             onPress={inputAction(owner.showModels, owner.action())}
             style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.accent, flex: 1 }}>
@@ -244,8 +244,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
               disabled={disabled()}
               onPress={inputAction(owner.setDefault, { ...owner.action(), id: null })}
               style={controlStyle}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, color: C.muted }}>
@@ -261,8 +261,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                 revision: form().baseline!.target.revision,
               })}
               style={controlStyle}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, color: C.muted }}>
@@ -277,8 +277,8 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                 modelId: null,
               })}
               style={controlStyle}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, color: C.danger }}>

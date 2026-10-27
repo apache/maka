@@ -21,7 +21,7 @@ import { tr } from './locale';
 import { Text, View } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
-import { keymap, platform, windowSize } from 'nsh';
+import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import { sessionStatusCaption } from './sessionStatus';
 import {
@@ -41,7 +41,7 @@ export function textTooltip(text: () => string | undefined): YNode {
   );
 }
 
-export const C = {
+const DARK = {
   background: '#161719',
   surface: '#202123',
   raised: '#2a2b2e',
@@ -53,7 +53,39 @@ export const C = {
   warning: '#e7b86b',
   danger: '#f48a8a',
   line: '#37393e',
+  success: '#9bd5a5',
+  added: '#203527',
+  removed: '#382528',
 };
+const LIGHT: typeof DARK = {
+  background: '#ffffff',
+  surface: '#f5f5f6',
+  raised: '#ebebed',
+  text: '#1c1d1f',
+  secondary: '#45484e',
+  muted: '#6c7079',
+  accent: '#2f6bd8',
+  accentHover: '#1f56b8',
+  warning: '#9a5b00',
+  danger: '#c43c3c',
+  line: '#dcdde0',
+  success: '#1f7a3a',
+  added: '#e3f3e7',
+  removed: '#fbe8e9',
+};
+/** Whether the interface is dark: the window's appearance in effect (`setColorScheme`);
+ * terminals keep the dark colors. */
+export const isDark = () => platform.isTerminal || colorScheme() !== 'light';
+/** The interface's colors, in the appearance in effect: read them where they are drawn. */
+export const C = Object.defineProperties(
+  {} as typeof DARK,
+  Object.fromEntries(
+    Object.keys(DARK).map((key) => [
+      key,
+      { enumerable: true, get: () => (isDark() ? DARK : LIGHT)[key as keyof typeof DARK] },
+    ]),
+  ),
+);
 
 // Cells have a fixed 16-point row; native pixels retain the prose leading.
 export const bodyTextStyle = { fontSize: 14, lineHeight: platform.isTerminal ? 16 : 24 };
@@ -78,8 +110,9 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
-export const controlHoverStyle = { backgroundColor: C.raised };
-export const controlFocusStyle = { backgroundColor: C.raised, borderColor: C.accent };
+// Functions: a prop that calls one follows the appearance.
+export const controlHoverStyle = () => ({ backgroundColor: C.raised });
+export const controlFocusStyle = () => ({ backgroundColor: C.raised, borderColor: C.accent });
 export const controlDisabledStyle = platform.isTerminal
   ? { backgroundColor: C.background }
   : { opacity: 0.4 };

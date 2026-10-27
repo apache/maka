@@ -36,7 +36,7 @@ use crate::{
     placement::Placement,
 };
 use maka_workbench::bindings::Bindings;
-use nsh_engine::{EngineConfig, Limits};
+use nsh_engine::{EngineConfig, JsonValue, Limits};
 use nsh_platform_gpui::{
     AppOptions, AppView,
     gpui::{self, App, AppContext as _, Focusable as _, WindowHandle},
@@ -78,7 +78,12 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
     let (exit, mut exits) = tokio::sync::mpsc::unbounded_channel();
-    let shell = Shell { foreground, exit };
+    let (text_size, mut text_sizes) = tokio::sync::mpsc::unbounded_channel::<f32>();
+    let shell = Shell {
+        foreground,
+        exit,
+        text_size,
+    };
     let mut start = Some((config, Placement::new(&directory), endpoint, epoch, root));
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
     // apps as their last window closes, giving the detach no more than its
@@ -115,6 +120,14 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
                     closing.save(window, cx);
                     window.remove_window();
                 });
+            }
+        })
+        .detach();
+        // The workbench's text size (Settings › Appearance) scales the window's
+        // text; it stays for the workbench loaded after a Host change.
+        cx.spawn(async move |cx| {
+            while let Some(scale) = text_sizes.recv().await {
+                let _ = window.update(cx, |view, _, cx| view.set_font_scale(Some(scale), cx));
             }
         })
         .detach();
@@ -290,6 +303,8 @@ struct Shell {
     foreground: watch::Receiver<bool>,
     /// Closes the window.
     exit: tokio::sync::mpsc::UnboundedSender<()>,
+    /// Scales the window's text.
+    text_size: tokio::sync::mpsc::UnboundedSender<f32>,
 }
 
 impl Shell {
@@ -302,6 +317,16 @@ impl Shell {
         let exit = self.exit.clone();
         config.host.handle("terminal.exit", move |_| {
             let _ = exit.send(());
+        });
+        let text_size = self.text_size.clone();
+        config.host.handle("appearance.textSize", move |call| {
+            match call.data()["scale"].as_f64() {
+                Some(scale) if (0.5..=2.0).contains(&scale) => {
+                    let _ = text_size.send(scale as f32);
+                    call.resolve(JsonValue::Null);
+                }
+                _ => call.reject("expected a text scale between 0.5 and 2"),
+            }
         });
         config
     }

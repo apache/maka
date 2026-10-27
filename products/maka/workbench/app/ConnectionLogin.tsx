@@ -50,8 +50,8 @@ export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: bo
                 disabled={props.disabled || owner.dirty()}
                 onPress={inputAction(owner.login.start, owner.loginAction(method().id))}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Text style={{ color: C.accent }}>{method().label}</Text>
@@ -90,8 +90,8 @@ export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: bo
                   value: login()!.prompt!.url,
                 })}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Text style={{ color: C.accent }}>{tr('Copy URL')}</Text>
@@ -105,8 +105,8 @@ export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: bo
                     value: login()!.prompt!.userCode,
                   })}
                   style={controlStyle}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Text style={{ color: C.accent }}>{tr('Copy code')}</Text>
@@ -119,8 +119,8 @@ export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: bo
             disabled={login()!.cancelling}
             onPress={inputAction(owner.login.cancel, login()!.occurrence)}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ color: C.warning }}>{tr('Cancel sign-in')}</Text>

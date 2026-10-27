@@ -187,8 +187,8 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
               tooltip={textTooltip(() => tr('Back'))}
               onPress={inputAction(back, backAction())}
               style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Icon name="back" color={C.secondary} />
@@ -203,8 +203,8 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
             tooltip={textTooltip(() => tr('Close settings'))}
             onPress={inputAction(close, null)}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="close" color={C.secondary} />
@@ -234,8 +234,8 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
                   onPress={inputAction(choose, { from: section(), to: item().id })}
                   style={{ ...controlStyle, minHeight: rail() ? 40 : 32 }}
                   selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Text
@@ -273,8 +273,8 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
                   accessibilityLabel={tr('Recover settings actions')}
                   onPress={inputAction(recover, null)}
                   style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Text style={{ ...captionTextStyle, color: C.accent }}>
@@ -292,8 +292,8 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
                       disabled={operations.busy()}
                       onPress={inputAction(operations.abandon, item().id)}
                       style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                      hoverStyle={controlHoverStyle}
-                      focusStyle={controlFocusStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
                       disabledStyle={controlDisabledStyle}
                     >
                       <Text style={{ ...captionTextStyle, color: C.warning }}>

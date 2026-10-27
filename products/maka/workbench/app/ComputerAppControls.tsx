@@ -108,8 +108,8 @@ export function ComputerAppControls(props: {
                       operationId: entry().activity.operationId,
                     })}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <Text style={{ ...bodyTextStyle, color: entry().stopped ? C.muted : C.text }}>

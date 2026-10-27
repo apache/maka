@@ -135,8 +135,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                         alignItems: 'center',
                         gap: 8,
                       }}
-                      hoverStyle={controlHoverStyle}
-                      focusStyle={controlFocusStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
                       disabledStyle={controlDisabledStyle}
                     >
                       <ChoiceIndicator
@@ -178,8 +178,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                   language: language().value,
                 })}
                 style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <ChoiceIndicator
@@ -211,8 +211,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           selected={model().thinkingLevels === null}
           onPress={inputAction(owner.useProviderThinking, owner.modelAction())}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <ChoiceIndicator
@@ -234,8 +234,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                   level: level(),
                 })}
                 style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <ChoiceIndicator
@@ -261,8 +261,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           selected={model().defaultThinkingLevel === null}
           onPress={inputAction(owner.defaultThinking, { ...owner.modelAction(), level: null })}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <ChoiceIndicator
@@ -284,8 +284,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                   level: level(),
                 })}
                 style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <ChoiceIndicator
@@ -320,8 +320,8 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
               modelId: model().originalId,
             })}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Remove model')}</Text>

@@ -66,8 +66,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                 alignItems: 'center',
                 gap: 12,
               }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>{tr('Proxy')}</Text>
@@ -97,8 +97,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                       gap: 8,
                     }}
                     selectedStyle={{ backgroundColor: C.raised }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <ChoiceIndicator
@@ -140,8 +140,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                 alignItems: 'center',
                 gap: 12,
               }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>
@@ -181,8 +181,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                     gap: 8,
                   }}
                   selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <ChoiceIndicator
@@ -211,8 +211,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                     gap: 8,
                   }}
                   selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <ChoiceIndicator
@@ -272,8 +272,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
               accessibilityLabel={tr('Reload network settings')}
               onPress={inputAction(owner.reload, owner.action())}
               style={{ ...controlStyle, alignSelf: 'flex-start' }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...bodyTextStyle, color: C.secondary }}>
@@ -288,8 +288,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
           accessibilityLabel={tr('Reload network settings')}
           onPress={inputAction(owner.reload, owner.action())}
           style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>

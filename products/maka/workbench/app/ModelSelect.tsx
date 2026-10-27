@@ -536,8 +536,8 @@ function ModelMenu(props: {
           }
           tooltip={textTooltip(() => (pane() === 'root' ? tr('Close') : tr('Back')))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name={pane() === 'root' ? 'close' : 'back'} color={C.muted} />
@@ -647,8 +647,8 @@ function ModelMenu(props: {
               selected={connection() === null}
               onPress={inputAction(filterConnection, null)}
               style={controlStyle}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
             >
               <Text style={{ ...captionTextStyle, color: C.text }}>{tr('All connections')}</Text>
             </Button>
@@ -667,8 +667,8 @@ function ModelMenu(props: {
                     slug: item().slug,
                   })}
                   style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                 >
                   <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
                     <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
@@ -690,8 +690,8 @@ function ModelMenu(props: {
                 disabled={connectionsLoading()}
                 onPress={loadConnections}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Text style={{ ...captionTextStyle, color: C.accent }}>
                   {connectionsLoading() ? tr('Loading…') : tr('Load more connections')}
@@ -711,8 +711,8 @@ function ModelMenu(props: {
             to: 'connections',
           })}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Connection')}</Text>
@@ -906,8 +906,8 @@ function ModelMenu(props: {
                       }),
                     )}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <Text style={{ ...captionTextStyle, color: C.secondary }}>
@@ -935,8 +935,8 @@ function ModelMenu(props: {
           onPress={inputAction(retry, { instance: props.instance, from: pane() })}
           accessibilityLabel={tr('Retry model policy')}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
@@ -947,8 +947,8 @@ function ModelMenu(props: {
         accessibilityLabel={tr('Manage connections and models')}
         onPress={inputAction(props.manage, null)}
         style={controlStyle}
-        hoverStyle={controlHoverStyle}
-        focusStyle={controlFocusStyle}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
         disabledStyle={controlDisabledStyle}
       >
         <Text style={{ ...captionTextStyle, color: C.accent }}>
@@ -970,8 +970,8 @@ function ModelMenu(props: {
             onPress={inputAction(retry, { instance: props.instance, from: pane() })}
             accessibilityLabel={tr('Retry model catalog')}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>

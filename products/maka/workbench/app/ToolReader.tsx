@@ -96,7 +96,7 @@ function ToolText(props: {
     props.tone === 'removed'
       ? C.danger
       : props.tone === 'added'
-        ? '#78d7a1'
+        ? C.success
         : props.tone === 'warning'
           ? C.warning
           : C.text;
@@ -468,7 +468,7 @@ function Sections(props: { items: ToolSection[] }) {
                       : section().tone === 'warning'
                         ? C.warning
                         : section().tone === 'added'
-                          ? '#78d7a1'
+                          ? C.success
                           : C.text,
                 },
                 { userSelect: 'text' },

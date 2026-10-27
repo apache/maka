@@ -111,8 +111,8 @@ export function Palette(props: {
             tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={inputAction(props.close, props.instance)}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="close" color={C.muted} />
@@ -186,8 +186,8 @@ export function Palette(props: {
                       borderRadius: 8,
                       backgroundColor: matches()[index()]?.id === entry().id ? C.raised : C.surface,
                     }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>

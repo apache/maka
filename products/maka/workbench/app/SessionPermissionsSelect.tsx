@@ -129,8 +129,8 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
             alignItems: 'center',
             gap: 4,
           }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text
@@ -161,8 +161,8 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
               tooltip={textTooltip(() => tr('Close'))}
               onPress={inputAction(changeOpen, false)}
               style={{ ...controlStyle, width: 32, alignItems: 'center' }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Icon name="close" color={C.muted} />
@@ -188,8 +188,8 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                       settings: { ...owner.snapshot()!.permissions, access: access() },
                     })}
                     style={rowStyle()}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <ChoiceIndicator
@@ -237,8 +237,8 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                       settings: { ...owner.snapshot()!.permissions, requestPermissions: ask() },
                     })}
                     style={rowStyle()}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <ChoiceIndicator

@@ -109,8 +109,8 @@ function InteractionAction(props: {
         gap: 8,
         backgroundColor: props.primary ? C.accent : props.selected ? C.raised : C.surface,
       }}
-      hoverStyle={props.primary ? { backgroundColor: C.accentHover } : controlHoverStyle}
-      focusStyle={props.primary ? { backgroundColor: C.accentHover } : controlFocusStyle}
+      hoverStyle={props.primary ? { backgroundColor: C.accentHover } : controlHoverStyle()}
+      focusStyle={props.primary ? { backgroundColor: C.accentHover } : controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>
@@ -876,8 +876,8 @@ export function InteractionComposer({
                                     ? C.raised
                                     : C.surface,
                               }}
-                              hoverStyle={controlHoverStyle}
-                              focusStyle={controlFocusStyle}
+                              hoverStyle={controlHoverStyle()}
+                              focusStyle={controlFocusStyle()}
                               disabledStyle={controlDisabledStyle}
                             >
                               <ChoiceIndicator

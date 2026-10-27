@@ -20,6 +20,7 @@
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { applyLanguagePreference, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
+import { initializeAppearance } from './appearance';
 import { cleanup, effect, inputAction, mount, signal, Scroll, Text, View } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
@@ -74,6 +75,7 @@ type Overlay = OverlayTarget & { instance: number };
 type ActionContext = { instance: number | null; sessionId: string | null };
 function App() {
   initializeUiScale();
+  initializeAppearance();
   const browsing = createBrowsing();
   const foreground = createForeground();
   const selected = signal<string | null>(host.initialSession);
@@ -922,8 +924,8 @@ function App() {
                       disabled={recovering()}
                       onPress={inputAction(recoverControls, null)}
                       style={controlStyle}
-                      hoverStyle={controlHoverStyle}
-                      focusStyle={controlFocusStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
                     >
                       <Text style={{ ...bodyTextStyle, color: C.warning }}>
                         {recovering()
@@ -941,8 +943,8 @@ function App() {
                         <Button
                           onPress={inputAction(abandonControl, original().id)}
                           style={controlStyle}
-                          hoverStyle={controlHoverStyle}
-                          focusStyle={controlFocusStyle}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
                         >
                           <Text style={{ ...bodyTextStyle, color: C.warning }}>
                             {tr('Abandon unconfirmed {method}', { method: original().method })} ·{' '}
@@ -998,8 +1000,8 @@ function App() {
         <Button
           onPress={inputAction(openRecoveredFork, { id: recoveredFork()!.id, origin: selected() })}
           style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Text style={{ color: C.accent }}>
             {tr('Open recovered fork')} · {recoveredFork()!.title}

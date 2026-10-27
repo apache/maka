@@ -330,8 +330,8 @@ export function RecallSearch(props: {
               paddingHorizontal: 8,
               alignItems: 'center',
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Icon name="close" color={C.muted} />
           </Button>
@@ -391,8 +391,8 @@ export function RecallSearch(props: {
             accessibilityLabel={tr('Retry')}
             onPress={inputAction(retry, failure()?.request.id)}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
           </Button>
@@ -463,8 +463,8 @@ export function RecallSearch(props: {
                       borderColor: 'transparent',
                       backgroundColor: index() === row.index ? C.raised : C.surface,
                     }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                   >
                     <View
                       style={[

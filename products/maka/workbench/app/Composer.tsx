@@ -42,7 +42,7 @@ import type { ComposerCommand } from './composerCommands';
 import logo from './assets/maka.png';
 
 // Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
-const skillTokens = [
+const skillTokens = () => [
   {
     pattern: String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)`,
     style: { color: C.accent, backgroundColor: `${C.accent}20`, borderRadius: 4 },
@@ -373,7 +373,7 @@ export function Composer(props: {
                       autoFocus={owner !== null}
                       multiline
                       submitBehavior="submit"
-                      tokens={skillTokens}
+                      tokens={skillTokens()}
                       value={owner?.draft() ?? ''}
                       readonly={!owner?.editable()}
                       onChange={owner ? (text) => completion.change(owner, text) : undefined}

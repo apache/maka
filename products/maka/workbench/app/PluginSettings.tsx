@@ -53,8 +53,8 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
         accessibilityLabel={tr('Refresh plugin configuration')}
         onPress={inputAction(owner.reload, owner.action())}
         style={{ ...controlStyle, alignSelf: 'flex-start' }}
-        hoverStyle={controlHoverStyle}
-        focusStyle={controlFocusStyle}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
         disabledStyle={controlDisabledStyle}
       >
         <Text style={{ ...bodyTextStyle, color: C.secondary }}>
@@ -134,8 +134,8 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                                   gap: 12,
                                   backgroundColor: C.raised,
                                 }}
-                                hoverStyle={controlHoverStyle}
-                                focusStyle={controlFocusStyle}
+                                hoverStyle={controlHoverStyle()}
+                                focusStyle={controlFocusStyle()}
                                 disabledStyle={controlDisabledStyle}
                               >
                                 <View
@@ -212,8 +212,8 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                             alignItems: 'center',
                             gap: 12,
                           }}
-                          hoverStyle={controlHoverStyle}
-                          focusStyle={controlFocusStyle}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
                           disabledStyle={controlDisabledStyle}
                         >
                           <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>
@@ -281,8 +281,8 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                                         gap: 12,
                                         backgroundColor: C.raised,
                                       }}
-                                      hoverStyle={controlHoverStyle}
-                                      focusStyle={controlFocusStyle}
+                                      hoverStyle={controlHoverStyle()}
+                                      focusStyle={controlFocusStyle()}
                                       disabledStyle={controlDisabledStyle}
                                     >
                                       <View
@@ -379,8 +379,8 @@ function PluginField(props: { owner: PluginSettingsOwner; request: PluginAction 
                       gap: 8,
                     }}
                     selectedStyle={{ backgroundColor: C.raised }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <ChoiceIndicator
@@ -439,8 +439,8 @@ function PluginField(props: { owner: PluginSettingsOwner; request: PluginAction 
                 gap: 8,
               }}
               selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <ChoiceIndicator
@@ -470,8 +470,8 @@ function PluginField(props: { owner: PluginSettingsOwner; request: PluginAction 
             gap: 8,
           }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <ChoiceIndicator
@@ -495,8 +495,8 @@ function PluginField(props: { owner: PluginSettingsOwner; request: PluginAction 
             gap: 8,
           }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <ChoiceIndicator kind="radio" checked={value() === null} disabled={owner.disabled()} />

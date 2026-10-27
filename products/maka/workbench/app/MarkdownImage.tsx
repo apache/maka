@@ -178,7 +178,7 @@ export function MarkdownImageView(props: {
           disabled={!error() && !dimensions()}
           onPress={inputAction(activate, { sessionId, target })}
           style={{ padding: 0, alignItems: 'flex-start', backgroundColor: 'transparent' }}
-          focusStyle={controlFocusStyle}
+          focusStyle={controlFocusStyle()}
         >
           {content()}
         </Button>

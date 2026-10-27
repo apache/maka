@@ -72,8 +72,8 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                     alignItems: 'center',
                     gap: 8,
                   }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Icon name={index() ? 'right' : 'folder'} color={C.muted} />
@@ -99,8 +99,8 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
           onPress={inputAction(model.refresh, null)}
           tooltip={textTooltip(() => tr('Refresh workspace files'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="refresh" color={C.secondary} />
@@ -172,8 +172,8 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                     alignItems: 'center',
                     gap: 8,
                   }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                   activeStyle={{ backgroundColor: C.line }}
                 >
@@ -240,8 +240,8 @@ function DirectoryStatus(props: { model: WorkspaceFilesModel }) {
               gap: 8,
               backgroundColor: C.surface,
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="refresh" color={C.secondary} />

@@ -21,7 +21,7 @@
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
 import { effect, signal } from 'nsh';
-import { platform, setColorScheme } from 'nsh';
+import { platform } from 'nsh';
 import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 
@@ -29,11 +29,9 @@ export const ownTitleBar = isAvailable && platform.idiom === 'desktop' && !platf
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
 
-if (ownTitleBar) {
-  Window.setTitleBar('hidden', TITLE_BAR_HEIGHT);
-  // The workbench's colors are dark: the system's menus and controls match them.
-  setColorScheme('dark');
-}
+// The window's colors follow the system until Settings › General chooses
+// (`appearance.ts`); the system's menus and controls follow them too.
+if (ownTitleBar) Window.setTitleBar('hidden', TITLE_BAR_HEIGHT);
 
 /** Whether the session browser and the preview are docked at the window's edges. */
 export const docked = { browser: signal(false), preview: signal(false) };

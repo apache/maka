@@ -1048,4 +1048,22 @@ export const settingsMessages = {
       '原操作已完成，但无法读取源文件。草稿已保留，请重新加载后再保存。（{reason}）',
       '原操作已完成，但無法讀取來源檔案。草稿已保留，請重新載入後再儲存。（{reason}）',
     ],
+  Appearance: ['Appearance', '外观', '外觀'],
+  'Colors of the window and its menus.': [
+    'Colors of the window and its menus.',
+    '窗口及其菜单的配色。',
+    '視窗及其選單的配色。',
+  ],
+  'Match system': ['Match system', '跟随系统', '跟隨系統'],
+  Light: ['Light', '浅色', '淺色'],
+  Dark: ['Dark', '深色', '深色'],
+  'Text size': ['Text size', '文字大小', '文字大小'],
+  'Size of the text in the window.': [
+    'Size of the text in the window.',
+    '窗口中文字的大小。',
+    '視窗中文字的大小。',
+  ],
+  Small: ['Small', '小', '小'],
+  Large: ['Large', '大', '大'],
+  Larger: ['Larger', '特大', '特大'],
 } as const satisfies Catalog;

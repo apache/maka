@@ -74,8 +74,8 @@ export function UiScaleSettings() {
                 })}
                 onPress={() => uiScale.preview(String(percent()))}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Text style={{ ...captionTextStyle, color: C.text }}>{percent()}%</Text>
@@ -89,8 +89,8 @@ export function UiScaleSettings() {
             accessibilityLabel={tr('Save interface scale')}
             onPress={() => void uiScale.save()}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Save')}</Text>
@@ -100,8 +100,8 @@ export function UiScaleSettings() {
             accessibilityLabel={tr('Reset interface scale to 100%')}
             onPress={uiScale.reset}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Reset to 100%')}</Text>
@@ -111,8 +111,8 @@ export function UiScaleSettings() {
             accessibilityLabel={tr('Cancel interface scale preview')}
             onPress={uiScale.cancel}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Cancel')}</Text>

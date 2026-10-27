@@ -38,32 +38,34 @@ const size = (bytes: number) =>
     : bytes < 1024 * 1024
       ? `${Math.ceil(bytes / 1024)} KB`
       : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-const fileTileStyle = {
-  width: 240,
-  height: 64,
-  flexShrink: 0,
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 8,
-  paddingHorizontal: 12,
-  borderWidth: 1,
-  borderColor: C.line,
-  borderRadius: 8,
-  backgroundColor: C.surface,
-} as const;
-const removeStyle = {
-  position: 'absolute',
-  top: 4,
-  right: 4,
-  width: 24,
-  height: 24,
-  alignItems: 'center',
-  justifyContent: 'center',
-  borderRadius: 12,
-  backgroundColor: C.raised,
-  borderWidth: 1,
-  borderColor: C.line,
-} as const;
+const fileTileStyle = () =>
+  ({
+    width: 240,
+    height: 64,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: 8,
+    backgroundColor: C.surface,
+  }) as const;
+const removeStyle = () =>
+  ({
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: C.raised,
+    borderWidth: 1,
+    borderColor: C.line,
+  }) as const;
 
 export function DraftAttachments(props: {
   draft: AttachmentDraft;
@@ -111,7 +113,7 @@ export function DraftAttachments(props: {
                       else={
                         <View
                           tooltip={textTooltip(() => `${original.name}\n${size(original.bytes)}`)}
-                          style={fileTileStyle}
+                          style={fileTileStyle()}
                         >
                           <Icon name="file" color={C.secondary} />
                           <View style={{ flex: 1, minWidth: 0, paddingRight: 24, gap: 4 }}>
@@ -150,7 +152,7 @@ export function DraftAttachments(props: {
                         id: original.id,
                       })}
                       style={{
-                        ...removeStyle,
+                        ...removeStyle(),
                         ...(image(original.mimeType) ? { right: undefined, left: 36 } : {}),
                       }}
                       hoverStyle={{ backgroundColor: C.line }}
@@ -292,7 +294,7 @@ export function HistoryAttachments(props: {
                     tooltip={textTooltip(
                       () => `${original.name}\n${size(original.bytes)} · ${original.kind}`,
                     )}
-                    style={fileTileStyle}
+                    style={fileTileStyle()}
                   >
                     <Icon name={image(original.mimeType) ? 'image' : 'file'} color={C.secondary} />
                     <View style={{ flex: 1, minWidth: 0, gap: 4 }}>

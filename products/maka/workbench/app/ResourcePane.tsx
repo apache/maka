@@ -100,8 +100,8 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               })}
               style={{ ...controlStyle, paddingHorizontal: 8 }}
               selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
             >
               <Text
                 style={{
@@ -121,8 +121,8 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               })}
               style={{ ...controlStyle, paddingHorizontal: 8 }}
               selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
             >
               <Text
                 style={{
@@ -145,8 +145,8 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                 paddingHorizontal: 8,
               }}
               selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
             >
               <Text
                 style={{
@@ -176,8 +176,8 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                     accessibilityLabel={tr('Preview {name}', { name: tab().title })}
                     tooltip={textTooltip(() => tab().title)}
                     style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                   >
                     <Icon
                       name={
@@ -219,8 +219,8 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       paddingVertical: 5,
                       alignItems: 'center',
                     }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                   >
                     <Icon name="close" color={C.muted} />
                   </Button>
@@ -234,8 +234,8 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
           onPress={inputAction(resources.close, closeTarget)}
           tooltip={textTooltip(() => tr('Close workspace preview · Esc'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="close" color={C.muted} />
         </Button>

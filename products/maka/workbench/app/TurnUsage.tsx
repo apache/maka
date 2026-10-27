@@ -200,8 +200,8 @@ export function TurnUsage(props: {
             tooltip={textTooltip(() => tr('Close'))}
             onPress={props.close}
             style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Icon name="close" color={C.secondary} />
             <Text style={{ color: C.accent }}>{tr('Close')}</Text>
@@ -228,8 +228,8 @@ export function TurnUsage(props: {
               <Button
                 accessibilityLabel={tr('Retry original turn usage')}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 onPress={inputAction(read, {
                   sessionId: props.sessionId,
                   turnId: props.turnId,
