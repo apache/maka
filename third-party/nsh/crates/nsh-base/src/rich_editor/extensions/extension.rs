@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 
 use super::{
     input_rules::{InputRule, input_rules as input_rules_plugin},
-    keymap::keymap as keymap_plugin,
+    keymap::{Keymap, keymap_plugin},
     paste_rules::{PasteRule, paste_rules as paste_rules_plugin},
     starter::merge_keymaps,
 };
@@ -122,6 +122,13 @@ impl std::error::Error for ExtensionError {}
 
 type OptionsFn<T> = Arc<dyn Fn(&Value) -> T + Send + Sync>;
 type RuntimeFn<T> = Arc<dyn Fn(&ExtensionContext<'_>) -> T + Send + Sync>;
+type KeyboardBindings = Vec<(String, BoxCommand)>;
+
+#[derive(Clone)]
+enum KeyboardShortcuts {
+    Custom(RuntimeFn<Vec<(String, BoxCommand)>>),
+    Core,
+}
 
 /// One extension: a name, a kind, a priority, options, and the parts it
 /// contributes, each a function of the options (and, for the runtime
@@ -147,7 +154,7 @@ pub struct Extension {
     mark: Option<OptionsFn<MarkSpec>>,
     extensions: Option<OptionsFn<Vec<Extension>>>,
     global_attributes: Option<OptionsFn<Vec<GlobalAttributes>>>,
-    keyboard_shortcuts: Option<RuntimeFn<Vec<(String, BoxCommand)>>>,
+    keyboard_shortcuts: Option<KeyboardShortcuts>,
     input_rules: Option<RuntimeFn<Vec<InputRule>>>,
     paste_rules: Option<RuntimeFn<Vec<PasteRule>>>,
     plugins: Option<RuntimeFn<Vec<Plugin>>>,
@@ -347,7 +354,12 @@ impl Extension {
         mut self,
         f: impl Fn(&ExtensionContext<'_>) -> Vec<(String, BoxCommand)> + Send + Sync + 'static,
     ) -> Self {
-        self.keyboard_shortcuts = Some(Arc::new(f));
+        self.keyboard_shortcuts = Some(KeyboardShortcuts::Custom(Arc::new(f)));
+        self
+    }
+
+    pub(crate) fn with_core_keyboard_shortcuts(mut self) -> Self {
+        self.keyboard_shortcuts = Some(KeyboardShortcuts::Core);
         self
     }
 
@@ -434,16 +446,35 @@ impl Extension {
         }
     }
 
-    /// Its key bindings for `schema`.
+    /// Its key bindings for `schema`. The built-in core uses the compilation
+    /// target here; runtime plugins select its keys from each view's events.
     pub fn keyboard_shortcuts(
         &self,
         schema: &Schema,
         commands: &CommandRegistry,
     ) -> Vec<(String, BoxCommand)> {
-        self.keyboard_shortcuts
-            .as_ref()
-            .map(|f| f(&self.cx(schema, commands)))
-            .unwrap_or_default()
+        match &self.keyboard_shortcuts {
+            Some(KeyboardShortcuts::Custom(f)) => f(&self.cx(schema, commands)),
+            Some(KeyboardShortcuts::Core) => super::core_keymap::core_keymap(),
+            None => Vec::new(),
+        }
+    }
+
+    pub(crate) fn keyboard_shortcut_tables(
+        &self,
+        schema: &Schema,
+        commands: &CommandRegistry,
+    ) -> (KeyboardBindings, KeyboardBindings) {
+        match &self.keyboard_shortcuts {
+            Some(KeyboardShortcuts::Core) => (
+                super::core_keymap::pc_core_keymap(),
+                super::core_keymap::mac_core_keymap(),
+            ),
+            _ => {
+                let bindings = self.keyboard_shortcuts(schema, commands);
+                (bindings.clone(), bindings)
+            }
+        }
     }
 
     /// Its input rules for `schema`.
@@ -690,9 +721,15 @@ impl ExtensionManager {
         if !paste.is_empty() {
             plugins.push(paste_rules_plugin(paste));
         }
-        let keys = self.keymap();
-        if !keys.is_empty() {
-            plugins.push(keymap_plugin(keys));
+        let (control, apple): (Vec<_>, Vec<_>) = self
+            .runtime_order()
+            .into_iter()
+            .map(|e| e.keyboard_shortcut_tables(&self.schema, &self.commands))
+            .unzip();
+        let control = merge_keymaps(control);
+        let apple = merge_keymaps(apple);
+        if !control.is_empty() || !apple.is_empty() {
+            plugins.push(keymap_plugin(Keymap::platform_bindings(control, apple)));
         }
         for extension in self.runtime_order() {
             plugins.extend(extension.plugins(&self.schema, &self.commands));
@@ -939,5 +976,180 @@ mod tests {
         assert!(extension_named("starterKit").is_some());
         assert!(extension_named("bold").is_some());
         assert!(extension_named("nope").is_none());
+    }
+
+    #[test]
+    fn runtime_keyboard_tables_preserve_custom_priority_and_evaluate_factories_once() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        use crate::rich_editor::{extensions::kit, state::KeyEvent};
+
+        let made = Arc::new(AtomicUsize::new(0));
+        let called = Arc::new(AtomicUsize::new(0));
+        let handles = Arc::new(AtomicBool::new(true));
+        let custom = {
+            let (made, called, handles) = (made.clone(), called.clone(), handles.clone());
+            Extension::new("custom").add_keyboard_shortcuts(move |_| {
+                made.fetch_add(1, Ordering::Relaxed);
+                let (called, handles) = (called.clone(), handles.clone());
+                vec![(
+                    "Mod-a".into(),
+                    command(move |_, _| {
+                        called.fetch_add(1, Ordering::Relaxed);
+                        handles.load(Ordering::Relaxed)
+                    }),
+                )]
+            })
+        };
+        let manager = ExtensionManager::new(vec![
+            kit::core_keymap(),
+            doc(),
+            block("para"),
+            text(),
+            custom,
+        ])
+        .unwrap();
+        let plugins = manager.plugins();
+        assert_eq!(made.load(Ordering::Relaxed), 1);
+        let state = EditorState::create(EditorStateConfig::new(manager.schema().clone())).unwrap();
+        for apple in [false, true] {
+            let event = KeyEvent {
+                apple_keyboard: Some(apple),
+                ctrl: !apple,
+                meta: apple,
+                mod_key: true,
+                ..KeyEvent::new("a")
+            };
+            let mut transactions = Vec::new();
+            assert!(
+                plugins
+                    .iter()
+                    .any(|p| p.handle_key_down(&state, &event, &mut |tr| transactions.push(tr)))
+            );
+            assert!(
+                transactions.is_empty(),
+                "the caller handled it before any built-in"
+            );
+        }
+        assert_eq!(called.load(Ordering::Relaxed), 2);
+        handles.store(false, Ordering::Relaxed);
+        let mut transactions = Vec::new();
+        assert!(plugins.iter().any(|p| p.handle_key_down(
+            &state,
+            &KeyEvent {
+                apple_keyboard: Some(false),
+                ctrl: true,
+                mod_key: true,
+                ..KeyEvent::new("a")
+            },
+            &mut |tr| transactions.push(tr)
+        )));
+        assert_eq!(called.load(Ordering::Relaxed), 3);
+        let next = state
+            .apply(transactions.pop().expect("the core takes a declined key"))
+            .unwrap();
+        assert_eq!(
+            (next.selection().from(), next.selection().to()),
+            (0, state.doc().content().size())
+        );
+    }
+
+    #[test]
+    fn runtime_keyboard_tables_keep_the_last_alias_within_a_custom_extension() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::rich_editor::state::KeyEvent;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let custom = {
+            let calls = calls.clone();
+            Extension::new("custom").add_keyboard_shortcuts(move |_| {
+                [("Mod-a", 1), ("Ctrl-a", 10)]
+                    .into_iter()
+                    .map(|(name, value)| {
+                        let calls = calls.clone();
+                        (
+                            name.into(),
+                            command(move |_, _| {
+                                calls.fetch_add(value, Ordering::Relaxed);
+                                true
+                            }),
+                        )
+                    })
+                    .collect()
+            })
+        };
+        let manager = ExtensionManager::new(vec![doc(), block("para"), text(), custom]).unwrap();
+        let plugins = manager.plugins();
+        let state = EditorState::create(EditorStateConfig::new(manager.schema().clone())).unwrap();
+        for (apple, ctrl, meta, expected) in [
+            (false, true, false, 10),
+            (true, false, true, 1),
+            (true, true, false, 10),
+        ] {
+            calls.store(0, Ordering::Relaxed);
+            let event = KeyEvent {
+                apple_keyboard: Some(apple),
+                ctrl,
+                meta,
+                mod_key: if apple { meta } else { ctrl },
+                ..KeyEvent::new("a")
+            };
+            assert!(
+                plugins
+                    .iter()
+                    .any(|p| p.handle_key_down(&state, &event, &mut |_| {}))
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), expected);
+        }
+    }
+
+    #[test]
+    fn runtime_keyboard_tables_preserve_custom_duplicate_chains() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::rich_editor::state::KeyEvent;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let custom = {
+            let calls = calls.clone();
+            Extension::new("duplicates").add_keyboard_shortcuts(move |_| {
+                [("Ctrl-k", 1, true), ("Control-k", 100, false)]
+                    .into_iter()
+                    .map(|(name, value, handled)| {
+                        let calls = calls.clone();
+                        (
+                            name.into(),
+                            command(move |_, _| {
+                                calls.fetch_add(value, Ordering::Relaxed);
+                                handled
+                            }),
+                        )
+                    })
+                    .collect()
+            })
+        };
+        let manager = ExtensionManager::new(vec![doc(), block("para"), text(), custom]).unwrap();
+        let plugins = manager.plugins();
+        let state = EditorState::create(EditorStateConfig::new(manager.schema().clone())).unwrap();
+        for apple in [false, true] {
+            calls.store(0, Ordering::Relaxed);
+            let event = KeyEvent {
+                apple_keyboard: Some(apple),
+                ctrl: true,
+                mod_key: !apple,
+                ..KeyEvent::new("k")
+            };
+            assert!(
+                plugins
+                    .iter()
+                    .any(|p| p.handle_key_down(&state, &event, &mut |_| {}))
+            );
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                1,
+                "the first duplicate consumes the key"
+            );
+        }
     }
 }

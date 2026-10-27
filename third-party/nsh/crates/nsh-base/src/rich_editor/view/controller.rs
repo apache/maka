@@ -31,7 +31,6 @@ use super::{
 use crate::{
     editor::layout::{self, AutoScroll},
     rich_editor::{
-        commands::base_keymap,
         extensions::{HistoryOptions, Keymap, KeymapOptions, history, starter},
         formats::{DomParser, slice_from_text, slice_to_text},
         model::{Fragment, Mark, Node, SchemaSpec, Slice},
@@ -175,7 +174,7 @@ impl Rv {
             .get_untracked()
             .unwrap_or_else(|| own_session(&props));
         let state = session.state();
-        let mac = matches!(os(), Os::MacOs | Os::Ios);
+        let mac = apple_keys();
         let base_keymap = Keymap::new(base_keymap_for(mac), &KeymapOptions { mac: Some(mac) })
             .unwrap_or_default();
         let rv = Rv {
@@ -546,13 +545,13 @@ impl Rv {
         };
         self.sink_value.set(text.to_owned());
         for _ in 0..deleted {
-            self.key(&KeyEvent::new("Backspace"));
+            self.key(&keys::plain_event("Backspace"));
         }
         let mut parts = inserted.split('\n').peekable();
         while let Some(part) = parts.next() {
             self.text_input(part, composed);
             if parts.peek().is_some() {
-                self.key(&KeyEvent::new("Enter"));
+                self.key(&keys::plain_event("Enter"));
             }
         }
         {
@@ -599,7 +598,7 @@ impl Rv {
     /// empty sink).
     pub(crate) fn sink_key(&self, key: &str) {
         if key == "Backspace" && self.sink.borrow().text.is_empty() {
-            self.key(&KeyEvent::new("Backspace"));
+            self.key(&keys::plain_event("Backspace"));
         }
     }
 
@@ -703,7 +702,7 @@ impl Rv {
         if !at.parent().inline_content() {
             return false;
         }
-        let apple = matches!(os(), Os::MacOs | Os::Ios);
+        let apple = apple_keys();
         let (start, end) = (at.start(at.depth), at.end(at.depth));
         let target = if apple && event.meta {
             let geo = self.geo.borrow();
@@ -1786,7 +1785,9 @@ fn own_session(props: &RichEditorProps) -> EditorSession {
             "starter" => plugins.extend(starter::plugins(&schema)),
             "history" if !starter_on => plugins.push(history(HistoryOptions::default())),
             "baseKeymap" if !starter_on => {
-                plugins.push(crate::rich_editor::extensions::keymap(base_keymap()))
+                plugins.push(crate::rich_editor::extensions::keymap_plugin(
+                    crate::rich_editor::extensions::keymap::built_in_base_keymap(),
+                ))
             }
             "markdown" => plugins.extend(crate::rich_editor::extensions::markdown::markdown(
                 Default::default(),

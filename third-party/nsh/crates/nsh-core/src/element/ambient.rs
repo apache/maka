@@ -758,11 +758,26 @@ pub struct KeyOptions {
 
 /// Whether shortcuts follow Apple's conventions here (`mod` is Command):
 /// the OS, or for a browser the platform it runs on. Terminals use Control.
-fn apple_keys() -> bool {
+pub fn apple_keys() -> bool {
     let (os, apple, terminal) = with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
         .with_untracked(|e| (e.os, e.apple_keyboard, e.uses_terminal_keyboard()));
     !terminal && crate::keymap::apple_keys(os, apple)
+}
+
+/// The platform's reserved-key convention, for [`crate::keymap::Keystroke::reserved`].
+/// Terminal keyboards use the Linux (Control-based) reservations even on
+/// an Apple OS or when a graphical backend renders their pixels.
+pub fn reserved_key_os() -> Os {
+    with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .expect("the core sets the environment")
+        .with_untracked(|e| {
+            if e.uses_terminal_keyboard() {
+                Os::Linux
+            } else {
+                e.os
+            }
+        })
 }
 
 /// Runs `handler` when `keystroke` is pressed while the current owner
@@ -788,14 +803,9 @@ pub fn on_key(keystroke: &str, handler: impl Fn(&str) + 'static) {
 /// As [`on_key`].
 #[track_caller]
 pub fn on_key_with(keystroke: &str, options: KeyOptions, handler: impl Fn(&str) + 'static) {
-    let os = os();
     let parsed = crate::keymap::Keystroke::parse_with(keystroke, apple_keys())
         .unwrap_or_else(|e| panic!("on_key: {e}"));
-    let terminal_keyboard = with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
-        .expect("the core sets the environment")
-        .with_untracked(|e| e.uses_terminal_keyboard());
-    // A terminal uses the Control-based host shortcuts on every OS.
-    if let Some(why) = parsed.reserved(if terminal_keyboard { Os::Linux } else { os }) {
+    if let Some(why) = parsed.reserved(reserved_key_os()) {
         panic!("on_key: {keystroke:?} cannot be bound: {why}");
     }
     let owner = Owner::current();

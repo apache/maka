@@ -14,7 +14,7 @@ use serde_json::Value;
 use super::{
     extension::{Extension, ExtensionManager},
     input_rules::{InputMatch, InputRule, input_rules as input_rules_plugin},
-    keymap::{keymap as keymap_plugin, normalize_key_name},
+    keymap::{Keymap, keymap_plugin, normalize_key_name},
     kit,
     paste_rules::{PasteRule, paste_rules},
     typography::{TypographyOptions, typography},
@@ -762,7 +762,9 @@ pub fn extension_keymap(schema: &Schema) -> Vec<(String, BoxCommand)> {
 /// All of the starter's key bindings for `schema`: the starter kit's
 /// extensions' and the core's ([`core_keymap`]), merged in Tiptap's order
 /// (later extensions first, the core last, with its
-/// `core_keymap`; [`ExtensionManager::keymap`]).
+/// `core_keymap`; [`ExtensionManager::keymap`]). This pure binding-list factory
+/// uses the compilation target's built-in editing keys. [`plugins`] chooses
+/// those keys from each view's keyboard convention instead.
 pub fn keymap(schema: &Schema) -> Vec<(String, BoxCommand)> {
     merge_keymaps(
         for_schema(schema)
@@ -771,6 +773,14 @@ pub fn keymap(schema: &Schema) -> Vec<(String, BoxCommand)> {
             .filter(|g| !g.is_empty())
             .collect(),
     )
+}
+
+pub(crate) fn runtime_keymap(schema: &Schema) -> Keymap {
+    let (control, apple): (Vec<_>, Vec<_>) = for_schema(schema)
+        .into_iter()
+        .map(|e| e.keyboard_shortcut_tables(schema, commands()))
+        .unzip();
+    Keymap::platform_bindings(merge_keymaps(control), merge_keymaps(apple))
 }
 
 pub(super) fn regex(pattern: &str) -> Regex {
@@ -867,7 +877,7 @@ pub fn plugins(schema: &Schema) -> Vec<Plugin> {
     if !paste.is_empty() {
         plugins.push(paste_rules(paste));
     }
-    plugins.push(keymap_plugin(keymap(schema)));
+    plugins.push(keymap_plugin(runtime_keymap(schema)));
     for extension in extensions {
         plugins.extend(extension.plugins(schema, commands()));
     }

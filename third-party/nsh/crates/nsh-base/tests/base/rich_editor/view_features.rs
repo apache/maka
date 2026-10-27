@@ -397,3 +397,59 @@ fn geometry_registration_follows_real_component_disposal_and_remount() {
     assert_eq!(session.coords_at_pos(1), None);
     assert_eq!(session.selection_rect(), None);
 }
+
+#[test]
+fn keyboard_conventions_follow_the_host_environment_when_the_editor_focuses() {
+    use std::time::Duration;
+
+    use nsh_core::platform::Renderer;
+
+    // Explicit keystrokes avoid Headless's physical-OS interpretation of
+    // `mod`; these exercise the actual table registered by the component.
+    for (os, renderer, terminal_keyboard, apple_keyboard, command) in [
+        (Os::MacOs, Renderer::Native, true, false, "ctrl"),
+        (Os::MacOs, Renderer::Terminal, false, false, "ctrl"),
+        (Os::MacOs, Renderer::Native, false, false, "cmd"),
+        (Os::Linux, Renderer::Native, false, false, "ctrl"),
+        (Os::Web, Renderer::Web, false, true, "cmd"),
+        (Os::Web, Renderer::Web, false, false, "ctrl"),
+    ] {
+        let session = session(paragraphs(&["alpha beta"]));
+        let mut config = EngineConfig {
+            viewport: Size::new(px(800.0), px(900.0)),
+            ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
+                session: Some(session.clone()),
+            }))
+        };
+        config.environment.os = os;
+        config.environment.renderer = renderer;
+        config.environment.terminal_keyboard = terminal_keyboard;
+        config.environment.apple_keyboard = apple_keyboard;
+        config.environment.idiom = Idiom::Desktop;
+        let mut app = Headless::start(config).expect("the engine starts");
+        app.wait_for("text:Ready").unwrap();
+        // On macOS with terminal keys the old table tries to register
+        // Ctrl+Q here, which on_key_with correctly rejects as reserved.
+        app.type_text("id:editor", "").unwrap();
+        app.press_key(&format!("{command}+a")).unwrap();
+        see(&mut app, "Sel 0-12");
+        app.press_key(&format!("{command}+c")).unwrap();
+        app.wait_until(
+            "editor copied the selection",
+            Duration::from_secs(2),
+            |screen| screen.clipboard() == Some("alpha beta"),
+        )
+        .unwrap();
+        let mut paste = PasteEvent::default();
+        paste.text = "replacement".into();
+        app.paste("id:editor", &paste).unwrap();
+        see(&mut app, &doc("replacement"));
+        app.press_key(if command == "cmd" {
+            "alt+backspace"
+        } else {
+            "ctrl+backspace"
+        })
+        .unwrap();
+        see(&mut app, &doc(""));
+    }
+}

@@ -52,7 +52,8 @@ impl std::error::Error for KeymapError {}
 pub struct KeymapOptions {
     /// Whether `Mod-` is `Meta-` (Apple platforms) rather than `Ctrl-`;
     /// by default (`None`), as each key event's platform has it (the
-    /// view's [`KeyEvent::mod_key`]).
+    /// view's [`KeyEvent::apple_keyboard`], or the modifier-based inference
+    /// from [`KeyEvent::mod_key`] when that policy is absent).
     pub mac: Option<bool>,
 }
 
@@ -136,6 +137,9 @@ pub struct Keymap {
     bindings: HashMap<String, BoxCommand>,
     /// With `Mod-` read as `Meta-`, when the platform is the event's.
     apple: Option<HashMap<String, BoxCommand>>,
+    // For built-ins and manually made, policy-less Alt/plain events only.
+    // Explicit view policy always wins; custom Keymap::new keeps its inference.
+    platform_default_apple: bool,
 }
 
 impl fmt::Debug for Keymap {
@@ -170,6 +174,7 @@ impl Keymap {
         Ok(Self {
             bindings: map,
             apple,
+            platform_default_apple: false,
         })
     }
 
@@ -179,11 +184,47 @@ impl Keymap {
         self.bindings.get(name)
     }
 
-    // The bindings for `event`'s platform: Apple's when its command key is
-    // Meta (or Control is held without being it).
+    /// Built-in bindings differ by keyboard convention, not compilation target.
+    /// The two tables are made outside any engine and chosen by each event.
+    pub(crate) fn platform_bindings(
+        control: Vec<(String, BoxCommand)>,
+        apple: Vec<(String, BoxCommand)>,
+    ) -> Self {
+        let normalize = |bindings: Vec<(String, BoxCommand)>, mac| {
+            bindings
+                .into_iter()
+                .filter_map(|(name, command)| match normalize_key_name(&name, mac) {
+                    Ok(name) => Some((name, command)),
+                    Err(error) => {
+                        log::warn!("{error}");
+                        None
+                    }
+                })
+                .collect()
+        };
+        Self {
+            bindings: normalize(control, false),
+            apple: Some(normalize(apple, true)),
+            platform_default_apple: cfg!(any(target_os = "macos", target_os = "ios")),
+        }
+    }
+
+    // Explicit view policy also disambiguates Alt-only and unmodified keys.
+    // Manually constructed events retain their original modifier inference.
     fn for_event(&self, event: &KeyEvent) -> &HashMap<String, BoxCommand> {
         match &self.apple {
-            Some(apple) if (event.mod_key && event.meta) || (!event.mod_key && event.ctrl) => apple,
+            Some(apple)
+                if event.apple_keyboard.unwrap_or(
+                    (event.mod_key && event.meta)
+                        || (!event.mod_key && event.ctrl)
+                        || (self.platform_default_apple
+                            && !event.mod_key
+                            && !event.ctrl
+                            && !event.meta),
+                ) =>
+            {
+                apple
+            }
             _ => &self.bindings,
         }
     }
@@ -228,6 +269,13 @@ impl Keymap {
         }
         false
     }
+}
+
+pub(crate) fn built_in_base_keymap() -> Keymap {
+    Keymap::platform_bindings(
+        crate::rich_editor::commands::pc_base_keymap(),
+        crate::rich_editor::commands::mac_base_keymap(),
+    )
 }
 
 // Makes each keymap plugin's key unique: an editor holds several.
@@ -398,5 +446,190 @@ mod tests {
         .unwrap();
         assert!(bold_only.handle(&state, &event("B", true), &mut dispatch));
         assert_eq!(hits.swap(0, Ordering::Relaxed), 1);
+    }
+
+    fn keyboard_state(head: usize) -> EditorState {
+        let schema = starter::schema();
+        let doc = schema
+            .node_from_json(&serde_json::json!({
+                "type": "doc", "content": [
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "one" }] },
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "two" }] }
+                ]
+            }))
+            .unwrap();
+        let selection = crate::rich_editor::state::TextSelection::create(&doc, head, None);
+        EditorState::create(EditorStateConfig::new(schema).doc(doc).selection(selection)).unwrap()
+    }
+
+    #[test]
+    fn built_in_mac_tables_do_not_override_terminal_control_select_all() {
+        use super::super::core_keymap::{mac_core_keymap, pc_core_keymap};
+
+        let state = keyboard_state(7);
+        // Both exact Mac tables are built even on Linux; forcing the fallback
+        // also models a macOS-compiled binary rather than only its environment.
+        for mut map in [
+            built_in_base_keymap(),
+            Keymap::platform_bindings(pc_core_keymap(), mac_core_keymap()),
+            starter::runtime_keymap(state.schema()),
+        ] {
+            map.platform_default_apple = true;
+            for (apple, ctrl, meta, expected) in [
+                (false, true, false, (0, 10)),
+                (true, true, false, (6, 6)),
+                (true, false, true, (0, 10)),
+            ] {
+                let event = KeyEvent {
+                    apple_keyboard: Some(apple),
+                    ctrl,
+                    meta,
+                    mod_key: if apple { meta } else { ctrl },
+                    ..KeyEvent::new("a")
+                };
+                let mut transactions = Vec::new();
+                assert!(map.handle(&state, &event, &mut |tr| transactions.push(tr)));
+                let next = state
+                    .apply(transactions.pop().expect("the command dispatched"))
+                    .unwrap();
+                assert_eq!((next.selection().from(), next.selection().to()), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_policy_disambiguates_alt_only_keys_without_changing_custom_bindings() {
+        let state = keyboard_state(6);
+        let mut map = built_in_base_keymap();
+        map.platform_default_apple = true;
+        let event = |apple| KeyEvent {
+            apple_keyboard: Some(apple),
+            alt: true,
+            ..KeyEvent::new("Backspace")
+        };
+        let mut transactions = Vec::new();
+        assert!(!map.handle(&state, &event(false), &mut |tr| transactions.push(tr)));
+        assert!(transactions.is_empty());
+        assert!(map.handle(&state, &event(true), &mut |tr| transactions.push(tr)));
+        let next = state.apply(transactions.pop().unwrap()).unwrap();
+        assert_eq!(next.doc().child_count(), 1);
+        assert_eq!(next.doc().text_content(), "onetwo");
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = calls.clone();
+        let custom = Keymap::new(
+            vec![(
+                "Alt-Backspace".into(),
+                command(move |_, _| {
+                    called.fetch_add(1, Ordering::Relaxed);
+                    true
+                }),
+            )],
+            &KeymapOptions::default(),
+        )
+        .unwrap();
+        assert!(custom.handle(&state, &event(false), &mut |_| {}));
+        assert!(custom.handle(&state, &event(true), &mut |_| {}));
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn starter_plugins_choose_the_event_policy_without_an_engine() {
+        let state = keyboard_state(7);
+        let plugins = starter::plugins(state.schema());
+        for (apple, expected) in [(false, (0, 10)), (true, (6, 6))] {
+            let event = KeyEvent {
+                apple_keyboard: Some(apple),
+                ctrl: true,
+                mod_key: !apple,
+                ..KeyEvent::new("a")
+            };
+            let mut transactions = Vec::new();
+            assert!(plugins.iter().any(|plugin| plugin.handle_key_down(
+                &state,
+                &event,
+                &mut |tr| transactions.push(tr)
+            )));
+            let next = state.apply(transactions.pop().unwrap()).unwrap();
+            assert_eq!((next.selection().from(), next.selection().to()), expected);
+        }
+    }
+
+    #[test]
+    fn policy_less_events_keep_legacy_defaults_and_fixed_keymap_options() {
+        let state = keyboard_state(6);
+        let event = KeyEvent {
+            alt: true,
+            ..KeyEvent::new("Backspace")
+        };
+        assert_eq!(event.apple_keyboard, None);
+        let mut map = built_in_base_keymap();
+        for apple in [false, true] {
+            map.platform_default_apple = apple;
+            assert_eq!(map.handle(&state, &event, &mut |_| {}), apple);
+        }
+        // A caller that explicitly asks for the Mac list keeps every binding,
+        // independently of the compilation target and event-policy defaults.
+        let custom = Keymap::new(
+            crate::rich_editor::commands::mac_base_keymap(),
+            &KeymapOptions::default(),
+        )
+        .unwrap();
+        assert!(custom.handle(&state, &event, &mut |_| {}));
+        let fixed = Keymap::new(
+            vec![("Mod-a".into(), command(|_, _| true))],
+            &KeymapOptions { mac: Some(true) },
+        )
+        .unwrap();
+        assert!(!fixed.handle(
+            &state,
+            &KeyEvent {
+                apple_keyboard: Some(false),
+                ctrl: true,
+                mod_key: true,
+                ..KeyEvent::new("a")
+            },
+            &mut |_| {}
+        ));
+        assert!(fixed.handle(
+            &state,
+            &KeyEvent {
+                apple_keyboard: Some(false),
+                meta: true,
+                ..KeyEvent::new("a")
+            },
+            &mut |_| {}
+        ));
+    }
+
+    #[test]
+    fn explicit_control_plugins_keep_precedence_over_builtin_tables() {
+        let state = keyboard_state(7);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let called = calls.clone();
+        let mut plugins = vec![keymap(vec![(
+            "Ctrl-a".into(),
+            command(move |_, _| {
+                called.fetch_add(1, Ordering::Relaxed);
+                true
+            }),
+        )])];
+        plugins.extend(starter::plugins(state.schema()));
+        for apple in [false, true] {
+            let event = KeyEvent {
+                apple_keyboard: Some(apple),
+                ctrl: true,
+                mod_key: !apple,
+                ..KeyEvent::new("a")
+            };
+            let mut transactions = Vec::new();
+            assert!(
+                plugins
+                    .iter()
+                    .any(|p| p.handle_key_down(&state, &event, &mut |tr| transactions.push(tr)))
+            );
+            assert!(transactions.is_empty());
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 }

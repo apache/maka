@@ -77,6 +77,11 @@ pub struct KeyEvent {
     /// Whether the platform's command modifier is held (⌘ on Apple
     /// platforms, Ctrl elsewhere).
     pub mod_key: bool,
+    /// The host's keyboard convention, independently of which modifiers are
+    /// held. The view supplies this even for Alt-only or unmodified keys.
+    /// `None` uses modifier-based inference; built-in keymaps fall back to
+    /// the compilation target when no command modifier disambiguates it.
+    pub apple_keyboard: Option<bool>,
     /// Whether Control is held.
     pub ctrl: bool,
     /// Whether Alt (Option) is held.

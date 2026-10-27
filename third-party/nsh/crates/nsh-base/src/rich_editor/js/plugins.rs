@@ -34,7 +34,7 @@ use super::{
     json::{AttrsJson, StateJson, TransactionJson},
 };
 use crate::rich_editor::{
-    commands::{BoxCommand, base_keymap, command},
+    commands::{BoxCommand, command},
     extensions::{
         HistoryOptions, InputRule, Keymap, KeymapOptions, ellipsis, em_dash, history, input_rules,
         keymap_plugin, mark_input_rule,
@@ -583,12 +583,9 @@ pub(crate) fn plugins_of(spec: &RichPluginSpec, schema: &Schema) -> Result<Vec<P
             )]
         }
         RichPluginKind::BaseKeymap => vec![keymap_plugin(
-            Keymap::new(base_keymap(), &KeymapOptions::default()).map_err(|e| e.to_string())?,
+            crate::rich_editor::extensions::keymap::built_in_base_keymap(),
         )],
-        RichPluginKind::StarterKeymap => vec![keymap_plugin(
-            Keymap::new(starter::keymap(schema), &KeymapOptions::default())
-                .map_err(|e| e.to_string())?,
-        )],
+        RichPluginKind::StarterKeymap => vec![keymap_plugin(starter::runtime_keymap(schema))],
         RichPluginKind::InputRules => vec![input_rules(input_rule_list(
             spec.rules.as_deref().unwrap_or_default(),
             schema,

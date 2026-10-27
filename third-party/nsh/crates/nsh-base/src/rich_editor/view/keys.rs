@@ -8,7 +8,11 @@
 //! Characters typed without those modifiers are text, which the native
 //! input takes; `mod+v` is left to it too (the paste comes as an event).
 
-use nsh_core::{element::Os, keymap::Keystroke, prelude::os};
+use nsh_core::{
+    element::Os,
+    keymap::Keystroke,
+    prelude::{apple_keys, reserved_key_os},
+};
 
 use crate::rich_editor::state::KeyEvent;
 
@@ -53,8 +57,10 @@ struct Mods {
 
 /// Every keystroke the view binds on this platform.
 pub(crate) fn key_table() -> Vec<KeySpec> {
-    let apple = matches!(os(), Os::MacOs | Os::Ios);
-    let os = os();
+    key_table_for(apple_keys(), reserved_key_os())
+}
+
+fn key_table_for(apple: bool, reserved_os: Os) -> Vec<KeySpec> {
     let mut out = Vec::with_capacity(1024);
     let combos: Vec<Mods> = (0..if apple { 16 } else { 8 })
         .map(|bits: u32| Mods {
@@ -67,7 +73,7 @@ pub(crate) fn key_table() -> Vec<KeySpec> {
     let mut push = |keystroke: String, event: KeyEvent, repeat: bool| {
         // Keys the platform keeps (Command+Q, ...) cannot be bound.
         match Keystroke::parse_with(&keystroke, apple) {
-            Ok(parsed) if parsed.reserved(os).is_none() => out.push(KeySpec {
+            Ok(parsed) if parsed.reserved(reserved_os).is_none() => out.push(KeySpec {
                 keystroke,
                 event,
                 repeat,
@@ -116,9 +122,14 @@ fn keystroke(m: Mods, key: &str) -> String {
     parts.join("+")
 }
 
+pub(crate) fn plain_event(key: &str) -> KeyEvent {
+    event(key, Mods::default(), apple_keys())
+}
+
 fn event(key: &str, m: Mods, apple: bool) -> KeyEvent {
     KeyEvent {
         mod_key: if apple { m.cmd } else { m.ctrl },
+        apple_keyboard: Some(apple),
         ctrl: m.ctrl,
         alt: m.alt,
         shift: m.shift,
@@ -155,7 +166,10 @@ pub(crate) struct Move {
 
 /// The movement a key makes when no plugin took it.
 pub(crate) fn movement(e: &KeyEvent) -> Option<Move> {
-    let apple = matches!(os(), Os::MacOs | Os::Ios);
+    movement_for(e, apple_keys())
+}
+
+fn movement_for(e: &KeyEvent, apple: bool) -> Option<Move> {
     let extend = e.shift;
     let (unit, dir) = match e.key.as_str() {
         "ArrowLeft" | "ArrowRight" => {
@@ -196,4 +210,82 @@ pub(crate) fn movement(e: &KeyEvent) -> Option<Move> {
         _ => return None,
     };
     Some(Move { unit, dir, extend })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn find<'a>(table: &'a [KeySpec], key: &str) -> &'a KeySpec {
+        table.iter().find(|s| s.keystroke == key).expect(key)
+    }
+
+    fn assert_bindable(table: &[KeySpec], apple: bool, reserved_os: Os) {
+        for spec in table {
+            let parsed = Keystroke::parse_with(&spec.keystroke, apple).unwrap();
+            assert_eq!(parsed.reserved(reserved_os), None, "{}", spec.keystroke);
+        }
+    }
+
+    #[test]
+    fn control_keys_leave_native_paste_and_host_quit_unbound() {
+        // The Linux convention also applies to a macOS terminal keyboard,
+        // including one rendered by GPUI rather than the terminal renderer.
+        for os in [Os::Linux, Os::Windows, Os::Android, Os::Web] {
+            let table = key_table_for(false, os);
+            assert_bindable(&table, false, os);
+            assert_eq!(
+                find(&table, "alt+backspace").event.apple_keyboard,
+                Some(false)
+            );
+            assert!(find(&table, "ctrl+c").event.mod_key);
+            assert!(find(&table, "ctrl+x").event.mod_key);
+            assert!(find(&table, "ctrl+a").event.mod_key);
+            assert!(!table.iter().any(|s| s.keystroke == "ctrl+v"));
+            assert!(!table.iter().any(|s| s.event.meta));
+            assert_eq!(table.iter().any(|s| s.keystroke == "ctrl+q"), os == Os::Web);
+        }
+    }
+
+    #[test]
+    fn apple_keys_preserve_command_copy_paste_and_native_reservations() {
+        for os in [Os::MacOs, Os::Ios, Os::Web] {
+            let table = key_table_for(true, os);
+            assert_bindable(&table, true, os);
+            assert_eq!(
+                find(&table, "alt+backspace").event.apple_keyboard,
+                Some(true)
+            );
+            assert!(find(&table, "cmd+c").event.mod_key);
+            assert!(find(&table, "cmd+x").event.mod_key);
+            assert!(!find(&table, "ctrl+c").event.mod_key);
+            assert!(!table.iter().any(|s| s.keystroke == "cmd+v"));
+            assert!(!find(&table, "ctrl+v").event.mod_key);
+            assert_eq!(table.iter().any(|s| s.keystroke == "cmd+q"), os == Os::Web);
+        }
+    }
+
+    #[test]
+    fn caret_movement_uses_the_keyboard_convention_not_the_host_os() {
+        let ctrl_left = event(
+            "ArrowLeft",
+            Mods {
+                ctrl: true,
+                ..Mods::default()
+            },
+            false,
+        );
+        assert_eq!(movement_for(&ctrl_left, false).unwrap().unit, Unit::Word);
+        assert_eq!(movement_for(&ctrl_left, true).unwrap().unit, Unit::Char);
+        let alt_left = event(
+            "ArrowLeft",
+            Mods {
+                alt: true,
+                ..Mods::default()
+            },
+            true,
+        );
+        assert_eq!(movement_for(&alt_left, true).unwrap().unit, Unit::Word);
+        assert_eq!(movement_for(&alt_left, false).unwrap().unit, Unit::Char);
+    }
 }
