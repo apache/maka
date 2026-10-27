@@ -1387,6 +1387,7 @@ export class McpClientManager {
         entry,
         entry.diagnosticPrivacy!,
         () => this.secretsFor(serverId, entry.config),
+        () => this.now(),
         () => {
           if (this.connections.get(serverId) === entry) this.emit(entry.status);
         },
@@ -2932,6 +2933,7 @@ function attachStderrTail(
   entry: Connection,
   privacy: ConnectionDiagnosticPrivacy,
   secrets: () => SecretInventory,
+  now: () => number,
   onUpdate: () => void,
 ): void {
   let pending = '';
@@ -2977,7 +2979,7 @@ function attachStderrTail(
     const next = [...(entry.status.stderrTail ?? []), ...rendered]
       .filter(Boolean)
       .slice(-STDERR_LINES);
-    entry.status = { ...entry.status, stderrTail: next, updatedAt: Date.now() };
+    entry.status = { ...entry.status, stderrTail: next, updatedAt: now() };
     onUpdate();
   };
   const retain = (batch: string[], value: string) => {
