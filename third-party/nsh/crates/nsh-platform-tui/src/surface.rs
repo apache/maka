@@ -1204,6 +1204,9 @@ impl Surface {
                 MountItem::NativeProps { id, props } => self.set_media(id, props),
                 MountItem::Refreshing { id, refreshing } => self.set_refreshing(id, refreshing),
                 MountItem::Overflow { .. } | MountItem::LayoutDirection { .. } => {}
+                // A terminal has no GPU layer: a shader view shows its
+                // background and children.
+                MountItem::Shader { .. } => {}
             }
         }
         if !finished.is_empty() {

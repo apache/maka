@@ -8,6 +8,17 @@ API", "Use precise domain words" and "Callback and event wording" in `gpui-kit/w
 (cited below as *guides*). The table at the end lists the renames decided so far; until they land, the code still has
 the old names.
 
+## Features as well as names
+
+GPUI Kit's components are long proven in its apps, so a component of `nsh-base` takes its features from there too,
+not only its names (decided by the user, 2026-10-27). Before a component is written or reviewed, list the options of
+its counterpart: `gpui-base`'s builder (`gpui-kit/crates/base/src`), `gpui-component`'s builder and state
+(`gpui-kit/crates/component/src/<name>.rs`, its `pub fn`s) and the props `gpui-shell` materializes for scripts
+(`gpui-kit/crates/shell/src/materialize/components/`). The component covers each one: as a prop, as a part
+(`<part>Class` / `<part>Style`, a slot), or as the app's own markup where NSH leaves the look to the app (a trigger's
+placeholder, icon or title prefix in the app's `trigger` slot). An option it does not cover gets a row in the table
+at the end with the reason.
+
 ## Where names come from
 
 Each part of the API takes its names from one source, so an app's code never mixes vocabularies:
@@ -83,6 +94,14 @@ go elsewhere under these rules rather than into them.
   and the keys held as `modifiers` (`{ control, alt, shift, platform }`, GPUI's `Modifiers`: `platform` is Command on
   Apple platforms, the Windows / Super key elsewhere), as GPUI's `MouseMoveEvent { position, modifiers }` (decided by
   the user, 2026-10-21). The frozen responder events keep React Native's `locationX` / `pageX`.
+- **Units**: one unit per quantity, everywhere, React Native's modules included. A length is points, an image's or a
+  video's own size pixels (`PixelSize`, never `Size`: `onLoad`, `Image.getSize`, the clipboard's and the picker's
+  images), a time milliseconds (`duration`, `delay`, `timeout`, `keyboardFrame().duration`), a velocity points per
+  second (`PanEvent`'s, `PanResponder`'s `vx` / `vy`, an animation's `velocity`), a share a fraction from 0 to 1
+  (`viewPosition`, `volume`, `ViewabilityConfig`'s thresholds; no `Percent` in names). Two exceptions keep the
+  convention everyone knows: media time is seconds, as HTML's `currentTime` (`Video`'s `seek`, `onProgress`,
+  `onLoad`), and a deceleration is the velocity kept per millisecond (`decelerationRate`, `Animated.decay`'s
+  `deceleration`: UIKit's `0.998` / `0.99`) (decided by the user, 2026-10-27).
 - **Intent over geometry**: an event says what the app should do when the act has a name (`onLoadMore`, as
   `gpui-component`'s `ListDelegate::load_more`), not where the user got to (`onEndReached`). Its counterpart at
   the start is the same act at the other end, `onLoadMoreAtStart` / `loadMoreAtStartThreshold` (React Native's
@@ -163,6 +182,7 @@ them yet (`compatibility.md`). The frozen RN-shaped modules keep their names. A 
 | `onMomentumScrollBegin`, `onMomentumScrollEnd` | `onMomentumStart`, `onMomentumEnd` | Begin and end | |
 | List `onEndReached`, `onEndReachedThreshold` | `onLoadMore`, `loadMoreThreshold` | Intent over geometry | `ListDelegate::load_more`, `load_more_threshold`; also in `ListItemsProps` |
 | List `onViewableItemsChanged` | `onViewableItemsChange` | Events | |
+| `ViewabilityConfig` `itemVisiblePercentThreshold`, `viewAreaCoveragePercentThreshold` (0 to 100) | `itemVisibleThreshold`, `viewAreaCoverageThreshold` (0 to 1) | Units | IntersectionObserver's `threshold` |
 | **Every element** | | | |
 | Input `caretHidden` | `caret` (default `true`) | States | Decided by the user: the part's name, as `scrollbar`; replaces the 2026-10-20 row keeping it |
 | `HoverEvent` (`onHoverMove`) `locationX` / `locationY`, `pageX` / `pageY`, `altKey` / `ctrlKey` / `metaKey` / `shiftKey` | `{ position: Point; pagePosition: Point; modifiers: Modifiers }` | Points | GPUI `MouseMoveEvent`; new types `Point`, `Modifiers` in `nsh` |
@@ -175,7 +195,9 @@ them yet (`compatibility.md`). The frozen RN-shaped modules keep their names. A 
 | `Insets` (type) | `Edges` | Geometry | `safeArea()`, `safeAreaInsets()`; `hitSlop` / `contentInset` take `number \| Partial<Edges>` / `Partial<Edges>` |
 | `contentOffset`, `Overlay` `anchor`, `Menu.popup`'s `at` | typed `Partial<Point>` / `Point` | Geometry | Same fields |
 | `nsh/desktop` `WindowFrame` `{ x, y, width, height, animated, anchorTop }` | `{ origin?: Partial<Point>; size?: Partial<Size>; animated; anchorTop }` | Geometry | |
-| `windowSize()`, `ImageSize`, Image `onLoad`, `onContentSizeChange` | typed `Size` | Geometry | Same fields |
+| `windowSize()`, `ImageSize`, Image `onLoad`, `onContentSizeChange` | typed `Size` | Geometry | Same fields; pixel sizes are `PixelSize` (next row) |
+| `ImageSize`, Image and Video `onLoad`'s, `ClipboardImage`'s and `PickedImage`'s `Size` (pixels) | `PixelSize` | Units | Same fields; `Size` is points |
+| `PanResponder` `vx` / `vy` (points per millisecond), `keyboardFrame().duration` (seconds) | points per second, milliseconds | Units | |
 | `ImageAsset` / `ClipboardImage` `{ url, width, height }`, Video `onLoad` `{ duration, width, height }` | `{ url; size: Size }`, `{ duration; size: Size }` | Geometry | |
 | **Image** | | | |
 | `src: string \| ImageAsset \| { uri }` | `src: string \| ImageAsset` | Addresses | |
@@ -322,11 +344,12 @@ and `Input`'s React Native names follow the rules as well.
 | `Radio::id`, `tab_index`, `tab_stop`, `track_focus` | (left out) | | Identity is the element's; the keyboard focus follows the view tree, as `Button`'s does |
 | `RadioGroup::axis(Axis)` | (left out) | `radio_group.rs` (`aria_orientation`); `gpui-shell`'s `axis` ("semantic only") | It sets only the orientation screen readers hear, which NSH's accessibility layer does not carry yet; the layout is the app's `class` (`flex-row`) |
 | `accessibility_label` on a `RadioGroup` (`gpui-shell`, any element) | (left out) | | A labelled container is one element on iOS, which would hide the radios inside it; added with a container that keeps its children elements |
+| No keys in `RadioGroup` (`radio_group.rs`; its page says "arrow keys among enabled choices"), every radio its own Tab stop | `RadioGroup` is one Tab stop (the checked radio, else the first enabled); Down / Right and Up / Left move to the next / previous enabled radio, around the ends, and check it (`onChange(true)`); Space checks the focused one | WAI-ARIA APG radio group; `roving.rs` | `gpui-base` has none in code; `nsh-base` owns the behavior since NSH has no styled layer. No props: the radios reach their group through context, a radio outside one stays a stop of its own. Both pairs of arrows move, whatever the layout, as the pattern has it, so `axis` stays left out |
 | **Tabs** (`nsh/base`) | | | |
 | `Tab::on_click(&ClickEvent, ..)` | `onPress()` | `tabs.rs` `Tab::on_click`; `Button`'s `onPress` | Press, not click (above), as `Button`'s; every press reports, the selected tab's included, as `Tab::on_click` does |
 | `Tab::set_position(position, size)` | (left out) | | As `Radio::set_position`: NSH's accessibility state has no position in a set yet |
 | `Tab::id`, `Tabs::new(id)` | (left out) | | Identity is the element's (`testID` for tests), as `Radio::id` |
-| A tab outside the keyboard focus until its list has roving focus (`Tab`'s doc comment) | each enabled tab is a focus stop, Space / Return press it | `Button`, `Radio` | The keyboard focus follows the view tree, so keyboard users reach every tab; arrow keys, Home / End and roving focus come with the tab list's keyboard model (`gpui-base`'s TODO) |
+| A tab outside the keyboard focus, with a TODO for "compound keyboard navigation with roving focus, arrow keys, Home/End, and Enter/Space activation" (`tabs.rs` `Tab`'s doc comment) | `Tabs` is one Tab stop (the selected tab, else the first enabled); Left / Up and Right / Down move to the previous / next enabled tab, around the ends, Home / End to the first / last, and the tab reached reports `onPress` (automatic activation); Space / Return press the focused tab | WAI-ARIA APG tabs; `roving.rs` | `gpui-base` has none; `nsh-base` owns the behavior since NSH has no styled layer. Automatic activation, as the pattern recommends where a section shows at once: the app's content is its own reactive view, nothing to load. No `orientation` (`gpui-base` has none, and the axis is the app's `class`), so both pairs of arrows move. A tab outside a `Tabs` stays a stop of its own |
 | `Tab`'s own layout (`flex`, `items_center`, `justify_center`, a line height of 1) | (none) | `Button` (no layout of its own) | The layout is the app's `class` and `style`, as `Button`'s; centering is `items-center justify-center` |
 | **Collapsible** (`nsh/base`) | | | |
 | `Collapsible::reveal(id, progress)` (`MotionReveal`: the content kept mounted, its measured height times `progress`, clipped) | (left out) | | NSH's layout has no height that is a fraction of the content's own; until the core has one, the app animates what it shows (opacity, a transform) |

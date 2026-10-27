@@ -359,6 +359,7 @@ import { Animated, createAnimatedValue, createMotion, motions, Easing, LayoutAni
 | 手势 | `.pan_values(Some(&x), Some(&y))`、`.pinch_value(&scale)`、`.rotation_value(&angle)` | 任意元素上的 `pan={{ x, y }}`、`pinch={{ scale }}`、`rotation={{ angle }}`：手势直接写入这些值（见[触摸与手势](../docs/touch-and-gestures.md)） |
 | 吸附位置 | `.sticky().bind_sticky_top(&value)`（横向滚动视图中为 `.bind_sticky_left`）、列表上的 `.bind_sticky_header_offset(&value)` | `style={{ position: "sticky", top: value }}`、`<List stickyHeaderOffset={value}>`：吸附视图和标题吸附在距视口起点这么远的位置，逐帧跟随该值 |
 | 画布 | 绘制调用中的动画参数 | [画布](./nsh-canvas.md)绘制调用中的任意数字或颜色参数 |
+| Shader | `.uniform(name, &value)` | [shader](../elements/shader.md) 的 `struct Uniforms` 成员：`uniforms={{ name: value }}`（数值，或用于 `vec3f` / `vec4f` 的颜色节点） |
 
 其他样式属性只接受普通值；如果要为布局本身（尺寸、在布局流中的位置）添加动画，请使用 [`LayoutAnimation`](#layoutanimation)。
 
@@ -1033,7 +1034,7 @@ const shadow = platform.select({
 const pixelRatio: Accessor<number>;
 ```
 
-每个点对应的设备像素数（大多数 iPhone 上为 `3`）。响应式：窗口移动到另一种像素密度的屏幕上时（Mac Catalyst、桌面系统或外接显示器）它会变化。Rust：`pixel_ratio() -> f32`，取整到设备像素的长度用 `round_to_nearest_pixel(points)`；在 TSX 中这个长度是 `Math.round(x * pixelRatio()) / pixelRatio()`。
+每个点对应的设备像素数（大多数 iPhone 上为 `3`）。响应式：窗口移动到另一种像素密度的屏幕上时（Mac Catalyst、桌面系统或外接显示器），以及 Android 的显示大小设置改变像素密度时，它会变化。Rust：`pixel_ratio() -> f32`，取整到设备像素的长度用 `round_to_nearest_pixel(points)`；在 TSX 中这个长度是 `Math.round(x * pixelRatio()) / pixelRatio()`。
 
 ```rust tabs
 let hairline = move || px(1.0 / pixel_ratio());
@@ -1155,7 +1156,7 @@ pub fn App() -> impl IntoElement {
                 pos.set((x + e.gesture.delta.x.0, y + e.gesture.delta.y.0));
             })
             .on_responder_release(move |e: &ResponderEvent| {
-                log::info!("released at {:.2} pt/ms", e.gesture.vx);
+                log::info!("released at {:.0} pt/s", e.gesture.vx);
             }),
     )
 }
@@ -1172,7 +1173,7 @@ function App() {
     onStartShouldSetPanResponder: () => true,
     onPanResponderGrant: () => (start = pos()),
     onPanResponderMove: (_, g) => pos.set({ x: start.x + g.dx, y: start.y + g.dy }),
-    onPanResponderRelease: (_, g) => console.log(`released at ${g.vx.toFixed(2)} pt/ms`),
+    onPanResponderRelease: (_, g) => console.log(`released at ${g.vx.toFixed(0)} pt/s`),
   });
   return (
     <View style={{ flex: 1 }}>
@@ -1228,7 +1229,7 @@ interface PanResponderGestureState {
   y0: number;
   dx: number;                  // 成为响应者以来移动的距离
   dy: number;
-  vx: number;                  // 速度，点/毫秒
+  vx: number;                  // 速度，点/秒
   vy: number;
   numberActiveTouches: number;
 }
@@ -1242,7 +1243,7 @@ Rust：`PanGesture`，位置为 `Point<Points>`。
 | `moveX`、`moveY` | `position` | 触点中心的最新位置，界面坐标（点）。 |
 | `x0`、`y0` | `origin` | 成为响应者时触点中心的位置。 |
 | `dx`、`dy` | `delta` | 成为响应者以来移动的距离。 |
-| `vx`、`vy` | `vx`、`vy` | 速度，单位为点/毫秒。 |
+| `vx`、`vy` | `vx`、`vy` | 速度，单位为点/秒。 |
 | `numberActiveTouches` | `active_touches` | 按下的手指数。 |
 
 ### 在滚动视图中
@@ -1301,7 +1302,7 @@ const Clipboard: {
 
 interface ClipboardImage {
   url: string; // data:image/png;base64,…
-  size: { width: number; height: number }; // 像素
+  size: PixelSize;
 }
 ```
 
@@ -1569,7 +1570,7 @@ interface PickImagesOptions {
 
 interface PickedImage {
   file: File; // 文件名、类型、字节数和字节
-  size: { width: number; height: number }; // 像素，方向已摆正
+  size: PixelSize; // 方向已摆正
 }
 ```
 
@@ -2570,6 +2571,7 @@ function Saved() {
 | `ColorValue`、`DimensionValue`、`LengthValue`、`TransformStep` | 样式中的值 |
 | `GestureResponderEvent`、`HoverEvent`、`ContextMenuEvent`、`ScrollEvent`、`PanEvent`、`TouchPoint` | 事件数据 |
 | `Point`、`Size`、`Bounds`、`Edges`、`Modifiers` | 事件数据和属性所用的形状，字段与 GPUI 相同（`nsh_core::geometry`） |
+| `PixelSize` | 图片或视频自身的像素尺寸（`onLoad`、`Image.getSize`、剪贴板和照片选择器的图片）；`Size` 的单位是点 |
 | `ImageAsset` | 导入图片文件得到的对象（`{ url, size: Size, scales? }`；`scales` 列出它的[像素密度变体](../docs/images-and-assets.md#像素密度)） |
 | `OS` | `"ios" \| "android" \| "macos" \| "windows" \| "linux" \| "web"` |
 | `AccessibilityRole`、`AccessibilityState` | 无障碍属性 |

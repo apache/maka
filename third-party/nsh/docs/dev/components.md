@@ -17,7 +17,11 @@ come from two places:
   module `AlertDialog`, beside the navigation `nsh-js` makes for it (`NavStack`, `NavPage`, `Dialog`, `createNavStack`); controls
   (toggles, sliders, selects, popovers, sheets, ...) join as their behavior is written. It is a UI set
   (`Registry::ui_set("nsh/base")`), with the charts' parts `Plot`, `Line`, `Area`, `Bar`, `Grid`, `Pie` and `Arc` in its submodule `nsh/base/plot` (`Registry::submodule`, `js-modules.md`), every host serves by default (`set_ui_sets`' default; embedders with a list of their
-  own add `nsh_base::registry()` to it); Rust apps use `nsh_base::{button, …}`, make navigation and
+  own add `nsh_base::registry()` to it). `nsh_base::registry_of` makes it of some of its parts only
+  (`nsh_base::parts`: `core`, the controls, popups, toasts and alerts every app has, and one part per larger
+  component, `text_view`, `editor`, `diff`, `rich_editor`, `data_table`, `table`, `dock`, `resizable`, `plot`): a
+  runtime that registers fewer parts leaves the others' code out of its binary, as nothing else reaches it (Rust
+  builders make a component's instance without the registry). Rust apps use `nsh_base::{button, …}`, make navigation and
   dialogs with `nsh_base::{nav_stack, nav_page, dialog}` (on the core's `Stack`, `Screen` and `Modal` host
   elements, whose builders are hidden building blocks of these), and show system alerts with
   `nsh_base::alert_dialog()`. What goes in is behavior:
@@ -201,7 +205,9 @@ reasons: `reactive-components.md`.
     the app's function in a root of its own under the component's owner (so context reaches it), inserts what it
     returns into a holder view (`componentRender`: the prop, U+001F, the key) and the holder into the host, replacing
     the key's previous one; the core places the holder as the only child of the key's placeholder (the last one placed
-    when a view places a key twice; none placed: it waits out of the tree for the `Unrender`). Until its holder
+    when a view places a key twice, skipping those in list cells their lists freed: a cell whose row went still reads
+    the row now at its old index until the list binds it again, so it may place the key of a row that moved to another
+    cell, which keeps showing it; none placed: it waits out of the tree for the `Unrender`). Until its holder
     arrives a placeholder is empty, so a list cell holding one is not measured (`Core::cells_awaiting_renders`): its
     row keeps its estimate (or its last size) and stays in the window, and is measured in the commit the holder
     comes in; measured empty, a list in a view sized by its content would shrink that view's viewport to nothing
@@ -833,6 +839,17 @@ what changed.
   `on_event` listener of the view that made it, typed, whose own emits are routed in turn until none are left.
 - The back button: `on_back_press` listeners of views run newest first, after modals' and before stacks', then JS's
   (`element/back.rs`).
+- Keys while the control has the keyboard focus: a signal of the focus (`on_focus` / `on_blur`), and
+  `keys::bind_while(focused, keys, handler)`, which binds them in an effect that returns early while it is false,
+  so the bindings of the global keymap come and go with the focus (`DataTable` does the same by hand).
+- Roving focus (`roving.rs`, WAI-ARIA's tab list and radio group): `Tabs` and `RadioGroup` provide a `Roving` through
+  context, and each `Tab` / `Radio` under one registers its ref, its current state (`selected`, `checked`), its
+  `disabled` and what moving to it does (a press, `Change(true)`); an item outside a group stays a stop of its own.
+  Only the stop is `focusable`: the item the focus is on, else the current one, else the first enabled, so Tab
+  passes the group in one step. While an item has the focus the group binds its arrows (and Home / End for tabs);
+  a key sets the target as the focused item first, which makes it the stop (its `focusable` mounts before the
+  `focus()` command of the same batch, as a ref's `focus()` only moves to stops), focuses it and activates it.
+  Items are in the order they registered: the order the app's children were made.
 
 ## The JS face and the declarations
 
@@ -974,7 +991,7 @@ NSH's additions fit the same pieces: gpui-base expands the stack for hover and f
 a finger down on the stack (observed `onTouch`) expands it as the pointer does, so a toast being read or swiped is
 paused. A `Toast` takes a swipe (the core's responder, claimed once the pointer moved 10 points toward
 `swipeDirection` along its axis, so its buttons stay presses; released past `swipeThreshold`, measured from where the
-pointer went down, or flicked at 0.5 points per millisecond, it moves out and emits `DismissRequest`). The stack hears
+pointer went down, or flicked at 500 points per second, it moves out and emits `DismissRequest`). The stack hears
 Escape and back while it has children (an overlay of no size, `onCancel`), so nothing else loses them to an empty
 stack. A `Toast`'s `accessibilityLabel` is announced once as it mounts (`announce_for_accessibility`, every platform's
 announcement). The state classes are the app's look for the status: `startingClass` in the first frame while

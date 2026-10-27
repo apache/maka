@@ -2,11 +2,15 @@
 //!
 //! The engine owns a [`nsh_core::Core`] on a dedicated thread and runs one
 //! app ([`App`]): a Rust app's root component, or a JS bundle in a QuickJS
-//! VM (`nsh_js::Host`, feature `js`). Each wake-up (input event, timer,
+//! VM (`nsh_js::Host`, feature `js-core`; `js` adds the standard modules
+//! `zlib` and `crypto`). Each wake-up (input event, timer,
 //! resize) runs the app's code (component tasks; JS and its microtasks),
 //! applies what JS committed, lays out, and hands one [`MountBatch`] to the
 //! platform through a [`MountSink`]. The platform thread never blocks on
 //! the engine.
+
+#[cfg(all(feature = "browser", target_arch = "wasm32", not(feature = "js-core")))]
+pub mod browser;
 
 mod access;
 mod app_directory;
@@ -18,9 +22,11 @@ mod local_storage;
 pub mod net;
 pub mod perf;
 mod script;
+#[cfg(feature = "shader")]
+pub mod shader;
 #[cfg(not(target_arch = "wasm32"))]
 mod storage;
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 mod symbolicate;
 
 // The typed API check (docs/dev/geometry.md, "Typed API"): the scan is
@@ -57,10 +63,10 @@ pub use nsh_core::{
     storage::{StorageBackend, StorageChange},
     time::Clock,
 };
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub use nsh_js::BYTECODE_VERSION;
 /// Signed packages, release-key certificates, revocations and trust stores.
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub use nsh_package as package;
 use rustc_hash::FxHashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,7 +115,7 @@ const HOVER_MOVE_INTERVAL: Duration = Duration::from_millis(8);
 pub enum App {
     /// A Rust app: its root component, mounted as the surface's content.
     Rust(Root),
-    /// A JS app (feature `js`).
+    /// A JS app (feature `js-core`).
     Js(Bundle),
 }
 
@@ -407,7 +413,7 @@ impl Bundle {
     }
 }
 
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 impl Bundle {
     /// The bundle of a verified package: its bytecode when it was compiled
     /// for this runtime (else its source), its source map and its declared
@@ -455,7 +461,7 @@ fn read_app_id(path: &std::path::Path) -> Option<String> {
 }
 
 /// A verified package, unpacked ([`load_package`], [`verify_package`]).
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 #[derive(Debug)]
 pub struct LoadedPackage {
     /// Its bundle.
@@ -472,7 +478,7 @@ pub struct LoadedPackage {
 /// `assets_root` (`<root>/<app id>/<package hash>/`, once per package) and
 /// records its build (older builds of the app are refused from now on):
 /// [`verify_package`], then [`accept_package`].
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn load_package(
     trust: &mut nsh_package::TrustStore,
     bytes: &[u8],
@@ -490,7 +496,7 @@ pub fn load_package(
 /// decided the package is healthy (its first frame drawn, no fatal error for
 /// a while) calls [`accept_package`]; if it fails before, the app can go
 /// back to the package it ran before, which still verifies.
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn verify_package(
     trust: &nsh_package::TrustStore,
     bytes: &[u8],
@@ -527,7 +533,7 @@ pub fn verify_package(
 /// stack) to the app source position `source_map` (the bundle's) gives,
 /// as the engine does with a bundle's own map: for stacks reported by
 /// packages published without their map (`nsh symbolicate`).
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn symbolicate(source_map: &str, text: &str) -> String {
     symbolicate::Symbolicator::new(Some(source_map.into())).rewrite(text)
 }
@@ -535,7 +541,7 @@ pub fn symbolicate(source_map: &str, text: &str) -> String {
 /// Records the build of `package` ([`verify_package`]) in `trust`: older
 /// builds of its app are refused from now on. Refused if the package or its
 /// release key was revoked since it was verified.
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn accept_package(
     trust: &mut nsh_package::TrustStore,
     package: &LoadedPackage,
@@ -597,6 +603,13 @@ pub trait MountSink: Send + 'static {
     /// latest size. A platform that waits for the layout at a new size, to
     /// show it in the frame the window takes the size, stops waiting here.
     fn resized(&self, _size: Size<Points>) {}
+
+    /// The engine has handled the first `events` events sent with
+    /// [`EngineControl::dispatch_event`]. Called after the commit of the
+    /// turn that handled them (what they changed came before), once per
+    /// turn. A platform holding typed text for the field an event may focus
+    /// gives it to the focused field from here.
+    fn handled(&self, _events: u64) {}
 
     /// The app imports chunk `id` of a split bundle (`import()`), which its
     /// [`Bundle`] does not hold: load it and hand it over with
@@ -751,7 +764,7 @@ fn trusted_directory(path: Option<std::path::PathBuf>) -> Option<std::path::Path
 }
 
 /// Native hosts choose these anchors before any application JavaScript runs.
-#[cfg(feature = "js")]
+#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 fn bundle_system_paths(bundle: &Bundle) -> nsh_core::access::TrustedPaths {
     let mut paths = bundle.system_paths.clone();
     paths.plugin_dir = trusted_directory(paths.plugin_dir);
@@ -887,6 +900,7 @@ enum Message {
     Frame,
     States(NodeId, u8),
     FontsChanged,
+    Remount,
     /// An event of a request (by the hop it is for: events of a hop the
     /// engine left are dropped).
     Fetch(Requester, u64, FetchEvent),
@@ -1082,6 +1096,13 @@ impl EngineControl {
     /// is measured again.
     pub fn fonts_changed(&self) {
         let _ = self.tx.send(Message::FontsChanged);
+    }
+
+    /// The platform's views get everything again and text is measured
+    /// again: the unit the platform converts values with changed (Android's
+    /// density). Send the new environment and size too.
+    pub fn remount(&self) {
+        let _ = self.tx.send(Message::Remount);
     }
 
     /// Records the engine's commits into `monitor` from now on (`None`:
@@ -1406,9 +1427,9 @@ impl<M: TextEngine + 'static> Driver<M> {
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) -> Option<Self> {
         config.pinned.apply(&mut config.environment);
-        #[cfg(feature = "js")]
+        #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
         let system_tx = tx.clone();
-        #[cfg(feature = "js")]
+        #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
         let host_bridge = config.host.bridge(tx.clone());
         let host_tx = tx.clone();
         let text_engine = Rc::new(text_engine);
@@ -1528,6 +1549,8 @@ impl<M: TextEngine + 'static> Driver<M> {
             hover_moved: None,
             sets_seen: FxHashMap::default(),
             resized: None,
+            events_handled: 0,
+            events_reported: 0,
             pinned: config.pinned,
             host: config.host.clone(),
             url_opens: Vec::new(),
@@ -1562,7 +1585,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         };
         let eval_us = match &config.app {
             App::Js(bundle) => {
-                #[cfg(feature = "js")]
+                #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
                 let system = {
                     script::SystemConfig {
                         access: (*access).clone(),
@@ -1579,7 +1602,10 @@ impl<M: TextEngine + 'static> Driver<M> {
                         host: Rc::new(host_bridge),
                     }
                 };
-                #[cfg(not(feature = "js"))]
+                #[cfg(not(any(
+                    feature = "js-core",
+                    all(feature = "browser", target_arch = "wasm32")
+                )))]
                 let system = script::SystemConfig;
                 let (script, eval_us) = Script::start(
                     bundle,
@@ -1639,6 +1665,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             }
             sink.submit(batch);
         }
+        state.report_handled(&**sink);
         state.net.pump(script, &mut state.core);
         state.load_chunks(script, &**sink);
         state.request_frame(script, &**sink);
@@ -1825,6 +1852,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         if let Some(size) = state.resized.take() {
             sink.resized(size);
         }
+        state.report_handled(&**sink);
         state.net.pump(script, &mut state.core);
         state.load_chunks(script, &**sink);
         state.request_frame(script, &**sink);
@@ -1928,6 +1956,10 @@ struct State<M: TextEngine> {
     sets_seen: FxHashMap<(u8, NodeId), usize>,
     /// The viewport size a resize set this turn ([`MountSink::resized`]).
     resized: Option<Size<Points>>,
+    /// Events received ([`EngineControl::dispatch_event`]), and the count
+    /// last reported ([`MountSink::handled`]).
+    events_handled: u64,
+    events_reported: u64,
 }
 
 /// Who made a request: JS (`fetch`), or a Rust component's task
@@ -2305,6 +2337,15 @@ impl<M: TextEngine> State<M> {
         }
     }
 
+    /// Tells the platform how many events were handled, once the commit
+    /// of what they changed is submitted.
+    fn report_handled(&mut self, sink: &dyn MountSink) {
+        if self.events_handled != self.events_reported {
+            self.events_reported = self.events_handled;
+            sink.handled(self.events_handled);
+        }
+    }
+
     /// Asks the platform for a frame when JS or a component's task waits
     /// for one.
     fn request_frame(&mut self, script: Option<&Script>, sink: &dyn MountSink) {
@@ -2631,6 +2672,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         Message::HintObservation(observation) => state.core.observe_hint(observation),
         Message::CancelTouch(contact) => state.cancel_touch(script, contact),
         Message::Event(id, event, mut payload) => {
+            state.events_handled += 1;
             state.discard_revoked_input(script);
             if !state.core.accepts_native_input(id) {
                 return true;
@@ -2791,6 +2833,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             }
         }
         Message::FontsChanged => state.core.fonts_changed(),
+        Message::Remount => state.core.remount(),
         Message::Fetch(who, hop, event) => {
             if let Some(event) = state.net.event(who, hop, event) {
                 match who {

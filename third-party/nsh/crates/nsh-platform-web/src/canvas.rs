@@ -175,7 +175,7 @@ fn rule(r: FillRule) -> &'static str {
     }
 }
 
-fn font(f: &CanvasFont) -> String {
+pub(crate) fn font(f: &CanvasFont) -> String {
     let family = f.family.as_deref().map_or_else(
         || "system-ui, sans-serif".to_owned(),
         |f| format!("\"{f}\""),

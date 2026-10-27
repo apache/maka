@@ -62,6 +62,9 @@ pub enum Tag {
     /// `Overlay` of `nsh`), outside its parent's layout and clipping, laid
     /// out on its own and placed by the core ([`crate::overlay`]).
     Overlay,
+    /// A view whose box a shader draws, under its children (`<shader>`,
+    /// TS: `Shader` of `nsh`; [`crate::shader`]).
+    Shader,
 }
 
 impl Tag {
@@ -86,6 +89,7 @@ impl Tag {
             "video" => Tag::Video,
             "native" => Tag::Native,
             "overlay" => Tag::Overlay,
+            "shader" => Tag::Shader,
             _ => return None,
         })
     }
@@ -1307,10 +1311,12 @@ pub enum ListViewport {
 /// Without thresholds, any visible pixel does.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Viewability {
-    /// Percent of the viewport an item must cover.
-    pub view_area_percent: Option<f32>,
-    /// Percent of an item that must be visible.
-    pub item_visible_percent: Option<f32>,
+    /// How much of the viewport an item must cover (TS:
+    /// `viewAreaCoverageThreshold`, 0 to 1).
+    pub view_area_coverage_threshold: Option<Percentage>,
+    /// How much of an item must be visible (TS: `itemVisibleThreshold`, 0
+    /// to 1).
+    pub item_visible_threshold: Option<Percentage>,
 }
 
 /// Where a header item goes (`<headeritem slot>`).
@@ -1897,6 +1903,22 @@ pub enum Prop {
     /// prop's Rust type ([`crate::element::PropSpec::decode`]); `None` resets it
     /// to its default.
     RustProp(&'static str, Option<crate::element::AnyValue>),
+    /// `source` (shaders): the WGSL defining `fn shade(uv: vec2f) -> vec4f`,
+    /// the color of each point of the box (`uv` 0..1 from the top left;
+    /// straight sRGB with alpha), which reads `nsh.size`, `nsh.time`,
+    /// `nsh.scale` and its `struct Uniforms` as `uniforms`.
+    #[prop(js = "source", on = SHADER)]
+    ShaderSource(Option<Arc<str>>),
+    /// A compiled shader, as Rust sets it (TS sets `source`).
+    Shader(Option<crate::shader::Shader>),
+    /// `uniforms` (shaders): the values of the members of the shader's
+    /// `struct Uniforms`, by name: numbers, colors, lists of them (vectors,
+    /// arrays of `vec4f`) and animated values, which move it natively.
+    #[prop(js = "uniforms", on = SHADER)]
+    Uniforms(crate::shader::ShaderUniforms),
+    /// `paused` (shaders): its clock (`nsh.time`) stands still.
+    #[prop(js = "paused", on = SHADER, shared)]
+    ShaderPaused(bool),
     /// `src`: a URL, `asset:/path`, or an imported asset.
     #[prop(js = "src", on = IMAGE, shared)]
     Source(Option<ImageSource>),
@@ -2334,7 +2356,7 @@ pub enum NativeProp {
     )]
     BackForwardGestures(bool),
     /// `paused` (videos): playback is paused.
-    #[prop(js = "paused", on = VIDEO)]
+    #[prop(js = "paused", on = VIDEO, shared)]
     Paused(bool),
     /// `muted` (videos): no sound.
     #[prop(js = "muted", on = VIDEO)]

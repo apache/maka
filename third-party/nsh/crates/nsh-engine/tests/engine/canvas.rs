@@ -44,7 +44,7 @@ mount(
 "##;
 
 /// The app, compiled by nsh and loaded as bytecode.
-fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatch>) {
+pub(crate) fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatch>) {
     static APPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "nsh-canvas-{}-{}",

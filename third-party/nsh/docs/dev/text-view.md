@@ -188,6 +188,11 @@ syntaxes takes tens of milliseconds more. So the engine thread parses only what 
   that has a language. A block that goes away before its colors arrive leaves its tokens in the cache.
 - WebAssembly has no threads: there the work is done after the frame that shows the block plain (`next_frame`), so
   the block appears at once but that later frame pays for the parsing.
+- The web runtime gets the syntaxes from its page: `nsh-syntaxes.bin`, two-face's dump, next to `nsh.wasm` (the
+  build that makes the module copies it from the two-face its workspace resolves, so it matches the module's syntect;
+  `nsh package --target web` publishes it as `nsh-syntaxes.<digest>.bin` and names it in the page's `data`). The
+  first block with a language asks for it (`syntax::load_async`, `nsh_core::runtime_data`), the page fetches it once
+  and every block waiting is highlighted when it arrives. A page that cannot serve it keeps code plain (one warning).
 
 `bench_highlight` (ignored: `cargo test --release -p nsh-base bench_highlight -- --ignored --nocapture`) prints these
 numbers.

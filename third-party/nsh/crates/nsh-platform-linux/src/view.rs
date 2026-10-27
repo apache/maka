@@ -75,6 +75,8 @@ pub(crate) struct ViewState {
     pub(crate) image: Option<crate::image::ImageState>,
     /// Canvas content.
     pub(crate) canvas: Option<crate::canvas::CanvasState>,
+    /// What a shader draws under the children ([`crate::shader`]).
+    pub(crate) shader: Option<crate::shader::ShaderState>,
     /// Text field (input views).
     pub(crate) input: Option<std::rc::Rc<crate::text_input::InputState>>,
     /// Hosted GTK widgets.
@@ -107,6 +109,7 @@ impl ViewState {
             area_selection: None,
             image: None,
             canvas: None,
+            shader: None,
             input: None,
             natives: Vec::new(),
             overflow: None,
@@ -387,6 +390,7 @@ mod imp {
                     state.frame.size.height.0,
                 ));
             }
+            crate::shader::draw(snapshot, &state);
             crate::text::draw(snapshot, &state);
             crate::image::draw(snapshot, &state);
             if state.canvas.is_some() {

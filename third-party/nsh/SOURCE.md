@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`1849776f68ee41d73c08970fe530cf952451af13`. The first upstream synchronization
+`d4c43ea6bece16881a582275fdbeb754bebb3e4f`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -252,3 +252,20 @@ other queued engine messages. The existing terminal lifecycle, retained-row
 host-identity checks and focus regressions remain in place. Native platform
 runtime and gallery appearance checks require their supported environments;
 Linux core tests are not evidence of those visual checks.
+
+The synchronization through `d4c43ea6` adds the Shader view, held typed-ahead
+text in GPUI fields, arrow-key movement in `Tabs` and `RadioGroup`, RichEditor
+keys chosen by the engine's OS, one unit per quantity, Android density remount,
+`nsh/base` registry parts and the browser-engine web runtime. The GPUI hold
+queue wraps the local `set_focus_target` transition, so inline-link targets and
+focus admission tokens remain; any focus move arms it, and hover hint
+observations are not counted as engine events. Core creation and remount share
+`mount_state`; list cells keep the local publication path, and a remount does
+not clear a list's mounted cells. Only `sticky_ranges` is added beside the
+local sticky handling. `TextViewLinkTarget` registers with the `text_view` part.
+Android's Shader mount item takes opcode 37, after the local 34 to 36. The
+terminal backend ignores Shader mount items, so a shader view shows its
+background and children. `wgpu` and `naga` follow version 30, which Maka's GPUI
+build already uses, instead of upstream's 29; the shader readback keeps its
+previous frame when wgpu 30 cannot map a range. Maka's root dependency graph
+gains no packages from this synchronization.

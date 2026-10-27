@@ -156,8 +156,6 @@ ops::ScrollProp::MaxZoom.0                                       # a zoom scale 
 ops::ScrollProp::MinZoom.0                                       # a zoom scale factor
 ops::ScrollProp::Zoom.0                                          # a zoom scale factor
 ops::TouchEvent.timestamp                                        # time
-ops::Viewability.item_visible_percent                            # a percent, 0..100, as React Native's viewabilityConfig takes it
-ops::Viewability.view_area_percent                               # a percent, 0..100, as React Native's viewabilityConfig takes it
 platform::Environment.font_scale                                 # a font scale factor
 platform::Environment.keyboard_duration                          # time
 platform::Environment.pixel_ratio                                # device pixels per point
@@ -189,6 +187,9 @@ scroll::snap_duration(velocity)                                  # a velocity, p
 scroll::spokes ->                                                # an opacity per spoke, 0..1
 scroll::wheel_end(vx)                                            # a velocity, points per second
 scroll::wheel_end(vy)                                            # a velocity, points per second
+shader::UniformValue::Number.0                                  # a uniform's value, whatever the app's program makes of it
+shader::builtins(scale)                                          # pixels per point, a ratio
+shader::builtins(time)                                           # time
 shape::SMOOTHING                                                 # a corner smoothing factor
 style::Color::to_f64 ->                                          # color components
 style::LineHeight::Em.0                                          # a multiple of the element's font size
@@ -327,8 +328,8 @@ element::js::JsHost::number ->                                        # a generi
 element::js::JsIn::as_date ->                                         # time (a JS Date's milliseconds since the epoch)
 element::js::JsIn::as_number ->                                       # a generic number (a JS value, a recorded slot)
 element::module::ConstantValue::Number.0                              # a generic number (a module constant's JS value)
-element::responder::PanGesture.vx                                     # a rate or a physical constant of an animation
-element::responder::PanGesture.vy                                     # a rate or a physical constant of an animation
+element::responder::PanGesture.vx                                     # a velocity, points per second
+element::responder::PanGesture.vy                                     # a velocity, points per second
 element::responder::ResponderEvent.timestamp                          # time
 element::scrollable::Scrollable::deceleration(rate)                   # a rate or a physical constant of an animation
 element::scrollable::Scrollable::event_throttle(ms)                   # time

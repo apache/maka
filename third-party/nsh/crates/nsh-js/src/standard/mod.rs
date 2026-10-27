@@ -14,6 +14,7 @@ pub(crate) mod process;
 pub(crate) mod scheduler;
 mod url;
 pub(crate) mod websocket;
+#[cfg(feature = "zlib")]
 mod zlib;
 
 #[cfg(target_arch = "wasm32")]
@@ -30,6 +31,7 @@ pub(crate) fn load<'js>(cx: &Ctx<'js>, name: &str) -> Result<Module<'js>> {
     // LLRT's crypto module expects the classes its global defines.
     // Compiling to bytecode declares modules in a context without NSH's
     // state, and runs none.
+    #[cfg(feature = "crypto")]
     if name == "crypto" && !crate::state::state(cx.as_raw().as_ptr()).is_null() {
         init_crypto(cx)?;
     }
@@ -40,12 +42,14 @@ pub(crate) fn load<'js>(cx: &Ctx<'js>, name: &str) -> Result<Module<'js>> {
     }
     match name {
         "buffer" => declare!(quickjs_jit_stdlib::buffer::BufferModule),
+        #[cfg(feature = "crypto")]
         "crypto" => declare!(bounds::CryptoModule),
         #[cfg(not(target_arch = "wasm32"))]
         "path" => declare!(quickjs_jit_stdlib::path::PathModule),
         #[cfg(target_arch = "wasm32")]
         "path" => declare!(path::PathModule),
         "url" => declare!(url::UrlModule),
+        #[cfg(feature = "zlib")]
         "zlib" => declare!(zlib::ZlibModule),
         "console" => declare!(console::ConsoleModule),
         _ => Err(Error::new_loading(name)),
@@ -60,13 +64,14 @@ type Init = fn(&Ctx<'_>) -> Result<()>;
 /// name is an accessor until then; reading
 /// or assigning any name of a group installs the whole group, which
 /// replaces the accessors with plain data properties.
+#[cfg(feature = "crypto")]
 const LAZY: &[(&[&str], Init)] = &[
     (&["process"], init_process),
-    (
-        &["crypto", "Crypto", "SubtleCrypto", "CryptoKey"],
-        init_crypto,
-    ),
+    (nsh_core::js::CRYPTO_GLOBALS, init_crypto),
 ];
+/// [`LAZY`] of a runtime without `crypto` (feature `crypto`).
+#[cfg(not(feature = "crypto"))]
+const LAZY: &[(&[&str], Init)] = &[(&["process"], init_process)];
 
 /// Installs `Buffer` and the lazy standard globals. `Buffer`
 /// is made now (about 30 µs): LLRT defines its methods by assignment, and
@@ -227,6 +232,7 @@ fn init_process(cx: &Ctx<'_>) -> Result<()> {
 }
 
 /// `crypto` and its classes.
+#[cfg(feature = "crypto")]
 fn init_crypto(cx: &Ctx<'_>) -> Result<()> {
     if take_lazy(cx, "crypto")? {
         quickjs_jit_stdlib::crypto::init(cx)?;

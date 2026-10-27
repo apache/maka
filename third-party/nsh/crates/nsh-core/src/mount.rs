@@ -855,6 +855,16 @@ pub enum MountItem {
         /// The drawing.
         drawing: Arc<crate::canvas::Drawing>,
     },
+    /// What a shader view draws under its children (`None`: nothing); the
+    /// animated values among its uniforms come as
+    /// [`crate::animation::AnimationProp::CanvasArg`] bindings of its
+    /// [`crate::shader::ShaderLayer::slots`].
+    Shader {
+        /// The view.
+        id: NodeId,
+        /// The program and its uniforms.
+        layer: Option<Arc<crate::shader::ShaderLayer>>,
+    },
     /// Bind visual properties to native animation nodes.
     AnimationBindings {
         /// View.

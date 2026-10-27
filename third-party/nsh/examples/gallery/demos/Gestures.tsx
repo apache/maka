@@ -116,7 +116,7 @@ function Ball() {
     onPanResponderMove: (_, g) => pos.set({ x: start.x + g.dx, y: start.y + g.dy }),
     onPanResponderRelease: (_, g) => {
       grab.spring(0, { stiffness: 300, damping: 20 });
-      state.set({ label: `${g.vx.toFixed(2)}, ${g.vy.toFixed(2)} pt/ms`, tone: "info" });
+      state.set({ label: `${g.vx.toFixed(0)}, ${g.vy.toFixed(0)} pt/s`, tone: "info" });
     },
     onPanResponderTerminate: () => {
       grab.spring(0);

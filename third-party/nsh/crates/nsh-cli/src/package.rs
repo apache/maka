@@ -142,6 +142,11 @@ pub(crate) struct PackageOptions<'a> {
     pub(crate) profile: Option<&'a Path>,
     /// Android release keystore, key alias and password.
     pub(crate) keystore: Option<(&'a Path, &'a str, &'a str)>,
+    /// Android: the ABIs of the APK (empty: [`android::DEFAULT_ABIS`], plus
+    /// the device's with `run`).
+    ///
+    /// [`android::DEFAULT_ABIS`]: crate::android::DEFAULT_ABIS
+    pub(crate) abis: &'a [String],
     /// Install and launch in the simulator or on the device afterwards
     /// (Linux, macOS, Windows: launch it; the web: serve it and open it in
     /// the browser).
@@ -241,6 +246,9 @@ pub(crate) fn package(options: PackageOptions<'_>) -> anyhow::Result<()> {
             "GPUI is the backend for embedding in GPUI and GPUI Kit apps (`AppView`), not for packages: \
              package this app with --target {instead}"
         );
+    }
+    if !options.abis.is_empty() && options.target != PackageTarget::Android {
+        bail!("--abi only applies to --target android");
     }
     let entry = dunce::canonicalize(options.entry)?;
     let config = &options.config;
@@ -404,6 +412,43 @@ struct App<'a> {
     executable: &'a str,
 }
 
+/// The ABIs of an APK: `requested`, else [`android::DEFAULT_ABIS`] and the
+/// preferred ABI of the device it is installed on (`device`: its ABIs,
+/// preferred first), when the runtime is built for it: an emulator's
+/// `x86_64`.
+///
+/// [`android::DEFAULT_ABIS`]: crate::android::DEFAULT_ABIS
+fn apk_abis(requested: &[String], device: Option<&[String]>) -> anyhow::Result<Vec<String>> {
+    use crate::android::{ABIS, DEFAULT_ABIS};
+    if !requested.is_empty() {
+        let mut abis = Vec::new();
+        for abi in requested {
+            if !abis.contains(abi) {
+                abis.push(abi.clone());
+            }
+        }
+        if let Some(device) = device
+            && !device.iter().any(|abi| abis.contains(abi))
+        {
+            bail!(
+                "the device runs {}, which --abi leaves out",
+                device.join(", ")
+            );
+        }
+        return Ok(abis);
+    }
+    let mut abis: Vec<String> = DEFAULT_ABIS.iter().map(|abi| abi.to_string()).collect();
+    if let Some(abi) = device
+        .unwrap_or_default()
+        .iter()
+        .find(|abi| ABIS.contains(&abi.as_str()))
+        && !abis.contains(abi)
+    {
+        abis.push(abi.clone());
+    }
+    Ok(abis)
+}
+
 /// An APK with the release runtime: `AppActivity` runs `assets/nsh/bundle.nshc`.
 fn package_android(
     options: &PackageOptions<'_>,
@@ -414,7 +459,17 @@ fn package_android(
 ) -> anyhow::Result<()> {
     use crate::android::{self, Apk, Signing};
     let sdk = android::Sdk::find()?;
-    let runtime = runtime::android(false)?;
+    let serial = if options.run {
+        Some(android::device(&sdk)?)
+    } else {
+        None
+    };
+    let device = match &serial {
+        Some(serial) => Some(android::device_abis(&sdk, serial)?),
+        None => None,
+    };
+    let abis = apk_abis(options.abis, device.as_deref())?;
+    let runtime = runtime::android(false, &abis)?;
     // A Rust app has no bundle: `AppActivity` runs its root (the
     // manifest's `com.longbridge.nsh.RUST`).
     let mut assets = Vec::new();
@@ -460,15 +515,19 @@ fn package_android(
             rust: built.rust_root,
             dark: config.appearance.as_deref() == Some("dark"),
             runtime: &runtime,
+            abis: &abis,
             icon: config.icon.as_deref(),
             assets,
             signing,
         },
         &apk_path,
     )?;
-    step.done(format!("packaged {}", ui::path(&apk_path)));
-    if options.run {
-        let serial = android::device(&sdk)?;
+    step.done(format!(
+        "packaged {} {}",
+        ui::path(&apk_path),
+        ui::dim(format!("({})", abis.join(", ")))
+    ));
+    if let Some(serial) = serial {
         let step = ui::Step::start(format!("installing {id} on {serial}"));
         android::adb(
             &sdk,
@@ -1025,6 +1084,30 @@ fn make_ipa(app: &Path, ipa: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_apk_takes_the_phones_abis_and_the_devices() {
+        let abis = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let phones = abis(&["arm64-v8a", "armeabi-v7a"]);
+        assert_eq!(apk_abis(&[], None).unwrap(), phones);
+        // A phone: nothing more.
+        assert_eq!(
+            apk_abis(&[], Some(&abis(&["arm64-v8a", "armeabi-v7a", "armeabi"]))).unwrap(),
+            phones
+        );
+        // An emulator: its own, first of those the runtime has.
+        assert_eq!(
+            apk_abis(&[], Some(&abis(&["x86_64", "arm64-v8a"]))).unwrap(),
+            abis(&["arm64-v8a", "armeabi-v7a", "x86_64"])
+        );
+        // --abi, once each.
+        let only = abis(&["arm64-v8a", "arm64-v8a"]);
+        assert_eq!(apk_abis(&only, None).unwrap(), abis(&["arm64-v8a"]));
+        let error = apk_abis(&only, Some(&abis(&["x86_64"])))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("x86_64"), "{error}");
+    }
 
     #[test]
     fn a_release_needs_the_apps_own_id() {

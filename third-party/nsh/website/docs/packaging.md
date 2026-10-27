@@ -89,6 +89,7 @@ nsh package --target android --app-version 1.4.0 --build 42
 | `--keystore <file>` | Android: a release keystore (default: the debug key). |
 | `--key-alias <alias>` | Android: the key alias in the keystore. |
 | `--keystore-password <password>` | Android: the keystore password; also read from `NSH_KEYSTORE_PASSWORD`. |
+| `--abi <abi>` | Android: the ABIs of the APK, repeated or separated by commas (default: `arm64-v8a` and `armeabi-v7a`). |
 | `--run` | Install and launch afterwards: in the iOS simulator, or on the Android device or emulator `adb` sees; macOS, Linux and Windows apps are launched on this machine; terminal apps run in the current terminal until they exit; a web site is served on this machine and opened in the browser. Not for `--target ios`. |
 
 ## iOS simulator
@@ -143,7 +144,13 @@ without Gradle. Requirements:
 - For a Rust app, the Android NDK (`sdkmanager "ndk;<version>"`, or `ANDROID_NDK_HOME`), which builds its
   `libnsh.so`.
 
-The app targets API 35 and needs API 28 (Android 9) or newer; it contains native code for `arm64-v8a`, `armeabi-v7a` and `x86_64`.
+The app targets API 35 and needs API 28 (Android 9) or newer. It contains native code for the ABIs of phones,
+`arm64-v8a` and `armeabi-v7a`; with `--run`, also the device's, such as an emulator's `x86_64`. `--abi` picks them
+yourself, for example `--abi arm64-v8a` for 64-bit phones only, the smallest APK:
+
+```sh
+nsh package --target android --abi arm64-v8a
+```
 
 ### Signing for release
 

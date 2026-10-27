@@ -19,8 +19,9 @@ pub enum AnimationProp {
     /// The value of entry `n` of the view's `transform` list (translations
     /// in points, rotations and skews in degrees).
     Transform(u8),
-    /// Animated value slot `n` of a canvas drawing: the canvas draws again
-    /// with it (a number or a color).
+    /// Animated value slot `n` of a canvas drawing, or of a shader's layer
+    /// ([`crate::shader::ShaderLayer::slots`]): the canvas or the shader
+    /// draws again with it (a number or a color).
     CanvasArg(u16),
     /// `top` of a `position: sticky` view: how far from the viewport's
     /// start of a vertical scroll view it sticks. The core hands it to the

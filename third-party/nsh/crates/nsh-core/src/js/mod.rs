@@ -38,6 +38,12 @@ pub fn is_standard_module(name: &str) -> bool {
     STANDARD_MODULES.contains(&name)
 }
 
+/// The globals the standard module `crypto` defines: Web Crypto's `crypto`
+/// and its classes. A runtime built without `crypto` (`nsh-js`'s feature)
+/// has none of them, so code that names one needs a runtime with it (the
+/// bundler's `NativeUse::global_crypto`).
+pub const CRYPTO_GLOBALS: &[&str] = &["crypto", "Crypto", "SubtleCrypto", "CryptoKey"];
+
 /// The module name of an app's bundle (its entry chunk): stack traces show
 /// `bundle.js:LINE:COL`, and the chunks of a split bundle import it as
 /// `./bundle.js`.
@@ -138,14 +144,14 @@ mod tests {
                 "IOSInputHostProps",
                 "  keyboardAppearance?: KeyboardAppearance;",
             ),
-            ("ImageHostProps", "  onLoad?: (e: Size) => void;"),
+            ("ImageHostProps", "  onLoad?: (e: PixelSize) => void;"),
             (
                 "TextHostProps",
                 "  textSource?: { id: string; offset: number; segments?: never } | { id: string; offset?: never; segments: { start: number; end: number; sourceStart: number; sourceEnd: number; kind: \"literal\" | \"replacement\" }[] };",
             ),
             (
                 "VideoHostProps",
-                "  onLoad?: (e: { duration: number; size: Size }) => void;",
+                "  onLoad?: (e: { duration: number; size: PixelSize }) => void;",
             ),
             ("VideoHostProps", "  audioSession?: AudioSession;"),
             (

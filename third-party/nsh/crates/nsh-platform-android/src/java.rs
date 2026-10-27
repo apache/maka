@@ -37,6 +37,9 @@ pub(crate) struct Java {
     pub(crate) view_report_error: JMethodID,
     pub(crate) view_read_asset: JMethodID,
     pub(crate) view_request_frame: JMethodID,
+    /// `shaderFrame(int, ByteBuffer, int, int)`: a shader view's new frame
+    /// (UI thread).
+    pub(crate) view_shader_frame: JMethodID,
     pub(crate) view_app_stopped: JMethodID,
     pub(crate) view_host_message: JMethodID,
     pub(crate) view_open_url_message: JMethodID,
@@ -121,6 +124,11 @@ pub(crate) fn init(vm: JavaVM) -> jni::errors::Result<()> {
         view_report_error: env.get_method_id(view_class, "reportError", "(Ljava/lang/String;)V")?,
         view_read_asset: env.get_method_id(view_class, "readAsset", "(Ljava/lang/String;)[B")?,
         view_request_frame: env.get_method_id(view_class, "requestJsFrame", "()V")?,
+        view_shader_frame: env.get_method_id(
+            view_class,
+            "shaderFrame",
+            "(ILjava/nio/ByteBuffer;II)V",
+        )?,
         view_app_stopped: env.get_method_id(view_class, "appStopped", "()V")?,
         view_host_message: env.get_method_id(
             view_class,

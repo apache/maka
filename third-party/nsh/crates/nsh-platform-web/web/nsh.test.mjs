@@ -291,3 +291,53 @@ test("Return presses a focused pressable, not a focused stop that takes no press
   assert.equal(key(chart), false);
   assert.deepEqual(pressed, [button]);
 });
+
+/** A fake engine's `nsh_data`: what was handed over, as `[name, bytes, ok]`. */
+function dataSink(player) {
+  const handed = [];
+  player.wasm.nsh_data = (np, nl, dp, dl, ok) => {
+    handed.push([player.str(np, nl), [...player.bytes(dp, dl)], ok]);
+    return -1;
+  };
+  return handed;
+}
+
+/** Runs `f` with `fetch` answering `respond(url)`; the URLs it was asked for. */
+async function withFetch(respond, f) {
+  const fetched = [];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetched.push(String(url));
+    return respond(url);
+  };
+  try {
+    await f();
+  } finally {
+    globalThis.fetch = saved;
+  }
+  return fetched;
+}
+
+test("the runtime's data comes from the URL the page names and reaches the engine", async () => {
+  const { player } = fakePlayer({ data: { syntaxes: "https://example.test/nsh-syntaxes.0123456789.bin" } });
+  const handed = dataSink(player);
+  const fetched = await withFetch(
+    () => ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }),
+    () => player.loadData("syntaxes"),
+  );
+  assert.deepEqual(fetched, ["https://example.test/nsh-syntaxes.0123456789.bin"]);
+  assert.deepEqual(handed, [["syntaxes", [1, 2, 3], 1]]);
+});
+
+test("data that does not load reaches the engine as none", async () => {
+  const { player } = fakePlayer({ data: { syntaxes: "https://example.test/missing.bin" } });
+  const handed = dataSink(player);
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    await withFetch(() => ({ ok: false, status: 404, statusText: "Not Found" }), () => player.loadData("syntaxes"));
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(handed, [["syntaxes", [], 0]]);
+});

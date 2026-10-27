@@ -97,6 +97,9 @@ pub struct Bundle {
     /// `nsh/base`, an app's own UI set), sorted: what a host must
     /// serve to run it.
     pub natives: Vec<String>,
+    /// What the app's code uses of them, by export, and whether it may read
+    /// the global `crypto`: what a runtime built for it must serve.
+    pub native_use: crate::NativeUse,
     /// What the app declares it may reach (`nsh.json` `capabilities`);
     /// `None` without a declaration.
     pub capabilities: Option<nsh_core::access::Capabilities>,
@@ -449,9 +452,13 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
     assets.sort();
     assets.dedup();
     let natives = std::mem::take(&mut *natives.lock().expect("natives lock"));
-    let codes = std::iter::once(code.as_str()).chain(chunks.iter().map(|c| c.code.as_str()));
-    if let Some(warning) = ungranted_host(codes, capabilities.as_ref()) {
+    let codes = || std::iter::once(code.as_str()).chain(chunks.iter().map(|c| c.code.as_str()));
+    if let Some(warning) = ungranted_host(codes(), capabilities.as_ref()) {
         log::warn!(target: "nsh::build", "{warning}");
+    }
+    let mut native_use = crate::NativeUse::default();
+    for code in codes() {
+        native_use.add(code, |specifier| natives.contains(specifier));
     }
     Ok(Bundle {
         code,
@@ -461,6 +468,7 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
         assets,
         watch_files: watch_files(&bundler, &cwd_root),
         natives: natives.into_iter().collect(),
+        native_use,
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
@@ -1328,6 +1336,39 @@ mod tests {
             split: false,
             ui_sets: Vec::new(),
         })
+    }
+
+    /// What an app's code uses of the native modules, from every chunk of
+    /// a split bundle, by the names they export (types left out).
+    #[test]
+    fn native_use_names_what_every_chunk_imports() {
+        let dir = single(
+            "use",
+            "import { mount, signal, type Signal } from \"nsh\";\n\
+             const count: Signal<number> = signal(0);\n\
+             const screen = () => import(\"./Screen\");\n\
+             mount(() => { count.set(1); return screen; });\n",
+        );
+        std::fs::write(
+            dir.join("Screen.tsx"),
+            "import { computed } from \"nsh\";\nexport default computed(() => 1);\n",
+        )
+        .unwrap();
+        let bundle = bundle(&BundleOptions {
+            entry: dir.join("App.tsx"),
+            minify: true,
+            split: true,
+            ui_sets: Vec::new(),
+        })
+        .unwrap();
+        assert!(!bundle.chunks.is_empty());
+        let names = ["computed", "mount", "signal"].map(String::from);
+        assert_eq!(
+            bundle.native_use.imports.get("nsh"),
+            Some(&crate::Imported::Names(names.into_iter().collect()))
+        );
+        assert!(!bundle.native_use.global_crypto && !bundle.native_use.computed_import);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

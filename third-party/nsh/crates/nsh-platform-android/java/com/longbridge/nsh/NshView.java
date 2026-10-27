@@ -93,7 +93,7 @@ public class NshView extends FrameLayout {
     long handle;
     /** Serializes background sends with releasing the native handle. */
     private final Object hostLock = new Object();
-    private final float density;
+    private float density;
     private final Box root;
     private final Mounter mounter;
     private final TouchTracker touches;
@@ -628,7 +628,19 @@ public class NshView extends FrameLayout {
     @Override
     protected void onConfigurationChanged(Configuration config) {
         super.onConfigurationChanged(config);
+        // `wm density` or a display change: the view keeps its pixel size, so
+        // only its size in dp changes. The environment's new density makes the
+        // engine send every view again; it goes first so that the new window
+        // size reaches JS with it.
+        float d = getResources().getDisplayMetrics().density;
+        boolean rescaled = d > 0 && d != density;
+        if (rescaled) {
+            density = d;
+            mounter.setDensity(d);
+        }
         publishEnvironment(getRootWindowInsets());
+        int w = getWidth(), h = getHeight();
+        if (rescaled && handle != 0 && w > 0 && h > 0) Native.resize(handle, w / density, h / density);
     }
 
     private static Window windowOf(Context context) {
@@ -704,7 +716,7 @@ public class NshView extends FrameLayout {
         java.util.Locale locale = hostLocale != null ? hostLocale : java.util.Locale.getDefault();
         float fontScale = hostFontScale > 0 && !Float.isInfinite(hostFontScale) ? hostFontScale : c.fontScale;
         Native.environment(handle, new float[] {
-            top / density, right / density, bottom / density, left / density, ime / density, keyboardDuration / 1000f, fontScale,
+            top / density, right / density, bottom / density, left / density, ime / density, (float) keyboardDuration, fontScale,
             android.text.TextUtils.getLayoutDirectionFromLocale(java.util.Locale.getDefault()) == LAYOUT_DIRECTION_RTL ? 1 : 0,
             // "Remove animations" sets the animator scale to 0.
             android.provider.Settings.Global.getFloat(getContext().getContentResolver(),
@@ -869,6 +881,16 @@ public class NshView extends FrameLayout {
     private final Choreographer.FrameCallback jsFrame = nanos -> {
         if (handle != 0) Native.frame(handle);
     };
+
+    /**
+     * A shader view's new frame, called by libnsh on the UI thread during
+     * {@link Native#tick}: {@code pixels} (null for an empty frame) are only
+     * valid during the call.
+     */
+    void shaderFrame(int id, java.nio.ByteBuffer pixels, int width, int height) {
+        View v = mounter.view(id);
+        if (v instanceof Box) ((Box) v).shaderFrame(pixels, width, height);
+    }
 
     /** JS waits for a display frame (`requestAnimationFrame`). */
     void requestJsFrame() {

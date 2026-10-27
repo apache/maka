@@ -110,6 +110,13 @@ export interface ImageProps extends CommonProps<ImageStyle>, ImageHostProps {
   style?: StyleProp<ImageStyle>;
 }
 
+/** `<Shader>`: a view whose box a WGSL shader draws, under its children. */
+export interface ShaderProps extends CommonProps, ViewHostProps, ShaderHostProps {
+  /** The WGSL defining `fn shade(uv: vec2f) -> vec4f`. */
+  source: string;
+  style?: StyleProp<ViewStyle>;
+}
+
 /** `<Scroll>` */
 export interface ScrollProps extends CommonProps, ScrollingHostProps, ScrollHostProps {
   style?: StyleProp<ViewStyle>;

@@ -30,13 +30,13 @@ use crate::{
     animation::UiAnimation,
     encode::{self, Obj},
     java::{java, with_env},
-    text::AndroidTextEngine,
+    text::{AndroidTextEngine, Density},
 };
 
 pub(crate) struct Host {
     /// The `NshView`.
     pub(crate) view: GlobalRef,
-    density: f32,
+    density: Density,
     trace: bool,
     engine: Mutex<Option<Engine>>,
     /// The running engine's control, for answers the sink gives itself
@@ -97,7 +97,7 @@ impl Host {
     /// The display's density: pixels per point.
     #[cfg(feature = "dev")]
     pub(crate) fn density(&self) -> f32 {
-        self.density
+        self.density.get()
     }
 
     /// Whether the native animation graph animates.
@@ -166,7 +166,7 @@ impl Host {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
-        *self.ui.lock().expect("ui") = UiAnimation::default();
+        self.ui.lock().expect("ui").reset();
         let mut cache = self.cache.lock().expect("cache options").clone();
         if cache.location == nsh_engine::CacheLocation::System {
             cache.location = match &self.system_cache_dir {
@@ -201,7 +201,7 @@ impl Host {
             host: self.host.clone(),
             picker: None,
         };
-        let density = self.density;
+        let density = self.density.clone();
         let control_slot = Arc::new(OnceLock::new());
         let sink = Sink(self.clone(), control_slot.clone());
         // A test session's app: the test's storage, network and trace.
@@ -217,7 +217,14 @@ impl Host {
                 control.set_tokens(tokens);
             }
         };
-        match Engine::start_with(config, move || AndroidTextEngine { density }, sink, setup) {
+        match Engine::start_with(
+            config,
+            move || AndroidTextEngine {
+                density: density.clone(),
+            },
+            sink,
+            setup,
+        ) {
             Ok(engine) => {
                 // The app's downloaded images go through its disk cache.
                 *self.image_cache.lock().expect("image cache") = engine.image_cache();
@@ -555,7 +562,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_create(
         .map(|dir| std::path::PathBuf::from(String::from(dir)));
     let host = Arc::new(Host {
         view,
-        density,
+        density: Density::new(density),
         trace: trace != 0,
         engine: Mutex::new(None),
         answers: Mutex::new(None),
@@ -1100,8 +1107,14 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
         ColorScheme::Light
     };
     let environment = *environment;
+    // `wm density` or a display change: `NshView` resized the viewport in
+    // dp, and every value it converted to pixels is sent again.
+    let remount = host.density.set(environment.pixel_ratio);
     if let Some(control) = host.control() {
         control.set_environment(environment);
+        if remount {
+            control.remount();
+        }
     }
 }
 
@@ -1581,9 +1594,37 @@ extern "system" fn Java_com_longbridge_nsh_Native_tick(
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
     let mut ui = host.ui.lock().expect("ui");
-    ui.tick(host.epoch.elapsed().as_secs_f64());
+    let changed = ui.tick(host.epoch.elapsed().as_secs_f64());
     finish(host, &mut ui);
-    floats(&env, &ui.outputs())
+    // A frame only shader views asked for: no bound value moved.
+    let mut out = if changed || ui.animating() {
+        ui.outputs()
+    } else {
+        vec![0.0]
+    };
+    let shading = ui.shaders.render(host.view.as_obj());
+    out[0] = if ui.animating() || shading { 1.0 } else { 0.0 };
+    floats(&env, &out)
+}
+
+/// Shader view `id` (`Box.java`) is `width` × `height` pixels: its next
+/// frame is rendered at that size. Whether frames should come
+/// (`NshView.requestFrames`).
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_shaderSize(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    id: jint,
+    width: jint,
+    height: jint,
+) -> jboolean {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let mut ui = host.ui.lock().expect("ui");
+    ui.shaders
+        .resized(id as u32, width, height, host.density.get());
+    ui.shaders.wants_frame().into()
 }
 
 /// A scroll view moved: the engine (lists) and its scroll value learn the

@@ -1004,15 +1004,7 @@ impl Dv {
         }
         let dv = self.clone();
         spawn(async move {
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let _ = blocking(Highlighter::load).await;
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                next_frame().await;
-                Highlighter::load();
-            }
+            Highlighter::load_async().await;
             dv.st.borrow_mut().make_highlighters();
             dv.schedule_highlight();
         });

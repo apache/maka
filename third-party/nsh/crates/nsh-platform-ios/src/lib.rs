@@ -39,6 +39,7 @@ mod net;
 mod picker;
 mod press;
 mod selectable_view;
+mod shader;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;

@@ -70,7 +70,7 @@ could not infer their item types. The compiler recognizes the elements through t
 views in place, so importing them costs nothing at run time. See [JSX and components](../docs/jsx-and-components.md).
 
 ```tsx
-import { Canvas, Image, List, Overlay, Scroll, Text, Video, View, WebView } from "nsh";
+import { Canvas, Image, List, Overlay, Scroll, Shader, Text, Video, View, WebView } from "nsh";
 import { Button, Dialog, Menu, NavPage, NavStack, Popover, Sheet, Tooltip, Input } from "nsh/base";
 ```
 
@@ -86,6 +86,7 @@ Imported from `nsh` in TSX, from `nsh_core::prelude` in Rust.
 | `<Scroll>` | `scroll()` | UIScrollView / ScrollView | [Scroll](./scroll.md) |
 | `<List>` | `virtual_list(count, \|at\| row)` | UIScrollView / ScrollView with recycled cells | [List](./list.md) |
 | `<Canvas>` | `canvas(painter)` | a view replaying a 2D drawing | [Canvas](./canvas.md) |
+| `<Shader>` | `shader(program)` | a view whose box a WGSL program draws on the GPU, under its children | [Shader](./shader.md) |
 | `<WebView>` | `web_view(url)`, `web_view_html(html, base)` | WKWebView / android.webkit.WebView | [WebView](./web-view.md) |
 | `<Video>` | `video(url)` | AVPlayerLayer / MediaPlayer on a TextureView | [Video](./video.md) |
 | `<Overlay>` | `overlay()` | a view on top of the window (or the dialog it is in), placed against an anchor | [Overlay](./overlay.md) |

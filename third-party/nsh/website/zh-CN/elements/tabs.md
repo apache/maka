@@ -116,7 +116,7 @@ mount(App);
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onPress`（`Tab`） | `.on_press(\|_: &()\| ..)` | 标签页被按下：轻点、点击、拥有键盘焦点时按 Space 或 Return，或屏幕阅读器的激活。它在任何变化之前运行：标签页显示应用传回的 `selected`。 |
+| `onPress`（`Tab`） | `.on_press(\|_: &()\| ..)` | 标签页被按下：轻点、点击、拥有键盘焦点时按 Space 或 Return，或屏幕阅读器的激活；或者列表的方向键、Home 或 End 把键盘焦点移到了它上面。它在任何变化之前运行：标签页显示应用传回的 `selected`。 |
 
 已选中的标签页同样报告按压，应用可以响应第二次按压（例如把这一部分滚动到顶部）。禁用的标签页不报告任何事件。
 
@@ -157,14 +157,31 @@ mount(App);
 - 标签页对屏幕阅读器而言是一个元素，角色是 `"tab"`，带有它的选中状态。它的标签是子元素的文字，或 `accessibilityLabel`。
 - `Tabs` 的角色是 `"tablist"`：屏幕阅读器把其中的标签页当作一组播报，每个标签页仍然是独立的元素。
 - `disabled` 按平台的方式报告（VoiceOver、TalkBack、UI Automation、浏览器的无障碍树）。
-- 在 macOS 和 Web 上，每个标签页都是键盘焦点的一站：Tab 可以到达它，Space 和 Return 按下它，`focus:` 样式显示焦点所在。
+- 在 macOS 和 Web 上，整个列表是键盘焦点的一站，方向键在它的标签页之间移动（见下文）。
 
 标签、角色和播报的一般用法见[无障碍](../docs/accessibility.md)。
+
+<a id="keyboard"></a>
+
+## 键盘
+
+在 macOS 和 Web 上，Tab 会到达接受按压的视图，`Tabs` 列表遵循
+[WAI-ARIA 标签页模式](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/)：
+
+| 按键 | 作用 |
+|---|---|
+| Tab、Shift+Tab | 从选中的标签页进入列表（没有选中时是第一个未禁用的标签页），一步离开列表。 |
+| Right、Down | 把焦点移到下一个标签页，从最后一个回到第一个。 |
+| Left、Up | 把焦点移到上一个标签页，从第一个回到最后一个。 |
+| Home、End | 把焦点移到第一个或最后一个标签页。 |
+| Space、Return | 按下拥有焦点的标签页。 |
+
+方向键跳过禁用的标签页，焦点移到的标签页报告 `onPress`，应用随焦点移动选中它：显示的部分跟随焦点。无论列表的布局如何（布局由应用的类决定），两组方向键都会移动焦点。`focus:` 样式显示焦点所在。不在 `Tabs` 里的 `Tab` 是独立的一站。
 
 <a id="platform-notes"></a>
 
 ## 平台说明
 
 - iOS、Android 和 Mac Catalyst：按压是在标签页上（包括它的标签）结束的一次轻点。
-- 桌面（macOS、Windows、Linux、GPUI）和 Web：按压是一次点击。在 macOS 和 Web 上，Space 和 Return 也会按下拥有键盘焦点的标签页。
+- 桌面（macOS、Windows、Linux、GPUI）和 Web：按压是一次点击。在 macOS 和 Web 上，Space 和 Return 也会按下拥有键盘焦点的标签页，方向键、Home 和 End 移动焦点（见[键盘](#keyboard)）。
 - 每个平台都按应用的样式绘制：标签页、选中标签页的表面以及各部分的内容。

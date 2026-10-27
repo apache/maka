@@ -390,6 +390,7 @@ fn windows(cx: &mut TestAppContext) {
     presses_carry_where_the_pointer_was(cx);
     presses_carry_the_modifier_keys_and_click_count(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
+    text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
     configured_assets_stay_with_their_original_load(cx);
     buttons_keep_native_focus_and_live_key_scopes(cx);
@@ -1211,6 +1212,94 @@ fn an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx: &mut 
     });
     cx.simulate_keystrokes("end backspace");
     wait_for(&view, cx, "ab");
+}
+
+/// Two fields. Enter in the first, and Ctrl+N (Command+N on macOS), both
+/// focus the second. Text typed before the engine has handled that key
+/// belongs to the second field.
+const TWO_FIELDS: &str = r#"
+import { keymap, mount, signal, View, type YNode } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const first = signal("A");
+  const second = signal("");
+  let next!: YNode;
+  const go = () => next.focus();
+  keymap.bind("mod+n", go, { when: "always" });
+  return (
+    <View style={{ flex: 1, padding: 8, gap: 8 }}>
+      <Input
+        autoFocus
+        value={first()}
+        onChange={(t) => first.set(t)}
+        onSubmit={go}
+        submitBehavior="submit"
+        style={{ height: 30 }}
+      />
+      <Input ref={next} value={second()} onChange={(t) => second.set(t)} style={{ height: 30 }} />
+    </View>
+  );
+}
+mount(App);
+"#;
+
+fn down(vk: u16, modifiers: crate::input::Modifiers) -> crate::input::KeyEvent {
+    crate::input::KeyEvent {
+        vk,
+        down: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// `x`, then Backspace, then `y`, before the engine applies `key`. The
+/// focused field must still read "A", and then "y" once the next field
+/// has the keyboard.
+fn typed_ahead(cx: &mut TestAppContext, key: crate::input::KeyEvent) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let surface = view.surface().clone();
+        assert!(crate::input::key(&surface, key), "the key was not handled");
+        crate::text_input::char_input(&surface, "x");
+        assert!(crate::input::key(
+            &surface,
+            down(crate::keys::VK_BACK, crate::input::Modifiers::default())
+        ));
+        crate::text_input::char_input(&surface, "y");
+        let now = crate::text_input::focused(view.surface())
+            .and_then(|field| crate::text_input::accessible_value(&field))
+            .map(|value| value.text);
+        assert!(
+            matches!(now.as_deref(), None | Some("A")),
+            "typed ahead into the field that still has the keyboard: {now:?}"
+        );
+    });
+    wait_for(&view, cx, "y");
+}
+
+fn text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx: &mut TestAppContext) {
+    typed_ahead(
+        cx,
+        down(crate::keys::VK_RETURN, crate::input::Modifiers::default()),
+    );
+    let modifiers = if cfg!(target_os = "macos") {
+        crate::input::Modifiers {
+            meta: true,
+            ..crate::input::Modifiers::default()
+        }
+    } else {
+        crate::input::Modifiers {
+            ctrl: true,
+            ..crate::input::Modifiers::default()
+        }
+    };
+    typed_ahead(cx, down(0x4E, modifiers));
 }
 
 struct KeyLog {

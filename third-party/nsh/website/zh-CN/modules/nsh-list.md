@@ -113,10 +113,10 @@ interface ViewToken<T> {
 }
 
 interface ViewabilityConfig {
-  /** 条目需覆盖视口的百分比才算可见。 */
-  viewAreaCoveragePercentThreshold?: number;
-  /** 条目自身需可见的百分比。两个阈值都不设时，只要有一个像素可见就算。 */
-  itemVisiblePercentThreshold?: number;
+  /** 条目需覆盖视口的比例（0 到 1）才算可见。 */
+  viewAreaCoverageThreshold?: number;
+  /** 条目自身需可见的比例（0 到 1）。两个阈值都不设时，只要有一个像素可见就算。 */
+  itemVisibleThreshold?: number;
   /** 条目需保持可见多少毫秒才会被报告。 */
   minimumViewTime?: number;
 }

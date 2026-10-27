@@ -158,7 +158,7 @@ pub(crate) fn reveal() {
 /// Whether some of `view` may show: false only when it lies wholly
 /// outside a clipping ancestor (a scroll view, `overflow: hidden`) or the
 /// window.
-fn in_sight(view: &NshView) -> bool {
+pub(crate) fn in_sight(view: &NshView) -> bool {
     let mut widget = view.parent();
     while let Some(ancestor) = widget {
         widget = ancestor.parent();

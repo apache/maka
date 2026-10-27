@@ -34,6 +34,7 @@ nsh-engine = { version = "0.3.0", path = "../nsh-engine", default-features = fal
 nsh-base = { version = "0.3.0", path = "../nsh-base", default-features = false }
 # The JSX compiler alone (tests compile their apps).
 nsh-bundler = { version = "0.3.0", path = "../nsh-bundler", default-features = false }
+# Shader views' renderer (wgpu, the version GPUI draws with).
 nsh-platform-gpui = { version = "0.3.0", path = "nsh-platform-gpui", default-features = false }
 
 # The same versions as the main workspace's.

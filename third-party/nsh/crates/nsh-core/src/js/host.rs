@@ -116,6 +116,7 @@ pub fn element_bits(tag: crate::Tag) -> u32 {
             Tag::Video => on::VIDEO,
             Tag::InputAccessory => on::INPUT_ACCESSORY,
             Tag::View => on::VIEW,
+            Tag::Shader => on::VIEW | on::SHADER,
             Tag::Cell | Tag::Stack | Tag::HeaderItem | Tag::Canvas | Tag::Native | Tag::Overlay => {
                 0
             }
@@ -162,6 +163,8 @@ pub mod on {
     pub const OVERLAY: u32 = 1 << 12;
     /// `<view>`.
     pub const VIEW: u32 = 1 << 13;
+    /// `<shader>`.
+    pub const SHADER: u32 = 1 << 14;
     /// Set by the runtime itself, not part of the elements' types.
     pub const INTERNAL: u32 = 1 << 31;
 }
@@ -390,6 +393,13 @@ export interface Point {
 
 /** An extent, in points (`nsh_core::geometry::Size`). */
 export interface Size {
+  width: number;
+  height: number;
+}
+
+/** An image's or a video's own extent, in pixels as decoded
+ * (`nsh_core::geometry::Size<DevicePixels>`), not the points it is drawn at. */
+export interface PixelSize {
   width: number;
   height: number;
 }
@@ -677,7 +687,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::Load,
         on::IMAGE,
-        "(e: Size) => void",
+        "(e: PixelSize) => void",
         "The source image's size in pixels (not the decoded, downsampled one).",
     ),
     (
@@ -689,7 +699,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::Load,
         on::VIDEO,
-        "(e: { duration: number; size: Size }) => void",
+        "(e: { duration: number; size: PixelSize }) => void",
         "",
     ),
     (
@@ -899,6 +909,7 @@ const GROUPS: &[(u32, &str, &str)] = &[
     (on::MODAL, "Dialog", "dialogs"),
     (on::WEBVIEW, "WebView", "web views"),
     (on::VIDEO, "Video", "videos"),
+    (on::SHADER, "Shader", "shaders"),
     (on::INPUT_ACCESSORY, "InputAccessory", "input accessories"),
     (on::OVERLAY, "Overlay", "`<Overlay>`"),
 ];

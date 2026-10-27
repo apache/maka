@@ -93,7 +93,7 @@ mount(Player);
 | 事件 | 数据 | 时机 |
 |---|---|---|
 | `onLoadStart` | | 视频开始加载。 |
-| `onLoad` | `{ duration: number; size: Size }` | 可以播放：时长（秒）和尺寸。 |
+| `onLoad` | `{ duration: number; size: PixelSize }` | 可以播放：时长（秒）和像素尺寸。 |
 | `onProgress` | `{ currentTime: number; duration: number }` | 播放期间，每 `progressUpdateInterval` 毫秒一次。单位为秒。 |
 | `onBuffer` | `{ isBuffering: boolean }` | 播放在等待数据，或恢复播放。 |
 | `onEnd` | | 播放到达结尾。 |

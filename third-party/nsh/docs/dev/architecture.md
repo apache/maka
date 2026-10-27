@@ -36,6 +36,12 @@ Input                        native gestures -> EngineControl::dispatch_event ->
 - **Android**: the engine thread typesets with `StaticLayout` through JNI; each commit is one `byte[]` plus an object
   table handed to `Mounter.java` on the UI thread, and animation items stay in Rust (the flow, the units and the JNI
   rules: `crates/nsh-platform-android/src/encode.rs`).
+  Display-density changes update the shared text density and remount the existing views. Sticky ranges are replayed
+  even when their logical coordinates are unchanged: the Android scroll views cache them in pixels. Each scroll
+  view saves its logical offset, waits for the new content size and viewport layout, and then restores it (clamped
+  to the new bounds) before reporting to the core, without counting the rescale as a core scroll command. Commands
+  arriving during that layout update the saved target. Modal windows invalidate their pixel-size report cache and
+  report their new dp size even when Android keeps the same pixel bounds.
 - **Linux** (GTK 4, `linux.md`): one `NshView` widget per node, placed at the core's frames in `size_allocate` and
   drawn with GSK nodes in `snapshot`; each commit wakes the GTK main loop once (`MainContext::invoke`); native
   animations run on the frame clock.

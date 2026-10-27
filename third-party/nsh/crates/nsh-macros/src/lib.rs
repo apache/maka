@@ -1919,13 +1919,9 @@ fn js_object(input: DeriveInput) -> syn::Result<TokenStream2> {
         };
         from_js.push(quote! {
             #ident: {
-                let v = value.field(#js)?;
-                let v = v.get();
-                if v.kind() != #ui::JsKind::Undefined && (#is_option || !v.is_nullish()) {
-                    <#ty as #ui::JsValue>::from_js(v)
-                        .map_err(|e| #ui::PropError(::std::format!("`{}`: {}", #js, e)))?
-                } else {
-                    #missing
+                match #ui::__private::object_field::<#ty>(value, #js, #is_option)? {
+                    ::core::option::Option::Some(value) => value,
+                    ::core::option::Option::None => { #missing }
                 }
             }
         });

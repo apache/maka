@@ -74,6 +74,21 @@ jobs:
       - name: Test browser scroll indicator behavior
         run: node --test crates/nsh-platform-web/web/scroll.test.mjs
 
+      - name: Test browser JavaScript bindings against Wasm
+        env:
+          AR_wasm32_unknown_unknown: llvm-ar
+        run: |
+          cargo build -p nsh-platform-web --target wasm32-unknown-unknown --no-default-features --features browser-tests --profile web
+          NSH_BROWSER_WASM=target/wasm32-unknown-unknown/web/nsh_platform_web.wasm node --expose-gc --test crates/nsh-platform-web/web/browser/*.test.mjs
+
+      - name: Test browser module lifecycle
+        run: |
+          python3 -m venv "$RUNNER_TEMP/nsh-browser-tests"
+          "$RUNNER_TEMP/nsh-browser-tests/bin/pip" install playwright==1.62.0
+          "$RUNNER_TEMP/nsh-browser-tests/bin/python" -m playwright install --with-deps chromium
+          CHROME=$("$RUNNER_TEMP/nsh-browser-tests/bin/python" -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+          "$RUNNER_TEMP/nsh-browser-tests/bin/python" crates/nsh-platform-web/web/browser/browser-check.py --chrome "$CHROME" --wasm target/wasm32-unknown-unknown/web/nsh_platform_web.wasm
+
       - name: Install website dependencies
         working-directory: website
         run: bun install
@@ -91,6 +106,9 @@ jobs:
       - name: Test website
         working-directory: website
         run: bun run test
+
+      - name: Check standalone Gallery code size
+        run: node crates/nsh-platform-web/web/browser/package-size.mjs website/public/play/gallery --require-browser --brotli-budget=4000000
 
       - uses: actions/configure-pages@v5
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'

@@ -277,7 +277,7 @@ image(cover).blur_radius(px(16.0)).absolute().inset_0()
 let status = signal(SharedString::from("loading…"));
 
 image(url)
-    .on_load(move |size: &Size<Points>| status.set(format!("{}×{}", size.width.0, size.height.0).into()))
+    .on_load(move |size: &Size<DevicePixels>| status.set(format!("{}×{}", size.width.0, size.height.0).into()))
     .on_error(move |message: &str| status.set(message.to_owned().into()))
     .w(px(90.0))
     .h(px(60.0))

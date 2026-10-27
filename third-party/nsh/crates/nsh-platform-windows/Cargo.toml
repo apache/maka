@@ -25,7 +25,7 @@ log.workspace = true
 # Empty off Windows (like the other platform crates off their targets).
 [target.'cfg(windows)'.dependencies]
 nsh-core = { workspace = true, features = ["svg"] }
-nsh-engine = { workspace = true, features = ["net"] }
+nsh-engine = { workspace = true, features = ["net", "shader"] }
 nsh-base = { workspace = true, features = ["highlight"] }
 windows.workspace = true
 windows-core.workspace = true

@@ -47,7 +47,7 @@ fn Media() -> impl IntoElement {
                 .on_progress(move |p: &ImageProgress| {
                     note(format!("image {}/{}", p.loaded, p.total))
                 })
-                .on_load(move |s: &Size<Points>| {
+                .on_load(move |s: &Size<DevicePixels>| {
                     note(format!("image {}x{}", s.width.0, s.height.0))
                 })
                 .on_error(move |m: &str| note(format!("image failed: {m}")))

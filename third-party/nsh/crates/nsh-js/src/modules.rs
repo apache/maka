@@ -254,6 +254,14 @@ const NSH: &[Item] = &[
             &["(props: OverlayProps): YNode"],
         ),
     ),
+    (
+        "Shader",
+        Export::Value(|cx| dom::host_component(cx, "shader", true)),
+        Ts::function(
+            "A view whose box a GPU shader draws, under its children: `source` is WGSL\ndefining `fn shade(uv: vec2f) -> vec4f`, the straight sRGB color of each\npoint (`uv` 0..1 from the top left), which reads `nsh.size` (points),\n`nsh.time` (seconds; reading it animates the shader, unless `paused`),\n`nsh.scale` and the members of its `struct Uniforms` as `uniforms.name`, set by\n`uniforms={{ name: value }}`: numbers, colors, lists and animated values,\nwhich move it natively. It takes every prop of a `View`.",
+            &["(props: ShaderProps): YNode"],
+        ),
+    ),
 ];
 
 /// `nsh`'s types; its element and style types and `JSX` are `types.d.ts`'s.

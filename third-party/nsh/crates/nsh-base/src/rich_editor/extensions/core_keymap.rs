@@ -130,10 +130,10 @@ pub fn mac_core_keymap() -> Vec<(String, BoxCommand)> {
     keymap
 }
 
-/// The core bindings of this platform: [`mac_core_keymap`] on macOS and
-/// iOS, [`pc_core_keymap`] elsewhere.
+/// The core bindings of the platform the editor runs on:
+/// [`mac_core_keymap`] on macOS and iOS, [`pc_core_keymap`] elsewhere.
 pub fn core_keymap() -> Vec<(String, BoxCommand)> {
-    if cfg!(any(target_os = "macos", target_os = "ios")) {
+    if crate::rich_editor::commands::base::apple() {
         mac_core_keymap()
     } else {
         pc_core_keymap()
