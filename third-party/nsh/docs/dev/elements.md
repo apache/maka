@@ -342,7 +342,7 @@ Text, styles, scrolling and lists, animation, canvases and images have their own
 ## Overlays
 
 A callback-free tooltip with custom placement and native keyboard focus can use the existing overlay directly:
-`tooltip={<Overlay hintDelay={0} hintOnFocus placement="left" pointerEvents="none">…</Overlay>}`.
+`tooltip={<Overlay hintDelay={0} hintOnFocus placement="left" style={{ pointerEvents: "none" }}>…</Overlay>}`.
 `hintDelay` is milliseconds; `hintOnFocus` also presents it while the anchor owns native keyboard focus. The same
 hint owns pointer and focus presentation, without app hover/focus listeners or controlled tooltip state.
 
