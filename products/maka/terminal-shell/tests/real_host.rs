@@ -3573,7 +3573,10 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
         // Only the simulated terminal's response changes. The actual binary
         // must first emit DA1 + CSI 16t and choose Sixel through its sole reader.
         let mut terminal = support::pty::Pty::spawn_sixel(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
-        // The emulator appends this ordinary Ctrl+P to its cell-size reply.
+        // The packaged App binds Ctrl+P asynchronously. Wait for its real session
+        // content, then send the original cell-size reply and key together once.
+        terminal.wait_for("Read the graphics image").await;
+        terminal.reply_initial_sixel_cells();
         terminal.wait_for("Search commands…").await;
         let palette = terminal.wait_for("Resume a conversation").await;
         assert!(palette.contains("Search commands…") && palette.contains("Sessions") && palette.contains('×'));
