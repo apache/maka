@@ -48,6 +48,8 @@ export function Workbench(props: {
   expanded(): boolean;
   browser: WorkspaceBrowserProps;
   resources: Resources;
+  /** Files dropped anywhere in the center column. */
+  dropFiles?(event: { uris: string[] }): void;
   children: JSX.Element;
 }) {
   const preferredWidth = signal(32 * CELL);
@@ -93,7 +95,9 @@ export function Workbench(props: {
           </If>
         </ResizablePanel>
         <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-          {props.children}
+          <View onFileDrop={props.dropFiles} style={{ flex: 1, minHeight: 0 }}>
+            {props.children}
+          </View>
         </ResizablePanel>
         <ResizablePanel
           visible={preview()}

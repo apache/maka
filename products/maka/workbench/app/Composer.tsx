@@ -100,11 +100,18 @@ export function Composer(props: {
   stopAction(): () => void;
   chooseWorkspace(): void;
   settings(): void;
+  /** Receives the composer's handler for files dropped beside it. */
+  dropFiles?(drop: (event: { uris: string[] }) => void): void;
 }) {
   const completion = createComposerCompletion({
     session: props.session,
     commands: props.commands,
     active: props.active,
+  });
+  // Files dropped on the conversation attach as they do on the field.
+  props.dropFiles?.((event) => {
+    const owner = props.session();
+    if (owner) completion.drop(owner, event);
   });
   const hero = () => props.session() === null || props.session()!.empty();
   const blocked = () => props.session()?.blockedReason() ?? '';

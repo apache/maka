@@ -388,6 +388,7 @@ fn windows(cx: &mut TestAppContext) {
     compositions_are_reported_and_hold_values_until_they_end(cx);
     menu_shortcuts_leave_a_focused_field_the_keys_it_uses(cx);
     presses_carry_where_the_pointer_was(cx);
+    files_dropped_from_outside_reach_the_view_under_them(cx);
     presses_carry_the_modifier_keys_and_click_count(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
@@ -1593,6 +1594,54 @@ mod press_point {
                     .h(px(30.0)),
             )
     }
+}
+
+fn files_dropped_from_outside_reach_the_view_under_them(cx: &mut TestAppContext) {
+    let source = r#"
+import { mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+const dropped = signal("none");
+mount(() => <View style={{ flex: 1 }}>
+  <View onFileDrop={(e) => dropped.set("outer " + e.uris.join(";"))} style={{ height: 100 }}>
+    <View onFileDrop={(e) => dropped.set("inner " + e.uris.join(";"))} style={{ height: 40 }} />
+  </View>
+  <View style={{ height: 100 }} />
+  <Input testID="report" readonly value={dropped()} style={{ height: 30 }} />
+</View>);
+"#;
+    let code = nsh_bundler::compile_module("App.tsx", source, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    wait_for_report(&view, cx, "none");
+    let origin = view.read_with(cx, |view, _| view.surface().origin.get());
+    let drop = |cx: &mut VisualTestContext, y: f32, paths: &[&str]| {
+        let position = gpui::point(gpui::px(origin.0 + 10.0), gpui::px(origin.1 + y));
+        let paths = gpui::ExternalPaths(paths.iter().map(std::path::PathBuf::from).collect());
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Entered { position, paths }),
+                cx,
+            );
+        });
+        // The drag's frame, which lays the drop layer over the surface.
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Submit { position }),
+                cx,
+            );
+        });
+    };
+    // The innermost listener under the drop hears it; relative paths are left out.
+    drop(cx, 20.0, &["/tmp/a.txt", "b.txt"]);
+    wait_for_report(&view, cx, "inner file:///tmp/a.txt");
+    drop(cx, 70.0, &["/tmp/c.txt"]);
+    wait_for_report(&view, cx, "outer file:///tmp/c.txt");
+    // Where no view listens, the drop goes nowhere.
+    drop(cx, 150.0, &["/tmp/d.txt"]);
+    cx.run_until_parked();
+    wait_for_report(&view, cx, "outer file:///tmp/c.txt");
 }
 
 fn presses_carry_where_the_pointer_was(cx: &mut TestAppContext) {

@@ -90,6 +90,7 @@ function App() {
   const recovering = signal(false);
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
+  let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   let editor: YNode | undefined;
   const focusComposer = () => editor?.focus();
   let browserRoot: YNode | undefined;
@@ -799,6 +800,7 @@ function App() {
   return (
     <View style={{ flex: 1, backgroundColor: C.background }}>
       <Workbench
+        dropFiles={(event) => dropFiles?.(event)}
         expanded={() => sidebarExpanded() && overlay()?.kind !== 'sessions'}
         browser={browserProps}
         resources={resources}
@@ -845,6 +847,9 @@ function App() {
           )}
         </Each>
         <Composer
+          dropFiles={(drop) => {
+            dropFiles = drop;
+          }}
           active={() => overlay() === null}
           session={handle}
           stopAction={stopAction}

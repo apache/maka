@@ -11,7 +11,7 @@ use std::{
 
 use gpui::{
     App as GpuiApp, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, Styled, Window,
+    IntoElement, ParentElement, Render, Styled, Window, prelude::FluentBuilder as _,
 };
 use nsh_base::{Theme, ThemeError};
 use nsh_core::platform::{Appearance, Locale};
@@ -601,6 +601,27 @@ impl AppView {
     /// Tab: the surface's next text field; past its last one, the window's
     /// next tab stop (the embedding app's widgets), or the first field again
     /// when there is none.
+    /// Files dragged in from outside the window (Finder, the desktop) and
+    /// dropped: GPUI turns the drop into a mouse up carrying them, which
+    /// only its own elements hear (`render`'s drop layer).
+    fn drop_files(&mut self, paths: &gpui::ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        let uris: Vec<String> = paths
+            .paths()
+            .iter()
+            .filter(|path| path.is_absolute())
+            .map(|path| nsh_core::platform::clipboard::file_url(&path.to_string_lossy()))
+            .collect();
+        if uris.is_empty() {
+            return;
+        }
+        let (ox, oy) = self.surface.origin.get();
+        let position = window.mouse_position();
+        let (x, y) = (f32::from(position.x) - ox, f32::from(position.y) - oy);
+        if crate::input::file_drop(&self.surface, x, y, uris) {
+            crate::rt::flush(cx);
+        }
+    }
+
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
         self.tab(false, window, cx);
     }
@@ -849,6 +870,17 @@ impl Render for AppView {
             .on_action(cx.listener(Self::focus_prev))
             .size_full()
             .child(content)
+            // While something is dragged, a layer over the surface takes the
+            // drop: the surface's hitbox blocks the mouse for the elements
+            // behind it, this div included.
+            .when(cx.has_active_drag(), |div| {
+                div.child(
+                    gpui::div()
+                        .absolute()
+                        .inset_0()
+                        .on_drop(cx.listener(Self::drop_files)),
+                )
+            })
     }
 }
 

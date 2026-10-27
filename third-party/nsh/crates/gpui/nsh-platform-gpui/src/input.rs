@@ -894,6 +894,26 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
     }
 }
 
+/// Files dropped onto the window from outside it at `(x, y)` (root
+/// points), as `file:` URLs: the first view under them, innermost out,
+/// that listens to `onFileDrop` hears them. Whether one did.
+pub(crate) fn file_drop(surface: &Rc<Surface>, x: f32, y: f32, uris: Vec<String>) -> bool {
+    let Some(hit) = pick(&surface.root, x, y, true) else {
+        return false;
+    };
+    for view in chain(&hit.view) {
+        let (id, listens) = {
+            let s = view.state();
+            (s.id, s.events.contains(EventKind::FileDrop))
+        };
+        if listens {
+            surface.event(id, EventKind::FileDrop, EventPayload::FileDrop(uris));
+            return true;
+        }
+    }
+    false
+}
+
 // --- Events from the window ---------------------------------------------------------
 
 /// A pointer event from the window.
