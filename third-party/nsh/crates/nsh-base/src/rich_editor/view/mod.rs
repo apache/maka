@@ -19,6 +19,7 @@
 
 mod controller;
 mod geometry;
+mod geometry_handle;
 mod keys;
 mod node_view;
 mod parts;

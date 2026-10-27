@@ -81,6 +81,10 @@ those same style rules. Legacy single-shadow fields become `boxShadow` layers.
 Consumers must regenerate declarations and rebuild old JS bundles with the
 matching compiler/runtime; old prop or style aliases are not restored.
 
+Independent local corrections retain RichEditor geometry on its owning thread
+and retire its session subscription before dropping the geometry payload.
+These are local quality adaptations, not upstream import bytes.
+
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while
 using upstream whitespace-inclusive measurement when that hook is absent.

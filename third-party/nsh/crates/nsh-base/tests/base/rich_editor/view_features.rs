@@ -279,3 +279,121 @@ fn the_session_answers_where_its_view_shows_it() {
     app.wait_for("text:/^Geometry true Some\\(\\d\\) true$/")
         .unwrap();
 }
+
+#[derive(Clone, PartialEq, Props)]
+struct GeometryLifetimeProps {
+    session: Option<EditorSession>,
+}
+
+#[component]
+fn GeometryLifetime(props: GeometryLifetimeProps) -> impl IntoElement {
+    let session = props.session.clone().expect("a session");
+    let shown = signal(true);
+    let answer = signal(String::new());
+    let query = session.clone();
+    view()
+        .child(
+            view()
+                .test_id("query-geometry")
+                .h(px(24.0))
+                .on_press(move || {
+                    let caret = query.coords_at_pos(1);
+                    let back = caret.and_then(|rect| {
+                        query.pos_at_coords(
+                            rect.origin + Point::new(px(0.0), rect.size.height / 2.0),
+                        )
+                    });
+                    answer.set(format!(
+                        "Live geometry {}",
+                        caret.is_some()
+                            && caret != Some(fallback_rect())
+                            && back == Some(1)
+                            && query.selection_rect() == caret
+                    ));
+                }),
+        )
+        .child(
+            view()
+                .test_id("toggle-geometry")
+                .h(px(24.0))
+                .on_press(move || {
+                    answer.set(String::new());
+                    shown.update(|visible| *visible = !*visible);
+                }),
+        )
+        .child(text(move || format!("Geometry mounted {}", shown.get())))
+        .child(text(move || answer.get()))
+        .child(dynamic(move || {
+            shown.get().then(|| {
+                rich_editor()
+                    .editor(session.clone())
+                    .w(px(600.0))
+                    .h(px(400.0))
+            })
+        }))
+}
+
+fn fallback_rect() -> Bounds<Points> {
+    Bounds::new(
+        Point::new(px(777.0), px(888.0)),
+        Size::new(px(1.0), px(2.0)),
+    )
+}
+
+struct FallbackGeometry;
+
+impl nsh_base::rich_editor::view::ViewGeometry for FallbackGeometry {
+    fn coords_at_pos(&self, _: usize) -> Option<Bounds<Points>> {
+        Some(fallback_rect())
+    }
+
+    fn pos_at_coords(&self, _: Point<Points>) -> Option<usize> {
+        Some(99)
+    }
+
+    fn selection_rect(&self) -> Option<Bounds<Points>> {
+        Some(fallback_rect())
+    }
+}
+
+#[test]
+fn geometry_registration_follows_real_component_disposal_and_remount() {
+    let session = session(paragraphs(&["hi"]));
+    let fallback = session.attach_geometry(Arc::new(FallbackGeometry));
+    let held = session.clone();
+    let config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<GeometryLifetime>(move || {
+            GeometryLifetimeProps {
+                session: Some(held.clone()),
+            }
+        }))
+    };
+    let mut app = Headless::start(config).unwrap();
+
+    for _ in 0..2 {
+        see(&mut app, "Geometry mounted true");
+        // The component's geometry belongs to the engine, not this test thread.
+        assert_eq!(session.coords_at_pos(1), None);
+        assert_eq!(session.pos_at_coords(Point::default()), None);
+        assert_eq!(session.selection_rect(), None);
+        app.press("id:query-geometry").unwrap();
+        see(&mut app, "Live geometry true");
+
+        app.press("id:toggle-geometry").unwrap();
+        see(&mut app, "Geometry mounted false");
+        // Disposing the actual component unregisters its proxy, revealing the
+        // previous view; a fresh component must register its own live geometry.
+        assert_eq!(session.coords_at_pos(1), Some(fallback_rect()));
+        assert_eq!(session.pos_at_coords(Point::default()), Some(99));
+        assert_eq!(session.selection_rect(), Some(fallback_rect()));
+        app.press("id:toggle-geometry").unwrap();
+    }
+
+    see(&mut app, "Geometry mounted true");
+    app.press("id:toggle-geometry").unwrap();
+    see(&mut app, "Geometry mounted false");
+    session.unsubscribe(fallback);
+    assert_eq!(session.coords_at_pos(1), None);
+    assert_eq!(session.selection_rect(), None);
+}
