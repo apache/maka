@@ -159,6 +159,38 @@ for (const route of ['workspace', 'worker'] as const) {
   });
 }
 
+test('model reads reject workspace FIFOs fast on every route instead of blocking on open', {
+  skip: process.platform === 'win32',
+  timeout: 5000,
+}, async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'maka-read-fifo-')));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const path = join(cwd, 'pipe');
+  execFileSync('mkfifo', [path]);
+  await assert.rejects(readWorkspaceFile(path), /not a regular file/i);
+  await assert.rejects(new LocalWorkspaceExecutor().readFile({ cwd, path }), /not a regular file/i);
+  const response = await executeFilesystemWorkerRequest({
+    version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+    requestId: 'read-fifo',
+    operation: { kind: 'read', cwd, path },
+    operationBoundary: {
+      filesystem: { entries: [{ path: cwd, access: 'read', scope: 'subtree' }] },
+    },
+    expectedTarget: {
+      enforcementPath: path,
+      access: 'read',
+      scope: 'exact',
+      targetType: 'other',
+      identity: 'unchecked',
+    },
+  });
+  assert.equal(response.ok, false);
+  if (!response.ok) {
+    assert.equal(response.error.code, 'filesystem_error');
+    assert.match(response.error.message, /not a regular file/i);
+  }
+});
+
 test('chat reads reject FIFOs without waiting for a writer', {
   skip: process.platform === 'win32',
   timeout: 1000,
