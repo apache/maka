@@ -50,7 +50,7 @@ function Grid() {
       estimatedItemSize={110}
       style={{ flex: 1 }}
       contentStyle={wide ? { padding: 24, gap: 12 } : { padding: 16, gap: 8 }}
-      viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+      viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
       onViewableItemsChange={({ viewableItems }) => {
         first.set(viewableItems.length ? viewableItems[0].index : -1);
         last.set(viewableItems.length ? viewableItems[viewableItems.length - 1].index : -1);

@@ -5127,7 +5127,7 @@ impl<M: TextEngine> Core<M> {
                 update: Some(LayoutTransition {
                     curve: LayoutCurve::Keyboard,
                     property: LayoutProperty::Opacity,
-                    duration_ms: duration * 1000.0,
+                    duration_ms: duration,
                     delay_ms: 0.0,
                 }),
                 delete: None,

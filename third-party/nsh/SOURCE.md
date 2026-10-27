@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`ad7aadd5a3cb94ae3c90c485203e44d428ea8a78`. The first upstream synchronization
+`9f7213929688dba417af8ddb2730e27c2f99e41c`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -94,6 +94,21 @@ RichEditor fixtures inside their engine. Public keymap factories follow the
 current host keyboard convention, with compilation-target fallback outside an
 engine. Maka retains its event-time dual tables for off-engine sessions, terminal
 and Apple-browser policies, and custom binding precedence.
+
+The following units synchronization makes responder velocities points per second,
+keyboard animation durations milliseconds, and viewability thresholds fractions
+from zero to one under `itemVisibleThreshold` / `viewAreaCoverageThreshold`.
+Image and video intrinsic pixel extents use `PixelSize` in declarations and
+`Size<DevicePixels>` in Rust image callbacks; layout `Size<Points>` stays distinct.
+These are breaking API/unit changes: regenerate declarations, migrate thresholds
+and rebuild existing bundles. Media playback time remains seconds and decay's
+per-millisecond retention remains unchanged. Native keyboard adapters convert at
+the UIKit/Android boundary, not again in the engine. Local list retirement,
+retained-value ownership, terminal image layout and keymap policy are preserved.
+Additional regressions cover fractional threshold boundaries and JS forwarding,
+JS responder velocity, and typed/map image-load pixel payloads. Preparing this
+source does not establish test execution or iOS/Android device behavior; native
+keyboard timing requires the corresponding supported platform validation.
 
 Independent local corrections retain RichEditor geometry on its owning thread,
 retire its session subscription before dropping the geometry payload, and keep

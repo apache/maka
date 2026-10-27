@@ -259,7 +259,7 @@ fn Ball() -> impl IntoElement {
             .on_responder_release(move |e: &ResponderEvent| {
                 let g = e.gesture;
                 let _ = grab.spring(0.0, spring(300.0, 20.0));
-                state.set((format!("{:.2}, {:.2} pt/ms", g.vx, g.vy).into(), Tone::Info));
+                state.set((format!("{:.0}, {:.0} pt/s", g.vx, g.vy).into(), Tone::Info));
             })
             .on_responder_terminate(move |_: &ResponderEvent| {
                 let _ = grab.spring(0.0, Spring::default());

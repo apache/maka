@@ -138,14 +138,14 @@ mod tests {
                 "IOSInputHostProps",
                 "  keyboardAppearance?: KeyboardAppearance;",
             ),
-            ("ImageHostProps", "  onLoad?: (e: Size) => void;"),
+            ("ImageHostProps", "  onLoad?: (e: PixelSize) => void;"),
             (
                 "TextHostProps",
                 "  textSource?: { id: string; offset: number; segments?: never } | { id: string; offset?: never; segments: { start: number; end: number; sourceStart: number; sourceEnd: number; kind: \"literal\" | \"replacement\" }[] };",
             ),
             (
                 "VideoHostProps",
-                "  onLoad?: (e: { duration: number; size: Size }) => void;",
+                "  onLoad?: (e: { duration: number; size: PixelSize }) => void;",
             ),
             ("VideoHostProps", "  audioSession?: AudioSession;"),
             (

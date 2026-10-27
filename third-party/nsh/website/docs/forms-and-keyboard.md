@@ -702,7 +702,7 @@ The full height suits a view that reaches the bottom of the surface, as a screen
 
 ### The keyboard accessor
 
-`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in seconds. Read them for anything custom: hide a floating button while typing, or size a panel. A layout that changes with them moves with the keyboard when it animates on the keyboard's curve: `LayoutAnimation.configureNext({ duration: keyboardFrame().duration * 1000, update: { type: "keyboard" } })` (Rust: `LayoutCurve::Keyboard`), as `env(keyboard-inset-height)` does.
+`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in milliseconds. Read them for anything custom: hide a floating button while typing, or size a panel. A layout that changes with them moves with the keyboard when it animates on the keyboard's curve: `LayoutAnimation.configureNext({ duration: keyboardFrame().duration, update: { type: "keyboard" } })` (Rust: `LayoutCurve::Keyboard`), as `env(keyboard-inset-height)` does.
 
 ```rust tabs
 view().child(when(

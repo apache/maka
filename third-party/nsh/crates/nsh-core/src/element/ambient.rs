@@ -199,7 +199,7 @@ pub fn keyboard_height() -> Points {
     env(|e| e.keyboard_height)
 }
 
-/// How long the keyboard's show / hide animation takes, in seconds.
+/// How long the keyboard's show / hide animation takes, in milliseconds.
 pub fn keyboard_duration() -> f32 {
     env(|e| e.keyboard_duration)
 }
