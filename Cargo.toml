@@ -32,8 +32,6 @@ members = [
     "plugins/workspace/workspace-processes/native",
     "plugins/workspace/workspace-files/native",
     "plugins/workspace/support",
-    "third-party/gpui-kit/crates/base",
-    "third-party/gpui-kit/crates/shell",
     "products/maka/acp",
     "plugins/agent/engine",
     "plugins/agent/native",
@@ -127,7 +125,6 @@ maka-workspace-api = { path = "plugins/workspace/api" }
 maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
-gpui-shell = { path = "third-party/gpui-kit/crates/shell", default-features = false, features = ["gpui-fast", "quickjs"] }
 maka-transport = { path = "platform/transport" }
 cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf" }
 cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf" }
@@ -269,6 +266,3 @@ gpui-fast-linux = { path = "third-party/gpui-fast/crates/gpui_linux" }
 gpui-fast-wgpu = { path = "third-party/nsh/third-party/gpui-wgpu" }
 icy_sixel = { path = "third-party/nsh/third-party/icy_sixel" }
 gpui-pre-scheduler = { path = "third-party/gpui-fast/crates/scheduler" }
-
-[patch."https://github.com/longbridge/gpui-kit"]
-gpui-base = { path = "third-party/gpui-kit/crates/base" }

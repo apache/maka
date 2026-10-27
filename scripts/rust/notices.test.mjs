@@ -44,7 +44,6 @@ test('release notices reject changed dependency inputs and edited texts', async 
     for (const name of [
       'Cargo.lock',
       'scripts/rust/notices-sources.json',
-      'third-party/gpui-kit/upstream.json',
       'products/maka/cli/Cargo.toml',
       'products/maka/desktop-shell/Cargo.toml',
       'patches/zod+4.6.7.patch',
