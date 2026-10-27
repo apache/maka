@@ -20,7 +20,9 @@
 use super::*;
 use maka_agent_facts::{
     context::ModelPurpose,
-    event::{Fact, Invocation, LogScope, ModelInterruption, RuntimeEvent, ToolOutcome},
+    event::{
+        Fact, Invocation, LogScope, ModelInterruption, RuntimeEvent, StoredEvent, ToolOutcome,
+    },
     input::InvocationInput,
     model::{ModelEvent, ModelPart, ModelToolCall, TextKind},
     tool_call::{ToolCallIdentity, ToolOrigin},
@@ -28,16 +30,8 @@ use maka_agent_facts::{
 };
 use sqlx::{Connection, sqlite::SqliteConnectOptions};
 
-async fn register_functions(db: &mut SqliteConnection) {
-    let mut handle = db.lock_handle().await.unwrap();
-    let borrowed =
-        unsafe { rusqlite::Connection::from_handle(handle.as_raw_handle().as_ptr()) }.unwrap();
-    register(&borrowed).unwrap();
-    crate::context::evidence::register(&borrowed).unwrap();
-}
-
 async fn initialize(db: &mut SqliteConnection) {
-    register_functions(db).await;
+    crate::sqlite_functions::register(db).await.unwrap();
     // The production writer's admission boundary is outside this fixture. This
     // schema isolates the production semantic projector and explicit transaction.
     sqlx::raw_sql("CREATE TABLE event_log(sequence INTEGER PRIMARY KEY,invocation_id TEXT,event_json TEXT);
@@ -92,13 +86,34 @@ async fn append_event(
         .bind(&json)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("SELECT context_semantic_record(?,?)")
-        .bind(sequence as i64)
-        .bind(&json)
-        .execute(&mut *tx)
-        .await?;
+    let stored = StoredEvent {
+        sequence,
+        event: event.clone(),
+    };
+    crate::connection::worker_query(&mut tx, move |worker| {
+        Box::pin(async move { record(worker, &stored).await })
+    })
+    .await?;
     tx.commit().await?;
     Ok(())
+}
+
+async fn insert_member(db: &mut SqliteConnection, owner: &str, sequence: i64) {
+    let owner = owner.to_owned();
+    let mut tx = db.begin().await.unwrap();
+    crate::connection::worker_query(&mut tx, move |worker| {
+        Box::pin(async move {
+            sqlx::query("INSERT INTO session_history_members VALUES(?,?,NULL)")
+                .bind(&owner)
+                .bind(sequence)
+                .execute(&mut *worker)
+                .await?;
+            copy_member(worker, &owner, sequence, None).await
+        })
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
 }
 
 async fn append(db: &mut SqliteConnection, sequence: u64, fact: Fact) -> RuntimeEvent {
@@ -402,14 +417,8 @@ async fn copying_one_source_does_not_scan_other_semantic_revisions() {
                 counter.fetch_add(1, Ordering::Relaxed);
                 true
             });
-        // Exercise the production copy trigger and reducer, including nested
-        // queries, rather than a duplicate of the lookup SQL under test.
-        sqlx::query("INSERT INTO session_history_members VALUES(?,?,NULL)")
-            .bind(child)
-            .bind(through)
-            .execute(&mut db)
-            .await
-            .unwrap();
+        // Exercise the production copy projector and its indexed lookups.
+        insert_member(&mut db, child, through).await;
         db.lock_handle().await.unwrap().remove_progress_handler();
         counts.push(steps.load(Ordering::Relaxed));
         let copied = rows(
@@ -478,11 +487,7 @@ async fn archive_revisions_preserve_old_views_and_copied_payload_identity() {
         .await
         .unwrap();
     for sequence in 1..=6 {
-        sqlx::query("INSERT INTO session_history_members VALUES('child',?,NULL)")
-            .bind(sequence)
-            .execute(&mut db)
-            .await
-            .unwrap();
+        insert_member(&mut db, "child", sequence).await;
     }
     let placeholder = maka_agent_facts::archive::ArchivedPlaceholder::prepare(
         result.id,
@@ -651,8 +656,13 @@ async fn classified_reducer_failure_preserves_fact_and_rejects_current_projectio
         }),
     )
     .await;
-    let state:(i64,i64)=sqlx::query_as("SELECT through_sequence,unavailable_at FROM context_semantic_heads WHERE session_id='session'").fetch_one(&mut db).await.unwrap();
-    assert_eq!(state, (2, 3));
+    let unavailable: i64 = sqlx::query_scalar(
+        "SELECT unavailable_at FROM context_semantic_heads WHERE session_id='session'",
+    )
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(unavailable, 3);
     assert!(rows(&mut db, &selection(3), None, 20, None).await.is_err());
     assert_eq!(
         rows(&mut db, &frozen, None, 20, None)
@@ -667,11 +677,7 @@ async fn classified_reducer_failure_preserves_fact_and_rejects_current_projectio
         .await
         .unwrap();
     for sequence in 1..=2 {
-        sqlx::query("INSERT INTO session_history_members VALUES('child',?,NULL)")
-            .bind(sequence)
-            .execute(&mut db)
-            .await
-            .unwrap();
+        insert_member(&mut db, "child", sequence).await;
     }
     let child = SemanticSelection {
         session: "child".into(),
@@ -708,11 +714,7 @@ async fn owner_retirement_keeps_copied_fragments_until_source_collection() {
         .await
         .unwrap();
     for sequence in 1..=2 {
-        sqlx::query("INSERT INTO session_history_members VALUES('child',?,NULL)")
-            .bind(sequence)
-            .execute(&mut db)
-            .await
-            .unwrap();
+        insert_member(&mut db, "child", sequence).await;
     }
     gc::retire_owner(&mut db, "session").await.unwrap();
     assert!(rows(&mut db, &selection(2), None, 20, None).await.is_err());
@@ -826,7 +828,11 @@ async fn storage_failure_rolls_back_the_explicit_transaction_instead_of_marking_
         },
     );
     let result = append_event(&mut db, 1, &event).await;
-    assert!(result.is_err());
+    assert!(
+        matches!(result, Err(StoreError::Sqlx(sqlx::Error::Database(ref error)))
+        if error.message() == "injected storage failure"),
+        "fragment serialization must preserve the original storage error: {result:?}"
+    );
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM event_log)")
         .fetch_one(&mut db)
         .await
@@ -957,4 +963,701 @@ async fn imported_conversation_counts_as_new_compaction_history_but_the_anchor_d
         .unwrap(),
         "an already covered user anchor and a ledger note do not create new conversation history"
     );
+}
+
+#[tokio::test]
+async fn streaming_fragments_do_not_rewrite_relationship_frontier() {
+    let mut db = database().await;
+    opening(&mut db).await;
+    append(
+        &mut db,
+        3,
+        observed(ModelEvent::PartStarted {
+            id: "text".into(),
+            text_kind: TextKind::Text,
+            provider_options: None,
+        }),
+    )
+    .await;
+    sqlx::raw_sql(
+        "CREATE TEMP TABLE frontier_writes(value INTEGER); INSERT INTO frontier_writes VALUES(0);
+        CREATE TEMP TRIGGER count_frontier_writes AFTER UPDATE ON context_semantic_frontiers
+        BEGIN UPDATE frontier_writes SET value=value+1; END;",
+    )
+    .execute(&mut db)
+    .await
+    .unwrap();
+    let body = "中🙂x".repeat(128);
+    for sequence in 4..132 {
+        append(
+            &mut db,
+            sequence,
+            observed(ModelEvent::PartDelta {
+                id: "text".into(),
+                text: "中🙂x".into(),
+                provider_options: None,
+            }),
+        )
+        .await;
+    }
+    let writes: i64 = sqlx::query_scalar("SELECT value FROM frontier_writes")
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    assert_eq!(
+        writes, 0,
+        "immutable fragments must not rewrite relationship state"
+    );
+    append(
+        &mut db,
+        132,
+        observed(ModelEvent::PartFinished {
+            id: "text".into(),
+            provider_options: None,
+        }),
+    )
+    .await;
+    append(&mut db, 133, interrupted("step")).await;
+    let page = rows(&mut db, &selection(133), None, 10, None)
+        .await
+        .unwrap();
+    let resolved = resolve(&mut db, page.rows).await.unwrap();
+    assert!(resolved.iter().any(|row| matches!(&row.payload,
+        Some(Payload::Part(ModelPart::Text { text, .. })) if text == &body)));
+}
+
+#[tokio::test]
+async fn semantic_stream_reuses_original_worker_prepared_statements() {
+    async fn statements(
+        db: &mut SqliteConnection,
+    ) -> std::collections::BTreeMap<String, (usize, i32, i32)> {
+        let mut handle = db.lock_handle().await.unwrap();
+        let mut result = std::collections::BTreeMap::new();
+        let mut statement = std::ptr::null_mut();
+        // SAFETY: the locked connection exclusively owns its live statements.
+        // SQL is copied and counters observed without reset; no pointer escapes.
+        unsafe {
+            loop {
+                statement =
+                    rusqlite::ffi::sqlite3_next_stmt(handle.as_raw_handle().as_ptr(), statement);
+                if statement.is_null() {
+                    break;
+                }
+                let sql = rusqlite::ffi::sqlite3_sql(statement);
+                if sql.is_null() {
+                    continue;
+                }
+                let sql = std::ffi::CStr::from_ptr(sql).to_string_lossy();
+                if sql.contains("context_semantic_") || sql.contains("session_history_copies") {
+                    result.insert(
+                        sql.into_owned(),
+                        (
+                            statement as usize,
+                            rusqlite::ffi::sqlite3_stmt_status(
+                                statement,
+                                rusqlite::ffi::SQLITE_STMTSTATUS_RUN,
+                                0,
+                            ),
+                            rusqlite::ffi::sqlite3_stmt_status(
+                                statement,
+                                rusqlite::ffi::SQLITE_STMTSTATUS_REPREPARE,
+                                0,
+                            ),
+                        ),
+                    );
+                }
+            }
+        }
+        result
+    }
+    let mut db = database().await;
+    opening(&mut db).await;
+    append(
+        &mut db,
+        3,
+        observed(ModelEvent::PartStarted {
+            id: "text".into(),
+            text_kind: TextKind::Text,
+            provider_options: None,
+        }),
+    )
+    .await;
+    let delta = || {
+        observed(ModelEvent::PartDelta {
+            id: "text".into(),
+            text: "a".into(),
+            provider_options: None,
+        })
+    };
+    append(&mut db, 4, delta()).await;
+    let before = statements(&mut db).await;
+    append(&mut db, 5, delta()).await;
+    let after = statements(&mut db).await;
+    for (prefix, table) in [
+        ("INSERT INTO", "context_semantic_fragment_pieces"),
+        ("INSERT INTO", "context_semantic_fragments"),
+        ("SELECT", "context_semantic_frontiers"),
+        ("SELECT unavailable_at", "context_semantic_heads"),
+    ] {
+        let (sql, first) = before
+            .iter()
+            .find(|(sql, _)| sql.starts_with(prefix) && sql.contains(table))
+            .unwrap_or_else(|| panic!("streaming writes must cache the {table} statement"));
+        let next = after.get(sql).unwrap();
+        assert_eq!(next.0, first.0, "{table} must reuse its original statement");
+        assert_eq!(next.1, first.1 + 1, "{table} runs once per delta");
+        assert_eq!(next.2, first.2, "{table} does not reprepare between deltas");
+    }
+    for (prefix, table) in [
+        ("INSERT INTO", "context_semantic_heads"),
+        ("SELECT EXISTS", "context_semantic_copies"),
+        ("SELECT source_session_id", "session_history_copies"),
+    ] {
+        let (sql, first) = before
+            .iter()
+            .find(|(sql, _)| sql.starts_with(prefix) && sql.contains(table))
+            .unwrap_or_else(|| {
+                panic!("first use must prepare the {table} initialization or hydration statement")
+            });
+        assert_eq!(
+            after.get(sql).unwrap(),
+            first,
+            "a healthy semantic head must not repeat {table} initialization or hydration"
+        );
+    }
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "warm streaming adds no statements"
+    );
+    let payload: Vec<u8> = sqlx::query_scalar(
+        "SELECT bytes FROM context_semantic_fragment_pieces WHERE source_sequence=5 AND piece_index=0",
+    )
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    let payload: Payload = serde_json::from_slice(&payload).unwrap();
+    assert!(matches!(payload, Payload::TextDelta { text, .. } if text == "a"));
+}
+
+#[tokio::test]
+async fn stable_changes_page_latest_revisions_from_the_current_source_cursor() {
+    let mut db = database().await;
+    let row = SemanticRow {
+        id: RowPosition {
+            source_sequence: 10,
+            item_index: 0,
+        },
+        revision: 10,
+        invocation: invocation(),
+        order: RowPosition {
+            source_sequence: 101,
+            item_index: 0,
+        },
+        kind: SemanticKind::AssistantPart {
+            step_id: "step".into(),
+            model_id: "model".into(),
+            route_identity: "route".into(),
+            accepted_at: 10,
+            index: 0,
+            payload: PartPayload::Complete(RowPosition {
+                source_sequence: 10,
+                item_index: 0,
+            }),
+        },
+    };
+    sqlx::query(
+        "WITH RECURSIVE items(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM items WHERE n<299),
+        versions(v) AS (VALUES(1),(2),(3))
+        INSERT INTO context_semantic_rows
+        SELECT 'session',10,n,v*10,100+v,n,'invocation','invocation','part-'||n,
+            CASE WHEN n=200 AND v=3 THEN 'user' ELSE 'assistant_part' END,
+            0,v=3,1,0,json_set(?1,'$.id.itemIndex',n,'$.revision',v*10,
+                '$.order.sourceSequence',100+v,'$.order.itemIndex',n)
+        FROM items CROSS JOIN versions",
+    )
+    .bind(serde_json::to_string(&row).unwrap())
+    .execute(&mut db)
+    .await
+    .unwrap();
+    let plan = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "EXPLAIN QUERY PLAN {}",
+        write::STABLE_CHANGES_SQL
+    )))
+    .bind("session")
+    .bind("invocation")
+    .bind(10i64)
+    .bind(132i64)
+    .bind(30i64)
+    .bind(10i64)
+    .bind(290i64)
+    .bind(128i64)
+    .fetch_all(&mut db)
+    .await
+    .unwrap();
+    let details: Vec<String> = plan.iter().map(|row| row.get("detail")).collect();
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.starts_with("SEARCH r USING PRIMARY KEY")
+                && detail.contains("(source_sequence,source_index,revision)>(?,?,?)")),
+        "each page must seek the current revision cursor: {details:?}"
+    );
+    assert!(
+        !details.iter().any(|detail| detail.contains("TEMP B-TREE")),
+        "source-key order must use the index: {details:?}"
+    );
+    let stored = StoredEvent {
+        sequence: 1000,
+        event: RuntimeEvent::new(invocation(), interrupted("step")),
+    };
+    crate::connection::worker_query(&mut db, move |worker| {
+        Box::pin(async move {
+            write::stable_changes(
+                worker,
+                &stored,
+                Some(RowPosition {
+                    source_sequence: 10,
+                    item_index: 5,
+                }),
+                RowPosition {
+                    source_sequence: 10,
+                    item_index: 290,
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let changed: Vec<(i64,i64,i64,bool,bool)> = sqlx::query_as(
+        "SELECT source_index,order_sequence,revision,inherited,deleted FROM context_semantic_changes ORDER BY change_id")
+        .fetch_all(&mut db).await.unwrap();
+    let expected: Vec<_> = (5..290)
+        .filter(|index| *index != 200)
+        .map(|index| (index, 103, 1000, true, false))
+        .collect();
+    assert_eq!(
+        changed, expected,
+        "cross-page projection uses each latest row once and preserves both source boundaries"
+    );
+}
+
+#[tokio::test]
+async fn reopening_notifications_pages_latest_sources_without_losing_pending_rows() {
+    let mut db = database().await;
+    opening(&mut db).await;
+    let row = SemanticRow {
+        id: RowPosition {
+            source_sequence: 10,
+            item_index: 0,
+        },
+        revision: 110,
+        invocation: invocation(),
+        order: RowPosition {
+            source_sequence: 110,
+            item_index: 0,
+        },
+        kind: SemanticKind::Notification {
+            call_id: "call".into(),
+            custom: false,
+            payload: RowPosition {
+                source_sequence: 10,
+                item_index: 0,
+            },
+        },
+    };
+    sqlx::query(
+        "WITH RECURSIVE items(n) AS (SELECT 10 UNION ALL SELECT n+1 FROM items WHERE n<309),
+        versions(v) AS (VALUES(1),(2))
+        INSERT INTO context_semantic_rows
+        SELECT 'session',n,0,n+v*100,n+v*100,0,'invocation','invocation','notification-'||n,
+            'notification',0,v=2,1,0,json_set(?1,'$.id.sourceSequence',n,'$.revision',n+v*100,
+                '$.order.sourceSequence',n+v*100)
+        FROM items CROSS JOIN versions",
+    )
+    .bind(serde_json::to_string(&row).unwrap())
+    .execute(&mut db)
+    .await
+    .unwrap();
+    append(&mut db, 1000, request("retry", 100)).await;
+    let hidden: Vec<(i64,i64,bool)> = sqlx::query_as(
+        "SELECT source_sequence,revision,visible FROM context_semantic_rows WHERE revision=1000 AND kind='notification' ORDER BY source_sequence")
+        .fetch_all(&mut db).await.unwrap();
+    let expected: Vec<_> = (101..310).map(|sequence| (sequence, 1000, false)).collect();
+    assert_eq!(
+        hidden, expected,
+        "each notification beyond the request cut must reopen once across pages"
+    );
+    let previous: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM context_semantic_rows r WHERE r.kind='notification' AND r.source_sequence<=100 AND r.visible=1
+            AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n WHERE n.owner_session_id=r.owner_session_id
+                AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision)")
+        .fetch_one(&mut db).await.unwrap();
+    assert_eq!(
+        previous, 91,
+        "the inclusive observed source cut stays visible"
+    );
+    let frontier: String = sqlx::query_scalar(
+        "SELECT frontier_json FROM context_semantic_frontiers WHERE invocation_id='invocation'",
+    )
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    let frontier: maka_agent_facts::history::semantic::Frontier =
+        serde_json::from_str(&frontier).unwrap();
+    let pending: Vec<_> = frontier
+        .notifications
+        .iter()
+        .map(|pending| pending.row.id.source_sequence)
+        .collect();
+    assert_eq!(
+        pending,
+        (101..310).collect::<Vec<_>>(),
+        "reopened locators survive all database pages"
+    );
+}
+
+mod neighbor_window {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    fn user(source: u64, revision: u64, order: u64) -> SemanticRow {
+        let id = RowPosition {
+            source_sequence: source,
+            item_index: 0,
+        };
+        SemanticRow {
+            id,
+            revision,
+            invocation: invocation(),
+            order: RowPosition {
+                source_sequence: order,
+                item_index: 0,
+            },
+            kind: SemanticKind::User {
+                payload: id,
+                steering: false,
+            },
+        }
+    }
+
+    async fn insert(db: &mut SqliteConnection, row: &SemanticRow) {
+        let kind = match &row.kind {
+            SemanticKind::User { .. } => "user",
+            SemanticKind::ToolResult { .. } => "tool_result",
+            SemanticKind::UnknownTool { .. } => "unknown_tool",
+            SemanticKind::AssistantPart { .. } => "assistant_part",
+            other => panic!("unsupported neighbor fixture kind: {other:?}"),
+        };
+        sqlx::query("INSERT INTO context_semantic_rows VALUES('session',?,0,?,?,0,?,?,'neighbor-fixture',?,0,0,1,0,?)")
+            .bind(row.id.source_sequence as i64)
+            .bind(row.revision as i64)
+            .bind(row.order.source_sequence as i64)
+            .bind(&row.invocation.invocation_id)
+            .bind(&row.invocation.invocation_id)
+            .bind(kind)
+            .bind(serde_json::to_string(row).unwrap())
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    async fn measured_neighbor(
+        db: &mut SqliteConnection,
+        selected: &SemanticSelection,
+        group: u64,
+        before: bool,
+    ) -> (Option<SemanticRow>, u64) {
+        let steps = Arc::new(AtomicU64::new(0));
+        let observed = steps.clone();
+        db.lock_handle()
+            .await
+            .unwrap()
+            .set_progress_handler(1, move || {
+                observed.fetch_add(1, Ordering::Relaxed);
+                true
+            });
+        let result = neighbor(db, selected, group, before).await;
+        db.lock_handle().await.unwrap().remove_progress_handler();
+        (result.unwrap(), steps.load(Ordering::Relaxed))
+    }
+
+    #[tokio::test]
+    async fn neighbors_preserve_source_selection_and_revision_filters() {
+        let mut db = database().await;
+        insert(&mut db, &user(1, 1, 1)).await;
+        insert(&mut db, &user(2, 2, 2)).await;
+        let mut late = user(11, 11, 3);
+        late.kind = SemanticKind::ToolResult {
+            operation_id: "operation".into(),
+            call_id: "call".into(),
+            name: "exec".into(),
+            custom: false,
+            payload: late.id,
+            is_error: false,
+            archived: false,
+        };
+        insert(&mut db, &late).await;
+        insert(&mut db, &user(12, 12, 20)).await;
+        let mut unknown = user(13, 13, 20);
+        unknown.kind = SemanticKind::UnknownTool {
+            operation_id: "unknown".into(),
+            call_id: "unknown".into(),
+            name: "exec".into(),
+            custom: false,
+        };
+        insert(&mut db, &unknown).await;
+        insert(&mut db, &user(14, 14, 19)).await;
+        insert(&mut db, &user(15, 15, 22)).await;
+        insert(&mut db, &user(15, 18, 22)).await;
+        sqlx::query(
+            "UPDATE context_semantic_rows SET visible=0 WHERE source_sequence=14 OR revision=18",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE context_semantic_rows SET archived=1 WHERE revision=18")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        let mut assistant = user(16, 16, 23);
+        assistant.invocation.invocation_id = "other".into();
+        assistant.kind = SemanticKind::AssistantPart {
+            step_id: "step".into(),
+            model_id: "model".into(),
+            route_identity: "route".into(),
+            accepted_at: 16,
+            index: 0,
+            payload: PartPayload::Complete(assistant.id),
+        };
+        insert(&mut db, &assistant).await;
+        insert(&mut db, &user(17, 17, 24)).await;
+
+        let selected = SemanticSelection {
+            after: 10,
+            anchor_sequence: Some(1),
+            captured_through: 18,
+            before: 19,
+            ..selection(16)
+        };
+        // An eligible newer invisible archive hides its old visible revision.
+        // A newer publication outside the capture must leave that old row visible.
+        for (captured, before, unknown, replay, expected) in [
+            (16, 19, false, false, vec![1, 11, 12, 15, 16]),
+            (18, 18, false, false, vec![1, 11, 12, 15, 16]),
+            (18, 19, false, false, vec![1, 11, 12, 16]),
+            (18, 19, true, false, vec![1, 11, 12, 13, 16]),
+            (18, 19, true, true, vec![1, 11, 12, 13]),
+        ] {
+            let selected = SemanticSelection {
+                captured_through: captured,
+                before,
+                prior_unknown: unknown,
+                replay: replay.then(|| SemanticReplay {
+                    base: 0,
+                    current: "invocation".into(),
+                    route: "route".into(),
+                    model: "model".into(),
+                }),
+                ..selected.clone()
+            };
+            let candidates = rows(&mut db, &selected, None, 64, None).await.unwrap().rows;
+            assert_eq!(
+                candidates
+                    .iter()
+                    .map(|row| row.id.source_sequence)
+                    .collect::<Vec<_>>(),
+                expected,
+                "capture={captured}, unknown={unknown}, replay={replay}"
+            );
+            for anchor in [None, Some(1), Some(12), Some(17)] {
+                let selected = SemanticSelection {
+                    anchor_sequence: anchor,
+                    ..selected.clone()
+                };
+                let candidates = rows(&mut db, &selected, None, 64, None).await.unwrap().rows;
+                // Use row selection as the oracle for neighbor filtering
+                // and full semantic ordering, including rows ordered before `after`.
+                for group in [0, 1, 2, 3, 10, 19, 20, 21, 22, 23, 24] {
+                    for before in [true, false] {
+                        let expected = if before {
+                            candidates
+                                .iter()
+                                .rev()
+                                .find(|row| row.order.source_sequence < group)
+                        } else {
+                            candidates
+                                .iter()
+                                .find(|row| row.order.source_sequence > group)
+                        };
+                        assert_eq!(
+                            neighbor(&mut db, &selected, group, before)
+                                .await
+                                .unwrap()
+                                .as_ref(),
+                            expected,
+                            "group={group}, before={before}, anchor={anchor:?}, capture={captured}, unknown={unknown}, replay={replay}"
+                        );
+                    }
+                }
+            }
+        }
+        insert(&mut db, &user(18, 18, 25)).await;
+        sqlx::query(
+            "UPDATE context_semantic_rows SET row_json='invalid JSON' WHERE source_sequence=18",
+        )
+        .execute(&mut db)
+        .await
+        .unwrap();
+        assert!(
+            neighbor(&mut db, &selection(18), 24, false).await.is_err(),
+            "neighbor decoding must preserve malformed projection errors"
+        );
+    }
+
+    #[tokio::test]
+    async fn neighbor_gap_work_is_bounded_by_selected_sources() {
+        let mut db = database().await;
+        let template = serde_json::to_string(&user(1, 1, 1)).unwrap();
+        let mut previous = 0_i64;
+        let mut samples = Vec::new();
+        for through in [128_i64, 16_384] {
+            sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
+                INSERT INTO context_semantic_rows
+                SELECT 'session',n,0,n,n,0,'invocation','invocation','neighbor-fixture','user',0,0,1,0,
+                    json_set(?3,'$.id.sourceSequence',n,'$.order.sourceSequence',n,'$.revision',n)
+                FROM numbers")
+                .bind(previous + 1).bind(through).bind(&template)
+                .execute(&mut db).await.unwrap();
+            let selected = SemanticSelection {
+                after: (through - 16) as u64,
+                anchor_sequence: Some(1),
+                ..selection(through as u64)
+            };
+            let mut costs = Vec::new();
+            // Both directions cross the compacted gap. Also measure no neighbor
+            // and an overlapping anchor so no path can scan all owner history.
+            for (group, before, anchor, expected) in [
+                ((through - 15) as u64, true, Some(1), Some(1)),
+                (1, false, Some(1), Some((through - 15) as u64)),
+                ((through - 15) as u64, true, None, None),
+                (through as u64, false, Some(1), None),
+                (
+                    1,
+                    false,
+                    Some((through - 15) as u64),
+                    Some((through - 15) as u64),
+                ),
+            ] {
+                let selected = SemanticSelection {
+                    anchor_sequence: anchor,
+                    ..selected.clone()
+                };
+                let (found, cost) = measured_neighbor(&mut db, &selected, group, before).await;
+                assert_eq!(
+                    found.map(|row| row.id.source_sequence),
+                    expected,
+                    "history={through}, group={group}, before={before}, anchor={anchor:?}"
+                );
+                costs.push(cost);
+            }
+            samples.push(costs);
+            previous = through;
+        }
+        for (case, (small, large)) in samples[0].iter().zip(&samples[1]).enumerate() {
+            assert!(
+                *large <= small * 2,
+                "neighbor case {case} scanned covered history: H=128 {small} -> H=16384 {large}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn neighbor_pages_keep_revision_in_both_physical_cursors() {
+        let mut db = database().await;
+        insert(&mut db, &user(1, 1, 1)).await;
+        for revision in 1001..=1128 {
+            insert(&mut db, &user(1001, revision, 3)).await;
+        }
+        sqlx::query("UPDATE context_semantic_rows SET archived=1 WHERE source_sequence=1001")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        let selected = SemanticSelection {
+            after: 1000,
+            anchor_sequence: Some(1),
+            captured_through: 1064,
+            before: 1129,
+            ..selection(1001)
+        };
+        // The first reverse order page contains only future publications.
+        let found = neighbor(&mut db, &selected, 4, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.id.source_sequence, found.revision), (1001, 1064));
+        let selected = SemanticSelection {
+            captured_through: 1128,
+            ..selected
+        };
+        // The first forward order page contains only superseded revisions.
+        let found = neighbor(&mut db, &selected, 2, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.id.source_sequence, found.revision), (1001, 1128));
+
+        let template = serde_json::to_string(&user(1, 1, 1)).unwrap();
+        sqlx::query(
+            "WITH RECURSIVE numbers(n) AS (SELECT 2 UNION ALL SELECT n+1 FROM numbers WHERE n<1000)
+            INSERT INTO context_semantic_rows
+            SELECT 'session',n,0,n,n,0,'invocation','invocation','covered','user',0,0,1,0,
+                json_set(?1,'$.id.sourceSequence',n,'$.order.sourceSequence',n,'$.revision',n)
+            FROM numbers",
+        )
+        .bind(template)
+        .execute(&mut db)
+        .await
+        .unwrap();
+        // Long covered order history leaves the source scan to find its winner
+        // beyond the first physical source page, at the same source and index.
+        let found = neighbor(&mut db, &selected, 1000, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.id.source_sequence, found.revision), (1001, 1128));
+    }
+
+    #[tokio::test]
+    async fn dense_first_neighbor_does_not_evaluate_a_full_order_page() {
+        let mut db = database().await;
+        let mut previous = 0;
+        let mut samples = Vec::new();
+        for through in [2, 128] {
+            for source in previous + 1..=through {
+                insert(&mut db, &user(source, source, source)).await;
+            }
+            let selected = selection(through);
+            let mut costs = Vec::new();
+            for before in [true, false] {
+                let group = if before { through + 1 } else { 1 };
+                let expected = if before { through } else { 2 };
+                let (found, cost) = measured_neighbor(&mut db, &selected, group, before).await;
+                assert_eq!(found.map(|row| row.id.source_sequence), Some(expected));
+                costs.push(cost);
+            }
+            samples.push(costs);
+            previous = through;
+        }
+        for (direction, (small, large)) in samples[0].iter().zip(&samples[1]).enumerate() {
+            assert!(
+                *large <= small * 2,
+                "dense first-hit direction {direction} evaluated trailing candidates: H=2 {small} -> H=128 {large}"
+            );
+        }
+    }
 }

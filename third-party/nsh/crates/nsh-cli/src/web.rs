@@ -130,7 +130,7 @@ pub(crate) fn package(
         (code, site.add("harden.nshc", &nsh_js::compile_harden()?)?)
     };
     // Chunk id -> URL: the page hands the map to the runtime, which fetches
-    // a chunk the first time the app imports it (nothing is preloaded).
+    // lazy chunks on demand. Static entry dependencies are staged before startup.
     let mut chunks = serde_json::Map::new();
     for chunk in &built.chunks {
         let stem = chunk.id.strip_suffix(".js").unwrap_or(&chunk.id);
@@ -178,6 +178,7 @@ pub(crate) fn package(
         "fonts": fonts,
         "chunkFonts": chunk_fonts,
         "chunks": chunks,
+        "entryChunks": built.entry_imports,
         "host": host,
     });
     if let Some(glue) = &glue {
@@ -849,7 +850,11 @@ mod tests {
         );
         // The page's host is the app's (`with_page_host`).
         assert!(!page.replace("{{host}}", "").contains("{{"), "{page}");
-        assert!(page.contains("const UI_SETS = [\"nsh/base\"];"));
+        // `nsh/base` with its submodules, each a module the page serves.
+        assert!(
+            page.contains("const UI_SETS = [\"nsh/base\",\"nsh/base/plot\"];"),
+            "{page}"
+        );
         fs::write(&runtime.wasm, "two").unwrap();
         assert_ne!(version(&dev_host(&runtime, false).unwrap().1), first);
         assert!(

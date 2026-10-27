@@ -1054,8 +1054,8 @@ pub(crate) struct DrawnText {
     pub(crate) content: nsh_core::Bounds<nsh_core::Points>,
     /// The selection of `selectable` text, kept across new content.
     selection: Option<Selection>,
-    /// The part of a selection area's selection in this text
-    /// ([`crate::selection_area`]).
+    /// The part of a selectable view's selection in this text
+    /// ([`crate::selectable_view`]).
     area_range: std::cell::Cell<Option<(u32, u32)>>,
 }
 
@@ -1732,13 +1732,13 @@ pub(crate) struct Selection {
 
 /// The text selection of a surface: the view whose text was last pressed
 /// to select (it takes Cmd+A, and Cmd+C and Escape while it has a
-/// selection), or the selection area last pressed (`area`). Only one view
+/// selection), or the selectable view last pressed (`area`). Only one view
 /// or area has a selection at a time, as a window has one focus.
 #[derive(Default)]
 pub(crate) struct Selected {
     view: RefCell<Option<objc2::rc::Weak<crate::view::ViewObj>>>,
-    /// The selection of the selection area last pressed.
-    pub(crate) area: crate::selection_area::AreaSelection,
+    /// The selection of the selectable view last pressed.
+    pub(crate) area: crate::selectable_view::AreaSelection,
 }
 
 impl Selected {
@@ -1776,7 +1776,7 @@ fn select(view: &crate::view::NshView, range: Option<(u32, u32)>) {
     }
 }
 
-/// Sets the part of a selection area's selection `view`'s text shows
+/// Sets the part of a selectable view's selection `view`'s text shows
 /// (`None` or empty clears it).
 pub(crate) fn set_area_range(view: &crate::view::NshView, range: Option<(u32, u32)>) {
     let range = range.filter(|(a, b)| a < b);
@@ -1956,7 +1956,7 @@ pub(crate) fn copy(surface: &crate::surface::Surface) -> bool {
     true
 }
 
-/// Selects all of the last pressed selectable text or selection area (the
+/// Selects all of the last pressed selectable text or selectable view (the
 /// Edit menu's Select All). False if there is none.
 pub(crate) fn select_all(surface: &crate::surface::Surface) -> bool {
     if surface.selection.area.select_all() {

@@ -4,7 +4,7 @@
 // (its side, alignment, gap and margin), a `ContextMenu` the secondary
 // button opens where the pointer is (its gap and margin), a `Tooltip` (an element's
 // `tooltip`) shown after the pointer rests on its trigger (`delay`) and hidden when it leaves,
-// and an element's `tooltip`: a text in a bubble, an element. Its script
+// and an element's `tooltip` that is a plain element. Its script
 // checks each.
 import { Text, View, signal } from "nsh";
 import { ContextMenu, Menu, MenuItem, Popover, Tooltip } from "nsh/base";
@@ -59,7 +59,7 @@ function App() {
         <Text>SlowTrigger</Text>
       </View>
       <Text>{lifecycle()}</Text>
-      <View testID="prop-tip" tooltip="PropTip" style={{ height: 30, width: 100 }}>
+      <View testID="prop-tip" tooltip={<Text>PropTip</Text>} style={{ height: 30, width: 100 }}>
         <Text>PropTrigger</Text>
       </View>
       <View tooltip={<Text>ElementTip</Text>} style={{ height: 30 }}>

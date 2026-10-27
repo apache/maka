@@ -16,7 +16,8 @@ use nsh_core::{
         CanvasGradient, CanvasOp, CanvasTextAlign, CanvasTextBaseline, Composite, FillRule,
         LineCap, LineJoin, Num, PathOp, svg_path,
     },
-    ui::{Animation, prelude::*},
+    element::Animation,
+    prelude::*,
 };
 
 use crate::ui::{

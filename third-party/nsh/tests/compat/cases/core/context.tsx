@@ -2,7 +2,7 @@
 // provided and read below, the device's locale, a press found by its testID
 // and the layout of a few style keys. Its script checks each.
 import { Text, View, context, signal } from "nsh";
-import { locale } from "nsh/device";
+import { locale } from "nsh";
 
 const Theme = context("light");
 

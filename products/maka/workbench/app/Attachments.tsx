@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { renderText } from './text';
 import { tr } from './locale';
 import { inputAction, Scroll, Text, View } from 'nsh';
@@ -109,7 +110,7 @@ export function DraftAttachments(props: {
                       when={image(original.mimeType)}
                       else={
                         <View
-                          tooltip={`${original.name}\n${size(original.bytes)}`}
+                          tooltip={textTooltip(() => `${original.name}\n${size(original.bytes)}`)}
                           style={fileTileStyle}
                         >
                           <Icon name="file" color={C.secondary} />
@@ -141,7 +142,7 @@ export function DraftAttachments(props: {
                     </If>
                     <Button
                       accessibilityLabel={tr('Remove attachment {name}', { name: original.name })}
-                      tooltip={tr('Remove {name}', { name: original.name })}
+                      tooltip={textTooltip(() => tr('Remove {name}', { name: original.name }))}
                       onPress={inputAction(owner.remove, {
                         owner: owner.sessionId,
                         id: original.id,
@@ -290,7 +291,9 @@ export function HistoryAttachments(props: {
                 when={image(original.mimeType) && props.position !== undefined}
                 else={
                   <View
-                    tooltip={`${original.name}\n${size(original.bytes)} · ${original.kind}`}
+                    tooltip={textTooltip(
+                      () => `${original.name}\n${size(original.bytes)} · ${original.kind}`,
+                    )}
                     style={fileTileStyle}
                   >
                     <Icon name={image(original.mimeType) ? 'image' : 'file'} color={C.secondary} />

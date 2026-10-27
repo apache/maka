@@ -18,7 +18,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use nsh_core::ui::{Registry, Root};
+use nsh_core::element::{Registry, Root};
 use nsh_engine::Bundle;
 use serde::{Deserialize, Serialize};
 

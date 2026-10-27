@@ -40,8 +40,8 @@ use std::{
 fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     const APP: &str = r#"
         import { mount, signal } from 'nsh';
-        import { Clipboard } from 'nsh/clipboard';
-        import { keymap } from 'nsh/keymap';
+        import { Clipboard } from 'nsh';
+        import { keymap } from 'nsh';
         import { element, prop, bindProp, append } from 'nsh:rt';
         const value = signal('');
         const second = signal('B');
@@ -589,8 +589,8 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
                     ..EngineConfig::new(App::Js(Bundle::source(
                         r#"
                         import { mount } from 'nsh';
-                        import { Clipboard } from 'nsh/clipboard';
-                        import { keymap } from 'nsh/keymap';
+                        import { Clipboard } from 'nsh';
+                        import { keymap } from 'nsh';
                         import { element, prop, append } from 'nsh:rt';
                         let fallbackCopies = 0;
                         keymap.bind('ctrl+c', () => fallbackCopies++,

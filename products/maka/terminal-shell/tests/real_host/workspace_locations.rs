@@ -60,7 +60,7 @@ async fn update(client: &Client, source: &Value, roots: Value) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspace_locations_save_browse_remove_and_preserve_conflicting_drafts() {
     tokio::time::timeout(Duration::from_secs(120), async {
-        let fixture = Fixture::open().await;
+        let (fixture, mut activations) = Fixture::workspace_locations().await;
         let project = fixture.directory.path().join("projects ");
         let draft = fixture.directory.path().join("draft-project");
         std::fs::create_dir(&project).unwrap();
@@ -153,6 +153,12 @@ async fn workspace_locations_save_browse_remove_and_preserve_conflicting_drafts(
         )
         .await;
         assert_eq!(elsewhere["status"], "committed");
+        // The receipt commits desired configuration; the conflict assertion
+        // needs its gateway imports active, without reloading this UI's draft.
+        activations
+            .wait_for(&serde_json::from_value(elsewhere["value"]["source"].clone()).unwrap())
+            .await
+            .unwrap();
         support::click_button(&mut view, "Save workspace locations").await;
         wait_view(&mut view, |screen| screen.contains("changed elsewhere")).await;
         assert!(

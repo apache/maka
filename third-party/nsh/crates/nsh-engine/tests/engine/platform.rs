@@ -11,7 +11,7 @@ use nsh_engine::{Bundle, Engine, EngineConfig, Environment, Idiom, Os, Renderer}
 use crate::ChannelSink;
 
 const APP: &str = r#"import { mount, Text, View } from "nsh";
-import { platform } from "nsh/device";
+import { platform } from "nsh";
 
 mount(
   () => (
@@ -127,7 +127,7 @@ fn frame_parts(batch: MountBatch) -> (Vec<String>, Vec<String>) {
 #[test]
 fn pixel_ratio_changes_keep_the_window_size() {
     let app = r#"import { mount, Text } from "nsh";
-import { pixelRatio, windowSize } from "nsh/device";
+import { pixelRatio, windowSize } from "nsh";
 
 mount(() => <Text>{`${pixelRatio()} ${windowSize().width}x${windowSize().height}`}</Text>);
 "#;
@@ -157,8 +157,8 @@ mount(() => <Text>{`${pixelRatio()} ${windowSize().width}x${windowSize().height}
 #[test]
 fn terminal_environment_keeps_the_os_and_uses_terminal_interaction() {
     let app = r#"import { mount, Text, View } from "nsh";
-import { platform } from "nsh/device";
-import { keymap } from "nsh/keymap";
+import { platform } from "nsh";
+import { keymap } from "nsh";
 import { Menu, isAvailable } from "nsh/desktop";
 Menu.setApplicationMenu([]);
 Menu.popup([]);
@@ -235,8 +235,8 @@ fn platform_props_and_select_follow_the_os() {
 #[test]
 fn graphical_terminal_keyboard_keeps_identity_and_uses_control_shortcuts() {
     let app = r#"import { mount, Text } from "nsh";
-import { platform } from "nsh/device";
-import { keymap } from "nsh/keymap";
+import { platform } from "nsh";
+import { keymap } from "nsh";
 keymap.bind("mod+k", () => {});
 mount(() => <Text>{`${platform.os} ${platform.renderer} ${platform.isTerminal} ${keymap.label("mod+k")}`}</Text>);
 "#;

@@ -21,6 +21,83 @@ use super::*;
 use maka_fs_tools::workspace::MARKER_FILE;
 use maka_host_runtime::DirectoryRootSpec;
 
+#[tokio::test]
+async fn concurrent_sessions_share_the_same_available_project() {
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let sessions =
+        futures_util::future::join_all((0..16).map(|_| fixture.create("Concurrent"))).await;
+    let mut projects = std::collections::BTreeSet::new();
+    let mut identity = None;
+    for id in &sessions {
+        let session = fixture.owner.session(id).await.unwrap();
+        projects.insert(session.configuration.workspace.project_id);
+        let current = session.configuration.workspace.identity;
+        match &identity {
+            Some(first) => assert_eq!(&current, first),
+            None => identity = Some(current),
+        }
+    }
+    assert_eq!(
+        sessions
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        16
+    );
+    assert_eq!(projects.len(), 1);
+    assert!(!projects.contains(&None));
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn blocked_creation_allows_other_sessions_and_precedes_close() {
+    use futures_util::poll;
+
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let client = fixture.app.client();
+    let input = fixture.create_input("Blocked").await;
+    let prepared = client
+        .prepare_mutation(
+            fixture.binding(2).await,
+            "create".into(),
+            input.clone(),
+            scope(&fixture.issuer, true),
+            Uuid::new_v4(),
+            Attachments::new().into(),
+        )
+        .await
+        .unwrap();
+    let session = fixture.owner.operation_id(prepared.reference());
+    let gate = fixture.owner.runs.session(&session).await;
+    let scope = scope(&fixture.issuer, true);
+    let mut blocked = Box::pin(fixture.owner.create_inner(
+        serde_json::from_value(input).unwrap(),
+        prepared.reference(),
+        &scope,
+    ));
+    assert!(poll!(blocked.as_mut()).is_pending());
+
+    let other = tokio::time::timeout(Duration::from_secs(10), fixture.create("Independent"))
+        .await
+        .expect("another Session can be created while the first waits");
+    assert_ne!(other, session);
+    assert!(poll!(blocked.as_mut()).is_pending());
+    assert!(fixture.owner.prepare_retirement().is_none());
+
+    let mut close = fixture.owner.close();
+    assert!(poll!(close.as_mut()).is_pending());
+    drop(gate);
+    let Created::Created { session: created } = blocked.await.unwrap() else {
+        panic!("creation admitted before close must settle");
+    };
+    assert_eq!(created.id, session);
+    drop(prepared);
+    close.await.unwrap();
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}
+
 async fn publish(fixture: &mut Fixture, roots: Vec<DirectoryRootSpec>) {
     let policy = Arc::new(Grant(fixture.issuer.clone(), None));
     publish_with_policy(fixture, roots, policy).await;

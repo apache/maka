@@ -13,7 +13,7 @@ use std::{future::Future, task::Poll, time::Duration};
 
 use crate::{
     JsonValue,
-    ui::{JsObject, module},
+    element::{JsObject, module},
 };
 
 /// What a call rejects with on a platform without a host.
@@ -57,14 +57,14 @@ impl Host {
                 .and_then(|t| Some((t, crate::time::now().checked_add(t)?))),
             None => Some((DEFAULT_TIMEOUT, crate::time::now() + DEFAULT_TIMEOUT)),
         };
-        let answer = crate::ui::ambient::host_call(name.clone(), args.unwrap_or_default());
+        let answer = crate::element::ambient::host_call(name.clone(), args.unwrap_or_default());
         let Some((timeout, at)) = deadline else {
             return answer.await;
         };
         // On the app's clock, as its timers: a manual clock moves it.
         let answered = {
             let mut answer = std::pin::pin!(answer);
-            let mut delay = std::pin::pin!(crate::ui::ambient::timer_until(at));
+            let mut delay = std::pin::pin!(crate::element::ambient::timer_until(at));
             std::future::poll_fn(|cx| {
                 if let Poll::Ready(result) = answer.as_mut().poll(cx) {
                     return Poll::Ready(Some(result));
@@ -79,7 +79,7 @@ impl Host {
         answered.unwrap_or_else(|| {
             // The answer went with the block: the core drops its slot now,
             // and a late reply finds none (`Core::answer_host`).
-            crate::ui::ambient::forget_host_calls();
+            crate::element::ambient::forget_host_calls();
             Err(format!(
                 "nsh/host: {name} timed out after {} ms",
                 timeout.as_millis()

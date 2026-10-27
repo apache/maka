@@ -670,7 +670,11 @@ impl IRawElementProviderSimple_Impl for Element_Impl {
                 UIA_TogglePatternId => a.state.checked.is_some(),
                 UIA_ExpandCollapsePatternId => a.state.expanded.is_some(),
                 UIA_SelectionItemPatternId => {
-                    a.state.selected || matches!(control, Control::TabItem | Control::RadioButton)
+                    a.state.selected
+                        || matches!(
+                            control,
+                            Control::TabItem | Control::RadioButton | Control::ListItem
+                        )
                 }
                 UIA_RangeValuePatternId => super::range_of(a, control).is_some(),
                 UIA_ValuePatternId => s.kind == ViewKind::Input,
@@ -1099,6 +1103,7 @@ fn control_type(c: Control) -> UIA_CONTROLTYPE_ID {
         Control::TabList => UIA_TabControlTypeId,
         Control::ToolBar => UIA_ToolBarControlTypeId,
         Control::List => UIA_ListControlTypeId,
+        Control::ListItem => UIA_ListItemControlTypeId,
         Control::Pane => UIA_PaneControlTypeId,
     }
 }
@@ -1113,6 +1118,7 @@ mod tests {
         assert_eq!(control_type(Control::Heading), UIA_TextControlTypeId);
         assert_eq!(control_type(Control::TabList), UIA_TabControlTypeId);
         assert_eq!(control_type(Control::Pane), UIA_PaneControlTypeId);
+        assert_eq!(control_type(Control::ListItem), UIA_ListItemControlTypeId);
     }
 
     #[test]

@@ -13,8 +13,8 @@ use rustc_hash::FxHashMap;
 use crate::{
     css,
     effects::BoxShadow,
+    element::AdaptiveColor,
     style::{Color, TextShadow},
-    ui::AdaptiveColor,
 };
 
 /// Tailwind's design tokens.
@@ -66,7 +66,7 @@ pub struct Theme {
     tokens: Option<Arc<ClassTokens>>,
 }
 
-/// The design tokens (`crate::ui::Tokens`) by the names classes give them,
+/// The design tokens (`crate::element::Tokens`) by the names classes give them,
 /// their names: as Tailwind's theme variables, colors are names of the
 /// color utilities (`bg-primary`, `text-muted-foreground/70`) when the
 /// Tailwind theme has no color of that name, and every token is a
@@ -87,11 +87,11 @@ pub(crate) struct ClassTokens {
 }
 
 static DEFAULT_TOKENS: LazyLock<Arc<ClassTokens>> =
-    LazyLock::new(|| Arc::new(ClassTokens::new(&crate::ui::Tokens::default())));
+    LazyLock::new(|| Arc::new(ClassTokens::new(&crate::element::Tokens::default())));
 
 impl ClassTokens {
     /// The names classes give `theme`'s tokens.
-    pub(crate) fn new(theme: &crate::ui::Tokens) -> Self {
+    pub(crate) fn new(theme: &crate::element::Tokens) -> Self {
         ClassTokens {
             colors: theme.colors().map(|(k, c)| (k.into(), c)).collect(),
             numbers: theme.numbers().map(|(k, n)| (k.into(), n)).collect(),
@@ -669,7 +669,7 @@ impl Theme {
 
     /// Takes design tokens `theme`, which classes such as `bg-primary`
     /// name. Without them classes name none.
-    pub fn set_tokens(&mut self, theme: &crate::ui::Tokens) {
+    pub fn set_tokens(&mut self, theme: &crate::element::Tokens) {
         self.tokens = Some(Arc::new(ClassTokens::new(theme)));
     }
 

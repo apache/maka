@@ -79,8 +79,11 @@ pub fn nsh_theme(theme: &Theme) -> nsh_platform_gpui::Theme {
         nsh.set_color(name, AdaptiveColor::from(color(c)));
     }
     nsh.set_number("radius", f32::from(theme.radius));
-    nsh.set_font(nsh_core::ui::FONT_SANS, theme.font_family.to_string());
-    nsh.set_font(nsh_core::ui::FONT_MONO, theme.mono_font_family.to_string());
+    nsh.set_font(nsh_core::element::FONT_SANS, theme.font_family.to_string());
+    nsh.set_font(
+        nsh_core::element::FONT_MONO,
+        theme.mono_font_family.to_string(),
+    );
     nsh
 }
 

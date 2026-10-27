@@ -2,8 +2,8 @@ use std::{cell::RefCell, rc::Rc};
 
 use nsh_core::{
     JsonValue,
+    element::{CallbackHandle, ClassInstance, JsRaw},
     geometry::px,
-    ui::{CallbackHandle, ClassInstance, JsRaw},
 };
 use serde_json::json;
 

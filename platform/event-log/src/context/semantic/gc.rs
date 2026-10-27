@@ -39,7 +39,7 @@ pub(crate) async fn retire_owner(
             .execute(&mut *connection)
             .await?;
     }
-    sqlx::query("INSERT INTO context_semantic_heads(session_id,through_sequence,unavailable_at,unavailable_reason) VALUES(?,0,0,'semantic owner retired') ON CONFLICT(session_id) DO UPDATE SET unavailable_at=0,unavailable_reason='semantic owner retired'")
+    sqlx::query("INSERT INTO context_semantic_heads(session_id,unavailable_at,unavailable_reason) VALUES(?,0,'semantic owner retired') ON CONFLICT(session_id) DO UPDATE SET unavailable_at=0,unavailable_reason='semantic owner retired'")
         .bind(session).execute(&mut *connection).await?;
     // Retain context_semantic_copies' tiny completed marker. A removed owner
     // must not be rehydrated by an accidental later metadata access.

@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { cleanup, signal, Text } from 'nsh';
-import { SelectionArea, TextView } from 'nsh/base';
+import { cleanup, signal, Text, View } from 'nsh';
+import { TextView } from 'nsh/base';
 import { hasCompletePrefix, type Row } from './history';
 import { MarkdownImageView } from './MarkdownImage';
 import { SourceText } from './SourceText';
@@ -41,7 +41,7 @@ export function MarkdownBody(props: {
   const readingStyle = props.compact ? secondaryTextStyle : bodyTextStyle;
   const color = props.compact ? C.muted : C.text;
   return (
-    <SelectionArea>
+    <View selectable>
       <If
         when={hasCompletePrefix(props.row())}
         else={
@@ -136,6 +136,6 @@ export function MarkdownBody(props: {
           </Text>
         </If>
       </If>
-    </SelectionArea>
+    </View>
   );
 }

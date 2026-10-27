@@ -67,9 +67,9 @@ use crate::{
         Composite, Drawing, FillRule, GradientShape, LineCap, LineJoin, Num, Paint, Path, PathOp,
         parse_svg_path,
     },
+    element::TsTypes,
     geometry::{Bounds, Percentage, Points, Radians, ScaledPixels, point, size},
     style::{Color, FontVariant},
-    ui::TsTypes,
 };
 
 /// Reads drawing `list[start..end]` (what a `draw` callback recorded).

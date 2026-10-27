@@ -291,7 +291,7 @@ dynamic(move || if wide.get() { two_columns() } else { one_column() })
 - `resource(source, fetcher)` (TS: `resource`): a render effect reads the source and spawns the load, whose task the
   next run (or the owner's disposal) drops, cancelling what it awaited; the value, error and state are signals, and
   which load counts is `nsh_core::resource::Runs`, the JS face's too.
-- Platform services (`dialog`, `toast`, `set_clipboard`, `clipboard_string`, `announce`, `image_size`, ...) become free
+- Platform services (`dialog`, `set_clipboard`, `clipboard_string`, `announce`, `image_size`, ...) become free
   functions on the current runtime, as `nsh/*` modules are free functions in TSX. `Context`, `RenderCx` and `AsyncCx`
   go; `ModuleCx` keeps only what a module call needs.
 - `on_back_press(f)`: registered for as long as its owner lives. Listening only while something holds is an effect:

@@ -326,7 +326,38 @@ async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_readin
         !notices.has_changed().unwrap(),
         "search emits no execution commits"
     );
-    let canonical = log.prefix(128, 32 * 1024 * 1024).await.unwrap().digest;
+    let prefix = log.prefix(128, 32 * 1024 * 1024).await.unwrap();
+    let mut full = maka_presentation::InvocationView::new();
+    let mut expected = Vec::new();
+    for stored in &prefix.events {
+        let raw = if matches!(
+            stored.event.fact,
+            Fact::ToolSettled {
+                outcome: maka_agent_facts::event::ToolOutcome::Succeeded { .. },
+                ..
+            }
+        ) {
+            Some(
+                log.resolve_tool_result("session", &stored.event.id)
+                    .await
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        for row in full.push_with_tool_output(stored, raw.as_ref()).unwrap() {
+            expected.push((row.position, serde_json::to_vec(&row.message).unwrap()));
+        }
+    }
+    assert_eq!(
+        original
+            .iter()
+            .map(|(position, payload, _)| (*position, payload.clone()))
+            .collect::<Vec<_>>(),
+        expected,
+        "own-boundary projection must exactly match full invocation replay"
+    );
+    let canonical = prefix.digest;
     crate::test_store::inspect(&log, move |db| {
         db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
             .unwrap()

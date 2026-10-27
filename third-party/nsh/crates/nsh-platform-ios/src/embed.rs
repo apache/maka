@@ -784,6 +784,18 @@ pub struct NshComponentCallbacks {
     pub release_factory: Option<unsafe extern "C" fn(factory: *mut c_void)>,
 }
 
+/// What nsh calls on a component when a prop bound to an animated value
+/// moves ([`nsh_app_register_component_with_animation`]); every function gets the
+/// handle `create` returned.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct NshComponentAnimationCallbacks {
+    /// Prop `name` moved to number `value`.
+    pub set_number: unsafe extern "C" fn(component: *mut c_void, name: *const c_char, value: f64),
+    /// Prop `name` moved to color `argb` (`0xAARRGGBB`).
+    pub set_color: unsafe extern "C" fn(component: *mut c_void, name: *const c_char, argb: u32),
+}
+
 /// What a component tells its app (opaque to C): owned by the component.
 pub struct NshComponentContext(crate::ComponentContext);
 
@@ -791,6 +803,7 @@ pub struct NshComponentContext(crate::ComponentContext);
 struct CFactory {
     factory: *mut c_void,
     callbacks: NshComponentCallbacks,
+    animated: Option<NshComponentAnimationCallbacks>,
 }
 
 impl Drop for CFactory {
@@ -806,6 +819,7 @@ impl Drop for CFactory {
 struct CComponent {
     handle: *mut c_void,
     callbacks: NshComponentCallbacks,
+    animated: Option<NshComponentAnimationCallbacks>,
     view: objc2::rc::Retained<UIView>,
 }
 
@@ -833,6 +847,27 @@ impl crate::NativeComponent for CComponent {
         // SAFETY: the contract of `nsh_app_register_component`.
         unsafe { (self.callbacks.command)(self.handle, name.as_ptr(), json.as_ptr()) };
     }
+
+    fn set_animated_number(&mut self, name: &str, value: f64) {
+        let Some(animated) = self.animated else {
+            // Registered without them: as a JSON prop.
+            let json = serde_json::Number::from_f64(value)
+                .map_or(nsh_core::JsonValue::Null, nsh_core::JsonValue::Number);
+            return self.set_prop(name, Some(&json));
+        };
+        let name = CString::new(name).unwrap_or_default();
+        // SAFETY: the contract of `nsh_app_register_component_with_animation`.
+        unsafe { (animated.set_number)(self.handle, name.as_ptr(), value) };
+    }
+
+    fn set_animated_color(&mut self, name: &str, argb: u32) {
+        let Some(animated) = self.animated else {
+            return self.set_prop(name, Some(&nsh_core::JsonValue::from(argb)));
+        };
+        let name = CString::new(name).unwrap_or_default();
+        // SAFETY: the contract of `nsh_app_register_component_with_animation`.
+        unsafe { (animated.set_color)(self.handle, name.as_ptr(), argb) };
+    }
 }
 
 impl Drop for CComponent {
@@ -859,11 +894,50 @@ pub unsafe extern "C" fn nsh_app_register_component(
     callbacks: *const NshComponentCallbacks,
 ) {
     // SAFETY: guaranteed by the caller.
+    unsafe { register_component(app, name, factory, callbacks, None) };
+}
+
+/// [`nsh_app_register_component`], with what nsh calls when a prop bound to
+/// an animated value moves (otherwise those come as `set_prop` JSON).
+///
+/// # Safety
+///
+/// As [`nsh_app_register_component`]; `animated` must point to callbacks
+/// with the same contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_app_register_component_with_animation(
+    app: *mut NshApp,
+    name: *const c_char,
+    factory: *mut c_void,
+    callbacks: *const NshComponentCallbacks,
+    animated: *const NshComponentAnimationCallbacks,
+) {
+    // SAFETY: guaranteed by the caller.
+    let animated = unsafe { animated.as_ref().copied() };
+    // SAFETY: guaranteed by the caller.
+    unsafe { register_component(app, name, factory, callbacks, animated) };
+}
+
+/// # Safety
+///
+/// As [`nsh_app_register_component_with_animation`].
+unsafe fn register_component(
+    app: *mut NshApp,
+    name: *const c_char,
+    factory: *mut c_void,
+    callbacks: *const NshComponentCallbacks,
+    animated: Option<NshComponentAnimationCallbacks>,
+) {
+    // SAFETY: guaranteed by the caller.
     let (app, name, callbacks) = unsafe { (&*app, CStr::from_ptr(name), *callbacks) };
     let Ok(name) = name.to_str() else {
         return log::error!("component name is not UTF-8");
     };
-    let registration = std::rc::Rc::new(CFactory { factory, callbacks });
+    let registration = std::rc::Rc::new(CFactory {
+        factory,
+        callbacks,
+        animated,
+    });
     app.view.register_component(
         name,
         std::rc::Rc::new(move |context| {
@@ -877,6 +951,7 @@ pub unsafe extern "C" fn nsh_app_register_component(
             Box::new(CComponent {
                 handle,
                 callbacks: r.callbacks,
+                animated: r.animated,
                 view,
             })
         }),

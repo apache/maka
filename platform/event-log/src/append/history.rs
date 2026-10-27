@@ -79,7 +79,7 @@ async fn identity(
         return Err(StoreError::Sealed);
     }
     let opening: Option<String> = sqlx::query_scalar(
-        "SELECT event_json FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
+        "SELECT json_extract(event_json, '$.invocation') FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
     )
     .bind(id)
     .fetch_optional(connection)
@@ -89,7 +89,9 @@ async fn identity(
         (Fact::InvocationOpened { .. }, Some(_)) => Err(invalid("invocation already opened")),
         (_, None) => Err(invalid("invocation not opened")),
         (_, Some(opening)) => {
-            if serde_json::from_str::<RuntimeEvent>(&opening)?.invocation != event.invocation {
+            if serde_json::from_str::<maka_agent_facts::event::Invocation>(&opening)?
+                != event.invocation
+            {
                 return Err(invalid("invocation identity changed"));
             }
             Ok(())

@@ -13,7 +13,7 @@ canvas 是一个由你自己用 2D 绘图 API（即 HTML Canvas 2D API）绘制�
 ```rust tabs
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use nsh_core::{canvas::LineCap, ui::prelude::*};
+use nsh_core::{canvas::LineCap, prelude::*};
 
 /// 一个进度圆环，120 点见方。
 fn ring(progress: f32) -> impl IntoElement {
@@ -108,7 +108,7 @@ const values = signal([12, 40, 28, 64]);
 />;
 ```
 
-数字和颜色也可以是[原生动画值](../modules/nsh-animated.md)（`CanvasNumber`、`CanvasPaint`；在 Rust 中，凡是数字的位置都可以传 `&AnimatedValue`）：这些值动画时，平台会自行重绘，每帧都不经过应用代码。
+数字和颜色也可以是[原生动画值](../modules/nsh.md#animation)（`CanvasNumber`、`CanvasPaint`；在 Rust 中，凡是数字的位置都可以传 `&AnimatedValue`）：这些值动画时，平台会自行重绘，每帧都不经过应用代码。
 
 ```rust tabs
 use std::f32::consts::TAU;
@@ -128,7 +128,7 @@ canvas(
 
 ```tsx tabs
 import { Canvas } from "nsh";
-import { Animated, createAnimatedValue } from "nsh/animated";
+import { Animated, createAnimatedValue } from "nsh";
 
 const angle = createAnimatedValue(0);
 Animated.timing(angle, { toValue: Math.PI * 2, duration: 1000 }).start();

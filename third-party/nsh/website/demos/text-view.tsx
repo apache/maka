@@ -1,6 +1,6 @@
 import { cleanup, mount, signal, Scroll, Text, View } from "nsh";
 import { TextView } from "nsh/base";
-import { desktop, size, ui } from "./palette";
+import { button, buttonText, desktop, ui } from "./palette";
 
 const REPLY = `## Moving to offline sync
 
@@ -52,14 +52,10 @@ function App() {
         />
         <View
           onPress={play}
-          activeStyle={{ opacity: 0.75 }}
-          style={
-            desktop
-              ? { ...ui().raised, alignSelf: "flex-start", borderRadius: 8, height: size.control, paddingHorizontal: 12, justifyContent: "center", opacity: streaming() ? 0.5 : 1 }
-              : { ...ui().raised, borderRadius: 12, paddingVertical: 10, alignItems: "center", opacity: streaming() ? 0.5 : 1 }
-          }
+          disabled={streaming()}
+          {...button()}
         >
-          <Text style={{ color: ui().text, fontSize: desktop ? 13 : 15, fontWeight: "600" }}>{streaming() ? "Streaming…" : "Stream it again"}</Text>
+          <Text style={buttonText()}>{streaming() ? "Streaming…" : "Stream it again"}</Text>
         </View>
       </View>
     </Scroll>

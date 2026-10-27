@@ -33,5 +33,9 @@ two-face = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The components' tests run them headless (`tests/base`), without QuickJS.
-nsh-engine.workspace = true
-nsh-testing.workspace = true
+# Path only, unlike the workspace's entries: `cargo publish` drops a
+# dev-dependency without a version, and these two depend on nsh-js, which
+# depends on this crate, so with versions nsh-base could not be packaged
+# before nsh-js is on crates.io.
+nsh-engine = { path = "../nsh-engine", default-features = false }
+nsh-testing = { path = "../nsh-testing", default-features = false }

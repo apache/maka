@@ -32,7 +32,8 @@ pub use mutation::OriginalMutation;
 
 use maka_app_client::{Client, Subscription, SubscriptionEvent};
 use maka_plugin_core::contract::{Contract, Interface};
-use nsh_core::{JsonValue, ui::prelude::*};
+use nsh_core::JsonValue;
+use nsh_core::prelude::*;
 use std::{
     future::Future,
     sync::{Arc, LazyLock, Mutex as StdMutex},

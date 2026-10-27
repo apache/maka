@@ -1,5 +1,5 @@
 //! What a resource is and how its loads go (TS: `resource(source,
-//! fetcher)`, Rust: [`crate::ui::resource`]): a value loaded asynchronously
+//! fetcher)`, Rust: [`crate::element::resource`]): a value loaded asynchronously
 //! from a source, loaded again when the source changes or when asked.
 //!
 //! Both faces keep their value, error and state in signals of their own

@@ -1173,7 +1173,7 @@ pub(crate) struct DrawnText {
     pub(crate) layout: TextLayout,
     /// The render node, built on first draw.
     node: OnceCell<Option<gsk::RenderNode>>,
-    /// Selection geometry reused across redraws, including selection areas.
+    /// Selection geometry reused across redraws, including selectable views.
     selection_rects: RefCell<Vec<Bounds<Points>>>,
     /// The selection of `selectable` text, kept across new content.
     selection: Option<Rc<Selection>>,
@@ -1756,8 +1756,8 @@ fn select(view: &NshView, range: Option<(u32, u32)>) {
 
 /// A press of the primary button (`n`: the click count).
 fn pressed(view: &NshView, n: i32, x: f32, y: f32, modifiers: gtk::gdk::ModifierType) {
-    // In a selection area the area selects (`selection_area.rs`).
-    let Some(s) = view_selection(view).filter(|_| crate::selection_area::area_of(view).is_none())
+    // In a selectable view the area selects (`selectable_view.rs`).
+    let Some(s) = view_selection(view).filter(|_| crate::selectable_view::area_of(view).is_none())
     else {
         return;
     };
@@ -1815,7 +1815,7 @@ fn pressed(view: &NshView, n: i32, x: f32, y: f32, modifiers: gtk::gdk::Modifier
 
 /// The pressed mouse moved by `(dx, dy)` to `(x, y)` (view coordinates).
 fn dragged(view: &NshView, dx: f32, dy: f32, x: f32, y: f32) {
-    let Some(s) = view_selection(view).filter(|_| crate::selection_area::area_of(view).is_none())
+    let Some(s) = view_selection(view).filter(|_| crate::selectable_view::area_of(view).is_none())
     else {
         return;
     };

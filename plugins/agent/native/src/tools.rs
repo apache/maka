@@ -113,8 +113,8 @@ pub(crate) fn catalog(
     let mut planning = Vec::new();
     let questions_contract = maka_interactions_api::questions::contract();
     let web_contract = maka_web_api::contract();
-    let mut web_bindings = Vec::new();
-    let mut computer_bindings = Vec::new();
+    let mut web_bindings = std::collections::BTreeMap::<String, Vec<Service>>::new();
+    let mut computer_bindings = std::collections::BTreeMap::<String, Vec<Service>>::new();
     let mut shell_bindings = Vec::new();
     let mut skill_bindings = Vec::new();
     let skill_contract = maka_skills_api::contract();
@@ -278,13 +278,10 @@ pub(crate) fn catalog(
                 skill_bindings.push((selection.name.clone(), Arc::new(SkillBinding(service.clone()))));
             }
             if selection.result == ToolResult::Computer {
-                computer_bindings.push((
-                    selection.name.clone(),
-                    Arc::new(computer::Binding {
-                        service: service.clone(),
-                        workers: workers.clone(),
-                    }),
-                ));
+                computer_bindings
+                    .entry(selection.import.clone())
+                    .or_default()
+                    .push(service.clone());
             }
             if selection.input == ToolInput::Shell {
                 shell_bindings.push((
@@ -297,13 +294,10 @@ pub(crate) fn catalog(
                 ));
             }
             if selection.input == ToolInput::Web {
-                web_bindings.push((
-                    selection.name.clone(),
-                    Arc::new(web::Binding {
-                        service: service.clone(),
-                        workers: workers.clone(),
-                    }),
-                ));
+                web_bindings
+                    .entry(selection.import.clone())
+                    .or_default()
+                    .push(service.clone());
             }
             let mut description = selection.description.clone();
             if binding.contract() == &file_contract && selection.method == "readText" {
@@ -342,14 +336,34 @@ pub(crate) fn catalog(
             .with_request_binding([name].into(), binding)
             .map_err(|_| "agent_skill_binding_invalid")?;
     }
-    for (name, binding) in web_bindings {
+    for services in web_bindings.into_values() {
+        let names = services
+            .iter()
+            .map(|service| service.selection.name.clone())
+            .collect();
         catalog = catalog
-            .with_request_binding([name].into(), binding)
+            .with_request_binding(
+                names,
+                Arc::new(web::Binding {
+                    services,
+                    workers: workers.clone(),
+                }),
+            )
             .map_err(|_| "agent_web_binding_invalid")?;
     }
-    for (name, binding) in computer_bindings {
+    for services in computer_bindings.into_values() {
+        let names = services
+            .iter()
+            .map(|service| service.selection.name.clone())
+            .collect();
         catalog = catalog
-            .with_request_binding([name].into(), binding)
+            .with_request_binding(
+                names,
+                Arc::new(computer::Binding {
+                    services,
+                    workers: workers.clone(),
+                }),
+            )
             .map_err(|_| "agent_computer_binding_invalid")?;
     }
     for (name, binding) in shell_bindings {

@@ -28,6 +28,8 @@ use std::{
 };
 
 mod authority;
+mod stats;
+pub use stats::{ConnectionResourceStats, SqliteResourceStats};
 pub(crate) mod control;
 pub(crate) mod custody;
 use control::ReadOnlyControl;
@@ -74,9 +76,20 @@ type Job = Box<
         + Send,
 >;
 // Returns whether the connection remains reusable after this accepted job.
-type ReadJob = Box<
+type ExecuteRead = Box<
     dyn for<'c> FnOnce(Result<&'c mut SqliteConnection, StoreError>) -> BoxFuture<'c, bool> + Send,
 >;
+type ObserveRead = Box<
+    dyn for<'c> FnOnce(
+            usize,
+            Result<Option<&'c mut SqliteConnection>, StoreError>,
+        ) -> BoxFuture<'c, bool>
+        + Send,
+>;
+enum ReadJob {
+    Execute(ExecuteRead),
+    Observe(ObserveRead),
+}
 struct ReadEnvelope {
     job: ReadJob,
     custody: Option<Custody>,
@@ -662,11 +675,23 @@ impl OwnedConnection {
             .acquire_owned()
             .await
             .map_err(|_| StoreError::ConnectionClosed)?;
+        self.read_job_with_permit(operation, interruptible, permit)
+            .await
+    }
+
+    async fn read_job_with_permit<T: Send + 'static>(
+        &self,
+        operation: impl for<'c> FnOnce(&'c mut SqliteConnection) -> BoxFuture<'c, Result<T, StoreError>>
+        + Send
+        + 'static,
+        interruptible: bool,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> Result<T, StoreError> {
         let (mut reply, result) = oneshot::channel();
         self.read_jobs
             .send(ReadEnvelope {
                 custody: self.custody.clone(),
-                job: Box::new(move |connection| {
+                job: ReadJob::Execute(Box::new(move |connection| {
                     Box::pin(async move {
                         let _permit = permit;
                         let mut clean = true;
@@ -732,7 +757,7 @@ impl OwnedConnection {
                         let _ = reply.send(result);
                         reusable
                     })
-                }),
+                })),
             })
             .await
             .map_err(|_| StoreError::ConnectionClosed)?;
@@ -818,7 +843,7 @@ async fn reader_worker(
             retained.hold(slot, custody);
         }
         let mut valid = authority.validate();
-        if valid.is_ok() && connection.is_none() {
+        if valid.is_ok() && connection.is_none() && matches!(&job, ReadJob::Execute(_)) {
             match connect_reader(
                 &options.connection,
                 options.prepared.as_ref(),
@@ -837,10 +862,13 @@ async fn reader_worker(
         }
         // Every job checks the current original authority, including after a
         // connection startup await. The immutable connection is never a grant.
-        let ready = valid
-            .and_then(|()| authority.validate())
-            .map(|()| connection.as_mut().expect("validated reader connection"));
-        let reusable = job(ready).await;
+        let ready = valid.and_then(|()| authority.validate());
+        let reusable = match job {
+            ReadJob::Execute(job) => {
+                job(ready.map(|()| connection.as_mut().expect("validated reader connection"))).await
+            }
+            ReadJob::Observe(job) => job(slot, ready.map(|()| connection.as_mut())).await,
+        };
         // Noninterruptible reads must prove cleanup too. A forgotten transaction
         // or a failed startup close retires this physical reader before reuse.
         let clean = match connection.as_mut() {

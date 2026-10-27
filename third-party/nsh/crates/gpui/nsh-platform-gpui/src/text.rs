@@ -2134,8 +2134,8 @@ pub(crate) struct DrawnText {
     pub(crate) content: nsh_core::Bounds<Points>,
     /// The selection of `selectable` text, kept across new content.
     selection: Option<Rc<Selection>>,
-    /// The part of the selection of the selection area around it that is
-    /// this text's ([`crate::selection_area`]).
+    /// The part of the selection of the selectable view around it that is
+    /// this text's ([`crate::selectable_view`]).
     pub(crate) area_range: Option<(u32, u32)>,
 }
 
@@ -2149,7 +2149,7 @@ pub(crate) fn set(
     let old = view.state_mut().text.take();
     let was = old.as_ref().is_some_and(|o| o.text.is_selectable());
     // The area's selection is checked against the new content once the
-    // batch is applied (`selection_area::batch_applied`).
+    // batch is applied (`selectable_view::batch_applied`).
     let area_range = old
         .as_ref()
         .filter(|o| o.text.text == text.text)
@@ -2676,7 +2676,7 @@ fn select(surface: u64, view: &NshView, range: Option<(u32, u32)>) {
     }
     view.changed();
     if range.is_some() {
-        crate::selection_area::clear_all();
+        crate::selectable_view::clear_all();
     }
     let previous = SELECTED.with_borrow_mut(|selected| match range {
         Some(_) => selected.replace((surface, view.clone())),

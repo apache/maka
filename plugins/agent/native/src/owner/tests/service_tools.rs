@@ -178,6 +178,7 @@ pub(super) struct Setup {
     prepare_skills: bool,
     skill_tools: bool,
     preparation: Option<(Arc<dyn Handler>, Arc<dyn NativeOwner>)>,
+    capture: Option<Arc<dyn Handler>>,
     images: Option<images::Source>,
     confirmation: contract::ToolConfirmation,
 }
@@ -215,6 +216,7 @@ impl Setup {
             prepare_skills: false,
             skill_tools: true,
             preparation: None,
+            capture: None,
             images: None,
             confirmation: contract::ToolConfirmation::Preapproved,
             nestable: false,
@@ -245,6 +247,7 @@ impl Setup {
             prepare_skills: false,
             skill_tools: true,
             preparation: None,
+            capture: None,
             images: None,
             confirmation: contract::ToolConfirmation::Preapproved,
             nestable: false,
@@ -281,6 +284,7 @@ impl Setup {
             prepare_skills: false,
             skill_tools: true,
             preparation: None,
+            capture: None,
             images: None,
             confirmation: contract::ToolConfirmation::Preapproved,
             nestable: false,
@@ -373,7 +377,22 @@ impl Setup {
             ..Self::javascript()
         }
     }
+    pub(super) fn captured(mut self, handler: Arc<dyn Handler>) -> Self {
+        self.capture = Some(handler);
+        self
+    }
     pub(super) fn selections(&self) -> Vec<contract::ServiceTool> {
+        let mut selections = self.primary_selections();
+        if self.capture.is_some() {
+            selections.extend(self.primary_selections().into_iter().map(|mut tool| {
+                tool.import = "other_service".into();
+                tool.name.push_str("Other");
+                tool
+            }));
+        }
+        selections
+    }
+    fn primary_selections(&self) -> Vec<contract::ServiceTool> {
         if self.protocol || (self.skills.is_some() && !self.skill_tools) {
             return vec![];
         }
@@ -609,6 +628,14 @@ impl Setup {
                     cardinality: Cardinality::One,
                 },
             );
+        if self.capture.is_some() {
+            let imports = &mut manifest_application
+                .entries
+                .get_mut(&EntryTarget::Host)
+                .unwrap()
+                .imports;
+            imports.insert("other_service".into(), imports["service"].clone());
+        }
         let provider = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
             manifest.application = Some(
                 maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap(),
@@ -629,6 +656,10 @@ impl Setup {
                     export: self.export().into(),
                 }],
             );
+        if self.capture.is_some() {
+            let bindings = &mut input.instances.get_mut("provider").unwrap().bindings;
+            bindings.insert("other_service".into(), bindings["service"].clone());
+        }
         packages[0] = provider;
         let implementation = if self.computer {
             json!({"kind":"native","implementation":maka_workspace_api::computer::IMPLEMENTATION})
@@ -773,13 +804,44 @@ impl Setup {
         }
     }
     pub(super) fn provide(&self, registry: &mut NativeRegistry) {
-        if self.computer {
+        if let Some(handler) = &self.capture {
+            let handler = handler.clone();
+            let contract = self.contract();
+            let export = self.export().to_owned();
+            let implementation = if self.computer {
+                maka_workspace_api::computer::IMPLEMENTATION
+            } else {
+                maka_web_api::IMPLEMENTATION
+            };
+            registry
+                .insert(
+                    implementation.into(),
+                    Arc::new(move |_, _| {
+                        let handler = handler.clone();
+                        let contract = contract.clone();
+                        let export = export.clone();
+                        Box::pin(async move {
+                            NativeActivation {
+                                exports: Ok(BTreeMap::from([(
+                                    export,
+                                    Published {
+                                        contract,
+                                        value: handler,
+                                    },
+                                )])),
+                                owner: Arc::new(()),
+                            }
+                        })
+                    }),
+                )
+                .unwrap();
+        } else if self.computer {
             maka_computer_native::provide(registry).unwrap();
         }
         if self.jev {
             maka_jev_native::provide(registry).unwrap();
         }
-        if self.web || self.health {
+        if (self.web && self.capture.is_none()) || self.health {
             maka_web::provide(registry).unwrap();
         }
         if let Some((handler, owner)) = &self.preparation {

@@ -1,4 +1,4 @@
-use nsh_core::ui::description::SetDescription;
+use nsh_core::element::description::SetDescription;
 use rquickjs::{
     CatchResultExt, Context, Module, Runtime,
     module::{WriteOptions, WriteOptionsEndianness},
@@ -201,6 +201,32 @@ mod tests {
         assert!(host.eval_source("import 'events';").is_err());
         assert!(host.eval_source("import 'node:vm';").is_err());
         assert!(host.eval_source("import 'node:node:buffer';").is_err());
+    }
+
+    #[test]
+    fn entry_bytecode_resolves_static_shared_chunks_and_back_imports() {
+        let entry = "import { read } from './shared.js'; export const base = 7; globalThis.result = read();";
+        let shared =
+            "import { base } from './bundle.js'; export function read() { return base + 1; }";
+        for strip in [Strip::Nothing, Strip::Source, Strip::All] {
+            let compiled = compile_chunk_bytecode(
+                entry,
+                &[(crate::BUNDLE_NAME, entry), ("shared.js", shared)],
+                strip,
+                &[],
+            )
+            .unwrap();
+            let host = crate::Host::new().unwrap();
+            // SAFETY: compiled by the linked engine immediately above.
+            unsafe {
+                host.add_chunk_bytecode("shared.js", compiled[1].clone());
+            }
+            host.eval_bytecode(&compiled[0]).unwrap();
+            assert!(
+                host.eval_script("check", "globalThis.result === 8")
+                    .unwrap()
+            );
+        }
     }
 
     #[test]

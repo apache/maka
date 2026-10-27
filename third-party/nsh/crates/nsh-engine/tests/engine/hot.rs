@@ -249,7 +249,9 @@ fn edits_replace_modules_and_keep_unrelated_state() {
     // A native module the running bundle does not import: a reload.
     std::fs::write(
         dir.join("Counter.tsx"),
-        format!("import {{ windowSize }} from \"nsh/device\";\nwindowSize();\n{counter}"),
+        format!(
+            "import {{ isAvailable }} from \"nsh/desktop\";\nconsole.log(isAvailable);\n{counter}"
+        ),
     )
     .unwrap();
     let next =

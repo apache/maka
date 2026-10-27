@@ -3,7 +3,7 @@
 // sticky`'s `top`) rather than at it, a number or an animated value. Its
 // script checks the travel the platform gets.
 import { List, Text, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 

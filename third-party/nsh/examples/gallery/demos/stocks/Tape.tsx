@@ -1,5 +1,5 @@
 import { Canvas, computed, effect, signal, Text, untracked, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
 import { colors, Legend, tints } from "../../ui";
 import { BLOCK, buckets, compact, type Market, price, type Stock, type Trade, time } from "./market";
 import { Block, grid, Head, SpringBar } from "./parts";

@@ -79,7 +79,7 @@ pub(crate) const LOOKAHEAD: usize = 1000;
 pub(crate) async fn off_thread<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        match nsh_core::ui::prelude::blocking(f).await {
+        match nsh_core::prelude::blocking(f).await {
             Ok(r) => r,
             Err(error) => std::panic::resume_unwind(error.into_panic()),
         }

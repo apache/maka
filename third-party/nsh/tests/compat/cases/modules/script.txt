@@ -28,21 +28,19 @@ expect Reduce motion: false
 expect Calls: not called
 tap id:call
 expect Calls: done
-covers [nsh/accessibility] announce
-covers [nsh/accessibility] setAccessibilityFocus
-covers [nsh/accessibility] reduceMotion
-covers [nsh/accessibility] screenReaderEnabled
+covers [nsh] announce
+covers [nsh] setAccessibilityFocus
+covers [nsh] reduceMotion
+covers [nsh] screenReaderEnabled
 # mod-android
 tap id:case-mod-android
-# nsh/android's functions do nothing there and the app runs on.
+# nsh/mobile's BackHandler does nothing there and the app runs on.
 expect Android: false
 expect Exit: function
 expect Calls: not called
 tap id:call
 expect Calls: done, remove function
-covers [nsh/android] isAvailable
-covers [nsh/android] BackHandler
-covers [nsh/android] Toast
+covers [nsh/mobile] BackHandler
 # mod-clipboard
 tap id:case-mod-clipboard
 # the headless runtime: writes and reads return promises; reads stay
@@ -55,7 +53,7 @@ expect Writes: 2 promises
 expect Calls: 5 promises
 wait 300
 expect Failed: none
-covers [nsh/clipboard] Clipboard
+covers [nsh] Clipboard
 # mod-picker
 tap id:case-mod-picker
 # options out of range throw a RangeError in the call; a pick is a promise,
@@ -66,7 +64,7 @@ expect Thrown: RangeError
 expect Picked: pending
 wait 300
 expect Picked: pending
-covers [nsh/picker] Picker
+covers [nsh] Picker
 # mod-desktop
 tap id:case-mod-desktop
 # no title bar area, the window and menu functions do nothing, and a popup
@@ -108,13 +106,13 @@ expect Scheme: light
 expect Open: not opened
 tap id:open
 expect Open: function, refused TypeError
-covers [nsh/device] openUrl
-covers [nsh/device] platform
-covers [nsh/device] pixelRatio
-covers [nsh/device] colorScheme
-covers [nsh/device] setColorScheme
-covers [nsh/device] fontScale
-covers [nsh/device] windowSize
+covers [nsh] openUrl
+covers [nsh] platform
+covers [nsh] pixelRatio
+covers [nsh] colorScheme
+covers [nsh] setColorScheme
+covers [nsh] fontScale
+covers [nsh] windowSize
 # mod-host-channel
 tap id:case-mod-host-channel
 # no embedding app: no parameters, posts go nowhere and calls fail at once.
@@ -123,8 +121,8 @@ expect Calls: not called
 expect Call failed: none
 tap id:call
 expect Calls: function, post done
-expect Call failed: nsh/host: this platform has no host
-covers [nsh/host] host
+expect Call failed: nsh: this platform has no host
+covers [nsh] host
 # mod-ios
 tap id:case-mod-ios
 # the accessory view's content exists, and takes no room in its parent.
@@ -134,8 +132,7 @@ expect Rendered
 frame id:above 0 0 390 30
 frame id:below 0 30 390 30
 frame id:column 0 81 390 60
-covers [nsh/ios] isAvailable
-covers [nsh/ios] InputAccessoryView
+covers [nsh/mobile] InputAccessoryView
 # mod-keymap
 tap id:case-mod-keymap
 # an Apple platform: Apple's symbols, and Command+Q kept by the platform.
@@ -147,7 +144,7 @@ expect Kept: refused
 expect Bound: not bound
 tap id:bind
 expect Bound: function function
-covers [nsh/keymap] keymap
+covers [nsh] keymap
 # mod-mobile
 tap id:case-mod-mobile
 expect Mobile: true
@@ -171,7 +168,7 @@ tap id:remove
 expect Storage removed: a=1 missing=null
 tap id:clear
 expect Storage cleared: none missing=null
-covers [nsh/storage] Storage
+covers [nsh] Storage
 # mod-host
 tap id:case-mod-host
 # no host on this platform: the call rejects at once; the root's events
@@ -179,7 +176,7 @@ tap id:case-mod-host
 expect Host available: false
 expect Host call: not called
 tap id:call
-expect Host call: rejected nsh/host: this platform has no host
+expect Host call: rejected nsh: this platform has no host
 event id:heard onHost type=event event=tick payload=1
 expect Host heard: [1]
-covers [nsh/host] host
+covers [nsh] host

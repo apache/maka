@@ -1,5 +1,5 @@
 import { Text, View, type JSX } from "nsh";
-import { Canvas } from "nsh/canvas";
+import { Canvas } from "nsh";
 
 export const palette = {
   page: "#0c131d", sidebar: "#101c28", panel: "#14212f", raised: "#1b2d3d", line: "#293e50",

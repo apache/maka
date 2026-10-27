@@ -20,7 +20,11 @@
 //! Complete metadata on the canonical writer; bodies are optional read caches.
 use super::{emit, evidence, read};
 use crate::StoreError;
-use maka_presentation::ProjectionError;
+use maka_agent_facts::{
+    event::{Fact, RuntimeEvent},
+    model::ModelEvent,
+};
+use maka_presentation::{ProjectionError, Row};
 use rusqlite::{Connection as RawConnection, OptionalExtension, params};
 use sqlx::SqliteConnection;
 use std::collections::HashMap;
@@ -99,14 +103,66 @@ pub(crate) async fn record_source(
 ) -> Result<(), StoreError> {
     let sequence = read::sql_number(source)?;
     let session = session.to_owned();
-    connection
-        .run_on_worker(move |handle| {
-            // SAFETY: exclusive callback-local borrow, no SQLite-backed result escapes.
-            let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-            db.set_prepared_statement_cache_capacity(100);
-            record_on_handle(&db, &session, sequence)
-        })
-        .await?
+    crate::connection::worker_query(connection, move |worker| Box::pin(async move {
+        let done: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 UNION ALL SELECT 1 FROM transcript_failures WHERE session_id=?1 AND source_sequence=?2)")
+            .bind(&session).bind(sequence).fetch_one(&mut *worker).await?;
+        if done {
+            return Ok(());
+        }
+        let rows = emit::source_on_worker(worker, &session, source).await;
+        // SAFETY: exclusive worker-local borrow; the wrapper and statements end here.
+        let db = unsafe { RawConnection::from_handle(worker.as_raw_handle().as_ptr()) }?;
+        record_rows(&db, &session, sequence, rows)
+    })).await
+}
+
+pub(crate) async fn record_event(
+    connection: &mut SqliteConnection,
+    event: &RuntimeEvent,
+    source: u64,
+) -> Result<(), StoreError> {
+    let eligible = match &event.fact {
+        Fact::MessageImported { .. }
+        | Fact::InvocationOpened { .. }
+        | Fact::MessageSteered { .. }
+        | Fact::ModelCompleted { .. }
+        | Fact::ModelInterrupted { .. }
+        | Fact::InvocationEnded { .. }
+        | Fact::ContextCheckpointRecorded { .. }
+        | Fact::ToolDispatched { .. }
+        | Fact::ToolRejected { .. }
+        | Fact::ToolSettled { .. }
+        | Fact::ExecutorCompleted { .. } => true,
+        Fact::ModelObserved { event, .. } => match event {
+            ModelEvent::PartFinished { .. }
+            | ModelEvent::Source(_)
+            | ModelEvent::ToolCall(_)
+            | ModelEvent::ProviderToolResult { .. } => true,
+            ModelEvent::PartStarted { .. }
+            | ModelEvent::PartDelta { .. }
+            | ModelEvent::ToolInputStarted { .. }
+            | ModelEvent::ToolInputDelta { .. }
+            | ModelEvent::ToolInputFinished { .. }
+            | ModelEvent::ResponseMetadata { .. }
+            | ModelEvent::Finished { .. } => false,
+        },
+        Fact::ExecutorObserved { output } => match output {
+            maka_agent_facts::executor::Output::ToolStart { .. }
+            | maka_agent_facts::executor::Output::ToolResult { .. } => true,
+            maka_agent_facts::executor::Output::OutputDelta { .. }
+            | maka_agent_facts::executor::Output::ThinkingDelta { .. }
+            | maka_agent_facts::executor::Output::ToolProgress { .. } => false,
+        },
+        Fact::ExecutorStarted { .. }
+        | Fact::ModelRequested { .. }
+        | Fact::ToolResultArchived { .. }
+        | Fact::ToolOperationObserved { .. }
+        | Fact::ToolNotified { .. } => false,
+    };
+    if eligible {
+        record_source(connection, &event.invocation.session_id, source).await?;
+    }
+    Ok(())
 }
 
 fn record_on_handle(db: &RawConnection, session: &str, source: i64) -> Result<(), StoreError> {
@@ -115,7 +171,21 @@ fn record_on_handle(db: &RawConnection, session: &str, source: i64) -> Result<()
     if done {
         return Ok(());
     }
-    let rows = match emit::source_on_handle(db, session, source) {
+    record_rows(
+        db,
+        session,
+        source,
+        emit::source_on_handle(db, session, source),
+    )
+}
+
+fn record_rows(
+    db: &RawConnection,
+    session: &str,
+    source: i64,
+    rows: Result<Vec<Row>, StoreError>,
+) -> Result<(), StoreError> {
+    let rows = match rows {
         Ok(rows) => rows,
         Err(error) => {
             let Some((category, reason)) = optional_failure(&error) else {
@@ -634,7 +704,10 @@ mod tests {
             let request = maka_agent_facts::session::CopyRequest {source_session_id:"source".into(),target_session_id:"target".into(),expected_source_revision:1,purpose:maka_agent_facts::session::CopyPurpose::Branch {turn_id:None,side_conversation:false}};
             let lineage = maka_agent_facts::session::Lineage::Branch {origin:maka_agent_facts::session::BranchOrigin {parent_session_id:"source".into(),turn_id:None}};
             sqlx::query("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES('target','source',1,1,2,?,?,'committed')").bind(serde_json::to_string(&request)?).bind(serde_json::to_string(&lineage)?).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO session_history_members SELECT 'target',sequence,NULL FROM runtime_events WHERE event_session='source'").execute(&mut *tx).await?;
+            crate::connection::worker_query(&mut tx, |worker| Box::pin(async move {
+                let sequence: i64 = sqlx::query_scalar("INSERT INTO session_history_members SELECT 'target',sequence,NULL FROM runtime_events WHERE event_session='source' RETURNING sequence").fetch_one(&mut *worker).await?;
+                crate::context::semantic::copy_member(worker, "target", sequence, None).await
+            })).await?;
             sqlx::query("CREATE TEMP TRIGGER fail_copy BEFORE INSERT ON main.transcript_directory WHEN NEW.session_id='target' BEGIN SELECT RAISE(ABORT,'copy write failed'); END").execute(&mut *tx).await?;
             assert!(matches!(copy(&mut tx,"source","target",2).await,Err(StoreError::Sqlite(_))));
             // Inspect the actual original writer, before outer rollback or a next job.

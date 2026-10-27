@@ -8,6 +8,7 @@ mod editor_completion;
 mod editor_definition;
 mod editor_diagnostics;
 mod editor_languages;
+mod plot;
 mod resizable;
 mod sheet;
 mod text_view;

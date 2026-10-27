@@ -92,12 +92,14 @@ impl PreparedOnboarding {
                                 enabled.push(id.clone());
                             }
                         }
+                        row.enabled = previous.enabled;
                         row.revision = catalog::next_revision(previous.revision)?;
                         if row.configuration != previous.configuration {
                             row.model_overrides = None;
                         }
+                    } else {
+                        row.enabled = true;
                     }
-                    row.enabled = true;
                     row.enabled_model_ids = enabled;
                     row.models = models;
                     row.model_source = Some(ModelDiscoverySource::Fetched);
@@ -107,12 +109,12 @@ impl PreparedOnboarding {
                     }
                     catalog::write_entry(tx, &row).await?;
                     let target = catalog.default_target.or_else(|| {
-                        (row.provider.scope == maka_plugin_core::scope::Scope::Profile).then(|| {
-                            ConnectionTarget {
+                        (row.enabled
+                            && row.provider.scope == maka_plugin_core::scope::Scope::Profile)
+                            .then(|| ConnectionTarget {
                                 connection_id: row.connection_id.clone(),
                                 model_id: row.enabled_model_ids[0].clone(),
-                            }
-                        })
+                            })
                     });
                     catalog::advance(tx, catalog.revision, target.as_ref()).await?;
                     Ok(OnboardingSaveResult::Saved {

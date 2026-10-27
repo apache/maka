@@ -33,6 +33,7 @@ pub(super) async fn run(
     continuation_base: Option<u64>,
     handoff: &crate::HandoffGate,
     prior_unknown: bool,
+    mut inspected_through: u64,
 ) -> Result<maka_agent_facts::event::InvocationOutcome, RunError> {
     let crate::runner::ModelWork {
         tools: catalog,
@@ -318,7 +319,7 @@ pub(super) async fn run(
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
             if tools.code_idle() && pending.is_none() && !prior_unknown {
-                prune::run(inner, input, cancellation).await?;
+                prune::run(inner, input, cancellation, &mut inspected_through).await?;
             }
             if request_tools.finished() {
                 return Ok(maka_agent_facts::event::InvocationOutcome::Completed);

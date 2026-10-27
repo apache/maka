@@ -1,9 +1,9 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/host`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
 // on a platform without a host (the headless runtime's): `available()` is
 // false, a call rejects at once, and the root's host events reach
 // `host.on`'s listeners until they are removed. Its script checks each.
 import { Text, View, signal } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 function App() {
   const called = signal("not called");

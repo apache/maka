@@ -27,7 +27,7 @@ pub use self::{
         PlaybackDirection, PresetDef, StaggerFrom, keyframe_ends, keyframes, stagger_delay,
     },
     ops::{
-        AnimationId, AnimationOp, AnimationProp, Composite, Curve, Driver, EaseMode, Easing,
-        Extrapolate, MathOp, NodeId, Operand, Output, StepPosition,
+        AnimatedPropValue, AnimationId, AnimationOp, AnimationProp, Composite, Curve, Driver,
+        EaseMode, Easing, Extrapolate, MathOp, NodeId, Operand, Output, StepPosition,
     },
 };

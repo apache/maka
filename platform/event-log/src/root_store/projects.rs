@@ -80,6 +80,17 @@ impl RootStore {
             .await
     }
 
+    pub async fn register_available_project(
+        &self,
+        registration: ProjectRegistration,
+        now: u64,
+    ) -> Result<ProjectRecord, StoreError> {
+        self.project_writer()
+            .await?
+            .register_available_project(registration, now)
+            .await
+    }
+
     pub async fn mutate_project(
         &self,
         id: &str,

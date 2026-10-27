@@ -14,7 +14,7 @@ computed natively, so scrolling a list of thousands of items costs as much as a 
 `virtual_list(count, |at| row)`, TSX with `<List>` from `nsh`.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[derive(Clone, PartialEq)]
 struct Contact {

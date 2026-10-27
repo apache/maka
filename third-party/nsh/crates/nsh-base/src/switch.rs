@@ -1,9 +1,6 @@
 //! `Switch`: an on / off control with no look of its own.
 
-use nsh_core::{
-    AccessibilityState, Checked,
-    ui::{Style, prelude::*},
-};
+use nsh_core::{AccessibilityState, Checked, element::Style, prelude::*};
 
 /// The props of [`Switch`].
 #[derive(Debug, Clone, PartialEq, Props)]

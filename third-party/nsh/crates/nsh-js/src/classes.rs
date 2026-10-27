@@ -1,4 +1,4 @@
-//! The JS face of Rust's classes (`#[class]`, `nsh_core::ui::ClassDef`):
+//! The JS face of Rust's classes (`#[class]`, `nsh_core::element::ClassDef`):
 //! one constructor and prototype per class and context, made from its
 //! definition when a bundle imports its set (or a member first returns
 //! one of its values).
@@ -21,7 +21,7 @@
 //! A JS function Rust takes is a [`JsCallback`]: a key into the context's
 //! table of functions ([`Functions`], freed with the context), called on
 //! the spot inside a synchronous call, or queued in the engine's post
-//! queue ([`nsh_core::ui::Posts`]) and run by [`run_posted`] in its next
+//! queue ([`nsh_core::element::Posts`]) and run by [`run_posted`] in its next
 //! turn. An instance whose only handle is its object reports the
 //! callbacks it keeps from the object's mark hook, so the collector sees
 //! through them. While a finalizer drops Rust values (QuickJS is
@@ -37,7 +37,7 @@ use std::{
 
 use nsh_core::{
     JsonValue,
-    ui::{
+    element::{
         CallbackHandle, ClassDef, ClassInstance, Exception, JsCall, JsHost, JsIn, JsKind, JsRaw,
         Member, MemberCall, MemberKind, Posts, PropError, RustCall, RustOp, SyncCall, Thrown,
         Tracer,
@@ -500,7 +500,7 @@ unsafe extern "C" fn dispose(
 /// The JS error `thrown` is: its class, its message and its properties
 /// (Node's `code`, `syscall`, `path`, ...), as an own enumerable field each.
 pub(crate) fn error_value(cx: Ctx, thrown: &Thrown) -> V {
-    use nsh_core::ui::ErrorClass;
+    use nsh_core::element::ErrorClass;
     let (class, message, fields) = match thrown {
         Thrown::Type(m) => (ErrorClass::Type, m, &[][..]),
         Thrown::Range(m) => (ErrorClass::Range, m, &[][..]),
@@ -995,6 +995,18 @@ impl JsHost for CallHost<'_> {
         js::is_function(self.cx, v).then(|| new_callback(self.cx, v))
     }
 
+    fn retain(&self, v: JsRaw) -> Option<Rc<dyn CallbackHandle>> {
+        // The functions' table keeps any value; one that is no function is
+        // only ever handed back (`value`), never called.
+        Some(new_callback(self.cx, from_raw(v)))
+    }
+
+    fn owns_retained(&self, handle: &dyn CallbackHandle) -> bool {
+        (handle as &dyn Any)
+            .downcast_ref::<JsCallback>()
+            .is_some_and(|callback| Rc::ptr_eq(&callback.functions, &classes(self.cx).functions))
+    }
+
     fn free(&self, v: JsRaw) {
         // SAFETY: an owned value.
         unsafe { qjs::JS_FreeValue(self.cx, from_raw(v)) };
@@ -1094,9 +1106,9 @@ impl JsHost for CallHost<'_> {
         to_raw(self.this)
     }
 
-    fn system(&self) -> nsh_core::ui::System {
+    fn system(&self) -> nsh_core::element::System {
         let shared = crate::dom::shared(self.cx);
-        nsh_core::ui::System::new(
+        nsh_core::element::System::new(
             std::sync::Arc::new(shared.system_access.borrow().clone()),
             shared.system_data_dir.borrow().clone(),
             shared.system_paths.borrow().clone(),
@@ -1110,7 +1122,7 @@ impl JsHost for CallHost<'_> {
         .with_os(unsafe { (*crate::state::state(self.cx)).dom.os() })
     }
 
-    fn start_task(&self, task: nsh_core::ui::TaskStart) {
+    fn start_task(&self, task: nsh_core::element::TaskStart) {
         // Past the op limit the app is stopped: the task goes with it.
         let op = nsh_core::Op::Rust(RustOp {
             call: 0,
@@ -1283,6 +1295,15 @@ impl JsCallback {
 }
 
 impl CallbackHandle for JsCallback {
+    fn value(&self, host: &dyn nsh_core::element::JsHost) -> Option<JsRaw> {
+        if !host.owns_retained(self) {
+            return None;
+        }
+        let (cx, v) = JsCallback::value(self)?;
+        // SAFETY: a new reference for the caller, of a value the table owns.
+        Some(to_raw(unsafe { qjs::JS_DupValue(cx, v) }))
+    }
+
     fn call_now(&self, call: JsCall) {
         let Some((cx, _)) = self.value() else {
             // The function or the VM is gone: the call is dropped (its
@@ -1477,7 +1498,7 @@ pub(crate) fn run_call(cx: Ctx, mut call: JsCall) {
     }
 }
 
-/// Runs the JS calls Rust queued ([`nsh_core::ui::Callback::post`],
+/// Runs the JS calls Rust queued ([`nsh_core::element::Callback::post`],
 /// `call_async`), in order. Those queued meanwhile wait for the next turn.
 /// An uncatchable exception (an interrupt) stops them: it is pending when
 /// this fails, and the calls left are dropped.
@@ -1516,7 +1537,10 @@ pub(crate) fn close(cx: Ctx) {
 pub(crate) mod tests {
     use std::{cell::Cell, rc::Rc};
 
-    use nsh_core::ui::{Answer, PropError, Registry, prelude::*};
+    use nsh_core::{
+        element::{Answer, PropError, Registry},
+        prelude::*,
+    };
 
     use crate::{Host, HostOptions};
 
@@ -1719,22 +1743,22 @@ pub(crate) mod tests {
     pub(crate) struct Flaky(bool);
 
     impl JsValue for Flaky {
-        fn ts_type(_types: &mut nsh_core::ui::TsTypes) -> String {
+        fn ts_type(_types: &mut nsh_core::element::TsTypes) -> String {
             "object".into()
         }
 
-        fn from_js(_value: nsh_core::ui::JsIn<'_>) -> Result<Self, PropError> {
+        fn from_js(_value: nsh_core::element::JsIn<'_>) -> Result<Self, PropError> {
             Ok(Flaky(true))
         }
 
         fn to_js<'a>(
             &self,
-            host: &'a dyn nsh_core::ui::JsHost,
-        ) -> Result<nsh_core::ui::JsOwned<'a>, PropError> {
+            host: &'a dyn nsh_core::element::JsHost,
+        ) -> Result<nsh_core::element::JsOwned<'a>, PropError> {
             if !self.0 {
                 return Err(PropError("flaky".to_owned()));
             }
-            Ok(nsh_core::ui::JsOwned::new(host, host.new_object()?))
+            Ok(nsh_core::element::JsOwned::new(host, host.new_object()?))
         }
     }
 
@@ -1840,18 +1864,18 @@ pub(crate) mod tests {
     pub(crate) struct Brittle;
 
     impl JsValue for Brittle {
-        fn ts_type(_types: &mut nsh_core::ui::TsTypes) -> String {
+        fn ts_type(_types: &mut nsh_core::element::TsTypes) -> String {
             "object".into()
         }
 
-        fn from_js(_value: nsh_core::ui::JsIn<'_>) -> Result<Self, PropError> {
+        fn from_js(_value: nsh_core::element::JsIn<'_>) -> Result<Self, PropError> {
             Ok(Brittle)
         }
 
         fn to_js<'a>(
             &self,
-            _host: &'a dyn nsh_core::ui::JsHost,
-        ) -> Result<nsh_core::ui::JsOwned<'a>, PropError> {
+            _host: &'a dyn nsh_core::element::JsHost,
+        ) -> Result<nsh_core::element::JsOwned<'a>, PropError> {
             panic!("brittle");
         }
     }
@@ -1866,34 +1890,34 @@ pub(crate) mod tests {
     }
 
     impl JsValue for Grenade {
-        fn ts_type(_types: &mut nsh_core::ui::TsTypes) -> String {
+        fn ts_type(_types: &mut nsh_core::element::TsTypes) -> String {
             "object".into()
         }
 
-        fn from_js(_value: nsh_core::ui::JsIn<'_>) -> Result<Self, PropError> {
+        fn from_js(_value: nsh_core::element::JsIn<'_>) -> Result<Self, PropError> {
             Ok(Grenade)
         }
 
         fn to_js<'a>(
             &self,
-            host: &'a dyn nsh_core::ui::JsHost,
-        ) -> Result<nsh_core::ui::JsOwned<'a>, PropError> {
-            Ok(nsh_core::ui::JsOwned::new(host, host.null()))
+            host: &'a dyn nsh_core::element::JsHost,
+        ) -> Result<nsh_core::element::JsOwned<'a>, PropError> {
+            Ok(nsh_core::element::JsOwned::new(host, host.null()))
         }
     }
 
     /// An event whose data panics as it converts.
     struct BrittleEvent;
 
-    impl nsh_core::ui::EventToJs for BrittleEvent {
+    impl nsh_core::element::EventToJs for BrittleEvent {
         fn name(&self) -> &'static str {
             "brittle"
         }
 
         fn data_js<'a>(
             &self,
-            _host: &'a dyn nsh_core::ui::JsHost,
-        ) -> Result<nsh_core::ui::JsOwned<'a>, PropError> {
+            _host: &'a dyn nsh_core::element::JsHost,
+        ) -> Result<nsh_core::element::JsOwned<'a>, PropError> {
             panic!("brittle event");
         }
     }
@@ -1910,19 +1934,19 @@ pub(crate) mod tests {
     pub(crate) struct Panicky;
 
     impl JsValue for Panicky {
-        fn ts_type(_types: &mut nsh_core::ui::TsTypes) -> String {
+        fn ts_type(_types: &mut nsh_core::element::TsTypes) -> String {
             "unknown".into()
         }
 
-        fn from_js(_value: nsh_core::ui::JsIn<'_>) -> Result<Self, PropError> {
+        fn from_js(_value: nsh_core::element::JsIn<'_>) -> Result<Self, PropError> {
             panic!("panicky");
         }
 
         fn to_js<'a>(
             &self,
-            host: &'a dyn nsh_core::ui::JsHost,
-        ) -> Result<nsh_core::ui::JsOwned<'a>, PropError> {
-            Ok(nsh_core::ui::JsOwned::new(host, host.undefined()))
+            host: &'a dyn nsh_core::element::JsHost,
+        ) -> Result<nsh_core::element::JsOwned<'a>, PropError> {
+            Ok(nsh_core::element::JsOwned::new(host, host.undefined()))
         }
     }
 
@@ -2018,7 +2042,7 @@ pub(crate) mod tests {
     #[derive(Clone, PartialEq, Props)]
     pub(crate) struct MeterProps {
         #[prop(default)]
-        level: nsh_core::ui::Prop<u32>,
+        level: nsh_core::element::Prop<u32>,
     }
 
     impl Component for Meter {
@@ -2115,6 +2139,97 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect())
+    }
+
+    fn retained_test_rows(host: &Host) -> nsh_core::element::Rows {
+        use nsh_core::element::{JsOwned, JsValue};
+
+        host.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            // SAFETY: this closure owns access to the host's live context;
+            // JsOwned releases the global's reference through that same host.
+            let global = JsOwned::new(
+                &call,
+                super::to_raw(unsafe { rquickjs::qjs::JS_GetGlobalObject(cx) }),
+            );
+            let value = global.get().field("retainedRows").unwrap();
+            nsh_core::element::Rows::from_js(value.get()).unwrap()
+        })
+    }
+
+    fn retained_row_label(host: &Host, row: nsh_core::element::RowRef) -> Option<String> {
+        use nsh_core::element::Ret;
+
+        host.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            row.into_js(&call)
+                .unwrap()
+                .get()
+                .field("label")
+                .unwrap()
+                .get()
+                .as_string()
+        })
+    }
+
+    #[test]
+    fn retained_row_fields_replace_a_held_prop_with_equal_numeric_columns() {
+        use nsh_core::element::{Prop, Reactive, Runtime, create_root};
+
+        let host = host();
+        host.eval_source("globalThis.retainedRows = [{n: 1, label: 'before'}];")
+            .unwrap();
+        let before = retained_test_rows(&host);
+        assert_eq!(before, before.clone());
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let (owner, mut prop) = create_root(|| Prop::new(before).__hold());
+        host.eval_source("globalThis.retainedRows = [{n: 1, label: 'after'}];")
+            .unwrap();
+        let after = retained_test_rows(&host);
+        assert_eq!(prop.get().column("n"), after.column("n"));
+        assert!(prop.__set(Reactive::Static(after)));
+        assert!(!prop.__set(Reactive::Static(prop.get())));
+        host.eval_source("globalThis.retainedRows = undefined;")
+            .unwrap();
+        host.collect_garbage();
+        assert_eq!(
+            retained_row_label(&host, prop.get().row(0).unwrap()).as_deref(),
+            Some("after")
+        );
+        owner.dispose();
+    }
+
+    #[test]
+    fn retained_rows_reject_other_hosts_and_outlive_their_vm_harmlessly() {
+        use nsh_core::element::{JsKind, Ret};
+
+        let source = host();
+        let destination = host();
+        source
+            .eval_source("globalThis.retainedRows = [{label: 'source'}];")
+            .unwrap();
+        let row = retained_test_rows(&source).row(0).unwrap();
+        assert_eq!(
+            retained_row_label(&source, row.clone()).as_deref(),
+            Some("source")
+        );
+        destination.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            let rejected = row.clone().into_js(&call).unwrap();
+            assert_eq!(rejected.get().kind(), JsKind::Undefined);
+        });
+        // Rejection neither consumes nor frees the source's retained value.
+        assert_eq!(
+            retained_row_label(&source, row.clone()).as_deref(),
+            Some("source")
+        );
+        drop(source);
+        destination.with_raw(|cx| {
+            let call = super::host_outside_calls(cx);
+            assert_eq!(row.into_js(&call).unwrap().get().kind(), JsKind::Undefined);
+        });
+        destination.collect_garbage();
     }
 
     #[test]
@@ -2515,7 +2630,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_context_makes_as_many_classes_as_constructors_can_name() {
-        use nsh_core::ui::Class as _;
+        use nsh_core::element::Class as _;
         let host = host();
         // As if 32768 classes were made: the next one's index does not fit
         // its constructor's magic.
@@ -2613,7 +2728,7 @@ pub(crate) mod tests {
 
     #[test]
     fn panics_in_what_the_core_hands_back_stay_in_rust() {
-        use nsh_core::ui::{JsEvent, RustOp};
+        use nsh_core::element::{JsEvent, RustOp};
         let host = host();
         host.eval_source(
             "import { Tools } from \"test/classes\";\n\
@@ -2671,8 +2786,8 @@ pub(crate) mod tests {
         host.take_ops(&mut ops);
         assert!(ops.iter().any(|op| matches!(
             op,
-            nsh_core::Op::Rust(nsh_core::ui::RustOp {
-                run: nsh_core::ui::RustCall::Post(_),
+            nsh_core::Op::Rust(nsh_core::element::RustOp {
+                run: nsh_core::element::RustCall::Post(_),
                 ..
             })
         )));
@@ -2770,7 +2885,7 @@ pub(crate) mod tests {
     /// returning a value is a promise, which a wrong argument rejects.
     #[test]
     fn ops_returning_nothing_are_plain_calls() {
-        use nsh_core::ui::RustOp;
+        use nsh_core::element::RustOp;
         let host = host();
         host.eval_source(
             "import { text as show } from \"nsh:rt\";\n\

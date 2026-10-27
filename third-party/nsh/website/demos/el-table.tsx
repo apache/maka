@@ -1,6 +1,6 @@
 import { mount, Text, View } from "nsh";
 import { Table, TableBody, TableCaption, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "nsh/base";
-import { Stage, size, ui } from "./palette";
+import { size, Stage, ui } from "./palette";
 
 // A few rows the app writes out: the parts give screen readers a table, the
 // classes and the palette give it its look.

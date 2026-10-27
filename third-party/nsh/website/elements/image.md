@@ -13,7 +13,7 @@ downsampled to the size the view shows them at, and cached in memory. Animated G
 makes one with `image(src)`, TSX with `<Image>` from `nsh`.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 // assets/logo.png in the app's crate.
 const LOGO: ImageAsset = asset!("logo.png");

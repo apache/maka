@@ -1,5 +1,5 @@
 //! Desktop local-file destinations; drag files from the system file manager.
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::ui::colors;
 

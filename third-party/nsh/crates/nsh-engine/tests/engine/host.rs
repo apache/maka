@@ -25,7 +25,7 @@ fn calls(names: &[&str]) -> String {
     let names = serde_json::to_string(names).unwrap();
     format!(
         r#"import {{ mount, signal, Text }} from "nsh";
-import {{ host }} from "nsh/host";
+import {{ host }} from "nsh";
 
 const shown = signal("waiting");
 const settled = async (p) => {{
@@ -181,7 +181,7 @@ fn host_allowlist_matches_prefixes() {
 }
 
 const EVENTS: &str = r#"import { mount, signal, Text } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 const shown = signal("waiting");
 let once = 0;
@@ -224,7 +224,7 @@ fn host_events_reach_listeners_until_removed() {
 fn timed(options: &str) -> String {
     format!(
         r#"import {{ mount, signal, Text }} from "nsh";
-import {{ host }} from "nsh/host";
+import {{ host }} from "nsh";
 
 const shown = signal("waiting");
 setTimeout(() => {{
@@ -443,7 +443,7 @@ fn a_reply_whose_id_is_not_a_whole_number_answers_no_call() {
 }
 
 const THROWING_LISTENER: &str = r#"import { mount, signal, Text } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 const shown = signal("waiting");
 host.on("tick", () => {

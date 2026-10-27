@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use nsh_core::{
     ApproxTextEngine, Core, Size,
-    ui::{JsEvent, Posts, Registry, prelude::*},
+    element::{JsEvent, Posts, Registry},
+    prelude::*,
 };
 use nsh_js::Host;
 

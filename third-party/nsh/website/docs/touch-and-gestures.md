@@ -17,7 +17,7 @@ Pick the highest level that does the job: the higher the level, the less work cr
 Every element accepts the press handlers; there is no separate "touchable" component. Put `.on_press` / `onPress` on a view, a text, an image or anything else.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 fn App() -> impl IntoElement {
@@ -96,7 +96,7 @@ Press feedback is the app's: styles the view takes while it is pressed, hovered,
 The state styles go over the view's own styles. Later states win (hover, focus, active), the disabled style wins over all, and the others do not apply while the view is disabled.
 
 ```rust tabs
-use nsh_core::{Ripple, ui::prelude::*};
+use nsh_core::{Ripple, prelude::*};
 
 view().on_press(open).active(|s| s.opacity(0.5))
 
@@ -237,7 +237,7 @@ The Tailwind classes `pointer-events-none` and `pointer-events-auto` set the sam
 For drags, pinches and rotations that move something on screen, bind [animated values](./animation.md#animated-values) to the gesture. The platform's gesture recognizer writes the values on the UI thread and the views bound to them move in the same frame; your code is told when the gesture starts and ends.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 fn App() -> impl IntoElement {
@@ -263,7 +263,7 @@ fn App() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, View } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 function App() {
   const x = createAnimatedValue(0);
@@ -360,7 +360,7 @@ Each TSX handler gets a `GestureResponderEvent`:
 | `stopPropagation()` | Views further out do not see this touch event. |
 
 ```rust tabs
-use nsh_core::{TouchPhase, ui::{TouchEvent, prelude::*}};
+use nsh_core::{TouchPhase, element::{TouchEvent}, prelude::*};
 
 view().on_touch(|e: &TouchEvent| {
     let Some(p) = e.points.iter().find(|p| p.changed) else { return };
@@ -451,7 +451,7 @@ A Rust component's responder stays pressed from its grant until its touches end,
 The Rust handlers get a `ResponderEvent`: the finger's `location` in the view it went down on, its `page` position, the `timestamp` and the `gesture` since the grant.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn sketch() -> impl IntoElement {
     let strokes = signal(Vec::<Vec<Point<Points>>>::new());
@@ -522,10 +522,10 @@ How it runs: a view with any touch or responder handler listens to touches nativ
 
 ## PanResponder
 
-In Rust, the responder events already carry the gesture: `ResponderEvent::gesture` is a `PanGesture` with the distance from the start, the velocity and the number of fingers. In TSX, `PanResponder` from `nsh/gesture` wraps the responder system and adds the same gesture state; spread its `panHandlers` on a view.
+In Rust, the responder events already carry the gesture: `ResponderEvent::gesture` is a `PanGesture` with the distance from the start, the velocity and the number of fingers. In TSX, `PanResponder` from `nsh` wraps the responder system and adds the same gesture state; spread its `panHandlers` on a view.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn ball() -> impl IntoElement {
     let pos = signal((0.0_f32, 0.0_f32));
@@ -555,7 +555,7 @@ fn ball() -> impl IntoElement {
 
 ```tsx tabs
 import { mount, signal, View } from "nsh";
-import { PanResponder } from "nsh/gesture";
+import { PanResponder } from "nsh";
 
 function Ball() {
   const pos = signal({ x: 0, y: 0 });
@@ -635,5 +635,5 @@ The main thread never waits for your code. When the system needs an answer on th
 - [`View`](../elements/view.md): every touch prop on the basic element.
 - [Animation](./animation.md): animated values, springs and decay for gesture-driven motion.
 - [Scrolling](./scrolling.md): the keyboard taps setting, scroll views and nested gestures.
-- [`nsh/gesture`](../modules/nsh-gesture.md): the `PanResponder` reference.
+- [`PanResponder`](../modules/nsh.md#panresponder): the `PanResponder` reference.
 - [Accessibility](./accessibility.md): pressable views are accessibility elements; give them a role and a label.

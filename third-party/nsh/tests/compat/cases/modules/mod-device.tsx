@@ -1,10 +1,10 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/device`
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`
 // as the headless runtime reports it (iOS, a phone, 1 pixel per point, the
 // script's viewport), the color scheme an app sets and `openUrl`: a promise
 // for a URL it opens (the headless runtime answers none), a `TypeError` for
 // one it never opens. Its script checks each.
 import { Text, View, signal } from "nsh";
-import { colorScheme, fontScale, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh/device";
+import { colorScheme, fontScale, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
 
 function App() {
   const opened = signal("not opened");

@@ -1,4 +1,4 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/list`'s
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`'s
 // `List` (`nsh:rt`'s `list`): the rows near the viewport rendered from
 // `each`, with a header, a footer and separators, rows added when `each`
 // changes, the padding of its content (`contentStyle`,
@@ -7,7 +7,7 @@
 // the viewport, rendered once the frames after the first bind them. Its
 // script checks each.
 import { List as NativeList, Scroll, Text, View, signal, type ListItemsProps, type ListProps } from "nsh";
-import { List, type ReadonlyListSource } from "nsh/list";
+import { List, type ReadonlyListSource } from "nsh";
 
 function plumSource(name: string): ReadonlyListSource<string> {
   return { length: 1, at: () => name };

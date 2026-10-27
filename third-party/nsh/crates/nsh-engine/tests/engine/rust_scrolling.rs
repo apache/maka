@@ -10,8 +10,9 @@ use crossbeam_channel::Receiver;
 use nsh_core::{
     ApproxTextEngine, EventKind, EventPayload, KeyboardDismissMode, MountBatch, MountItem, NodeId,
     ScrollBehavior, SnapAlignment,
+    element::{Root, ScrollEvent},
     geometry::point,
-    ui::{Root, ScrollEvent, prelude::*},
+    prelude::*,
 };
 use nsh_engine::{Engine, EngineConfig};
 

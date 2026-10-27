@@ -1057,7 +1057,12 @@ async fn returned_mutation_and_failed_cleanup_are_separate_persistent_facts() {
 
 // Locate persisted test evidence without exposing a raw partition API in production.
 fn journal_database(root: &std::path::Path, table: &str, operation: Uuid) -> std::path::PathBuf {
-    for database in journal_databases(root) {
+    let databases = match table {
+        "application_intents" => vec![root.join(maka_event_log::root::ROOT_DATABASE)],
+        "application_operations" => journal_databases(root),
+        _ => panic!("unsupported journal table {table}"),
+    };
+    for database in databases {
         let connection = rusqlite::Connection::open_with_flags(
             &database,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -1871,8 +1876,7 @@ async fn internal_caller_commit_precedes_final_admission_and_failed_record_never
             app.ready().await.unwrap();
             let client = app.client();
             let binding = client.bind(client.activation(&id(2)).unwrap(), "echo".into()).await.unwrap().remove(0);
-            let connections: Vec<_> = journal_databases(&dir.path().join("root")).into_iter().map(|path| rusqlite::Connection::open(path).unwrap()).collect();
-            for connection in &connections {
+            let connection = rusqlite::Connection::open(dir.path().join("root").join(maka_event_log::root::ROOT_DATABASE)).unwrap();
             if mode == "record-failure" {
                 connection.execute_batch("CREATE TRIGGER reject_caller_intent BEFORE INSERT ON application_intents BEGIN SELECT RAISE(ABORT,'caller record unavailable'); END;").unwrap();
             }
@@ -1881,7 +1885,6 @@ async fn internal_caller_commit_precedes_final_admission_and_failed_record_never
             }
             // A real competing SQLite writer keeps the caller commit pending.
             connection.execute_batch("BEGIN IMMEDIATE;").unwrap();
-            }
             let parent = client.start(binding, "echo".into(), json!("no-effect"), scope(&issuer, true), Attachments::new().into()).await.unwrap();
             prepared.acquire().await.unwrap().forget();
             match mode {
@@ -1889,7 +1892,7 @@ async fn internal_caller_commit_precedes_final_admission_and_failed_record_never
                 "revoke" => allowed.store(false, Ordering::SeqCst),
                 _ => {},
             }
-            for connection in &connections { connection.execute_batch("COMMIT;").unwrap(); }
+            connection.execute_batch("COMMIT;").unwrap();
             let error = parent.result().await.unwrap();
             let error = error.as_str().unwrap();
             match mode {
@@ -1908,7 +1911,7 @@ async fn internal_caller_commit_precedes_final_admission_and_failed_record_never
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert!(client.snapshot().cleanup_error.is_none(), "no effect admission is not a physical cleanup failure");
             app.shutdown().await.unwrap();
-            drop(connections); drop(app); drop(client); close(store).await;
+            drop(connection); drop(app); drop(client); close(store).await;
         }).await.unwrap();
     }
 }

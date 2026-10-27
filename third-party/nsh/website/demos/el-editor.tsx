@@ -1,6 +1,7 @@
-import { Input, mount, signal, Text, View } from "nsh";
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 import { Editor, type EditorDiagnostic, type EditorRef, type EditorSearchResult } from "nsh/base";
-import { desktop, Log, Panel, Segmented, Split, size, ui, wide } from "./palette";
+import { button, buttonText, desktop, field, Log, Panel, Segmented, size, Split, ui, wide } from "./palette";
 
 const SAMPLES = {
   rust: `/// The n-th Fibonacci number.
@@ -61,14 +62,9 @@ function App() {
   const log = (line: string) => events.set([line, ...events()].slice(0, 4));
   let editor: EditorRef | undefined;
 
-  const button = (label: string, onPress: () => void) => (
-    <View
-      onPress={onPress}
-      role="button"
-      activeStyle={{ opacity: 0.6 }}
-      style={{ height: size.controlSm, paddingHorizontal: 12, borderRadius: 8, justifyContent: "center", ...ui().raised }}
-    >
-      <Text style={{ fontSize: 13, fontWeight: "500", color: ui().text }}>{label}</Text>
+  const action = (label: string, onPress: () => void) => (
+    <View onPress={onPress} role="button" {...button("secondary", { size: "sm" })}>
+      <Text style={buttonText()}>{label}</Text>
     </View>
   );
 
@@ -96,14 +92,14 @@ function App() {
                 accessibilityLabel="Find"
                 autoCapitalize="none"
                 autoCorrect={false}
-                style={{ height: size.controlSm, fontSize: 13, color: ui().text, placeholderColor: ui().faint }}
+                {...field({ style: { height: size.controlSm, paddingVertical: 0 } })}
               />
               <Text style={{ fontSize: 13, fontVariant: ["tabular-nums"], color: ui().text }}>
                 {query() ? (found().error ?? `${found().current == null ? "–" : found().current! + 1} of ${found().count}`) : "–"}
               </Text>
               <View style={{ flexDirection: "row", gap: 8 }}>
-                {button("Next", () => editor?.run("findNext"))}
-                {button("Undo", () => editor?.run("undo"))}
+                {action("Next", () => editor?.run("findNext"))}
+                {action("Undo", () => editor?.run("undo"))}
               </View>
             </Panel>
             <Panel title="caret">

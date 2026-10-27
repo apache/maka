@@ -1,10 +1,7 @@
 //! `Radio` and `RadioGroup`: a set of options the user picks one of, with
 //! no look of their own.
 
-use nsh_core::{
-    AccessibilityState, Checked,
-    ui::{Style, prelude::*},
-};
+use nsh_core::{AccessibilityState, Checked, element::Style, prelude::*};
 
 /// The props of [`Radio`].
 #[derive(Debug, Clone, PartialEq, Props)]

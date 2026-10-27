@@ -90,16 +90,16 @@ thread_local! {
     /// so that matching never needs the engine.
     static KEYMAP: RefCell<Option<std::sync::Arc<Keymap>>> = const { RefCell::new(None) };
     /// The UI sets apps import ([`set_ui_sets`]; by default `nsh/base`).
-    static UI_SETS: RefCell<Option<Vec<nsh_core::ui::Registry>>> = const { RefCell::new(None) };
+    static UI_SETS: RefCell<Option<Vec<nsh_core::element::Registry>>> = const { RefCell::new(None) };
     /// What makes the Rust app's root ([`set_root`]), for [`nsh_start_rust`].
-    static ROOT: RefCell<Option<Box<dyn Fn() -> nsh_core::ui::Root>>> = const { RefCell::new(None) };
+    static ROOT: RefCell<Option<Box<dyn Fn() -> nsh_core::element::Root>>> = const { RefCell::new(None) };
     /// What the last [`nsh_compile`] made: the module or the error.
     #[cfg(feature = "compiler")]
     static COMPILED: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// What [`ui_sets!`] gives.
-pub use nsh_core::ui::Registry;
+pub use nsh_core::element::Registry;
 
 /// Sets the UI sets the apps started from now on serve: `nsh/base` and
 /// an app's own Rust components (`nsh.json` `"rust"`). A runtime built for
@@ -133,14 +133,14 @@ macro_rules! ui_sets {
 
 /// Sets the Rust app [`nsh_start_rust`] runs: `root` makes its root
 /// component (with its theme), each time the page starts it.
-pub fn set_root(root: impl Fn() -> nsh_core::ui::Root + 'static) {
+pub fn set_root(root: impl Fn() -> nsh_core::element::Root + 'static) {
     ROOT.with(|r| *r.borrow_mut() = Some(Box::new(root)));
 }
 
 /// Makes this module the web runtime of a Rust app (`nsh.json` `"root"`):
 /// it serves `$sets` (`nsh/base` and the app's own set) and runs the
 /// root component `$root` makes (an expression giving a
-/// [`nsh_core::ui::Root`]) when the page calls [`nsh_start_rust`]. Built
+/// [`nsh_core::element::Root`]) when the page calls [`nsh_start_rust`]. Built
 /// without the feature `js`, the module has no QuickJS: the app is Rust
 /// and the browser's own JS from start to end. Exports `nsh_app_init`, as
 /// [`ui_sets!`].
@@ -175,6 +175,8 @@ struct BundleOptions {
     /// The VM limits the page runs the app with ([`nsh_bundle_limits`]);
     /// `None`: none, as an app on its own.
     limits: Option<String>,
+    /// Static chunks staged before the entry starts.
+    chunks: Vec<nsh_engine::Chunk>,
 }
 
 struct Running {
@@ -502,7 +504,8 @@ fn start(code: BundleCode, width: f32, height: f32, dark: u32, pixel_ratio: f32)
         // SAFETY: trusted, per `nsh_start_bytecode`'s contract.
         BundleCode::Bytecode(bytes) => unsafe { Bundle::bytecode(bytes) },
     }
-    .with_policy(policy);
+    .with_policy(policy)
+    .with_chunks(options.chunks);
     if let Some(harden) = options.harden {
         // SAFETY: trusted, per `nsh_bundle_harden`'s contract.
         bundle = unsafe { bundle.with_harden_bytecode(harden) };
@@ -650,8 +653,36 @@ pub unsafe extern "C" fn nsh_bundle_options(
             harden: None,
             app_id: (!app_id.is_empty()).then_some(app_id),
             limits: None,
+            chunks: Vec::new(),
         }
     });
+}
+
+/// Stages a static dependency for the next app, after [`nsh_bundle_options`].
+///
+/// # Safety
+///
+/// Both ranges are memory from [`nsh_alloc`]. Bytecode must be trusted output
+/// from the matching CLI, as required by [`nsh_start_bytecode`].
+#[cfg(feature = "js")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_bundle_chunk(
+    name: *const u8,
+    name_len: usize,
+    code: *const u8,
+    code_len: usize,
+    bytecode: u32,
+) {
+    // SAFETY: the caller provides allocated ranges and trusted bytecode.
+    let chunk = unsafe {
+        let name = string(name, name_len);
+        if bytecode != 0 {
+            nsh_engine::Chunk::bytecode(name, std::slice::from_raw_parts(code, code_len).to_vec())
+        } else {
+            nsh_engine::Chunk::source(name, string(code, code_len))
+        }
+    };
+    OPTIONS.with(|o| o.borrow_mut().chunks.push(chunk));
 }
 
 /// Sets the VM limits the next [`nsh_start`] / [`nsh_start_bytecode`]
@@ -784,10 +815,10 @@ pub unsafe extern "C" fn nsh_compile(
 ) -> u32 {
     // SAFETY: guaranteed by the caller.
     let (name, source) = unsafe { (string(name, name_len), string(ptr, len)) };
-    let sets: Vec<nsh_core::ui::description::SetDescription> = ui_sets()
+    let sets: Vec<nsh_core::element::description::SetDescription> = ui_sets()
         .iter()
-        .flat_map(nsh_core::ui::Registry::sets)
-        .filter_map(nsh_core::ui::description::SetDescription::of)
+        .flat_map(nsh_core::element::Registry::sets)
+        .filter_map(nsh_core::element::description::SetDescription::of)
         .collect();
     let result = nsh_bundler::compile_module(&name, &source, &sets);
     let ok = result.is_ok();

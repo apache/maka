@@ -15,7 +15,7 @@ motion or label of its own.
 
 ```rust tabs
 use nsh_base::{collapsible, theme};
-use nsh_core::{AccessibilityState, ui::prelude::*};
+use nsh_core::{AccessibilityState, prelude::*};
 
 fn storage() -> impl IntoElement {
     let open = signal(false);

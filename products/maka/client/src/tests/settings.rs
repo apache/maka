@@ -189,7 +189,7 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         assert_eq!(&fixture.counter.messages.lock().unwrap()[2..4], &[preferences, network]);
         assert_eq!(fixture.counter.secrets.lock().unwrap().as_slice(), &["k€y\\\"raw".as_bytes().to_vec(), password]);
         let contexts = sqlx::query_scalar::<_, String>("SELECT context FROM operations")
-            .fetch_all(&restarted.0.journal.0).await.unwrap();
+            .fetch_all(&restarted.0.journal.pool).await.unwrap();
         for context in contexts {
             assert!(!context.contains("k€y"));
             assert!(!context.contains("密密"));
@@ -211,7 +211,7 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
             assert_eq!(restarted.recover(id).await.unwrap().reference, prepared.reference.unwrap());
             assert_eq!(fixture.counter.messages.lock().unwrap().last(), Some(&input));
             let context: String = sqlx::query_scalar("SELECT context FROM operations WHERE id = ?")
-                .bind(id.to_string()).fetch_one(&restarted.0.journal.0).await.unwrap();
+                .bind(id.to_string()).fetch_one(&restarted.0.journal.pool).await.unwrap();
             assert!(!context.contains("私有全局指令"), "the settings journal must not store instruction contents");
             assert!(second.pending_settings().await.unwrap().is_empty());
         }

@@ -1,8 +1,8 @@
 ---
 title: Input
 description: "The native text field: controlled and uncontrolled text, keyboards, autofill, selection, multiline inputs and focus."
-order: 6
-group: primitives
+order: 20.1
+group: base
 demo: el-input
 ---
 
@@ -10,10 +10,11 @@ demo: el-input
 
 `Input` is a native text field: a UITextField (single line) or UITextView (multiline) on iOS and Mac Catalyst, an
 EditText on Android. Typing, the caret, selection, autocorrection and autofill are the platform's own. Rust makes one
-with `input()`, TSX with `<Input>` from `nsh`.
+with `nsh_base::input()`, TSX with `<Input>` from `nsh/base`.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_base::input;
+use nsh_core::prelude::*;
 
 fn name_field() -> impl IntoElement {
     let name = signal(String::new());
@@ -32,7 +33,8 @@ fn name_field() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Input, signal } from "nsh";
+import { signal } from "nsh";
+import { Input } from "nsh/base";
 
 function NameField() {
   const name = signal("");
@@ -164,11 +166,11 @@ input()
 | `ios` key | Rust | Type | Description |
 |---|---|---|---|
 | `textContentType` | `.auto_fill(..)` | `AutoComplete \| TextContentType` | iOS's names for `autoComplete` (`"oneTimeCode"`, `"newPassword"`, …). |
-| `inputAccessoryViewID` | `.input_accessory(id)` | `string` | The `nativeID` of an `InputAccessoryView` ([`nsh/ios`](../modules/nsh-ios.md)) shown over the keyboard while the input has focus. |
+| `inputAccessoryViewID` | `.input_accessory(id)` | `string` | The `nativeID` of an `InputAccessoryView` ([`InputAccessoryView`](../modules/nsh-mobile.md#inputaccessoryview)) shown over the keyboard while the input has focus. |
 | `keyboardAppearance` | `.keyboard_appearance(KeyboardAppearance::Dark)` | `"default" \| "light" \| "dark"` | The keyboard's look; `"default"` follows the system's appearance. Android's keyboards follow the system's theme. |
 
 ```rust tabs
-use nsh_core::ui::AutoFill;
+use nsh_core::element::AutoFill;
 
 input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
 ```
@@ -227,7 +229,7 @@ const height = signal(40);
 Moving focus to the next field on return:
 
 ```rust tabs
-use nsh_core::ui::AutoFill;
+use nsh_core::element::AutoFill;
 
 let password = element_ref();
 
@@ -244,14 +246,14 @@ let password!: YNode;
 </>;
 ```
 
-`Keyboard.dismiss()` from `nsh/base` (`dismiss_keyboard()` in Rust) hides the keyboard whichever input has it.
+`Keyboard.dismiss()` from `nsh` (`dismiss_keyboard()` in Rust) hides the keyboard whichever input has it.
 
 ## Platform notes
 
 - On macOS, single-line text, placeholders and carets share the native field's font metrics and are centered together
   inside the content box. `lineHeight` participates in layout; multiline editors also use it for paragraph spacing.
 - Inputs inside a [scroll view](./scroll.md#keyboard) are kept clear of the keyboard natively. Elsewhere use
-  [`KeyboardAvoidingView`](./keyboard-avoiding-view.md).
+  a bottom padding or margin of [`env(keyboard-inset-height)`](./keyboard.md).
 - `disabled` disables the input (no focus) as well as applying the disabled styles; a `readonly` input keeps its
   focus and selection.
 - `inputAccessoryViewID` applies on iOS, where the keyboard has an accessory bar.

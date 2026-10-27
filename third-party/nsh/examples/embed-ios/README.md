@@ -23,7 +23,7 @@ let info = try await app.loadPackage(at: downloaded, trust: trust)
 stays). Bytecode files only load from inside the app bundle: downloaded code must come as a signed
 package (or JS source).
 
-Native components: the app's own views, used from JS with `nativeComponent` (`nsh/native`).
+Native components: the app's own views, used from JS with `nativeComponent` (`nsh`).
 `main.swift` registers `embed.badge`, which `examples/embedded` shows:
 
 ```swift
@@ -33,7 +33,7 @@ app.register(component: "embed.badge") { context in Badge(context) }  // Badge: 
 The component gets its props (`setProp`, JSON as Foundation objects) and commands, emits events with
 `context.emit("tap", ["count": n])` and may report its size with `context.setSize(_:)`.
 
-The app and its host also talk without a view, through the view's channel (`nsh/host` in the app):
+The app and its host also talk without a view, through the view's channel (`nsh` in the app):
 
 ```swift
 app.params = ["user": "Ada"]                         // host.params, read when the app starts

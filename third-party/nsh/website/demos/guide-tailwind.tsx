@@ -10,17 +10,17 @@ function App() {
     <View class="flex-row flex-wrap gap-2">
       <View
         onPress={() => count.update((n) => n + 1)}
-        class="rounded-lg bg-lime-300 px-4 py-2 transition-colors duration-150 active:bg-lime-400"
+        class="rounded-lg bg-lime-300 px-4 py-2 transition-colors duration-150 motion-reduce:transition-none hover:bg-lime-200 active:bg-lime-400 focus-visible:outline-2 focus-visible:outline-sky-500"
       >
         <Text class="font-medium text-lime-950">Pressed {count()}×</Text>
       </View>
       <View
         onPress={() => busy.set(!busy())}
-        class="rounded-lg border border-black/10 bg-white px-4 py-2 shadow-sm transition active:scale-95 active:bg-zinc-100 dark:border-[#2c2e33] dark:bg-[#24262a] dark:active:bg-[#2d2f34]"
+        class="rounded-lg border border-black/10 bg-white px-4 py-2 shadow-sm transition motion-reduce:transition-none hover:bg-zinc-50 active:scale-95 active:bg-zinc-100 dark:border-[#2c2e33] dark:bg-[#24262a] dark:hover:bg-[#2a2c31] dark:active:bg-[#2d2f34] focus-visible:outline-2 focus-visible:outline-sky-500"
       >
         <Text class="font-medium text-[#15161a] dark:text-[#eceef1]">{busy() ? "Enable" : "Disable"}</Text>
       </View>
-      <View disabled={busy()} onPress={() => count.set(0)} class="rounded-lg bg-emerald-400 px-4 py-2 active:bg-emerald-500 disabled:opacity-40">
+      <View disabled={busy()} onPress={() => count.set(0)} class="rounded-lg bg-emerald-400 px-4 py-2 enabled:hover:bg-emerald-300 active:bg-emerald-500 disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-sky-500">
         <Text class="font-medium text-emerald-950">Reset</Text>
       </View>
     </View>
@@ -31,8 +31,8 @@ function App() {
         {(t) => (
           <View
             onPress={() => tab.set(t())}
-            class="flex-1 items-center rounded-lg py-2 transition-colors"
-            classList={{ "bg-white shadow-sm dark:bg-[#2a2c31]": tab() === t() }}
+            class="flex-1 items-center rounded-lg py-2 transition-colors motion-reduce:transition-none active:opacity-70 focus-visible:outline-2 focus-visible:outline-sky-500"
+            classList={{ "bg-white shadow-sm dark:bg-[#2a2c31]": tab() === t(), "hover:bg-black/5 dark:hover:bg-white/5": tab() !== t() }}
           >
             <Text class="text-sm font-medium" classList={{ "text-[#15161a] dark:text-[#eceef1]": tab() === t(), "text-[#565a61] dark:text-[#8d9198]": tab() !== t() }}>
               {t()}
@@ -75,9 +75,9 @@ function App() {
   );
   const motion = () => (
     <View class="flex-row items-center justify-around py-2">
-      <View class="size-8 animate-spin rounded-md bg-lime-300" />
-      <View class="size-8 animate-bounce rounded-full bg-sky-400" />
-      <View class="h-8 w-14 animate-pulse rounded-md bg-[#e1e1db] dark:bg-[#2c2e33]" />
+      <View class="size-8 animate-spin motion-reduce:animate-none rounded-md bg-lime-300" />
+      <View class="size-8 animate-bounce motion-reduce:animate-none rounded-full bg-sky-400" />
+      <View class="h-8 w-14 animate-pulse motion-reduce:animate-none rounded-md bg-[#e1e1db] dark:bg-[#2c2e33]" />
     </View>
   );
 

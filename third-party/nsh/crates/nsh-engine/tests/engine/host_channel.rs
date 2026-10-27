@@ -88,7 +88,7 @@ fn texts_within(rx: &Receiver<MountBatch>, time: Duration) -> Vec<String> {
 }
 
 const APP: &str = r#"import { mount, signal, Text } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 const log = signal<string[]>([]);
 const say = (s: string) => log.set([...log(), s]);
@@ -179,7 +179,7 @@ fn the_app_and_its_host_talk() {
 }
 
 const LISTENER: &str = r#"import { mount, signal, Text } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 const seen = signal<string[]>([]);
 host.on("open", (d: any) => seen.set([...seen(), d.id]));
@@ -203,7 +203,7 @@ fn events_wait_for_the_next_app() {
 }
 
 const PARAMS: &str = r#"import { mount, Text } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 mount(() => <Text>{`keys ${Object.keys(host.params).length}`}</Text>);
 "#;

@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    collections::HashSet,
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{
@@ -34,6 +35,8 @@ pub(crate) struct DevSession {
     /// The modules of the last good development build: updates are
     /// computed against it.
     hot: std::cell::RefCell<Option<nsh_bundler::HotBundle>>,
+    /// Files read by the last good build (imports may be outside the app).
+    watch_files: std::cell::RefCell<Vec<PathBuf>>,
     /// Good builds so far: the first one is "built", the next "rebuilt".
     builds: Cell<u32>,
     /// A Rust app (`nsh.json` `"root"`): nothing to bundle, the hosts run
@@ -77,6 +80,7 @@ impl DevSession {
             server,
             devices,
             hot: Default::default(),
+            watch_files: Default::default(),
             builds: Cell::new(0),
             rust_root,
         };
@@ -156,6 +160,8 @@ impl DevSession {
                 watcher.watch(dir, RecursiveMode::Recursive)?;
             }
         }
+        let mut imported_dirs = HashSet::new();
+        self.watch_imports(&mut watcher, &mut imported_dirs)?;
         loop {
             if ui::stop_requested() || stop()? {
                 return Ok(());
@@ -182,7 +188,29 @@ impl DevSession {
                 .is_ok()
             {}
             self.rebuild();
+            self.watch_imports(&mut watcher, &mut imported_dirs)?;
         }
+    }
+
+    /// Watch the directories of shared imports, so atomic saves and new
+    /// modules work as they do inside the app. Its own tree is watched above.
+    fn watch_imports(
+        &self,
+        watcher: &mut impl Watcher,
+        watched: &mut HashSet<PathBuf>,
+    ) -> anyhow::Result<()> {
+        for dir in self
+            .watch_files
+            .borrow()
+            .iter()
+            .filter_map(|path| path.parent())
+        {
+            if !dir.starts_with(&self.src_dir) && watched.insert(dir.to_path_buf()) {
+                watcher.watch(dir, RecursiveMode::NonRecursive)?;
+                ui::debug(format!("watching shared source {}", ui::path(dir)));
+            }
+        }
+        Ok(())
     }
 
     fn rebuild(&self) {
@@ -194,6 +222,7 @@ impl DevSession {
         if self.release {
             match build::compile(&self.entry, true) {
                 Ok(built) => {
+                    self.watch_files.replace(built.watch_files.clone());
                     let capabilities = built.capabilities_json();
                     let summary = self.summary(&built);
                     self.server.publish(
@@ -215,6 +244,7 @@ impl DevSession {
         }
         match build::compile_hot(&self.entry) {
             Ok((built, hot)) => {
+                self.watch_files.replace(built.watch_files.clone());
                 let summary = self.summary(&built);
                 // Other capabilities: the app starts again under them.
                 let patch = self

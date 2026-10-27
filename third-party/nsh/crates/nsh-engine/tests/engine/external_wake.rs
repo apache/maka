@@ -14,10 +14,7 @@ use std::{
 };
 
 use crossbeam_channel::Receiver;
-use nsh_core::{
-    ApproxTextEngine, MountBatch, MountItem,
-    ui::{Root, prelude::*},
-};
+use nsh_core::{ApproxTextEngine, MountBatch, MountItem, element::Root, prelude::*};
 use nsh_engine::{App, EngineConfig, EngineContext, LocalEngine};
 use tokio::sync::oneshot;
 

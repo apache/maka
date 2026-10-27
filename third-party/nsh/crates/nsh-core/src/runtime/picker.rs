@@ -5,12 +5,12 @@
 //! `picker` capability when the app declares capabilities.
 
 use crate::{
-    geometry::{DevicePixels, Size},
-    picker::{self, PickRequest, PickedFile},
-    ui::{
+    element::{
         JsError, JsHost, JsIn, JsObject, JsOwned, JsValue, Later, PropEnum, PropError, TsTypes,
         module,
     },
+    geometry::{DevicePixels, Size},
+    picker::{self, PickRequest, PickedFile},
 };
 
 /// The system's picker.
@@ -31,7 +31,7 @@ impl Picker {
     ) -> Result<Later<Vec<PickedImage>>, JsError> {
         let request = options.unwrap_or_default().request()?;
         Ok(Later::new(async move {
-            let files = crate::ui::prelude::pick_images(request).await;
+            let files = crate::prelude::pick_images(request).await;
             Ok::<_, JsError>(files.into_iter().map(PickedImage).collect())
         }))
     }

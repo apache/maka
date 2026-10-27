@@ -1,6 +1,6 @@
 import { mount, signal, Text, Video, View, type YNode } from "nsh";
-import { windowSize } from "nsh/device";
-import { ui } from "./palette";
+import { windowSize } from "nsh";
+import { button, buttonText, ui } from "./palette";
 
 // A short CC0 clip from MDN's examples.
 const FLOWER = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
@@ -9,10 +9,9 @@ function Toggle(props: { label: string; on: boolean; onPress: () => void }) {
   return (
     <View
       onPress={props.onPress}
-      activeStyle={{ opacity: 0.6 }}
-      style={{ ...(props.on ? ui().accentFill : ui().raised), paddingHorizontal: 14, paddingVertical: 9, borderRadius: 10 }}
+      {...button("secondary", { on: () => props.on, size: "sm" })}
     >
-      <Text style={{ fontWeight: "600", color: props.on ? ui().onAccent : ui().text }}>{props.label}</Text>
+      <Text style={buttonText("secondary", { on: () => props.on })}>{props.label}</Text>
     </View>
   );
 }

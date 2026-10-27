@@ -23,6 +23,16 @@
 
 Provides workspace command, terminal and protocol-process services. `protocol` handles structured subprocess communication; `terminal` manages interactive terminal resources. Configuration supplies the installation ceiling, and each call still needs its own authority. Closing an observer does not terminate ownership of a running process.
 
+The workspace-write sandbox permits writes in the selected workspace and system temporary directories. Tool caches elsewhere need an explicit writable location. For example, [mise](https://mise.jdx.dev/directories.html) defaults to `~/Library/Caches/mise` on macOS; select a cache before starting mise:
+
+```sh
+mise_cache=$(mktemp -d "${TMPDIR:-/tmp}/maka-mise.XXXXXX")
+MISE_CACHE_DIR="$mise_cache" mise exec -- node --version
+rm -r "$mise_cache"
+```
+
+Reuse a dedicated directory inside the selected workspace for a persistent cache. Pass `MISE_CACHE_DIR` in the command environment before shell startup if shell initialization invokes mise; setting it in `mise.toml`'s `[env]` is too late. This relocates the cache without granting access to the user's global cache. Read-only mode still requires write permission for cache creation, and tool downloads require separate network permission.
+
 Live terminal screens and background-process logs come from the original worker handle. Output alone does not update the durable resource revision, `updatedAt`, or `watchList`; start, state, actual resize and final output still commit durably. Detail watches accept new output at the same durable revision. After a Host crash, orphan recovery retains the last durable snapshot, which may predate the last live output.
 
 `health` (the default `BackgroundTaskHealth` model tool) reads the original session-owned process, including live logs when retained. `updatedAt` denotes the last durable resource update, not output activity or endpoint health. Logs require `include_logs: true`. An optional HTTP(S) URL is probed by the bound Web service under separate network permission; the process result and endpoint observation are independent. A responding endpoint proves neither listener ownership nor browser readiness. Health calls and their nested probes retain original operation receipts.

@@ -10,7 +10,7 @@
 //! without highlighting again. What maps to nothing keeps the code's own
 //! color (the app's).
 
-use nsh_core::ui::{StyleRefinement, prelude::*};
+use nsh_core::{element::StyleRefinement, prelude::*};
 
 #[cfg(feature = "highlight")]
 pub(crate) use self::syntect_syntaxes::{find_syntax, loaded, plain, scope_token, syntaxes};

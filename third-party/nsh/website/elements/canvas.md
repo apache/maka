@@ -16,7 +16,7 @@ iOS and Mac Catalyst, `android.graphics.Canvas` on Android) at the screen's reso
 ```rust tabs
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use nsh_core::{canvas::LineCap, ui::prelude::*};
+use nsh_core::{canvas::LineCap, prelude::*};
 
 /// A progress ring, 120 points square.
 fn ring(progress: f32) -> impl IntoElement {
@@ -116,7 +116,7 @@ const values = signal([12, 40, 28, 64]);
 />;
 ```
 
-Numbers and colors may also be [native animated values](../modules/nsh-animated.md) (`CanvasNumber`, `CanvasPaint`;
+Numbers and colors may also be [native animated values](../modules/nsh.md#animation) (`CanvasNumber`, `CanvasPaint`;
 in Rust a `&AnimatedValue` wherever a number goes): the platform then redraws on its own while they animate, with no
 work in the app's code per frame.
 
@@ -138,7 +138,7 @@ canvas(
 
 ```tsx tabs
 import { Canvas } from "nsh";
-import { Animated, createAnimatedValue } from "nsh/animated";
+import { Animated, createAnimatedValue } from "nsh";
 
 const angle = createAnimatedValue(0);
 Animated.timing(angle, { toValue: Math.PI * 2, duration: 1000 }).start();

@@ -15,7 +15,7 @@ these elements and styled by the app, so the app's look is entirely its own.
 Every example on these pages comes in Rust and TSX: pick a tab, and every example on the page follows.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn app() -> impl IntoElement {
     let count = signal(0_u32);
@@ -56,7 +56,7 @@ function App() {
 mount(App);
 ```
 
-In Rust, the primitives are functions of `nsh_core::ui::prelude` (`view()`, `text(..)`, `image(..)`) and the base
+In Rust, the primitives are functions of `nsh_core::prelude` (`view()`, `text(..)`, `image(..)`) and the base
 components come from the `nsh_base` crate. Styles are typed methods (`.flex_1()`, `.gap_3()`, `.px(px(20.0))`,
 `.bg(..)`), state styles take a closure (`.active(|s| s.opacity(0.6))`), listeners are closures of their event
 (`.on_press(move || ..)`, `.on_change(move |text: &str| ..)`) and `.child(..)` adds children. A piece of UI is a plain function returning
@@ -70,32 +70,29 @@ could not infer their item types. The compiler recognizes the elements through t
 views in place, so importing them costs nothing at run time. See [JSX and components](../docs/jsx-and-components.md).
 
 ```tsx
-import { Canvas, Image, Input, List, Overlay, Scroll, Text, Video, View, WebView } from "nsh";
-import { Button, Dialog, Menu, NavPage, NavStack, Popover, SafeAreaView, Sheet, Tooltip } from "nsh/base";
+import { Canvas, Image, List, Overlay, Scroll, Text, Video, View, WebView } from "nsh";
+import { Button, Dialog, Menu, NavPage, NavStack, Popover, Sheet, Tooltip, Input } from "nsh/base";
 ```
-
-> [!NOTE]
-> Apps built for earlier releases import `Image`, `List`, `Canvas`, `WebView` and `Video` from `nsh/image`,
-> `nsh/list`, `nsh/canvas`, `nsh/webview` and `nsh/video`; those imports keep working and name the same elements.
 
 ## Primitives
 
-Imported from `nsh` in TSX, from `nsh_core::ui::prelude` in Rust.
+Imported from `nsh` in TSX, from `nsh_core::prelude` in Rust.
 
 | Element | Rust | Native view (iOS / Android) | Page |
 |---|---|---|---|
-| `<View>` | `view()` | UIView / ViewGroup | [View](./view.md) |
+| `<View>` | `view()` | UIView / ViewGroup; with `selectable`, the texts inside it select together | [View](./view.md), [Text selection](./text-selection.md) |
 | `<Text>` | `text(content)` | CoreText view / StaticLayout view | [Text](./text.md) |
 | `<Image>` | `image(src)` | a view with an image layer / an image view | [Image](./image.md) |
 | `<Scroll>` | `scroll()` | UIScrollView / ScrollView | [Scroll](./scroll.md) |
-| `<Input>` | `input()` | UITextField or UITextView / EditText | [Input](./input.md) |
 | `<List>` | `virtual_list(count, \|at\| row)` | UIScrollView / ScrollView with recycled cells | [List](./list.md) |
 | `<Canvas>` | `canvas(painter)` | a view replaying a 2D drawing | [Canvas](./canvas.md) |
 | `<WebView>` | `web_view(url)`, `web_view_html(html, base)` | WKWebView / android.webkit.WebView | [WebView](./web-view.md) |
 | `<Video>` | `video(url)` | AVPlayerLayer / MediaPlayer on a TextureView | [Video](./video.md) |
 | `<Overlay>` | `overlay()` | a view on top of the window (or the dialog it is in), placed against an anchor | [Overlay](./overlay.md) |
 | `<If>`, `<Each>` | `when(..)`, `each(..)`, `dynamic(..)` | control flow: the elements they choose | [Control flow](./control-flow.md) |
-| `<InputAccessoryView>` (`nsh/ios`) | `input_accessory_view(id)` | a bar over the keyboard on iOS | [nsh/ios](../modules/nsh-ios.md) |
+| `<InputAccessoryView>` (`nsh/mobile`) | `input_accessory_view(id)` | a bar over the keyboard on iOS | [`InputAccessoryView`](../modules/nsh-mobile.md#inputaccessoryview) |
+
+Padding and margin keep content clear of system UI with CSS's `env()`: `env(safe-area-inset-top)` and the other edges ([Safe area](./safe-area.md)) and `env(keyboard-inset-height)` ([Keyboard](./keyboard.md)).
 
 ## Base
 
@@ -105,23 +102,22 @@ and take their look from the app.
 | Component | Rust | What it does | Page |
 |---|---|---|---|
 | `<Button>` | `nsh_base::button()` | A pressable control with its states and its role | [Button](./button.md) |
+| `<Input>` | `nsh_base::input()` | The native text input (UITextField or UITextView / EditText) | [Input](./input.md) |
 | `<Checkbox>` | `nsh_base::checkbox()` | A checked, unchecked or indeterminate control with an indicator | [Checkbox](./checkbox.md) |
 | `<Radio>`, `<RadioGroup>` | `nsh_base::radio()`, `radio_group()` | One option of a set the user picks one of, and the set | [Radio](./radio.md) |
 | `<Tab>`, `<Tabs>` | `nsh_base::tab()`, `tabs()` | One tab of a tab list, and the list | [Tabs](./tabs.md) |
 | `<Switch>` | `nsh_base::switch()` | An on / off control with a track and a thumb | [Switch](./switch.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | A region whose content expands and collapses | [Collapsible](./collapsible.md) |
 | `<Progress>` | `nsh_base::progress()` | A progress bar: how far a task is, or that it is under way | [Progress](./progress.md) |
+| `<Plot>`, `<Line>`, `<Area>`, `<Grid>`, `<Pie>`, `<Arc>` (`nsh/base/plot`) | `nsh_base::plot::{plot, line, area, grid, pie, arc}` | A chart's frame and its marks, drawn natively from the app's rows | [Plot](./plot.md) |
 | `<Dialog>` | `nsh_base::dialog()` | Presents its children over everything else | [Dialog](./dialog.md) |
 | `<NavStack>`, `<NavPage>` | `nsh_base::nav_stack()`, `nsh_base::nav_page()` | Native navigation: a stack of pages with the platform's header and back gestures | [NavStack](./nav-stack.md) |
-| `<SafeAreaView>` | `nsh_base::safe_area_view()` | Pads its content clear of notches, bars and the home indicator | [SafeAreaView](./safe-area-view.md) |
-| `<KeyboardAvoidingView>` | `nsh_base::keyboard_avoiding_view()` | Keeps its content above the software keyboard | [KeyboardAvoidingView](./keyboard-avoiding-view.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | The system's alert and action sheet | [AlertDialog](./alert-dialog.md) |
 | `<TextView>` | `nsh_base::text_view()` | Shows a Markdown or HTML document with texts and views | [TextView](./text-view.md) |
 | `<Editor>` | `nsh_base::editor()` | A code editor with highlighting, several carets, folding and search | [Editor](./editor.md) |
 | `<DiffView>` | `nsh_base::diff_view()` | The changes between two texts or of a patch, split or unified | [DiffView](./diff-view.md) |
 | `<Table>` and its parts | `nsh_base::table()`, `table_row()`, ... | A table of the app's own rows and cells, with a table's roles | [Table](./table.md) |
 | `<DataTable>` | `nsh_base::data_table()` | A table of rows and columns of any number, selectable, sortable, with resizable and movable columns | [DataTable](./data-table.md) |
-| `<SelectionArea>` | `nsh_base::selection_area()` | Makes the texts inside it select together | [SelectionArea](./selection-area.md) |
 | `<Popover>` | `nsh_base::popover()` | Content anchored to a trigger, on top of everything | [Popover](./popover.md) |
 | `<Menu>`, `<ContextMenu>`, `<MenuItem>`, `<MenuSeparator>`, `<Submenu>` | `nsh_base::menu()`, ... | Menus: popups with cascading submenus on desktops, sheets on phones | [Menu](./menu.md) |
 | `<Tooltip>` | `nsh_base::tooltip()` | A hint next to its trigger, on hover or a held finger | [Tooltip](./tooltip.md) |
@@ -263,20 +259,37 @@ and tablets show none. The hint never takes the pointer or presses, so the eleme
 
 | Prop | Rust | Type | Description |
 |---|---|---|---|
-| `tooltip` | `.tooltip(..)` | `string \| JSX.Element` | A text, in a small bubble drawn with the theme's `popover` tokens (`bg-popover`, `text-popover-foreground`, `border-border`: the theme decides how it looks), or an element, shown as it is (a `Tooltip` of `nsh/base` is the tooltip itself). |
+| `tooltip` | `.tooltip(..)` | `JSX.Element` | The hint, an element the app styles: a [`Tooltip`](tooltip.md) of `nsh/base` is the tooltip itself, with its placement, delay and events; any other element is shown as it is. |
 
 ```rust tabs
-view().on_press(save).tooltip("Save the document").child(text("💾"))
+view()
+    .on_press(save)
+    .tooltip(
+        tooltip()
+            .rounded_md()
+            .bg(rgb(0x111827))
+            .px_2()
+            .py_1()
+            .child(text("Save the document").text_color(white())),
+    )
+    .child(text("💾"))
 ```
 
 ```tsx tabs
-<View onPress={save} tooltip="Save the document">
+<View
+  onPress={save}
+  tooltip={
+    <Tooltip class="rounded-md bg-gray-900 px-2 py-1">
+      <Text class="text-white">Save the document</Text>
+    </Tooltip>
+  }
+>
   <Text>💾</Text>
 </View>
 ```
 
-For a tooltip of its own look, placement, delay or events, give a [`Tooltip`](tooltip.md) of `nsh/base` as the
-`tooltip`, as GPUI's `.tooltip(..)` takes one.
+The `Tooltip` sets its own look, placement, delay and events, as GPUI's `.tooltip(..)` takes one. An app with many
+tooltips keeps one small component of its own that wraps a text in its `Tooltip`.
 
 ### Context menus
 
@@ -312,13 +325,19 @@ touchscreens, a long press opens menus: handle `onLongPress` with the same funct
 
 ### Keyboard focus
 
-On macOS and the web, Tab moves the keyboard focus between the views that take presses (and the inputs), Return or
-Space presses the focused view, and focus styles (`focus:`, `.focus(..)`) style it. A click presses a view without
-focusing it, so focus styles show for keyboard focus only.
+On macOS and the web, Tab moves the keyboard focus between its stops in tree order: the inputs, the views that take
+presses, and every `focusable` view. Focus styles (`focus:`, `.focus(..)`) style the focused view, and Return or Space
+presses it when it takes presses. A click presses a view without focusing it, so focus styles show for keyboard focus
+only.
+
+Focus and presses are separate. A view that takes keys while it has the focus (a chart, a slider, a list that moves
+its selection with the arrow keys) sets `focusable` and binds its keys while focused (`onFocus` / `onBlur` with
+[`keymap`](../modules/nsh.md#keymap)); a press on it still reaches a pressable around it, such as a card that
+opens a page.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `focusable` | `.focusable(..)` | `boolean` | `true` | Whether a view that takes presses is a stop of Tab; `false` leaves it to the pointer (a backdrop that closes a popover, rows the arrow keys move between). |
+| `focusable` | `.focusable(..)` | `boolean` | `true` for views that take presses | Whether the view is a stop of Tab. `true` makes any view one, whether it takes presses or leaves them to the views around it; `false` leaves a pressable to the pointer (a backdrop that closes a popover, rows the arrow keys move between). |
 | `onFocus` | `.on_focus(..)` | `() => void` | | Tab (or `focus()`) gave the view the keyboard focus. |
 | `onBlur` | `.on_blur(..)` | `() => void` | | The keyboard focus left the view. |
 
@@ -332,6 +351,16 @@ view()
 
 // An overlay's backdrop: a click closes it, Tab goes past it to the content.
 view().absolute().inset_0().focusable(false).on_press(close)
+
+// A chart in a card: Tab stops at the chart, a click opens the card's page.
+view().on_press(open_page).child(
+    view()
+        .h(px(160.0))
+        .focusable(true)
+        .focus(|s| s.bg(rgb(0xe0f2fe)))
+        .on_focus(move || focused.set(true))
+        .on_blur(move || focused.set(false)),
+)
 ```
 
 ```tsx tabs
@@ -341,6 +370,16 @@ view().absolute().inset_0().focusable(false).on_press(close)
 
 {/* An overlay's backdrop: a click closes it, Tab goes past it to the content. */}
 <View class="absolute inset-0" focusable={false} onPress={close} />
+
+{/* A chart in a card: Tab stops at the chart, a click opens the card's page. */}
+<View onPress={openPage}>
+  <View
+    class="h-40 focus:bg-sky-100"
+    focusable
+    onFocus={() => focused.set(true)}
+    onBlur={() => focused.set(false)}
+  />
+</View>
 ```
 
 ### Layout and identity
@@ -355,7 +394,7 @@ view().absolute().inset_0().focusable(false).on_press(close)
 
 ### Gestures driving animated values
 
-These props bind a gesture to [native animated values](../modules/nsh-animated.md) that move on the UI thread, with no
+These props bind a gesture to [native animated values](../modules/nsh.md#animation) that move on the UI thread, with no
 work in the app's code per frame. See [touch and gestures](../docs/touch-and-gestures.md).
 
 | Prop | Rust | Type | Description |
@@ -385,7 +424,7 @@ Returning `true` from `onResponderGrant` keeps native scroll views from taking t
 (`{ activeOffsetX, activeOffsetY, failOffsetX, failOffsetY }`) makes the view the responder only once the platform
 activates its pan, so drags inside scroll views leave the other axis to them
 ([Touch and gestures](../docs/touch-and-gestures.md#pans-inside-scroll-views-panactivation)).
-`PanResponder` in [`nsh/gesture`](../modules/nsh-gesture.md) builds on them. In Rust, `.on_touch(..)` hears every touch
+`PanResponder` in [`PanResponder`](../modules/nsh.md#panresponder) builds on them. In Rust, `.on_touch(..)` hears every touch
 (`TouchEvent`), `.claim_touches(..)` decides when the view takes them, and `.on_responder_grant(..)`,
 `.on_responder_move(..)`, `.on_responder_release(..)` and the others follow the responder.
 
@@ -467,7 +506,7 @@ Each element page says which apply to it.
 | `scrollToEnd({ animated? })` | `scroll_to_end(animated)` | `List` | Scrolls to the end of the content. |
 | `reload()`, `goBack()`, `goForward()`, `stopLoading()`, `injectJavaScript(script)`, `postMessage(data)` | `reload()`, `go_back()`, `go_forward()`, `stop_loading()`, `inject_java_script(..)`, `post_message(..)` | `WebView` | Controls the page. |
 | `seek(seconds)` | `seek(seconds)` | `Video` | Jumps to a time. |
-| `command(name, args?)` | `command(name, args)` | native components | Calls a command of a registered native component ([`nsh/native`](../modules/nsh-native.md)). |
+| `command(name, args?)` | `command(name, args)` | native components | Calls a command of a registered native component ([`nativeComponent`](../modules/nsh.md#nativecomponent-and-nativemodule)). |
 
 ```rust tabs
 let field = element_ref();
@@ -478,7 +517,8 @@ view()
 ```
 
 ```tsx tabs
-import { Input, View, type YNode } from "nsh";
+import { View, type YNode } from "nsh";
+import { Input } from "nsh/base";
 
 let input!: YNode;
 <View onPress={() => input.focus()}>

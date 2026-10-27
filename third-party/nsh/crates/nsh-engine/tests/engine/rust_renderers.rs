@@ -8,7 +8,8 @@ use std::{collections::HashSet, time::Duration};
 use crossbeam_channel::Receiver;
 use nsh_core::{
     MountBatch, MountItem,
-    ui::{Registry, Rendered, Renderer, dynamic, prelude::*},
+    element::{Registry, Rendered, Renderer, dynamic},
+    prelude::*,
 };
 
 /// Renders each item (`key:label`) with the app's function, keyed by its
@@ -20,9 +21,9 @@ pub(crate) struct Shelf;
 pub(crate) struct ShelfProps {
     /// The items, `key:label`.
     #[prop(default)]
-    items: nsh_core::ui::Prop<Vec<String>>,
+    items: nsh_core::element::Prop<Vec<String>>,
     /// Renders an item's label.
-    render_item: nsh_core::ui::Prop<Option<Renderer<String>>>,
+    render_item: nsh_core::element::Prop<Option<Renderer<String>>>,
 }
 
 fn split(item: &str) -> (String, String) {

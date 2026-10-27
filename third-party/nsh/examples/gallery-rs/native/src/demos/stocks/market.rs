@@ -12,8 +12,8 @@
 use std::{collections::HashMap, rc::Rc};
 
 use nsh_core::{
+    element::{AdaptiveColor, JsObject},
     time::Instant,
-    ui::{AdaptiveColor, JsObject},
 };
 
 use crate::ui::colors;

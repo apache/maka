@@ -15,7 +15,7 @@ children (a label), and the app styles each part, with `checked:` and `disabled:
 
 ```rust tabs
 use nsh_base::{switch, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn wifi() -> impl IntoElement {
     let on = signal(false);

@@ -1188,7 +1188,7 @@ impl Headless {
     /// press), as the platforms count them. `None` when the view has no
     /// bounds.
     fn press_payload(&mut self, view: NodeId, at: Option<Point<Points>>) -> EventPayload {
-        // A pointer's press takes the keyboard focus off the pressable Tab
+        // A pointer's press takes the keyboard focus off the view Tab
         // gave it to.
         if self.screen.key_focus().is_some_and(|id| id != view) {
             self.move_focus(None);
@@ -1628,7 +1628,10 @@ pub fn print_batch(out: &mut dyn Write, step: &str, batch: &MountBatch) {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::ui::{Root, prelude::*};
+    use nsh_core::{
+        element::{Root, input},
+        prelude::*,
+    };
 
     use super::*;
 
@@ -2084,7 +2087,7 @@ mod tests {
                 view()
                     .test_id("button")
                     .h(px(40.0))
-                    .on_press(move |_: &()| presses.update(|p| *p += 1))
+                    .on_press(move || presses.update(|p| *p += 1))
                     .on_press_up(move |_: &()| ups.update(|u| *u += 1))
                     .child(text("Button")),
             )
@@ -2561,6 +2564,100 @@ mount(() => {
         let mut android = open_shortcuts(nsh_core::platform::Os::Android);
         android.press_key("ctrl+k").unwrap();
         android.wait_for("Palette 1").unwrap();
+    }
+
+    /// A card that opens something when pressed, a chart in it that is a
+    /// stop of Tab without taking presses (its arrow key steps while it
+    /// has the focus), and a button.
+    #[component]
+    fn FocusStops() -> impl IntoElement {
+        let opens = signal(0_u32);
+        let presses = signal(0_u32);
+        let steps = signal(0_u32);
+        let focused = signal(false);
+        effect(move || {
+            if focused.get() {
+                on_key("right", move |_| steps.update(|s| *s += 1));
+            }
+        });
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("card")
+                    .on_press(move || opens.update(|o| *o += 1))
+                    .child(
+                        view()
+                            .test_id("chart")
+                            .h(px(40.0))
+                            .focusable(true)
+                            .on_focus(move || focused.set(true))
+                            .on_blur(move || focused.set(false)),
+                    ),
+            )
+            .child(
+                view()
+                    .test_id("button")
+                    .on_press(move || presses.update(|p| *p += 1))
+                    .child(text("Button")),
+            )
+            .child(text(move || {
+                format!(
+                    "Opens {} presses {} steps {} focused {}",
+                    opens.get(),
+                    presses.get(),
+                    steps.get(),
+                    focused.get()
+                )
+            }))
+    }
+
+    #[test]
+    fn tab_stops_at_a_focusable_view_that_takes_no_presses() {
+        let mut config = EngineConfig::new(Root::of::<FocusStops>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let (card, chart, button) = (
+            id(&app, "id:card"),
+            id(&app, "id:chart"),
+            id(&app, "id:button"),
+        );
+        assert_eq!(app.screen().tab_stops(), [card, chart, button]);
+        // In tree order: the card, then the chart inside it.
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(card));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(chart));
+        app.wait_for("Opens 0 presses 0 steps 0 focused true")
+            .unwrap();
+        // Return presses nothing there; its keys reach it through the
+        // keymap while it has the focus.
+        app.press_key("enter").unwrap();
+        app.press_key("right").unwrap();
+        app.wait_for("Opens 0 presses 0 steps 1 focused true")
+            .unwrap();
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(button));
+        app.wait_for("Opens 0 presses 0 steps 1 focused false")
+            .unwrap();
+        app.press_key("right").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("Opens 0 presses 1 steps 1 focused false")
+            .unwrap();
+        app.press_key("shift+tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(chart));
+        app.wait_for("Opens 0 presses 1 steps 1 focused true")
+            .unwrap();
+        // A press on the chart is the card's: being focusable takes none.
+        app.press("id:chart").unwrap();
+        app.wait_for("Opens 1 presses 1 steps 1 focused false")
+            .unwrap();
     }
 
     #[cfg(feature = "js")]

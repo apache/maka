@@ -36,7 +36,7 @@ Rust 组件、嵌入 NSH 的原生应用），以及在 `nsh/base` 之上构建�
 - **页面：** 一个 `NavPage`，包括它的内容、对话框和它发起的工作；
 - **应用组件：** 跨页面复用且带有领域语义的模式；
 - **组件库：** 带样式的通用界面，应用自己的或社区的，构建在 `nsh/base` 之上；
-- **`nsh/base`：** 不带产品表现的可复用行为：导航、对话框、弹出框、菜单、面板、按压目标、安全区域、键盘；
+- **`nsh/base`：** 不带产品表现的可复用行为：导航、对话框、弹出框、菜单、面板、按压目标；
 - **`nsh`：** 原语、样式、布局、响应式与环境。
 
 ### 应用文件的布局
@@ -265,7 +265,7 @@ TSX 用 `new` 创建的持久状态（账本、解析器、会话）是 `#[class
 - 临时视图状态属于渲染它的组件，是一个 signal；
 - 可复用的行为状态属于为该行为设计的组件（不传 `open` 的 `Menu` 或 `Popover` 自己保存它）；
 - 子树共享的状态是通过 [context](./reactivity.md#context) 提供的 signal；
-- 跨越一次运行的数据放在[存储](../modules/nsh-storage.md)或服务器上。
+- 跨越一次运行的数据放在[存储](../modules/nsh.md#storage)或服务器上。
 
 普通的选择和开关优先采用受控值：传入当前值，接收请求的变化，由归属者更新，绑定随之更新。回调表达意图，不能建立第二份隐藏
 真相。
@@ -291,7 +291,7 @@ switch()
 
 ```rust tabs
 use nsh_base::{button, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The props of [`QuantityStepper`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -660,7 +660,7 @@ keymap.bind("mod+s", save);
 
 - `Button`、`Switch` 和菜单项在桌面和 Web 上是键盘焦点的停靠点；在它们之上构建控件，而不是在裸视图上；
 - 在事件中，或在跟随状态变化的 effect 中，用 ref 的 `focus()` 移动焦点，用 `set_accessibility_focus()`（Rust）或
-  `nsh/accessibility`（TSX）移动屏幕阅读器的焦点；
+  `nsh` 的 `setAccessibilityFocus`（TSX）移动屏幕阅读器的焦点；
 - 绘制清楚的 `focus:` 状态；
 - 禁止在渲染时无条件设置焦点。
 
@@ -748,8 +748,8 @@ view()
 
 每个可滚动区域只有一个归属者。避免同一轴向上意外的嵌套滚动。把滚动视图放在拥有完整页面、面板或列表的元素上，使滚动指示器
 解析到区域边缘；内容的内边距放在它内部（`contentClass` / `contentStyle`），不能用带内边距的容器包住滚动视图。指示器悬在
-内容与页面边界中间，通常说明滚动归属者错误或内边距放错了层。通过 `SafeAreaView`、`KeyboardAvoidingView` 及其访问器读取
-安全区域和键盘，它们原生地跟随旋转和键盘。
+内容与页面边界中间，通常说明滚动归属者错误或内边距放错了层。在内边距和外边距中用 `env(safe-area-inset-*)` 和 `env(keyboard-inset-height)` 避开
+安全区域和键盘（用对应的访问器读取数值），它们原生地跟随旋转和键盘。
 
 ## 列表、表格与大数据集
 
@@ -837,7 +837,7 @@ const liked = signal<Set<number>>(new Set());
 
 - 两个平台都有的 prop 是顶层 prop；只有一个平台有的 prop 放进 `ios={{…}}`、`android={{…}}`、`desktop={{…}}` 或
   `web={{…}}`（Rust 中是构建器方法），只有当前平台的对象会生效；
-- 某个平台独有的 API 来自 `nsh/ios`、`nsh/android` 和 `nsh/desktop`；
+- 移动平台的 API 来自 `nsh/mobile`，桌面的 API 来自 `nsh/desktop`；
 - 按平台设置的样式使用 `ios:`、`android:` 和 `web:` 类名。
 
 平台分支即使表现不同，也必须保留语义契约。例如对话框在 iOS 上是面板，在桌面上是覆盖窗口的一层，但应用仍需要一致的打开状态。

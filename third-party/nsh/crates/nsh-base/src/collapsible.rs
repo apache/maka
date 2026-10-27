@@ -1,7 +1,7 @@
 //! `Collapsible`: a region whose content is shown or left out, with no look
 //! of its own.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The props of [`Collapsible`].
 #[derive(Debug, Clone, PartialEq, Props)]

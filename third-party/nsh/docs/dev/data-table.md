@@ -5,9 +5,9 @@ and columns: only the cells in view (and a reach around them) exist as views. It
 `DataTable` (columns, selection of rows, columns or cells, sorting, resizing, moving, fixed columns, loading more,
 context menus, keyboard) and is adapted to NSH where that one is not: the rows are data the app hands over (`data`,
 `dataStart`, `rowCount`), not a delegate the table calls; sorting is the app's (the table reports the next sort and
-draws the one the app sets); paddings are the app's classes. As `Editor` and `DiffView` do, it has a default look
-from the theme's tokens (an exception to "No styles in NSH", `AGENTS.md`), every part of which the app restyles. The
-user-facing page is `website/elements/data-table.md`; how each module works inside is in its `//!` docs.
+draws the one the app sets). It supplies a table's layout, alignment, virtualization and interaction; the app
+supplies padding, colors, borders and state feedback through `classes` and `styles`. The user-facing page is
+`website/elements/data-table.md`; how each module works inside is in its `//!` docs.
 
 | File | What |
 |---|---|
@@ -31,6 +31,9 @@ The table is a hit layer, a body and a header (`view.rs`):
   last scrolled to. Its regions are the row headers, the fixed columns (which move with the rows only) and the scrolling
   columns (which move both ways). The cells a scroll needs come with the next commit, which moves the body with them;
 - the *header* above it is interactive: group labels, titles, resize handles and the drop line of a column being moved.
+
+The fixed-column separator sits above each row background and below its cells, so app-supplied cell borders
+remain visible at the fixed boundary.
 
 Rows come from `RowWindow` (`window.rs`, `reaching(margin, ahead)`), columns from the same with a reach of 1 and 3, so
 a scroll inside the window made commits a few mount items only.
@@ -60,6 +63,12 @@ that float is several content points. Columns hold prefix sums, so finding the c
 A column's `cellClass` and `headerClass` come after the part's classes (`column_parts`, `view.rs`). Two presses of a
 resize handle that moved less than `MOVE_SLOP`, within `DOUBLE_PRESS` (400 ms), fit the column (`Dt::resize_end`).
 `bounces` sets the bounce of both scroll views.
+
+A resize handle supplies its hit band and a one-point indicator part. The app colors that part as its column
+separator; leaving the title's right border unset gives it one line. `headerContent` styles the layout row of the
+label and sort button (for example, their gap), and `headerCellDragging` supplies drag feedback. `examples/nsh-gallery-ui/data-table.ts` supplies the gallery and website demos'
+8-point cell padding, 8 points before a title and 4 after its sort button, with a 4-point gap before the button.
+Its columns set `fitPadding: 16` for this app-owned spacing; fits add this to the widest title or cell text.
 
 ## Data
 
@@ -95,7 +104,8 @@ frame, and scrolling while they tick holds 143 of 144 frames, ~3 ms a frame.
 The table is one stop of Tab, as gpui-component's (a `tab_stop` focus handle): its hit layer's content box, whose
 `onFocus` / `onBlur` set the table's focus (`Dt::set_focus`), which binds its keys; its rows, titles and sort buttons
 are `focusable(false)`. While it has the keyboard Tab moves the selection, as gpui-component's, and Escape gives it
-back. A press, `focus()` and `blur()` set the same flag. Tab stops at pressables on macOS and the web.
+back. A press, `focus()` and `blur()` set the same flag. Tab stops at pressables and `focusable(true)` views on macOS
+and the web (`ViewProps::focus_stop`).
 
 ## Compared with gpui-component
 
@@ -112,8 +122,8 @@ methods the ref's. Deliberate differences:
   every range change, for the delegate to guard).
 - One `onSelectionChange` with a `{ row?, column? }` value replaces `SelectRow` / `SelectColumn` / `SelectCell` /
   `ClearSelection`; the arrow keys skip columns that do not select (gpui-component's land on them).
-- No strings and no fixed look: the empty and loading slots are the app's, and every part (the sort button's chevrons
-  among them) takes the app's classes over the theme's default look (gpui-component draws an inbox icon, a skeleton
+- No strings and no fixed look: the empty and loading slots are the app's, and every part (the sort button
+  among them) takes the app's classes for its appearance (gpui-component draws an inbox icon, a skeleton
   and a translated "Sort by" label).
 - `onRowPress` is gpui-component's `render_tr` click handler, for the app's own selections of several rows;
   `rowClasses`, data beside `data`, is `render_tr`'s per-row look without a call into JS per row.

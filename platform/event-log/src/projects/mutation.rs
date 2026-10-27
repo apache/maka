@@ -20,6 +20,12 @@
 use super::*;
 use uuid::Uuid;
 
+enum RegistrationGuard {
+    Unconditional,
+    Observed(Option<ProjectRecord>),
+    Available,
+}
+
 impl EventLog {
     /// Register one resolved identity without rewriting unrelated catalog rows.
     /// Additional non-preferred worktrees do not displace the existing choice.
@@ -29,7 +35,7 @@ impl EventLog {
         prefer: bool,
         now: u64,
     ) -> Result<ProjectRecord> {
-        self.register_project_guarded(registration, prefer, now, None)
+        self.register_project_guarded(registration, prefer, now, RegistrationGuard::Unconditional)
             .await
     }
 
@@ -42,7 +48,22 @@ impl EventLog {
         now: u64,
         expected: Option<ProjectRecord>,
     ) -> Result<ProjectRecord> {
-        self.register_project_guarded(registration, prefer, now, Some(expected))
+        self.register_project_guarded(
+            registration,
+            prefer,
+            now,
+            RegistrationGuard::Observed(expected),
+        )
+        .await
+    }
+
+    /// Use the current physical identity only while its logical project is available.
+    pub async fn register_available_project(
+        &self,
+        registration: ProjectRegistration,
+        now: u64,
+    ) -> Result<ProjectRecord> {
+        self.register_project_guarded(registration, true, now, RegistrationGuard::Available)
             .await
     }
 
@@ -51,77 +72,21 @@ impl EventLog {
         registration: ProjectRegistration,
         prefer: bool,
         now: u64,
-        expected: Option<Option<ProjectRecord>>,
+        guard: RegistrationGuard,
     ) -> Result<ProjectRecord> {
         self.validate_root()?;
         validate_registration(&registration)?;
         let now = timestamp(now)?;
         self.connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let existing: Option<String> =
-                        sqlx::query_scalar("SELECT id FROM projects WHERE identity = ?")
-                            .bind(&registration.identity)
-                            .fetch_optional(&mut *tx)
-                            .await?;
-                    if let Some(expected) = expected {
-                        let actual = match &existing {
-                            Some(id) => read(&mut tx, id).await?,
-                            None => None,
-                        };
-                        if actual != expected {
-                            return Err(ProjectError::Changed.into());
-                        }
-                    }
-                    let id = if let Some(id) = existing {
-                        sqlx::query(
-                            "UPDATE projects SET last_used_at = MAX(last_used_at, ?) WHERE id = ?",
-                        )
-                        .bind(now)
-                        .bind(&id)
-                        .execute(&mut *tx)
-                        .await?;
-                        id
-                    } else {
-                        let id = Uuid::new_v4().to_string();
-                        sqlx::query("INSERT INTO projects VALUES (?, ?, ?, ?, NULL)")
-                            .bind(&id)
-                            .bind(&registration.identity)
-                            .bind(registration.name.trim())
-                            .bind(now)
-                            .execute(&mut *tx)
-                            .await?;
-                        sqlx::query("INSERT INTO project_identities VALUES (?, ?)")
-                            .bind(&id)
-                            .bind(&id)
-                            .execute(&mut *tx)
-                            .await?;
-                        id
-                    };
-                    let has_location: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM project_locations WHERE project_id = ?)",
-                    )
-                    .bind(&id)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                    let used_at = if prefer || !has_location { now } else { 0 };
-                    sqlx::query(
-                        "INSERT INTO project_locations VALUES (?, ?, ?, ?)
-                ON CONFLICT(project_id, path) DO UPDATE SET is_worktree = excluded.is_worktree,
-                last_used_at = MAX(project_locations.last_used_at, excluded.last_used_at)",
-                    )
-                    .bind(&id)
-                    .bind(&registration.path)
-                    .bind(registration.is_worktree)
-                    .bind(used_at)
-                    .execute(&mut *tx)
-                    .await?;
-                    let record = read(&mut tx, &id).await?.ok_or(ProjectError::NotFound)?;
-                    tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    Ok(record)
-                })
-            })
+            .write(
+                WriteRegistration {
+                    registration,
+                    prefer,
+                    now,
+                    guard,
+                },
+                self.commits.notice(),
+            )
             .await
     }
 
@@ -291,6 +256,115 @@ impl EventLog {
                 })
             })
             .await
+    }
+}
+
+pub(crate) struct WriteRegistration {
+    registration: ProjectRegistration,
+    prefer: bool,
+    now: i64,
+    guard: RegistrationGuard,
+}
+
+impl crate::writeback::Statement for WriteRegistration {
+    type Value = ProjectRecord;
+    type Output = ProjectRecord;
+
+    fn execute(
+        self,
+        connection: &mut SqliteConnection,
+    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<ProjectRecord>>> {
+        Box::pin(async move {
+            let Self {
+                registration,
+                prefer,
+                now,
+                guard,
+            } = self;
+            let existing: Option<String> =
+                sqlx::query_scalar("SELECT id FROM projects WHERE identity = ?")
+                    .bind(&registration.identity)
+                    .fetch_optional(&mut *connection)
+                    .await?;
+            if let RegistrationGuard::Observed(expected) = guard {
+                let actual = match &existing {
+                    Some(id) => read(connection, id).await?,
+                    None => None,
+                };
+                if actual != expected {
+                    return Err(ProjectError::Changed.into());
+                }
+            } else if matches!(guard, RegistrationGuard::Available)
+                && let Some(id) = &existing
+            {
+                let archived: Option<i64> =
+                    sqlx::query_scalar("SELECT archived_at FROM projects WHERE id=?")
+                        .bind(id)
+                        .fetch_one(&mut *connection)
+                        .await?;
+                if archived.is_some() {
+                    return Err(ProjectError::Archived.into());
+                }
+            }
+            let id = if let Some(id) = existing {
+                sqlx::query("UPDATE projects SET last_used_at = MAX(last_used_at, ?) WHERE id = ?")
+                    .bind(now)
+                    .bind(&id)
+                    .execute(&mut *connection)
+                    .await?;
+                id
+            } else {
+                let id = Uuid::new_v4().to_string();
+                sqlx::query("INSERT INTO projects VALUES (?, ?, ?, ?, NULL)")
+                    .bind(&id)
+                    .bind(&registration.identity)
+                    .bind(registration.name.trim())
+                    .bind(now)
+                    .execute(&mut *connection)
+                    .await?;
+                sqlx::query("INSERT INTO project_identities VALUES (?, ?)")
+                    .bind(&id)
+                    .bind(&id)
+                    .execute(&mut *connection)
+                    .await?;
+                id
+            };
+            let has_location: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM project_locations WHERE project_id = ?)",
+            )
+            .bind(&id)
+            .fetch_one(&mut *connection)
+            .await?;
+            let used_at = if prefer || !has_location { now } else { 0 };
+            sqlx::query(
+                "INSERT INTO project_locations VALUES (?, ?, ?, ?)
+    ON CONFLICT(project_id, path) DO UPDATE SET is_worktree = excluded.is_worktree,
+    last_used_at = MAX(project_locations.last_used_at, excluded.last_used_at)",
+            )
+            .bind(&id)
+            .bind(&registration.path)
+            .bind(registration.is_worktree)
+            .bind(used_at)
+            .execute(&mut *connection)
+            .await?;
+            let record = read(connection, &id).await?.ok_or(ProjectError::NotFound)?;
+            Ok(crate::writeback::Prepared {
+                value: record,
+                changed: true,
+                notification: crate::writeback::Notification::None,
+            })
+        })
+    }
+
+    fn committed(value: ProjectRecord) -> ProjectRecord {
+        value
+    }
+
+    fn isolated_rejection(error: &StoreError) -> bool {
+        matches!(
+            error,
+            StoreError::Project(ProjectError::Changed | ProjectError::Archived)
+        )
     }
 }
 

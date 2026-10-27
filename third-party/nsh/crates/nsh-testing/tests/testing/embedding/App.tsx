@@ -2,8 +2,8 @@
 // parameters, events, calls the test's handlers answer, posts it records,
 // and the URLs the app opens, recorded instead of opened.
 import { mount, signal, Text, View } from "nsh";
-import { host } from "nsh/host";
-import { openUrl } from "nsh/device";
+import { host } from "nsh";
+import { openUrl } from "nsh";
 import { TextView } from "nsh/base";
 
 const user = typeof host.params.user === "string" ? host.params.user : "guest";

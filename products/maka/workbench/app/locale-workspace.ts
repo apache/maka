@@ -297,11 +297,10 @@ export const workspaceMessages = {
   ],
   Rename: msg_projectsRename,
   'Rename conversation': ['Rename conversation', '重命名对话', '重新命名對話'],
-  'Resize session browser': ['Resize session browser', '调整会话浏览器大小', '調整對話瀏覽器大小'],
-  'Resize workspace preview': [
-    'Resize workspace preview',
-    '调整工作区预览大小',
-    '調整工作區預覽大小',
+  'Resize workspace panels': [
+    'Resize workspace panels',
+    '调整工作区面板大小',
+    '調整工作區面板大小',
   ],
   Restore: msg_projectsRestore,
   'Restore conversation': msg_restoreSession,

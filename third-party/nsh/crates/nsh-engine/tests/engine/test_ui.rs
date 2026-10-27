@@ -5,8 +5,8 @@
 
 use std::{rc::Rc, time::Duration};
 
-use nsh_base::{dialog, theme};
-use nsh_core::ui::{Registry, prelude::*};
+use nsh_base::{dialog, input, theme};
+use nsh_core::{element::Registry, prelude::*};
 
 /// The module the tests' apps import these components from.
 pub(crate) const SPECIFIER: &str = "test/ui";
@@ -17,6 +17,7 @@ pub(crate) fn registry() -> Registry {
     registry
         .register::<Button>()
         .register::<Card>()
+        .register::<Disclosure>()
         .register::<Group>()
         .register::<ListView>()
         .register::<Stepper>()
@@ -148,6 +149,38 @@ pub(crate) fn Card(props: CardProps) -> impl IntoElement {
                 .footer
                 .place(|footer| footer.flex_row().justify_end().px_4().py_3()),
         )
+}
+
+// --- Disclosure: a slot the view makes a button ------------------------------
+
+/// A trigger the app passes, made a disclosure button.
+#[derive(Debug, Clone, PartialEq, Props)]
+pub(crate) struct DisclosureProps {
+    /// No presses.
+    #[prop(default)]
+    pub(crate) disabled: Prop<bool>,
+    /// What the user presses.
+    pub(crate) trigger: Prop<Option<Slot>>,
+}
+
+/// A trigger the view gives a role, the keyboard focus, `disabled`, an
+/// expanded state and presses that flip it ([`DisclosureProps`]), as a
+/// popup's trigger: they are the app's element's own, so its state classes
+/// follow them.
+#[component]
+pub(crate) fn Disclosure(props: DisclosureProps) -> impl IntoElement {
+    let open = signal(false);
+    view().child(props.trigger.place(move |trigger| {
+        trigger
+            .role(AccessibilityRole::Button)
+            .focusable(true)
+            .disabled(props.disabled)
+            .accessibility_state(move || AccessibilityState {
+                expanded: Some(open.get()),
+                ..AccessibilityState::default()
+            })
+            .on_press(move |_: &()| open.update(|o| *o = !*o))
+    }))
 }
 
 // --- Group: children placed one by one --------------------------------------

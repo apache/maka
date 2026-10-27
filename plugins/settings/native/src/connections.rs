@@ -48,7 +48,7 @@ pub(crate) async fn page(
     let input: ConnectionsRead =
         serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
     let catalog = store
-        .catalog()
+        .connection_summaries()
         .await
         .map_err(|_| "settings_store_unavailable")?;
     let offset = match input {
@@ -71,14 +71,14 @@ pub(crate) async fn page(
         .map(|row| ConnectionSummary {
             editable: definition(&row.provider, snapshot.clone()).is_ok(),
             basis: ConnectionVersionBasis {
-                connection_id: row.connection_id.clone(),
-                revision: row.revision,
+                connection_id: row.basis.connection_id.clone(),
+                revision: row.basis.revision,
             },
             slug: row.slug.clone(),
             name: row.name.clone(),
             provider: row.provider.clone(),
             enabled: row.enabled,
-            enabled_model_count: row.enabled_model_ids.len(),
+            enabled_model_count: row.enabled_model_count,
         })
         .collect();
     encode(ConnectionsPage::Ready {

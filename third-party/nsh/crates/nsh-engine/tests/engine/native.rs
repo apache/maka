@@ -14,7 +14,7 @@ use serde_json::json;
 use crate::ChannelSink;
 
 const APP: &str = r#"import { mount, signal, Text, View } from "nsh";
-import { nativeComponent } from "nsh/native";
+import { nativeComponent } from "nsh";
 
 const Map = nativeComponent<
   { center: { lat: number; lng: number }; zoom?: number; title?: string },
@@ -45,7 +45,10 @@ mount(App);
 "#;
 
 fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
-    let dir = std::env::temp_dir().join(format!("nsh-native-{}", std::process::id()));
+    // One directory per app started: the tests run in parallel.
+    static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nsh-native-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let entry = dir.join("App.tsx");
     std::fs::write(&entry, app).unwrap();
@@ -156,4 +159,134 @@ fn cross_as_json((engine, rx): (Engine, Receiver<MountBatch>)) {
         MountItem::Command { id: c, command: Command::Native { name, args } }
             if *c == id && &**name == "flyTo" && *args == json!({ "zoom": 7, "animated": true })
     )));
+}
+
+const ANIMATED_APP: &str = r#"import { mount, signal, View } from "nsh";
+import { createAnimatedValue } from "nsh";
+import { nativeComponent } from "nsh";
+
+const Thing = nativeComponent<{ progress?: number }, { mode: { animated: boolean; tick: number } }>(
+  "com.example.thing",
+  { props: ["progress"], events: ["mode"] },
+);
+
+function App() {
+  const v = createAnimatedValue(36);
+  const animated = signal(true);
+  const tick = signal(0);
+  return (
+    <View>
+      <Thing
+        progress={(tick(), animated() ? v.interpolate({ inputRange: [0, 72], outputRange: [0, 1] }) : 0.3)}
+        style={{ height: 100 }}
+        onMode={(e: { animated: boolean; tick: number }) => {
+          tick.set(e.tick);
+          animated.set(e.animated);
+        }}
+      />
+    </View>
+  );
+}
+
+mount(App);
+"#;
+
+fn native_id(batch: &MountBatch) -> u32 {
+    batch
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::Create {
+                id,
+                kind: ViewKind::Native,
+            } => Some(*id),
+            _ => None,
+        })
+        .expect("a native container")
+}
+
+fn component_props(batch: &MountBatch, id: u32) -> Vec<(String, Option<JsonValue>)> {
+    batch
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MountItem::ComponentProps { id: c, props } if *c == id => Some(props.clone()),
+            _ => None,
+        })
+        .flatten()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
+}
+
+fn bound_slots(batch: &MountBatch, id: u32) -> Option<Vec<nsh_core::animation::AnimationProp>> {
+    batch.items.iter().rev().find_map(|i| match i {
+        MountItem::AnimationBindings { id: c, bindings } if *c == id => {
+            Some(bindings.iter().map(|(p, _)| *p).collect())
+        }
+        _ => None,
+    })
+}
+
+fn set_mode(engine: &Engine, id: u32, animated: bool, tick: u32) {
+    engine.control().dispatch_event(
+        id,
+        EventKind::NativeEvent,
+        EventPayload::Native {
+            name: "mode".into(),
+            data: json!({ "animated": animated, "tick": tick }),
+        },
+    );
+}
+
+#[test]
+fn animated_props_bind_instead_of_crossing_as_json() {
+    let (engine, rx) = start(ANIMATED_APP);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let id = native_id(&first);
+    assert!(first.items.iter().any(|i| matches!(
+        i,
+        MountItem::ComponentPropSlots { id: c, names } if *c == id && names.len() == 1 && &*names[0] == "progress"
+    )));
+    assert_eq!(
+        bound_slots(&first, id),
+        Some(vec![nsh_core::animation::AnimationProp::ComponentSlot(0)])
+    );
+    // Never as `{ "__av": n }`.
+    assert!(
+        component_props(&first, id)
+            .iter()
+            .all(|(k, _)| k != "progress")
+    );
+
+    // A plain number again: sent as JSON, the slot unbound.
+    set_mode(&engine, id, false, 1);
+    let batch = rx.recv_timeout(Duration::from_secs(5)).expect("a batch");
+    assert_eq!(
+        component_props(&batch, id),
+        vec![("progress".to_owned(), Some(json!(0.3)))]
+    );
+    assert_eq!(bound_slots(&batch, id), Some(vec![]));
+}
+
+#[test]
+fn animated_component_prop_survives_rerender() {
+    let (engine, rx) = start(ANIMATED_APP);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let id = native_id(&first);
+    // The prop is read again; the same interpolation is the same node.
+    set_mode(&engine, id, true, 1);
+    if let Ok(batch) = rx.recv_timeout(Duration::from_secs(2)) {
+        assert!(
+            !batch.items.iter().any(|i| matches!(
+                i,
+                MountItem::AnimationBindings { id: c, .. } | MountItem::ComponentPropSlots { id: c, .. } if *c == id
+            )),
+            "{:?}",
+            batch.items
+        );
+    }
 }

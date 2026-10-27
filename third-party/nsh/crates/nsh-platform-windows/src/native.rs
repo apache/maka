@@ -138,6 +138,20 @@ pub trait NativeComponent {
     fn command(&mut self, name: &str, args: &JsonValue) {
         let _ = (name, args);
     }
+
+    /// Prop `name`, bound to an animated value, moved to `value` (on the
+    /// frames it changes, without JS). By default, [`Self::set_prop`] with
+    /// a JSON number.
+    fn set_animated_number(&mut self, name: &str, value: f64) {
+        let json = serde_json::Number::from_f64(value).map_or(JsonValue::Null, JsonValue::Number);
+        self.set_prop(name, Some(&json));
+    }
+
+    /// Prop `name`, bound to an animated color, moved to `argb`
+    /// (`0xAARRGGBB`). By default, [`Self::set_prop`] with a JSON number.
+    fn set_animated_color(&mut self, name: &str, argb: u32) {
+        self.set_prop(name, Some(&JsonValue::from(argb)));
+    }
 }
 
 /// What a component can tell its app. Cheap to clone; usable from any
@@ -533,6 +547,36 @@ fn web_item(surface: &Surface, id: NodeId) -> Option<Rc<web::WebItem>> {
     match surface.native.hosts.borrow().get(&id) {
         Some(Host::Web(item)) => Some(item.clone()),
         _ => None,
+    }
+}
+
+/// Whether view `id` holds a made component (its animated props wait until
+/// it does).
+pub(crate) fn has_component(surface: &Surface, id: NodeId) -> bool {
+    component_item(surface, id).is_some_and(|item| item.component.borrow().is_some())
+}
+
+/// Bound props that moved (`Animator::write_components`): handed to their
+/// components.
+pub(crate) fn component_animated(
+    surface: &Surface,
+    moved: Vec<(NodeId, Arc<str>, nsh_core::animation::AnimatedPropValue)>,
+) {
+    use nsh_core::animation::AnimatedPropValue;
+    for (id, name, value) in moved {
+        let Some(item) = component_item(surface, id) else {
+            continue;
+        };
+        // Taken out while the app's code runs, so it may reach the surface.
+        let Some(mut component) = item.component.borrow_mut().take() else {
+            continue;
+        };
+        match value {
+            AnimatedPropValue::Number(n) => component.set_animated_number(&name, n),
+            AnimatedPropValue::Color(argb) => component.set_animated_color(&name, argb),
+            _ => {}
+        }
+        item.put(component);
     }
 }
 

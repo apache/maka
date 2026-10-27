@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) struct StepGate {
     root: PathBuf,
+    sqlite_owner: Option<Arc<maka_event_log::root_store::RootStore>>,
     first: Barrier,
     second: Barrier,
     paused: Vec<AtomicU64>,
@@ -46,11 +47,24 @@ impl StepGate {
         assert!(w > 0);
         Arc::new(Self {
             root,
+            sqlite_owner: None,
             first: Barrier::new(w),
             second: Barrier::new(w),
             paused: (0..w).map(|_| AtomicU64::new(0)).collect(),
             cancelled: CancellationToken::new(),
         })
+    }
+
+    pub(super) fn with_sqlite_owner(
+        root: PathBuf,
+        w: usize,
+        sqlite_owner: Arc<maka_event_log::root_store::RootStore>,
+    ) -> Arc<Self> {
+        let mut gate = Self::new(root, w);
+        Arc::get_mut(&mut gate)
+            .expect("new gate is uniquely owned")
+            .sqlite_owner = Some(sqlite_owner);
+        gate
     }
 
     pub(super) fn paused_nanos(&self, index: usize) -> u64 {
@@ -121,7 +135,27 @@ impl ToolExecutor for Echo {
             let step = input["step"].as_u64().expect("fixture step is an integer") as usize;
             if step.is_multiple_of(100) {
                 gate.checkpoint(index, &cancellation, async {
-                    super::sample(&gate.root, "active_sample", step, gate.paused.len(), 0).await;
+                    let started = Instant::now();
+                    let sqlite = if matches!(step, 500 | 900) {
+                        match &gate.sqlite_owner {
+                            Some(owner) => Some(owner.sqlite_resource_stats().await.unwrap()),
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let mut metrics = tokio::task::spawn_blocking({
+                        let root = gate.root.clone();
+                        move || super::snapshot(&root, 0)
+                    })
+                    .await
+                    .unwrap();
+                    if let Some(sqlite) = sqlite {
+                        metrics["sqlite_connections"] = serde_json::to_value(sqlite).unwrap();
+                    }
+                    metrics["sampling_ms"] = json!(started.elapsed().as_secs_f64() * 1000.0);
+                    super::emit(json!({"phase":"active_sample","progress":step,
+                        "work_concurrency":gate.paused.len(),"metrics":metrics}));
                 })
                 .await?;
             }

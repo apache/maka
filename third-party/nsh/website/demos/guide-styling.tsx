@@ -1,5 +1,6 @@
 import { mount, Scroll, signal, Text, View } from "nsh";
-import { desktop, size, tint, ui, wide } from "./palette";
+import { reduceMotion } from "nsh";
+import { desktop, focusRing, size, tint, ui, wide } from "./palette";
 
 // A function, so the styles follow the page's theme.
 const styles = () =>
@@ -59,6 +60,9 @@ function App() {
                   : { flex: 1, padding: 12, borderRadius: 10, backgroundColor: ui().raised.backgroundColor, alignItems: "center", borderWidth: 3, borderColor: "transparent" },
                 picked() === i() && styles().selected,
               ]}
+              hoverStyle={{ opacity: 0.88 }}
+              focusStyle={focusRing()}
+              activeStyle={{ opacity: 0.7 }}
             >
               <Text style={{ color: ui().text, fontSize: desktop ? 13 : undefined }}>{label()}</Text>
             </View>
@@ -81,9 +85,12 @@ function App() {
           alignItems: "center",
           justifyContent: "center",
           transitionProperty: "all",
-          transitionDuration: 400,
+          transitionDuration: reduceMotion() ? 0 : 400,
           transitionTimingFunction: "ease-in-out",
         }}
+        hoverStyle={{ opacity: 0.88 }}
+        focusStyle={focusRing()}
+        activeStyle={{ opacity: 0.7 }}
       >
         <Text style={{ color: ui().page, fontWeight: "600" }}>{on() ? "On" : "Off"}</Text>
       </View>

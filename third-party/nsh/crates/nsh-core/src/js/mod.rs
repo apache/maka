@@ -15,26 +15,7 @@
 /// platforms' and host elements' modules. Registries add theirs
 /// (`Registry::specifier`: `nsh/base`, an app's set) or
 /// the functions of nsh's own (`nsh/image`, `nsh/android`).
-pub const NATIVE_MODULES: &[&str] = &[
-    "nsh",
-    "nsh:rt",
-    "nsh/device",
-    "nsh/accessibility",
-    "nsh/android",
-    "nsh/ios",
-    "nsh/desktop",
-    "nsh/mobile",
-    "nsh/webview",
-    "nsh/video",
-    "nsh/native",
-    "nsh/gesture",
-    "nsh/animated",
-    "nsh/canvas",
-    "nsh/list",
-    "nsh/image",
-    "nsh/host",
-    "nsh/keymap",
-];
+pub const NATIVE_MODULES: &[&str] = &["nsh", "nsh:rt", "nsh/desktop", "nsh/mobile"];
 
 /// The exact gpui-shell standard catalog, using canonical bare specifiers.
 /// Privileged entries route through NSH capability adapters.

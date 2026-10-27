@@ -39,6 +39,7 @@ animation::ops::AnimationOp::CreateInterpolate.input_range       # interpolation
 animation::ops::AnimationOp::CreateValue.value                   # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::Set.value                           # a generic animated value (any prop: opacity, a color channel, a length)
 animation::ops::AnimationOp::SetOffset.offset                    # a generic animated value (any prop: opacity, a color channel, a length)
+animation::ops::AnimatedPropValue::Number.0                          # a native component's animated prop, whatever the component makes of it
 animation::ops::Composite::Delay.0                               # time
 animation::ops::Curve::Back.0                                    # an easing curve parameter
 animation::ops::Curve::Elastic.0                                 # an easing curve parameter
@@ -213,153 +214,158 @@ transform::TransformOp.value                                     # a transform o
 transition::Extra.scale                                          # a scale factor
 transition::Live::opacity ->                                     # an opacity factor
 transition::Live::step(now)                                      # time
-ui::ambient::animated_value(value)                               # an animated value (any quantity)
-ui::ambient::font_scale ->                                       # a font scale factor
-ui::ambient::keyboard_duration ->                                # time
-ui::ambient::pixel_ratio ->                                      # device pixels per point
-ui::animated::AnimatedNode::diff_clamp(max)                      # an animated value (any quantity)
-ui::animated::AnimatedNode::diff_clamp(min)                      # an animated value (any quantity)
-ui::animated::AnimatedNode::diff_clamp_with(max)                 # an animated value (any quantity)
-ui::animated::AnimatedNode::diff_clamp_with(min)                 # an animated value (any quantity)
-ui::animated::AnimatedNode::interpolate(input)                   # an animated value (any quantity)
-ui::animated::AnimatedNode::interpolate(output)                  # an animated value (any quantity)
-ui::animated::AnimatedNode::interpolate_colors(input)            # an animated value (any quantity)
-ui::animated::AnimatedNode::interpolate_with(input)              # an animated value (any quantity)
-ui::animated::AnimatedValue::decay(deceleration)                 # a rate or a physical constant of an animation
-ui::animated::AnimatedValue::decay(velocity)                     # a rate or a physical constant of an animation
-ui::animated::AnimatedValue::decay_within(_)                     # an animated value (any quantity)
-ui::animated::AnimatedValue::decay_within(bounce)                # a rate or a physical constant of an animation
-ui::animated::AnimatedValue::decay_within(deceleration)          # a rate or a physical constant of an animation
-ui::animated::AnimatedValue::decay_within(velocity)              # a rate or a physical constant of an animation
-ui::animated::AnimatedValue::diff_clamp(max)                     # an animated value (any quantity)
-ui::animated::AnimatedValue::diff_clamp(min)                     # an animated value (any quantity)
-ui::animated::AnimatedValue::diff_clamp_with(max)                # an animated value (any quantity)
-ui::animated::AnimatedValue::diff_clamp_with(min)                # an animated value (any quantity)
-ui::animated::AnimatedValue::interpolate(input)                  # an animated value (any quantity)
-ui::animated::AnimatedValue::interpolate(output)                 # an animated value (any quantity)
-ui::animated::AnimatedValue::interpolate_colors(input)           # an animated value (any quantity)
-ui::animated::AnimatedValue::interpolate_with(input)             # an animated value (any quantity)
-ui::animated::AnimatedValue::adjust(factor)                      # an affine multiplier of a generic animated value
-ui::animated::AnimatedValue::adjust(offset)                      # an animated value (any quantity)
-ui::animated::AnimatedValue::set(value)                          # an animated value (any quantity)
-ui::animated::AnimatedValue::set_offset(offset)                  # an animated value (any quantity)
-ui::animated::AnimatedValue::spring(to)                          # an animated value (any quantity)
-ui::animated::AnimatedValue::timing(ms)                          # time
-ui::animated::AnimatedValue::timing(to)                          # an animated value (any quantity)
-ui::animated::AnimatedValue::timing_with(to)                     # an animated value (any quantity)
-ui::animated::AnimatedValue::value ->                            # an animated value (any quantity)
-ui::animated::Animation::decay(deceleration)                     # a rate or a physical constant of an animation
-ui::animated::Animation::decay(velocity)                         # a rate or a physical constant of an animation
-ui::animated::Animation::decay_within(_)                         # an animated value (any quantity)
-ui::animated::Animation::decay_within(bounce)                    # a rate or a physical constant of an animation
-ui::animated::Animation::decay_within(deceleration)              # a rate or a physical constant of an animation
-ui::animated::Animation::decay_within(velocity)                  # a rate or a physical constant of an animation
-ui::animated::Animation::delay(ms)                               # time
-ui::animated::Animation::spring(to)                              # an animated value (any quantity)
-ui::animated::Animation::stagger(ms)                             # time
-ui::animated::Animation::stagger_from(ms)                        # time
-ui::animated::Animation::timing(to)                              # an animated value (any quantity)
-ui::animated::Spring.damping                                     # a rate or a physical constant of an animation
-ui::animated::Spring.mass                                        # a rate or a physical constant of an animation
-ui::animated::Spring.stiffness                                   # a rate or a physical constant of an animation
-ui::animated::Spring.velocity                                    # a rate or a physical constant of an animation
-ui::animated::Timing.delay_ms                                    # time
-ui::animated::Timing.duration_ms                                 # time
-ui::animated::Timing::new(duration_ms)                           # time
-ui::animated::sample_decay ->                                    # an animated value (any quantity)
-ui::animated::sample_decay(deceleration)                         # a rate or a physical constant of an animation
-ui::animated::sample_decay(fps)                                  # time
-ui::animated::sample_decay(from)                                 # an animated value (any quantity)
-ui::animated::sample_decay(velocity)                             # a rate or a physical constant of an animation
-ui::animated::sample_decay_within ->                             # an animated value (any quantity)
-ui::animated::sample_decay_within(_)                             # an animated value (any quantity)
-ui::animated::sample_decay_within(bounce)                        # a rate or a physical constant of an animation
-ui::animated::sample_decay_within(deceleration)                  # a rate or a physical constant of an animation
-ui::animated::sample_decay_within(fps)                           # time
-ui::animated::sample_decay_within(from)                          # an animated value (any quantity)
-ui::animated::sample_decay_within(velocity)                      # a rate or a physical constant of an animation
-ui::animated::sample_spring ->                                   # an animated value (any quantity)
-ui::animated::sample_spring(fps)                                 # time
-ui::animated::sample_spring(from)                                # an animated value (any quantity)
-ui::animated::sample_spring(to)                                  # an animated value (any quantity)
-ui::asset::ImageAsset.scales                                     # pixel densities (device pixels per point)
-ui::element::Image::fade_duration(ms)                            # time
-ui::element::Interactive::long_press_delay(ms)                   # time
-ui::element::Text::max_font_size_multiplier(multiplier)          # a font scale factor
-ui::element::Text::shrink_to_fit(min_scale)                      # a font scale factor
-ui::element_ref::ElementRef::seek(seconds)                       # time
-ui::element_ref::ElementRef::zoom_to(scale)                      # a zoom scale factor
-ui::env::Environment.font_scale                                  # a font scale factor
-ui::env::Environment.keyboard_duration                           # time
-ui::env::Environment.pixel_ratio                                 # device pixels per point
-ui::events::GestureEvent.velocity                                # a rate or a physical constant of an animation
-ui::events::ImageProgress.loaded                                 # byte counts
-ui::events::ImageProgress.total                                  # byte counts
-ui::events::PanEvent.value_x                                     # an animated value (any quantity)
-ui::events::PanEvent.value_y                                     # an animated value (any quantity)
-ui::events::PanEvent.velocity_x                                  # a rate or a physical constant of an animation
-ui::events::PanEvent.velocity_y                                  # a rate or a physical constant of an animation
-ui::events::ScrollEvent.zoom_scale                               # a zoom scale factor
-ui::events::VideoInfo.duration                                   # time
-ui::events::VideoProgress.current_time                           # time
-ui::events::VideoProgress.duration                               # time
-ui::host::Painter::miter_limit(limit)                            # a ratio of the stroke width
-ui::host::Scroll::zoom(scale)                                    # a zoom scale factor
-ui::host::Scroll::zoom_range(max)                                # a zoom scale factor
-ui::host::Scroll::zoom_range(min)                                # a zoom scale factor
-ui::host::Video::progress_interval(ms)                           # time
-ui::host::Video::rate(rate)                                      # a playback rate multiplier
-ui::host::Video::volume(volume)                                  # audio volume, 0..1
-ui::js::JsHost::date ->                                          # time (a JS Date's milliseconds since the epoch)
-ui::js::JsHost::new_date(millis)                                 # time (a JS Date's milliseconds since the epoch)
-ui::js::JsHost::new_number(n)                                    # a generic number (a JS value, a recorded slot)
-ui::js::JsHost::number ->                                        # a generic number (a JS value, a recorded slot)
-ui::js::JsIn::as_date ->                                         # time (a JS Date's milliseconds since the epoch)
-ui::js::JsIn::as_number ->                                       # a generic number (a JS value, a recorded slot)
-ui::module::ConstantValue::Number.0                              # a generic number (a module constant's JS value)
-ui::responder::PanGesture.vx                                     # a rate or a physical constant of an animation
-ui::responder::PanGesture.vy                                     # a rate or a physical constant of an animation
-ui::responder::ResponderEvent.timestamp                          # time
-ui::scrollable::Scrollable::deceleration(rate)                   # a rate or a physical constant of an animation
-ui::scrollable::Scrollable::event_throttle(ms)                   # time
-ui::style::AdaptiveColor::opacity(opacity)                       # an opacity, 0..1
-ui::style::Styled::aspect_ratio(ratio)                           # a width / height ratio
-ui::style::Styled::backdrop_brightness(amount)                   # a filter amount (1 leaves the image as it is)
-ui::style::Styled::backdrop_contrast(amount)                     # a filter amount (1 leaves the image as it is)
-ui::style::Styled::backdrop_grayscale(amount)                    # a filter amount (1 leaves the image as it is)
-ui::style::Styled::backdrop_invert(amount)                       # a filter amount (1 leaves the image as it is)
-ui::style::Styled::backdrop_opacity(amount)                      # an opacity, 0..1
-ui::style::Styled::backdrop_saturate(amount)                     # a filter amount (1 leaves the image as it is)
-ui::style::Styled::backdrop_sepia(amount)                        # a filter amount (1 leaves the image as it is)
-ui::style::Styled::brightness(amount)                            # a filter amount (1 leaves the image as it is)
-ui::style::Styled::contrast(amount)                              # a filter amount (1 leaves the image as it is)
-ui::style::Styled::delay(ms)                                     # time
-ui::style::Styled::duration(ms)                                  # time
-ui::style::Styled::ease_bezier(x1)                               # easing curve coordinates (unit square)
-ui::style::Styled::ease_bezier(x2)                               # easing curve coordinates (unit square)
-ui::style::Styled::ease_bezier(y1)                               # easing curve coordinates (unit square)
-ui::style::Styled::ease_bezier(y2)                               # easing curve coordinates (unit square)
-ui::style::Styled::flex_grow(factor)                             # a flex factor
-ui::style::Styled::flex_shrink(factor)                           # a flex factor
-ui::style::Styled::grayscale(amount)                             # a filter amount (1 leaves the image as it is)
-ui::style::Styled::invert(amount)                                # a filter amount (1 leaves the image as it is)
-ui::style::Styled::opacity(opacity)                              # an opacity, 0..1
-ui::style::Styled::saturate(amount)                              # a filter amount (1 leaves the image as it is)
-ui::style::Styled::scale(scale)                                  # a scale factor
-ui::style::Styled::scale_x(scale)                                # a scale factor
-ui::style::Styled::scale_y(scale)                                # a scale factor
-ui::style::Styled::sepia(amount)                                 # a filter amount (1 leaves the image as it is)
-ui::style::Styled::shadow_opacity(opacity)                       # an opacity, 0..1
-ui::style::Styled::transform_step(amount)                        # a transform operand (any of its kinds' units)
-ui::tokens::Tokens::number ->                                    # a design token: a generic number (a radius, a size, a ratio)
-ui::tokens::Tokens::numbers ->                                   # a design token: a generic number (a radius, a size, a ratio)
-ui::tokens::Tokens::set_number(value)                            # a design token: a generic number (a radius, a size, a ratio)
-ui::tokens::Token::Number.0                                      # a design token: a generic number (a radius, a size, a ratio)
-ui::virtual_list::VirtualList::load_more_at_start_threshold(viewports)  # in viewport lengths (a ratio)
-ui::virtual_list::VirtualList::load_more_threshold(viewports)  # in viewport lengths (a ratio)
+element::ambient::animated_value(value)                               # an animated value (any quantity)
+element::ambient::font_scale ->                                       # a font scale factor
+element::ambient::keyboard_duration ->                                # time
+element::ambient::pixel_ratio ->                                      # device pixels per point
+element::animated::AnimatedNode::diff_clamp(max)                      # an animated value (any quantity)
+element::animated::AnimatedNode::diff_clamp(min)                      # an animated value (any quantity)
+element::animated::AnimatedNode::diff_clamp_with(max)                 # an animated value (any quantity)
+element::animated::AnimatedNode::diff_clamp_with(min)                 # an animated value (any quantity)
+element::animated::AnimatedNode::interpolate(input)                   # an animated value (any quantity)
+element::animated::AnimatedNode::interpolate(output)                  # an animated value (any quantity)
+element::animated::AnimatedNode::interpolate_colors(input)            # an animated value (any quantity)
+element::animated::AnimatedNode::interpolate_with(input)              # an animated value (any quantity)
+element::animated::AnimatedValue::decay(deceleration)                 # a rate or a physical constant of an animation
+element::animated::AnimatedValue::decay(velocity)                     # a rate or a physical constant of an animation
+element::animated::AnimatedValue::decay_within(_)                     # an animated value (any quantity)
+element::animated::AnimatedValue::decay_within(bounce)                # a rate or a physical constant of an animation
+element::animated::AnimatedValue::decay_within(deceleration)          # a rate or a physical constant of an animation
+element::animated::AnimatedValue::decay_within(velocity)              # a rate or a physical constant of an animation
+element::animated::AnimatedValue::diff_clamp(max)                     # an animated value (any quantity)
+element::animated::AnimatedValue::diff_clamp(min)                     # an animated value (any quantity)
+element::animated::AnimatedValue::diff_clamp_with(max)                # an animated value (any quantity)
+element::animated::AnimatedValue::diff_clamp_with(min)                # an animated value (any quantity)
+element::animated::AnimatedValue::interpolate(input)                  # an animated value (any quantity)
+element::animated::AnimatedValue::interpolate(output)                 # an animated value (any quantity)
+element::animated::AnimatedValue::interpolate_colors(input)           # an animated value (any quantity)
+element::animated::AnimatedValue::interpolate_with(input)             # an animated value (any quantity)
+element::animated::AnimatedValue::adjust(factor)                      # an affine multiplier of a generic animated value
+element::animated::AnimatedValue::adjust(offset)                      # an animated value (any quantity)
+element::animated::AnimatedValue::set(value)                          # an animated value (any quantity)
+element::animated::AnimatedValue::set_offset(offset)                  # an animated value (any quantity)
+element::animated::AnimatedValue::spring(to)                          # an animated value (any quantity)
+element::animated::AnimatedValue::timing(ms)                          # time
+element::animated::AnimatedValue::timing(to)                          # an animated value (any quantity)
+element::animated::AnimatedValue::timing_with(to)                     # an animated value (any quantity)
+element::animated::AnimatedValue::value ->                            # an animated value (any quantity)
+element::animated::Animation::decay(deceleration)                     # a rate or a physical constant of an animation
+element::animated::Animation::decay(velocity)                         # a rate or a physical constant of an animation
+element::animated::Animation::decay_within(_)                         # an animated value (any quantity)
+element::animated::Animation::decay_within(bounce)                    # a rate or a physical constant of an animation
+element::animated::Animation::decay_within(deceleration)              # a rate or a physical constant of an animation
+element::animated::Animation::decay_within(velocity)                  # a rate or a physical constant of an animation
+element::animated::Animation::delay(ms)                               # time
+element::animated::Animation::spring(to)                              # an animated value (any quantity)
+element::animated::Animation::stagger(ms)                             # time
+element::animated::Animation::stagger_from(ms)                        # time
+element::animated::Animation::timing(to)                              # an animated value (any quantity)
+element::animated::Spring.damping                                     # a rate or a physical constant of an animation
+element::animated::Spring.mass                                        # a rate or a physical constant of an animation
+element::animated::Spring.stiffness                                   # a rate or a physical constant of an animation
+element::animated::Spring.velocity                                    # a rate or a physical constant of an animation
+element::animated::Timing.delay_ms                                    # time
+element::animated::Timing.duration_ms                                 # time
+element::animated::Timing::new(duration_ms)                           # time
+element::animated::sample_decay ->                                    # an animated value (any quantity)
+element::animated::sample_decay(deceleration)                         # a rate or a physical constant of an animation
+element::animated::sample_decay(fps)                                  # time
+element::animated::sample_decay(from)                                 # an animated value (any quantity)
+element::animated::sample_decay(velocity)                             # a rate or a physical constant of an animation
+element::animated::sample_decay_within ->                             # an animated value (any quantity)
+element::animated::sample_decay_within(_)                             # an animated value (any quantity)
+element::animated::sample_decay_within(bounce)                        # a rate or a physical constant of an animation
+element::animated::sample_decay_within(deceleration)                  # a rate or a physical constant of an animation
+element::animated::sample_decay_within(fps)                           # time
+element::animated::sample_decay_within(from)                          # an animated value (any quantity)
+element::animated::sample_decay_within(velocity)                      # a rate or a physical constant of an animation
+element::animated::sample_spring ->                                   # an animated value (any quantity)
+element::animated::sample_spring(fps)                                 # time
+element::animated::sample_spring(from)                                # an animated value (any quantity)
+element::animated::sample_spring(to)                                  # an animated value (any quantity)
+element::asset::ImageAsset.scales                                     # pixel densities (device pixels per point)
+element::builder::Image::fade_duration(ms)                            # time
+element::builder::Interactive::long_press_delay(ms)                   # time
+element::builder::Text::max_font_size_multiplier(multiplier)          # a font scale factor
+element::builder::Text::shrink_to_fit(min_scale)                      # a font scale factor
+element::element_ref::ElementRef::seek(seconds)                       # time
+element::element_ref::ElementRef::zoom_to(scale)                      # a zoom scale factor
+element::env::Environment.font_scale                                  # a font scale factor
+element::env::Environment.keyboard_duration                           # time
+element::env::Environment.pixel_ratio                                 # device pixels per point
+element::events::GestureEvent.velocity                                # a rate or a physical constant of an animation
+element::events::ImageProgress.loaded                                 # byte counts
+element::events::ImageProgress.total                                  # byte counts
+element::events::PanEvent.value_x                                     # an animated value (any quantity)
+element::events::PanEvent.value_y                                     # an animated value (any quantity)
+element::events::PanEvent.velocity_x                                  # a rate or a physical constant of an animation
+element::events::PanEvent.velocity_y                                  # a rate or a physical constant of an animation
+element::events::ScrollEvent.zoom_scale                               # a zoom scale factor
+element::events::VideoInfo.duration                                   # time
+element::events::VideoProgress.current_time                           # time
+element::events::VideoProgress.duration                               # time
+element::host::Painter::miter_limit(limit)                            # a ratio of the stroke width
+element::host::Scroll::zoom(scale)                                    # a zoom scale factor
+element::host::Scroll::zoom_range(max)                                # a zoom scale factor
+element::host::Scroll::zoom_range(min)                                # a zoom scale factor
+element::host::Video::progress_interval(ms)                           # time
+element::host::Video::rate(rate)                                      # a playback rate multiplier
+element::host::Video::volume(volume)                                  # audio volume, 0..1
+element::js::JsHost::date ->                                          # time (a JS Date's milliseconds since the epoch)
+element::js::JsHost::new_date(millis)                                 # time (a JS Date's milliseconds since the epoch)
+element::js::JsHost::new_number(n)                                    # a generic number (a JS value, a recorded slot)
+element::js::JsHost::number ->                                        # a generic number (a JS value, a recorded slot)
+element::js::JsIn::as_date ->                                         # time (a JS Date's milliseconds since the epoch)
+element::js::JsIn::as_number ->                                       # a generic number (a JS value, a recorded slot)
+element::module::ConstantValue::Number.0                              # a generic number (a module constant's JS value)
+element::responder::PanGesture.vx                                     # a rate or a physical constant of an animation
+element::responder::PanGesture.vy                                     # a rate or a physical constant of an animation
+element::responder::ResponderEvent.timestamp                          # time
+element::scrollable::Scrollable::deceleration(rate)                   # a rate or a physical constant of an animation
+element::scrollable::Scrollable::event_throttle(ms)                   # time
+element::style::AdaptiveColor::opacity(opacity)                       # an opacity, 0..1
+element::style::Styled::aspect_ratio(ratio)                           # a width / height ratio
+element::style::Styled::backdrop_brightness(amount)                   # a filter amount (1 leaves the image as it is)
+element::style::Styled::backdrop_contrast(amount)                     # a filter amount (1 leaves the image as it is)
+element::style::Styled::backdrop_grayscale(amount)                    # a filter amount (1 leaves the image as it is)
+element::style::Styled::backdrop_invert(amount)                       # a filter amount (1 leaves the image as it is)
+element::style::Styled::backdrop_opacity(amount)                      # an opacity, 0..1
+element::style::Styled::backdrop_saturate(amount)                     # a filter amount (1 leaves the image as it is)
+element::style::Styled::backdrop_sepia(amount)                        # a filter amount (1 leaves the image as it is)
+element::style::Styled::brightness(amount)                            # a filter amount (1 leaves the image as it is)
+element::style::Styled::contrast(amount)                              # a filter amount (1 leaves the image as it is)
+element::style::Styled::delay(ms)                                     # time
+element::style::Styled::duration(ms)                                  # time
+element::style::Styled::ease_bezier(x1)                               # easing curve coordinates (unit square)
+element::style::Styled::ease_bezier(x2)                               # easing curve coordinates (unit square)
+element::style::Styled::ease_bezier(y1)                               # easing curve coordinates (unit square)
+element::style::Styled::ease_bezier(y2)                               # easing curve coordinates (unit square)
+element::style::Styled::flex_grow(factor)                             # a flex factor
+element::style::Styled::flex_shrink(factor)                           # a flex factor
+element::style::Styled::grayscale(amount)                             # a filter amount (1 leaves the image as it is)
+element::style::Styled::invert(amount)                                # a filter amount (1 leaves the image as it is)
+element::style::Styled::opacity(opacity)                              # an opacity, 0..1
+element::style::Styled::saturate(amount)                              # a filter amount (1 leaves the image as it is)
+element::style::Styled::scale(scale)                                  # a scale factor
+element::style::Styled::scale_x(scale)                                # a scale factor
+element::style::Styled::scale_y(scale)                                # a scale factor
+element::style::Styled::sepia(amount)                                 # a filter amount (1 leaves the image as it is)
+element::style::Styled::shadow_opacity(opacity)                       # an opacity, 0..1
+element::style::Styled::transform_step(amount)                        # a transform operand (any of its kinds' units)
+element::tokens::Tokens::number ->                                    # a design token: a generic number (a radius, a size, a ratio)
+element::tokens::Tokens::numbers ->                                   # a design token: a generic number (a radius, a size, a ratio)
+element::tokens::Tokens::set_number(value)                            # a design token: a generic number (a radius, a size, a ratio)
+element::tokens::Token::Number.0                                      # a design token: a generic number (a radius, a size, a ratio)
+element::virtual_list::VirtualList::load_more_at_start_threshold(viewports)  # in viewport lengths (a ratio)
+element::virtual_list::VirtualList::load_more_threshold(viewports)  # in viewport lengths (a ratio)
 animation::animator::Animator::value ->                          # a generic animated value (any prop: opacity, a color channel, a length)
 scroll::ScrollState::sticky_shifts_with(value)                  # a generic animated value read from the graph (a sticky cell's offset)
-ui::rows::Rows::column ->                                        # the app's data: numbers of any unit, which a component scales
-ui::rows::Rows::from_columns(columns)                            # the app's data: numbers of any unit, which a component scales
+element::rows::Rows::column ->                                        # the app's data: numbers of any unit, which a component scales
+element::rows::Rows::from_columns(columns)                            # the app's data: numbers of any unit, which a component scales
+element::rows::RowAccessor::Js.0                                      # the app's data: numbers of any unit, which a component scales
+element::rows::RowAccessor::Rust.0                                    # the app's data: numbers of any unit, which a component scales
+element::rows::RowAccessor::from_fn(f)                                # the app's data: numbers of any unit, which a component scales
+element::rows::RowAccessor::values ->                                 # the app's data: numbers of any unit, which a component scales
+element::rows::RowAccessor::values_now ->                             # the app's data: numbers of any unit, which a component scales
 
 style::TextStyle.line_height_em                                  # a line-height length in multiples of the element font size

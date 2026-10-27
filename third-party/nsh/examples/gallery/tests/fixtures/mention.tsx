@@ -1,8 +1,9 @@
 // An @-mention candidate list driven by the keyboard while the message
 // input keeps the focus: `up`, `down` and `enter` bound with
 // `{ when: "always" }` take the keys before the input does.
-import { Input, mount, signal, Text, View } from "nsh";
-import { keymap } from "nsh/keymap";
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { keymap } from "nsh";
 
 const people = ["Alice", "Bob", "Carol"];
 

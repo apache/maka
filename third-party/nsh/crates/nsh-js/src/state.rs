@@ -9,7 +9,7 @@
 
 use std::{cell::RefCell, ffi::c_void, ptr, rc::Rc};
 
-use nsh_core::ui::Registry;
+use nsh_core::element::Registry;
 use rquickjs::{Ctx, qjs};
 use rustc_hash::FxHashMap;
 
@@ -67,7 +67,7 @@ pub(crate) fn install(
     cx: &Ctx<'_>,
     shared: Rc<Shared>,
     ui_sets: &[Registry],
-    posts: nsh_core::ui::Posts,
+    posts: nsh_core::element::Posts,
 ) {
     let raw = cx.as_raw().as_ptr();
     // SAFETY: registering classes on the context's runtime; the state is

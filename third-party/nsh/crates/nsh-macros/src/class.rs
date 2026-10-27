@@ -37,7 +37,7 @@ fn class_struct(item: ItemStruct, interface: bool) -> syn::Result<TokenStream2> 
             "a class has no generic parameters",
         ));
     }
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let name = &item.ident;
     let doc = decl(&docs(&item.attrs));
     // Every field, traced when its type implements `Trace` (by its type,
@@ -222,7 +222,7 @@ enum Param<'a> {
 }
 
 fn class_impl(mut item: ItemImpl) -> syn::Result<TokenStream2> {
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     if !item.generics.params.is_empty() || item.trait_.is_some() {
         return Err(syn::Error::new(
             item.span(),
@@ -298,7 +298,7 @@ fn class_impl(mut item: ItemImpl) -> syn::Result<TokenStream2> {
 }
 
 fn member_def(f: &ImplItemFn, class: &str) -> syn::Result<TokenStream2> {
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let private = quote!(#ui::__private);
     let kind = kind_of(f)?;
     let ident = &f.sig.ident;
@@ -526,7 +526,7 @@ fn sync_call(
     fallible: bool,
     starts: bool,
 ) -> TokenStream2 {
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let private = quote!(#ui::__private);
     let ident = &f.sig.ident;
     let mut decode = Vec::new();
@@ -650,7 +650,7 @@ fn async_call(
     what: &str,
     fallible: bool,
 ) -> TokenStream2 {
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let private = quote!(#ui::__private);
     let ident = &f.sig.ident;
     let mut decode = Vec::new();

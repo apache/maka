@@ -34,7 +34,7 @@ mod mount;
 mod native;
 mod navigation;
 mod scroll;
-mod selection_area;
+mod selectable_view;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;

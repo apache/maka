@@ -1,6 +1,6 @@
-import { Input, signal, Text, View } from "nsh";
-import { AlertDialog } from "nsh/base";
-import { Storage } from "nsh/storage";
+import { signal, Text, View } from "nsh";
+import { AlertDialog, Input } from "nsh/base";
+import { Storage } from "nsh";
 import { Icon } from "../icons";
 import { Badge, Button, Caption, Card, colors, DemoPage, Figure, finish, mono, radius, Row } from "../ui";
 
@@ -10,7 +10,7 @@ const NOTE = "note";
 type Entry = { key: string; length: number };
 
 /**
- * nsh/storage: a count of this demo's openings, a note saved as it is
+ * nsh: a count of this demo's openings, a note saved as it is
  * typed, and every key the app keeps (the gallery's own last demo among
  * them), all still there after a restart.
  */

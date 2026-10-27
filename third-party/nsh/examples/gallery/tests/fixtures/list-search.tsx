@@ -1,4 +1,5 @@
-import { Input, List, mount, signal, Text, View } from "nsh";
+import { List, mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 const people = ["Alice", "Bob", "Carol", "Dave", "Erin", "Frank", "Grace", "Heidi", "Ivan", "Judy", "Mallory", "Niaj"];
 

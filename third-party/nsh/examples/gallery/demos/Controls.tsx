@@ -1,7 +1,7 @@
 import { cleanup, computed, signal, Text, View } from "nsh";
 import { Checkbox, Collapsible, Progress, Radio, RadioGroup, Switch, Tab, Tabs } from "nsh/base";
-import { reduceMotion } from "nsh/accessibility";
-import { platform } from "nsh/device";
+import { reduceMotion } from "nsh";
+import { platform } from "nsh";
 import { Icon } from "../icons";
 import { Badge, Button, Caption, Card, colors, DemoPage, finish, focusRing, hovered, mono, switchLook, toneColor } from "../ui";
 

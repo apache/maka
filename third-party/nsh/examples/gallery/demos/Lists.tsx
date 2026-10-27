@@ -1,8 +1,9 @@
-import { cleanup, computed, effect, Input, List, Scroll, signal, Text, View, type YNode } from "nsh";
-import { reduceMotion } from "nsh/accessibility";
-import { Animated, type AnimatedNode, createAnimatedValue, Easing, LayoutAnimation } from "nsh/animated";
-import { platform } from "nsh/device";
-import { keyboardFrame, KeyboardAvoidingView, safeAreaInsets, Tab, Tabs } from "nsh/base";
+import { cleanup, computed, effect, List, Scroll, signal, Text, View, type YNode } from "nsh";
+import { reduceMotion } from "nsh";
+import { Animated, type AnimatedNode, createAnimatedValue, Easing, LayoutAnimation } from "nsh";
+import { platform } from "nsh";
+import { Tab, Tabs, Input } from "nsh/base";
+import { keyboardFrame, safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { alpha, Appear, Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, hint, IconTile, Meter, mono, Press, radius, RoundButton, Section, Segmented, tabPress, type Tone, toneColor, toneTint } from "../ui";
 
@@ -259,7 +260,7 @@ function Chat() {
     messages.update((m) => [...m, ...Array.from({ length: 20 }, (_, i) => message(`Older message ${count + i + 1}`, i % 4 === 0))]);
   };
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }}>
+    <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingBottom: 8 }}>
         <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: colors.up }} />
         <Text style={{ flex: 1, fontSize: 13, color: colors.muted }}>Release room</Text>
@@ -336,7 +337,7 @@ function Chat() {
         />
         <RoundButton icon="arrow-up" label="Send" onPress={send} />
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 

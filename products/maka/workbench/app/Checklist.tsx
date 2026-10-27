@@ -21,7 +21,7 @@ import { createText, UiError, errorText } from './text';
 import { tr } from './locale';
 import { batch, cleanup, inputAction, signal, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { windowSize } from 'nsh/device';
+import { windowSize } from 'nsh';
 import { host } from './host';
 import type { Subscription } from './history';
 import type { AgentChecklist, AgentTodoItem } from '../../../../packages/plugin-sdk/src/index.js';

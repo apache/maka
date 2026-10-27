@@ -4,7 +4,7 @@
 //! to change, the split sides scrolling sideways together, and the text
 //! box's width that soft wrap follows.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use super::{
     DiffLine, DiffLineRange, DiffSide, DiffViewEvent,

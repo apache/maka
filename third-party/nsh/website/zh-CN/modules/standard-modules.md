@@ -22,7 +22,7 @@ Native Shell 为 TSX 提供十一个标准模块，按裸模块名导入（Rust 
 
 ## 在 Rust 中
 
-Rust 代码用 Rust 标准库和 crates.io 完成同样的工作，作为应用自己的原生代码运行：阻塞调用用 `blocking(…)` 在运行时的线程上执行，异步调用用 `background(…)`（`nsh_core::ui::prelude`），结果在任务中回到组件。`nsh.json` 的 `capabilities` 约束应用的 TSX 和 NSH 的服务（`fetch`、剪贴板）；应用自己的 Rust 代码以应用进程的权限运行。在浏览器应用中，Rust 代码用 `fetch` 访问网络，用 `nsh_core::storage::Storage` 保存数据。
+Rust 代码用 Rust 标准库和 crates.io 完成同样的工作，作为应用自己的原生代码运行：阻塞调用用 `blocking(…)` 在运行时的线程上执行，异步调用用 `background(…)`（`nsh_core::prelude`），结果在任务中回到组件。`nsh.json` 的 `capabilities` 约束应用的 TSX 和 NSH 的服务（`fetch`、剪贴板）；应用自己的 Rust 代码以应用进程的权限运行。在浏览器应用中，Rust 代码用 `fetch` 访问网络，用 `nsh_core::storage::Storage` 保存数据。
 
 | 模块 | Rust |
 |---|---|

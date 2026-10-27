@@ -43586,6 +43586,10 @@ export const contracts = {
                     type: 'string',
                     default: '',
                   },
+                  connectionId: {
+                    type: ['string', 'null'],
+                    default: null,
+                  },
                 },
                 additionalProperties: false,
                 required: ['kind'],
@@ -43618,6 +43622,9 @@ export const contracts = {
                   query: {
                     type: 'string',
                   },
+                  connectionId: {
+                    type: ['string', 'null'],
+                  },
                   connection: {
                     type: 'integer',
                     format: 'uint',
@@ -43630,7 +43637,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['query', 'connection', 'model'],
+                required: ['query', 'connectionId', 'connection', 'model'],
               },
             },
           },
@@ -43920,6 +43927,9 @@ export const contracts = {
                   query: {
                     type: 'string',
                   },
+                  connectionId: {
+                    type: ['string', 'null'],
+                  },
                   connection: {
                     type: 'integer',
                     format: 'uint',
@@ -43932,7 +43942,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['query', 'connection', 'model'],
+                required: ['query', 'connectionId', 'connection', 'model'],
               },
             },
           },

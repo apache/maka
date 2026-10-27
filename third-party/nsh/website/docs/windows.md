@@ -11,7 +11,7 @@ NSH apps also run on Windows. The Windows backend draws them in Win32 windows wi
 DirectWrite; the core, the reactive graph, the renderer, Taffy layout and the native modules are the same
 as on iOS and Android, so one app runs everywhere. On Windows, `os()` is `Os::Windows` (`platform.os` is `"windows"`
 in TSX) and TSX's `desktop={{…}}` props apply. The window's title, a title bar of the app's own, the menu bar and
-context menus come from `nsh_core::ui::desktop` in Rust ([Desktop title bars](./rust.md#desktop-title-bars)) and
+context menus come from `nsh_core::element::desktop` in Rust ([Desktop title bars](./rust.md#desktop-title-bars)) and
 [`nsh/desktop`](../modules/nsh-desktop.md) in TSX.
 
 ## Requirements
@@ -182,7 +182,7 @@ Shortcuts work with any keyboard layout (on a Cyrillic or Greek one, Ctrl+C is t
 A return that commits an input method's composition (Chinese, Japanese, ...) never submits. `onKeyPress` reports
 what React Native reports: the typed text, `"Enter"`, `"Backspace"`, and `"Escape"`; pasted text is not reported.
 
-The app's own shortcuts ([`nsh/keymap`](../modules/nsh-keymap.md)) come before a focused field's keys, navigation
+The app's own shortcuts ([`keymap`](../modules/nsh.md#keymap)) come before a focused field's keys, navigation
 and scrolling; Alt+F4, F11 and Ctrl+Q cannot be bound.
 
 Different, or not supported:

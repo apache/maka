@@ -9,7 +9,7 @@ mod nav;
 mod shell;
 mod ui;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::ui::{colors, desktop};
 

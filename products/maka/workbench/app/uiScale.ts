@@ -18,7 +18,7 @@
  */
 
 import { batch, signal } from 'nsh';
-import { Storage } from 'nsh/storage';
+import { Storage } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import { createText, message } from './text';
 

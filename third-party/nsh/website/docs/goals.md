@@ -32,7 +32,7 @@ A switch means the same thing on a phone, a desktop and the web. [`nsh/base`](..
 | Rendering, layout, reactivity and environment | `nsh-core`, `nsh` and runtime modules | Views, text, signals, styles |
 | Shared behavior and accessible structure | `nsh-base`, imported as `nsh/base` in TSX | `Button`, `Checkbox`, `Switch`, `Tabs` |
 | Visual design and styled components | The app or a community library | Branded controls, cards, form rows |
-| Platform-specific capabilities | `nsh/mobile`, `nsh/desktop`, `nsh/ios`, `nsh/android` | Mobile navigation bar, desktop window controls |
+| Platform-specific capabilities | `nsh/mobile`, `nsh/desktop` | Mobile navigation bar, desktop window controls |
 
 Common controls have one cross-platform home in `nsh/base`. Platform modules are scoped by purpose and platform semantics. [`TabBar`](../modules/nsh-mobile.md#tabbar) serves mobile top-level navigation; [`Tabs`](../elements/tabs.md) switches tabbed content across platforms. Their roles are distinct. `nsh/mobile` accepts capabilities with mobile-specific interaction semantics; differences in a common control’s appearance, size, tint or animation belong within its shared component and app styling. A notification or toast with a shared role should first be designed around one cross-platform contract, with presentation adapted internally.
 

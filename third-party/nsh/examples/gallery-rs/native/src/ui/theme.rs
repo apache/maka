@@ -11,11 +11,11 @@
 
 use nsh_core::{
     animation::{Curve, EaseMode},
-    geometry::px,
-    ui::{
+    element::{
         AdaptiveColor, BoxShadow, Easing, Rgba, Spring, StyleRefinement, Styled, Timing,
         percentage, rgb, rgba,
     },
+    geometry::px,
 };
 
 /// `#rrggbb` at opacity `alpha` (CSS's `rgba(r, g, b, alpha)`).
@@ -101,7 +101,7 @@ pub(crate) mod tints {
 }
 
 /// What a mark says: its color and its tint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nsh_core::ui::PropEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, nsh_core::element::PropEnum)]
 pub(crate) enum Tone {
     /// No meaning: muted.
     #[default]

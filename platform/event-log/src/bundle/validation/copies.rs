@@ -140,12 +140,26 @@ impl Copies {
                         {
                             return Err(invalid("copy member exceeds its original fence"));
                         }
-                        sqlx::query("INSERT INTO session_history_members VALUES(?,?,?)")
-                            .bind(session)
-                            .bind(sequence as i64)
-                            .bind(archive_sequence.map(|n| n as i64))
-                            .execute(&mut *db)
-                            .await?;
+                        crate::connection::worker_query(db, move |worker| {
+                            Box::pin(async move {
+                                let sequence = sequence as i64;
+                                let archive_sequence = archive_sequence.map(|n| n as i64);
+                                sqlx::query("INSERT INTO session_history_members VALUES(?,?,?)")
+                                    .bind(&session)
+                                    .bind(sequence)
+                                    .bind(archive_sequence)
+                                    .execute(&mut *worker)
+                                    .await?;
+                                crate::context::semantic::copy_member(
+                                    worker,
+                                    &session,
+                                    sequence,
+                                    archive_sequence,
+                                )
+                                .await
+                            })
+                        })
+                        .await?;
                     }
                     Record::RevisionSource { session, sequence } => {
                         let sequence = positions.map_or(Ok(sequence), |p| p.event(sequence))?;

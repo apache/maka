@@ -358,8 +358,6 @@ dependencies = [
 [[package]]
 name = "async-io"
 version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "456b8a8feb6f42d237746d4b3e9a178494627745c3c56c6ea55d92ba50d026fc"
 dependencies = [
  "autocfg",
  "cfg-if",
@@ -2464,6 +2462,12 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foldhash"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
@@ -3098,12 +3102,11 @@ dependencies = [
 [[package]]
 name = "gpui-fast"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f539554aee0e994d84014d99e85f3923db613a62a94f248a6559e628bbb0b0be"
 dependencies = [
  "accesskit",
  "anyhow",
  "async-channel",
+ "async-io",
  "async-task",
  "backtrace",
  "bitflags 2.13.2",
@@ -3209,8 +3212,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-linux"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f41024ac6447667ddb55d23dd897acc714f1d4ed74214b34144f320458de879f"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3254,8 +3255,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-macos"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9656cc924a624ebbc44bb9f8149f5206fe6e94b262349f662efe692e03d900"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -3379,8 +3378,6 @@ dependencies = [
 [[package]]
 name = "gpui-fast-windows"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f034e131f83ff84b67f009cde41e0cbecb3be09d7ebba7c548ea78fe0fdee5b0"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3599,8 +3596,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83f342555282a59ed8dd58dd7e0a920524fa8ef6aa8c8f30e2edb7019a8f72cb"
 dependencies = [
  "async-task",
  "backtrace",
@@ -3899,13 +3894,22 @@ checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
+version = "0.15.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+dependencies = [
+ "foldhash 0.1.5",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -3916,7 +3920,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -5193,7 +5197,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-base"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "html5ever 0.27.0",
  "imara-diff",
@@ -5213,7 +5217,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-bundler"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dunce",
  "log",
@@ -5226,7 +5230,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cap-std",
  "crc32fast",
@@ -5237,6 +5241,7 @@ dependencies = [
  "libc",
  "log",
  "nsh-macros",
+ "regex",
  "resvg",
  "rustc-hash 2.1.3",
  "serde",
@@ -5247,13 +5252,14 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "unicode-linebreak",
+ "unicode-segmentation",
  "url",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nsh-dev"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "dunce",
@@ -5265,7 +5271,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-engine"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossbeam-channel",
  "libc",
@@ -5283,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-gpui-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "log",
  "nsh-dev",
@@ -5293,7 +5299,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-gpui-terminal"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5310,7 +5316,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-js"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",
@@ -5330,7 +5336,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-macros"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "imagesize 0.15.0",
  "proc-macro2",
@@ -5341,7 +5347,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-package"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.2.0",
@@ -5355,7 +5361,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-platform-gpui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -5394,7 +5400,7 @@ dependencies = [
 
 [[package]]
 name = "nsh-testing"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
@@ -8168,7 +8174,7 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
- "foldhash",
+ "foldhash 0.2.0",
  "indexmap",
  "itoa",
  "memchr",

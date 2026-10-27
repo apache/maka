@@ -7,7 +7,7 @@ group: ui
 
 # 网页视图与视频
 
-Web 视图和视频播放器把平台自己的网页引擎和媒体播放器作为普通视图嵌入：Rust 中是 `web_view` 和 `video`（`nsh_core::ui::prelude`），TSX 中是 `nsh` 的 `WebView` 和 `Video`。由于 NSH 用原生视图渲染，它们在布局中与其他元素无异：随父视图滚动、支持圆角和裁剪，其他视图可以覆盖在它们上面而不会出现层级问题。
+Web 视图和视频播放器把平台自己的网页引擎和媒体播放器作为普通视图嵌入：Rust 中是 `web_view` 和 `video`（`nsh_core::prelude`），TSX 中是 `nsh` 的 `WebView` 和 `Video`。由于 NSH 用原生视图渲染，它们在布局中与其他元素无异：随父视图滚动、支持圆角和裁剪，其他视图可以覆盖在它们上面而不会出现层级问题。
 
 | 组件 | iOS | Android | macOS | Linux | Windows |
 |---|---|---|---|---|---|
@@ -32,7 +32,7 @@ NSH 内容（对话框、sheet）会被它遮住。它需要 WebView2 Runtime（
 ## WebView
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn App() -> impl IntoElement {
@@ -96,7 +96,7 @@ mount(App);
 Web 视图的 ref（Rust 中用 `.element_ref(&web)` 挂上的 `element_ref()`，TSX 中的 `ref`）提供 `reload`、`go_back` / `goBack`、`go_forward` / `goForward`、`stop_loading` / `stopLoading`、`inject_java_script` / `injectJavaScript(script)` 和 `post_message` / `postMessage(data)`：
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn browser() -> impl IntoElement {
     let web = element_ref();
@@ -182,7 +182,7 @@ mount(Browser);
 页面通过 `window.nsh.postMessage(string)` 向应用发消息，应用收到 `on_message`（`onMessage`）。应用通过 ref 的 `post_message`（`postMessage(string)`）向页面发消息，页面在 `window` 上收到 `message` 事件。消息是字符串；结构化数据请发送 JSON。
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 const PAGE: &str = r#"<!doctype html>
 <html><head><meta name="viewport" content="width=device-width"></head>
@@ -299,7 +299,7 @@ web_view("https://example.com")
 ## Video
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn player() -> impl IntoElement {
     let player = element_ref();

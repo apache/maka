@@ -12,7 +12,7 @@ demo: el-alert-dialog
 
 ```rust tabs
 use nsh_base::{alert_dialog, button};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn app() -> impl IntoElement {
     let answer = signal(SharedString::from("–"));
@@ -102,7 +102,7 @@ alert_dialog().title(..).description(..).action(..).cancel(..).destructive(..).s
 
 ```rust tabs
 use nsh_base::alert_dialog;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn share() {
     spawn(async move {

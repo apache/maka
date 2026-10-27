@@ -10,8 +10,8 @@ use std::{
 };
 
 use nsh_core::{
+    element::JsError,
     filesystem::{FileEntry, FileMetadata, FileOperation, FileRequest, FileResponse, FileSystem},
-    ui::JsError,
 };
 
 use crate::ffi;

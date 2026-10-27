@@ -89,4 +89,4 @@ covers [nsh/base] NavStack
 covers [nsh/base] NavPage
 covers [nsh/base] Dialog
 covers [nsh/base] Button
-covers [nsh/storage] Storage
+covers [nsh] Storage

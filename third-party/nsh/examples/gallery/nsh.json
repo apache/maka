@@ -5,7 +5,7 @@
   "build": 1,
   "icon": "icon.png",
   "appearance": "system",
-  "theme": "theme.json",
+  "theme": "../nsh-gallery-ui/theme.json",
   "capabilities": {
     "network": {
       "hosts": [

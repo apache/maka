@@ -13,26 +13,13 @@ On the desktops and in desktop browsers it shows once the pointer has rested on 
 hides when the pointer leaves or presses the trigger. Phones and tablets show a tooltip only when the app opens it
 (`open`). It never takes the pointer or presses, so the trigger works exactly as it does without it.
 
-The quickest tooltip is the `tooltip` prop every element has: a text in a small bubble drawn with the theme's `popover`
-tokens, or an element shown as it is ([Common props](index.md#tooltips)).
-
-```rust tabs
-view().on_press(save).tooltip("Save the document").child(text("💾"))
-```
-
-```tsx tabs
-<View onPress={save} tooltip="Save the document">
-  <Text>💾</Text>
-</View>
-```
-
-`Tooltip` from [`nsh/base`](../modules/nsh-base.md) is the one to style, place and follow, given as the element's
-`tooltip` (as GPUI's `.tooltip(..)`): the element is what the pointer rests on and what it is placed against. The
-tooltip itself is the bubble: style it with `class` / `style`, and its children are what it says.
+`Tooltip` from [`nsh/base`](../modules/nsh-base.md) is given as the `tooltip` prop every element has
+([Common props](index.md#tooltips)), as GPUI's `.tooltip(..)`: the element is what the pointer rests on and what it
+is placed against. The tooltip itself is the bubble: style it with `class` / `style`, and its children are what it says.
 
 ```rust tabs
 use nsh_base::tooltip;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn save_button(on_save: impl Fn() + 'static) -> impl IntoElement {
     view()

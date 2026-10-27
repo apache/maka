@@ -1,11 +1,11 @@
 // A case of the API's test suite (docs/dev/compatibility.md): motions and
-// keyframes of `nsh/animated`. The animations run on the UI thread, which a
+// keyframes of `nsh`. The animations run on the UI thread, which a
 // headless run has not, so the script checks what JS sees synchronously:
 // the presets as data, the values a motion makes (and where `enter` starts
 // them), the steps easing's curve, and that keyframes, motions and
 // staggers build and start.
 import { Text, View } from "nsh";
-import { Animated, Easing, createAnimatedValue, createMotion, motions } from "nsh/animated";
+import { Animated, Easing, createAnimatedValue, createMotion, motions } from "nsh";
 
 function App() {
   const card = createMotion({ enter: "fadeInUp", delay: 40 });

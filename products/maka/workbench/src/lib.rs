@@ -75,7 +75,7 @@ pub fn application_bundle() -> Bundle {
 /// Runs the application with `registry` (the Host bindings') on `runtime`.
 /// The backend sets the viewport and environment it presents in.
 pub fn configuration(
-    registry: nsh_core::ui::Registry,
+    registry: nsh_core::element::Registry,
     runtime: tokio::runtime::Handle,
 ) -> EngineConfig {
     EngineConfig {

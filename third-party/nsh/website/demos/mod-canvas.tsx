@@ -1,31 +1,15 @@
 import { Canvas, mount, Path2D, signal, Text, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
-import { desktop, Panel, Split, tint, ui, wide } from "./palette";
+import { createAnimatedValue, Easing } from "nsh";
+import { button, buttonText, Panel, Split, tint, ui, wide } from "./palette";
 
 const TAU = Math.PI * 2;
 const heart = new Path2D("M12 21s-7-4.5-9.5-9A5.5 5.5 0 0 1 12 6a5.5 5.5 0 0 1 9.5 6c-2.5 4.5-9.5 9-9.5 9z");
 
 function Chip(props: { label: string; onPress: () => void }) {
   return (
-    <Text
-      onPress={props.onPress}
-      activeStyle={{ opacity: 0.6 }}
-      style={
-        desktop
-          ? { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, overflow: "hidden", ...ui().raised, color: ui().text, fontSize: 13, fontWeight: "600" }
-          : {
-              paddingHorizontal: 14,
-              paddingVertical: 8,
-              borderRadius: 10,
-              overflow: "hidden",
-              ...ui().raised,
-              color: ui().text,
-              fontWeight: "600",
-            }
-      }
-    >
-      {props.label}
-    </Text>
+    <View onPress={props.onPress} {...button()}>
+      <Text style={buttonText()}>{props.label}</Text>
+    </View>
   );
 }
 

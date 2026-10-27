@@ -1,7 +1,7 @@
 import { cleanup, mount, signal, Text, View } from "nsh";
-import { reduceMotion } from "nsh/accessibility";
+import { reduceMotion } from "nsh";
 import { Button, Progress, Switch } from "nsh/base";
-import { desktop, focusRing, hoverFill, Log, Panel, size, Split, ui } from "./palette";
+import { button, buttonText, desktop, focusRing, hoverFill, Log, Panel, size, Split, ui } from "./palette";
 
 // The parts: geometry and motion in classes, colors from the palette. The
 // label row comes first (`flex-col-reverse`: the children follow the track),
@@ -49,12 +49,9 @@ function Action(props: { label: string; disabled?: boolean; onPress: () => void 
     <Button
       onPress={props.onPress}
       disabled={props.disabled}
-      class="items-center justify-center rounded-lg border px-3 active:opacity-70 disabled:opacity-40"
-      style={{ height: size.control, flex: desktop ? undefined : 1, borderColor: ui().border }}
-      hoverStyle={props.disabled ? undefined : hoverFill()}
-      focusStyle={focusRing()}
+      {...button("secondary", { style: desktop ? {} : { flex: 1 } })}
     >
-      <Text style={{ fontSize: desktop ? 13 : 15, fontWeight: "600", color: ui().text }}>{props.label}</Text>
+      <Text style={buttonText()}>{props.label}</Text>
     </Button>
   );
 }

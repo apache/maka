@@ -10,7 +10,7 @@ group: platforms
 NSH 应用也能在 Linux 上运行。Linux 后端用 GTK 4 控件渲染应用，用 Pango 排版文字；核心、响应式图、渲染器、Taffy 布局以及
 原生模块与 iOS、Android 上完全相同，因此同一个应用可以在所有平台上运行。在 Linux 上，`os()` 为 `Os::Linux`（TSX 中
 `platform.os` 为 `"linux"`），并会应用 TSX 的 `desktop={{…}}` 属性。窗口标题、自定义标题栏、
-菜单栏和右键菜单在 Rust 中由 `nsh_core::ui::desktop` 提供（[桌面标题栏](./rust.md#桌面标题栏)），在 TSX 中由
+菜单栏和右键菜单在 Rust 中由 `nsh_core::element::desktop` 提供（[桌面标题栏](./rust.md#桌面标题栏)），在 TSX 中由
 [`nsh/desktop`](../modules/nsh-desktop.md) 提供。
 
 ## 环境要求
@@ -154,7 +154,7 @@ view.load(Bundle::source(code).into());
 | Ctrl+W、F11、Ctrl+Q | 关闭窗口、全屏、退出（`nsh package` 和 `nsh run` 的应用） |
 | Ctrl+R | 重新加载最新的构建（`nsh run`） |
 
-应用自己的快捷键（[`nsh/keymap`](../modules/nsh-keymap.md)）是一个窗口范围的快捷键控制器；Ctrl+Q 和 F11 不能被绑定。
+应用自己的快捷键（[`keymap`](../modules/nsh.md#keymap)）是一个窗口范围的快捷键控制器；Ctrl+Q 和 F11 不能被绑定。
 
 快捷键适用于任何键盘布局（在西里尔或希腊字母布局下，Ctrl+C 是美式布局中输入 C 的那个键）。确认输入法组合文字（中文、日文等）的回车
 不会提交。`onKeyPress` 报告的与 React Native 一致：输入的文字、`"Enter"`、`"Backspace"` 和 `"Escape"`；粘贴的文字不报告。

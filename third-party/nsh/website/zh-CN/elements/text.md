@@ -11,7 +11,7 @@ demo: el-text
 `Text` 绘制一个段落。它是显示字符串的元素：`View` 的字符串子节点什么也不会画。段落在原生侧排版（iOS 和 Mac Catalyst 上用 CoreText，Android 上用 `StaticLayout`），并在引擎线程上测量，主线程只负责绘制。Rust 用 `text(content)` 创建，TSX 用从 `nsh` 导入的 `<Text>`。
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 text("继续之前请阅读")
     .text_base()
@@ -211,4 +211,4 @@ Rust 用 `measure_text(..)` 在布局之前测量字符串。
 - 选区在一个文本块（一个文本及其片段）之内。iOS 显示其编辑菜单（拷贝、全选、查询、翻译、共享），Android 显示浮动工具栏（复制、全选、分享）。
 - 在 iOS 上，非实线单线的文本装饰线（`double`、`dotted`、`dashed`、`wavy`）由 NSH 自行绘制。
 - iOS 上的文本绘制纯色背景和外阴影。
-- [`nsh/device`](../modules/nsh-device.md) 的 `fontScale()`（Rust 中为 `font_scale()`）给出当前系统的文字缩放比例。
+- [`nsh` 的设备 API](../modules/nsh.md#device) 的 `fontScale()`（Rust 中为 `font_scale()`）给出当前系统的文字缩放比例。

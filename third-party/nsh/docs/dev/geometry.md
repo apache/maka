@@ -30,7 +30,7 @@ declarations. They serialize as numbers.
 Rust components style with them: `Styled`'s length methods take `impl IntoReactive<Length>`, so `.w(px(120.0))`,
 `.w(relative(0.5))`, `.p(rems(1.0))`, `.h(Length::Auto)` and closures returning any of them all work.
 
-The rest of the Rust UI API (`nsh_core::ui`) follows GPUI's element APIs:
+The rest of the Rust UI API (`nsh_core::element`) follows GPUI's element APIs:
 
 - **Box lengths** that layout does not resolve (`border*`, `outline`, `outline_offset`, `ring*`, `letter_spacing`,
   `perspective`) take `impl IntoReactive<AbsoluteLength>`, as GPUI's border widths are `AbsoluteLength`s: points or
@@ -68,7 +68,9 @@ The rest of the Rust UI API (`nsh_core::ui`) follows GPUI's element APIs:
 - **In JS values**: `Point<Points>`, `Size<Points>` and `Bounds<Points>` are `JsValue`s, TS's `Point`, `Size` and
   `Bounds` (`{ x, y }`, `{ width, height }`, `{ origin, size }`), as events carry them, so a Rust component's event
   payloads and ref methods take and return them typed (the `Editor`'s `caretBounds()`); `keymap::Modifiers` is TS's
-  `Modifiers` likewise.
+  `Modifiers` likewise. `Points`, `Radians` and `Percentage` are numbers (points, radians, a fraction), and
+  `DefiniteLength` is CSS's `number | \`${number}%\`` (points, or a percentage of a reference length the prop names),
+  so a Rust component's props take lengths, angles and fractions typed (`Pie`'s `startAngle`, `innerRadius`).
 
 ### Deviations from GPUI, and why
 
@@ -152,15 +154,15 @@ gives a reason in `unitless.txt`).
 |---|---|---|---|
 | A | `effects.rs`, `css.rs`, `transform.rs`, `shape.rs` | 24 | Box and drop shadows' offsets, blurs and spreads (`Points`), `Filter::Blur` / `HueRotate` (`Points`, `Radians`), outlines, `blur_radius`; `transform::Decomposed` (translate in `Points`, rotate in `Radians`), `Transform::resolve_fractions`; `shape::Segment` points (`Point<Points>`), `rounded_rect` |
 | B | `style.rs`, `tailwind/` | 43 | `CornerRadii` (`Corners<Points>`), `Borders.widths` (`Edges<Points>`), shadows, `TextStyle`'s font size, letter spacing, line height, decoration (`Points`), `OriginLen` (`DefiniteLength`), `TransformOrigin`, `ViewStyle` radii and elevation. Another pull request reorders `style.rs`'s border / outline / animation precedence: land after it |
-| C | `text.rs`, `canvas.rs`, `canvas/`, `ui/host.rs` (`Painter`) | 126 | Text metrics (`TextLine`, `LinePiece`, `BackgroundBox`, attachments: `Points`, `Bounds<Points>`), `TextEngine::measure(max_width)`; the canvas's ops, gradients, hit tests and `Painter`'s methods (`Point<Points>`, `Bounds<Points>`, `Radians` for arcs and rotations, `Percentage` for color stop offsets). The recorded canvas ops' wire encoding stays |
-| D | `ui/` except `host.rs` | 100 | `Styled`'s remaining methods (`border(width)`, `rotate(degrees)` → `Radians`, `translate_x`, `blur`, shadows, `gradient_*_position` → `Percentage`), events (`ScrollEvent`, `PanEvent`, `ResponderEvent`, `VideoInfo` → `Size<DevicePixels>` for pixel sizes), `ElementRef::scroll_to*`, `Scrollable`, `ListLayout`, `Theme` lengths, `ambient::keyboard_height` / `measure_text` / `round_to_nearest_pixel`, image and clipboard sizes (`Size<DevicePixels>`) |
+| C | `text.rs`, `canvas.rs`, `canvas/`, `element/host.rs` (`Painter`) | 126 | Text metrics (`TextLine`, `LinePiece`, `BackgroundBox`, attachments: `Points`, `Bounds<Points>`), `TextEngine::measure(max_width)`; the canvas's ops, gradients, hit tests and `Painter`'s methods (`Point<Points>`, `Bounds<Points>`, `Radians` for arcs and rotations, `Percentage` for color stop offsets). The recorded canvas ops' wire encoding stays |
+| D | `element/` except `host.rs` | 100 | `Styled`'s remaining methods (`border(width)`, `rotate(degrees)` → `Radians`, `translate_x`, `blur`, shadows, `gradient_*_position` → `Percentage`), events (`ScrollEvent`, `PanEvent`, `ResponderEvent`, `VideoInfo` → `Size<DevicePixels>` for pixel sizes), `ElementRef::scroll_to*`, `Scrollable`, `ListLayout`, `Theme` lengths, `ambient::keyboard_height` / `measure_text` / `round_to_nearest_pixel`, image and clipboard sizes (`Size<DevicePixels>`) |
 | E | `ops.rs`, `props.rs`, `mount.rs`, `core/`, `platform.rs`, `desktop.rs`, `js/`; `nsh-js`'s decoding; the backends that read them | 86 | The wire types: `EventPayload` (layout, scroll, pan, image), touch / hover / context menu locations (`Point<Points>`), `Prop` / `ScrollProp` lengths, `props::EdgeInsets` (→ `Edges<Points>`), `PanActivation`, `Command::ScrollTo` / `ZoomTo`, `ScrollBehavior` snapping, `StickyCell`, `ScreenConfig.header_height`, `WindowFrame` (`Bounds<Points>`), `Core::set_scroll_offset` and the header heights. JS numbers become typed where `nsh-js` decodes them; the backends unwrap them where they hand them to their toolkits |
 | F | `nsh-js`, `nsh-engine` | 1, 7 | The check covers their public API with lists of their own (`crates/nsh-js/untyped.txt`: `TextMeasurer`'s width, with C; `crates/nsh-engine/untyped.txt`: `EngineControl::scroll`, `set_screen_header`, `EngineConfig.header_heights`) |
 
 Groups A–E touch disjoint files in nsh-core; a group that changes a type other crates read (C's text metrics, E's wire
 types) also updates those readers (`nsh-js`, `nsh-engine`, the backends, `crates/gpui`), so C and E should not land at
 the same time as each other's backend edits without a rebase. `nsh-base` (the runtime's components) is not scanned;
-its props and code use the geometry types all the same (`KeyboardAvoidingView`'s `offset` is `Points`).
+its props and code use the geometry types all the same (`Styled::pb_keyboard_plus` takes `Points`).
 
 Each group checks its backends as this migration did: `cargo test --workspace`, the GPUI workspace, and every backend
 through `cargo check --target …` (iOS / Catalyst, macOS, Windows, Android, `wasm32`, Linux). Values that reach a

@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use super::controller::Span;
 

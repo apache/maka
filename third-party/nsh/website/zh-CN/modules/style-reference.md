@@ -6,7 +6,7 @@ order: 16
 
 # 样式参考
 
-本页列出 `style` 属性可用的每一个键，以及在 Rust 中设置它的 `Styled` 方法。Rust 组件用以 Tailwind 工具类命名的类型化方法为元素设置样式（`.p_4()`、`.rounded(px(12.0))`、`.bg(color)`，来自 `nsh_core::ui::prelude`），它们会落到同样的键上；TSX 传入 `style` 对象（以及 class）。Rust 列给出对应的方法；大多数方法接受一个值、一个 signal 或一个闭包，`.style_when(…)` / `.style_with(…)` 可以让任意样式按条件生效。键名和类型来自生成的声明文件 `.nsh/types/nsh/types.d.ts`，编辑器会在你输入时检查它们。布局是默认纵向排列的 flexbox，数字的单位是点，同时支持这些 CSS 能力：网格、渐变、盒阴影、滤镜、混合模式、轮廓线、过渡和关键帧动画。
+本页列出 `style` 属性可用的每一个键，以及在 Rust 中设置它的 `Styled` 方法。Rust 组件用以 Tailwind 工具类命名的类型化方法为元素设置样式（`.p_4()`、`.rounded(px(12.0))`、`.bg(color)`，来自 `nsh_core::prelude`），它们会落到同样的键上；TSX 传入 `style` 对象（以及 class）。Rust 列给出对应的方法；大多数方法接受一个值、一个 signal 或一个闭包，`.style_when(…)` / `.style_with(…)` 可以让任意样式按条件生效。键名和类型来自生成的声明文件 `.nsh/types/nsh/types.d.ts`，编辑器会在你输入时检查它们。布局是默认纵向排列的 flexbox，数字的单位是点，同时支持这些 CSS 能力：网格、渐变、盒阴影、滤镜、混合模式、轮廓线、过渡和关键帧动画。
 
 样式怎么写、怎样与 class 组合、文字样式如何继承，见 [样式](../docs/styling.md)。class 的语法见 [Tailwind 参考](./tailwind-reference.md)。
 
@@ -22,7 +22,7 @@ order: 16
 | `ImageStyle` | `ViewStyle` | `<Image>` |
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn card() -> View {
     view().p_4().rounded(px(12.0)).bg(white()).shadow([BoxShadow {
@@ -79,7 +79,8 @@ card().style_when(selected, |s| s.border_color(rgb(0x2563eb)).border(px(2.0)))
 | `DimensionValue` | `number`（点）、`` `${number}%` ``（相对父元素）或 `"auto"`。 | `Length`：`px(…)`、`relative(0.5)`、`auto()` |
 | `LengthValue` | `number`（点）或 `` `${number}%` ``，不接受 `"auto"`。 | `DefiniteLength`：`px(…)`、`relative(0.5)` |
 | `ColorValue` | CSS 颜色字符串：`#rgb`、`#rgba`、`#rrggbb`、`#rrggbbaa`、`rgb()`、`rgba()`、`hsl()`、`hsla()`、`oklch()`、`oklab()`，或 CSS 命名颜色（`black`、`white`、`transparent`、`rebeccapurple` 等）。 | `Hsla` / `AdaptiveColor`：`rgb(0x2563eb)`、`hsla(…)`, 主题颜色（`theme().primary`） |
-| `AnimatedNode` | 原生动画值，或由它派生的节点（见 [nsh/animated](./nsh-animated.md)）。`backgroundColor`、`opacity` 和 `transform` 的各步骤接受它，值会在 UI 线程上动画，不经过 JS。 | `AnimatedValue` / `AnimatedNode`，用 `.bind_opacity(&v)`、`.bind_background(&v)`、`.bind_translate_x(&v)` 等绑定 |
+| `EnvValue` | 内边距或外边距中的环境变量：`env(name)`、`env(name, <length>)`（名称未知时用这个长度）、`calc(env(name) + <length>)` 或 `calc(<length> + env(name))`。名称为 `safe-area-inset-top`、`-right`、`-bottom`、`-left`（[安全区域](../elements/safe-area.md)）和 `keyboard-inset-height`（[键盘](../elements/keyboard.md)）。物理方向的内边距和外边距键及其简写接受它。 | `.p_safe_area()`、`.pt_safe_area_plus(px(8.0))`、`.pb_keyboard()`、`.mb_keyboard_plus(…)` 等 |
+| `AnimatedNode` | 原生动画值，或由它派生的节点（见 [`nsh` 的动画 API](./nsh.md#animation)）。`backgroundColor`、`opacity` 和 `transform` 的各步骤接受它，值会在 UI 线程上动画，不经过 JS。 | `AnimatedValue` / `AnimatedNode`，用 `.bind_opacity(&v)`、`.bind_background(&v)`、`.bind_translate_x(&v)` 等绑定 |
 
 采用 CSS 语法的字符串（`boxShadow`、`backgroundImage`、`filter`、`gridTemplateColumns` 等）中，长度可写 `px` 或裸数字（都是点）、`pt`（与 CSS 相同，为 4/3 点），或 `rem`（16 点）。
 
@@ -171,31 +172,33 @@ view()
 
 ### 外边距
 
-外边距接受 `"auto"`（与 flexbox 中一样吸收剩余空间）和负值。
+外边距接受 `"auto"`（与 flexbox 中一样吸收剩余空间）和负值。物理方向的键（`marginStart` / `marginEnd` 之外）也接受 `EnvValue`：`marginBottom: "env(keyboard-inset-height)"`（Rust 中为 `.mb_keyboard()`、`.mt_safe_area()` 等）。
 
 | 键 | 类型 | Rust | 说明 |
 |---|---|---|---|
-| `margin` | `DimensionValue` | `.m(…)`、`.m_4()` | 四边。 |
-| `marginHorizontal` | `DimensionValue` | `.mx(…)` | 左右。 |
-| `marginVertical` | `DimensionValue` | `.my(…)` | 上下。 |
-| `marginTop` | `DimensionValue` | `.mt(…)` | 上。 |
-| `marginRight` | `DimensionValue` | `.mr(…)` | 右。 |
-| `marginBottom` | `DimensionValue` | `.mb(…)` | 下。 |
-| `marginLeft` | `DimensionValue` | `.ml(…)` | 左。 |
+| `margin` | `DimensionValue \| EnvValue` | `.m(…)`、`.m_4()` | 四边。 |
+| `marginHorizontal` | `DimensionValue \| EnvValue` | `.mx(…)` | 左右。 |
+| `marginVertical` | `DimensionValue \| EnvValue` | `.my(…)` | 上下。 |
+| `marginTop` | `DimensionValue \| EnvValue` | `.mt(…)` | 上。 |
+| `marginRight` | `DimensionValue \| EnvValue` | `.mr(…)` | 右。 |
+| `marginBottom` | `DimensionValue \| EnvValue` | `.mb(…)` | 下。 |
+| `marginLeft` | `DimensionValue \| EnvValue` | `.ml(…)` | 左。 |
 | `marginStart` | `DimensionValue` | `.ms(…)` | 从左到右布局中为左，从右到左布局中为右。 |
 | `marginEnd` | `DimensionValue` | `.me(…)` | 与 `marginStart` 相对的一边。 |
 
 ### 内边距
 
+物理方向的键（`paddingStart` / `paddingEnd` 之外）也接受 `EnvValue`：`paddingTop: "env(safe-area-inset-top)"`、`paddingBottom: "calc(env(safe-area-inset-bottom) + 16px)"`（Rust 中为 `.pt_safe_area()`、`.pb_safe_area_plus(px(16.0))`、`.pb_keyboard()` 等）。内边距不小于 0。
+
 | 键 | 类型 | Rust | 说明 |
 |---|---|---|---|
-| `padding` | `LengthValue` | `.p(…)`、`.p_4()` | 四边。 |
-| `paddingHorizontal` | `LengthValue` | `.px(…)` | 左右。 |
-| `paddingVertical` | `LengthValue` | `.py(…)` | 上下。 |
-| `paddingTop` | `LengthValue` | `.pt(…)` | 上。 |
-| `paddingRight` | `LengthValue` | `.pr(…)` | 右。 |
-| `paddingBottom` | `LengthValue` | `.pb(…)` | 下。 |
-| `paddingLeft` | `LengthValue` | `.pl(…)` | 左。 |
+| `padding` | `LengthValue \| EnvValue` | `.p(…)`、`.p_4()` | 四边。 |
+| `paddingHorizontal` | `LengthValue \| EnvValue` | `.px(…)` | 左右。 |
+| `paddingVertical` | `LengthValue \| EnvValue` | `.py(…)` | 上下。 |
+| `paddingTop` | `LengthValue \| EnvValue` | `.pt(…)` | 上。 |
+| `paddingRight` | `LengthValue \| EnvValue` | `.pr(…)` | 右。 |
+| `paddingBottom` | `LengthValue \| EnvValue` | `.pb(…)` | 下。 |
+| `paddingLeft` | `LengthValue \| EnvValue` | `.pl(…)` | 左。 |
 | `paddingStart` | `LengthValue` | `.ps(…)` | 从左到右布局中为左，从右到左布局中为右。 |
 | `paddingEnd` | `LengthValue` | `.pe(…)` | 与 `paddingStart` 相对的一边。 |
 
@@ -384,7 +387,7 @@ view()
 | `animationTimingFunction` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(...)"` | `.animation(KeyframeAnimation { … })` | 缓动曲线。 |
 | `animationIterationCount` | `number \| "infinite"` | `.animation(KeyframeAnimation { … })` | 重复次数。 |
 
-由数值、手势或弹簧驱动的动画请使用 [nsh/animated](./nsh-animated.md)。
+由数值、手势或弹簧驱动的动画请使用 [`nsh` 的动画 API](./nsh.md#animation)。
 
 ### 指针
 

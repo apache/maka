@@ -33,6 +33,10 @@ pub struct RootFixture {
     directory: PathBuf,
 }
 impl RootFixture {
+    pub fn store(&self) -> Arc<RootStore> {
+        self.root.clone()
+    }
+
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
         let directory = path.with_extension("root");
         let namespaces = RootNamespaces {

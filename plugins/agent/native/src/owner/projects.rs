@@ -240,20 +240,9 @@ impl Owner {
         let Some((registration, selection)) = self.project_directory(selection).await? else {
             return Ok(None);
         };
-        let current = self
-            .project_records()
-            .await?
-            .into_iter()
-            .find(|record| record.identity == registration.identity);
-        if current
-            .as_ref()
-            .is_some_and(|record| record.archived_at.is_some())
-        {
-            return Ok(None);
-        }
         let record = match self
             .store
-            .register_project_if(registration, true, now(), current)
+            .register_available_project(registration, now())
             .await
         {
             Ok(record) => record,

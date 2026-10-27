@@ -17,11 +17,12 @@ mod scripts;
 
 use std::{rc::Rc, time::Duration};
 
-use nsh_base::{keyboard_avoiding_view, selection_area};
+use nsh_base::input;
 use nsh_core::{
     LayoutAnimation, Points, Size,
+    element::{AccessibilityState, ScrollEvent, View},
+    prelude::*,
     time::Instant,
-    ui::{AccessibilityState, ScrollEvent, View, prelude::*},
 };
 
 use self::{
@@ -841,7 +842,12 @@ pub(crate) fn Chat(cx: Scope<NoEvent>) -> impl IntoElement {
     // mounted.
     let content = when(
         move || !messages.with(Vec::is_empty),
-        move || selection_area().flex_1().child(chat.list_view(list, wide)),
+        move || {
+            view()
+                .selectable(true)
+                .flex_1()
+                .child(chat.list_view(list, wide))
+        },
     )
     .otherwise(move || chat.empty());
 
@@ -1166,7 +1172,8 @@ pub(crate) fn Chat(cx: Scope<NoEvent>) -> impl IntoElement {
         );
 
     let pane = view().flex_1().bg(colors::BACKGROUND).child(
-        keyboard_avoiding_view()
+        view()
+            .pb_keyboard()
             .flex_1()
             .child(
                 view()

@@ -68,6 +68,7 @@ const ACCESSIBILITY_LABEL: i32 = 32;
 const APPEARANCE: i32 = 33;
 const RETIRE_LIST_CELL: i32 = 34;
 const PROJECT_ROOT: i32 = 35;
+const COMPONENT_PROP_SLOTS: i32 = 36;
 
 /// An entry of the object table.
 pub(crate) enum Obj {
@@ -240,7 +241,7 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     mask(&mut e, l.events);
                 }
                 // `selectable`: 1 asked for, 0 refused (`false`: out of
-                // selection areas too), 2 unset.
+                // selectable views too), 2 unset.
                 e.int(match text.selectable {
                     Some(true) => 1,
                     Some(false) => 0,
@@ -507,6 +508,14 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 e.int(id as i32);
                 e.string(name.to_string());
             }
+            MountItem::ComponentPropSlots { id, names } => {
+                e.int(COMPONENT_PROP_SLOTS);
+                e.int(id as i32);
+                e.int(names.len() as i32);
+                for name in names {
+                    e.string(name.to_string());
+                }
+            }
             MountItem::ComponentProps { id, props } => {
                 e.int(COMPONENT_PROPS);
                 e.int(id as i32);
@@ -572,11 +581,6 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                                 DialogButtonStyle::Destructive => 2,
                             });
                         }
-                    }
-                    Command::Toast { text, long } => {
-                        e.int(13);
-                        e.string(text);
-                        e.bool(long);
                     }
                     Command::SetJsResponder { block } => {
                         e.int(14);
@@ -1104,7 +1108,7 @@ fn view_props(e: &mut Encoded, p: &ViewProps) {
         }
         None => e.int(0),
     }
-    e.bool(p.selection_area);
+    e.bool(p.selectable_view);
 }
 
 /// Index of `role` in `A11y.java`'s class name table.
@@ -1145,6 +1149,8 @@ fn role_index(role: AccessibilityRole) -> i32 {
         Cell => 31,
         ColumnHeader => 32,
         RowGroup => 33,
+        Listbox => 34,
+        Option => 35,
     }
 }
 

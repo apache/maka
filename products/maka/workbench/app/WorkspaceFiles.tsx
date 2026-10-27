@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
@@ -94,7 +95,7 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
           disabled={!model.active() || model.busy()}
           accessibilityLabel={tr('Refresh workspace files')}
           onPress={inputAction(model.refresh, null)}
-          tooltip={tr('Refresh workspace files')}
+          tooltip={textTooltip(() => tr('Refresh workspace files'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}

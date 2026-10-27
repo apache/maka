@@ -26,6 +26,9 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::message::MessageDisposition;
 use sqlx::Connection;
 
+#[cfg(test)]
+mod tests;
+
 impl EventLog {
     /// Select and commit the exact pending steering batch at a settled model boundary.
     /// Cancellation after this commits must never put delivered messages back in the queue.
@@ -44,6 +47,25 @@ impl EventLog {
     }
     async fn commit_steering(&self, invocation: &Invocation) -> Result<usize, StoreError> {
         self.validate_root()?;
+        // Only an empty snapshot bypasses the writer; deliveries are rechecked below.
+        let session = invocation.session_id.clone();
+        let pending: bool = self
+            .connection
+            .read_interruptible(move |connection| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM message_admissions WHERE session_id=?)",
+                    )
+                    .bind(session)
+                    .fetch_one(connection)
+                    .await
+                    .map_err(Into::into)
+                })
+            })
+            .await?;
+        if !pending {
+            return Ok(0);
+        }
         let invocation = invocation.clone();
         let commits = self.commits.session(&invocation.session_id);
         self.connection

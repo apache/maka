@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { Input, inputAction, List, Scroll, Text, View } from 'nsh';
+import { inputAction, List, Scroll, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
 import { tr } from './locale';
 import type {

@@ -2,7 +2,7 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ====================================================================
-   Tokens. The gallery's graphite look (examples/gallery/ui.tsx): dark
+   Tokens. The shared graphite look (examples/nsh-gallery-ui): dark
    surfaces lit from above, one citrus accent, tinted status colours; and
    its light variant (`html.light`, below), warm-neutral surfaces with the
    same finishes. The pre-paint script in BaseLayout picks the class. See
@@ -10,63 +10,63 @@
    ==================================================================== */
 
 :root {
-  --radius-control: 10px;
-  --radius-card: 12px;
-  --radius-surface: 16px;
+  --radius-control: var(--nsh-gallery-radius-control);
+  --radius-card: var(--nsh-gallery-radius);
+  --radius-surface: var(--nsh-gallery-radius-card);
 
   /* Surfaces: page, card, inset (recessed), raised (controls). */
-  --background: #101113;
-  --foreground: #eceef1;
-  --card: #18191c;
-  --popover: #1b1c20;
-  --inset: #0c0d0f;
-  --raised: #24262a;
-  --secondary: #1e1f23;
-  --muted: #18191c;
-  --muted-foreground: #8d9198;
-  --faint: #5a5e65;
-  --border: #2c2e33;
-  --divider: #25272b;
-  --line: #1f2124;
-  --border-hover: #3b3e44;
-  --ring: #c8f26d;
-  --sidebar: #141518;
-  --sidebar-accent: #24262a;
+  --background: var(--nsh-gallery-background);
+  --foreground: var(--nsh-gallery-foreground);
+  --card: var(--nsh-gallery-card);
+  --popover: var(--nsh-gallery-popover);
+  --inset: var(--nsh-gallery-inset);
+  --raised: var(--nsh-gallery-raised);
+  --secondary: var(--nsh-gallery-secondary);
+  --muted: var(--nsh-gallery-muted);
+  --muted-foreground: var(--nsh-gallery-muted-foreground);
+  --faint: var(--nsh-gallery-faint);
+  --border: var(--nsh-gallery-border);
+  --divider: var(--nsh-gallery-line);
+  --line: var(--nsh-gallery-line);
+  --border-hover: color-mix(in srgb, var(--nsh-gallery-border) 80%, var(--nsh-gallery-foreground));
+  --ring: var(--nsh-gallery-ring);
+  --sidebar: var(--nsh-gallery-sidebar);
+  --sidebar-accent: var(--nsh-gallery-sidebar-accent);
 
   /* The one accent (text, lines and small fills), and the light primary
      button. The bright citrus fill is `--finish-accent-bg` in both themes. */
-  --citrus: #c8f26d;
-  --on-citrus: #13160c;
-  --brand: #eceef1;
+  --citrus: var(--nsh-gallery-brand);
+  --on-citrus: var(--nsh-gallery-on-brand);
+  --brand: var(--nsh-gallery-primary);
   --brand-hover: #ffffff;
-  --brand-contrast: #111214;
+  --brand-contrast: var(--nsh-gallery-primary-foreground);
   --brand-line: color-mix(in srgb, var(--foreground) 26%, transparent);
 
-  --data-1: #4f6aa3;
-  --data-2: #7ea8ff;
-  --data-3: #7ea8ff;
-  --doc-link: #c8f26d;
-  --doc-link-hover: #dbf893;
+  --data-1: color-mix(in srgb, var(--nsh-gallery-info) 65%, var(--nsh-gallery-background));
+  --data-2: var(--nsh-gallery-info);
+  --data-3: var(--nsh-gallery-info);
+  --doc-link: var(--nsh-gallery-brand);
+  --doc-link-hover: color-mix(in srgb, var(--nsh-gallery-brand) 85%, var(--nsh-gallery-foreground));
 
-  --selection: #7ea8ff;
-  --success: #45d49a;
-  --warning: #ffb547;
-  --destructive: #ff6170;
-  --important: #c8f26d;
+  --selection: var(--nsh-gallery-info);
+  --success: var(--nsh-gallery-up);
+  --warning: var(--nsh-gallery-warn);
+  --destructive: var(--nsh-gallery-destructive);
+  --important: var(--nsh-gallery-brand);
 
-  /* Finishes (`finish` in ui.tsx): gentle top-to-bottom gradients, a
+  /* Shared finishes (`finishes.json` in nsh-gallery-ui): gentle top-to-bottom gradients, a
      highlight along the top edge, soft shadows. */
-  --finish-card-bg: linear-gradient(180deg, #1b1c20 0%, #191a1d 100%);
-  --finish-card: inset 0 1px 0 rgb(255 255 255 / 4%), 0 16px 36px -20px rgb(0 0 0 / 75%);
+  --finish-card-bg: var(--nsh-gallery-finish-card-background-image);
+  --finish-card: var(--nsh-gallery-finish-card-box-shadow);
   --finish-flat: 0 1px 2px rgb(0 0 0 / 30%);
-  --finish-inset: inset 0 1px 3px rgb(0 0 0 / 55%);
-  --finish-raised-bg: linear-gradient(180deg, #2b2d32 0%, #24262a 100%);
-  --finish-raised: inset 0 1px 0 rgb(255 255 255 / 7%), 0 1px 1px rgb(0 0 0 / 40%), 0 6px 14px -7px rgb(0 0 0 / 70%);
-  --finish-primary-bg: linear-gradient(180deg, #fbfbfc 0%, #e3e5e8 100%);
+  --finish-inset: var(--nsh-gallery-finish-inset-box-shadow);
+  --finish-raised-bg: var(--nsh-gallery-finish-raised-background-image);
+  --finish-raised: var(--nsh-gallery-finish-raised-box-shadow);
+  --finish-primary-bg: var(--nsh-gallery-finish-light-background-image);
   --finish-primary-hover-bg: linear-gradient(180deg, #ffffff 0%, #eaecee 100%);
-  --finish-primary: inset 0 1px 0 #ffffff, 0 1px 1px rgb(0 0 0 / 40%), 0 8px 18px -8px rgb(0 0 0 / 75%);
-  --finish-accent-bg: linear-gradient(180deg, #d6f78a 0%, #c1ea5c 100%);
-  --finish-accent: inset 0 1px 0 rgb(255 255 255 / 55%), 0 1px 1px rgb(0 0 0 / 40%), 0 8px 20px -9px rgb(200 242 109 / 40%);
+  --finish-primary: var(--nsh-gallery-finish-light-box-shadow);
+  --finish-accent-bg: var(--nsh-gallery-finish-accent-background-image);
+  --finish-accent: var(--nsh-gallery-finish-accent-box-shadow);
 
   /* Code: Shiki emits the allsum-light colours (src/light.theme.json, the
      palette of TextView's built-in highlighting); the rules below map them
@@ -97,7 +97,7 @@
 
   /* The demo frame's screen, behind the app: the demos' own background,
      as they follow the page's theme. */
-  --screen: #101113;
+  --screen: var(--nsh-gallery-background);
 
   --nav-shadow: 0 1px 0 rgb(0 0 0 / 35%);
   --nav-bg: color-mix(in srgb, var(--background) 72%, transparent);
@@ -148,55 +148,14 @@
 /* The light variant: warm-neutral surfaces, the same finishes, the accent
    darkened so it reads as text. */
 html.light {
-  --background: #f3f3ef;
-  --foreground: #15161a;
-  --card: #ffffff;
-  --popover: #ffffff;
-  --inset: #ecece7;
-  --raised: #f7f7f3;
-  --secondary: #ebebe6;
-  --muted: #ecece7;
-  --muted-foreground: #565a61;
-  --faint: #8c9097;
-  --border: #e0e0d9;
-  --divider: rgb(40 40 20 / 11%);
-  --line: rgb(0 0 0 / 7%);
-  --border-hover: #cfcfc7;
-  --ring: #4a6a0a;
-  --sidebar: #efefea;
-  --sidebar-accent: #ebebe6;
-  --screen: #f3f3ef;
 
-  --citrus: #4a6a0a;
-  --on-citrus: #1b2207;
-  --brand: #15161a;
   --brand-hover: #000000;
-  --brand-contrast: #ffffff;
   --brand-line: color-mix(in srgb, var(--foreground) 26%, transparent);
 
-  --data-1: #9db3ec;
-  --data-2: #3d63d1;
-  --data-3: #3d63d1;
-  --doc-link: #4a6a0a;
-  --doc-link-hover: #2f4406;
 
-  --selection: #3d63d1;
-  --success: #0f8a55;
-  --warning: #b26a00;
-  --destructive: #d43345;
-  --important: #4a6a0a;
 
-  --finish-card-bg: linear-gradient(180deg, #ffffff 0%, #fdfdfc 100%);
-  --finish-card: inset 0 1px 0 #ffffff, 0 1px 1px rgb(20 20 10 / 4%), 0 14px 32px -18px rgb(20 20 10 / 20%);
   --finish-flat: inset 0 1px 0 #ffffff, inset 0 -1px 0 rgb(0 0 0 / 2.5%), 0 1px 2px rgb(20 20 10 / 5%);
-  --finish-inset: inset 0 1px 2px rgb(0 0 0 / 6%), inset 0 0 0 1px rgb(0 0 0 / 2%);
-  --finish-raised-bg: linear-gradient(180deg, #ffffff 0%, #f6f6f2 100%);
-  --finish-raised: inset 0 1px 0 #ffffff, 0 1px 1px rgb(20 20 10 / 6%), 0 5px 12px -6px rgb(20 20 10 / 18%);
-  --finish-primary-bg: linear-gradient(180deg, #2e3035 0%, #1b1c20 100%);
   --finish-primary-hover-bg: linear-gradient(180deg, #36383e 0%, #222327 100%);
-  --finish-primary: inset 0 1px 0 rgb(255 255 255 / 16%), 0 1px 1px rgb(20 20 10 / 20%), 0 7px 14px -7px rgb(20 20 10 / 50%);
-  --finish-accent-bg: linear-gradient(180deg, #d6f78a 0%, #c1ea5c 100%);
-  --finish-accent: inset 0 1px 0 rgb(255 255 255 / 60%), 0 1px 1px rgb(80 110 10 / 20%), 0 7px 14px -7px rgb(110 150 20 / 55%);
   --accent-border: #a7cf3f;
 
   --code-bg: #f0f0eb;
@@ -371,8 +330,6 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
   align-items: center;
   gap: 0.5rem;
   flex-shrink: 0;
-  padding-right: 1.5rem;
-  border-right: 1px solid var(--line);
   color: var(--foreground);
   font-size: 0.9rem;
   font-weight: 640;
@@ -488,7 +445,6 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 
 @media (max-width: 860px) {
   .site-nav__inner { gap: 1rem; }
-  .site-nav__brand { padding-right: 0; border-right: 0; }
   .site-nav__projects { margin-left: -0.5rem; }
   .site-nav__burger { display: inline-flex; }
   .site-nav__links {

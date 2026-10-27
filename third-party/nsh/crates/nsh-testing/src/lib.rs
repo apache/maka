@@ -53,9 +53,9 @@ mod trace;
 use std::{path::Path, sync::Arc};
 
 #[cfg(feature = "js")]
-use nsh_core::ui::Registry;
+use nsh_core::element::Registry;
 #[cfg(feature = "bundle")]
-use nsh_core::ui::description::SetDescription;
+use nsh_core::element::description::SetDescription;
 #[cfg(feature = "bundle")]
 use nsh_engine::{Bundle, EngineConfig};
 

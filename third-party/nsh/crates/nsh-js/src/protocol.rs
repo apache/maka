@@ -279,7 +279,7 @@ pub(crate) fn decode_command<'js>(
 }
 
 /// Reads the node id of an animated value object (`{ __av: id }`).
-fn animated_value(value: &Value<'_>) -> Option<nsh_core::animation::NodeId> {
+pub(crate) fn animated_value(value: &Value<'_>) -> Option<nsh_core::animation::NodeId> {
     value
         .as_object()?
         .get::<_, Option<u32>>("__av")
@@ -393,8 +393,15 @@ pub(crate) fn decode_prop<'js>(
     value: Value<'js>,
     warnings: &mut Warnings,
 ) -> rquickjs::Result<Option<Op>> {
-    // A registered native component's own props: `$name`, any JSON value.
+    // A registered native component's own props: `$name`, any JSON value,
+    // or an animated value the platform pushes to it on every frame.
     if let Some(key) = name.strip_prefix('$') {
+        if let Some(node) = animated_value(&value) {
+            return Ok(Some(Op::SetProp {
+                id,
+                prop: Prop::ComponentPropBinding(key.into(), Some(node)),
+            }));
+        }
         let value = if value.is_undefined() {
             None
         } else {

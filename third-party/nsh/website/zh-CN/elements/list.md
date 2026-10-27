@@ -11,7 +11,7 @@ demo: el-list
 `List` 用来展示很长或无上限的数据。视口附近的行才真正存在：用户滚动时，离开视口的行会被回收，用来显示新进入的行。哪些行存在、它们的位置、多列布局、吸顶标题和可见性都在原生侧计算，所以滚动一个上千项的列表，开销和二十项的列表相当。Rust 用 `virtual_list(count, |at| row)` 创建，TSX 用从 `nsh` 导入的 `<List>`。
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[derive(Clone, PartialEq)]
 struct Contact {

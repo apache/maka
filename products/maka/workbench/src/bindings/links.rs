@@ -21,8 +21,8 @@
 
 use super::{Owner, execute};
 use maka_agent_api::contract::WorkspacePath;
-use nsh_core::ui::prelude::*;
-use nsh_core::ui::{JsHost, JsIn, JsOwned, PropError, TsTypes};
+use nsh_core::element::{JsHost, JsIn, JsOwned, PropError, TsTypes};
+use nsh_core::prelude::*;
 use std::sync::Arc;
 use url::Url;
 

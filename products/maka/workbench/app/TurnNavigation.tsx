@@ -17,10 +17,11 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { platform, windowSize } from 'nsh/device';
+import { platform, windowSize } from 'nsh';
 import type { Position } from './history';
 import { C, controlStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
@@ -245,7 +246,7 @@ export function TurnNavigation(props: {
         <If when={props.busy()}>
           <Button
             accessibilityLabel={tr('Cancel turn navigation')}
-            tooltip={tr('Cancel navigation')}
+            tooltip={textTooltip(() => tr('Cancel navigation'))}
             onPress={props.cancel}
             style={{
               position: 'absolute',

@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use crate::{
+    element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
     geometry::{Point, Points},
     keymap::{self, Keystroke, Modifiers, When},
-    ui::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
 };
 
 /// How the window's title bar looks (`Window.setTitleBar`).

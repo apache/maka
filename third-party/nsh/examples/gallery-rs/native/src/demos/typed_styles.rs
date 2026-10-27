@@ -13,11 +13,14 @@
 //! `even:` / `last:` are plain Rust from the row's index, `sm:` reads the
 //! window.
 
-use nsh_core::ui::{
-    AnyElement, BlendMode, BoxShadow, Image,
-    palette::{
-        AMBER, BLACK, BLUE, EMERALD, FUCHSIA, GREEN, Hue, INDIGO, ORANGE, PINK, RED, ROSE, SKY,
-        VIOLET, WHITE, YELLOW, ZINC,
+use nsh_base::input;
+use nsh_core::{
+    element::{
+        AnyElement, BlendMode, BoxShadow, Image,
+        palette::{
+            AMBER, BLACK, BLUE, EMERALD, FUCHSIA, GREEN, Hue, INDIGO, ORANGE, PINK, RED, ROSE, SKY,
+            VIOLET, WHITE, YELLOW, ZINC,
+        },
     },
     prelude::*,
 };

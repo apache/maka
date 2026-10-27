@@ -846,9 +846,9 @@ impl Surface {
             || self
                 .drag_input
                 .is_some_and(|id| self.within_popup(id, root))
-            || (self.selection_area_dragging()
+            || (self.selectable_view_dragging()
                 && self
-                    .selection_area_owner()
+                    .selectable_view_owner()
                     .is_some_and(|id| self.within_popup(id, root)));
         if affected {
             let owner = self
@@ -896,7 +896,7 @@ impl Surface {
                     .is_some_and(|id| self.within_popup(id, root))
                 {
                     self.drag_input = None;
-                    self.selection_area_release();
+                    self.selectable_view_release();
                 }
             } else {
                 self.cancel_pointer();
@@ -1231,7 +1231,8 @@ impl Surface {
         }) {
             return false;
         }
-        node.props.focus_return_parent.is_some()
+        (node.kind != ViewKind::Native && node.props.focusable == Some(true))
+            || node.props.focus_return_parent.is_some()
             || node.kind == ViewKind::Input
             || node
                 .text
@@ -1409,13 +1410,13 @@ impl Surface {
             return self.dialog_key(key);
         }
         let visible = std::cell::OnceCell::new();
-        let selection_area = self.selection_area_owner().is_some_and(|area| {
+        let selectable_view = self.selectable_view_owner().is_some_and(|area| {
             visible.get_or_init(|| self.visible_ids()).contains(&area)
                 && self
                     .current_popup_owner()
                     .is_none_or(|scope| self.within_popup(area, scope.scope.0))
         });
-        let editing = selection_area
+        let editing = selectable_view
             || self.focus.is_some_and(|id| {
                 self.node(id).is_some_and(|n| {
                     n.kind == ViewKind::Input
@@ -1456,11 +1457,11 @@ impl Surface {
         {
             return true;
         }
-        if selection_area
+        if selectable_view
             && !self
                 .focus
                 .is_some_and(|id| self.node(id).is_some_and(|n| n.kind == ViewKind::Input))
-            && self.selection_area_key(key)
+            && self.selectable_view_key(key)
         {
             return true;
         }
@@ -2265,7 +2266,7 @@ impl Surface {
         let hit = self.hit_test(x, y);
         self.set_hover(hit);
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
-            self.selection_area_window_press(hit);
+            self.selectable_view_window_press(hit);
         }
         if let Some((id, button)) = self
             .pointer
@@ -2408,14 +2409,14 @@ impl Surface {
                             .any(|node| node == id)
                 });
                 let selects_area = control.is_none()
-                    && self.selection_area_press(
+                    && self.selectable_view_press(
                         target,
                         x,
                         y,
                         mouse.modifiers.contains(KeyModifiers::SHIFT),
                     );
                 if let Some(id) = control {
-                    self.selection_area_release();
+                    self.selectable_view_release();
                     self.set_focus_from(Some(id), FocusSource::Pointer);
                 } else if selects_area {
                     self.set_focus_from(field, FocusSource::Pointer);
@@ -2537,7 +2538,7 @@ impl Surface {
                     }
                     return true;
                 }
-                if self.selection_area_drag(x, y) {
+                if self.selectable_view_drag(x, y) {
                     self.set_pressed(None);
                     if let Some(pointer) = &mut self.pointer {
                         pointer.moved = true;
@@ -2565,7 +2566,7 @@ impl Surface {
                 if self.pointer.is_none() {
                     return false;
                 }
-                if self.selection_area_drag(x, y)
+                if self.selectable_view_drag(x, y)
                     && let Some(pointer) = &mut self.pointer
                 {
                     pointer.moved = true;
@@ -2593,7 +2594,7 @@ impl Surface {
                 }
                 self.set_pressed(None);
                 self.drag_input = None;
-                self.selection_area_release();
+                self.selectable_view_release();
                 true
             }
             MouseEventKind::Moved => hit.is_some(),
@@ -2984,7 +2985,7 @@ impl Surface {
         let mut activated = None;
         if pointer.pan.is_none()
             && self.drag_input.is_none()
-            && !self.selection_area_dragging()
+            && !self.selectable_view_dragging()
             && let Some(id) = pointer.pan_candidate
         {
             let (dx, dy) = self.pan_delta(id, &pointer, x, y);
@@ -3120,11 +3121,11 @@ impl Surface {
         }
         self.set_pressed(None);
         self.drag_input = None;
-        self.selection_area_release();
+        self.selectable_view_release();
     }
 
     pub(crate) fn input_pending(&self) -> bool {
-        self.selection_area_pending()
+        self.selectable_view_pending()
             || self.pointer.as_ref().is_some_and(|pointer| {
                 !pointer.moved
                     && !pointer.long_fired
@@ -3136,7 +3137,7 @@ impl Surface {
     }
 
     pub(crate) fn input_tick(&mut self) -> bool {
-        let selecting = self.selection_area_tick();
+        let selecting = self.selectable_view_tick();
         let Some(pointer) = self.pointer.as_ref() else {
             return selecting;
         };
@@ -4086,9 +4087,9 @@ mod tests {
     fn native_tooltip_observations_preserve_button_callbacks() {
         use nsh_core::{
             ApproxTextEngine, Core, MountBatch, MountItem, Op, Prop, Tag,
+            element::Environment,
             overlay::TooltipContent,
             platform::{Idiom, Os},
-            ui::Environment,
         };
 
         let mut core = Core::new(ApproxTextEngine, Size::new(px(320.0), px(192.0)));
@@ -4107,9 +4108,22 @@ mod tests {
                 child: 2,
                 before: None,
             },
+            Op::Create {
+                id: 600,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 602,
+                text: "Close conversation".into(),
+            },
+            Op::Insert {
+                parent: 600,
+                child: 602,
+                before: None,
+            },
             Op::SetProp {
                 id: 2,
-                prop: Prop::Tooltip(TooltipContent::Text("Close conversation".into())),
+                prop: Prop::Tooltip(TooltipContent::Node(600)),
             },
         ] {
             core.apply(op).unwrap();
@@ -4435,6 +4449,142 @@ mod tests {
             assert_eq!(surface.focused(), expected_focus);
             assert_eq!(surface.node(2).unwrap().scroll.y, px(0.0));
         }
+    }
+
+    #[test]
+    fn nonpressable_focusable_views_keep_keyboard_and_pointer_actions_separate() {
+        use nsh_core::{
+            MountBatch, MountItem, ViewProps,
+            keymap::{KeyBinding, Keymap, When},
+        };
+
+        let mut surface = form();
+        let mut items = create(6, ViewKind::View, 4, 0.0);
+        items.extend([
+            MountItem::ViewProps {
+                id: 6,
+                props: Box::new(ViewProps {
+                    focusable: Some(true),
+                    ..Default::default()
+                }),
+            },
+            MountItem::Events {
+                id: 6,
+                events: mask(&[EventKind::Focus, EventKind::Blur]),
+            },
+        ]);
+        surface.apply(MountBatch { items });
+        key(&mut surface, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(surface.focused(), Some(4));
+        key(&mut surface, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(surface.focused(), Some(6));
+        assert!(!surface.pressable(6));
+        assert!(
+            surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(6, EventKind::Focus, _)))
+        );
+
+        surface.events.clear();
+        key(&mut surface, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut surface, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(
+            !surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(_, EventKind::Press, _)))
+        );
+        let mut binding = KeyBinding::new(
+            91,
+            Keystroke::parse_with("ctrl+k", false).unwrap(),
+            When::Always,
+            false,
+        );
+        binding.within = Some(6);
+        surface.keymap = std::sync::Arc::new(Keymap::new(vec![binding]));
+        key(&mut surface, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert!(surface.events.iter().any(|event| matches!(
+            event,
+            SurfaceEvent::Event(
+                ROOT_ID,
+                EventKind::KeyCommand,
+                EventPayload::Value(nsh_core::PayloadValue::Number(91.0))
+            )
+        )));
+        key(&mut surface, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(surface.focused(), Some(4));
+        assert!(
+            surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(6, EventKind::Blur, _)))
+        );
+
+        surface.events.clear();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            surface.handle_event(Event::Mouse(MouseEvent {
+                kind,
+                column: 1,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+        assert_eq!(
+            surface
+                .events
+                .iter()
+                .filter(|event| matches!(event, SurfaceEvent::Event(4, EventKind::Press, _)))
+                .count(),
+            1
+        );
+        assert!(
+            !surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(6, EventKind::Press, _)))
+        );
+
+        surface
+            .node_mut(6)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = true;
+        assert!(!surface.keyboard_stop(6));
+        surface
+            .node_mut(6)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = false;
+        surface.node_mut(6).unwrap().props.focusable = Some(false);
+        assert!(!surface.keyboard_stop(6));
+        surface.node_mut(6).unwrap().props.focusable = Some(true);
+        surface.set_focus(Some(6));
+        let original = surface.focus_target(6).unwrap();
+        surface.apply(MountBatch {
+            items: vec![MountItem::Delete { id: 6 }],
+        });
+        assert_ne!(surface.focused(), Some(6));
+        surface.apply(MountBatch {
+            items: create(6, ViewKind::View, 4, 0.0),
+        });
+        assert!(surface.focus_target(6) != Some(original));
+        assert!(!surface.keyboard_stop(6));
+        surface.apply(MountBatch {
+            items: create(8, ViewKind::Native, 4, 0.0),
+        });
+        surface.node_mut(8).unwrap().props.focusable = Some(true);
+        assert!(
+            !surface.keyboard_stop(8),
+            "a native component must provide focus capability"
+        );
     }
 
     #[test]
@@ -6031,6 +6181,42 @@ mod tests {
     }
 
     #[test]
+    fn box_none_input_keeps_keyboard_focus_but_not_pointer_ownership() {
+        let mut surface = form();
+        surface.node_mut(2).unwrap().props.pointer_events = PointerEvents::BoxNone;
+        assert!(surface.keyboard_stop(2));
+        surface.set_focus(None);
+        key(&mut surface, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(surface.focused(), Some(2));
+        let frame = surface.global_frame(2).unwrap();
+        let x = frame.origin.x.0 + frame.size.width.0 / 2.0;
+        let y = frame.origin.y.0 + frame.size.height.0 / 2.0;
+        assert_ne!(surface.hit_test(x, y), Some(2));
+        surface
+            .node_mut(2)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = true;
+        assert!(!surface.keyboard_stop(2));
+        surface.reconcile_focus(false);
+        assert_eq!(surface.focused(), Some(4));
+        surface
+            .node_mut(2)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = false;
+        surface.node_mut(ROOT_ID).unwrap().props.pointer_events = PointerEvents::None;
+        assert!(!surface.keyboard_stop(2));
+        surface.reconcile_focus(false);
+        surface.set_focus(Some(2));
+        assert_eq!(surface.focused(), None);
+    }
+
+    #[test]
     fn disabled_controls_and_pointer_none_subtrees_are_skipped() {
         let mut surface = form();
         surface
@@ -6673,7 +6859,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_selection_area_cancels_its_drag_after_its_text_moves_elsewhere() {
+    fn removing_a_selectable_view_cancels_its_drag_after_its_text_moves_elsewhere() {
         use std::sync::Arc;
 
         use nsh_core::{
@@ -6685,7 +6871,7 @@ mod tests {
         items.push(MountItem::ViewProps {
             id: 2,
             props: Box::new(ViewProps {
-                selection_area: true,
+                selectable_view: true,
                 ..Default::default()
             }),
         });
@@ -6726,9 +6912,9 @@ mod tests {
         };
         surface.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 1, 0));
         surface.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 0));
-        assert!(surface.selection_area_dragging());
-        assert_eq!(surface.selection_area_owner(), Some(2));
-        let selected = surface.selection_area_range(4).unwrap();
+        assert!(surface.selectable_view_dragging());
+        assert_eq!(surface.selectable_view_owner(), Some(2));
+        let selected = surface.selectable_view_range(4).unwrap();
         assert!(selected.0 < selected.1);
         key(&mut surface, KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(!surface.clipboard.is_empty());
@@ -6748,23 +6934,23 @@ mod tests {
                 },
             ],
         });
-        assert!(!surface.selection_area_dragging());
+        assert!(!surface.selectable_view_dragging());
         assert!(surface.pointer.is_none());
         assert_eq!(surface.node(2).unwrap().parent, Some(ROOT_ID));
-        let selection = surface.selection_area_range(4);
+        let selection = surface.selectable_view_range(4);
         let scroll = surface.node(6).unwrap().scroll.y;
         surface.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 10, 10));
         surface.tick(1.0);
         surface.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 10, 10));
         surface.tick(2.0);
-        assert!(!surface.selection_area_pending());
-        assert!(!surface.selection_area_tick());
+        assert!(!surface.selectable_view_pending());
+        assert!(!surface.selectable_view_tick());
         assert_eq!(surface.node(6).unwrap().scroll.y, scroll);
-        assert_eq!(surface.selection_area_range(4), selection);
+        assert_eq!(surface.selectable_view_range(4), selection);
     }
 
     #[test]
-    fn selection_area_copies_across_lines_and_scrolling_without_activating_links() {
+    fn selectable_view_copies_across_lines_and_scrolling_without_activating_links() {
         use std::sync::Arc;
 
         use nsh_core::{
@@ -6791,7 +6977,7 @@ mod tests {
         items.push(MountItem::ViewProps {
             id: 3,
             props: Box::new(ViewProps {
-                selection_area: true,
+                selectable_view: true,
                 ..Default::default()
             }),
         });
@@ -7076,8 +7262,8 @@ mod tests {
             "First line\nSecond line\nThird line\nTail line"
         );
         assert!(!surface.should_quit());
-        assert!(surface.selection_area_range(4).is_none());
-        assert!(surface.selection_area_range(5).is_none());
+        assert!(surface.selectable_view_range(4).is_none());
+        assert!(surface.selectable_view_range(5).is_none());
         surface.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 1, 3));
         surface.handle_event(mouse(MouseEventKind::Drag(MouseButton::Left), 5, 5));
         assert!(
@@ -7524,13 +7710,13 @@ mod tests {
 
         // An interactive attachment keeps its own contact instead of
         // activating the enclosing text span's link or selecting its paragraph.
-        surface.node_mut(2).unwrap().props.selection_area = true;
+        surface.node_mut(2).unwrap().props.selectable_view = true;
         surface.node_mut(4).unwrap().props.pointer_events = PointerEvents::Auto;
         surface.node_mut(4).unwrap().events = mask(&[EventKind::Press]);
         surface.events.clear();
         surface.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), 2, 3));
         assert_eq!(surface.focused(), Some(4));
-        assert!(!surface.selection_area_dragging());
+        assert!(!surface.selectable_view_dragging());
         surface.handle_event(mouse(MouseEventKind::Up(MouseButton::Left), 2, 3));
         assert_eq!(presses(&surface), [4]);
         surface.node_mut(4).unwrap().props.pointer_events = PointerEvents::None;

@@ -9,10 +9,19 @@
 //!   costs, CPU, GPU, memory) at the top right.
 //! - `--window-size 1200x800` sets the window size (1200×800 by default; 390x844
 //!   shows an app's phone layout).
+//! - `--display <n>` centers the window on display `n`: 1 is the primary
+//!   display (the one with the menu bar), 2 the next in the system's list,
+//!   and so on; the main one when there is no such display. `--display
+//!   secondary` (what `nsh test` passes unless told a display) centers it on
+//!   the first display besides the primary one that does not mirror it, the
+//!   primary one when there is none.
+//! - `--keep-window-size` keeps the window at its size when it does not fit
+//!   on its display, where AppKit would shrink it (what `nsh test` passes:
+//!   a test's window is the size the test asks for).
 //! - `--name <name>` names the app (the menu bar, the window title; `nsh
 //!   run` passes the app's name), "nsh" by default.
 //! - `--app-id <id>` sets the application id (`com.example.app`); `nsh run`
-//!   passes the app's (`nsh.json` `"id"`). The app's data (`nsh/storage`)
+//!   passes the app's (`nsh.json` `"id"`). The app's data (`Storage` of `nsh`)
 //!   is kept under the id its bundle carries, in the system's data
 //!   directory.
 //!
@@ -27,7 +36,9 @@
 pub fn main() -> std::process::ExitCode {
     use std::{env, path::PathBuf};
 
-    use nsh_platform_macos::{AppOptions, AppSource, AssetBase, Bundle, Limits, dev, run_app};
+    use nsh_platform_macos::{
+        AppOptions, AppSource, AssetBase, Bundle, Limits, WindowDisplay, dev, run_app,
+    };
 
     dev::init_logging();
     let mut source = None;
@@ -90,6 +101,17 @@ pub fn main() -> std::process::ExitCode {
                     options.size = (w.parse().unwrap_or(1200), h.parse().unwrap_or(800));
                 }
             }
+            // A test's window keeps the size it asks for on a shorter display.
+            "--keep-window-size" => options.keep_size = true,
+            // One-based, as `nsh run` / `nsh test --display` count them.
+            "--display" => match args.next().as_deref() {
+                Some("secondary") => options.display = Some(WindowDisplay::Secondary),
+                Some(n) => match n.parse::<usize>() {
+                    Ok(n) if n > 0 => options.display = Some(WindowDisplay::Index(n - 1)),
+                    _ => log::warn!("--display takes a display's number, from 1, or `secondary`"),
+                },
+                None => log::warn!("--display takes a display's number, from 1, or `secondary`"),
+            },
             // AppKit's own (`-ApplePersistenceIgnoreState YES`).
             other if other.starts_with('-') && !other.starts_with("--") => {
                 args.next();

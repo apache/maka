@@ -38,6 +38,12 @@ async fn metadata_cas_noop_and_reopen_preserve_activity_fingerprint_and_active_e
     )
     .await
     .unwrap();
+    let control_only = log.prefix(0, 0).await.unwrap();
+    assert_eq!(control_only.high_water, 0);
+    assert_eq!(
+        control_only.digest,
+        "sha256:f6f90ff5712679004ad38b9782378b8e9fe7deac69e8cee5b14b069f80e4834d"
+    );
     let invocation = Invocation {
         session_id: "session".into(),
         turn_id: "turn".into(),

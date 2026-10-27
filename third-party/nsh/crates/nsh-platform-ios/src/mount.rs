@@ -3,10 +3,12 @@
 
 use std::{
     cell::{Cell, RefCell},
+    ptr::NonNull,
     rc::Rc,
     sync::Arc,
 };
 
+use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_core::{
     Bounds, Color, Command, EventKind, EventMask, EventPayload, GestureValues, ImageSource,
@@ -32,7 +34,8 @@ use objc2_ui_kit::{
     UIPanGestureRecognizer, UIPinchGestureRecognizer, UIRefreshControl,
     UIRotationGestureRecognizer, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior,
     UIScrollViewKeyboardDismissMode, UITraitEnvironment, UIUserInterfaceIdiom, UIView,
-    UIViewAnimationOptions,
+    UIViewAnimationOptions, UIViewControllerTransitionCoordinator,
+    UIViewControllerTransitionCoordinatorContext,
 };
 
 use crate::{
@@ -615,8 +618,8 @@ pub(crate) struct Mounter {
     sticky: rustc_hash::FxHashMap<NodeId, Vec<StickyCell>>,
     /// The native components the app registered.
     components: crate::component::Components,
-    /// Selection areas (`ViewProps::selection_area`) and their selections.
-    areas: Vec<(NodeId, Retained<crate::selection_area::AreaResponder>)>,
+    /// Selectable views (`ViewProps::selectable_view`) and their selections.
+    areas: Vec<(NodeId, Retained<crate::selectable_view::AreaResponder>)>,
     /// The performance monitor, while it measures ([`Mounter::measure`]).
     fps: Option<std::rc::Rc<crate::fps::Fps>>,
     mtm: MainThreadMarker,
@@ -923,12 +926,9 @@ impl Mounter {
                         self.control.clone(),
                         self.access.clone(),
                     ))),
-                    ViewKind::Native => {
-                        Native::Component(Box::new(crate::component::ComponentHost {
-                            container: NshView::new(self.mtm),
-                            component: None,
-                        }))
-                    }
+                    ViewKind::Native => Native::Component(Box::new(
+                        crate::component::ComponentHost::new(NshView::new(self.mtm)),
+                    )),
                     ViewKind::Video => Native::Video(Box::new(VideoHost::new(
                         self.mtm,
                         id,
@@ -1426,6 +1426,13 @@ impl Mounter {
                     if let Some(s) = self.slot(id) {
                         apply_dynamic(s, &self.animator);
                     }
+                    // A component gets what is bound again.
+                    if let Some(Some(s)) = self.views.get_mut(id as usize)
+                        && let Native::Component(host) = &mut s.native
+                    {
+                        host.forget();
+                        host.push(&s.bindings, &self.animator);
+                    }
                     return true;
                 }
             }
@@ -1516,6 +1523,23 @@ impl Mounter {
                 ) = (made, self.slot_mut(id))
                 {
                     host.attach(component);
+                }
+                // Bindings may have come first: the new component gets them.
+                if let Some(Some(s)) = self.views.get_mut(id as usize)
+                    && let Native::Component(host) = &mut s.native
+                {
+                    host.forget();
+                    host.push(&s.bindings, &self.animator);
+                }
+            }
+            MountItem::ComponentPropSlots { id, names } => {
+                if let Some(Slot {
+                    native: Native::Component(host),
+                    ..
+                }) = self.slot_mut(id)
+                {
+                    host.slots = names;
+                    host.forget();
                 }
             }
             MountItem::ComponentProps { id, props } => {
@@ -1681,8 +1705,6 @@ impl Mounter {
                 input.select(start, end)
             }
             (Command::ClearJsResponder, _) => self.clear_js_responder(),
-            // Toasts are Android only.
-            (Command::Toast { .. }, _) => {}
             (Command::Announce(text), _) => crate::system::announce(&text),
             (Command::ImageInfo { id, uri }, _) => self.images.info(id, &uri),
             (Command::SetClipboard(text), _) => crate::system::set_clipboard(&text),
@@ -3428,9 +3450,21 @@ impl Mounter {
             else {
                 continue;
             };
-            if stack.nav.transitionCoordinator().is_some() {
+            if let Some(coordinator) = stack.nav.transitionCoordinator() {
                 if !self.deferred_stacks.contains(&id) {
                     self.deferred_stacks.push(id);
+                    // A modal presented or dismissed over the stack sets the
+                    // coordinator too, and its end never reaches `didShow`.
+                    let shared = self.shared.clone();
+                    let done = RcBlock::new(
+                        move |_: NonNull<
+                            ProtocolObject<dyn UIViewControllerTransitionCoordinatorContext>,
+                        >| { Self::finish_deferred(&shared, id) },
+                    );
+                    // Refused when the transition is already ending.
+                    if !coordinator.animateAlongsideTransition_completion(None, Some(&done)) {
+                        Self::finish_deferred(&self.shared, id);
+                    }
                 }
                 continue;
             }
@@ -3544,19 +3578,26 @@ impl Mounter {
     /// swipe) are reported so the app removes them.
     pub(crate) fn stack_did_show(&mut self, id: NodeId) {
         self.report_popped(id);
-        // Changes that arrived during the transition, once it is over (the
-        // transition coordinator outlives this callback).
-        if let Some(i) = self.deferred_stacks.iter().position(|&s| s == id) {
-            self.deferred_stacks.swap_remove(i);
-            let shared = self.shared.clone();
-            dispatch2::DispatchQueue::main().exec_async(move || {
-                let mtm = MainThreadMarker::new().expect("main queue");
-                if let Some(m) = shared.get(mtm).borrow_mut().as_mut() {
-                    m.dirty_stacks.push(id);
-                    m.finish_navigation();
-                }
-            });
+        if self.deferred_stacks.contains(&id) {
+            Self::finish_deferred(&self.shared, id);
         }
+    }
+
+    /// Applies the changes stack `id` deferred during a transition, on the
+    /// next main-queue turn (the transition coordinator outlives the
+    /// callbacks that end it), unless another callback already did.
+    fn finish_deferred(shared: &SharedMounter, id: NodeId) {
+        let shared = shared.clone();
+        DispatchQueue::main().exec_async(move || {
+            let mtm = MainThreadMarker::new().expect("main queue");
+            if let Some(m) = shared.get(mtm).borrow_mut().as_mut()
+                && let Some(i) = m.deferred_stacks.iter().position(|&s| s == id)
+            {
+                m.deferred_stacks.swap_remove(i);
+                m.dirty_stacks.push(id);
+                m.finish_navigation();
+            }
+        });
     }
 
     /// Reports the screens of stack `id` that the user popped natively.
@@ -3700,7 +3741,7 @@ impl Mounter {
         }
         // Only views that keep their props (which texts below look up).
         let area =
-            (props.selection_area && s.native.nsh().is_some()).then(|| s.native.view().retain());
+            (props.selectable_view && s.native.nsh().is_some()).then(|| s.native.view().retain());
         let was_area = self.areas.iter().any(|(a, _)| *a == id);
         let Some(s) = self.slot_mut(id) else { return };
         match s.native.nsh() {
@@ -3725,9 +3766,10 @@ impl Mounter {
         }
         // After the props: the texts below read whether they are in an area.
         match (area, was_area) {
-            (Some(view), false) => self
-                .areas
-                .push((id, crate::selection_area::AreaResponder::attach(&view, mtm))),
+            (Some(view), false) => self.areas.push((
+                id,
+                crate::selectable_view::AreaResponder::attach(&view, mtm),
+            )),
             (None, true) => {
                 if let Some(i) = self.areas.iter().position(|(a, _)| *a == id) {
                     self.areas.remove(i).1.detach();
@@ -4358,6 +4400,15 @@ impl Mounter {
         for &id in &self.animated {
             if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
                 apply_dynamic(s, animator);
+            }
+        }
+        // Components get their bound props' changes (no view borrowed while
+        // they run but their own slot).
+        for &id in &self.animated {
+            if let Some(Some(s)) = self.views.get_mut(id as usize)
+                && let Native::Component(host) = &mut s.native
+            {
+                host.push(&s.bindings, animator);
             }
         }
         // Sticky cells that stick an animated value further in follow it.

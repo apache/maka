@@ -27,12 +27,15 @@ const CONNECT: Duration = Duration::from_secs(60);
 
 /// Starts the apps tests open on `target`'s host; `browser` is the one
 /// `--target web` runs them in (else the one found on this machine); `fps`
-/// has the host log its performance monitor's readings.
+/// has the host log its performance monitor's readings; `display` (one-based)
+/// is the display the macOS host opens its windows on (by default a
+/// secondary one when there is one).
 pub(crate) fn starter(
     target: Target,
     browser: Option<&Path>,
     work: &Path,
     fps: bool,
+    display: Option<usize>,
 ) -> anyhow::Result<StartHost> {
     if browser.is_some() && target != Target::Web {
         anyhow::bail!("--browser goes with --target web");
@@ -44,6 +47,9 @@ pub(crate) fn starter(
         )
     {
         anyhow::bail!("--fps goes with --target linux, macos, windows or ios");
+    }
+    if display.is_some() && target != Target::Macos {
+        anyhow::bail!("--display goes with --target macos");
     }
     match target {
         Target::Web => return crate::test_web::starter(browser),
@@ -60,7 +66,7 @@ pub(crate) fn starter(
     // Built (in a checkout) or found once, before the first test.
     let host = crate::runtime::test_host(target.platform())?;
     Ok(Arc::new(move |entry: &Path, options: &HostOptions| {
-        start(target, &host, entry, options, fps).map(|h| Box::new(h) as Box<dyn Host>)
+        start(target, &host, entry, options, fps, display).map(|h| Box::new(h) as Box<dyn Host>)
     }))
 }
 
@@ -105,6 +111,7 @@ fn start(
     entry: &Path,
     options: &HostOptions,
     fps: bool,
+    display: Option<usize>,
 ) -> Result<TestHost, String> {
     let server = serve(entry, options)?;
     let entry = resolve(entry)?;
@@ -126,6 +133,15 @@ fn start(
     if target == Target::Macos {
         // A window AppKit restored from an earlier run would not be this one.
         command.args(["-ApplePersistenceIgnoreState", "YES"]);
+        // Off the main screen, which the user works on: the display
+        // `--display` names, else a secondary one when there is one (the
+        // host knows the screens).
+        let display = display.map_or_else(|| "secondary".to_owned(), |n| n.to_string());
+        command.args(["--display", &display]);
+        // At the size the test opens the app at, on a display shorter than
+        // it too: AppKit would shrink the window to the screen, and the
+        // app would lay out in less room than the test expects.
+        command.arg("--keep-window-size");
     }
     if target == Target::Gpui && cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some()
     {

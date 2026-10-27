@@ -54,7 +54,7 @@ A Rust app's root is a component of its crate, which `nsh.json`'s `"root"` names
 // src/lib.rs; nsh.json: { "rust": ".", "root": "App" }
 mod screens;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// What a TSX entry may import from the crate.
 #[native_module("my-app/native")]
@@ -120,7 +120,7 @@ Every other key is optional; a TSX app may also leave out the four. A TSX app's 
 | Key | Type | Used by | Description |
 |---|---|---|---|
 | `name` | string | `package` | The display name under the app icon. Default: the entry directory's name. |
-| `id` | string | `package`, `publish`, `nsh/storage` | Bundle identifier / application id in reverse-DNS form, e.g. `com.yourcompany.app`; required by `package` and `publish`. `nsh run` uses `com.example.<name>` without one. |
+| `id` | string | `package`, `publish`, `Storage` | Bundle identifier / application id in reverse-DNS form, e.g. `com.yourcompany.app`; required by `package` and `publish`. `nsh run` uses `com.example.<name>` without one. |
 | `version` | string | `package`, `publish` | The user-visible version, e.g. `1.2.0` (`CFBundleShortVersionString`, Android `versionName`). |
 | `build` | number | `package`, `publish` | The build number (`CFBundleVersion`, Android `versionCode`). Signed packages require it to grow with every release. |
 | `minRuntime` | string | `publish` | The lowest NSH runtime that runs the signed package, e.g. `0.2.0`. Default: the CLI's version ([Signed packages](./signed-packages.md#which-runtimes-run-a-package)). |
@@ -132,7 +132,7 @@ Every other key is optional; a TSX app may also leave out the four. A TSX app's 
 | `capabilities` | object | every build | What the app may reach outside its VM: network hosts, web view hosts, the status bar ([Sandbox and capabilities](./sandbox-and-capabilities.md)). |
 | `resolve` | object | every build | How bare imports resolve: the export conditions of npm packages and aliases ([npm packages](#npm-packages)). |
 | `rust` | string or string[] | every command | The app's Rust crate, or a list of them, relative to `nsh.json`: their components and modules, which TSX imports by each crate's `#[native_module]` specifier ([Building with Rust](./rust.md#several-crates)). |
-| `web` | object | `package` | What a web package adds to its page. `web.host`: a JS module relative to `nsh.json` exporting `createHost(player)`, which answers the app's [`nsh/host`](../modules/nsh-host.md) calls; `web.connect`: the hosts that module's own requests reach, as patterns of `capabilities.network.hosts`, which the page's Content-Security-Policy allows ([Web](./web.md#the-hosts-functions)). |
+| `web` | object | `package` | What a web package adds to its page. `web.host`: a JS module relative to `nsh.json` exporting `createHost(player)`, which answers the app's [`host`](../modules/nsh.md#host) calls; `web.connect`: the hosts that module's own requests reach, as patterns of `capabilities.network.hosts`, which the page's Content-Security-Policy allows ([Web](./web.md#the-hosts-functions)). |
 | `root` | string | `run`, `package` | A Rust app's root component, its path in the `rust` crate, the first one of a list (`App`, `shell::Gallery`): `nsh run` and `nsh package` of the app's directory mount it with no QuickJS, on every platform; `nsh run App.tsx` still runs the TSX entry ([Building with Rust](./rust.md)). |
 
 The flags of `nsh package` and `nsh publish` (`--name`, `--id`, `--app-version`, `--build`, `--icon`, `--min-runtime`) override the file's values ([CLI](./cli.md)).
@@ -183,7 +183,7 @@ NSH does not need `node_modules`. Instead, every command that builds the app (`i
 | `globals.d.ts` | `If` and `Each`; `console`, timers, `requestAnimationFrame`, `fetch` and the other [global APIs](../modules/globals.md) |
 | `assets.d.ts` | What importing an image or font gives |
 | `tokens.d.ts` | `Tokens`: the app's design tokens, from its `"theme"`, which type [`token()`](../modules/nsh.md#token) |
-| `animated.d.ts`, `device.d.ts`, ... | One file per module (`nsh/animated`, `nsh/device`, ...) |
+| `mobile.d.ts`, `desktop.d.ts` | One file per module (`nsh/mobile`, `nsh/desktop`) |
 | `base.d.ts` | `nsh/base` |
 
 `lib` is `ES2023` without `DOM`: there is no `document` or `window`. The files in `.nsh` are regenerated (only when their contents change), so do not edit them and do not commit them; `.gitignore` already excludes `.nsh/`. If your editor shows `nsh` as missing after cloning a project, run any build command once, e.g. `nsh check`.
@@ -194,7 +194,7 @@ An app made by an earlier `nsh init` gets the new `tsconfig.json` with its next 
 
 ## Modules
 
-A Rust app's code is its crate's modules (`mod screens;`), and its dependencies come from crates.io like any crate's; NSH's own crates are `nsh-core` (the primitives, signals and typed styles, `use nsh_core::ui::prelude::*`) and `nsh-base` (the base components and the theme).
+A Rust app's code is its crate's modules (`mod screens;`), and its dependencies come from crates.io like any crate's; NSH's own crates are `nsh-core` (the primitives, signals and typed styles, `use nsh_core::prelude::*`) and `nsh-base` (the base components and the theme).
 
 In TSX, split the app into as many `.ts` and `.tsx` modules as you like and import them with relative paths; the extension may be left out:
 
@@ -225,14 +225,10 @@ Imports of `nsh` and `nsh/...` are not bundled: the runtime provides them native
 
 | Module | What it has |
 |---|---|
-| `nsh` | Reactivity (`signal`, `computed`, `effect`, ...), `mount`, `split`, `context`; the primitives `View`, `Text`, `Scroll`, `Input`, `Image`, `List`, `Canvas`, `WebView`, `Video` ([reference](../modules/nsh.md)) |
-| `nsh/base` | The unstyled foundation of an app's UI: navigation stacks and their pages (`NavStack`, `NavPage`, `createNavStack`), dialogs (`Dialog`), a press target (`Button`), safe areas (`SafeAreaView`, `safeArea`, `safeAreaInsets`), the system's alert dialog (`AlertDialog`), the software keyboard (`Keyboard`, `keyboardFrame`, `KeyboardAvoidingView`); pages and dialogs set the status bar (`statusBar`) ([reference](../modules/nsh-base.md)) |
-| `nsh/animated` | Native animations |
-| `nsh/gesture` | `PanResponder` |
-| `nsh/device` | `platform`, `windowSize`, `colorScheme`, `fontScale`, `pixelRatio`, `locale` |
-| `nsh/accessibility` | Screen reader and reduce motion state, announcements |
-| `nsh/native` | Components and functions the embedding app registers |
-| `nsh/ios`, `nsh/android` | Platform-only APIs |
+| `nsh` | Reactivity (`signal`, `computed`, `effect`, ...), `mount`, `split`, `context`; the primitives `View`, `Text`, `Scroll`, `Image`, `List`, `Canvas`, `WebView`, `Video` (`View`'s `selectable` for text selection); safe area insets (`safeArea`, `safeAreaInsets`) and the software keyboard (`Keyboard`, `keyboardFrame`); native animations; `PanResponder`; the environment (`platform`, `windowSize`, `colorScheme`, `fontScale`, `pixelRatio`, `locale`); screen reader and reduce motion state, announcements; the clipboard, the photo picker, storage, the host channel, keyboard shortcuts; components and functions the embedding app registers ([reference](../modules/nsh.md)) |
+| `nsh/base` | The unstyled foundation of an app's UI: navigation stacks and their pages (`NavStack`, `NavPage`, `createNavStack`), dialogs (`Dialog`), a press target (`Button`), a text input (`Input`) and the system's alert dialog (`AlertDialog`); pages and dialogs set the status bar (`statusBar`) ([reference](../modules/nsh-base.md)) |
+| `nsh/mobile` | What iOS and Android have: `TabBar`, `InputAccessoryView` (iOS), `BackHandler` (Android) ([reference](../modules/nsh-mobile.md)) |
+| `nsh/desktop` | What macOS, Windows and Linux have: `Window`, `titleBar`, `Menu` ([reference](../modules/nsh-desktop.md)) |
 
 The [modules reference](../modules/index.md) documents each one. Importing a module NSH does not have (`nsh/foo`) is a build error. So is a name your code uses that the module does not export (`import { Buton } from "nsh/base"`): the error points at the import and names the closest export (``did you mean `Button`?``). Names used only as types are checked by `nsh check`.
 
@@ -261,7 +257,7 @@ declare module "node-polyfill";
 Images and fonts ship with the app. A Rust crate reads each file of its `assets/` directory at compile time with `asset!`, and ships them all with `registry.assets(assets!())` in its `#[native_module]` function; TSX imports them like modules, and the bundler records each imported file (and an image's pixel-density variants). `nsh build` copies them to `.nsh/out/assets/`, `nsh package` puts them in the app, and during development they are served to the app.
 
 ```rust tabs
-use nsh_core::ui::{FontAsset, ImageAsset, asset};
+use nsh_core::element::{FontAsset, ImageAsset, asset};
 
 const LOGO: ImageAsset = asset!("logo@2x.png");      // its url, and its size: 64×64 points
 const INTER: FontAsset = asset!("Inter.ttf");        // its uri, and its family: "Inter"

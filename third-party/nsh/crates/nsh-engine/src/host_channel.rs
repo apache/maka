@@ -573,7 +573,7 @@ mod tests {
             release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         });
         let mut config = EngineConfig::new(Bundle::source(
-            "import { host } from 'nsh/host'; host.post('hold');".to_owned(),
+            "import { host } from 'nsh'; host.post('hold');".to_owned(),
         ));
         if let crate::App::Js(bundle) = &mut config.app {
             bundle.policy.declared =
@@ -605,7 +605,7 @@ mod tests {
             seen_tx.send(call.take_data()).unwrap();
         });
         let mut config = EngineConfig::new(Bundle::source(
-            "import { host } from 'nsh/host'; host.on('open', data => host.post('seen', data));"
+            "import { host } from 'nsh'; host.on('open', data => host.post('seen', data));"
                 .to_owned(),
         ));
         if let crate::App::Js(bundle) = &mut config.app {

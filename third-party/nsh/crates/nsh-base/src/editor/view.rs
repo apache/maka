@@ -5,14 +5,17 @@
 //! carets, the composition and the sink. Only the rows in view (and a few
 //! around them) are made, each a text whose spans are highlighted tokens.
 
-use nsh_core::ui::{ContextMenuEvent, Cursor, EventKind, EventPayload, Style, prelude::*};
+use nsh_core::{
+    element::{ContextMenuEvent, Cursor, EventKind, EventPayload, Style},
+    prelude::*,
+};
 
 use super::{
     EditorDiagnosticSeverity, EditorPart, EditorProps,
     controller::Ed,
     state::{RowContent, SpanTags},
 };
-use crate::theme;
+use crate::{input, theme};
 
 /// The width of a caret.
 pub(crate) const CARET_WIDTH: f32 = 2.0;
@@ -152,8 +155,8 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
 /// Which of the editor's two trees a part is made for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Layer {
-    /// In the scroll views, empty: what the pointer, the wheel, the scroll
-    /// bars and touches reach (the platforms scroll it).
+    /// In the scroll views: the active-line backgrounds and what the
+    /// pointer, wheel, scroll bars and touches reach (the platforms scroll it).
     Hit,
     /// Over the scroll views, receiving no pointer: what shows, placed
     /// where the editor scrolled to. Its views keep their handlers for the
@@ -704,11 +707,15 @@ fn rows_box(ed: Ed, lh: impl Fn() -> Points + Clone + 'static, layer: Layer) -> 
     });
     let el = el.min_w(relative(1.0));
     if layer == Layer::Hit {
+        // Backgrounds belong to the scroll content, below its native
+        // indicators. The paint overlay above it holds the foreground.
         // The selection's handles take touches of their own.
-        return el.child(super::touch::handles(ed)).into_element();
+        return el
+            .child(active_lines(ed.clone(), lh))
+            .child(super::touch::handles(ed))
+            .into_element();
     }
-    el.child(active_lines(ed.clone(), lh.clone()))
-        .child(rulers(ed.clone()))
+    el.child(rulers(ed.clone()))
         .child(indent_guides(ed.clone(), lh.clone()))
         .child(match_rects(ed.clone()))
         .child(selection_rects(ed.clone()))
@@ -1237,13 +1244,18 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         .w(px(1.0))
         .h(move || Length::from(lh()))
         // Presses at the caret are the rows' (a click there places it).
-        .pointer_events(PointerEvents::None)
+        .pointer_events(if is_terminal() {
+            PointerEvents::BoxNone
+        } else {
+            PointerEvents::None
+        })
         .p_0()
         .border(px(0.0))
         .bg(AdaptiveColor::TRANSPARENT)
         .text_color(AdaptiveColor::TRANSPARENT)
         .caret(false)
         .multiline(true)
+        .auto_focus(move || is_terminal() && props.auto_focus.get())
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)

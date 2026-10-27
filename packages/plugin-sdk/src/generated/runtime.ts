@@ -1962,6 +1962,7 @@ export type SettingsModelsRead =
   | {
       kind: 'start';
       query?: string;
+      connectionId?: string | null;
     }
   | {
       kind: 'continue';
@@ -7651,6 +7652,7 @@ export interface ModelSelection {
 }
 export interface SettingsModelCursor {
   query: string;
+  connectionId: string | null;
   connection: number;
   model: number;
 }

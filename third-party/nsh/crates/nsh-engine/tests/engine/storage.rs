@@ -5,9 +5,7 @@ use std::{path::PathBuf, time::Duration};
 
 use crossbeam_channel::Receiver;
 use nsh_core::{
-    ApproxTextEngine, MountBatch, MountItem, Size,
-    storage::Storage,
-    ui::{Root, prelude::*},
+    ApproxTextEngine, MountBatch, MountItem, Size, element::Root, prelude::*, storage::Storage,
 };
 use nsh_engine::{App, Bundle, Engine, EngineConfig, Environment, FileStorage};
 
@@ -106,7 +104,7 @@ fn shown(rx: &Receiver<MountBatch>, prefix: &str) -> String {
 }
 
 const COUNTER: &str = r#"import { mount, signal, Text } from "nsh";
-import { Storage } from "nsh/storage";
+import { Storage } from "nsh";
 
 const shown = signal("waiting");
 setTimeout(async () => {
@@ -197,7 +195,7 @@ fn rust_shares_the_entries_of_js() {
 }
 
 const EDGES: &str = r#"import { mount, signal, Text } from "nsh";
-import { Storage } from "nsh/storage";
+import { Storage } from "nsh";
 
 const shown = signal("waiting");
 const outcomes: string[] = [];

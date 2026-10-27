@@ -7,7 +7,7 @@ use nsh_core::{
     Bounds, Points,
     animation::{Curve, EaseMode},
     canvas::{CanvasTextAlign, CanvasTextBaseline},
-    ui::prelude::*,
+    prelude::*,
 };
 
 use super::{

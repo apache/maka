@@ -15,7 +15,7 @@ trigger as it scrolls. It draws nothing of its own: the popup and its content ar
 
 ```rust tabs
 use nsh_base::{OpenChangeReason, PopoverEvent, popover};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn details() -> impl IntoElement {
     popover()
@@ -131,4 +131,5 @@ For a list of actions use a [Menu](./menu.md), which becomes a sheet on phones; 
 ## Accessibility
 
 The trigger tells screen readers whether the popover is expanded. Escape and the back button close it, as users expect
-of a popup.
+of a popup. In TSX the trigger is the element you pass: it takes the presses and the expanded state itself, so its own
+`active:` classes and `activeStyle` show while it is pressed, and its own `onPress` runs too.

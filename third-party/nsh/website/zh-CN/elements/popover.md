@@ -12,7 +12,7 @@ demo: el-popover
 
 ```rust tabs
 use nsh_base::{OpenChangeReason, PopoverEvent, popover};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn details() -> impl IntoElement {
     popover()
@@ -128,4 +128,4 @@ const open = signal(false);
 
 ## 无障碍
 
-触发元素会告诉屏幕阅读器弹出框是否已展开。Escape 和返回键会关闭它，与用户对弹出层的预期一致。
+触发元素会告诉屏幕阅读器弹出框是否已展开。Escape 和返回键会关闭它，与用户对弹出层的预期一致。在 TSX 中，触发元素就是你传入的元素：按压和展开状态都在它自己身上，所以它自己的 `active:` 类和 `activeStyle` 会在按下时生效，它自己的 `onPress` 也照常运行。

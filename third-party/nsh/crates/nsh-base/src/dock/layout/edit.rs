@@ -1,6 +1,6 @@
 use nsh_core::{
+    element::Placement,
     geometry::{Axis, Points},
-    ui::Placement,
 };
 
 use super::{
@@ -331,8 +331,8 @@ fn split_parent_of(path: &super::tree::NodePath) -> Option<(super::tree::NodePat
 #[cfg(test)]
 mod tests {
     use nsh_core::{
+        element::Placement,
         geometry::{Axis, px},
-        ui::Placement,
     };
 
     use super::super::*;

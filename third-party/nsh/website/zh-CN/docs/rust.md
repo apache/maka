@@ -45,7 +45,7 @@ nsh package --target web       # 或 ios、ios-simulator、android、macos、lin
 
 ```rust
 use nsh_base::{button, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// TSX 通过 `app/native` 可以使用的组件。
 #[native_module("app/native")]
@@ -129,7 +129,7 @@ iOS 的 `AppView` 上用 `AppSource::Rust` 挂载 Rust 根组件。
 
 ## 桌面标题栏
 
-Rust 应用通过 `nsh_core::ui::desktop` 绘制自定义标题栏。调用
+Rust 应用通过 `nsh_core::element::desktop` 绘制自定义标题栏。调用
 `set_title_bar(TitleBarStyle::Hidden, Some(height))`，将背景设为
 `.window_drag(true)`，并通过 `title_bar()` 为系统窗口按钮留出空间。
 返回值的 `top` 是标题栏高度，`left` 和 `right` 是两侧系统按钮占用的宽度。
@@ -139,7 +139,7 @@ Rust 应用通过 `nsh_core::ui::desktop` 绘制自定义标题栏。调用
 ```rust
 use nsh_core::{
     desktop::TitleBarStyle,
-    ui::{desktop::{close_window, set_title_bar, title_bar}, prelude::*},
+    element::{desktop::{close_window, set_title_bar, title_bar}}, prelude::*,
 };
 
 fn window_bar() -> impl IntoElement {

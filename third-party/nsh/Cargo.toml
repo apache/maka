@@ -7,7 +7,7 @@ exclude = ["crates/gpui", "third-party/gpui-wgpu", "third-party/icy_sixel"]
 default-members = ["crates/xtask"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 homepage = "https://nsh.dev"
@@ -27,22 +27,22 @@ private_interfaces = "deny"
 [workspace.dependencies]
 unicode-bidi = "0.3.18"
 unicode-linebreak = "0.1.5"
-nsh-core = { version = "0.2.0", path = "crates/nsh-core" }
-nsh-package = { version = "0.2.0", path = "crates/nsh-package" }
+nsh-core = { version = "0.3.0", path = "crates/nsh-core" }
+nsh-package = { version = "0.3.0", path = "crates/nsh-package" }
 # Without `highlight`: the platforms turn it on, the CLI and the bundler leave it off.
-nsh-base = { version = "0.2.0", path = "crates/nsh-base", default-features = false }
-nsh-macros = { version = "0.2.0", path = "crates/nsh-macros" }
-nsh-js = { version = "0.2.0", path = "crates/nsh-js" }
-nsh-engine = { version = "0.2.0", path = "crates/nsh-engine", default-features = false }
-nsh-bundler = { version = "0.2.0", path = "crates/nsh-bundler", default-features = false }
-nsh-platform-ios = { version = "0.2.0", path = "crates/nsh-platform-ios", default-features = false }
-nsh-platform-android = { version = "0.2.0", path = "crates/nsh-platform-android", default-features = false }
-nsh-platform-linux = { version = "0.2.0", path = "crates/nsh-platform-linux", default-features = false }
-nsh-platform-macos = { version = "0.2.0", path = "crates/nsh-platform-macos", default-features = false }
-nsh-platform-windows = { version = "0.2.0", path = "crates/nsh-platform-windows", default-features = false }
-nsh-platform-tui = { version = "0.2.0", path = "crates/nsh-platform-tui", default-features = false }
-nsh-dev = { version = "0.2.0", path = "crates/nsh-dev" }
-nsh-testing = { version = "0.2.0", path = "crates/nsh-testing", default-features = false }
+nsh-base = { version = "0.3.0", path = "crates/nsh-base", default-features = false }
+nsh-macros = { version = "0.3.0", path = "crates/nsh-macros" }
+nsh-js = { version = "0.3.0", path = "crates/nsh-js" }
+nsh-engine = { version = "0.3.0", path = "crates/nsh-engine", default-features = false }
+nsh-bundler = { version = "0.3.0", path = "crates/nsh-bundler", default-features = false }
+nsh-platform-ios = { version = "0.3.0", path = "crates/nsh-platform-ios", default-features = false }
+nsh-platform-android = { version = "0.3.0", path = "crates/nsh-platform-android", default-features = false }
+nsh-platform-linux = { version = "0.3.0", path = "crates/nsh-platform-linux", default-features = false }
+nsh-platform-macos = { version = "0.3.0", path = "crates/nsh-platform-macos", default-features = false }
+nsh-platform-windows = { version = "0.3.0", path = "crates/nsh-platform-windows", default-features = false }
+nsh-platform-tui = { version = "0.3.0", path = "crates/nsh-platform-tui", default-features = false }
+nsh-dev = { version = "0.3.0", path = "crates/nsh-dev" }
+nsh-testing = { version = "0.3.0", path = "crates/nsh-testing", default-features = false }
 
 anyhow = "1"
 thiserror = "2"

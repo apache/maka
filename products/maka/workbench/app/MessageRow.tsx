@@ -17,12 +17,13 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { tr } from './locale';
 import { CompactionDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX } from 'nsh';
 import { Button } from 'nsh/base';
-import { platform } from 'nsh/device';
+import { platform } from 'nsh';
 import { messageKey, type Row } from './history';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
@@ -177,9 +178,9 @@ export function MessageRow({
                           accessibilityLabel={
                             sourceMode() ? tr('Show formatted message') : tr('Show message source')
                           }
-                          tooltip={
-                            sourceMode() ? tr('Show formatted message') : tr('Show message source')
-                          }
+                          tooltip={textTooltip(() =>
+                            sourceMode() ? tr('Show formatted message') : tr('Show message source'),
+                          )}
                           selected={sourceMode()}
                           onPress={inputAction(setSourceMode, {
                             sessionId,
@@ -242,11 +243,11 @@ export function MessageRow({
                                   ? tr('Show formatted thinking')
                                   : tr('Show thinking source')
                               }
-                              tooltip={
+                              tooltip={textTooltip(() =>
                                 sourceMode()
                                   ? tr('Show formatted thinking')
-                                  : tr('Show thinking source')
-                              }
+                                  : tr('Show thinking source'),
+                              )}
                               selected={sourceMode()}
                               onPress={inputAction(setSourceMode, {
                                 sessionId,

@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import { cleanup, Input, Text, View } from 'nsh';
+import { cleanup, keymap, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
 import { tr } from './locale';
 import { uiScale } from './uiScale';
@@ -41,7 +42,9 @@ export function UiScaleSettings() {
       </Text>
       <If when={uiScale.supported}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>
-          {tr('Choose a preset or press Enter to preview. Ctrl+Alt+0 restores 100%.')}
+          {tr('Choose a preset or press Enter to preview. {shortcut} restores 100%.', {
+            shortcut: keymap.label('mod+alt+0'),
+          })}
         </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <Input

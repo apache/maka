@@ -4,9 +4,10 @@
 
 use std::hash::{BuildHasher, RandomState};
 
-use nsh_base::{AvoidBehavior, dialog, keyboard_avoiding_view, safe_area_view};
-use nsh_core::ui::{
-    AnyElement, Idiom, Input, KeyboardDismissMode, LayoutAnimation, Orientation, Os, prelude::*,
+use nsh_base::{dialog, input};
+use nsh_core::{
+    element::{AnyElement, Idiom, Input, KeyboardDismissMode, LayoutAnimation, Orientation, Os},
+    prelude::*,
 };
 
 use crate::{
@@ -220,7 +221,7 @@ fn PressableSheet() -> impl IntoElement {
             .animation(ModalAnimation::Slide)
             .on_cancel(open(false))
             .child(
-                safe_area_view().flex_1().bg(colors::BACKGROUND).child(
+                view().p_safe_area().flex_1().bg(colors::BACKGROUND).child(
                     view()
                         .flex_1()
                         .p_4()
@@ -449,16 +450,17 @@ fn Accessory() -> impl IntoElement {
         )
 }
 
-/// The behaviors of the keyboard avoiding view: label, what it does.
-const BEHAVIORS: [(AvoidBehavior, &str, &str); 2] = [
+/// How the page makes room for the keyboard (`env(keyboard-inset-height)`
+/// as a bottom padding or margin): label, what it does.
+const BEHAVIORS: [(bool, &str, &str); 2] = [
     (
-        AvoidBehavior::Padding,
+        false,
         "padding",
         "The bottom pads: the tinted background stays under the keyboard.",
     ),
     (
-        AvoidBehavior::Height,
-        "height",
+        true,
+        "margin",
         "The view shrinks: its background ends at the keyboard.",
     ),
 ];
@@ -470,8 +472,9 @@ fn AvoidingPage() -> impl IntoElement {
     let focused = signal(false);
     let picked = move || BEHAVIORS[behavior.get() as usize];
     view().flex_1().child(
-        keyboard_avoiding_view()
-            .behavior(move || picked().0)
+        view()
+            .style_when(move || !picked().0, |s| s.pb_keyboard())
+            .style_when(move || picked().0, |s| s.mb_keyboard())
             .flex_1()
             .bg(tints::INFO)
             .child(
@@ -483,7 +486,9 @@ fn AvoidingPage() -> impl IntoElement {
                         appear().index(0).child(
                             ui::Card::new()
                                 .icon(IconName::Form)
-                                .title(move || format!("behavior=\"{}\"", picked().1))
+                                .title(move || {
+                                    format!("{}-bottom: env(keyboard-inset-height)", picked().1)
+                                })
                                 .subtitle("Focus the field at the bottom")
                                 .child(
                                     segmented()
@@ -524,9 +529,12 @@ fn ModalOptions() -> impl IntoElement {
                     .flex_1()
                     .bg(AdaptiveColor::new(rgb(0xeef5dc), rgb(0x16200d)))
                     .child(
-                        safe_area_view()
+                        view()
                             .flex_1()
-                            .p_4()
+                            .pt_safe_area_plus(px(16.0))
+                            .pr_safe_area_plus(px(16.0))
+                            .pb_safe_area_plus(px(16.0))
+                            .pl_safe_area_plus(px(16.0))
                             .gap_3()
                             .child(
                                 view().flex_row().pt_2().child(
@@ -753,11 +761,11 @@ pub(crate) fn Components() -> impl IntoElement {
             .flush()
             .child(Inset::new().padding(0.0).gap(0.0).child(link_row(
                 IconName::Form,
-                "KeyboardAvoidingView",
-                "padding / height",
+                "Keyboard inset",
+                "padding / margin",
                 |_: &()| {
                     nav::push("keyboard-avoiding", || {
-                        titled("KeyboardAvoidingView").child(avoiding_page())
+                        titled("Keyboard inset").child(avoiding_page())
                     });
                 },
             )))

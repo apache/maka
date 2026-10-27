@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Application definitions live in control; caller journals and checkpoints use data writers.
+//! Application definitions and caller journals live in control; checkpoints use data writers.
 use super::*;
 use crate::applications::{
     DeploymentChanges, LoadedDeployment, PreparedApplication, SourceSnapshot,
@@ -172,9 +172,9 @@ impl RootStore {
             .ui_checkpoints_from(source, instance)
             .map(|capability| capability.with_shutdown(self.gates.cancellation()))
     }
-    fn caller_journal(&self, deployment: Uuid) -> Result<&EventLog, StoreError> {
+    fn caller_journal(&self) -> Result<&EventLog, StoreError> {
         self.require_open()?;
-        Ok(&self.partitions[partition_for(b"application", &deployment.to_string())])
+        Ok(&self.control)
     }
     pub async fn application_intent(
         &self,
@@ -182,7 +182,7 @@ impl RootStore {
         consumer: InstanceId,
         operation: Uuid,
     ) -> Result<Option<CallerIntent>, StoreError> {
-        self.caller_journal(deployment)?
+        self.caller_journal()?
             .application_intent(deployment, consumer, operation)
             .await
     }
@@ -206,7 +206,7 @@ impl RootStore {
         reference: RecoveryRef,
         recovery: serde_json::Value,
     ) -> Result<RecordedIntent, StoreError> {
-        self.caller_journal(source.reference().deployment)?
+        self.caller_journal()?
             .record_application_intent_from(source, consumer, reference, recovery)
             .await
     }
@@ -217,7 +217,7 @@ impl RootStore {
         after: u64,
         limit: usize,
     ) -> Result<Vec<CallerIntent>, StoreError> {
-        self.caller_journal(deployment)?
+        self.caller_journal()?
             .application_intents(deployment, consumer, after, limit)
             .await
     }
@@ -227,7 +227,7 @@ impl RootStore {
         after: u64,
         limit: usize,
     ) -> Result<Vec<CallerIntent>, StoreError> {
-        self.caller_journal(deployment)?
+        self.caller_journal()?
             .application_deployment_intents(deployment, after, limit)
             .await
     }

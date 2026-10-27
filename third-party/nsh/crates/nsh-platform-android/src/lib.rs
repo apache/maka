@@ -10,8 +10,8 @@
 //! - Native animations (nsh-core's `animation` graph) run on the UI thread in Rust:
 //!   `Choreographer` ticks call in, and changed values come back as a
 //!   compact array.
-//! - Selections across the texts of a selection area use nsh-core's model
-//!   on the UI thread too (`selection_area.rs`, `SelectionArea.java`).
+//! - Selections across the texts of a selectable view use nsh-core's model
+//!   on the UI thread too (`selectable_view.rs`, `SelectableView.java`).
 //!
 //! On non-Android targets this crate is empty.
 
@@ -30,7 +30,7 @@ mod logger;
 mod net;
 #[cfg(feature = "js")]
 mod package;
-mod selection_area;
+mod selectable_view;
 mod svg;
 mod text;
 
@@ -38,24 +38,24 @@ use std::ffi::c_void;
 
 pub use host::run_root;
 /// What [`ui_sets!`] gives.
-pub use nsh_core::ui::Registry;
+pub use nsh_core::element::Registry;
 /// What [`root!`] gives.
 pub use nsh_engine::Root;
 
 /// The UI sets apps import ([`set_ui_sets`]; by default `nsh/base`).
-static UI_SETS: std::sync::RwLock<Option<Vec<nsh_core::ui::Registry>>> =
+static UI_SETS: std::sync::RwLock<Option<Vec<nsh_core::element::Registry>>> =
     std::sync::RwLock::new(None);
 
 /// Sets the UI sets the engines started from now on serve: `nsh/base`
 /// and an app's own Rust components (`nsh.json` `"rust"`), which a host
 /// built for the app passes before it starts.
-pub fn set_ui_sets(sets: Vec<nsh_core::ui::Registry>) {
+pub fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
     *UI_SETS.write().unwrap_or_else(|e| e.into_inner()) = Some(sets);
 }
 
 /// The UI sets engines serve: [`set_ui_sets`]'s, else those of an app
 /// library built with [`ui_sets!`], else `nsh/base`.
-fn ui_sets() -> Vec<nsh_core::ui::Registry> {
+fn ui_sets() -> Vec<nsh_core::element::Registry> {
     if let Some(sets) = UI_SETS.read().unwrap_or_else(|e| e.into_inner()).clone() {
         return sets;
     }
@@ -64,7 +64,7 @@ fn ui_sets() -> Vec<nsh_core::ui::Registry> {
     let app = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"nsh_app_ui_sets".as_ptr()) };
     if !app.is_null() {
         // SAFETY: as above.
-        let sets: fn() -> Vec<nsh_core::ui::Registry> = unsafe { std::mem::transmute(app) };
+        let sets: fn() -> Vec<nsh_core::element::Registry> = unsafe { std::mem::transmute(app) };
         return sets();
     }
     vec![nsh_base::registry()]

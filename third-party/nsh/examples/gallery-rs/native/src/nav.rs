@@ -4,7 +4,10 @@
 
 use std::rc::Rc;
 
-use nsh_core::ui::{Screen, SharedString, Signal, prelude::global};
+use nsh_core::{
+    element::{Screen, SharedString, Signal},
+    prelude::global,
+};
 
 /// What makes a pushed screen: a `nav_page()` with its header options and
 /// content, made once when it is pushed (its bindings keep it current).

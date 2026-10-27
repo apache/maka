@@ -1,13 +1,13 @@
 //! `nsh/base`: the behavior and infrastructure foundation of NSH apps' UI,
 //! written in Rust, with no look of its own (as `gpui-base` is GPUI Kit's):
 //! controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`,
-//! `Tab` in `Tabs`), a progress bar (`Progress`), disclosure (`Collapsible`), navigation (stacks and pages), dialogs, popups on the core's overlays
+//! `Tab` in `Tabs`), a progress bar (`Progress`), disclosure (`Collapsible`),
+//! the parts of charts (`plot`: `nsh/base/plot`), navigation (stacks and pages), dialogs, popups on the core's overlays
 //! (`Popover`, `Menu`, `ContextMenu`, `Tooltip`, `Sheet`), a code editor
 //! (`Editor`), the changes between two texts (`DiffView`), tables over any number of rows and columns (`DataTable`) and static tables
 //! with a table's semantics (`Table` and its parts), toasts (`Toast`,
-//! `ToastStack`, `ToastManager`), safe areas,
-//! selection areas,
-//! the system's dialogs and the software keyboard, and the theme's semantic
+//! `ToastStack`, `ToastManager`), text input (`Input`), the system's
+//! dialogs, and the theme's semantic
 //! tokens (`Theme`, as `gpui-base`'s).
 //!
 //! What it renders lays out or tells the platform, never styles: the look
@@ -24,16 +24,14 @@ mod data_table;
 mod diff;
 pub mod dock;
 pub mod editor;
-mod keyboard;
 mod menu;
 mod navigation;
+pub mod plot;
 mod popover;
 mod popup;
 mod progress;
 mod radio;
 mod resizable;
-mod safe_area;
-mod selection_area;
 mod sheet;
 mod switch;
 mod syntax;
@@ -47,7 +45,10 @@ mod window;
 
 use std::sync::Arc;
 
-use nsh_core::ui::{ComponentSpec, Registry};
+use nsh_core::element::{ComponentSpec, Registry};
+/// `Input`, the native text input (UITextField / UITextView, EditText):
+/// TSX's `Input` of `nsh/base`, a host element the core makes.
+pub use nsh_core::element::{Input, input};
 
 pub use crate::{
     alert_dialog::{
@@ -80,10 +81,6 @@ pub use crate::{
         EditorSearchResult, EditorSelection, EditorStyles, EditorTextPressEvent, EditorToken,
         editor,
     },
-    keyboard::{
-        AvoidBehavior, Keyboard, KeyboardAvoidingView, KeyboardAvoidingViewElement,
-        KeyboardAvoidingViewProps, keyboard_avoiding_view,
-    },
     menu::{
         ContextMenu, ContextMenuElement, ContextMenuProps, Menu, MenuElement, MenuEvent, MenuItem,
         MenuItemElement, MenuItemEvent, MenuItemProps, MenuProps, MenuSeparator,
@@ -106,8 +103,6 @@ pub use crate::{
         ResizeHandleProps, ResizeHandleState, h_resizable, resizable_panel, resizable_panel_group,
         resize_handle, v_resizable,
     },
-    safe_area::{Edge, SafeAreaView, SafeAreaViewElement, SafeAreaViewProps, safe_area_view},
-    selection_area::{SelectionArea, SelectionAreaElement, SelectionAreaProps, selection_area},
     sheet::{Sheet, SheetElement, SheetEvent, SheetProps, sheet},
     switch::{Switch, SwitchElement, SwitchEvent, SwitchProps, switch},
     table::{
@@ -150,9 +145,6 @@ pub fn registry() -> Registry {
         .register::<Popover>()
         .register::<Sheet>()
         .register::<Tooltip>()
-        .register::<SafeAreaView>()
-        .register::<KeyboardAvoidingView>()
-        .register::<SelectionArea>()
         .register::<Checkbox>()
         .register::<Collapsible>()
         .register::<DataTable>()
@@ -181,14 +173,14 @@ pub fn registry() -> Registry {
         .class::<toast::ToastManagerClass>()
         .class::<text_view::TextViewLinkTarget>()
         .module::<AlertDialog>()
-        .module::<Keyboard>()
         .module::<TextView>()
-        // The environment's accessors and hooks, as they are.
-        .reexport(&["safeArea", "safeAreaInsets", "keyboardFrame"], &["Edges"])
-        // Navigation: made by `nsh-js` (`navigation.rs`), declared by hand.
-        .native_values(&["NavStack", "NavPage", "Dialog", "createNavStack"])
+        // Navigation and `Input`: made by `nsh-js` (`navigation.rs`,
+        // `env.rs`), declared by hand.
+        .native_values(&["NavStack", "NavPage", "Dialog", "createNavStack", "Input"])
         // The theme: the app's over the default, as design tokens.
-        .tokens_from(tokens_of);
+        .tokens_from(tokens_of)
+        // Charts' parts, a module of their own: `nsh/base/plot`.
+        .submodule(plot::registry());
     registry
 }
 
@@ -217,7 +209,6 @@ mod tests {
                 "DiffView",
                 "DockArea",
                 "Editor",
-                "KeyboardAvoidingView",
                 "Menu",
                 "MenuItem",
                 "MenuSeparator",
@@ -227,8 +218,6 @@ mod tests {
                 "RadioGroup",
                 "ResizablePanel",
                 "ResizablePanelGroup",
-                "SafeAreaView",
-                "SelectionArea",
                 "Sheet",
                 "Submenu",
                 "Switch",
@@ -249,12 +238,21 @@ mod tests {
             ]
         );
         let modules: Vec<_> = registry.module_specs().iter().map(|m| m.name).collect();
-        assert_eq!(modules, ["AlertDialog", "Keyboard", "TextView"]);
+        assert_eq!(modules, ["AlertDialog", "TextView"]);
+        let sets: Vec<_> = registry.sets().iter().map(|s| s.specifier()).collect();
+        assert_eq!(sets, [Some("nsh/base"), Some("nsh/base/plot")]);
+        let plot: Vec<_> = super::plot::registry()
+            .specs()
+            .iter()
+            .map(|s| s.export.clone())
+            .collect();
+        assert_eq!(plot, ["Arc", "Area", "Grid", "Line", "Pie", "Plot"]);
     }
 
     /// Every export TS sees has a doc comment (the declarations show it).
     #[test]
     fn every_export_is_documented() {
         assert_eq!(super::registry().undocumented(), Vec::<String>::new());
+        assert_eq!(super::plot::registry().undocumented(), Vec::<String>::new());
     }
 }

@@ -1624,7 +1624,7 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
 mod tests {
     use nsh_core::{
         ModalAnimation,
-        ui::{IntoElement, ParentElement, Styled, component, engine_context, text},
+        element::{IntoElement, ParentElement, Styled, component, engine_context, text},
     };
 
     use super::*;
@@ -1854,7 +1854,7 @@ mod tests {
         }
 
         cx.executor().allow_parking();
-        let context = nsh_core::ui::EngineContext::default().with(AtomicUsize::new(0));
+        let context = nsh_core::element::EngineContext::default().with(AtomicUsize::new(0));
         let count = context.get::<AtomicUsize>().unwrap();
         let (surface, _app) = cx.update(|cx| {
             let app = crate::rt::init_test_app(cx);
@@ -1866,7 +1866,7 @@ mod tests {
                 nsh_engine::EngineConfig {
                     context,
                     ..nsh_engine::EngineConfig::new(nsh_engine::App::Rust(
-                        nsh_core::ui::Root::of::<RetirementNavigation>(),
+                        nsh_core::element::Root::of::<RetirementNavigation>(),
                     ))
                 },
                 false,

@@ -106,7 +106,7 @@ installs the app's host.
 
 Rust is compiled: a change to an app's crate, or to a crate it depends on by path, builds the app again, and `nsh run`
 restarts it with the new code. The app's state starts afresh; keep what must survive a restart in
-[storage](../modules/nsh-storage.md). A build error is printed in the terminal, and the next save that compiles runs
+[storage](../modules/nsh.md#storage). A build error is printed in the terminal, and the next save that compiles runs
 again. In an app with Rust and TSX, TSX edits stay hot updates (below) and Rust edits restart the app.
 
 ## Hot module replacement
@@ -139,7 +139,7 @@ What happens to your app:
 
 The host **reloads the whole app** instead of patching when:
 
-- the change imports an NSH module the running app did not import yet (for example the first `import … from "nsh/animated"`);
+- the change imports an NSH module the running app did not import yet (for example the first `import … from "nsh"`);
 - the app's `capabilities` in `nsh.json` changed;
 - the host is not running the build the patch is based on (it just connected, or a previous load failed);
 - a patch cannot be applied.

@@ -1,10 +1,10 @@
 import { effect, mount, Scroll, signal, Text, untracked, View } from "nsh";
-import { Animated, createAnimatedValue, Easing } from "nsh/animated";
-import { platform, windowSize } from "nsh/device";
+import { Animated, createAnimatedValue, Easing } from "nsh";
+import { platform, windowSize } from "nsh";
 import { isAvailable as hasWindow, Window } from "nsh/desktop";
 import { NavPage, NavStack } from "nsh/base";
-import { keymap } from "nsh/keymap";
-import { Storage } from "nsh/storage";
+import { keymap } from "nsh";
+import { Storage } from "nsh";
 import { Icon } from "./icons";
 import { TitleBar } from "./TitleBar";
 import { Toaster } from "./toast";
@@ -45,12 +45,13 @@ const groups: { title: string; demos: DemoEntry[] }[] = [
     title: "Drawing and type",
     demos: [
       { name: "Canvas", detail: "2D context: paths, gradients, text, images, native animation", icon: "canvas", screen: lazy(() => import("./demos/CanvasDemo").then((m) => m.CanvasDemo)) },
+      { name: "Charts", detail: "A line and area plot with hover, grid lines and motion, sparklines in a list", icon: "stocks", screen: lazy(() => import("./demos/Charts").then((m) => m.Charts)) },
       { name: "Styles", detail: "Corners, borders, shadows, clipping, 3D transforms", icon: "styles", screen: lazy(() => import("./demos/Styles").then((m) => m.Styles)) },
       { name: "Tailwind", detail: "class=\"…\" resolved natively: variants, grid, shadows, motion", icon: "tailwind", screen: lazy(() => import("./demos/Tailwind").then((m) => m.Tailwind)) },
       { name: "Text", detail: "Fonts, spans, inline views and images, decorations, truncation, languages", icon: "text", screen: lazy(() => import("./demos/TextDemo").then((m) => m.TextDemo)) },
       { name: "Text View", detail: "Markdown and HTML documents, extensions, streaming replies", icon: "text", screen: lazy(() => import("./demos/TextViewDemo").then((m) => m.TextViewDemo)) },
       { name: "Editor", detail: "Code with highlighting, several carets, folding, find and replace, a language server: diagnostics, hover, definitions, completion", icon: "text", screen: lazy(() => import("./demos/EditorDemo").then((m) => m.EditorDemo)) },
-      { name: "Data table", detail: "A million stocks of sixty columns, their quotes ticking every 33 ms, fixed columns, sorting, selection, resized and moved columns", icon: "lists", screen: lazy(() => import("./demos/DataTableDemo").then((m) => m.DataTableDemo)) },
+      { name: "DataTable", detail: "A million stocks of sixty columns, their quotes ticking every 33 ms, fixed columns, sorting, selection, resized and moved columns", icon: "lists", screen: lazy(() => import("./demos/DataTableDemo").then((m) => m.DataTableDemo)) },
       { name: "Diff", detail: "Two texts side by side or unified, changes navigated, reverted and kept, a patch", icon: "text", screen: lazy(() => import("./demos/DiffDemo").then((m) => m.DiffDemo)) },
       { name: "Images", detail: "Resize modes, tint, GIF / WebP, placeholders, blur, fade", icon: "image", screen: lazy(() => import("./demos/Images").then((m) => m.Images)) },
     ],
@@ -65,7 +66,7 @@ const groups: { title: string; demos: DemoEntry[] }[] = [
       { name: "Web and video", detail: "WKWebView / WebView, AVPlayer / MediaPlayer", icon: "media", screen: lazy(() => import("./demos/Media").then((m) => m.Media)) },
       { name: "System", detail: "Status bar, alerts, action sheets, environment, timers, fetch", icon: "system", screen: lazy(() => import("./demos/System").then((m) => m.System)) },
       { name: "Standard APIs", detail: "Files, processes, TCP, WebSockets, buffers, crypto and utilities", icon: "system", screen: lazy(() => import("./demos/Standard").then((m) => m.StandardDemo)) },
-      { name: "Storage", detail: "nsh/storage: a launch count, a note saved as you type, the stored keys", icon: "storage", screen: lazy(() => import("./demos/Storage").then((m) => m.StorageDemo)) },
+      { name: "Storage", detail: "nsh: a launch count, a note saved as you type, the stored keys", icon: "storage", screen: lazy(() => import("./demos/Storage").then((m) => m.StorageDemo)) },
     ],
   },
 ];

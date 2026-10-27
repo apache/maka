@@ -32,9 +32,9 @@
 //! help text, and the patterns its role and state call for: Invoke
 //! (presses; [`activate`] sends the press as a tap would, or the
 //! `activate` action), Toggle (`accessibilityState.checked`),
-//! ExpandCollapse (`expanded`), SelectionItem (tabs, radios, `selected`),
-//! RangeValue (the `accessibilityValue` of sliders, progress bars, ...),
-//! Value (inputs) and Scroll (scroll views).
+//! ExpandCollapse (`expanded`), SelectionItem (tabs, radios, options,
+//! `selected`), RangeValue (the `accessibilityValue` of sliders, progress
+//! bars, ...), Value (inputs) and Scroll (scroll views).
 //!
 //! Events are raised only while a client listens (`UiaClientsAreListening`,
 //! checked once per batch): the mount hooks queue the views a batch
@@ -138,6 +138,8 @@ pub(crate) enum Control {
     ToolBar,
     /// `UIA_ListControlTypeId`.
     List,
+    /// `UIA_ListItemControlTypeId`.
+    ListItem,
     /// A group read as "grid" (UIA's data grids need the Grid pattern).
     Grid,
     /// `UIA_GroupControlTypeId`.
@@ -172,6 +174,7 @@ impl Control {
                 | Control::Switch
                 | Control::TabItem
                 | Control::MenuItem
+                | Control::ListItem
         )
     }
 
@@ -199,6 +202,7 @@ impl Control {
                 | Control::Spinner
                 | Control::Switch
                 | Control::TabItem
+                | Control::ListItem
         )
     }
 
@@ -292,7 +296,9 @@ pub(crate) fn control_for(a: &Accessibility, kind: ViewKind, pressable: bool) ->
         Role::Tablist => Control::TabList,
         Role::Timer => Control::Timer,
         Role::Toolbar => Control::ToolBar,
-        Role::List => Control::List,
+        // A listbox is UIA's list, as browsers map ARIA's `listbox`.
+        Role::List | Role::Listbox => Control::List,
+        Role::Option => Control::ListItem,
         Role::Grid | Role::Table => Control::Grid,
         Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup => Control::Group,
     })
@@ -919,6 +925,8 @@ mod tests {
             (Role::List, Control::List),
             (Role::Radio, Control::RadioButton),
             (Role::Menuitem, Control::MenuItem),
+            (Role::Listbox, Control::List),
+            (Role::Option, Control::ListItem),
         ] {
             assert_eq!(
                 control_for(&with_role(role), ViewKind::View, false),

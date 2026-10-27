@@ -17,12 +17,19 @@
  * under the License.
  */
 
-//! Writer-owned source progress. Each admitted event adds three fixed-size
+//! Writer-owned source progress. Each admitted event adds two fixed-size
 //! prefix rows. Copy bases share a pinned prefix; no canonical bytes are read
 //! when deriving a new selection, historical cut, or lineage identity.
 use crate::StoreError;
+use maka_agent_facts::{
+    event::{Fact, StoredEvent},
+    input::InvocationInput,
+};
 use rusqlite::{Connection, OptionalExtension, functions::FunctionFlags, params};
 use sha2::{Digest, Sha256};
+use sqlx::sqlite::SqliteWorkerConnection;
+
+const NATIVE: &str = "SELECT sequence,hash,ordinal FROM context_source_prefixes WHERE kind=? AND owner=? AND sequence<=? ORDER BY sequence DESC LIMIT 1";
 
 #[derive(Clone)]
 struct Prefix {
@@ -48,9 +55,39 @@ fn hash(domain: &[u8], parts: &[&[u8]]) -> Vec<u8> {
     }
     hash.finalize().to_vec()
 }
+/// Root prefixes already read every raw event; retain their source chain only for that read.
+pub(crate) struct RootDigest(Vec<u8>);
+
+impl RootDigest {
+    pub(crate) fn new() -> Self {
+        Self(Prefix::empty().hash)
+    }
+
+    pub(crate) fn record(&mut self, sequence: i64, json: &str) {
+        let sequence = sequence.to_be_bytes();
+        let leaf = hash(b"maka.source.leaf.v1\0", &[&sequence, json.as_bytes()]);
+        self.0 = hash(b"maka.source.chain.v1\0", &[&self.0, &sequence, &leaf]);
+    }
+
+    pub(crate) fn finish(self, cut: i64) -> Result<String, StoreError> {
+        let scope = serde_json::to_vec(&maka_agent_facts::event::LogScope::Root)?;
+        let mut state = selection_state(&scope, cut);
+        selection_component(&mut state, b"all", "", &self.0);
+        Ok(format!("sha256:{}", hex::encode(state.finalize())))
+    }
+}
+
 fn native(db: &Connection, kind: &str, owner: &str, cut: i64) -> rusqlite::Result<Prefix> {
-    Ok(db.query_row("SELECT sequence,hash,ordinal FROM context_source_prefixes WHERE kind=? AND owner=? AND sequence<=? ORDER BY sequence DESC LIMIT 1",
-        params![kind,owner,cut], |row| Ok(Prefix { high:row.get(0)?,hash:row.get(1)?,count:row.get(2)? })).optional()?.unwrap_or_else(Prefix::empty))
+    Ok(db
+        .query_row(NATIVE, params![kind, owner, cut], |row| {
+            Ok(Prefix {
+                high: row.get(0)?,
+                hash: row.get(1)?,
+                count: row.get(2)?,
+            })
+        })
+        .optional()?
+        .unwrap_or_else(Prefix::empty))
 }
 fn combine(base: Prefix, tail: Prefix) -> Prefix {
     if base.high == 0 {
@@ -102,29 +139,103 @@ fn session_prefix(db: &Connection, owner: &str, cut: i64) -> rusqlite::Result<Pr
     }
     Ok(base)
 }
-fn append(
-    db: &Connection,
+async fn native_on_worker(
+    db: &mut SqliteWorkerConnection<'_>,
     kind: &str,
     owner: &str,
-    sequence: i64,
-    leaf: &[u8],
-) -> rusqlite::Result<()> {
-    let previous = native(db, kind, owner, i64::MAX)?;
-    if previous.high >= sequence {
-        return Err(rusqlite::Error::InvalidParameterName(
-            "source append is not monotonic".into(),
-        ));
-    }
-    let next = hash(
-        b"maka.source.chain.v1\0",
-        &[&previous.hash, &sequence.to_be_bytes(), leaf],
+    cut: i64,
+) -> Result<Prefix, StoreError> {
+    let row: Option<(i64, Vec<u8>, i64)> = sqlx::query_as(NATIVE)
+        .bind(kind)
+        .bind(owner)
+        .bind(cut)
+        .fetch_optional(db)
+        .await?;
+    Ok(
+        row.map_or_else(Prefix::empty, |(high, hash, count)| Prefix {
+            high,
+            hash,
+            count,
+        }),
+    )
+}
+
+pub(crate) async fn record(
+    db: &mut SqliteWorkerConnection<'_>,
+    stored: &StoredEvent,
+    canonical_json: &str,
+) -> Result<(), StoreError> {
+    let sequence = i64::try_from(stored.sequence).map_err(|_| StoreError::PrefixTooLarge)?;
+    let event = &stored.event;
+    let leaf = hash(
+        b"maka.source.leaf.v1\0",
+        &[&sequence.to_be_bytes(), canonical_json.as_bytes()],
     );
-    db.execute(
-        "INSERT INTO context_source_prefixes VALUES(?,?,?,?,?)",
-        params![kind, owner, sequence, next, previous.count + 1],
-    )?;
+    for (kind, owner) in [
+        ("session", event.invocation.session_id.as_str()),
+        ("invocation", event.invocation.invocation_id.as_str()),
+    ] {
+        let previous = native_on_worker(db, kind, owner, i64::MAX).await?;
+        if previous.high >= sequence {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "source append is not monotonic".into(),
+            )
+            .into());
+        }
+        let next = hash(
+            b"maka.source.chain.v1\0",
+            &[&previous.hash, &sequence.to_be_bytes(), &leaf],
+        );
+        sqlx::query("INSERT INTO context_source_prefixes VALUES(?,?,?,?,?)")
+            .bind(kind)
+            .bind(owner)
+            .bind(sequence)
+            .bind(next)
+            .bind(previous.count + 1)
+            .execute(&mut *db)
+            .await?;
+    }
+    match &event.fact {
+        Fact::InvocationOpened { input, .. } => record_lineage(db, stored, input).await?,
+        Fact::ToolResultArchived { placeholder } => {
+            record_archive(db, stored, placeholder, &leaf).await?
+        }
+        _ => {}
+    }
     Ok(())
 }
+
+async fn session_high(
+    db: &mut SqliteWorkerConnection<'_>,
+    session: &str,
+    through: i64,
+) -> Result<i64, StoreError> {
+    let mut owner = session.to_owned();
+    let mut cut = through;
+    let mut high = 0;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(owner.clone()) {
+            return Err(rusqlite::Error::InvalidParameterName("source copy cycle".into()).into());
+        }
+        high = high.max(native_on_worker(db, "session", &owner, cut).await?.high);
+        let copy: Option<(String, i64, Option<i64>, bool)> = sqlx::query_as(
+            "SELECT source,through_sequence,base_high,base_hash IS NOT NULL FROM context_source_copies WHERE owner=?",
+        ).bind(&owner).fetch_optional(&mut *db).await?;
+        let Some((source, through, pinned_high, pinned_hash)) = copy else {
+            return Ok(high);
+        };
+        if cut >= through
+            && pinned_hash
+            && let Some(pinned) = pinned_high
+        {
+            return Ok(high.max(pinned));
+        }
+        owner = source;
+        cut = cut.min(through);
+    }
+}
+
 fn pin_copy(db: &Connection, owner: &str) -> rusqlite::Result<()> {
     let copy: Option<(String, i64)> = db
         .query_row(
@@ -238,6 +349,23 @@ fn lineage_contains(db: &Connection, selected: &str, candidate: &str) -> rusqlit
     Ok(current == candidate)
 }
 
+fn selection_state(scope: &[u8], cut: i64) -> Sha256 {
+    let mut state = Sha256::new();
+    state.update(b"maka.source.selection.v1\0");
+    state.update((scope.len() as u64).to_be_bytes());
+    state.update(scope);
+    state.update(cut.to_be_bytes());
+    state
+}
+
+fn selection_component(state: &mut Sha256, tag: &[u8], owner: &str, hash: &[u8]) {
+    state.update((tag.len() as u64).to_be_bytes());
+    state.update(tag);
+    state.update((owner.len() as u64).to_be_bytes());
+    state.update(owner.as_bytes());
+    state.update(hash);
+}
+
 fn identity(
     db: &Connection,
     session: Option<&str>,
@@ -245,18 +373,10 @@ fn identity(
     scope: &[u8],
     cut: i64,
 ) -> rusqlite::Result<String> {
-    let mut state = Sha256::new();
-    state.update(b"maka.source.selection.v1\0");
-    state.update((scope.len() as u64).to_be_bytes());
-    state.update(scope);
-    state.update(cut.to_be_bytes());
+    let mut state = selection_state(scope, cut);
     let mut high = 0;
     let mut component = |tag: &[u8], owner: &str, prefix: Prefix| {
-        state.update((tag.len() as u64).to_be_bytes());
-        state.update(tag);
-        state.update((owner.len() as u64).to_be_bytes());
-        state.update(owner.as_bytes());
-        state.update(prefix.hash);
+        selection_component(&mut state, tag, owner, &prefix.hash);
         high = high.max(prefix.high);
     };
     if let Some(lineage) = lineage {
@@ -278,7 +398,7 @@ fn identity(
     } else if let Some(session) = session {
         component(b"all", session, session_prefix(db, session, cut)?);
     } else {
-        component(b"all", "", native(db, "root", "", cut)?);
+        return Err(rusqlite::Error::InvalidQuery);
     }
     if high != cut {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -288,95 +408,77 @@ fn identity(
     Ok(format!("sha256:{}", hex::encode(state.finalize())))
 }
 
-fn record_lineage(db: &Connection, sequence: i64, bytes: &str) -> rusqlite::Result<()> {
-    use maka_agent_facts::{
-        event::{Fact, RuntimeEvent},
-        input::InvocationInput,
-    };
-    let event: RuntimeEvent = serde_json::from_str(bytes)
-        .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
-    let Fact::InvocationOpened { input, .. } = event.fact else {
-        return Ok(());
-    };
+async fn record_lineage(
+    db: &mut SqliteWorkerConnection<'_>,
+    stored: &StoredEvent,
+    input: &InvocationInput,
+) -> Result<(), StoreError> {
+    let event = &stored.event;
+    let sequence = stored.sequence as i64;
     let (parent, base, through, root) = if matches!(input, InvocationInput::Message { .. }) {
         (
             None,
-            session_prefix(db, &event.invocation.session_id, sequence - 1)?.high,
+            session_high(db, &event.invocation.session_id, sequence - 1).await?,
             0,
             Sha256::digest(b"maka.source.lineage.empty.v1\0").to_vec(),
         )
     } else if let Some(claim) = input.inherited_claim() {
-        let parent = &claim.source.invocation.invocation_id;
-        let prior: Vec<u8> = db.query_row(
+        let parent = claim.source.invocation.invocation_id.as_str();
+        let prior: Vec<u8> = sqlx::query_scalar(
             "SELECT ancestry_hash FROM context_source_lineages WHERE invocation_id=?",
-            [parent],
-            |row| row.get(0),
-        )?;
-        let part = native(db, "invocation", parent, sequence - 1)?;
+        )
+        .bind(parent)
+        .fetch_one(&mut *db)
+        .await?;
+        let part = native_on_worker(db, "invocation", parent, sequence - 1).await?;
         let root = hash(
             b"maka.source.lineage.link.v1\0",
             &[&prior, parent.as_bytes(), &part.hash],
         );
-        (
-            Some(parent.clone()),
-            claim.base.high_water as i64,
-            part.high,
-            root,
-        )
+        (Some(parent), claim.base.high_water as i64, part.high, root)
     } else {
         return Ok(());
     };
-    let identity = serde_json::to_string(&event.invocation)
-        .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
-    db.execute(
-        "INSERT INTO context_source_lineages VALUES(?,?,?,?,?,?,?)",
-        params![
-            event.invocation.invocation_id,
-            parent,
-            base,
-            through,
-            root,
-            sequence,
-            identity
-        ],
-    )?;
+    let identity = serde_json::to_string(&event.invocation)?;
+    sqlx::query("INSERT INTO context_source_lineages VALUES(?,?,?,?,?,?,?)")
+        .bind(&event.invocation.invocation_id)
+        .bind(parent)
+        .bind(base)
+        .bind(through)
+        .bind(root)
+        .bind(sequence)
+        .bind(identity)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
-fn record_archive(
-    db: &Connection,
-    sequence: i64,
-    bytes: &str,
+async fn record_archive(
+    db: &mut SqliteWorkerConnection<'_>,
+    stored: &StoredEvent,
+    placeholder: &maka_agent_facts::archive::ArchivedPlaceholder,
     leaf: &[u8],
-) -> rusqlite::Result<()> {
-    use maka_agent_facts::event::{Fact, RuntimeEvent};
-    let event: RuntimeEvent = serde_json::from_str(bytes)
-        .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
-    let Fact::ToolResultArchived { placeholder } = event.fact else {
-        return Ok(());
-    };
-    let (target,invocation,identity,operation,is_error):(i64,String,String,String,bool)=db.query_row(
-        "SELECT sequence,invocation_id,json_extract(event_json,'$.invocation'),operation_id,
-           json_extract(event_json,'$.fact.outcome.kind')='failed' FROM runtime_events WHERE event_id=?",
-        [&placeholder.identity.runtime_event_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
-    let encoded = serde_json::to_string(&placeholder)
-        .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))?;
-    db.execute(
-        "INSERT INTO context_archive_records VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        params![
-            sequence,
-            event.invocation.session_id,
-            event.invocation.invocation_id,
-            target,
-            invocation,
-            placeholder.identity.runtime_event_id,
-            leaf,
-            encoded,
-            identity,
-            operation,
-            is_error
-        ],
-    )?;
+) -> Result<(), StoreError> {
+    let event = &stored.event;
+    let (target, invocation, identity, operation, is_error): (i64, String, String, String, bool) =
+        sqlx::query_as("SELECT sequence,invocation_id,json_extract(event_json,'$.invocation'),operation_id,
+           json_extract(event_json,'$.fact.outcome.kind')='failed' FROM runtime_events WHERE event_id=?")
+            .bind(&placeholder.identity.runtime_event_id).fetch_one(&mut *db).await?;
+    let encoded = serde_json::to_string(placeholder)?;
+    sqlx::query("INSERT INTO context_archive_records VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(stored.sequence as i64)
+        .bind(&event.invocation.session_id)
+        .bind(&event.invocation.invocation_id)
+        .bind(target)
+        .bind(invocation)
+        .bind(&placeholder.identity.runtime_event_id)
+        .bind(leaf)
+        .bind(encoded)
+        .bind(identity)
+        .bind(operation)
+        .bind(is_error)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -395,33 +497,6 @@ pub(crate) fn register(db: &Connection) -> Result<(), StoreError> {
             };
             let db = unsafe { ctx.get_connection() }?;
             lineage_contains(&db, &selected, &candidate)
-        },
-    )?;
-    db.create_scalar_function(
-        "context_source_record",
-        5,
-        FunctionFlags::SQLITE_UTF8,
-        |ctx| {
-            let sequence: i64 = ctx.get(0)?;
-            let session: String = ctx.get(1)?;
-            let invocation: String = ctx.get(2)?;
-            let bytes = ctx.get_raw(3).as_str()?;
-            let db = unsafe { ctx.get_connection() }?;
-            let leaf = hash(
-                b"maka.source.leaf.v1\0",
-                &[&sequence.to_be_bytes(), bytes.as_bytes()],
-            );
-            append(&db, "root", "", sequence, &leaf)?;
-            append(&db, "session", &session, sequence, &leaf)?;
-            append(&db, "invocation", &invocation, sequence, &leaf)?;
-            let kind = ctx.get_raw(4).as_str()?;
-            if kind == "invocation_opened" {
-                record_lineage(&db, sequence, bytes)?;
-            }
-            if kind == "tool_result_archived" {
-                record_archive(&db, sequence, bytes, &leaf)?;
-            }
-            Ok(0)
         },
     )?;
     db.create_scalar_function(

@@ -5,8 +5,8 @@
 use crate::{
     Command, ROOT_ID,
     desktop::{DesktopCommand, MenuBarMode, TitleBarStyle, WindowFrame, WindowLevel},
+    element::{ModuleCx, module, task::Action},
     geometry::Points,
-    ui::{ModuleCx, module, task::Action},
 };
 
 fn desktop(cx: &mut ModuleCx, command: DesktopCommand) {

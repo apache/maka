@@ -9,9 +9,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
-import android.widget.Toast;
 
-/** System UI driven from JS: the status bar, alerts / action sheets and toasts. */
+/** System UI driven from JS: the status bar, alerts and action sheets. */
 final class SystemUi {
     private SystemUi() {}
 
@@ -136,10 +135,6 @@ final class SystemUi {
     private static void answer(Mounter mounter, int dialogId, int index) {
         mounter.eventMap(1, Native.DIALOG, new String[] {"id", "index"},
                 new Object[] {(double) dialogId, (double) index});
-    }
-
-    static void toast(Context context, String text, boolean longer) {
-        Toast.makeText(context, text, longer ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT).show();
     }
 
     /**

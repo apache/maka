@@ -16,7 +16,7 @@ demo: text-view
 
 ```rust tabs
 use nsh_base::{TextViewLinkPressEvent, text_view, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 const README: &str = "# Release notes
 
@@ -85,7 +85,7 @@ mount(App);
 
 `TextView` 由 [`Text`](./text.md) 元素组成，其中的文本行为与 Text 页面描述的完全一致。每个段落、标题、表格单元格和代码块都是一个原生 `Text`：一个独立排版、换行、跟随字体缩放的文本块，设置 `selectable` 后可以选择和复制。加粗、强调、删除线等行内标记是它的[片段](./text.md#片段)；行内代码是带[片段背景](./text.md#片段背景)的片段，因此 `code: "rounded bg-neutral-100"` 会给它一个圆角背景；链接是[可点击的片段](./text.md#链接)；图片和行内自定义节点是[行内附件](./text.md#行内视图和图片)。根节点上的文本样式会传给每个部件，就像[文本样式](./text.md#文本样式)从 `Text` 传给它的片段一样。
 
-设置 `selectable` 后，已挂载的文字共享一个选区：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个已挂载的段落、列表项、单元格或代码块延伸到下一个，复制取得选中的文字。设置了 `selectable` 的 `TextView` 本身就是一个 [`SelectionArea`](./selection-area.md)；放在 `SelectionArea` 里时，它的选区还会延伸到周围已挂载的文字和其他 `TextView`。复制完整文档时使用完整源码或 `TextView.plainText(document)`（[文档模型](#the-document-model)）。
+设置 `selectable` 后，已挂载的文字共享一个选区：拖动（在触摸屏上是长按后拖动选择手柄）可以从一个已挂载的段落、列表项、单元格或代码块延伸到下一个，复制取得选中的文字。设置了 `selectable` 的 `TextView` 本身就是一个 [`View selectable`](./text-selection.md)；放在 `View selectable` 里时，它的选区还会延伸到周围已挂载的文字和其他 `TextView`。复制完整文档时使用完整源码或 `TextView.plainText(document)`（[文档模型](#the-document-model)）。
 
 `TextView` 增加的是其余部分：把 Markdown、HTML 或文档读成文档块，文本周围的视图（列表、引用、表格、代码块、折叠块、脚注），流式输出，按部件设定样式，渲染函数和扩展。
 
@@ -102,7 +102,7 @@ mount(App);
 ```rust tabs
 use nsh_base::text_view;
 use nsh_base::text_view::{Block, Document, Inline};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn shipping() -> impl IntoElement {
     text_view().html(r#"<h2>Shipping</h2><p>Orders ship in <b>2 days</b>. <a href="/faq">FAQ</a></p>"#)
@@ -137,7 +137,7 @@ fn total() -> impl IntoElement {
 
 ```rust tabs
 use nsh_base::{TextViewPart, TextViewParts, text_view, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     provide_context(
@@ -253,7 +253,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 
 ```rust tabs
 use nsh_base::{MarkdownOptions, text_view};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// A reply the app appends to as chunks arrive, with `done` set at the end.
 fn reply(text: Signal<SharedString>, done: Signal<bool>) -> impl IntoElement {
@@ -288,7 +288,7 @@ function Reply(props: { stream: AsyncIterable<string> }) {
 }
 ```
 
-光标是应用自己的视图，可以用 [`nsh/animated`](../modules/nsh-animated.md) 让它闪烁或脉动，新的文档块也可以用应用自己的动画淡入。
+光标是应用自己的视图，可以用 [`nsh` 的动画 API](../modules/nsh.md#animation) 让它闪烁或脉动，新的文档块也可以用应用自己的动画淡入。
 
 <a id="links"></a>
 
@@ -298,7 +298,7 @@ function Reply(props: { stream: AsyncIterable<string> }) {
 
 ```rust tabs
 use nsh_base::{TextViewLinkPressEvent, text_view};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn doc(markdown: &'static str) -> impl IntoElement {
     text_view().markdown(markdown).on_link_press(|TextViewLinkPressEvent { url, .. }: &TextViewLinkPressEvent| {
@@ -322,7 +322,7 @@ fn doc(markdown: &'static str) -> impl IntoElement {
 
 `scroll_to_anchor` 和 `open_web`（TSX 中是 `scrollToAnchor` 和 `nav`）代表应用自己的函数。
 
-设置 `links="open"` 后，按下指向其他网站或应用的链接（带 scheme 的 URL：`https:`、`mailto:` 等）时，在 `onLinkPress` 报告之后，还会用 [`openUrl`](../modules/nsh-device.md#openurl) 在应用之外打开它，受应用的 `openUrl` 能力约束；文档内的锚点（`#…`）只报告。默认值 `"report"` 什么都不打开。
+设置 `links="open"` 后，按下指向其他网站或应用的链接（带 scheme 的 URL：`https:`、`mailto:` 等）时，在 `onLinkPress` 报告之后，还会用 [`openUrl`](../modules/nsh.md#openurl) 在应用之外打开它，受应用的 `openUrl` 能力约束；文档内的锚点（`#…`）只报告。默认值 `"report"` 什么都不打开。
 
 ```rust tabs
 use nsh_base::{TextViewLinks, text_view};
@@ -349,11 +349,11 @@ text_view().markdown(doc).links(TextViewLinks::Open)
 | `renderImage` | `.render_image(\|image\| ..)` | `TextViewImage`（`Image`） | 替换图片（`{ src, alt, title }`）：自己的加载方式、尺寸、点击查看大图。 |
 | `renderCustom` | `.render_custom(\|node\| ..)` | `TextViewCustomNode`（`CustomNode`） | 按 `name` 显示自定义节点（[Markdown 扩展](#markdown-extensions)）。 |
 
-代码块的右上角浮动着操作按钮，外观统一：幽灵按钮，悬停或按下时显示背景；桌面上指针悬停在代码块上时显示，触摸屏上始终显示。`copy` 是内置的：复制代码，并短暂显示一个对勾。其他操作由应用定义：`renderCodeBlockAction` 绘制它们的图标，`onCodeBlockAction` 报告按下（内置的 `copy` 复制后也会报告）。`copy` 与 `nsh/clipboard` 一样写入剪贴板，因此需要应用的 `clipboard` 权限（`nsh.json`）。
+代码块的右上角浮动着操作按钮，外观统一：幽灵按钮，悬停或按下时显示背景；桌面上指针悬停在代码块上时显示，触摸屏上始终显示。`copy` 是内置的：复制代码，并短暂显示一个对勾。其他操作由应用定义：`renderCodeBlockAction` 绘制它们的图标，`onCodeBlockAction` 报告按下（内置的 `copy` 复制后也会报告）。`copy` 与 `Clipboard` 一样写入剪贴板，因此需要应用的 `clipboard` 权限（`nsh.json`）。
 
 ```rust tabs
 use nsh_base::{TextViewCodeAction, TextViewCodeActionEvent, text_view};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     text_view()
@@ -392,7 +392,7 @@ import { TextView } from "nsh/base";
 use nsh_base::text_view;
 use nsh_base::text_view::{CodeBlock, Image};
 use nsh_base::TextViewMath;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
     text_view()
@@ -440,7 +440,7 @@ import { Image, View } from "nsh";
 ````rust tabs
 use nsh_base::text_view::{CustomNode, Document};
 use nsh_base::{MarkdownExtension, text_view};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 const MESSAGE: &str = r#"Thanks @ada! Here are the numbers:
 
@@ -612,7 +612,7 @@ function Custom(props: { node: TextViewCustomNode }) {
 
 ```rust tabs
 use nsh_base::{TextView, button};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn copy_reply(reply: Signal<SharedString>) -> impl IntoElement {
     button()
@@ -648,7 +648,7 @@ Rust 视图从 `nsh-base` crate 使用同一个组件，上面的示例都有对
 use std::ops::Range;
 
 use nsh_base::{CodeHighlighter, text_view::CodeBlock};
-use nsh_core::ui::{StyleRefinement, prelude::*};
+use nsh_core::{element::StyleRefinement, prelude::*};
 
 /// The app's highlighter (here with syntect, set up once by the app).
 fn highlight(code: &CodeBlock) -> Vec<(Range<usize>, StyleRefinement)> {
@@ -676,7 +676,7 @@ fn chat() -> impl IntoElement {
 
 ```rust
 use nsh_base::{TextViewPart, TextViewParts, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn chat_parts() {
     provide_context(
@@ -696,7 +696,7 @@ fn chat_parts() {
 
 ```rust
 use nsh_base::text_view::{mdast, CustomNode, Inline, MarkdownPlugin, MarkdownPlugins, ParseContext};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 struct Tickers;
 
@@ -739,7 +739,7 @@ fn chat() -> impl IntoElement {
 | `classes` | `.classes(..)` | `TextViewClasses` | `{}` | 按部件设定的 Tailwind 类。 |
 | `styles` | `.styles(..)` | `TextViewStyles` | `{}` | 按部件设定的内联样式（每个都是 `StyleProp<TextStyle>`），优先于类。 |
 | `contentStyle` | `.content_style(..)` | `ListContentStyle` | `{ rowGap: 11.25 }` | 原生文档行的内边距和间距，单位为点；显式值替换整个内容布局。 |
-| `selectable` | `.selectable(..)` | `boolean` | `false` | 已挂载的文字共享选区，可跨越段落、标题、单元格和代码块（[SelectionArea](./selection-area.md)）。 |
+| `selectable` | `.selectable(..)` | `boolean` | `false` | 已挂载的文字共享选区，可跨越段落、标题、单元格和代码块（[Text selection](./text-selection.md)）。 |
 | `links` | `.links(..)` | `"report" \| "open"` | `"report"` | 按下链接时的行为：报告它（`onLinkPress`），设为 `"open"` 时还会在应用之外打开指向其他网站或应用的链接（[链接](#链接)）。 |
 | `codeBlockScrollbar` | `.code_block_scrollbar(..)` | `boolean` | `true` | 代码块显示其水平滚动指示器。 |
 | `tableScrollbar` | `.table_scrollbar(..)` | `boolean` | `true` | 表格显示其水平滚动指示器。 |
@@ -776,6 +776,6 @@ fn chat() -> impl IntoElement {
 ## 相关内容
 
 - [Text](./text.md)：`TextView` 中每段文本所用的元素，包括它的片段、链接、行内附件和选择。
-- [SelectionArea](./selection-area.md)：跨越多个 `TextView` 和文字的同一个选区。
+- [文字选择](./text-selection.md)：跨越多个 `TextView` 和文字的同一个选区。
 - [`nsh/base`](../modules/nsh-base.md)：其他基础组件。
 - [样式](../docs/styling.md)与 [Tailwind](../docs/tailwind.md)。

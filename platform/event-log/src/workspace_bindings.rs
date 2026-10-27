@@ -23,7 +23,7 @@ use crate::{EventLog, StoreError};
 use maka_agent_facts::workspace::{BindingRef, BindingStamp, PermissionBasis};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use sqlx::{Connection, Row, SqliteConnection};
+use sqlx::{Row, SqliteConnection};
 
 const MAX: u64 = maka_agent_facts::interaction::MAX_SAFE_INTEGER;
 
@@ -79,26 +79,16 @@ impl EventLog {
         }
         let owner_scope = owner_scope.to_owned();
         let (workspace, digest) = canonical(serde_json::to_value(workspace)?)?;
-        self.connection.run(move |connection| Box::pin(async move {
-            let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let existing: Option<String> = sqlx::query_scalar(
-                "SELECT id FROM workspace_bindings
-                 WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1",
-            ).bind(&owner_scope).bind(&digest).bind(&workspace).fetch_optional(&mut *tx).await?;
-            let id = match existing {
-                Some(id) => uuid::Uuid::parse_str(&id).map_err(|_| invalid("invalid workspace binding ID"))?,
-                None => {
-                    let id = uuid::Uuid::new_v4();
-                    sqlx::query("INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)")
-                        .bind(id.to_string()).bind(owner_scope).bind(digest).bind(workspace)
-                        .execute(&mut *tx).await?;
-                    id
-                }
-            };
-            let binding = read::<Value>(&mut tx, id).await?.ok_or_else(|| invalid("workspace binding disappeared"))?;
-            tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            Ok(binding.reference())
-        })).await
+        self.connection
+            .write(
+                WriteAttachment {
+                    owner_scope,
+                    workspace,
+                    digest,
+                },
+                self.commits.notice(),
+            )
+            .await
     }
 
     pub async fn workspace_binding<T: DeserializeOwned + Send + 'static>(
@@ -109,6 +99,67 @@ impl EventLog {
         self.connection
             .read(move |connection| Box::pin(async move { read(connection, id).await }))
             .await
+    }
+}
+
+pub(crate) struct WriteAttachment {
+    owner_scope: String,
+    workspace: String,
+    digest: String,
+}
+
+impl crate::writeback::Statement for WriteAttachment {
+    type Value = BindingRef;
+    type Output = BindingRef;
+
+    fn execute(
+        self,
+        connection: &mut SqliteConnection,
+    ) -> crate::connection::BoxFuture<'_, Result<crate::writeback::Prepared<BindingRef>, StoreError>>
+    {
+        Box::pin(async move {
+            let Self {
+                owner_scope,
+                workspace,
+                digest,
+            } = self;
+            let existing: Option<String> = sqlx::query_scalar(
+                "SELECT id FROM workspace_bindings
+                 WHERE owner_scope=? AND selection_digest=? AND workspace_json=? ORDER BY id LIMIT 1",
+            ).bind(&owner_scope).bind(&digest).bind(&workspace).fetch_optional(&mut *connection).await?;
+            let changed = existing.is_none();
+            let id = match existing {
+                Some(id) => uuid::Uuid::parse_str(&id)
+                    .map_err(|_| invalid("invalid workspace binding ID"))?,
+                None => {
+                    let id = uuid::Uuid::new_v4();
+                    sqlx::query("INSERT INTO workspace_bindings VALUES(?,?,?,?,0,0)")
+                        .bind(id.to_string())
+                        .bind(owner_scope)
+                        .bind(digest)
+                        .bind(workspace)
+                        .execute(&mut *connection)
+                        .await?;
+                    id
+                }
+            };
+            let binding = read::<Value>(connection, id)
+                .await?
+                .ok_or_else(|| invalid("workspace binding disappeared"))?;
+            Ok(crate::writeback::Prepared {
+                value: binding.reference(),
+                changed,
+                notification: crate::writeback::Notification::None,
+            })
+        })
+    }
+
+    fn committed(value: BindingRef) -> BindingRef {
+        value
+    }
+
+    fn isolated_rejection(_error: &StoreError) -> bool {
+        false
     }
 }
 

@@ -1076,3 +1076,185 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn model_filter_distinguishes_connections_and_preserves_search_across_pages() {
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let ids: Vec<_> = (0..20).map(|at| format!("family/shared.{at:02}")).collect();
+    edit(&fixture, |changes| {
+        changes.name = Some("OpenRouter".into());
+        changes.enabled_model_ids = Some(ids.clone());
+        changes.model_overrides = Patch::Set(BTreeMap::from([
+            (
+                "family/shared.00".into(),
+                ModelOverride {
+                    context_window: Some(8192),
+                    ..Default::default()
+                },
+            ),
+            (
+                "family/shared.01".into(),
+                ModelOverride {
+                    context_window: Some(16384),
+                    ..Default::default()
+                },
+            ),
+        ]));
+    })
+    .await;
+    let original = fixture.config.catalog().await.unwrap();
+    let first = &original.connections[0];
+    let created = fixture
+        .config
+        .create_connection(
+            serde_json::from_value(json!({
+                "expectedCatalogRevision": original.revision,
+                "connection": {
+                    "slug":"custom", "name":"Custom connection", "provider":first.provider,
+                    "configuration":first.configuration, "enabled":true,
+                    "enabledModelIds":ids,
+                }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let CatalogMutationResult::Committed {
+        connection: Some(custom),
+        catalog_revision,
+    } = created
+    else {
+        panic!("custom connection commit");
+    };
+    let target = ConnectionTarget {
+        connection_id: first.connection_id.clone(),
+        model_id: "family/shared.00".into(),
+    };
+    fixture
+        .config
+        .set_default_target(SetDefaultConnectionTargetInput {
+            expected_catalog_revision: catalog_revision,
+            target: Some(target),
+        })
+        .await
+        .unwrap();
+    let summaries = fixture.config.connection_summaries().await.unwrap();
+    assert_eq!(
+        summaries
+            .connections
+            .iter()
+            .map(|row| (row.name.as_str(), row.enabled_model_count))
+            .collect::<Vec<_>>(),
+        vec![("OpenRouter", 20), ("Custom connection", 20)]
+    );
+    let scoped = fixture
+        .config
+        .model_catalog(Some(&custom.connection_id))
+        .await
+        .unwrap();
+    let default = scoped
+        .connections
+        .iter()
+        .find(|row| row.connection_id == first.connection_id)
+        .unwrap();
+    assert_eq!(default.enabled_model_ids, vec!["family/shared.00"]);
+    assert_eq!(
+        default
+            .model_overrides
+            .as_ref()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["family/shared.00"]
+    );
+    let all = models(&fixture, json!({"kind":"start","query":"family/shared.00"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        all["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| choice["connectionName"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["OpenRouter", "Custom connection"]
+    );
+    let page = models(
+        &fixture,
+        json!({"kind":"start","query":"shared","connectionId":custom.connection_id}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(page["choices"].as_array().unwrap().len(), 16);
+    assert_eq!(page["next"]["connectionId"], custom.connection_id);
+    assert_eq!(
+        page["defaultModel"]["choice"]["limits"]["contextWindow"],
+        8192
+    );
+    assert_eq!(
+        page["defaultModel"]["choice"]["selection"]["connectionId"],
+        first.connection_id
+    );
+    assert_eq!(
+        page["defaultModel"]["choice"]["selection"]["modelId"],
+        "family/shared.00"
+    );
+    let last = models(
+        &fixture,
+        json!({"kind":"continue","revision":page["revision"],"cursor":page["next"]}),
+    )
+    .await
+    .unwrap();
+    let choices: Vec<_> = page["choices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(last["choices"].as_array().unwrap())
+        .collect();
+    assert_eq!(
+        choices
+            .iter()
+            .map(|choice| choice["selection"]["modelId"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        (0..20)
+            .map(|at| format!("family/shared.{at:02}"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        choices
+            .iter()
+            .all(|choice| choice["selection"]["connectionId"] == custom.connection_id)
+    );
+    assert!(last["next"].is_null());
+    let missing = models(
+        &fixture,
+        json!({"kind":"start","query":"absent","connectionId":custom.connection_id}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(missing["choices"], json!([]));
+    fixture
+        .config
+        .set_default_target(SetDefaultConnectionTargetInput {
+            expected_catalog_revision: summaries.revision,
+            target: Some(ConnectionTarget {
+                connection_id: first.connection_id.clone(),
+                model_id: "family/shared.02".into(),
+            }),
+        })
+        .await
+        .unwrap();
+    let without_override = models(
+        &fixture,
+        json!({"kind":"start","query":"family/shared.00","connectionId":custom.connection_id}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        without_override["defaultModel"]["choice"]["selection"]["modelId"],
+        "family/shared.02"
+    );
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}

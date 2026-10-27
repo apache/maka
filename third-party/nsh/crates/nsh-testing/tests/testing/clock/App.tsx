@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { Animated, createAnimatedValue } from "nsh/animated";
+import { Animated, createAnimatedValue } from "nsh";
 
 function Press(props: { label: string; onPress: () => void }) {
   return (

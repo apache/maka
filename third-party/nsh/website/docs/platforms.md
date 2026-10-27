@@ -70,7 +70,7 @@ A Rust host mounts a Rust root (`Root::of::<App>()`) as `AppSource::Rust` or `Ap
 
 Most of an app needs no platform checks: elements, styles, layout and modules behave the same everywhere. Where platforms differ, NSH gives the difference one place ([Platform-specific code](./platform-specific.md)):
 
-- **The environment says where the app runs**: in Rust `os()`, `idiom()` and `is_desktop()` (`nsh_core::ui::prelude`), in TSX `platform.os`, `platform.idiom` and `platform.select` from `nsh/device`. The OS is iOS, Android, macOS, Windows, Linux or the web.
+- **The environment says where the app runs**: in Rust `os()`, `idiom()` and `is_desktop()` (`nsh_core::prelude`), in TSX `platform.os`, `platform.idiom` and `platform.select` from `nsh`. The OS is iOS, Android, macOS, Windows, Linux or the web.
 - **Platform-only props** go in `ios={{…}}`, `android={{…}}`, `web={{…}}` or `desktop={{…}}` in TSX (`desktop`: macOS, Windows, Linux and desktop browsers).
 - **The renderer** is identified by `platform.renderer` (`"native"`, `"web"` or `"terminal"`); the terminal keeps its actual `platform.os`. Use `platform.isTerminal` when selecting a terminal presentation.
 - **Input follows the platform.** Phones get touches and the software keyboard; desktops get the mouse, the trackpad and the keyboard.
@@ -78,7 +78,7 @@ Most of an app needs no platform checks: elements, styles, layout and modules be
 An app's components are drawn with NSH's primitives, so they run on desktops as well as on phones, looking the same on both. A desktop layout is built from the primitives (`view`, `text`, `scroll`, `virtual_list`, …; `View`, `Text`, `Scroll`, `List`, … in TSX) and a check for the desktop, as the gallery's desktop layout is:
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn Shell() -> impl IntoElement {
@@ -99,7 +99,7 @@ fn tab_layout() -> AnyElement {
 
 ```tsx tabs
 import { View } from "nsh";
-import { platform } from "nsh/device";
+import { platform } from "nsh";
 
 export function Shell() {
   // macOS, Windows, Linux and desktop browsers get a sidebar; phones get tabs.

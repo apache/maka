@@ -178,36 +178,36 @@ allows them without allowing any remote page.
 
 ### `clipboard`
 
-`"clipboard": true` lets the app read and write the system clipboard ([`nsh/clipboard`](../modules/nsh-clipboard.md)). Copying from a selectable text's edit menu is the user's own act and needs no capability.
+`"clipboard": true` lets the app read and write the system clipboard ([`Clipboard`](../modules/nsh.md#clipboard)). Copying from a selectable text's edit menu is the user's own act and needs no capability.
 
 ### `picker`
 
-`"picker": true` lets the app show the system's picker for photos ([`nsh/picker`](../modules/nsh-picker.md)): the user
+`"picker": true` lets the app show the system's picker for photos ([`Picker`](../modules/nsh.md#picker)): the user
 picks what reaches the app.
 
 ### `openUrl`
 
-Lets the app open URLs outside it ([`openUrl`](../modules/nsh-device.md#openurl), a `TextView`'s links with
+Lets the app open URLs outside it ([`openUrl`](../modules/nsh.md#openurl), a `TextView`'s links with
 `links="open"`): `"openUrl": true` for every scheme, `"openUrl": { "schemes": ["https", "mailto"] }` for the schemes
 listed. A URL whose scheme is not granted throws a `TypeError`. URLs that would run code or reach the app's own data
 (`javascript:`, `data:`, `file:`, ...) are never opened, whatever the capability.
 
 ### Storage
 
-Every app may keep its own data on the device with [`nsh/storage`](../modules/nsh-storage.md), with no capability: the storage holds only that app's data, and the embedding app decides where it is kept.
+Every app may keep its own data on the device with [`Storage`](../modules/nsh.md#storage), with no capability: the storage holds only that app's data, and the embedding app decides where it is kept.
 
 ### `host`
 
-`host` lists the functions of the app embedding NSH that `nsh/host`'s `host.call(name, args)` may call: exact names
+`host` lists the functions of the app embedding NSH that `nsh`'s `host.call(name, args)` may call: exact names
 (`"getUserInfo"`) or prefixes ending in `*` (`"bridge.*"` matches `bridge.call` and `bridge.share`). `"host": true`
 allows every function. A function not listed is refused, also in an app without `"capabilities"`: the host's
-functions are never granted by default, and building an app that imports `nsh/host` without `host` warns that every
+functions are never granted by default, and building an app that imports `host` from `nsh` without `host` warns that every
 call will be refused. Names are 1 to 128 characters from `A`–`Z`, `a`–`z`, `0`–`9`, `_`, `.`, `:` and `-`, without `..`;
 the call of any other name is refused before the grants are read. End a prefix with a separator (`"bridge.*"`):
 `"bridge*"` matches `bridgeAdmin` too. The host's events (`host.on(event, listener)`) reach the app's listeners as the host sends them.
 
 ```ts
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 if (host.available()) {
   const user = await host.call("getUserInfo");

@@ -284,7 +284,7 @@ pub(crate) fn host_props(input: DeriveInput) -> syn::Result<TokenStream2> {
                 }
             }
 
-            fn specs(types: &mut ::nsh_core::ui::TsTypes, out: &mut ::std::vec::Vec<#host::HostPropSpec>) {
+            fn specs(types: &mut ::nsh_core::element::TsTypes, out: &mut ::std::vec::Vec<#host::HostPropSpec>) {
                 let _ = (&types, &out);
                 #(#specs)*
             }
