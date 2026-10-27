@@ -194,11 +194,11 @@ async fn accepted_kinds_publish_at_observation_and_unaccepted_kinds_wait_for_sea
                 .await
                 .unwrap();
             assert_eq!(
-                crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+                crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
                 expected(&events, unaccepted)
             );
             assert_eq!(
-                crate::test_store::inspect(&log, |db| rows(db, "a"))
+                crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
                     .await
                     .len(),
                 2
@@ -210,7 +210,7 @@ async fn accepted_kinds_publish_at_observation_and_unaccepted_kinds_wait_for_sea
                     .await
                     .unwrap();
 
-                let actual = crate::test_store::inspect(&log, |db| rows(db, "a")).await;
+                let actual = crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await;
                 assert_eq!(actual, expected(&events, cut));
                 assert_eq!(actual.len(), if accepted { 3 + index } else { 2 });
                 if accepted {
@@ -239,7 +239,7 @@ async fn accepted_kinds_publish_at_observation_and_unaccepted_kinds_wait_for_sea
                 .await
                 .unwrap();
             assert_eq!(
-                crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+                crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
                 expected(&events, later)
             );
             for (&cut, original) in cuts.iter().zip(&cold) {
@@ -258,7 +258,7 @@ async fn accepted_kinds_publish_at_observation_and_unaccepted_kinds_wait_for_sea
                 .await
                 .unwrap();
             assert_eq!(
-                crate::test_store::inspect(&reopened, |db| rows(db, "a")).await,
+                crate::test_store::inspect_cache(&reopened, |db| rows(db, "a")).await,
                 expected(&events, later)
             );
 
@@ -310,8 +310,8 @@ async fn accepted_observation_directory_survives_missing_optional_bodies_and_reo
     let (cuts, _, events) = seed(&log, true, false).await;
     let old = cuts[0];
     let original = page(&log, old).await;
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -328,7 +328,7 @@ async fn accepted_observation_directory_survives_missing_optional_bodies_and_reo
 
     let reopened = EventLog::open(&path).await.unwrap();
     assert!(
-        crate::test_store::inspect(&reopened, |db| rows(db, "a"))
+        crate::test_store::inspect_cache(&reopened, |db| rows(db, "a"))
             .await
             .is_empty()
     );
@@ -337,7 +337,7 @@ async fn accepted_observation_directory_survives_missing_optional_bodies_and_reo
         .await
         .unwrap();
     assert_eq!(
-        crate::test_store::inspect(&reopened, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&reopened, |db| rows(db, "a")).await,
         expected(&events, old)
     );
     assert_eq!(

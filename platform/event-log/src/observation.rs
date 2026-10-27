@@ -170,6 +170,15 @@ impl EventLog {
             .await
     }
 
+    /// Canonical committed sequence across this partition, including other Sessions.
+    /// Scoped notification watermarks are hints and may lag this SQL boundary.
+    pub async fn committed_sequence(&self) -> Result<u64, StoreError> {
+        self.validate_root()?;
+        self.connection
+            .read(|connection| Box::pin(high_water(connection)))
+            .await
+    }
+
     pub async fn observe_session<T: DeserializeOwned + Send + 'static>(
         &self,
         session_id: &str,

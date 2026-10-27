@@ -115,7 +115,7 @@ async fn accepted(log: &EventLog, step: &str, name: &str) -> u64 {
         .unwrap()
 }
 fn rows(db: &Connection) -> Vec<(maka_agent_facts::history::RowPosition, Vec<u8>, String)> {
-    db.prepare("SELECT source_sequence, item_index, payload, digest FROM transcript_cache.rows ORDER BY source_sequence, item_index")
+    db.prepare("SELECT source_sequence, item_index, payload, digest FROM temp.transcript_rows ORDER BY source_sequence, item_index")
         .unwrap()
         .query_map([], |row| Ok((maka_agent_facts::history::RowPosition { source_sequence: row.get::<_, i64>(0)? as u64, item_index: row.get::<_, i64>(1)? as u64 }, row.get(2)?, row.get(3)?)))
         .unwrap()
@@ -210,7 +210,7 @@ async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_readin
     // A historical fence sees the planned provider call, but no later dispatch,
     // nested call, result or rejection from the already-existing future suffix.
     materialize_all(&log, accepted_fence).await;
-    let first = crate::test_store::inspect(&log, rows).await;
+    let first = crate::test_store::inspect_cache(&log, rows).await;
     assert_eq!(first.len(), 3);
     let parent_id = tool_message_id("invocation", parent);
     let planned: Value = serde_json::from_slice(&first[2].1).unwrap();
@@ -225,7 +225,7 @@ async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_readin
         !notices.has_changed().unwrap(),
         "derived cache must not publish execution commits"
     );
-    let original = crate::test_store::inspect(&log, rows).await;
+    let original = crate::test_store::inspect_cache(&log, rows).await;
     assert_eq!(&original[..3], first.as_slice());
     assert_eq!(original.len(), 17);
     let values: Vec<Value> = original
@@ -358,8 +358,8 @@ async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_readin
         "own-boundary projection must exactly match full invocation replay"
     );
     let canonical = prefix.digest;
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -367,7 +367,7 @@ async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_readin
     let reopened = EventLog::open(&path).await.unwrap();
     materialize_all(&reopened, through).await;
     assert_eq!(
-        crate::test_store::inspect(&reopened, rows).await,
+        crate::test_store::inspect_cache(&reopened, rows).await,
         original,
         "replaying earlier call evidence must be idempotent"
     );
@@ -375,18 +375,18 @@ async fn tool_boundaries_page_independently_and_rebuild_exact_ids_without_readin
         reopened.prefix(128, 32 * 1024 * 1024).await.unwrap().digest,
         canonical
     );
-    crate::test_store::inspect(&reopened, move |db| {
-        db.execute("DELETE FROM transcript_cache.rows", []).unwrap()
+    crate::test_store::inspect_cache(&reopened, move |db| {
+        db.execute("DELETE FROM temp.transcript_rows", []).unwrap()
     })
     .await;
-    crate::test_store::inspect(&reopened, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&reopened, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
     materialize_all(&reopened, through).await;
     assert_eq!(
-        crate::test_store::inspect(&reopened, rows).await,
+        crate::test_store::inspect_cache(&reopened, rows).await,
         original,
         "the complete index is disposable"
     );

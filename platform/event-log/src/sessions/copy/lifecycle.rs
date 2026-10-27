@@ -66,6 +66,7 @@ impl EventLog {
         sessions::validate_id(session)?;
         let session = session.to_owned();
         let prepared = self.prepared.clone();
+        let observations = self.connection.observations();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -74,7 +75,11 @@ impl EventLog {
                         .await?
                         .ok_or(StoreError::SessionNotFound)?
                     {
-                        CopyState::Abandoned => return Ok(AbandonRevision::Abandoned),
+                        CopyState::Abandoned => {
+                            tx.rollback().await?;
+                            observations.purge_session(session).await?;
+                            return Ok(AbandonRevision::Abandoned);
+                        }
                         CopyState::Committed => return Ok(AbandonRevision::Retained),
                         CopyState::Preparing => {}
                     }
@@ -86,8 +91,6 @@ impl EventLog {
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_history_members WHERE session_id=?",
                         "DELETE FROM session_revision_sources WHERE session_id=?",
-                        "DELETE FROM transcript_cache.rows WHERE session_id=?",
-                        "DELETE FROM transcript_cache.text WHERE session_id=?",
                         "DELETE FROM transcript_directory WHERE session_id=?",
                         "DELETE FROM transcript_failures WHERE session_id=?",
                         "DELETE FROM catalog_messages WHERE session_id=?",
@@ -114,6 +117,7 @@ impl EventLog {
                     sessions::advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     prepared.wake();
+                    observations.purge_session(session).await?;
                     Ok(AbandonRevision::Abandoned)
                 })
             })

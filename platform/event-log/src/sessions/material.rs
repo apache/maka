@@ -68,6 +68,7 @@ impl EventLog {
         self.validate_root()?;
         let after = after.map(str::to_owned);
         let prepared = self.prepared.clone();
+        let observations = self.connection.observations();
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let session: Option<String> = sqlx::query_scalar(
@@ -106,14 +107,14 @@ impl EventLog {
             // Also covers imported owners that never had a local retirement.
             crate::context::prepared::gc::retire_owner(&mut tx,&session).await?;
             crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
-            for table in ["transcript_directory", "transcript_failures", "transcript_cache.rows", "transcript_cache.text"] {
+            for table in ["transcript_directory", "transcript_failures"] {
                 let sql = format!("DELETE FROM {table} WHERE session_id=?");
                 sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(&session).execute(&mut *tx).await?;
             }
             let rows: Vec<(i64, String, String)> = sqlx::query_as(
                 "SELECT sequence,event_id,event_json FROM event_log WHERE event_session=?
                  AND event_json IS NOT NULL ORDER BY sequence LIMIT 8"
-            ).bind(session).fetch_all(&mut *tx).await?;
+            ).bind(&session).fetch_all(&mut *tx).await?;
             for (sequence,id,body) in rows {
                 let event: RuntimeEvent = serde_json::from_str(&body)?;
                 let proof = retained(&event);
@@ -134,6 +135,7 @@ impl EventLog {
             }
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
             prepared.wake();
+            observations.purge_session(session).await?;
             Ok(MaterialCollection::Collected)
         })).await
     }

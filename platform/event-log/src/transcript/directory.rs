@@ -392,15 +392,6 @@ fn copy_on_handle(
             "DELETE FROM transcript_failures WHERE session_id=?1",
             [target],
         )?;
-        // An earlier inherited ID may replace a later cached bare claimant.
-        db.execute(
-            "DELETE FROM transcript_cache.rows WHERE session_id=?1",
-            [target],
-        )?;
-        db.execute(
-            "DELETE FROM transcript_cache.text WHERE session_id=?1",
-            [target],
-        )?;
         let mut after = 0i64;
         loop {
             let next: Option<i64> = db.prepare_cached("SELECT source_sequence FROM (SELECT source_sequence FROM temp.transcript_copy_rows WHERE source_sequence>?1 UNION SELECT source_sequence FROM temp.transcript_copy_failures WHERE source_sequence>?1) ORDER BY source_sequence LIMIT 1")?.query_row([after],|r|r.get(0)).optional()?;
@@ -517,9 +508,22 @@ mod tests {
             check_read(db,"bare",end).await?;
             let rows: Vec<(i64,String)> = sqlx::query_as("SELECT item_index,role FROM transcript_directory WHERE session_id='bare' AND source_sequence=? ORDER BY item_index").bind(first as i64).fetch_all(&mut *db).await?;
             assert_eq!(rows,vec![(0,"user".into()),(1,"turn_state".into())]);
-            assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM transcript_cache.rows").fetch_one(&mut *db).await?,0);
             Ok(())
         })).await.unwrap();
+        log.connection
+            .observe(|db| {
+                Box::pin(async move {
+                    assert_eq!(
+                        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM temp.transcript_rows")
+                            .fetch_one(db)
+                            .await?,
+                        0
+                    );
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
         log.close().await.unwrap();
         let log = EventLog::open(&path).await.unwrap();
         log.connection

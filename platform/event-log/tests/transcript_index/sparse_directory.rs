@@ -61,7 +61,7 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
     );
     let db = Connection::open(&path).unwrap();
     assert!(
-        crate::test_store::inspect(&log, |db| rows(db, "a"))
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
             .await
             .is_empty()
     );
@@ -84,7 +84,7 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();
     assert!(
-        crate::test_store::inspect(&log, |db| rows(db, "a"))
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
             .await
             .is_empty(),
         "ordinary reopen does not rebuild optional bodies"
@@ -109,8 +109,8 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
         (Position::Before { cursor }, vec!["你好", "answ"]),
         (Position::After { cursor }, vec!["er😀"]),
     ] {
-        crate::test_store::inspect(&log, move |db| {
-            db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+        crate::test_store::inspect_cache(&log, move |db| {
+            db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
                 .unwrap()
         })
         .await;
@@ -153,8 +153,8 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
             "reading cannot rebuild or rewrite metadata"
         );
     }
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -181,7 +181,7 @@ async fn cold_windows_use_complete_directory_and_preserve_all_anchor_kinds_after
     assert_eq!(chunks[0].message_id, assistant_id);
     assert!(before.is_some() && after.is_none());
     assert!(
-        crate::test_store::inspect(&log, |db| rows(db, "a"))
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
             .await
             .iter()
             .all(|row| row.0.source_sequence >= sealed),

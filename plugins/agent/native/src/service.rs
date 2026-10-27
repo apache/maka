@@ -465,12 +465,12 @@ impl Handler for Agent {
                     use maka_agent_ports::session::history::Read;
                     let input: History = decode(input)?;
                     owner.require_session(&input.session_id).await?;
-                    let high_water = *owner
+                    let high_water = owner
                         .scoped_store(context.scope(), &input.session_id)
                         .await?
-                        .subscribe_commits()
-                        .map_err(|error| error.to_string())?
-                        .borrow();
+                        .committed_sequence()
+                        .await
+                        .map_err(|error| error.to_string())?;
                     let through = input.through.unwrap_or(high_water);
                     if through > high_water {
                         return Err("agent_cursor_invalid".into());
@@ -557,12 +557,12 @@ impl Handler for Agent {
                     let input: HistoryLandmarksRead = decode(input)?;
                     owner.require_session(&input.session_id).await?;
                     if input.through
-                        > *owner
+                        > owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
-                            .subscribe_commits()
+                            .committed_sequence()
+                            .await
                             .map_err(|error| error.to_string())?
-                            .borrow()
                     {
                         return Err("agent_cursor_invalid".into());
                     }
@@ -597,12 +597,12 @@ impl Handler for Agent {
                     let input: HistoryPromptRead = decode(input)?;
                     owner.require_session(&input.session_id).await?;
                     if input.through
-                        > *owner
+                        > owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
-                            .subscribe_commits()
+                            .committed_sequence()
+                            .await
                             .map_err(|error| error.to_string())?
-                            .borrow()
                     {
                         return Err("agent_cursor_invalid".into());
                     }
@@ -623,12 +623,12 @@ impl Handler for Agent {
                     owner.require_session(&input.session_id).await?;
 
                     if input.through
-                        > *owner
+                        > owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
-                            .subscribe_commits()
+                            .committed_sequence()
+                            .await
                             .map_err(|error| error.to_string())?
-                            .borrow()
                         || input.after.is_some_and(|after| {
                             after.validate().is_err() || after.source_sequence > input.through
                         })
@@ -683,12 +683,12 @@ impl Handler for Agent {
                         .scoped_session(context.scope(), &input.session_id)
                         .await?;
                     if input.through
-                        > *owner
+                        > owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
-                            .subscribe_commits()
+                            .committed_sequence()
+                            .await
                             .map_err(|error| error.to_string())?
-                            .borrow()
                     {
                         return Err("agent_cursor_invalid".into());
                     }
@@ -745,12 +745,12 @@ impl Handler for Agent {
                     let input: ToolImageRead = decode(input)?;
                     owner.require_session(&input.session_id).await?;
                     if input.through
-                        > *owner
+                        > owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
-                            .subscribe_commits()
+                            .committed_sequence()
+                            .await
                             .map_err(|error| error.to_string())?
-                            .borrow()
                     {
                         return Err("agent_cursor_invalid".into());
                     }
@@ -806,12 +806,12 @@ impl Handler for Agent {
                             attachment_index,
                         } => {
                             if *through
-                                > *owner
+                                > owner
                                     .scoped_store(context.scope(), &input.session_id)
                                     .await?
-                                    .subscribe_commits()
+                                    .committed_sequence()
+                                    .await
                                     .map_err(|error| error.to_string())?
-                                    .borrow()
                             {
                                 return Err("agent_cursor_invalid".into());
                             }
@@ -965,7 +965,12 @@ impl Handler for Agent {
                                 .await?;
                         }
                         owner.require_session(&input.session_id).await?;
-                        let through = *commits.borrow();
+                        let through = owner
+                            .scoped_store(context.scope(), &input.session_id)
+                            .await?
+                            .committed_sequence()
+                            .await
+                            .map_err(|error| error.to_string())?;
                         if after > through {
                             return Err("agent_cursor_invalid".into());
                         }
