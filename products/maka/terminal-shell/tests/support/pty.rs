@@ -51,7 +51,7 @@ struct SixelReplies {
 }
 
 impl Pty {
-    pub fn spawn(root: &Path, session: Option<&str>) -> Self {
+    pub fn spawn(binary: impl AsRef<Path>, root: &Path, session: Option<&str>) -> Self {
         let mut master = -1;
         let mut slave = -1;
         let mut size = libc::winsize {
@@ -85,7 +85,7 @@ impl Pty {
             unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut original) },
             0
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_maka"));
+        let mut command = Command::new(binary.as_ref());
         command.args(["--root", root.to_str().unwrap()]);
         if let Some(session) = session {
             command.args(["--session", session]);
@@ -120,8 +120,8 @@ impl Pty {
     /// Answer the initial Sixel measurement; later replies are controlled by the case.
     /// Its cell-size reply includes Ctrl+P to exercise mixed keyboard input.
     /// This selects emulator behavior; it does not configure the application.
-    pub fn spawn_sixel(root: &Path, session: Option<&str>) -> Self {
-        let mut terminal = Self::spawn(root, session);
+    pub fn spawn_sixel(binary: impl AsRef<Path>, root: &Path, session: Option<&str>) -> Self {
+        let mut terminal = Self::spawn(binary, root, session);
         terminal.sixel = Some(SixelReplies::default());
         terminal
     }

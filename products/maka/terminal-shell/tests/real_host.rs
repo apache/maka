@@ -1043,7 +1043,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         drop(client);
         #[cfg(unix)]
         {
-            let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&session));
+            let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&session));
             terminal.wait_for("SETTINGS_CONNECTION_SINGLE_SEND_DONE").await;
             terminal.wait_for("发送消息，或开始一项任务…").await;
             let restored = terminal.wait_for("Manual UI Agent · high").await;
@@ -3482,7 +3482,7 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         drop(view);
         bindings.close().await.unwrap();
 
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
         terminal.wait_for("fixture-model").await;
         terminal.wait_for_absent("Loading session history").await;
         terminal.wait_for("Working…").await;
@@ -3572,7 +3572,7 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
 
         // Only the simulated terminal's response changes. The actual binary
         // must first emit DA1 + CSI 16t and choose Sixel through its sole reader.
-        let mut terminal = support::pty::Pty::spawn_sixel(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let mut terminal = support::pty::Pty::spawn_sixel(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
         // The emulator appends this ordinary Ctrl+P to its cell-size reply.
         terminal.wait_for("Search commands…").await;
         let palette = terminal.wait_for("Resume a conversation").await;
@@ -3760,6 +3760,7 @@ async fn production_workspace_picker_browses_deep_folders_and_restores_the_real_
         std::fs::create_dir_all(&child_path).unwrap();
         let client = fixture.client().await;
         let mut terminal = support::pty::Pty::spawn(
+            env!("CARGO_BIN_EXE_maka"),
             &fixture.directory.path().join("host"),
             Some(&fixture.session),
         );
@@ -3927,7 +3928,7 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
         let gate = ReplyGate::history(fixture.directory.path(), fixture.address.clone());
         gate.arm();
         fixture.register_at(&gate.address);
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), None);
+        let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), None);
         let home = terminal.wait_for("Make something remarkable.").await;
         evidence("production-pty-home", &home);
         // A held navigation key can arrive as a burst in one reader turn.
@@ -4024,7 +4025,7 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
         drop(terminal);
         // A new OS process uses the same original Root and the same single
         // presentation: completed work is folded, and the source opens on request.
-        let mut restarted = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let mut restarted = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
         let folded = restarted.wait_for("REAL_PRODUCTION_PTY_STREAM").await;
         assert!(folded.contains("completed.") && !folded.contains("Details ·"));
         restarted.wait_for("Completed").await;
@@ -4054,6 +4055,24 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
 async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_and_reader() {
     use maka_app_client::{Client, Journal};
     use maka_host_runtime::application::host::Client as HostClient;
+    use std::sync::{Arc, atomic::AtomicUsize};
+    use tokio_util::task::AbortOnDropHandle;
+
+    async fn delta_progress(
+        terminal: &mut support::pty::Pty,
+        count: &AtomicUsize,
+        before: usize,
+    ) -> usize {
+        loop {
+            terminal.read();
+            let after = count.load(Ordering::SeqCst);
+            if after > before {
+                return after;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
     tokio::time::timeout(Duration::from_secs(90), async {
         let mut fixture = Fixture::registered().await;
         fixture.seed_history(1).await;
@@ -4070,7 +4089,8 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
             "receipts".into(),
         ).unwrap();
         terminal_client.save_draft("agent", &fixture.session, EDITOR, None, "RECOVERY_ORIGINAL_A".into()).await.unwrap();
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let binary = std::env::var_os("MAKA_TEST_CLI_BINARY").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_maka")));
+        let mut terminal = support::pty::Pty::spawn(&binary, &fixture.directory.path().join("host"), Some(&fixture.session));
         let failed = terminal.wait_for("Retry loading conversation").await;
         assert!(failed.contains("History unavailable."));
         assert!(failed.contains("History unavailable. Retrying automatically; your draft is kept."));
@@ -4100,14 +4120,102 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
         let focus_frame = terminal.wire().len();
         terminal.send(b"\x0c");
         terminal.wait_for_wire(b"\x1b[?2026l", focus_frame).await;
-        terminal.paste(" + LATER_UNSENT_B");
-        terminal.wait_for("RECOVERY_ORIGINAL_A + LATER_UNSENT_B").await;
-        support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A + LATER_UNSENT_B").await;
         request.delta("ACTIVE_PREFIX_ABCD").await;
         terminal.wait_for("ACTIVE_PREFIX_ABCD").await;
+        let epoch = Instant::now();
+        let submitted = Arc::new(AtomicUsize::new(0));
+        let (stop_stream, mut stopped) = tokio::sync::oneshot::channel();
+        let producer = AbortOnDropHandle::new(tokio::spawn({
+            let submitted = submitted.clone();
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(20));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut sequence = 0;
+                let mut deltas = Vec::new();
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut stopped => return (request, deltas),
+                        _ = interval.tick() => {
+                            let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+                            request.delta(".").await;
+                            sequence += 1;
+                            submitted.store(sequence, Ordering::SeqCst);
+                            deltas.push(json!({"sequence":sequence,"started_ms":started_ms,"submitted_ms":epoch.elapsed().as_secs_f64()*1000.0}));
+                        }
+                    }
+                }
+            }
+        }));
+        delta_progress(&mut terminal, &submitted, 0).await;
+        terminal.paste(" + ");
+        terminal.wait_for("RECOVERY_ORIGINAL_A +").await;
+        support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A + ").await;
+        let mut samples = Vec::new();
+        let mut phases = Vec::new();
+        let phase_before = submitted.load(Ordering::SeqCst);
+        let mut expected = String::from("RECOVERY_ORIGINAL_A + ");
+        for key in b"LATER_UNSENT_B" {
+            expected.push(char::from(*key));
+            assert!(!terminal.snapshot().contains(&expected), "a typing target must not already be visible");
+            let before = submitted.load(Ordering::SeqCst);
+            let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+            let started = Instant::now();
+            terminal.send(&[*key]);
+            terminal.wait_for(&expected).await;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            samples.push(json!({"phase":"typing","key":char::from(*key).to_string(),"target":expected,"started_ms":started_ms,"elapsed_ms":elapsed_ms,"deltas_before":before,"deltas_at_target":submitted.load(Ordering::SeqCst)}));
+        }
+        let phase_after = delta_progress(&mut terminal, &submitted, phase_before).await;
+        phases.push(json!({"phase":"typing","deltas_before":phase_before,"deltas_after_progress_fence":phase_after}));
+        support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A + LATER_UNSENT_B").await;
 
         // Move the reader to old history while the same model part stays open.
         // Recovery must preserve both this anchor and its already shown prefix.
+        assert!(!terminal.snapshot().contains("History 00 paragraph 00"));
+        let before = submitted.load(Ordering::SeqCst);
+        let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let focus_frame = terminal.wire().len();
+        terminal.send(b"\x1b[1;3A");
+        terminal.wait_for_wire(b"\x1b[?2026l", focus_frame).await;
+        terminal.send(b"\x1b[H");
+        terminal.wait_for("History 00 paragraph 00").await;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        samples.push(json!({"phase":"history_navigation","input":"Alt+Up then Home","target":"History 00 paragraph 00","started_ms":started_ms,"elapsed_ms":elapsed_ms,"deltas_before":before,"deltas_at_target":submitted.load(Ordering::SeqCst)}));
+        let after = delta_progress(&mut terminal, &submitted, before).await;
+        phases.push(json!({"phase":"history_navigation","deltas_before":before,"deltas_after_progress_fence":after}));
+        assert!(!terminal.snapshot().contains("ACTIVE_PREFIX_ABCD"));
+        let before = submitted.load(Ordering::SeqCst);
+        let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        terminal.send(b"\x0c");
+        terminal.wait_for("ACTIVE_PREFIX_ABCD").await;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        samples.push(json!({"phase":"return_to_live","input":"Ctrl+L","target":"ACTIVE_PREFIX_ABCD","started_ms":started_ms,"elapsed_ms":elapsed_ms,"deltas_before":before,"deltas_at_target":submitted.load(Ordering::SeqCst)}));
+        let after = delta_progress(&mut terminal, &submitted, before).await;
+        phases.push(json!({"phase":"return_to_live","deltas_before":before,"deltas_after_progress_fence":after}));
+        stop_stream.send(()).unwrap();
+        let (mut request, deltas) = producer.await.unwrap();
+        let delivered = format!("STREAM_SAMPLE_END_{}", submitted.load(Ordering::SeqCst));
+        request.delta(&format!(" {delivered}")).await;
+        terminal.wait_for(&delivered).await;
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+        if let Some(directory) = std::env::var_os("MAKA_NSH_EVIDENCE") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("production-streaming-interactions.json"), serde_json::to_vec_pretty(&json!({
+                "metric":"PTY input write to target text in a complete synchronized terminal frame",
+                "excludes":"pixel protocol transport, terminal rendering, physical display scanout and FPS",
+                "binary":binary,
+                "terminal_cells":[120,40],
+                "model_requests":fixture.request_count.load(Ordering::SeqCst),
+                "fixture":"real Host and ordinary product UI package from the test build",
+                "workload":{"delta_interval_ms":20,"delta_text":".","input_suffix":"LATER_UNSENT_B"},
+                "progress_fence":"delta progress is checked after target-frame timing; a sample may finish within one producer interval",
+                "delivery_marker":delivered,"samples":samples,"phases":phases,"deltas":deltas
+            })).unwrap()).unwrap();
+        }
         let focus_frame = terminal.wire().len();
         terminal.send(b"\x1b[1;3A");
         terminal.wait_for_wire(b"\x1b[?2026l", focus_frame).await;

@@ -925,7 +925,7 @@ async fn the_production_pty_leaves_requests_unanswered_then_records_cancel_and_d
         let request = fixture.next_request().await;
         let prompt = json!({"kind":"form","toolUseId":"physical_form_call","message":"Physical form decision","requester":{"name":"Trusted fixture"},"fields":[]});
         let cancelled = publish(&fixture, "physical_form_cancel", prompt.clone()).await;
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
         terminal.wait_for("Physical form decision").await;
         // Reading the original detail enters this request's keyboard scope.
         // Escape returns to the editor without answering or stopping the Run.
