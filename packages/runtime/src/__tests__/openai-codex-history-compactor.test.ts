@@ -234,6 +234,44 @@ describe('OpenAI Codex compaction output', () => {
       undefined,
     );
   });
+
+  test('captures the wire identity alongside the compatibility hash', () => {
+    assert.deepEqual(
+      extractOpenAiCodexCompactionState(
+        [compactPart('item-1', 'encrypted-1')],
+        'codex-subscription',
+        'gpt-5.3-codex',
+        '3000',
+        'sha256:identity-account-1',
+      ),
+      {
+        kind: 'openai_codex_remote_v2',
+        connectionId: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+        codexCompactionHash: '3000',
+        providerStateIdentity: 'sha256:identity-account-1',
+        itemId: 'item-1',
+        encryptedContent: 'encrypted-1',
+      },
+    );
+    // No identity stated at capture: the field stays absent, like before pinning.
+    assert.deepEqual(
+      extractOpenAiCodexCompactionState(
+        [compactPart('item-1', 'encrypted-1')],
+        'codex-subscription',
+        'gpt-5.3-codex',
+        '3000',
+      ),
+      {
+        kind: 'openai_codex_remote_v2',
+        connectionId: 'codex-subscription',
+        modelId: 'gpt-5.3-codex',
+        codexCompactionHash: '3000',
+        itemId: 'item-1',
+        encryptedContent: 'encrypted-1',
+      },
+    );
+  });
 });
 
 describe('OpenAI Codex compaction input', () => {
