@@ -675,6 +675,8 @@ impl BrowserHostEffects for HostEffects {
     }
 }
 struct HostServiceSettlement(HostEffects);
+// Retaining existing work mints no AttachedEffectScope. Its original issuing
+// effect retains its own preparation lifetime, independent of these drains.
 impl OperationSettlement for HostServiceSettlement {
     fn retain(&self, pending: SettlementFuture) -> Result<(), (ToolError, SettlementFuture)> {
         let admitted = match self.0.reserve() {
@@ -689,6 +691,7 @@ impl OperationSettlement for HostServiceSettlement {
             }),
             None,
             None,
+            None,
         );
         Ok(())
     }
@@ -700,7 +703,7 @@ impl OperationSettlement for HostServiceSettlement {
             Ok(admitted) => admitted,
             Err(error) => return Err((error, pending)),
         };
-        HostEffects::launch(admitted, pending, None, None);
+        HostEffects::launch(admitted, pending, None, None, None);
         Ok(())
     }
 }
