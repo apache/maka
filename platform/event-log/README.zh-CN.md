@@ -25,7 +25,7 @@
 
 管理 SQLite 事件存储和 State Root 租约，持久化应用配置与包、操作回执、会话、轮次及恢复记录。独占所有权见 `root`，已提交的组合见 `applications`，中断恢复见 `recovery`。服务激活前必须先取得 Root 的持久化所有权；业务策略属于插件，规范事实由这里记录。
 
-生产入口是持有唯一 `RootOwner` 的 `RootStore`。当前布局使用一个 control 数据库和八个固定执行分区。Control 保存不可变应用来源、caller intent journal、project/workspace binding 和持久化 Session 路由；Session 及其 revision/import family 共置一个分区。操作日志按 deployment、provider namespace 与 operation 身份定位，来源 revision 不改变分区。Session 范围的插件数据跟随 Session，其他插件命名空间和 UI checkpoint 使用稳定的数据分区。数据写入器只读挂载 control；任何执行分区含 caller intent 记录的 Root，以及已有数据的旧单库 Root，都会被拒绝并保留原日志，不会静默忽略或移动 caller 记录。
+生产入口是持有唯一 `RootOwner` 的 `RootStore`。当前布局使用一个 control 数据库和八个固定执行分区。Control 保存不可变应用来源、caller intent journal、project/workspace binding 和持久化 Session 路由；Session 及其 revision/import family 共置一个分区。操作日志按 deployment、provider namespace 与 operation 身份定位，来源 revision 不改变分区。Session 范围的插件数据跟随 Session，其他插件命名空间使用稳定的数据分区。数据写入器只读挂载 control；任何执行分区含 caller intent 记录的 Root，以及已有数据的旧单库 Root，都会被拒绝并保留原日志，不会静默忽略或移动 caller 记录。
 
 `SessionStore` 和 `OperationStore` 只公开绑定身份的操作，不暴露原始日志。闲置句柄和已完成的 capability 只持有弱引用；已接受的 SQL 则保留实际 owner 和锁，直到物理事务清理结束。执行通过工具、Host child scope 传递捕获的权限 basis、binding pins 和 Session work lease；可能超出父调用生命周期的子 worker 从这份实际 custody 派生独立租约。Root 关闭先拒绝新工作，再等待已接受的实际工作，最后关闭全部 SQL owner。无法确认清理时保留原始所有权并报告失败；观察者消失不代表清理完成。
 
@@ -47,7 +47,6 @@ Control 中的调用意图、项目登记、workspace attachment、Session 路�
 
 已保存应用的检查使用 `RootOwner::open_existing` 和 `EventLog::for_application_inspection`，要求已有的私有协调状态，并持有原有的独占 Root／数据库租约。检查读取已提交的应用事实，包括保留在 WAL 中的内容，关闭后不改变存储成员或字节；不执行迁移或派生初始化，缺失状态直接报错，不做修复。该打开方式仅供原连接上的应用查询使用。CLI 的 application read 与默认更新预览共用此入口；实际应用更新时重新打开普通写入所有者，并重新计算变更。
 
-原生 UI 检查点在原始持久化部署和实例下保存完整正文，不设置独立的正文或命名空间累计字节配额。读取在同一 SQLite 快照内先取得正文字节长度和调用方准入，再加载该记录；预留资源随记录一起返回。写入保留来源／格式身份、修订号比较和空内容 CAS 墓碑。实时内存准入由调用方负责，文件系统与提交失败仍明确报告为存储失败。
 
 原始操作契约按摘要只存储一次。操作请求和回执引用只携带该身份，日志读取、调用方历史与 UI 传递不再逐次复制服务 schema。读取仍核对原始请求指纹，执行准入仍校验完整契约和资源要求。
 

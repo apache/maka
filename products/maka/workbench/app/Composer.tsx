@@ -95,6 +95,7 @@ export function Composer(props: {
   attach(node: YNode): void;
   commands(): ComposerCommand[];
   active(): boolean;
+  blocked?(): boolean;
   models: JSX.Element;
   request: JSX.Element;
   stopAction(): () => void;
@@ -109,6 +110,7 @@ export function Composer(props: {
   const hero = () => props.session() === null || props.session()!.empty();
   const blocked = () => props.session()?.blockedReason() ?? '';
   const cannotSend = () =>
+    props.blocked?.() ||
     props.session() === null ||
     !props.session()?.editable() ||
     (!completion.isCommand() &&

@@ -28,8 +28,6 @@ export default {
     'zh-CN': { displayName: '协议进程', description: '运行连接助手协议所需的进程。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.protocolProcesses),
-    },
+    host: native(sdk.nativeImplementations.protocolProcesses),
   },
 };

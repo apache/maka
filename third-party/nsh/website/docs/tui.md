@@ -193,7 +193,10 @@ into the runner.
 
 ## Embedding in a Ratatui app
 
-`nsh-platform-tui` exposes an `AppView` with its own engine, retained surface and input state. Your host owns the
+`nsh-platform-tui` exposes an `AppView` with its own engine, retained surface and input state. Use
+`view.load_with_config(config)` to run a shared `nsh_engine::EngineConfig`, retaining its UI registries, asset
+reader, module loader, runtime and host context. The view supplies its actual terminal viewport and environment.
+Your host owns the
 terminal, event loop and other Ratatui widgets. Load a bundle, then poll commits, advance animations, forward
 events and draw into the region assigned to the view:
 

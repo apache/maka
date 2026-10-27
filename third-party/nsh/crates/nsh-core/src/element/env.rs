@@ -17,7 +17,7 @@ pub struct Environment {
     pub title_bar: crate::geometry::Edges<crate::geometry::Points>,
     /// The software keyboard's height, 0 when hidden.
     pub keyboard_height: Points,
-    /// How long the keyboard's show / hide animation takes, in seconds.
+    /// How long the keyboard's show / hide animation takes, in milliseconds.
     pub keyboard_duration: f32,
     /// Dark appearance.
     pub dark: bool,

@@ -208,9 +208,11 @@ fn run(
     platform
         .set_viewport(viewport, scale_factor)
         .map_err(|error| error.to_string())?;
-    config
-        .assets
-        .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
+    let mut reloading = config
+        .context
+        .get::<maka_workbench::reload::UiReload>()
+        .map(|reload| reload.take_requests());
+    let reload_config = config.clone();
     let error = presentation.clone();
     let window = Rc::new(RefCell::new(None));
     let created = window.clone();
@@ -373,6 +375,37 @@ fn run(
                 }
             });
             let mut worked = platform.pump_with_draw(false);
+            while let Some(request) = reloading
+                .as_mut()
+                .and_then(|requests| requests.try_recv().ok())
+            {
+                if matches!(request, maka_workbench::reload::Request::Reload) {
+                    text_input.blur(&platform, presentation)?;
+                }
+                application.update(|cx| {
+                    if let Some(window) = window.borrow().as_ref() {
+                        let _ = window.update(cx, |view, window, cx| {
+                            match request {
+                                maka_workbench::reload::Request::Pause(ready) => {
+                                    view.pause_input(window, cx, move |result| {
+                                        let _ = ready.send(result);
+                                    });
+                                }
+                                maka_workbench::reload::Request::Resume => {
+                                    view.resume_input(window, cx)
+                                }
+                                maka_workbench::reload::Request::Reload => {
+                                    view.load_with_config(reload_config.clone());
+                                    window.focus(&view.focus_handle(cx), cx);
+                                }
+                            }
+                            window.refresh();
+                            cx.notify();
+                        });
+                    }
+                });
+                worked = true;
+            }
             text_input.sync(&platform, presentation)?;
             if let Some(sample) = &mut input_pump {
                 sample.end = Instant::now();

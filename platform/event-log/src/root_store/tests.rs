@@ -468,10 +468,6 @@ async fn rejects_legacy_non_session_journals_without_orphaning_rows() {
             "application_intents",
             "INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json) VALUES ('deployment','[]','operation',1,'{}')",
         ),
-        (
-            "application_ui_checkpoints",
-            "INSERT INTO application_ui_checkpoints VALUES ('deployment','[]','key',1,'v1','{}','{}',x'010203')",
-        ),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let owner = owner(directory.path());

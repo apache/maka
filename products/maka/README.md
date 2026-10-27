@@ -31,7 +31,7 @@ This directory turns reusable plugins and platform owners into the Maka applicat
 | [desktop-shell](desktop-shell/README.md) | Run the workbench in a desktop window against public Host services |
 | [acp](acp/README.md) | Serve editor clients over ACP |
 
-Run `just run` from the repository root. It builds the TypeScript product first, then starts Cargo. Development binaries read the bundle from disk, so a TypeScript-only edit does not invalidate Rust compilation. Release binaries embed the same bundle.
+Run `just run` from the repository root. Cargo compiles the selected plugins and shared workbench and embeds them in the CLI, in both debug and release builds. Rebuild after editing those sources; a separate product build is unnecessary.
 
 Build the CLI and desktop shell with `just build` (`--release` and `--target` are supported); on macOS the shell is staged in `Maka.app`. Run `target/debug/maka desktop --root HOST_ROOT` to initialize or reopen a business Host and launch the desktop from any working directory. The launcher verifies its endpoint and epoch and retains its own client until the child exits; then it detaches, and the Host finishes the work it accepted.
 

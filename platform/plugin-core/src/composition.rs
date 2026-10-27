@@ -27,41 +27,8 @@ use uuid::Uuid;
 use crate::{
     Error,
     contract::Import,
-    package::{EntryTarget, PackageRef, PackageSelection},
+    package::{PackageRef, PackageSelection},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ExecutionLocation {
-    Host,
-    Ui,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PresentationTarget {
-    Tui,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Environment {
-    pub location: ExecutionLocation,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub presentation: Option<PresentationTarget>,
-}
-
-impl Environment {
-    pub fn entry_target(self) -> Result<EntryTarget, Error> {
-        match (self.location, self.presentation) {
-            (ExecutionLocation::Host, None) => Ok(EntryTarget::Host),
-            (ExecutionLocation::Ui, Some(PresentationTarget::Tui)) => Ok(EntryTarget::Tui),
-            _ => Err(Error::Composition(
-                "invalid execution and presentation combination".into(),
-            )),
-        }
-    }
-}
 
 /// Hierarchical, stable source keys. Display aliases never become data identities.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
@@ -82,19 +49,23 @@ impl InstanceId {
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "CompositionInput")]
 pub struct Input {
-    pub environment: Environment,
     pub instances: BTreeMap<String, Node>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub launch: Option<Target>,
-    /// Explicit ordinary fallback. Selection grants no extra capabilities.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<Target>,
+    pub ui: Option<UiTarget>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RootKind {
-    Launch,
-    Recovery,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiTarget {
+    pub path: Vec<String>,
+    pub id: String,
+}
+
+impl UiTarget {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        validate_path(&self.path)?;
+        crate::name(&self.id)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -119,7 +90,8 @@ pub struct Node {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PackageUse {
-    Entry,
+    Host,
+    Ui,
     Composition,
 }
 

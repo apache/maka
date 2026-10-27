@@ -266,11 +266,48 @@ pub struct AppView {
     /// Answers the apps' picks in place of GPUI's open dialog
     /// ([`AppView::set_picker`]).
     picker: RefCell<Option<Arc<dyn nsh_core::picker::PickerBackend>>>,
+    input_pause: RefCell<Option<InputPause>>,
     #[cfg(feature = "dev")]
     pub(crate) dev: RefCell<Option<crate::dev::DevSession>>,
 }
 
+struct InputPause {
+    scope: gpui::InputScope,
+    focus: FocusHandle,
+}
+
 impl AppView {
+    /// Refuses new physical input and drains edits admitted before the pause.
+    pub fn pause_input(
+        &self,
+        window: &mut Window,
+        cx: &mut GpuiApp,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        if self.input_pause.borrow().is_some() {
+            done(Err("input is already paused".into()));
+            return;
+        }
+        crate::text_input::ime::unmark_text(&self.surface);
+        let focus = cx.focus_handle();
+        let scope = window.input_scope(&focus, cx);
+        self.surface.input_paused.set(true);
+        *self.input_pause.borrow_mut() = Some(InputPause { scope, focus });
+        self.surface.invalidate();
+        crate::rt::flush(cx);
+        window.refresh();
+        self.surface.input_barrier(done);
+    }
+
+    /// Restores physical input when a paused reload is cancelled or fails.
+    pub fn resume_input(&self, window: &mut Window, cx: &mut GpuiApp) {
+        self.input_pause.borrow_mut().take();
+        self.surface.input_paused.set(false);
+        self.surface.invalidate();
+        crate::rt::flush(cx);
+        window.refresh();
+    }
+
     /// Cancels the current native mouse contact and hover without changing focus.
     /// Embedders call this when their terminal loses the physical pointer.
     pub fn cancel_pointer(&self) {
@@ -325,6 +362,7 @@ impl AppView {
         .detach();
         AppView {
             surface,
+            input_pause: RefCell::new(None),
             focus: cx.focus_handle().tab_stop(true),
             options: RefCell::new(options),
             tabbed: std::cell::Cell::new(false),
@@ -345,6 +383,7 @@ impl AppView {
             network: Some(nsh_engine::net::network()),
             websocket: None,
             filesystem: None,
+            chunk_loader: None,
             assets: Some(Arc::new(AssetReader(options.asset_base.clone()))),
             environment: self.surface.environment.get(),
             // NSH draws no header: a page's `header` sits at its top.
@@ -378,6 +417,8 @@ impl AppView {
     }
 
     fn start(&self, config: EngineConfig, use_engine_assets: bool) {
+        self.input_pause.borrow_mut().take();
+        self.surface.input_paused.set(false);
         let access = match &config.app {
             App::Js(bundle) => bundle.policy.access(),
             App::Rust(_) => nsh_engine::Policy::default().access(),
@@ -849,6 +890,12 @@ impl Render for AppView {
             .on_action(cx.listener(Self::focus_prev))
             .size_full()
             .child(content)
+            .children(self.input_pause.borrow().as_ref().map(|pause| {
+                pause
+                    .scope
+                    .element(gpui::div().absolute().inset_0().track_focus(&pause.focus))
+                    .into_any_element()
+            }))
     }
 }
 

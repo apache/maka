@@ -128,6 +128,7 @@ pub(crate) struct Surface {
     pub(crate) pending_auto_focus: RefCell<Option<NshView>>,
     /// Pointer input state ([`crate::input`]).
     pub(crate) input: crate::input::Input,
+    pub(crate) input_paused: Cell<bool>,
     engine: RefCell<Option<Engine>>,
     control: RefCell<Option<EngineControl>>,
     rx: RefCell<Option<Receiver<Message>>>,
@@ -226,6 +227,7 @@ impl Surface {
             focus_returns: RefCell::default(),
             pending_auto_focus: RefCell::default(),
             input: Default::default(),
+            input_paused: Cell::new(false),
             engine: RefCell::new(None),
             control: RefCell::new(None),
             rx: RefCell::new(None),
@@ -390,6 +392,37 @@ impl Surface {
         if let Some(control) = &*self.control.borrow() {
             f(control);
         }
+    }
+
+    pub(crate) fn input_barrier(
+        self: &Rc<Self>,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let Some(control) = self.control.borrow().clone() else {
+            done(Err("the UI engine is not running".into()));
+            return;
+        };
+        let (key, generation) = (self.key, self.generation.get());
+        control.advance_clock(std::time::Duration::ZERO, move || {
+            crate::rt::invoke(move || {
+                let Some(surface) =
+                    Surface::by_key(key).filter(|surface| surface.generation.get() == generation)
+                else {
+                    done(Err("the UI engine changed while pausing input".into()));
+                    return;
+                };
+                // JS may have committed native edits whose ChangeText goes back
+                // to its FIFO only when this owner applies the mount batches.
+                surface.drain();
+                let control = surface.control.borrow().clone();
+                let Some(control) = control.filter(|_| surface.generation.get() == generation)
+                else {
+                    done(Err("the UI engine changed while pausing input".into()));
+                    return;
+                };
+                control.advance_clock(std::time::Duration::ZERO, move || done(Ok(())));
+            });
+        });
     }
 
     /// The native keyboard owner and its ancestors, including a transfer

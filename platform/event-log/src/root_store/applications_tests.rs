@@ -21,13 +21,11 @@ use super::*;
 use crate::applications::intents::CallerIntent;
 use maka_packages::{MANIFEST_FILE, Package};
 use maka_plugin_core::{
-    composition::{
-        Configuration, Environment, ExecutionLocation, Input, InstanceId, Node, PackageUse,
-    },
+    composition::{Configuration, Input, InstanceId, Node, PackageUse},
     contract::{Contract, Interface, Method, MethodMode, Transport},
     deployment::DeploymentRef,
     operation::{RecoveryContract, RecoveryProtocol, RecoveryRef},
-    package::{Declaration, EntryDeclaration, EntryTarget, Implementation},
+    package::{Declaration, EntryDeclaration, Implementation},
 };
 use serde_json::json;
 use std::{collections::BTreeMap, path::Path, sync::mpsc, time::Duration};
@@ -56,16 +54,11 @@ async fn source(store: &RootStore, deployment: Uuid, expected: u64) -> Deploymen
             "schemaVersion": 1,
             "id": "caller",
             "application": Declaration {
-                entries: BTreeMap::from([(
-                    EntryTarget::Host,
-                    EntryDeclaration {
-                        scene: None,
-                        implementation: Implementation::Native { implementation: "test.caller".into() },
+                host: Some(EntryDeclaration { implementation: Implementation::Native { implementation: "test.caller".into() },
                         configuration: json!({"type":"object"}).into(),
                         imports: BTreeMap::new(),
                         exports: BTreeMap::new(),
-                    },
-                )]),
+                    }), ui: None,
                 composition: None,
             },
         }))
@@ -80,7 +73,7 @@ async fn source(store: &RootStore, deployment: Uuid, expected: u64) -> Deploymen
                 Node {
                     key: Uuid::from_u128(key),
                     package: package.application_ref().into(),
-                    use_package: PackageUse::Entry,
+                    use_package: PackageUse::Host,
                     configuration: Configuration::default(),
                     parameters: Configuration::default(),
                     bindings: BTreeMap::new(),
@@ -95,13 +88,8 @@ async fn source(store: &RootStore, deployment: Uuid, expected: u64) -> Deploymen
             deployment,
             expected,
             Input {
-                environment: Environment {
-                    location: ExecutionLocation::Host,
-                    presentation: None,
-                },
+                ui: None,
                 instances,
-                recovery: None,
-                launch: None,
             },
             vec![],
             vec![package],

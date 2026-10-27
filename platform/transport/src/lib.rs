@@ -17,25 +17,10 @@
  * under the License.
  */
 
-//! Trusted local connections between separate UI and Host deployment owners.
-mod connections;
+//! Host transport contracts, process stdio and confirmed storage startup.
 pub mod stdio;
 pub mod transport;
-mod updates;
-pub use connections::{Configuration, Connections, Grant, Host, HostEndpoint, HostLocation};
 pub use maka_host_runtime::application::transport::{GATEWAY, with_gateway};
-pub use updates::{ApprovedUpdate, Updates};
-/// Compiled fixed-UI-target management availability for explicit cohost entries.
-pub const UI_DEPLOYMENT_MANAGER: &str = "maka.application.ui-management";
-pub type Result<T> = std::result::Result<T, String>;
-
-/// The user's choice when closing a UI, after its physical calls have drained.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ExitMode {
-    #[default]
-    Quit,
-    KeepHost,
-}
 
 /// Product startup must not exit after losing confirmation of an acquired SQL
 /// owner's close. That original worker retains the Root and writer authority.
@@ -63,10 +48,4 @@ async fn confirmed_store<T>(
         }
         result => result,
     }
-}
-
-pub fn manager_native() -> maka_plugin_core::package::NativeDefinition {
-    let mut definition = maka_host_runtime::application::management::native();
-    definition.implementation = UI_DEPLOYMENT_MANAGER.into();
-    definition
 }

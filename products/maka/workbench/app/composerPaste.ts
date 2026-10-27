@@ -21,7 +21,7 @@ import { effect } from 'nsh';
 import type { YNode } from 'nsh';
 import { keymap } from 'nsh';
 import type { ComposerSession } from './Composer';
-import type { Selection } from './composerCompletion';
+import type { Selection } from './composerCompletionSyntax';
 import { UiError } from './text';
 
 type Target = {

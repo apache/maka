@@ -21,14 +21,19 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
-import { bundle } from '../../../../scripts/plugins/build.mjs';
+import { bundle, uiEntries } from '../../../../scripts/plugins/build.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const direct = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-const output = direct
-  ? parseArgs({ options: { output: { type: 'string' } } }).values.output
-  : undefined;
-await bundle({
-  packages: JSON.parse(await readFile(resolve(root, 'package-inputs.json'), 'utf8')),
-  output: output ? resolve(output) : resolve(root, 'dist'),
-  composition: resolve(root, 'src/composition.ts'),
-});
+const values = direct
+  ? parseArgs({ options: { output: { type: 'string' }, 'ui-entries': { type: 'string' } } }).values
+  : {};
+const packages = JSON.parse(await readFile(resolve(root, 'package-inputs.json'), 'utf8'));
+if (values['ui-entries']) {
+  await uiEntries({ packages, output: values['ui-entries'] });
+} else {
+  await bundle({
+    packages,
+    output: values.output ? resolve(values.output) : resolve(root, 'dist'),
+    composition: resolve(root, 'src/composition.ts'),
+  });
+}

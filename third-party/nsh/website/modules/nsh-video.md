@@ -93,7 +93,7 @@ The setting takes effect while the video plays. On iOS, the first such video to 
 | Event | Payload | When |
 |---|---|---|
 | `onLoadStart` | | The video starts loading. |
-| `onLoad` | `{ duration: number; size: Size }` | It is ready to play: its length in seconds and its size. |
+| `onLoad` | `{ duration: number; size: PixelSize }` | It is ready to play: its length in seconds and its size in pixels. |
 | `onProgress` | `{ currentTime: number; duration: number }` | While playing, every `progressUpdateInterval` ms. Seconds. |
 | `onBuffer` | `{ isBuffering: boolean }` | Playback waits for data, or resumes. |
 | `onEnd` | | Playback reached the end. |

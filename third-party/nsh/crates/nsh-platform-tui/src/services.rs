@@ -714,6 +714,9 @@ impl Surface {
     /// Completes a host paste only if its input, selection and edit count
     /// still match the request and its clipboard capability remains granted.
     pub fn complete_paste(&mut self, edit: InputEdit, result: Result<ClipboardContent, String>) {
+        if self.input_paused {
+            return;
+        }
         if !self.access.allows_clipboard() {
             return;
         }

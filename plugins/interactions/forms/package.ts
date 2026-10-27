@@ -28,6 +28,6 @@ export default {
     'zh-CN': { displayName: '结构化表单', description: '在助手任务中收集结构化回答。' },
   },
   application: {
-    entries: { host: native(sdk.nativeImplementations.forms) },
+    host: native(sdk.nativeImplementations.forms),
   },
 };

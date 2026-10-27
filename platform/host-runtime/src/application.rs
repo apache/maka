@@ -48,7 +48,7 @@ use maka_capabilities::call::Ticket;
 use maka_event_log::applications::intents::{CallerConfirmation, RecordedIntent};
 use maka_packages::Package;
 use maka_plugin_core::{
-    composition::{ExecutionLocation, Input, InstanceId},
+    composition::{Input, InstanceId},
     contract::{Contract, Interface, MethodMode},
     deployment::DeploymentRef,
     operation::{
@@ -63,7 +63,10 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Write,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -252,6 +255,7 @@ pub struct Binding(
     Arc<Contract>,
     Arc<str>,
     Arc<maka_plugin_core::package::PackageRef>,
+    Arc<AtomicBool>,
 );
 impl Clone for Binding {
     fn clone(&self) -> Self {
@@ -260,6 +264,7 @@ impl Clone for Binding {
             self.1.clone(),
             self.2.clone(),
             self.3.clone(),
+            self.4.clone(),
         )
     }
 }
@@ -289,6 +294,18 @@ impl Binding {
     }
     pub fn registration_epoch(&self) -> Uuid {
         self.0.registration_epoch()
+    }
+    // One-way evidence from actual admission; false never proves liveness.
+    fn retired(&self) -> bool {
+        self.4.load(Ordering::Relaxed)
+    }
+    fn mark_retired(&self) {
+        self.4.store(true, Ordering::Relaxed);
+    }
+    fn observe_lifetime(&self, error: &maka_plugin_core::Error) {
+        if matches!(error, maka_plugin_core::Error::Retired) {
+            self.mark_retired();
+        }
     }
 }
 
@@ -469,6 +486,11 @@ pub(super) enum Command {
         consumer: InstanceId,
         import: String,
         reply: oneshot::Sender<Result<CapturedImport>>,
+    },
+    CaptureUi {
+        source: DeploymentRef,
+        consumer: InstanceId,
+        reply: oneshot::Sender<Result<BTreeMap<String, Vec<Binding>>>>,
     },
     Bind {
         consumer: Activation,
@@ -780,7 +802,7 @@ impl Application {
         plan: Option<Plan>,
     ) -> Result<Self> {
         let (plan, sources) = match plan {
-            Some(plan) => prepare_plan(&input, packages, &native, persisted.is_some(), plan)?,
+            Some(plan) => prepare_plan(packages, &native, persisted.is_some(), plan)?,
             None => prepare(&input, packages, &native, persisted.is_some())?,
         };
         let scheduler = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
@@ -932,6 +954,65 @@ impl Client {
                 .await
                 .map_err(|_| "Host owner disappeared during instance startup".to_string())?;
         }
+    }
+    /// Capture all imports from one enabled UI consumer in its exact adopted source.
+    /// Source adoption and dependency initialization use the owner's notifications.
+    pub async fn capture_ui(
+        &self,
+        source: DeploymentRef,
+        consumer: InstanceId,
+    ) -> Result<BTreeMap<String, Vec<Binding>>> {
+        let mut updates = self.updates.clone();
+        loop {
+            let snapshot = updates.borrow().clone();
+            if snapshot.closing {
+                return Err("Host deployment is closing".into());
+            }
+            if let Some(desired) = &snapshot.desired {
+                if desired.state_domain != source.state_domain
+                    || desired.deployment != source.deployment
+                {
+                    return Err("foreign UI deployment source".into());
+                }
+                if desired.revision > source.revision {
+                    return Err("UI deployment source was superseded".into());
+                }
+                if desired == &source {
+                    if snapshot.initialization_failures.contains(&consumer) {
+                        return Err("UI service dependency failed to initialize".into());
+                    }
+                    if snapshot.instances.iter().any(|status| {
+                        status.activation.instance() == &consumer && status.phase == Phase::Active
+                    }) {
+                        break;
+                    }
+                    if !snapshot.starting {
+                        return Err("UI consumer is unavailable".into());
+                    }
+                }
+            }
+            if snapshot.loading.is_none()
+                && let Some(error) = snapshot.startup_error
+            {
+                return Err(error);
+            }
+            updates
+                .changed()
+                .await
+                .map_err(|_| "Host owner disappeared during UI binding capture".to_string())?;
+        }
+        let (reply, result) = oneshot::channel();
+        self.dispatch
+            .commands
+            .send(Command::CaptureUi {
+                source,
+                consumer,
+                reply,
+            })
+            .map_err(|error| error.to_string())?;
+        result
+            .await
+            .map_err(|_| "Host deployment is closed".to_string())?
     }
     pub async fn bind(&self, consumer: Activation, import: String) -> Result<Vec<Binding>> {
         let (reply, result) = oneshot::channel();
@@ -1279,9 +1360,6 @@ fn prepare(
     native: &NativeRegistry,
     durable: bool,
 ) -> Result<(Plan, BTreeMap<PackageRef, Package>)> {
-    if input.environment.location != ExecutionLocation::Host || input.launch.is_some() {
-        return Err("Host service deployment required".into());
-    }
     let mut declarations = Packages::default();
     for package in &packages {
         declarations
@@ -1298,25 +1376,21 @@ fn prepare(
     }
     let plan =
         Plan::prepare(input, &declarations, &RemoteExports::new()).map_err(|e| e.to_string())?;
-    prepare_plan(input, packages, native, durable, plan)
+    prepare_plan(packages, native, durable, plan)
 }
 
 fn prepare_plan(
-    input: &Input,
     packages: Vec<Package>,
     native: &NativeRegistry,
     durable: bool,
     plan: Plan,
 ) -> Result<(Plan, BTreeMap<PackageRef, Package>)> {
-    if input.environment.location != ExecutionLocation::Host || input.launch.is_some() {
-        return Err("Host service deployment required".into());
-    }
     let sources = packages
         .into_iter()
         .map(|p| (p.application_ref(), p))
         .collect();
     for instance in plan.instances().values().filter(|i| !i.disabled) {
-        if let Some(entry) = &instance.entry {
+        if let Some(entry) = instance.host_entry() {
             for export in entry.exports.values() {
                 let Interface::Service { methods } = &export.contract.interface else {
                     return Err("Host service executor requires service exports".into());

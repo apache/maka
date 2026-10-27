@@ -84,10 +84,7 @@ pub(crate) async fn select_committed_host(
         .read_application_metadata(request.deployment)
         .await?
         .ok_or("commit the selected Host deployment before opening its UI")?;
-    if source.source.input.environment.location
-        != maka_plugin_core::composition::ExecutionLocation::Host
-        || !source.source.remote_exports.is_empty()
-    {
+    if !source.source.remote_exports.is_empty() {
         return Err("selected deployment is not a local Host source".into());
     }
     store
@@ -235,11 +232,6 @@ async fn prepare_saved(
     if let Some(pending) = record.pending {
         let preparation: Preparation = serde_json::from_slice(&pending)?;
         let packages = launch::decode_packages(preparation.packages)?;
-        if preparation.input.environment.location
-            != maka_plugin_core::composition::ExecutionLocation::Host
-        {
-            return Err("public Host update requires a local Host source".into());
-        }
         let frozen = PreparedApplication::new(preparation.input.clone(), vec![], packages.clone())?;
         let current = if preparation.expected_revision == 0 {
             store.load_application(record.deployment).await?
@@ -807,7 +799,7 @@ mod tests {
         // setting removed by the current bundled revision.
         let mut files = current.files().clone();
         let mut manifest: Value = serde_json::from_slice(&files["maka.extension.json"]).unwrap();
-        manifest["application"]["entries"]["host"]["configuration"]["properties"]["legacySetting"] =
+        manifest["application"]["host"]["configuration"]["properties"]["legacySetting"] =
             json!({"type":"boolean"});
         files.insert(
             "maka.extension.json".into(),
@@ -942,8 +934,8 @@ mod tests {
                 .application
                 .as_ref()
                 .unwrap()
-                .entries
-                .contains_key(&maka_plugin_core::package::EntryTarget::Host)
+                .host
+                .is_some()
         }));
         let revision = original.source().reference.revision;
         let (reopened, _) = prepare(&store, Roots::Saved).await.unwrap();

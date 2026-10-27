@@ -345,10 +345,6 @@ pub(crate) async fn initialize_control(
                 "application_intents",
                 "SELECT EXISTS(SELECT 1 FROM application_intents)",
             ),
-            (
-                "application_ui_checkpoints",
-                "SELECT EXISTS(SELECT 1 FROM application_ui_checkpoints)",
-            ),
         ] {
             let exists: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=? AND type='table')",

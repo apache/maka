@@ -19,7 +19,7 @@
 
 //! Structured composition editing. Products define their own extension contracts.
 use super::*;
-use crate::composition::Target;
+use crate::composition::{PackageUse, Target};
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -69,6 +69,7 @@ pub struct BindingCandidatesPage {
 pub struct PackageSettingsRead {
     pub source: DeploymentRef,
     pub package: PackageRef,
+    pub use_package: PackageUse,
     pub path: Vec<String>,
     pub after: Option<String>,
     pub changes: Vec<SettingChange>,
@@ -103,6 +104,8 @@ pub enum CompositionChange {
     Insert {
         name: String,
         package: PackageRef,
+        #[serde(rename = "usePackage")]
+        use_package: PackageUse,
         settings: Vec<SettingChange>,
         bindings: BTreeMap<String, Vec<Target>>,
     },

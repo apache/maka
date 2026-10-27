@@ -28,14 +28,12 @@ export default {
     'zh-CN': { displayName: 'ACP 助手', description: '通过 Agent Client Protocol 运行助手。' },
   },
   application: {
-    entries: {
-      host: {
-        ...native(sdk.nativeImplementations.acpExecutor),
-        imports: {
-          processes: one(sdk.contracts.protocolProcesses),
-          files: one(sdk.contracts.workspaceFiles),
-          forms: one(sdk.contracts.forms),
-        },
+    host: {
+      ...native(sdk.nativeImplementations.acpExecutor),
+      imports: {
+        processes: one(sdk.contracts.protocolProcesses),
+        files: one(sdk.contracts.workspaceFiles),
+        forms: one(sdk.contracts.forms),
       },
     },
   },

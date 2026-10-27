@@ -726,7 +726,8 @@ fn update(cx: *mut JsContext, gs: JsValue, last: JsValue, e: JsValue) {
     }
     set(cx, gs, c"numberActiveTouches", number(n as f64));
     if n == ln {
-        let dt = (time - lt).max(1.0);
+        // Timestamps are milliseconds, velocities per second.
+        let dt = (time - lt).max(1.0) / 1000.0;
         set(cx, gs, c"dx", number(get_number(cx, gs, c"dx") + x - lx));
         set(cx, gs, c"dy", number(get_number(cx, gs, c"dy") + y - ly));
         // Smoothed over a few samples.
@@ -939,7 +940,7 @@ export interface ResponderGestureState {
   /** Distance moved since then. */
   dx: number;
   dy: number;
-  /** Velocity (points per millisecond). */
+  /** Velocity (points per second). */
   vx: number;
   vy: number;
   numberActiveTouches: number;
@@ -1037,7 +1038,7 @@ mod tests {
             const pan = PanResponder.create({
                 onStartShouldSetPanResponder: () => true,
                 onPanResponderGrant: () => log.push("grant"),
-                onPanResponderMove: (e, g) => log.push(`move ${g.dx},${g.dy}`),
+                onPanResponderMove: (e, g) => log.push(`move ${g.dx},${g.dy} velocity ${g.vx},${g.vy}`),
                 onPanResponderRelease: (e, g) => log.push(`release ${g.dx}`),
             });
             spread(inner, { ...pan.panHandlers, onTouchStart: () => log.push("inner bubble") });
@@ -1089,7 +1090,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             log,
-            "outer capture|inner bubble|outer bubble|grant|move 20,5|release 20"
+            "outer capture|inner bubble|outer bubble|grant|move 20,5 velocity 875,218.75|release 20"
         );
         // The grant blocks native scroll views (the default), the release
         // lets go.

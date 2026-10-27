@@ -34,7 +34,6 @@ serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 maka-computer-native.workspace = true
-maka-ui-authoring.workspace = true
 maka-acp-native.workspace = true
 maka-agent-native.workspace = true
 maka-files-native.workspace = true

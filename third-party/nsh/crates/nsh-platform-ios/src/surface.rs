@@ -269,7 +269,7 @@ impl RootView {
             options,
             on_error: Arc::new(MainThreadBound::new(RefCell::new(None), mtm)),
             on_hot_failed: Arc::new(MainThreadBound::new(RefCell::new(None), mtm)),
-            keyboard: Cell::new((0.0, 0.25)),
+            keyboard: Cell::new((0.0, 250.0)),
             environment: Cell::new(None),
             host: Cell::default(),
             host_tokens: RefCell::new(None),
@@ -498,7 +498,10 @@ impl RootView {
             }
             _ => 0.0,
         };
-        self.ivars().keyboard.set((height as f32, duration as f32));
+        // UIKit gives seconds; the environment holds milliseconds.
+        self.ivars()
+            .keyboard
+            .set((height as f32, (duration * 1000.0) as f32));
         self.publish_environment();
         let Some(mounter) = self
             .ivars()
@@ -557,6 +560,7 @@ impl RootView {
             network: Some(crate::net::network()),
             websocket: None,
             filesystem: None,
+            chunk_loader: None,
             assets: Some(Arc::new(crate::image::AssetReader(
                 self.ivars().options.asset_base.clone(),
             ))),

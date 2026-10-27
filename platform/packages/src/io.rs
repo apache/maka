@@ -201,7 +201,7 @@ mod tests {
         fs::create_dir(&package_root).unwrap();
         fs::write(
             package_root.join("maka.extension.json"),
-            br#"{"schemaVersion":1,"id":"example","application":{"entries":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}}}"#,
+            br#"{"schemaVersion":1,"id":"example","application":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}}"#,
         )
         .unwrap();
         fs::write(package_root.join("index.mjs"), b"export default {}").unwrap();
@@ -277,7 +277,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("package");
         fs::create_dir(&root).unwrap();
-        let mut files = BTreeMap::from([("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"wide.package","application":{"entries":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}}}"#.to_vec())]);
+        let mut files = BTreeMap::from([("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"wide.package","application":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}}"#.to_vec())]);
         for index in 0..96 {
             files.insert(
                 format!("dir-{index:03}/original.bin"),
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn published_package_survives_parent_sync_failure_as_unknown_without_overwrite() {
         let package = Package::new(BTreeMap::from([
-            ("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"example","application":{"entries":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}}}"#.to_vec()),
+            ("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"example","application":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}}"#.to_vec()),
             ("index.mjs".into(), b"export default {}".to_vec()),
         ])).unwrap();
         let directory = tempfile::tempdir().unwrap();

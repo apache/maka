@@ -25,10 +25,9 @@ NSH 源码位于 [`third-party/nsh`](../../../third-party/nsh/SOURCE.md)。Cargo
 
 ## 启动
 
-在仓库根目录构建产品包，再通过 Maka CLI 启动终端界面：
+在仓库根目录通过 Maka CLI 启动终端界面。Cargo 会构建并嵌入插件和工作台：
 
 ```sh
-npm run build --workspace @maka-agent/product
 cargo run -p maka-cli
 ```
 

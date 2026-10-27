@@ -21,7 +21,7 @@ use serde::Serialize;
 use serde_json::ser::Formatter;
 use std::io;
 
-/// Serialize validated typed interaction records with compact ECMAScript numbers.
+/// Serialize interaction records and JSON values with compact ECMAScript numbers.
 /// Record equality is semantic; object key order is not a canonical byte contract.
 pub fn stringify(value: &impl Serialize) -> Result<String, serde_json::Error> {
     struct JsFormatter;
@@ -47,9 +47,24 @@ pub fn stringify(value: &impl Serialize) -> Result<String, serde_json::Error> {
         ) -> io::Result<()> {
             self.write_f64(writer, value as f64)
         }
+        fn write_number_str<W: ?Sized + io::Write>(
+            &mut self,
+            writer: &mut W,
+            value: &str,
+        ) -> io::Result<()> {
+            let number = value
+                .parse::<f64>()
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if !number.is_finite() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ECMAScript numbers must be finite",
+                ));
+            }
+            self.write_f64(writer, number)
+        }
     }
     let mut bytes = Vec::new();
-    // Value's arbitrary-precision numbers bypass the typed formatter callbacks.
     value.serialize(&mut serde_json::Serializer::with_formatter(
         &mut bytes,
         JsFormatter,
@@ -84,6 +99,9 @@ mod tests {
             (1e20, "100000000000000000000"),
             (1e21, "1e+21"),
         ];
+        for (number, expected) in numbers {
+            assert_eq!(stringify(&serde_json::json!(number)).unwrap(), expected);
+        }
         let fields = numbers
             .iter()
             .enumerate()

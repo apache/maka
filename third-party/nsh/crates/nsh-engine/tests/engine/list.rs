@@ -218,6 +218,7 @@ fn config(app: &str) -> (EngineConfig, std::path::PathBuf) {
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment: Default::default(),
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),

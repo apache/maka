@@ -17,11 +17,10 @@
  * under the License.
  */
 
-//! Application definitions and caller journals live in control; checkpoints use data writers.
+//! Application definitions and caller journals live in the control database.
 use super::*;
 use crate::applications::{
     DeploymentChanges, LoadedDeployment, PreparedApplication, SourceSnapshot,
-    checkpoints::Checkpoints,
     intents::{CallerIntent, RecordedIntent},
     launch::Launch,
 };
@@ -150,27 +149,6 @@ impl RootStore {
     pub fn check_application(&self, loaded: &LoadedDeployment) -> Result<(), StoreError> {
         self.require_open()?;
         loaded.check_store(&self.control)
-    }
-    pub async fn ui_checkpoints(
-        &self,
-        source: &DeploymentRef,
-        instance: &InstanceId,
-    ) -> Result<Checkpoints, StoreError> {
-        let loaded = self
-            .load_application_at(source)
-            .await?
-            .ok_or(StoreError::SessionNotFound)?;
-        self.ui_checkpoints_from(&loaded.snapshot(), instance)
-    }
-    pub fn ui_checkpoints_from(
-        &self,
-        source: &SourceSnapshot,
-        instance: &InstanceId,
-    ) -> Result<Checkpoints, StoreError> {
-        self.require_open()?;
-        self.partitions[partition_for(b"application", &source.reference().deployment.to_string())]
-            .ui_checkpoints_from(source, instance)
-            .map(|capability| capability.with_shutdown(self.gates.cancellation()))
     }
     fn caller_journal(&self) -> Result<&EventLog, StoreError> {
         self.require_open()?;
