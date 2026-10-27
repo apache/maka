@@ -76,7 +76,9 @@ export function MessageRow({
     <Each of={[item()]} key={rowKey}>
       {(row) => {
         if (row().role === 'compaction')
-          return <CompactionDivider durationMs={() => row().compaction!.durationMs} />;
+          return (
+            <CompactionDivider state="completed" durationMs={() => row().compaction!.durationMs} />
+          );
         const expanded = viewState?.expanded ?? signal(false),
           sourceMode = viewState?.sourceMode ?? signal(false);
         const ownsRow = (action: MessageRowToggle) => {

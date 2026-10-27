@@ -194,7 +194,7 @@ async fn completed(load: &Load<'_>, session: &str, invocation: &str) {
     assert_eq!(execution["execution"]["state"], "completed");
     let observed: Observation =
         serde_json::from_value(load.query("observe", json!({"sessionId":session})).await).unwrap();
-    assert!(!observed.compacting);
+    assert!(observed.compacting.is_none());
     assert!(matches!(observed.session.activity, SessionActivity::Idle));
 }
 

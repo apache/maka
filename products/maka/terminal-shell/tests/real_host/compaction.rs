@@ -18,6 +18,17 @@
  */
 
 use super::*;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+fn duration_seconds(label: &str) -> Option<f64> {
+    let (minutes, seconds) = label.split_once("m ").unwrap_or(("0", label));
+    Some(minutes.parse::<f64>().ok()? * 60.0 + seconds.strip_suffix('s')?.parse::<f64>().ok()?)
+}
+
+fn compacting_seconds(screen: &str) -> Option<f64> {
+    let (_, duration) = screen.split_once("Compacting context… (")?;
+    duration_seconds(duration.split_once(')')?.0)
+}
 
 async fn open_compact(view: &mut AppView) {
     shortcut(view, 'p');
@@ -32,121 +43,67 @@ async fn open_compact(view: &mut AppView) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn manual_compaction_edits_once_and_retains_completed_divider_after_reopen() {
+async fn manual_compaction_timer_keeps_its_start_after_reopen() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let mut fixture = Fixture::open().await;
         fixture.seed_history(1).await;
         let client = fixture.client().await;
-        let preferences = client
-            .query("settings", "assistantPreferences", json!({}))
-            .await
-            .unwrap();
-        let prompt = client
-            .query(
-                "agent",
-                "compactionPrompt",
-                json!({"sessionId": fixture.session}),
-            )
-            .await
-            .unwrap();
         let (mut view, bindings) =
             fixture.view(fixture.client().await, Some(fixture.session.clone()));
         wait_editable_composer(&mut view).await;
         open_compact(&mut view).await;
-        assert_eq!(
-            view.surface().input_context().unwrap().text.as_deref(),
-            prompt["compactionPrompt"].as_str()
-        );
-        evidence("compaction-prompt-dialog", &view.snapshot());
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        wait_editable_composer(&mut view).await;
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
-        open_compact(&mut view).await;
-        shortcut(&mut view, 'a');
-        view.handle_event(Event::Paste(
-            "Keep the decisions and paths. ONE_TIME_COMPACTION_PROMPT".into(),
-        ));
-        wait_view_state(&mut view, |view, _| {
-            view.surface().input_context().is_some_and(|input| {
-                input
-                    .text
-                    .as_deref()
-                    .is_some_and(|text| text.contains("ONE_TIME_COMPACTION_PROMPT"))
-            })
-        })
-        .await;
         support::click_button(&mut view, "Compact now").await;
         let running = wait_view(&mut view, |screen| {
-            screen.contains("Compacting context…") && !screen.contains("One-time compaction prompt")
+            compacting_seconds(screen).is_some() && !screen.contains("One-time compaction prompt")
         })
         .await;
-        evidence("compaction-manual-running-divider", &running);
-        let (mut reopened, reopened_bindings) = fixture.view(fixture.client().await, Some(fixture.session.clone()));
-        wait_view(&mut reopened, |screen| screen.contains("Compacting context…")).await;
+        let initial_duration = compacting_seconds(&running).unwrap();
+        let advancing = wait_view(&mut view, |screen| {
+            compacting_seconds(screen).is_some_and(|seconds| seconds >= initial_duration + 1.0)
+        })
+        .await;
+        let before_reopen = compacting_seconds(&advancing).unwrap();
+        evidence("compaction-manual-running-divider", &advancing);
+        let original = client
+            .query("agent", "observe", json!({"sessionId": fixture.session}))
+            .await
+            .unwrap()["compacting"]
+            .clone();
+        let (mut reopened, reopened_bindings) =
+            fixture.view(fixture.client().await, Some(fixture.session.clone()));
+        let reopened_screen =
+            wait_view(&mut reopened, |screen| compacting_seconds(screen).is_some()).await;
+        assert!(
+            compacting_seconds(&reopened_screen).unwrap() >= before_reopen,
+            "reopening reset the compaction duration:\n{reopened_screen}"
+        );
+        assert_eq!(
+            client
+                .query("agent", "observe", json!({"sessionId": fixture.session}))
+                .await
+                .unwrap()["compacting"],
+            original
+        );
         drop(reopened);
         reopened_bindings.close().await.unwrap();
         let mut request = fixture.next_request().await;
-        assert!(
-            request
-                .body
-                .to_string()
-                .contains("ONE_TIME_COMPACTION_PROMPT"),
-            "{}",
-            request.body
-        );
         request
             .delta("Compacted context for the next request.")
             .await;
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
-        let completed = wait_view(&mut view, |screen| {
-            screen.contains("Context compacted (") && !screen.contains("Compacting context…")
-        })
-        .await;
-        let observed = client.query("agent", "observe", json!({"sessionId": fixture.session})).await.unwrap();
-        let history = client.query("agent", "history", json!({"sessionId": fixture.session, "through": observed["through"], "position": {"kind": "tail"}, "view": "conversation"})).await.unwrap();
-        let duration = history["chunks"].as_array().unwrap().iter().find(|chunk| chunk["role"] == "compaction").unwrap()["compaction"]["durationMs"].as_u64().unwrap();
-        let completed_label = format!("Context compacted ({:.1}s)", duration as f64 / 1000.0);
-        assert!(completed.contains(&completed_label), "{completed}");
-        evidence("compaction-completed-divider", &completed);
-        assert!(!completed.contains("Compacted context for the next request."));
-        assert_eq!(
-            client
-                .query("settings", "assistantPreferences", json!({}))
-                .await
-                .unwrap(),
-            preferences
-        );
-        drop(view);
-        bindings.close().await.unwrap();
-        let (mut view, bindings) =
-            fixture.view(fixture.client().await, Some(fixture.session.clone()));
-        wait_view(&mut view, |screen| screen.contains(&completed_label)).await;
-        open_compact(&mut view).await;
-        assert_eq!(
-            view.surface().input_context().unwrap().text.as_deref(),
-            prompt["compactionPrompt"].as_str()
-        );
-        support::click_button(&mut view, "Cancel compaction").await;
-        wait_editable_composer(&mut view).await;
-        view.handle_event(Event::Paste("/compact Keep exact paths. INLINE_COMPACT_PROMPT".into()));
-        wait_view_state(&mut view, |view, _| view.surface().input_context().is_some_and(|input| input.text.as_deref() == Some("/compact Keep exact paths. INLINE_COMPACT_PROMPT"))).await;
-        view.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-        wait_focused_input(&mut view, "One-time compaction prompt").await;
-        assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("Keep exact paths. INLINE_COMPACT_PROMPT"));
-        support::click_button(&mut view, "Cancel compaction").await;
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+        wait_view(&mut view, |screen| !screen.contains("Compacting context…")).await;
         drop(view);
         bindings.close().await.unwrap();
         client.close().await.unwrap();
         fixture.finish().await;
     })
     .await
-    .expect("manual compaction UI did not preserve the one-time prompt and durable divider");
+    .expect("manual compaction UI did not preserve the elapsed duration");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn automatic_compaction_displays_only_the_completed_divider() {
+async fn automatic_compaction_shows_its_background_duration_only_when_the_turn_must_wait() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let mut fixture = Fixture::files("write").await;
         let client = fixture.client().await;
@@ -172,25 +129,47 @@ async fn automatic_compaction_displays_only_the_completed_divider() {
         let first = fixture.next_request().await;
         let second = fixture.next_request().await;
         let (mut main, mut summary) = if first.body.to_string().contains("AUTO_COMPACTION_UI_ACTIVE") { (first, second) } else { (second, first) };
+        let background = Instant::now();
+        let background_wall = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
         let observed = client.query("agent", "observe", json!({"sessionId": fixture.session})).await.unwrap();
-        assert!(!observed["compacting"].as_bool().unwrap_or(false));
+        assert!(observed["compacting"].is_null(), "{observed}");
         main.delta("Automatic compaction runs alongside this response.").await;
+        main.thinking("Still working while the background summary is unfinished.").await;
         let running = wait_view(&mut view, |screen| screen.contains("Automatic compaction runs alongside this response.")).await;
         assert!(!running.contains("Compacting context…"));
         assert!(!running.contains("Context compacted ("));
+
+        let activity_duration = |view: &AppView| {
+            view.accessibility_snapshot().iter().filter_map(|node| duration_seconds(&node.label)).fold(0.0, f64::max)
+        };
+        let initial_activity = activity_duration(&view);
+        // The live turn advances while the provider still holds the summary.
+        let background_screen = wait_view_state(&mut view, |view, _| activity_duration(view) >= initial_activity + 2.0).await;
+        assert!(!background_screen.contains("Compacting context…"));
+        main.tool("WorkspaceDocument", json!({"path": "auto-note.txt", "content": "written"})).await;
+        fixture.next_request().await.context_overflow().await;
+        let before_wait = background.elapsed().as_secs();
+        let observed = loop {
+            let observed = client.query("agent", "observe", json!({"sessionId": fixture.session})).await.unwrap();
+            if observed["compacting"].is_object() { break observed; }
+            assert!(!observed["run"].is_null(), "the turn ended instead of waiting for its background summary: {observed}");
+            tokio::task::yield_now().await;
+        };
+        let started_at = observed["compacting"]["startedAt"].as_u64().expect("the waiting summary must expose its original start");
+        assert!(u128::from(started_at) <= background_wall, "waiting replaced the original compaction start: {observed}");
+        let waiting = wait_view(&mut view, |screen| compacting_seconds(screen).is_some()).await;
+        assert!(compacting_seconds(&waiting).unwrap() >= before_wait as f64, "the waiting divider omitted the background duration ({before_wait}s):\n{waiting}");
+        evidence("compaction-automatic-waiting-divider", &waiting);
         summary.delta("Preserved history for the next provider request.").await;
         summary.finish().await;
-        main.tool("WorkspaceDocument", json!({"path": "auto-note.txt", "content": "written"})).await;
         let mut continuation = fixture.next_request().await;
         continuation.delta("AUTO_COMPACTION_UI_FINISHED").await;
         continuation.finish().await;
         fixture.idle(&client, &fixture.session).await;
-        let completed = wait_view(&mut view, |screen| screen.contains("Context compacted (") && screen.contains("AUTO_COMPACTION_UI_FINISHED")).await;
-        assert!(!completed.contains("Compacting context…"));
-        evidence("compaction-automatic-completed-divider", &completed);
+        wait_view(&mut view, |screen| !screen.contains("Compacting context…")).await;
         drop(view);
         bindings.close().await.unwrap();
         client.close().await.unwrap();
         fixture.finish().await;
-    }).await.expect("automatic compaction did not display its completed divider");
+    }).await.expect("automatic compaction did not display its background duration while waiting");
 }

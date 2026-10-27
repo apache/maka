@@ -126,27 +126,78 @@ pub(super) async fn read(
     Ok(result)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompactionProgress {
+    pub id: String,
+    pub started_at: u64,
+}
+
 /// Display status from the same committed snapshot as the session observation.
 pub(super) async fn compacting(
     connection: &mut sqlx::SqliteConnection,
     root: Option<&TurnBoundary>,
-) -> Result<bool, StoreError> {
+) -> Result<Option<CompactionProgress>, StoreError> {
     let Some(root) = root else {
-        return Ok(false);
+        return Ok(None);
     };
     if matches!(root.state, InvocationState::Ended { .. }) {
-        return Ok(false);
+        return Ok(None);
     }
-    Ok(sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events request
-         WHERE request.invocation_id = ?1 AND request.kind = 'model_requested'
-         AND json_extract(request.event_json, '$.fact.purpose') = 'summary'
-         AND NOT EXISTS(SELECT 1 FROM runtime_events done
-             WHERE done.invocation_id = request.invocation_id
-             AND done.operation_id = request.operation_id
-             AND done.kind IN ('model_completed', 'model_interrupted')))",
-    )
-    .bind(&root.invocation.invocation_id)
-    .fetch_one(connection)
-    .await?)
+    let progress: Option<(String, i64)> = if matches!(
+        root.input,
+        maka_agent_facts::input::InvocationInput::ContextCompact { .. }
+    ) {
+        sqlx::query_as(
+            "SELECT opening.event_id, catalog_time(json_extract(opening.event_json, '$.recorded_at'))
+             FROM runtime_events opening WHERE opening.event_id = ?
+             AND NOT EXISTS (SELECT 1 FROM runtime_events checkpoint
+                 WHERE checkpoint.invocation_id = opening.invocation_id
+                 AND checkpoint.kind = 'context_checkpoint_recorded')",
+        )
+        .bind(&root.opening_event_id)
+        .fetch_optional(connection)
+        .await?
+    } else {
+        sqlx::query_as(
+            "WITH waiting AS MATERIALIZED (
+                 SELECT sequence FROM event_log INDEXED BY context_compaction_waiting
+                 WHERE invocation_id = ?1 AND kind = 'context_compaction_waiting'
+                 AND event_json IS NOT NULL
+                 ORDER BY sequence DESC LIMIT 1
+             ), latest AS MATERIALIZED (
+                 SELECT sequence, event_json FROM event_log INDEXED BY context_summary_sequence
+                 WHERE invocation_id = ?1 AND kind = 'model_requested'
+                 AND json_extract(event_json, '$.fact.purpose') = 'summary'
+                 ORDER BY sequence DESC LIMIT 1
+             )
+             SELECT first.event_id, catalog_time(json_extract(first.event_json, '$.recorded_at'))
+             FROM waiting, latest JOIN event_log first INDEXED BY context_summary_round
+               ON first.invocation_id = ?1 AND first.kind = 'model_requested'
+               AND json_extract(first.event_json, '$.fact.purpose') = 'summary'
+               AND json_extract(first.event_json, '$.fact.source_high_water') = json_extract(latest.event_json, '$.fact.source_high_water')
+               AND json_extract(first.event_json, '$.fact.source_digest') = json_extract(latest.event_json, '$.fact.source_digest')
+               AND first.sequence <= latest.sequence
+             WHERE first.event_json IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM runtime_events boundary
+                   WHERE boundary.invocation_id = ?1 AND boundary.sequence > waiting.sequence
+                   AND (boundary.kind = 'context_checkpoint_recorded'
+                       OR (boundary.kind = 'model_requested' AND json_extract(boundary.event_json, '$.fact.purpose') = 'main')
+                       OR (boundary.kind = 'model_interrupted' AND json_extract(boundary.event_json, '$.fact.status') = 'cancelled')))
+               AND NOT EXISTS (SELECT 1 FROM runtime_events boundary
+                   WHERE boundary.invocation_id = ?1 AND boundary.sequence > first.sequence
+                   AND boundary.kind = 'context_checkpoint_recorded')
+             ORDER BY first.sequence LIMIT 1",
+        )
+        .bind(&root.invocation.invocation_id)
+        .fetch_optional(connection)
+        .await?
+    };
+    progress
+        .map(|(id, started)| {
+            Ok(CompactionProgress {
+                id,
+                started_at: crate::sequence_number(started)?,
+            })
+        })
+        .transpose()
 }

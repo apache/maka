@@ -1054,6 +1054,12 @@ impl ModelRequest {
         self.finish_with_reason("stop").await;
     }
 
+    pub async fn context_overflow(mut self) {
+        self.packet(json!({"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"input rejected"}})).await;
+        drop(self.response);
+        self.completed.notified().await;
+    }
+
     async fn finish_with_reason(mut self, reason: &str) {
         self.packet(json!({"id":"nsh-real-model","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}})).await;
         let _ = self

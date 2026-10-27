@@ -720,7 +720,7 @@ async fn verify(
         observed.session.activity,
         contract::SessionActivity::Idle
     ));
-    assert!(!observed.compacting);
+    assert!(observed.compacting.is_none());
     json!({"tool_dispatches":dispatched.len(),"tool_settlements":settled.len(),"raw_result_json_bytes":raw_bytes,
         "business_result_json_bytes":projected_bytes,"original_payload_bytes":case.calls*case.bytes,
         "maintenance_facts":maintenance,"model_requests":purposes.len(),"main_requests":main_requests,

@@ -9508,7 +9508,7 @@ export interface AgentDelivery {
 }
 export interface AgentObservation {
   session: AgentSession;
-  compacting?: boolean;
+  compacting: AgentCompactionProgress | null;
   rememberedBackend?: AgentBackendPreference | null;
   metrics?: AgentSessionMetrics | null;
   through: number;
@@ -9518,6 +9518,13 @@ export interface AgentObservation {
    * Replay starts for active tool display, read at the same fence as the run.
    */
   toolSeeds: AgentToolSeed[];
+}
+export interface AgentCompactionProgress {
+  id: string;
+  /**
+   * Original compaction start in milliseconds since the Unix epoch.
+   */
+  startedAt: number;
 }
 /**
  * Display-only readings from the latest completed main-model request.

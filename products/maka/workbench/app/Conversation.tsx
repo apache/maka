@@ -92,6 +92,7 @@ import type {
   OperationReply,
   AgentPendingInteractions,
   AgentQueue,
+  AgentCompactionProgress,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   createAttachmentDraft,
@@ -193,7 +194,7 @@ export function Conversation(props: ConversationProps) {
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
-  const compacting = signal(false);
+  const compacting = signal<AgentCompactionProgress | null>(null);
   const stoppingRun = signal<string | null>(null);
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
@@ -354,18 +355,15 @@ export function Conversation(props: ConversationProps) {
     return false;
   };
   type DisplayEntry =
-    | { kind: 'compacting'; key: string }
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
-    let compacted = false;
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
       const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
-      if (row?.role === 'compaction' && row.turnId === runTurn()) compacted = true;
       const turn = turnId ? projection().turns.get(turnId) : undefined;
       if (
         turn &&
@@ -396,8 +394,6 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'row', key: entry.key, rowId: entry.rowId });
       }
     }
-    if (compacting() && invocation() && !compacted && atHistoryTail() && reading() === 'chat')
-      result.push({ kind: 'compacting', key: `compacting/${invocation()}` });
     return result;
   });
   let previouslyVisible = new Set<string>();
@@ -721,7 +717,7 @@ export function Conversation(props: ConversationProps) {
     if (observed.through >= runThrough) {
       metrics.set(observed.metrics ?? null);
       run.set(observed.run?.state ?? 'idle');
-      compacting.set(observed.compacting ?? false);
+      compacting.set(observed.compacting);
       invocation.set(observed.run?.invocationId ?? null);
       runTurn.set(observed.run?.turnId ?? null);
       if (!observed.run) stoppingRun.set(null);
@@ -952,7 +948,7 @@ export function Conversation(props: ConversationProps) {
           if (event.sequence > runThrough) {
             run.set(fact.failed ? 'failed' : 'idle');
             invocation.set(null);
-            compacting.set(false);
+            compacting.set(null);
             runTurn.set(null);
             stoppingRun.set(null);
             void observe().catch(report);
@@ -967,7 +963,10 @@ export function Conversation(props: ConversationProps) {
         case 'provider_tool_result':
         case 'executor_tool_start':
         case 'executor_tool_result':
+          changed = true;
+          break;
         case 'transcript_changed':
+          void observe().catch(report);
           changed = true;
           break;
       }
@@ -2217,7 +2216,6 @@ export function Conversation(props: ConversationProps) {
                       viewPosition: 0,
                       animated: false,
                     });
-                  if (initial.kind === 'compacting') return <CompactionDivider />;
                   if (initial.kind === 'summary') {
                     const first = projection().turns.get(initial.turnId);
                     if (!first) return <View />;
@@ -2331,6 +2329,11 @@ export function Conversation(props: ConversationProps) {
             activate={inputAction(ownHandle.jumpLatest, null)}
           />
         </View>
+        <Each of={compacting() === null ? [] : [compacting()!]} key={(progress) => progress.id}>
+          {(progress) => (
+            <CompactionDivider state="running" startedAt={() => progress().startedAt} />
+          )}
+        </Each>
       </View>
     </View>
   );

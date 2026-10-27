@@ -1057,6 +1057,9 @@ CREATE INDEX context_summary_round ON event_log(invocation_id,
 CREATE INDEX context_summary_sequence ON event_log(invocation_id,sequence)
     WHERE kind='model_requested' AND json_extract(event_json,'$.fact.purpose')='summary';
 
+CREATE INDEX context_compaction_waiting ON event_log(invocation_id,sequence)
+    WHERE kind='context_compaction_waiting';
+
 CREATE INDEX tool_call_identity ON event_log(invocation_id,
     json_extract(event_json,'$.fact.call.tool_call_id'),
     CASE WHEN json_extract(event_json,'$.fact.call.origin.kind')='provider'

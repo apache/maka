@@ -263,7 +263,7 @@ SELECT json_object(
         'run_id', json_extract(event_json, '$.invocation.run_id'),
         'invocation_id', invocation_id),
     'fact', json(CASE
-        WHEN kind IN ('model_requested', 'context_checkpoint_recorded') OR
+        WHEN kind IN ('model_requested', 'context_checkpoint_recorded', 'context_compaction_waiting') OR
              (kind IN ('model_completed', 'model_interrupted') AND EXISTS (
                 SELECT 1 FROM runtime_events request WHERE request.invocation_id = runtime_events.invocation_id
                 AND request.kind = 'model_requested' AND request.operation_id = runtime_events.operation_id
@@ -343,7 +343,7 @@ SELECT json_object(
 FROM runtime_events
 WHERE sequence > ?2 AND sequence <= ?3
 AND (event_json IS NOT NULL AND event_session=?1)
-AND (kind IN ('invocation_ended', 'model_requested', 'model_completed', 'model_interrupted', 'context_checkpoint_recorded') OR NOT EXISTS (
+AND (kind IN ('invocation_ended', 'model_requested', 'model_completed', 'model_interrupted', 'context_checkpoint_recorded', 'context_compaction_waiting') OR NOT EXISTS (
     SELECT 1 FROM runtime_events opening
     WHERE opening.invocation_id = runtime_events.invocation_id
       AND opening.kind = 'invocation_opened'
@@ -363,9 +363,8 @@ AND (kind != 'model_observed' OR json_extract(event_json, '$.fact.event.kind') !
          AND json_extract(call.event_json,'$.fact.event.kind')='tool_call'
          AND json_extract(call.event_json,'$.fact.event.data.id')=json_extract(runtime_events.event_json,'$.fact.event.data.id')
          AND json_extract(call.event_json,'$.fact.event.data.provider_executed')))
-AND (kind IN ('invocation_opened', 'message_steered', 'invocation_ended', 'model_completed', 'model_interrupted',
-             'tool_dispatched', 'tool_rejected', 'tool_settled', 'executor_started', 'executor_observed', 'executor_completed', 'context_checkpoint_recorded')
-     OR (kind = 'model_requested' AND json_extract(event_json, '$.fact.purpose') = 'summary')
+AND (kind IN ('invocation_opened', 'message_steered', 'invocation_ended', 'model_requested', 'model_completed', 'model_interrupted',
+             'tool_dispatched', 'tool_rejected', 'tool_settled', 'executor_started', 'executor_observed', 'executor_completed', 'context_checkpoint_recorded', 'context_compaction_waiting')
      OR (kind = 'model_observed'
          AND json_extract(event_json, '$.fact.event.kind') IN
              ('part_started', 'part_delta', 'part_finished',
