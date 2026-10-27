@@ -42,8 +42,7 @@ const modules = {
   './connectionLogin.ts':
     'export const createConnectionLogin = (_, owner) => { globalThis.__terminalSettingsFixtures.login = owner; return {}; };',
 };
-const settingsUrl = new URL('../../products/maka/workbench/app/settings.ts', import.meta.url)
-  .href;
+const settingsUrl = new URL('../../products/maka/workbench/app/settings.ts', import.meta.url).href;
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     if (context.parentURL === settingsUrl && specifier in modules)
