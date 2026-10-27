@@ -896,6 +896,33 @@ mod tests {
     }
 
     #[test]
+    fn retained_terminal_workbench_bundles_with_current_base_exports() {
+        // Exercise the retained example's real import/asset graph. This is a
+        // bundler smoke test, not a substitute for TypeScript or mounted UI tests.
+        let bundled = bundle(&BundleOptions {
+            entry: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/terminal-workbench/App.tsx"),
+            minify: false,
+            split: false,
+            ui_sets: vec![nsh_base::registry().into()],
+        })
+        .unwrap();
+        assert!(bundled.code.contains("Service fleet"));
+        assert!(
+            bundled
+                .watch_files
+                .iter()
+                .any(|path| path.ends_with("ui.tsx"))
+        );
+        assert!(
+            bundled
+                .watch_files
+                .iter()
+                .any(|path| path.ends_with("inspectors.tsx"))
+        );
+    }
+
+    #[test]
     fn hot_bundles_keep_optional_native_imports_deferred() {
         let dir = app("hot-native-imports");
         std::fs::write(
