@@ -256,6 +256,15 @@ pub fn os() -> Os {
         .with_untracked(|e| e.os)
 }
 
+/// [`os`] where an engine runs (its thread, while it runs Rust code),
+/// else `None`: for code that also runs outside an engine (a unit test of
+/// a component's model).
+pub fn try_os() -> Option<Os> {
+    super::reactive::try_with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .flatten()
+        .map(|env| env.with_untracked(|e| e.os))
+}
+
 /// The OS version: major and minor on iOS, the API level and 0 on Android
 /// (TS: `platform.version`).
 pub fn os_version() -> (u16, u16) {

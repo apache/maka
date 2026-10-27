@@ -193,7 +193,7 @@
     "crates/nsh-base/src/resizable/panel.rs": "0f8dbe6aa030c7a48dc843419fcee12e93c02642308817357ac347e7c7f9505b",
     "crates/nsh-base/src/resizable/resize_handle.rs": "927fd0e68c76b9fba79496a939e163ffd409e64222c54486214ee1c27df4a4a2",
     "crates/nsh-base/src/resizable/state.rs": "874194e34f301181eeffb2d88884fad8000878dba733255da02aee841aa50b8a",
-    "crates/nsh-base/src/rich_editor/commands/base.rs": "8facd16ffe99c31ac910e950bac8c19d36d47e54ecc0cd0aa3d9be1d18d0d233",
+    "crates/nsh-base/src/rich_editor/commands/base.rs": "268e2d4144ce181977a9b1aabdaf6464dde24ae8a2eca092587c24524f567f86",
     "crates/nsh-base/src/rich_editor/commands/helpers.rs": "d12274f35990551fc451a67ea92c6f115fe45c19b616ee0b1ab31283d2dfdb74",
     "crates/nsh-base/src/rich_editor/commands/list.rs": "bb8d38ddfb24cffac44a77eb155e343a596cb6b147a9f0a47c8dda6dc30095b9",
     "crates/nsh-base/src/rich_editor/commands/mod.rs": "3da66bcf637c773db4a44692c1b9d38e33132742652b9462f97223811a243ea4",
@@ -202,7 +202,7 @@
     "crates/nsh-base/src/rich_editor/extensions/character_count.rs": "80952f45d944a531262971e9f4c316318fe36c423b8237f2176b202e7aabefa5",
     "crates/nsh-base/src/rich_editor/extensions/clear_document.rs": "74b9014fe38e165e900d835a87fee73693f4261de6993fdfa80e36e96e724012",
     "crates/nsh-base/src/rich_editor/extensions/code_block.rs": "8f4959fda2060efd0a67580b4567cd9b535f39187274ab6c98d0077ed4f9eba9",
-    "crates/nsh-base/src/rich_editor/extensions/core_keymap.rs": "9b825aeb51dec91f970d0f5007cf398b065ed4f89eead1b840c148c14c357e48",
+    "crates/nsh-base/src/rich_editor/extensions/core_keymap.rs": "00949f87ffb3eb4bd0f6c2ef873fc291a0b5de9981a0f2bf4e24e7daa58201eb",
     "crates/nsh-base/src/rich_editor/extensions/extension.rs": "4f6623cfa9e7a1a55a5221fc4476b212749ce0a4c8bec3cef0af55bd9b03d65c",
     "crates/nsh-base/src/rich_editor/extensions/helpers.rs": "15ac08ac72a62f2a683e0846d23430383c02e77651c476fec2fa55e6915498e6",
     "crates/nsh-base/src/rich_editor/extensions/history.rs": "c8fe91af87f14122edb8097e0ef9ea6e5895e619b12472fe1eee85166eee4449",
@@ -308,8 +308,8 @@
     "crates/nsh-base/tests/base/resizable.rs": "be0859e6ecea4921e802eabb81a73e870e881a4186be39dde88787243e22c820",
     "crates/nsh-base/tests/base/rich_editor/commands.rs": "0128831e9dc30a9ebd336791dad12a2dc6e15f69fa55b261faeffc35bc2ed84d",
     "crates/nsh-base/tests/base/rich_editor/extensions.rs": "2b9c47ced15a727e5bc14a0bdb480f58d41589bdf04a5c9049d0fdeac1abd2b0",
-    "crates/nsh-base/tests/base/rich_editor/marks_clipboard_history.rs": "b417b89ded7d223a6c7a5265435fe95b5d3818bf9ef7a20e65c823651b867caf",
-    "crates/nsh-base/tests/base/rich_editor/mod.rs": "c4d59d5bb92cfab2856f53442d7f63a0f4ccbf397e6d2f74252a5af0c660f485",
+    "crates/nsh-base/tests/base/rich_editor/marks_clipboard_history.rs": "9d41ad8293637532fb8fd3c8c9c23c205d2729aad657c59d08dc4df187f7ac75",
+    "crates/nsh-base/tests/base/rich_editor/mod.rs": "24ac72ae9130c794818f1dab5930b7b90508b72556953230851ec04fe12e60fd",
     "crates/nsh-base/tests/base/rich_editor/selection.rs": "d6446aa838fd97defe07eec4060dc7f24665c879bffeb3753fd2efa2427e49d7",
     "crates/nsh-base/tests/base/rich_editor/structure.rs": "9c5585ca6473b972e980d059761ed9a40b46da1aa40d996c3c9aabd89361c86b",
     "crates/nsh-base/tests/base/rich_editor/tiptap.rs": "3e167e9796fc17657898dbc880665e67bf01ffb2919b702978cd599197116169",
@@ -408,7 +408,7 @@
     "crates/nsh-core/src/default-env": "dd2723803c946daa91ceda4cca488b2850629f7655a5b1515ceb095742a29a9c",
     "crates/nsh-core/src/desktop.rs": "a9049b6b05a59ef68b4683ea32e478a2dd49a5e01c7680fb1548ca3538371a3a",
     "crates/nsh-core/src/effects.rs": "891515920eec2b02c6a1de64078f03e0524d1f2fea75565e9268fb1df15c8c63",
-    "crates/nsh-core/src/element/ambient.rs": "d0abd666d79512298462662e19886a124e49f33e04a4a901d8d9a613c64c4842",
+    "crates/nsh-core/src/element/ambient.rs": "ad0eb67a4b402e366f644c44c087be25ece7cd8b033f1f066c156e1bca442c80",
     "crates/nsh-core/src/element/animated.rs": "8e1f0c64a4fcdd966968f55761eb04ee3695527d0260949389f6dd1faad458f3",
     "crates/nsh-core/src/element/asset.rs": "ecc4b40dbe52c239f69de438eab9444768bb5d7e4069aa15a51c3adc7477702e",
     "crates/nsh-core/src/element/back.rs": "ef98d58af2314de48ec9fef54677a69d663a6fbd6fcbe90ba5f80f8c253bbce7",
@@ -485,7 +485,7 @@
     "crates/nsh-core/src/picker.rs": "1067e7ed94f274a5ea7f0b768075e09a5c9dcebf19cb388b54beffb7e7ea53c9",
     "crates/nsh-core/src/platform.rs": "84a1e605f99d3b6b1f82a0859305c2a997f781cddf5b8f17d2f8117eb31a219b",
     "crates/nsh-core/src/platform/clipboard.rs": "42bad81067d3339c38fbd45de16611c92bb6dcbf0c400c5486962ca19e70f282",
-    "crates/nsh-core/src/prelude.rs": "9733222bbe7a35edc2d5844bae7a0fdf5d5eb6cbc366f7e356f3ff768b3573f0",
+    "crates/nsh-core/src/prelude.rs": "d56b874175be6439472744ab0d023a54b2802ed2f8099aabb169f8747a0b50be",
     "crates/nsh-core/src/props.rs": "d7fd3fb90550c8f8c4206a17a9947c063393d9d9e711aea804627baf4618c635",
     "crates/nsh-core/src/reactive.rs": "0d2d4c952be9b7f1c6c9c12898aa5d63b30e9401e8621194fda80904470e41df",
     "crates/nsh-core/src/reactive/tests.rs": "f8c773d266b01c412849c896bae5d9607f53f752d0b1cbb5974ba0b19a341648",
@@ -1987,7 +1987,7 @@
     "website/zh-CN/modules/tailwind-reference.md": "b8d2956f294f9dc442975b822a46c483b0c5b5d3e0cffafe18737e6db18c992f"
   },
   "upstream_repository": "https://github.com/longbridge/nsh",
-  "upstream_revision": "1849776f68ee41d73c08970fe530cf952451af13",
+  "upstream_revision": "ad7aadd5a3cb94ae3c90c485203e44d428ea8a78",
   "file_sources": {
     ".github/workflows/compat.yml": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2439,7 +2439,7 @@
     },
     "crates/nsh-base/src/rich_editor/commands/base.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "1849776f68ee41d73c08970fe530cf952451af13"
+      "revision": "ad7aadd5a3cb94ae3c90c485203e44d428ea8a78"
     },
     "crates/nsh-base/src/rich_editor/commands/helpers.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2475,7 +2475,7 @@
     },
     "crates/nsh-base/src/rich_editor/extensions/core_keymap.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "1849776f68ee41d73c08970fe530cf952451af13"
+      "revision": "ad7aadd5a3cb94ae3c90c485203e44d428ea8a78"
     },
     "crates/nsh-base/src/rich_editor/extensions/extension.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -2867,11 +2867,11 @@
     },
     "crates/nsh-base/tests/base/rich_editor/marks_clipboard_history.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "1849776f68ee41d73c08970fe530cf952451af13"
+      "revision": "ad7aadd5a3cb94ae3c90c485203e44d428ea8a78"
     },
     "crates/nsh-base/tests/base/rich_editor/mod.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "1849776f68ee41d73c08970fe530cf952451af13"
+      "revision": "ad7aadd5a3cb94ae3c90c485203e44d428ea8a78"
     },
     "crates/nsh-base/tests/base/rich_editor/selection.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3139,7 +3139,7 @@
     },
     "crates/nsh-core/src/element/ambient.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "76fa8a7fed47ea51aea01fa85bb40960be15d984"
+      "revision": "ad7aadd5a3cb94ae3c90c485203e44d428ea8a78"
     },
     "crates/nsh-core/src/element/animated.rs": {
       "repository": "https://github.com/longbridge/nsh",
@@ -3399,7 +3399,7 @@
     },
     "crates/nsh-core/src/prelude.rs": {
       "repository": "https://github.com/longbridge/nsh",
-      "revision": "1849776f68ee41d73c08970fe530cf952451af13"
+      "revision": "ad7aadd5a3cb94ae3c90c485203e44d428ea8a78"
     },
     "crates/nsh-core/src/props.rs": {
       "repository": "https://github.com/longbridge/nsh",
