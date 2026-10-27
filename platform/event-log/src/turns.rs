@@ -425,20 +425,27 @@ mod tests {
         let (release, gate) = oneshot::channel();
         let writer = store.clone();
         let blocked = tokio::spawn(async move {
-            writer.connection.run(move |connection| Box::pin(async move {
-                let mut tx = connection.begin().await?;
-                // Hold an uncommitted terminal on the actual writer while readers
-                // must still see the previously committed opening and event count.
-                sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,event_json) VALUES(?,?,'invocation_ended',?)")
-                    .bind(&pending_terminal.id)
-                    .bind(&pending_terminal.invocation.invocation_id)
-                    .bind(serde_json::to_string(&pending_terminal)?)
-                    .execute(&mut *tx).await?;
-                entered.send(()).unwrap();
-                gate.await.unwrap();
-                tx.commit().await?;
-                Ok(())
-            })).await
+            writer
+                .connection
+                .run(move |connection| {
+                    Box::pin(async move {
+                        let mut tx = connection.begin().await?;
+                        // Hold an uncommitted terminal on the actual writer while readers
+                        // must still see the previously committed opening and event count.
+                        crate::append::ingress::insert(
+                            &mut tx,
+                            &pending_terminal,
+                            serde_json::to_string(&pending_terminal)?,
+                            crate::append::ingress::Position::Admitted,
+                        )
+                        .await?;
+                        entered.send(()).unwrap();
+                        gate.await.unwrap();
+                        tx.commit().await?;
+                        Ok(())
+                    })
+                })
+                .await
         });
         reached.await.unwrap();
         let observed = tokio::time::timeout(Duration::from_secs(5), async {

@@ -636,13 +636,52 @@ async fn session_observers_follow_confirmed_fast_and_checked_commits_only() {
 
 #[tokio::test]
 async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighbors() {
-    for trigger in [
-        "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
+    enum ControlAfterRollback {
+        RetiredObservation,
+        ReusableRun,
+    }
+    let tool_poison = || {
+        event(
+            "poison",
+            Fact::ToolDispatched {
+                operation_id: "poison".into(),
+                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone("call".into()),
+                name: "Read".into(),
+                input: serde_json::json!({}),
+                presentation: None,
+                title: None,
+            },
+        )
+    };
+    for (trigger, poison_event, control_after_rollback) in [
+        (
+            "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='session'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
-        "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
+            delta("poison", "two"),
+            ControlAfterRollback::RetiredObservation,
+        ),
+        (
+            "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_source_prefixes
          WHEN NEW.sequence=5 AND NEW.kind='invocation'
          BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
+            delta("poison", "two"),
+            ControlAfterRollback::RetiredObservation,
+        ),
+        (
+            "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_obligations
+         WHEN NEW.kind='tool' AND NEW.operation_id='poison'
+         BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
+            tool_poison(),
+            ControlAfterRollback::ReusableRun,
+        ),
+        (
+            "CREATE TEMP TRIGGER projection_fault BEFORE INSERT ON context_execution_work
+         WHEN NEW.kind='tool' AND NEW.operation_id='poison'
+         BEGIN SELECT RAISE(ABORT,'projection storage fault'); END;",
+            tool_poison(),
+            ControlAfterRollback::ReusableRun,
+        ),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.sqlite");
@@ -664,7 +703,7 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
             log.commits.session("session"),
         ));
         let mut poison = Box::pin(log.connection.write(
-            WriteAppend::from_events(&[delta("poison", "two")]).unwrap(),
+            WriteAppend::from_events(&[poison_event]).unwrap(),
             log.commits.session("session"),
         ));
         let mut last = Box::pin(log.connection.write(
@@ -702,12 +741,24 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
             assert_eq!(database.code(), sqlx::error::DatabaseError::code(original));
             assert_eq!(database.message(), "projection storage fault");
         }
-        assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "failed observation owner must retire before pending control"
-        );
+        match control_after_rollback {
+            ControlAfterRollback::RetiredObservation => {
+                assert!(matches!(control.await, Err(StoreError::OperationUnknown)));
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    0,
+                    "failed observation owner must retire before pending control"
+                );
+            }
+            ControlAfterRollback::ReusableRun => {
+                control.await.unwrap();
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    1,
+                    "confirmed Run rollback must permit the pending control"
+                );
+            }
+        }
         assert!(!commits.has_changed().unwrap());
         log.connection.shutdown().await.unwrap();
         assert_eq!(ids(&path), ["opened", "requested", "part"]);
@@ -747,6 +798,21 @@ fn assert_projection_positions(path: &std::path::Path) {
             "{kind} projection retained rolled-back event"
         );
     }
+    for table in [
+        "context_obligations",
+        "context_execution_work",
+        "context_independent_tools",
+    ] {
+        let sql = format!(
+            "SELECT COUNT(*) FROM {table} WHERE opened_at>(SELECT COALESCE(MAX(sequence),0) FROM event_log)"
+        );
+        assert_eq!(
+            db.query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap(),
+            0,
+            "{table} retained an uncommitted boundary"
+        );
+    }
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM context_safety_heads WHERE through_sequence>(SELECT COALESCE(MAX(sequence),0) FROM event_log)",[],|row|row.get::<_,i64>(0)).unwrap(),0);
 }
 
 #[tokio::test]

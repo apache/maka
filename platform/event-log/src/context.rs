@@ -25,6 +25,7 @@ pub use history::{FrozenSessionHistory, HistoryCapture, HistoryCut};
 mod latest_main;
 mod lineage;
 mod proof;
+pub(crate) mod projection;
 pub(crate) mod read;
 mod report;
 mod request;

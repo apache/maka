@@ -65,6 +65,131 @@ fn migration_checksums(connection: &Connection) -> Vec<(i64, Vec<u8>)> {
 }
 
 #[tokio::test]
+async fn dropping_canonical_triggers_preserves_existing_projection_and_accepts_new_settlement() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    let opening = seed_session_and_event(&log).await;
+    log.append(
+        &EventWrite::plain(RuntimeEvent::new(
+            opening.invocation.clone(),
+            Fact::ToolDispatched {
+                presentation: None,
+                title: None,
+                operation_id: "tool".into(),
+                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone("call".into()),
+                name: "Read".into(),
+                input: json!({}),
+            },
+        ))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    log.close().await.unwrap();
+    let old = Connection::open(&path).unwrap();
+    let checksum = migration_checksums(&old)
+        .into_iter()
+        .find(|(version, _)| *version == 1)
+        .unwrap();
+    let original: Vec<(i64, String)> = old
+        .prepare("SELECT sequence,event_json FROM event_log ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    // Restore precisely the version-one DDL and migration ledger around valid
+    // committed data, rather than rewriting the historical migration checksum.
+    let baseline = Connection::open_in_memory().unwrap();
+    baseline
+        .execute_batch(include_str!("../migrations/0001_runtime.sql"))
+        .unwrap();
+    let triggers:Vec<String>=baseline.prepare("SELECT sql FROM sqlite_schema WHERE type='trigger' AND name IN ('context_obligations_append','context_execution_append') ORDER BY name").unwrap()
+        .query_map([],|row|row.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(triggers.len(), 2);
+    old.execute_batch("BEGIN IMMEDIATE").unwrap();
+    for trigger in triggers {
+        old.execute_batch(&trigger).unwrap();
+    }
+    assert_eq!(
+        old.execute("DELETE FROM _sqlx_migrations WHERE version=2", [])
+            .unwrap(),
+        1
+    );
+    old.execute_batch("COMMIT").unwrap();
+    assert_eq!(
+        old.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(old);
+
+    let log = EventLog::open(&path).await.unwrap();
+    let migrated = Connection::open(&path).unwrap();
+    assert_eq!(
+        migration_checksums(&migrated)
+            .into_iter()
+            .find(|(version, _)| *version == 1)
+            .unwrap(),
+        checksum
+    );
+    assert_eq!(
+        migrated
+            .query_row(
+                "SELECT COUNT(*) FROM _sqlx_migrations WHERE version=2 AND success=1",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(migrated.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name IN ('context_obligations_append','context_execution_append')",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(migrated.query_row("SELECT COUNT(*) FROM context_obligations WHERE kind='tool' AND operation_id='tool'",[],|row|row.get::<_,i64>(0)).unwrap(),1);
+    let after: Vec<(i64, String)> = migrated
+        .prepare("SELECT sequence,event_json FROM event_log ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(after, original);
+    drop(migrated);
+    assert_eq!(
+        log.append(
+            &EventWrite::plain(RuntimeEvent::new(
+                opening.invocation,
+                Fact::ToolSettled {
+                    operation_id: "tool".into(),
+                    outcome: maka_agent_facts::event::ToolOutcome::Failed {
+                        message: "known result".into()
+                    },
+                }
+            ))
+            .unwrap()
+        )
+        .await
+        .unwrap(),
+        3
+    );
+    log.close().await.unwrap();
+    let reopened = EventLog::open(&path).await.unwrap();
+    reopened.close().await.unwrap();
+    let final_db = Connection::open(&path).unwrap();
+    assert_eq!(
+        final_db
+            .query_row(
+                "SELECT COUNT(*) FROM context_obligations WHERE kind='tool'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(final_db.query_row("SELECT closed_at FROM context_execution_work WHERE kind='tool' AND operation_id='tool'",[],|row|row.get::<_,i64>(0)).unwrap(),3);
+}
+
+#[tokio::test]
 async fn initialization_and_reopen_preserve_facts_payloads_and_schema_identity() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("events.sqlite");

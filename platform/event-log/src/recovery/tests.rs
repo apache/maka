@@ -18,12 +18,20 @@
  */
 
 use super::*;
-use rusqlite::{Connection, StatementStatus, params};
+use maka_agent_facts::{
+    context::ModelPurpose,
+    event::{
+        Fact, InvocationInput, InvocationOutcome, LogScope, RuntimeEvent, StoredEvent, ToolOutcome,
+    },
+    model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall},
+    tool_call::{ToolCallIdentity, ToolOrigin},
+};
+use rusqlite::{Connection as RawConnection, StatementStatus};
 use serde_json::json;
 
-fn database() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
-    db.execute_batch("CREATE TABLE event_log (
+async fn database() -> SqliteConnection {
+    let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+    sqlx::raw_sql("CREATE TABLE event_log (
         sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE,
         invocation_id TEXT NOT NULL, kind TEXT NOT NULL, operation_id TEXT,
         event_json TEXT NOT NULL,
@@ -33,84 +41,179 @@ fn database() -> Connection {
     CREATE VIEW runtime_events AS SELECT * FROM event_log;
     CREATE TABLE imported_invocations(invocation_id TEXT PRIMARY KEY);
     CREATE VIEW local_runtime_events AS SELECT * FROM runtime_events e
-        WHERE NOT EXISTS(SELECT 1 FROM imported_invocations i WHERE i.invocation_id=e.invocation_id);").unwrap();
-    db.execute_batch(&crate::schema::fixture(|_, name| {
-        name.starts_with("context_obligations") || name.starts_with("context_safety_")
-    }))
-    .unwrap();
+        WHERE NOT EXISTS(SELECT 1 FROM imported_invocations i WHERE i.invocation_id=e.invocation_id);")
+        .execute(&mut db).await.unwrap();
+    let schema = crate::schema::fixture(|_, name| {
+        [
+            "context_obligations",
+            "context_safety_",
+            "context_execution_",
+            "context_independent_",
+        ]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    });
+    sqlx::raw_sql(sqlx::AssertSqlSafe(schema))
+        .execute(&mut db)
+        .await
+        .unwrap();
     db
 }
 
-fn append(
-    db: &Connection,
+fn opening() -> Fact {
+    Fact::InvocationOpened {
+        configuration: None,
+        input: InvocationInput::Message {
+            source_messages: vec![],
+            content: "fixture".into(),
+            request_fingerprint: None,
+        },
+    }
+}
+
+fn ended(class: &str) -> Fact {
+    Fact::InvocationEnded {
+        outcome: if class == "completed" {
+            InvocationOutcome::Completed
+        } else {
+            InvocationOutcome::Failed {
+                class: class.into(),
+                message: None,
+                model_failure: None,
+            }
+        },
+    }
+}
+
+fn requested(step: &str) -> Fact {
+    Fact::ModelRequested {
+        step_id: step.into(),
+        model_id: "fixture".into(),
+        item_acceptance: false,
+        purpose: ModelPurpose::Main,
+        source_scope: LogScope::Session {
+            id: "session".into(),
+        },
+        source_high_water: 0,
+        source_digest: "fixture".into(),
+        input_digest: "fixture".into(),
+        route_identity: format!("sha256:{}", "0".repeat(64)),
+        checkpoint_event_id: None,
+        context: None,
+        context_breakdown: None,
+        effective_source_digest: None,
+    }
+}
+
+fn completed(step: &str, parts: Vec<ModelPart>) -> Fact {
+    Fact::ModelCompleted {
+        step_id: step.into(),
+        output: ModelStep {
+            parts,
+            finish_reason: ModelFinishReason::Stop,
+            usage: Default::default(),
+            provider_options: None,
+            response_id: None,
+            model: None,
+            timestamp: None,
+        },
+    }
+}
+
+async fn append_worker(
+    worker: &mut sqlx::sqlite::SqliteWorkerConnection<'_>,
     invocation: &str,
-    kind: &str,
-    operation: Option<&str>,
-    fact: serde_json::Value,
-) {
-    let body = json!({"invocation":{"session_id":"session","turn_id":"turn","run_id":"run","invocation_id":invocation},"fact":fact});
-    db.execute(
-        "INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)
-        VALUES(lower(hex(randomblob(16))),?,?,?,?)",
-        params![invocation, kind, operation, body.to_string()],
-    )
-    .unwrap();
-}
-
-fn work(db: &Connection, sql: &str, parameter: &dyn rusqlite::ToSql) -> (usize, i32) {
-    let mut statement = db.prepare(sql).unwrap();
-    let parameters: Vec<&dyn rusqlite::ToSql> = if sql == UNFINISHED_INVOCATIONS {
-        vec![&0i64, parameter]
-    } else {
-        vec![parameter]
+    fact: Fact,
+) -> Result<(), StoreError> {
+    let event = RuntimeEvent::new(
+        Invocation {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            run_id: "run".into(),
+            invocation_id: invocation.into(),
+        },
+        fact,
+    );
+    let json = serde_json::to_string(&event)?;
+    let inserted = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
+        .bind(&event.id).bind(invocation).bind(event.fact.kind())
+        .bind(event.fact.operation_id()).bind(&json).execute(&mut *worker).await?;
+    let stored = StoredEvent {
+        sequence: u64::try_from(inserted.last_insert_rowid()).unwrap(),
+        event,
     };
-    let count = statement
-        .query_map(parameters.as_slice(), |_| Ok(()))
-        .unwrap()
-        .count();
-    (count, statement.get_status(StatementStatus::VmStep))
+    crate::context::projection::record(worker, &stored, &json).await
 }
 
-#[test]
-fn recovery_work_depends_on_unfinished_work_not_completed_history() {
-    let db = database();
-    append(&db, "forever", "invocation_opened", None, json!({}));
+async fn append(db: &mut SqliteConnection, invocation: &str, fact: Fact) {
+    let invocation = invocation.to_owned();
+    let mut tx = db.begin().await.unwrap();
+    crate::connection::worker_query(&mut tx, move |worker| {
+        Box::pin(async move { append_worker(worker, &invocation, fact).await })
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn inspect<T: Send + 'static>(
+    db: &mut SqliteConnection,
+    read: impl FnOnce(&RawConnection) -> rusqlite::Result<T> + Send + 'static,
+) -> T {
+    crate::connection::worker_query(db, move |worker| {
+        Box::pin(async move {
+            // SAFETY: the callback exclusively borrows the original worker; the wrapper
+            // and all statements finish before that borrow is returned to SQLx.
+            let raw = unsafe { RawConnection::from_handle(worker.as_raw_handle().as_ptr()) }?;
+            Ok(read(&raw)?)
+        })
+    })
+    .await
+    .unwrap()
+}
+
+async fn work(
+    db: &mut SqliteConnection,
+    sql: &'static str,
+    parameter: rusqlite::types::Value,
+) -> (usize, i32) {
+    inspect(db, move |db| {
+        let mut statement = db.prepare(sql)?;
+        let parameters = if sql == UNFINISHED_INVOCATIONS {
+            vec![rusqlite::types::Value::Integer(0), parameter]
+        } else {
+            vec![parameter]
+        };
+        let count = statement
+            .query_map(rusqlite::params_from_iter(parameters), |_| Ok(()))?
+            .count();
+        Ok((count, statement.get_status(StatementStatus::VmStep)))
+    })
+    .await
+}
+
+#[tokio::test]
+async fn recovery_work_depends_on_unfinished_work_not_completed_history() {
+    let mut db = database().await;
+    append(&mut db, "forever", opening()).await;
     let query = unresolved!(" SELECT kind,id,name,input,call FROM unresolved");
     let mut short = None;
     for n in 0..10_000 {
         let id = format!("old-{n}");
-        append(&db, &id, "invocation_opened", None, json!({}));
-        append(
-            &db,
-            &id,
-            "invocation_ended",
-            None,
-            json!({"outcome":{"class":"completed"}}),
-        );
-        append(
-            &db,
-            "forever",
-            "model_requested",
-            Some(&id),
-            json!({"item_acceptance":false}),
-        );
-        append(
-            &db,
-            "forever",
-            "model_completed",
-            Some(&id),
-            json!({"output":{"parts":[]}}),
-        );
+        append(&mut db, &id, opening()).await;
+        append(&mut db, &id, ended("completed")).await;
+        append(&mut db, "forever", requested(&id)).await;
+        append(&mut db, "forever", completed(&id, vec![])).await;
         if n == 99 {
             short = Some((
-                work(&db, UNFINISHED_INVOCATIONS, &16),
-                work(&db, query, &"forever"),
+                work(&mut db, UNFINISHED_INVOCATIONS, 16.into()).await,
+                work(&mut db, query, "forever".to_owned().into()).await,
             ));
         }
     }
     let (startup, active) = short.unwrap();
-    let long_startup = work(&db, UNFINISHED_INVOCATIONS, &16);
-    let long_active = work(&db, query, &"forever");
+    let long_startup = work(&mut db, UNFINISHED_INVOCATIONS, 16.into()).await;
+    let long_active = work(&mut db, query, "forever".to_owned().into()).await;
     assert_eq!(startup.0, 1);
     assert_eq!(long_startup.0, 1);
     assert_eq!(active.0, 0);
@@ -123,36 +226,40 @@ fn recovery_work_depends_on_unfinished_work_not_completed_history() {
         long_active.1 <= active.1 + 32,
         "active run work {active:?} -> {long_active:?}"
     );
-    db.execute("INSERT INTO imported_invocations VALUES('forever')", [])
+    sqlx::query("INSERT INTO imported_invocations VALUES('forever')")
+        .execute(&mut db)
+        .await
         .unwrap();
-    assert_eq!(work(&db, UNFINISHED_INVOCATIONS, &16).0, 0);
+    assert_eq!(work(&mut db, UNFINISHED_INVOCATIONS, 16.into()).await.0, 0);
 }
 
-#[test]
-fn pending_call_recovery_preserves_accepted_input_and_unknown_effects() {
-    let db = database();
-    append(&db, "run", "invocation_opened", None, json!({}));
+#[tokio::test]
+async fn pending_call_recovery_preserves_accepted_input_and_unknown_effects() {
+    let mut db = database().await;
+    append(&mut db, "run", opening()).await;
+    append(&mut db, "run", requested("step")).await;
     append(
-        &db,
+        &mut db,
         "run",
-        "model_requested",
-        Some("step"),
-        json!({"item_acceptance":false}),
-    );
-    append(
-        &db,
-        "run",
-        "model_completed",
-        Some("step"),
-        json!({"output":{"parts":[
-            {"kind":"tool_call","call":{"id":"call","name":"read","input":{"kind":"malformed","raw":"{"},"provider_executed":false}}
-        ]}}),
-    );
+        completed(
+            "step",
+            vec![ModelPart::ToolCall {
+                call: ModelToolCall {
+                    id: "call".into(),
+                    name: "read".into(),
+                    input: ToolInput::InvalidJson { raw: "{".into() },
+                    provider_options: None,
+                    provider_executed: false,
+                },
+            }],
+        ),
+    )
+    .await;
     let query = unresolved!(" SELECT kind,id,name,input,call FROM unresolved ORDER BY kind,id");
-    let row: (i64, String, String, String, String) = db
-        .query_row(query, ["run"], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-        })
+    let row: (i64, String, String, String, String) = sqlx::query_as(query)
+        .bind("run")
+        .fetch_one(&mut db)
+        .await
         .unwrap();
     assert_eq!(
         (row.0, row.1.as_str(), row.2.as_str()),
@@ -160,26 +267,49 @@ fn pending_call_recovery_preserves_accepted_input_and_unknown_effects() {
     );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&row.3).unwrap(),
-        json!({"kind":"malformed","raw":"{"})
+        json!({"kind":"invalid_json","data":{"raw":"{"}})
     );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&row.4).unwrap(),
         json!({"tool_call_id":"call","origin":{"kind":"provider","step_id":"step"}})
     );
-    append(&db, "run", "tool_dispatched", Some("step:call"), json!({}));
     append(
-        &db,
+        &mut db,
         "run",
-        "invocation_ended",
-        None,
-        json!({"outcome":{"class":"outcome_unknown"}}),
-    );
-    let pending: (i64, String) = db
-        .query_row(query, ["run"], |r| Ok((r.get(0)?, r.get(1)?)))
+        Fact::ToolDispatched {
+            operation_id: "step:call".into(),
+            presentation: None,
+            title: None,
+            call: ToolCallIdentity {
+                tool_call_id: "call".into(),
+                origin: ToolOrigin::Provider {
+                    step_id: "step".into(),
+                },
+            },
+            name: "read".into(),
+            input: json!({}),
+        },
+    )
+    .await;
+    append(&mut db, "run", ended("outcome_unknown")).await;
+    let pending: (i64, String) = sqlx::query_as(query)
+        .bind("run")
+        .fetch_one(&mut db)
+        .await
         .unwrap();
     assert_eq!(pending, (1, "step:call".into()));
-    append(&db, "run", "tool_settled", Some("step:call"), json!({}));
-    assert_eq!(work(&db, query, &"run").0, 0);
+    append(
+        &mut db,
+        "run",
+        Fact::ToolSettled {
+            operation_id: "step:call".into(),
+            outcome: ToolOutcome::Failed {
+                message: "fixture".into(),
+            },
+        },
+    )
+    .await;
+    assert_eq!(work(&mut db, query, "run".to_owned().into()).await.0, 0);
 }
 
 #[path = "pagination_tests.rs"]
