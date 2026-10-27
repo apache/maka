@@ -22,6 +22,9 @@ use futures_util::future::LocalBoxFuture;
 use serde_json::Value;
 use std::sync::Arc;
 
+#[path = "embedded.rs"]
+mod embedded;
+
 pub(super) struct Module(pub v8::Global<v8::Object>);
 pub(super) struct Callbacks {
     receiver: v8::Global<v8::Object>,
@@ -39,6 +42,7 @@ fn runtime_base(health: &Arc<Health>, limits: &Limits, realm: super::Realm) -> R
             Default::default(),
         ),
     ];
+    embedded::embed(&mut extensions)?;
     if realm == super::Realm::Scoped {
         extensions.push(super::request::maka_requests::init());
     }

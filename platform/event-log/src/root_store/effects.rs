@@ -102,11 +102,7 @@ mod tests {
         authorization::{Boundary, SessionBoundary},
         call::Identity,
     };
-    use maka_plugin_core::{
-        composition::{Environment, ExecutionLocation, Input},
-        deployment::DeploymentRef,
-        scope::Scope,
-    };
+    use maka_plugin_core::{composition::Input, deployment::DeploymentRef, scope::Scope};
     use serde_json::json;
     use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -129,13 +125,7 @@ mod tests {
                 Uuid::new_v4(),
                 0,
                 Input {
-                    environment: Environment {
-                        location: ExecutionLocation::Host,
-                        presentation: None,
-                    },
                     instances: BTreeMap::new(),
-                    recovery: None,
-                    launch: None,
                 },
                 Vec::new(),
                 Vec::new(),

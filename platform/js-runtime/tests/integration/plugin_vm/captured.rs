@@ -341,24 +341,33 @@ async fn pure_worker_has_no_ambient_host_ops() {
 }
 
 #[tokio::test]
-async fn pure_worker_decodes_binary_base64_without_ambient_host_capabilities() {
+async fn pure_and_scoped_workers_decode_binary_base64_without_ambient_host_capabilities() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let vm = Vm::pure(Limits::default()).unwrap();
-        let module = vm.load("codec.mjs".into(), r#"
-            export function decode() {
-                const bytes = Uint8Array.from(atob('AP8b5Lit5paH8J+Zgg=='), c => c.charCodeAt(0));
-                let invalid;
-                try { atob('invalid!'); } catch (error) { invalid = error.name; }
-                return {bytes: Array.from(bytes), text: new TextDecoder().decode(bytes.subarray(3)),
-                    invalid, deno: typeof Deno, buffer: typeof Buffer};
-            }
-        "#.into()).unwrap();
-        let result = module.call(vec!["decode".into()], vec![]).await;
-        module.close().await.unwrap();
-        vm.shutdown().await;
-        assert_eq!(result.unwrap(), json!({
-            "bytes": [0, 255, 27, 228, 184, 173, 230, 150, 135, 240, 159, 153, 130],
-            "text": "中文🙂", "invalid": "InvalidCharacterError", "deno": "undefined", "buffer": "undefined"
-        }));
+        for vm in [
+            Vm::pure(Limits::default()).unwrap(),
+            Vm::scoped(Limits::default()).unwrap(),
+        ] {
+            let module = vm.load("codec.mjs".into(), r#"
+                export function decode() {
+                    const bytes = Uint8Array.from(atob('AP8b5Lit5paH8J+Zgg=='), c => c.charCodeAt(0));
+                    let invalid;
+                    try { atob('invalid!'); } catch (error) { invalid = error.name; }
+                    return {bytes: Array.from(bytes), text: new TextDecoder().decode(bytes.subarray(3)),
+                        encoded: Array.from(new TextEncoder().encode('A')),
+                        query: new URL('https://example.test/?value=embedded').searchParams.get('value'),
+                        invalid, deno: typeof Deno, buffer: typeof Buffer,
+                        fetch: typeof fetch, console: typeof console};
+                }
+            "#.into()).unwrap();
+            let result = module.call(vec!["decode".into()], vec![]).await;
+            module.close().await.unwrap();
+            vm.shutdown().await;
+            assert_eq!(result.unwrap(), json!({
+                "bytes": [0, 255, 27, 228, 184, 173, 230, 150, 135, 240, 159, 153, 130],
+                "text": "中文🙂", "encoded": [65], "query": "embedded",
+                "invalid": "InvalidCharacterError", "deno": "undefined", "buffer": "undefined",
+                "fetch": "undefined", "console": "undefined"
+            }));
+        }
     }).await.unwrap();
 }
