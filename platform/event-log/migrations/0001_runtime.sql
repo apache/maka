@@ -592,7 +592,7 @@ CREATE TABLE context_semantic_rows (
     unknown_only INTEGER NOT NULL,
     row_json TEXT NOT NULL,
     PRIMARY KEY(owner_session_id,source_sequence,source_index,revision)
-) WITHOUT ROWID;
+);
 
 CREATE TABLE context_semantic_fragments (
     source_sequence INTEGER NOT NULL,
@@ -608,7 +608,7 @@ CREATE TABLE context_semantic_fragment_pieces (
     piece_index INTEGER NOT NULL,
     bytes BLOB NOT NULL,
     PRIMARY KEY(source_sequence,source_index,piece_index)
-) WITHOUT ROWID;
+);
 
 CREATE TABLE context_semantic_cuts (
     owner_session_id TEXT NOT NULL,
@@ -1032,7 +1032,7 @@ CREATE INDEX context_semantic_row_order ON context_semantic_rows(owner_session_i
 
 CREATE INDEX context_semantic_invocation_rows ON context_semantic_rows(owner_session_id,invocation_id,kind,source_sequence,source_index,revision);
 
-CREATE INDEX context_semantic_unknown_rows ON context_semantic_rows(owner_session_id,unknown_only,source_sequence,order_sequence) WHERE unknown_only=1;
+CREATE INDEX context_semantic_unknown_rows ON context_semantic_rows(owner_session_id,unknown_only,source_sequence,order_sequence,source_index,revision) WHERE unknown_only=1;
 
 CREATE INDEX context_semantic_notifications ON context_semantic_rows(owner_session_id,invocation_id,source_sequence,source_index,revision) WHERE kind='notification';
 

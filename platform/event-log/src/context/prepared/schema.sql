@@ -38,7 +38,7 @@ CREATE TABLE prepared_cache.context_prepared_dirty (
 CREATE INDEX prepared_cache.context_prepared_group_members ON context_prepared_dirty(build_id,COALESCE(leader_sequence,group_sequence),group_sequence);
 CREATE INDEX prepared_cache.context_prepared_pending ON context_prepared_dirty(build_id,group_sequence) WHERE done=0;
 CREATE TABLE prepared_cache.context_prepared_nodes (id TEXT PRIMARY KEY, node_json TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE prepared_cache.context_prepared_groups (id TEXT PRIMARY KEY, group_json TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE prepared_cache.context_prepared_groups (id TEXT PRIMARY KEY NOT NULL, group_json TEXT NOT NULL);
 CREATE TABLE prepared_cache.context_prepared_payloads (
  storage_id TEXT PRIMARY KEY, digest TEXT UNIQUE
 ) WITHOUT ROWID;
@@ -48,7 +48,7 @@ CREATE TABLE prepared_cache.context_prepared_chunks (
  storage_id TEXT NOT NULL, piece_index INTEGER NOT NULL, message_index INTEGER NOT NULL,
  item_start INTEGER NOT NULL, item_end INTEGER NOT NULL, metadata_json TEXT, bytes BLOB NOT NULL,
  PRIMARY KEY(storage_id,piece_index)
-) WITHOUT ROWID;
+);
 CREATE INDEX prepared_cache.context_prepared_wire_seek ON context_prepared_chunks(storage_id,message_index,piece_index);
 
 -- The previous logical root is needed while discovering codec dependencies.

@@ -1474,6 +1474,28 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
         Arc,
         atomic::{AtomicU64, Ordering},
     };
+    async fn statement_sorts(db: &mut SqliteConnection, reset: bool) -> Result<i64, StoreError> {
+        let mut handle = db.lock_handle().await?;
+        let mut statement = std::ptr::null_mut();
+        let mut sorts = 0;
+        // SAFETY: the locked connection excludes every other SQLite operation.
+        // Only counters are read/reset; no statement or raw pointer escapes.
+        unsafe {
+            loop {
+                statement =
+                    rusqlite::ffi::sqlite3_next_stmt(handle.as_raw_handle().as_ptr(), statement);
+                if statement.is_null() {
+                    break;
+                }
+                sorts += i64::from(rusqlite::ffi::sqlite3_stmt_status(
+                    statement,
+                    rusqlite::ffi::SQLITE_STMTSTATUS_SORT,
+                    i32::from(reset),
+                ));
+            }
+        }
+        Ok(sorts)
+    }
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("events.sqlite"))
         .await
@@ -1483,15 +1505,16 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
         for n in [1024i64,8192] {
             let session=format!("dense-{n}");
             sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
-                INSERT INTO context_semantic_rows SELECT ?1,1,0,n,(n%7)+1,0,'target','target',CAST(n AS TEXT),'assistant_part',0,0,1,1,'{}' FROM numbers")
+                INSERT INTO context_semantic_rows SELECT ?1,1,(n-1)%3,(n-1)/3+1,((n-1)/3)%7+1,0,'target','target',CAST(n AS TEXT),'assistant_part',0,0,1,1,'{}' FROM numbers")
                 .bind(&session).bind(n).execute(&mut *db).await?;
             let mut next=selection(n as u64);next.session=session;next.anchor_sequence=Some(1);
             next.replay=Some(semantic::SemanticReplay{base:0,current:"target".into(),route:"route".into(),model:"model".into()});next.prior_unknown=true;
             let mut previous=next.clone();previous.replay.as_mut().unwrap().current="absent".into();previous.prior_unknown=false;
             for kind in 0..4 {
+                if kind==3 { statement_sorts(db,true).await?; }
                 let steps=Arc::new(AtomicU64::new(0));let observed=steps.clone();
                 db.lock_handle().await?.set_progress_handler(1,move ||{observed.fetch_add(1,Ordering::Relaxed);true});
-                let cursor=Some((1,0,n/2,4));
+                let cursor=Some((1,1,n/6,4));
                 let page=match kind {
                     0=>semantic::initial_groups(db,&next,cursor,false,64).await?,
                     1=>semantic::initial_groups(db,&next,cursor,true,64).await?,
@@ -1499,17 +1522,27 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
                     _=>semantic::selection_dirty_groups(db,&previous,&next,4,cursor,64).await?,
                 };
                 db.lock_handle().await?.remove_progress_handler();assert_eq!(page.groups.len(),64);assert!(page.next.is_some());
+                if kind==3 { assert_eq!(statement_sorts(db,false).await?,0,"the forced unknown keyset must not sort"); }
                 measured.push(steps.load(Ordering::Relaxed));
             }
             // Full anchor/unknown pagination must not drop duplicate semantic
             // groups when the storage cursor crosses revision/order boundaries.
             for unknown in [false,true] {
-                let mut cursor=None;let mut groups=Vec::new();
+                let mut expected=(1..=n).map(|r|(1,(r-1)%3,(r-1)/3+1,((r-1)/3)%7+1)).collect::<Vec<_>>();
+                expected.sort_by_key(|point| if unknown {(point.0,point.3,point.1,point.2)}else{(point.0,point.1,point.2,point.3)});
+                let mut cursor=None;
+                let mut offset=0;
+                if unknown { statement_sorts(db,true).await?; }
                 loop {
                     let page=if unknown {semantic::selection_dirty_groups(db,&previous,&next,4,cursor,64).await?}else{semantic::initial_groups(db,&next,cursor,true,64).await?};
-                    groups.extend(page.groups);cursor=page.next;if cursor.is_none(){break;}
+                    let end=offset+page.groups.len();
+                    assert!(end<=expected.len());
+                    assert_eq!(page.groups,expected[offset..end].iter().map(|point|point.3 as u64).collect::<Vec<_>>(),"source/item/revision ties must preserve exact page order");
+                    assert_eq!(page.next,if end<expected.len(){Some(expected[end-1])}else{None},"the physical cursor must retain all four business-key components");
+                    offset=end;cursor=page.next;if cursor.is_none(){break;}
                 }
-                groups.sort_unstable();let mut expected=(1..=n).map(|r|(r%7+1) as u64).collect::<Vec<_>>();expected.sort_unstable();assert_eq!(groups,expected);
+                assert_eq!(offset,expected.len(),"pagination must neither omit nor duplicate tied rows");
+                if unknown { assert_eq!(statement_sorts(db,false).await?,0,"full unknown pagination must stay in index order"); }
             }
             let session=format!("sparse-{n}");
             sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
