@@ -127,6 +127,21 @@ export class Notebook {
         if (!rule.topicIds.includes(topicId) && !overlaps(rule.tags, topic.tags)) continue;
         current = { ...rule, feedbackId: e.payload.feedbackId };
       }
+    if (current.feedbackId && ['closed', 'deferred'].includes(current.status)) {
+      const governing = this.event(current.feedbackId)!.seq;
+      const reopen = this.events('reopen')
+        .filter((e) => e.payload.topicId === topicId && e.seq > governing)
+        .at(-1);
+      // Open again by changed information. A newer user rule replaced `current`
+      // above, so a reopening from before it no longer applies.
+      if (reopen)
+        current = {
+          status: 'open',
+          reason: reopen.payload.reason,
+          feedbackId: current.feedbackId,
+          reopenedByChange: true,
+        };
+    }
     if (
       current.status === 'deferred' &&
       current.resumeAt &&
@@ -134,11 +149,13 @@ export class Notebook {
     )
       current = { ...current, status: 'open', resumedByUserDeadline: true };
     const receipts = this.events('delivery').filter((e) => e.payload.topicIds.includes(topicId));
+    const withheld = this.events('withheld').filter((e) => e.payload.topicId === topicId);
     // Display 'sent' without destroying the user's open/deferred/closed policy.
     return {
       ...current,
       displayStatus: current.status === 'open' && receipts.length ? 'sent' : current.status,
       receipts,
+      withheld,
     };
   }
   recordFeedback({
@@ -243,6 +260,49 @@ export class Notebook {
     }
     return this.put(id, 'feedback-resolution', resolution);
   }
+  /**
+   * The judgement looked into a topic and chose not to tell the user. This is
+   * neither "investigated" (notes) nor "told" (delivery receipts), and it is not
+   * a ban: a later message about the topic is still allowed.
+   */
+  recordWithheld(entry: any, id: string) {
+    requireThat(
+      entry &&
+        Object.keys(entry).every((k) => ['topicId', 'reason'].includes(k)) &&
+        nonempty(entry.topicId) &&
+        nonempty(entry.reason),
+      'Withheld needs a topic and a reason',
+    );
+    requireThat(this.topics().has(entry.topicId), 'Unknown withheld topic');
+    return this.put(id, 'withheld', entry);
+  }
+  /**
+   * A closed or deferred topic becomes open again because its underlying
+   * information changed, not because the user said so. The change must be in the
+   * notebook: a note on this topic recorded after the user feedback that governs
+   * it. The user's own later feedback still overrides this.
+   */
+  reopenTopic(entry: any, id: string) {
+    requireThat(
+      entry &&
+        Object.keys(entry).every((k) => ['topicId', 'reason'].includes(k)) &&
+        nonempty(entry.topicId) &&
+        nonempty(entry.reason),
+      'Reopening needs a topic and a reason',
+    );
+    requireThat(this.topics().has(entry.topicId), 'Unknown reopened topic');
+    const current = this.state(entry.topicId);
+    requireThat(
+      current.feedbackId && ['closed', 'deferred'].includes(current.status),
+      'Only a topic the user closed or deferred can be reopened',
+    );
+    const governing = this.event(current.feedbackId)!.seq;
+    requireThat(
+      this.events('note').some((e) => e.payload.topicId === entry.topicId && e.seq > governing),
+      'Reopening needs a note on this topic recorded after the user feedback',
+    );
+    return this.put(id, 'reopen', entry);
+  }
   commitDraft({
     role,
     operationId,
@@ -271,16 +331,25 @@ export class Notebook {
       );
       requireThat(
         draft &&
-          Object.keys(draft).every((k) => ['notes', 'feedbackDecisions', 'messages'].includes(k)),
+          Object.keys(draft).every((k) =>
+            ['notes', 'feedbackDecisions', 'messages', 'withheld', 'reopened'].includes(k),
+          ),
         'Unsupported draft field',
       );
-      const { notes = [], feedbackDecisions = [], messages = [] } = draft;
+      const {
+        notes = [],
+        feedbackDecisions = [],
+        messages = [],
+        withheld = [],
+        reopened = [],
+      } = draft;
       requireThat(
-        [notes, feedbackDecisions, messages].every(Array.isArray),
+        [notes, feedbackDecisions, messages, withheld, reopened].every(Array.isArray),
         'Draft operations must be arrays',
       );
       requireThat(
-        role === 'judgement' || (!feedbackDecisions.length && !messages.length),
+        role === 'judgement' ||
+          (!feedbackDecisions.length && !messages.length && !withheld.length && !reopened.length),
         'Exploration only appends knowledge',
       );
       notes.forEach((n: any, i: number) => this.appendNote(n, `${operationId}:note:${i}`));
@@ -292,6 +361,10 @@ export class Notebook {
           this.pendingFeedback().length === 0,
           'Read and interpret pending user feedback first',
         );
+      withheld.forEach((w: any, i: number) =>
+        this.recordWithheld(w, `${operationId}:withheld:${i}`),
+      );
+      reopened.forEach((r: any, i: number) => this.reopenTopic(r, `${operationId}:reopened:${i}`));
       const preparedIds: string[] = [];
       messages.forEach((m: any, i: number) => {
         requireThat(
@@ -315,6 +388,8 @@ export class Notebook {
         preparedIds,
         notesAdded: notes.length,
         feedbackProcessed: feedbackDecisions.length,
+        withheldRecorded: withheld.length,
+        topicsReopened: reopened.length,
       };
       this.put(operationId, 'draft', { digest, result });
       return result;
@@ -398,7 +473,7 @@ export class Notebook {
       lines.push(
         '',
         `## ${topic.title}〔${topic.id}〕`,
-        `状态：${labels[s.displayStatus]}${s.reason ? '；原因：' + s.reason : ''}${s.feedbackId ? '；依据：' + s.feedbackId : ''}`,
+        `状态：${labels[s.displayStatus]}${s.reopenedByChange ? '（因信息出现重大变化，经判断重新开放）' : ''}${s.reason ? '；原因：' + s.reason : ''}${s.feedbackId ? '；依据：' + s.feedbackId : ''}`,
         `方向：${topic.tags.join('、') || '未分类'}`,
       );
       if (s.resumeAt) lines.push(`用户指定恢复时间：${s.resumeAt}`);
@@ -407,6 +482,8 @@ export class Notebook {
           `- ${n.text}\n  发生时间：${n.occurredAt ?? '未知'}｜记录时间：${n.recordedAt}\n  来源：${n.sources.join('；')}${n.related?.length ? '\n  关联主题：' + n.related.join('、') : ''}`,
         );
       for (const r of s.receipts) lines.push(`- 已发送 ${r.at}〔${r.id}〕：${r.payload.text}`);
+      for (const w of s.withheld)
+        lines.push(`- 已调查但未告知用户 ${w.at}〔${w.id}〕：${w.payload.reason}`);
     }
     const quickDeliveries = this.events('delivery').filter(
       (e) => e.payload.origin === 'quick-discovery' && !e.payload.topicIds.length,
