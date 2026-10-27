@@ -23,6 +23,8 @@ import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   buildHistoryCompactCheckpoint,
+  CODEX_COMPACTION_METADATA_MAX_AGE_MS,
+  freshCodexCompactionHash,
   isHistoryCompactContentEvent,
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
@@ -154,6 +156,7 @@ describe('history compact checkpoint', () => {
     });
     const connection = {
       providerType: 'openai-codex',
+      codexCompactionMetadataFetchedAt: Date.now(),
       models: [
         { id: 'model-a', codexCompactionHash: '3000' },
         { id: 'model-b', codexCompactionHash: '3000' },
@@ -195,6 +198,76 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canReplayHistoryCompactCheckpointForModel(legacy, connection, 'connection-a', 'model-b'),
       false,
+    );
+  });
+
+  test('expired, missing, or future catalog timestamps cannot authorize a cross-model checkpoint', () => {
+    const now = Date.now();
+    const cached = {
+      providerType: 'openai-codex',
+      codexCompactionMetadataFetchedAt: now,
+      models: [{ id: 'model-b', codexCompactionHash: 'old' }],
+    };
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      providerState: {
+        kind: 'openai_codex_remote_v2',
+        connectionId: 'connection-a',
+        modelId: 'model-a',
+        codexCompactionHash: 'old',
+        itemId: 'cmp-1',
+        encryptedContent: 'encrypted',
+      },
+    });
+    assert.equal(
+      freshCodexCompactionHash(cached, 'model-b', now + CODEX_COMPACTION_METADATA_MAX_AGE_MS - 1),
+      'old',
+    );
+    assert.equal(
+      freshCodexCompactionHash(cached, 'model-b', now + CODEX_COMPACTION_METADATA_MAX_AGE_MS),
+      undefined,
+    );
+    assert.equal(freshCodexCompactionHash(cached, 'model-b', now - 1), undefined);
+    const stale = {
+      ...cached,
+      codexCompactionMetadataFetchedAt: now - CODEX_COMPACTION_METADATA_MAX_AGE_MS,
+    };
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(checkpoint, stale, 'connection-a', 'model-b'),
+      false,
+    );
+    assert.equal(
+      canContinueHistoryCompactCheckpointForModel(checkpoint, stale, 'connection-a', 'model-b'),
+      false,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        { ...cached, codexCompactionMetadataFetchedAt: undefined },
+        'connection-a',
+        'model-b',
+      ),
+      false,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        { ...cached, codexCompactionMetadataFetchedAt: now + 60_000 },
+        'connection-a',
+        'model-b',
+      ),
+      false,
+    );
+    // Even a freshly fetched changed provider catalog rejects the old checkpoint.
+    const updated = { ...cached, models: [{ id: 'model-b', codexCompactionHash: 'new' }] };
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(checkpoint, updated, 'connection-a', 'model-b'),
+      false,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(checkpoint, stale, 'connection-a', 'model-a'),
+      true,
     );
   });
 

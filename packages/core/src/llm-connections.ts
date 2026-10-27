@@ -166,6 +166,8 @@ export interface RuntimeExecutionConnection {
   defaultApiProtocol?: ModelApiProtocol;
   defaultModel: string;
   models?: ModelInfo[];
+  /** Host-only timestamp of the fetched Codex compatibility metadata snapshot. */
+  codexCompactionMetadataFetchedAt?: number;
   /** User model parameters, retained independently of the enabled selection. */
   modelOverrides?: ModelOverrides;
   /** Additional top-level JSON properties added to model request bodies. */

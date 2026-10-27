@@ -25,6 +25,7 @@ import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { nonEmpty } from './context-budget-helpers.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
+  freshCodexCompactionHash,
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
   projectHistoryCompactCheckpointReplay,
@@ -51,6 +52,7 @@ export interface BuildOpenAiCodexHistoryCompactorOptions {
   providerStateIdentity?: `sha256:${string}`;
   modelId: string;
   models?: readonly { id: string; codexCompactionHash?: string }[];
+  codexCompactionMetadataFetchedAt?: number;
   providerOptions?: Record<string, unknown>;
 }
 
@@ -74,7 +76,11 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         previous &&
         canContinueHistoryCompactCheckpointForModel(
           previous,
-          { providerType: 'openai-codex', models: options.models },
+          {
+            providerType: 'openai-codex',
+            models: options.models,
+            codexCompactionMetadataFetchedAt: options.codexCompactionMetadataFetchedAt,
+          },
           options.connectionId,
           options.modelId,
         );
@@ -144,7 +150,14 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
         content,
         options.connectionId,
         options.modelId,
-        options.models?.find((model) => model.id === options.modelId)?.codexCompactionHash,
+        freshCodexCompactionHash(
+          {
+            providerType: 'openai-codex',
+            models: options.models,
+            codexCompactionMetadataFetchedAt: options.codexCompactionMetadataFetchedAt,
+          },
+          options.modelId,
+        ),
       );
       if (!state) throw new HistoryCompactSummarizerError('invalid_provider_state');
       return state;

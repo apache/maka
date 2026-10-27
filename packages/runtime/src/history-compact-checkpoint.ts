@@ -413,12 +413,37 @@ export function isTextHistoryCompactCheckpoint(
   return checkpoint.version === 2;
 }
 
+/** Bound the age of provider compatibility claims, including long-lived backends. */
+export const CODEX_COMPACTION_METADATA_MAX_AGE_MS = 5 * 60 * 1000;
+
+type CompactionModelConnection = {
+  providerType: string;
+  models?: readonly { id: string; codexCompactionHash?: string }[];
+  codexCompactionMetadataFetchedAt?: number;
+};
+
+export function freshCodexCompactionHash(
+  connection: CompactionModelConnection,
+  modelId: string,
+  now: number = Date.now(),
+): string | undefined {
+  const fetchedAt = connection.codexCompactionMetadataFetchedAt;
+  if (
+    connection.providerType !== 'openai-codex' ||
+    fetchedAt === undefined ||
+    !Number.isSafeInteger(fetchedAt) ||
+    fetchedAt < 0 ||
+    !Number.isFinite(now) ||
+    fetchedAt > now ||
+    now - fetchedAt >= CODEX_COMPACTION_METADATA_MAX_AGE_MS
+  )
+    return undefined;
+  return connection.models?.find((model) => model.id === modelId)?.codexCompactionHash;
+}
+
 export function canReplayHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: {
-    providerType: string;
-    models?: readonly { id: string; codexCompactionHash?: string }[];
-  },
+  connection: CompactionModelConnection,
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
@@ -430,7 +455,7 @@ export function canReplayHistoryCompactCheckpointForModel(
     state.connectionId !== connectionId
   )
     return false;
-  const targetHash = connection.models?.find((model) => model.id === modelId)?.codexCompactionHash;
+  const targetHash = freshCodexCompactionHash(connection, modelId);
   // Legacy checkpoints remain usable on their original model. Never infer a
   // legacy checkpoint's original hash from today's mutable model catalog.
   if (state.modelId === modelId && (!state.codexCompactionHash || !targetHash)) return true;
@@ -444,10 +469,7 @@ export function canReplayHistoryCompactCheckpointForModel(
 /** Whether this model's configured compactor can roll forward from this checkpoint value. */
 export function canContinueHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: {
-    providerType: string;
-    models?: readonly { id: string; codexCompactionHash?: string }[];
-  },
+  connection: CompactionModelConnection,
   connectionId: string | undefined,
   modelId: string,
 ): boolean {
