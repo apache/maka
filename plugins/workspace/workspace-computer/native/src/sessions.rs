@@ -2004,6 +2004,7 @@ mod tests {
     }
 
     async fn preparation_cleanup_started(receipt: &BrowserPreparationReceipt) -> Retirement {
+        let mut registered_cleanup = None;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let cleanup = receipt
@@ -2013,13 +2014,15 @@ mod tests {
                     .expect("fixture cleanup lock")
                     .clone();
                 if let Some(cleanup) = cleanup {
-                    return cleanup;
+                    registered_cleanup = Some(cleanup);
+                    break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("idle revocation must retain the original cleanup future")
+        .expect("idle revocation must retain the original cleanup future");
+        registered_cleanup.expect("captured original cleanup registration")
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2211,7 +2214,8 @@ mod tests {
             .expect("old receipts")[0]
             .clone();
         watch(&fixture.owner);
-        let observation = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut registered_observation = None;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let observation = old_receipt
                     .observation
@@ -2219,13 +2223,15 @@ mod tests {
                     .expect("old VM observation lock")
                     .clone();
                 if let Some(observation) = observation {
-                    return observation;
+                    registered_observation = Some(observation);
+                    break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("retain the actual old-VM observer");
+        let observation = registered_observation.expect("captured original old-VM observation");
         assert!(
             new_gate.check_open().is_ok(),
             "old VM retirement must not seal the replacement producer"
