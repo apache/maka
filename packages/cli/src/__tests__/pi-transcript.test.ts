@@ -71,6 +71,41 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(rendered, /context_provider_dropping|truncated or rewritten/);
   });
 
+  test('shows an interrupted compaction separately from a failed summary', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'system_note',
+        id: 'interrupted',
+        turnId: 't1',
+        ts: 1,
+        kind: 'context_compaction_failed_open',
+        data: { failOpenReason: 'interrupted' },
+      },
+      {
+        type: 'system_note',
+        id: 'failed',
+        turnId: 't1',
+        ts: 2,
+        kind: 'context_compaction_failed_open',
+        data: { failOpenReason: 'write_failed' },
+      },
+    ]);
+
+    assert.deepEqual(
+      state.entries
+        .filter((entry) => entry.kind === 'notice')
+        .map((entry) => ({ level: entry.level, text: entry.text })),
+      [
+        { level: 'info', text: 'Context compaction was interrupted.' },
+        {
+          level: 'info',
+          text: 'Context summary failed; the session continued without a new summary.',
+        },
+      ],
+    );
+  });
+
   test('renders manual compaction from the typed terminal outcome', async () => {
     for (const [outcome, expected] of [
       [{ kind: 'compacted' as const, checkpointId: 'checkpoint-1' }, 'Context compacted.'],

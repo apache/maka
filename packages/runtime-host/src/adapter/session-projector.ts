@@ -23,6 +23,7 @@ import {
   foldAssistantDelta,
   type SessionEvent,
 } from '@maka/core/events';
+import { readCompactionTimelineMarker } from '@maka/core/compaction-status';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
@@ -52,12 +53,18 @@ export interface RuntimeHostSessionProjectionSeed {
     readonly turnId: string;
   }[];
   readonly activeAssistantMessages: readonly Extract<StoredMessage, { type: 'assistant' }>[];
+  readonly activeStepCompactions: readonly {
+    readonly compactionId: string;
+    readonly turnId: string;
+    readonly ts: number;
+  }[];
 }
 
 export function createRuntimeHostSessionProjectionSeed(
   transcript: readonly StoredMessage[],
   snapshot: SessionContinuitySnapshot,
 ): RuntimeHostSessionProjectionSeed {
+  const activeStepCompactions = activeStepCompactionsFromTranscript(transcript);
   return {
     durableUserMessages: transcript
       .filter(
@@ -71,7 +78,31 @@ export function createRuntimeHostSessionProjectionSeed(
             (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
               message.type === 'assistant' && message.turnId === snapshot.rootTurn?.turnId,
           ),
+    activeStepCompactions:
+      snapshot.rootTurn === null
+        ? []
+        : activeStepCompactions.filter((attempt) => attempt.turnId === snapshot.rootTurn?.turnId),
   };
+}
+
+function activeStepCompactionsFromTranscript(
+  transcript: readonly StoredMessage[],
+): Array<{ compactionId: string; turnId: string; ts: number }> {
+  const active = new Map<string, { compactionId: string; turnId: string; ts: number }>();
+  for (const message of transcript) {
+    const marker = readCompactionTimelineMarker(message);
+    if (!marker || !message.turnId) continue;
+    if (marker.state === 'running') {
+      active.set(marker.compactionId, {
+        compactionId: marker.compactionId,
+        turnId: message.turnId,
+        ts: marker.ts,
+      });
+    } else {
+      active.delete(marker.compactionId);
+    }
+  }
+  return [...active.values()];
 }
 
 export type RuntimeHostTerminalTurn = Extract<
@@ -93,6 +124,10 @@ export class RuntimeHostSessionProjector {
   readonly #durableTurnByMessage: Map<string, string>;
   readonly #accumulators = new Map<string, AssistantAccumulator>();
   readonly #placedSteeringMessageIds = new Set<string>();
+  readonly #activeStepCompactions = new Map<
+    string,
+    { compactionId: string; turnId: string; ts: number }
+  >();
   #projectMessageAdmissions: boolean;
 
   constructor(
@@ -107,6 +142,9 @@ export class RuntimeHostSessionProjector {
     this.#durableTurnByMessage = new Map(
       seed.durableUserMessages.map(({ messageId, turnId }) => [messageId, turnId]),
     );
+    for (const attempt of seed.activeStepCompactions) {
+      this.#activeStepCompactions.set(attempt.compactionId, attempt);
+    }
     this.#projectMessageAdmissions = projectMessageAdmissions;
     const root = snapshot.rootTurn;
     if (!root) return;
@@ -202,6 +240,17 @@ export class RuntimeHostSessionProjector {
     // the compaction Turn alive, so a reconnecting client learns of it here.
     if (root.rootExecutionKind === 'context_compact') {
       events.push(contextCompactionStartedEvent(root, this.#now()));
+    }
+    for (const attempt of this.#activeStepCompactions.values()) {
+      if (attempt.turnId !== root.turnId) continue;
+      events.push({
+        type: 'context_compaction_started',
+        id: `host-step-compaction-started:${attempt.compactionId}`,
+        turnId: attempt.turnId,
+        ts: attempt.ts,
+        compactionId: attempt.compactionId,
+        scope: 'step',
+      });
     }
     if (includeAssistantText) {
       for (const accumulator of this.#accumulators.values()) {
@@ -399,6 +448,22 @@ export class RuntimeHostSessionProjector {
     }
     if (frame.kind === 'subscription.session_event') {
       const event = projectSessionEvent(frame);
+      if (event.type === 'context_compaction_started' && event.scope === 'step') {
+        if (event.compactionId !== undefined) {
+          this.#activeStepCompactions.set(event.compactionId, {
+            compactionId: event.compactionId,
+            turnId: event.turnId,
+            ts: event.ts,
+          });
+        }
+      } else if (
+        event.type === 'context_compaction_applied' ||
+        event.type === 'context_compaction_failed'
+      ) {
+        if (event.compactionId !== undefined) {
+          this.#activeStepCompactions.delete(event.compactionId);
+        }
+      }
       if (event.type === 'steering_message') {
         if (this.#durableTurnByMessage.has(event.messageId)) return emptyUpdate(events);
         this.#placedSteeringMessageIds.add(event.messageId);
@@ -437,6 +502,7 @@ export class RuntimeHostSessionProjector {
       );
     }
     if (startedTurn) this.#accumulators.clear();
+    if (startedTurn) this.#activeStepCompactions.clear();
     // Emit the presentation-only compaction-started event when the root Turn
     // FIRST becomes a `context_compact` run, not only when the runId changes.
     // The real lifecycle is `admitted (no rootExecutionKind) → running/
@@ -458,6 +524,7 @@ export class RuntimeHostSessionProjector {
         ? root
         : undefined;
     if (terminalTurn) events.push(...this.#terminalEvents(terminalTurn));
+    if (terminalTurn) this.#clearStepCompactionsForTurn(terminalTurn.turnId);
     return {
       events,
       previousSnapshot,
@@ -465,6 +532,12 @@ export class RuntimeHostSessionProjector {
       terminalTurn,
       resolvedInteractions,
     };
+  }
+
+  #clearStepCompactionsForTurn(turnId: string): void {
+    for (const [compactionId, attempt] of this.#activeStepCompactions) {
+      if (attempt.turnId === turnId) this.#activeStepCompactions.delete(compactionId);
+    }
   }
 
   #terminalEvents(root: RuntimeHostTerminalTurn, includeSettled = false): SessionEvent[] {
@@ -564,6 +637,8 @@ function contextCompactionStartedEvent(
     id: `host-compaction-started:${turn.runId}`,
     turnId: turn.turnId,
     ts: now,
+    compactionId: turn.runId,
+    scope: 'turn',
   };
 }
 
@@ -637,6 +712,29 @@ function projectSessionEvent(
       id: event.id,
       turnId: event.turnId,
       ts: event.ts,
+      ...(event.compactionId !== undefined ? { compactionId: event.compactionId } : {}),
+      ...(event.scope !== undefined ? { scope: event.scope } : {}),
+    };
+  }
+  if (event.type === 'context_compaction_started') {
+    return {
+      type: event.type,
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      ...(event.compactionId !== undefined ? { compactionId: event.compactionId } : {}),
+      ...(event.scope !== undefined ? { scope: event.scope } : {}),
+    };
+  }
+  if (event.type === 'context_compaction_failed') {
+    return {
+      type: event.type,
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+      compactionId: event.compactionId,
+      scope: event.scope,
+      reason: event.reason,
     };
   }
   if (event.type === 'steering_message') {

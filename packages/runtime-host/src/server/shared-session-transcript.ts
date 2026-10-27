@@ -18,6 +18,10 @@
  */
 
 import type { AttachmentRef, MessageContent } from '@maka/core/events';
+import {
+  readCompactionFailureReason,
+  readCompactionTimelineMarker,
+} from '@maka/core/compaction-status';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import {
   isUserVisibleSessionSystemNote,
@@ -156,20 +160,57 @@ export function projectSharedSessionTranscriptMessage(
         ...(message.reasoning === undefined ? {} : { reasoning: message.reasoning }),
         ...(message.costUsd === undefined ? {} : { costUsd: message.costUsd }),
       };
-    case 'system_note':
-      return isUserVisibleSessionSystemNote(message.kind)
-        ? {
-            type: message.type,
-            id: message.id,
-            ...(message.turnId === undefined ? {} : { turnId: message.turnId }),
-            ts: message.ts,
-            kind: message.kind,
-          }
-        : null;
+    case 'system_note': {
+      const isCompactionMarker = readCompactionTimelineMarker(message) !== undefined;
+      if (!isCompactionMarker && !isUserVisibleSessionSystemNote(message.kind)) return null;
+      const data = projectSharedSessionSystemNoteData(message);
+      return {
+        type: message.type,
+        id: message.id,
+        ...(message.turnId === undefined ? {} : { turnId: message.turnId }),
+        ts: message.ts,
+        kind: message.kind,
+        ...(data === undefined ? {} : { data }),
+      };
+    }
     case 'permission_decision':
     case 'workhub_coordination':
       return null;
   }
+}
+
+/** Shares only the fields needed to reconstruct a compaction attempt. */
+function projectSharedSessionSystemNoteData(
+  message: Extract<StoredMessage, { type: 'system_note' }>,
+): Record<string, unknown> | undefined {
+  if (
+    message.kind !== 'context_compaction_started' &&
+    message.kind !== 'context_compaction_applied' &&
+    message.kind !== 'context_compaction_failed_open'
+  ) {
+    return undefined;
+  }
+  const data =
+    typeof message.data === 'object' && message.data !== null && !Array.isArray(message.data)
+      ? (message.data as Record<string, unknown>)
+      : undefined;
+  const compactionId =
+    typeof data?.compactionId === 'string' && data.compactionId.length > 0
+      ? data.compactionId
+      : undefined;
+  const scope = data?.scope === 'step' || data?.scope === 'turn' ? data.scope : undefined;
+  const failOpenReason =
+    message.kind === 'context_compaction_failed_open'
+      ? readCompactionFailureReason(message.data)
+      : undefined;
+  if (compactionId === undefined && scope === undefined && failOpenReason === undefined) {
+    return undefined;
+  }
+  return {
+    ...(scope === undefined ? {} : { scope }),
+    ...(compactionId === undefined ? {} : { compactionId }),
+    ...(failOpenReason === undefined ? {} : { failOpenReason }),
+  };
 }
 
 function isSharedSessionAttachment(attachment: AttachmentRef, sessionId: string): boolean {

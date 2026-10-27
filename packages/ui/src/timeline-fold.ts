@@ -45,9 +45,12 @@ export function foldTimeline(items: readonly TurnTimelineItem[]): {
   const flush = (): void => {
     if (buffer.length === 0) return;
     // Imported transcripts can record reasoning after the visible reply.
-    // Ignore that trailing reasoning when locating the answer, but stop at
-    // tool activity: text before tools is still process commentary.
-    const replyIndex = buffer.findLastIndex((item) => item.kind !== 'thinking');
+    // A compaction row is execution evidence too: it may settle after the
+    // answer, so it must not become the answer candidate. Stop at tool
+    // activity: text before tools is still process commentary.
+    const replyIndex = buffer.findLastIndex(
+      (item) => item.kind !== 'thinking' && item.kind !== 'compaction',
+    );
     const candidate = buffer[replyIndex];
     const answer = candidate?.kind === 'text' ? candidate : undefined;
     if (answer) buffer.splice(replyIndex, 1);

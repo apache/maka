@@ -433,8 +433,36 @@ const PROJECTION_SAMPLES: ProjectionSamples = {
       text: 'UTC: 2026-10-19T00:00:00Z',
     },
   },
+  context_compaction_started: {
+    subject: {
+      type: 'context_compaction_started',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      compactionId: 'compact-1',
+      scope: 'step',
+    },
+  },
   context_compaction_applied: {
-    subject: { type: 'context_compaction_applied', id: 'e', turnId: 'turn-1', ts: 1 },
+    subject: {
+      type: 'context_compaction_applied',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      compactionId: 'compact-1',
+      scope: 'step',
+    },
+  },
+  context_compaction_failed: {
+    subject: {
+      type: 'context_compaction_failed',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      compactionId: 'compact-1',
+      scope: 'step',
+      reason: 'write_failed',
+    },
   },
   text_delta: {
     subject: { type: 'text_delta', id: 'e', turnId: 'turn-1', ts: 1, messageId: 'm1', text: 'h' },
@@ -717,6 +745,22 @@ describe('SessionEvent projection coverage', () => {
           ctx,
         ),
       /message_admission is not a backend event/,
+    );
+  });
+
+  test('keeps a Host-owned compaction start out of durable Runtime events', () => {
+    const event: SessionEvent = {
+      type: 'context_compaction_started',
+      id: 'host-compaction-started',
+      turnId: 'turn-1',
+      ts: 1,
+      compactionId: 'run-1',
+      scope: 'turn',
+    };
+    assert.equal(isLiveBackendSessionEvent(event), false);
+    assert.throws(
+      () => mapSessionEventToRuntimeEvent(event, ctx),
+      /turn-scoped context_compaction_started is not a backend event/,
     );
   });
 

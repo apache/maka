@@ -12,6 +12,7 @@
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
+    "./compaction-status": "./dist/compaction-status.js",
     "./canonical-json": "./dist/canonical-json.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-handoff": "./dist/runtime-handoff.js",

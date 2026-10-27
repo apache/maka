@@ -322,6 +322,7 @@ export interface ConversationCopy {
       contextCompactionUnobserved: string;
       contextCompacted: string;
       contextCompactionFailedOpen: string;
+      contextCompactionInterrupted: string;
       contextWindowSuggestion: (tokens: number, declared: number | undefined) => string;
       contextWindowOverrun: (used: number, declared: number) => string;
       contextReportedWindowExceeded: (used: number, reported: number) => string;
@@ -525,6 +526,7 @@ const conversationCopyZhCn: ConversationCopy = {
         contextCompactionUnobserved: '上下文压缩状态暂不可用',
         contextCompacted: '已压缩较早的上下文。',
         contextCompactionFailedOpen: '上下文压缩失败。',
+        contextCompactionInterrupted: '上下文压缩已中断。',
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供应商拒绝了这次请求。该模型未声明上下文窗口；上次成功的用量约 ${tokens} tokens，可将窗口设为该值让 Maka 先行压缩。`
@@ -649,6 +651,7 @@ const conversationCopyZhTw: ConversationCopy = {
         contextCompactionUnobserved: '上下文壓縮狀態暫不可用',
         contextCompacted: '已壓縮較早的上下文。',
         contextCompactionFailedOpen: '上下文壓縮失敗。',
+        contextCompactionInterrupted: '上下文壓縮已中斷。',
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `供應商拒絕了這次請求。該模型未宣告上下文視窗；上次成功的用量約 ${tokens} tokens，可將視窗設為該值讓 Maka 先行壓縮。`
@@ -771,6 +774,7 @@ const conversationCopyEn: ConversationCopy = {
         contextCompactionUnobserved: 'Context compaction status unavailable',
         contextCompacted: 'Earlier context compacted.',
         contextCompactionFailedOpen: 'Context compaction failed.',
+        contextCompactionInterrupted: 'Context compaction was interrupted.',
         contextWindowSuggestion: (tokens, declared) =>
           declared === undefined
             ? `The provider rejected this request. No context window is declared for this model; the last accepted usage was about ${tokens} tokens — set the window to that value so Maka compacts first.`

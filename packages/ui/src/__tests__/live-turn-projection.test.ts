@@ -1258,4 +1258,286 @@ describe('context-compaction live row', () => {
       [getConversationCopy('en').messages.systemNotes.contextCompacted],
     );
   });
+
+  it('projects a step-scoped attempt into the turn timeline instead of the root row', () => {
+    let projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'compaction-started-1',
+      turnId: 'turn-1',
+      ts: 10,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    });
+    assert.ok(projection);
+    assert.equal(projection.rootExecutionKind, undefined);
+    assert.deepEqual(projection.compactions, [
+      { compactionId: 'compaction-1', state: 'running', startedAt: 10 },
+    ]);
+
+    projection = applyLiveTurnEvent(projection, {
+      type: 'context_compaction_applied',
+      id: 'compaction-applied-1',
+      turnId: 'turn-1',
+      ts: 20,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    });
+    assert.ok(projection);
+    assert.deepEqual(projection.compactions, [
+      { compactionId: 'compaction-1', state: 'compacted', startedAt: 10 },
+    ]);
+
+    const turns = overlayLiveTurn([], projection, 'en');
+    assert.equal(turns[0]?.notes.length, 0);
+    assert.equal(turns[0]?.timeline[0]?.kind, 'compaction');
+    if (turns[0]?.timeline[0]?.kind !== 'compaction') return;
+    assert.equal(turns[0].timeline[0].compactionId, 'compaction-1');
+    assert.equal(turns[0].timeline[0].state, 'compacted');
+    assert.equal(
+      turns[0].timeline[0].text,
+      getConversationCopy('en').messages.systemNotes.contextCompacted,
+    );
+  });
+
+  it('settles a failed step-scoped attempt and keeps multiple attempts by compactionId', () => {
+    let projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'started-1',
+      turnId: 'turn-1',
+      ts: 10,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    });
+    projection = applyLiveTurnEvent(projection, {
+      type: 'context_compaction_started',
+      id: 'started-2',
+      turnId: 'turn-1',
+      ts: 30,
+      compactionId: 'compaction-2',
+      scope: 'step',
+    });
+    projection = applyLiveTurnEvent(projection, {
+      type: 'context_compaction_failed',
+      id: 'failed-1',
+      turnId: 'turn-1',
+      ts: 20,
+      compactionId: 'compaction-1',
+      scope: 'step',
+      reason: 'write_failed',
+    });
+    projection = applyLiveTurnEvent(projection, {
+      type: 'context_compaction_applied',
+      id: 'applied-2',
+      turnId: 'turn-1',
+      ts: 40,
+      compactionId: 'compaction-2',
+      scope: 'step',
+    });
+    assert.deepEqual(projection?.compactions, [
+      { compactionId: 'compaction-1', state: 'failed', startedAt: 10, reason: 'write_failed' },
+      { compactionId: 'compaction-2', state: 'compacted', startedAt: 30 },
+    ]);
+
+    const turns = overlayLiveTurn([], projection, 'en');
+    assert.deepEqual(
+      turns[0]?.timeline.map((item) => item.kind === 'compaction' ? item.state : item.kind),
+      ['failed', 'compacted'],
+    );
+  });
+
+  it('records a cancelled attempt as interrupted instead of failed', () => {
+    let projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'started-1',
+      turnId: 'turn-1',
+      ts: 10,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    });
+    projection = applyLiveTurnEvent(projection, {
+      type: 'context_compaction_failed',
+      id: 'failed-1',
+      turnId: 'turn-1',
+      ts: 20,
+      compactionId: 'compaction-1',
+      scope: 'step',
+      reason: 'interrupted',
+    });
+
+    assert.deepEqual(projection?.compactions, [
+      { compactionId: 'compaction-1', state: 'interrupted', startedAt: 10 },
+    ]);
+  });
+
+  it('retires a compaction-only live projection once the transcript is terminal', () => {
+    const projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'started-1',
+      turnId: 'turn-1',
+      ts: 10,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    });
+    assert.ok(projection);
+    const messages: StoredMessage[] = [
+      {
+        type: 'system_note',
+        id: 'started-note',
+        turnId: 'turn-1',
+        ts: 10,
+        kind: 'context_compaction_started',
+        data: { compactionId: 'compaction-1', scope: 'step' },
+      },
+      { type: 'turn_state', id: 'terminal', turnId: 'turn-1', ts: 11, status: 'completed' },
+    ];
+    assert.equal(reconcileTerminalLiveTurn(projection, messages), undefined);
+  });
+
+  it('settles a running live attempt from its durable terminal while the turn continues', () => {
+    let projection = applyLiveTurnEvent(undefined, {
+      type: 'context_compaction_started',
+      id: 'started-1',
+      turnId: 'turn-1',
+      ts: 10,
+      compactionId: 'compaction-1',
+      scope: 'step',
+    });
+    projection = applyLiveTurnEvent(projection, {
+      type: 'context_compaction_started',
+      id: 'started-2',
+      turnId: 'turn-1',
+      ts: 30,
+      compactionId: 'compaction-2',
+      scope: 'step',
+    });
+    assert.ok(projection);
+    const messages: StoredMessage[] = [
+      {
+        type: 'user',
+        id: 'user-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: 'continue',
+      },
+      {
+        type: 'system_note',
+        id: 'started-note-1',
+        turnId: 'turn-1',
+        ts: 10,
+        kind: 'context_compaction_started',
+        data: { compactionId: 'compaction-1', scope: 'step' },
+      },
+      {
+        type: 'system_note',
+        id: 'applied-note-1',
+        turnId: 'turn-1',
+        ts: 20,
+        kind: 'context_compaction_applied',
+        data: { compactionId: 'compaction-1', scope: 'step' },
+      },
+      {
+        type: 'system_note',
+        id: 'started-note-2',
+        turnId: 'turn-1',
+        ts: 30,
+        kind: 'context_compaction_started',
+        data: { compactionId: 'compaction-2', scope: 'step' },
+      },
+      {
+        type: 'system_note',
+        id: 'failed-note-2',
+        turnId: 'turn-1',
+        ts: 40,
+        kind: 'context_compaction_failed_open',
+        data: { compactionId: 'compaction-2', scope: 'step', failOpenReason: 'write_failed' },
+      },
+    ];
+
+    const reconciled = reconcileTerminalLiveTurn(projection, messages);
+    assert.deepEqual(reconciled?.compactions, [
+      { compactionId: 'compaction-1', state: 'compacted', startedAt: 10 },
+      {
+        compactionId: 'compaction-2',
+        state: 'failed',
+        startedAt: 30,
+        reason: 'write_failed',
+      },
+    ]);
+    const turns = overlayLiveTurn(materializeTurns(messages, 'en'), reconciled, 'en');
+    assert.deepEqual(
+      turns[0]?.timeline
+        .filter((item) => item.kind === 'compaction')
+        .map((item) => item.kind === 'compaction' ? item.state : undefined),
+      ['compacted', 'failed'],
+    );
+  });
+});
+
+
+describe('compaction-only terminal handoff', () => {
+  it('does not discard compaction evidence when the last text step hands off', () => {
+    const projection: LiveTurnProjection = {
+      turnId: 't', terminal: true,
+      steps: [{ stepId: 'answer', tools: [], text: { text: 'done', complete: true, truncated: false } }],
+      compactions: [{ compactionId: 'c', state: 'interrupted', startedAt: 1 }],
+    };
+    const settled = settleLiveTurnStep(projection, 'answer');
+    assert.ok(settled);
+    assert.equal(settled.steps.length, 0);
+    const terminalOnly: StoredMessage[] = [
+      { type: 'turn_state', id: 'end', turnId: 't', ts: 3, status: 'aborted' },
+    ];
+    assert.ok(reconcileTerminalLiveTurn(settled, terminalOnly));
+  });
+
+  for (const type of ['abort', 'complete'] as const) {
+    it(`retains interruption through ${type} until history can render it`, () => {
+      const start = { type: 'context_compaction_started' as const, id: 's', turnId: 't', ts: 1, scope: 'step' as const, compactionId: 'c' };
+      const live = applyLiveTurnEvent(undefined, start);
+      const terminal = applyLiveTurnEvent(live, type === 'complete'
+        ? { type, id: 'e', turnId: 't', ts: 2, stopReason: 'user_stop' }
+        : { type, id: 'e', turnId: 't', ts: 2, reason: 'user_stop' });
+      assert.ok(terminal);
+      assert.equal(terminal.compactions?.[0]?.state, 'interrupted');
+      assert.equal(terminal.compactions?.[0]?.reason, undefined);
+      assert.ok(reconcileTerminalLiveTurn(terminal, []));
+      const history: StoredMessage[] = [{ type: 'system_note', id: 's', turnId: 't', ts: 1, kind: 'context_compaction_started', data: { scope: 'step', compactionId: 'c' } }];
+      assert.ok(reconcileTerminalLiveTurn(terminal, history));
+      history.push({ type: 'system_note', id: 'f', turnId: 't', ts: 2, kind: 'context_compaction_failed_open', data: { scope: 'step', compactionId: 'c', failOpenReason: 'interrupted' } });
+      assert.equal(reconcileTerminalLiveTurn(terminal, history), undefined);
+      const row = materializeTurns(history, 'zh-CN')[0]?.timeline[0];
+      assert.ok(row?.kind === 'compaction');
+      assert.equal(row.text, '上下文压缩已中断。');
+    });
+  }
+
+  it('settles a running attempt as failed when the turn errors', () => {
+    const start = { type: 'context_compaction_started' as const, id: 's', turnId: 't', ts: 1, scope: 'step' as const, compactionId: 'c' };
+    const live = applyLiveTurnEvent(undefined, start);
+    const terminal = applyLiveTurnEvent(live, {
+      type: 'error',
+      id: 'e',
+      turnId: 't',
+      ts: 2,
+      message: 'provider failed',
+      recoverable: false,
+    });
+
+    assert.deepEqual(terminal?.compactions, [
+      { compactionId: 'c', state: 'failed', startedAt: 1 },
+    ]);
+  });
+
+  for (const outcome of ['compacted', 'write_failed'] as const) {
+    it(`preserves ${outcome} when the turn later stops`, () => {
+      const base = { id: 'e', turnId: 't', ts: 1, scope: 'step' as const, compactionId: 'c' };
+      const live = applyLiveTurnEvent(undefined, outcome === 'compacted'
+        ? { ...base, type: 'context_compaction_applied' }
+        : { ...base, type: 'context_compaction_failed', reason: outcome });
+      const terminal = applyLiveTurnEvent(live, { type: 'abort', id: 'a', turnId: 't', ts: 2, reason: 'user_stop' });
+      assert.ok(terminal);
+      assert.equal(terminal.compactions?.[0]?.state, outcome === 'compacted' ? 'compacted' : 'failed');
+      assert.equal(terminal.compactions?.[0]?.reason, outcome === 'compacted' ? undefined : outcome);
+    });
+  }
 });

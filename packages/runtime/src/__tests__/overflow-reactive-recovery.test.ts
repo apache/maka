@@ -1246,6 +1246,16 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.recorded.length, 1);
     assert.equal(fixture.recorded[0]!.phase, 'mid_turn');
     assert.equal(fixture.summarizerCalls(), 1);
+    const started = fixture.events.find((event) => event.type === 'context_compaction_started');
+    const applied = fixture.events.find((event) => event.type === 'context_compaction_applied');
+    assert.ok(started?.type === 'context_compaction_started');
+    assert.ok(applied?.type === 'context_compaction_applied');
+    assert.equal(started.compactionId, applied.compactionId);
+    assert.equal(
+      fixture.events.indexOf(started) < fixture.events.indexOf(applied),
+      true,
+      'overflow recovery publishes the start before the applied boundary',
+    );
     // The completed tool step was not re-executed on the retry.
     assert.deepEqual(fixture.toolExecutions, ['one.md']);
     // Send-level usage owner (review P1-2): the terminal record carries BOTH
