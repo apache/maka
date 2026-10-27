@@ -58,7 +58,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 **Development testing**: To contribute or help test unreleased changes, see [CONTRIBUTING](./CONTRIBUTING.md) and the [development mailing list](https://lists.apache.org/list.html?dev@maka.apache.org). Development builds are not approved Apache releases.
 
-**Build from source**: To compile and run Desktop, the TUI, or the CLI directly from a source checkout, see the [Build from source](#build-from-source) section below.
+**Build from source**: To compile and run Desktop, the TUI, or the CLI, see the [Build from source](#build-from-source) section below.
 
 ## Build from source
 
@@ -66,10 +66,21 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 - Node.js 22.19 or newer on the 22 line, or Node.js 24 or newer (CI uses Node.js 24; Node.js 23 is not supported);
 - npm (the lockfile and scripts use npm; the current `packageManager` is npm 11);
-- Git;
+- GnuPG to verify a release archive, or Git for contributor development;
 - `ripgrep`, used by Runtime's `Grep` tool.
 
-### Start Desktop
+### Build an Apache release
+
+Download and verify the signed source archive using the [downloads page](https://maka.apache.org/en/downloads/). Extract it, then build and start Desktop from the extracted directory:
+
+```sh
+npm ci
+npm run dev:full
+```
+
+### Contributor development
+
+For unreleased development builds, start from a Git checkout:
 
 ```sh
 git clone https://github.com/apache/maka.git

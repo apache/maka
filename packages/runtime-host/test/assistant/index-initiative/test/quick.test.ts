@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
 import { InitiativeController } from '../../../../src/assistant/index-initiative/controller.js';
+import { RunCostLedger } from '../../../../src/assistant/run-cost.js';
 import { fixture, until } from './fixture.js';
 
 async function setup() {
@@ -709,3 +710,92 @@ for (const phase of ['list', 'historyList', 'activityToken']) {
     });
   }
 }
+
+// Quick discovery cost and outcome (#6309).
+async function withCostLedger<T>(
+  f: Awaited<ReturnType<typeof setup>>,
+  fn: (ledger: RunCostLedger, asked: string[]) => Promise<T>,
+) {
+  const directory = await mkdtemp(join(tmpdir(), 'quick-cost-'));
+  const asked: string[] = [];
+  const ledger = new RunCostLedger(directory, async (sessionId) => {
+    asked.push(sessionId);
+    return {
+      calls: 4,
+      inputTokens: 2000,
+      cacheReadTokens: 1500,
+      cacheWriteTokens: 0,
+      outputTokens: 300,
+      modelDurationMs: 4000,
+      complete: true,
+    };
+  });
+  (f.ctx as any).runCost = ledger;
+  try {
+    return await fn(ledger, asked);
+  } finally {
+    ledger.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test('a quick run that reports nothing is recorded as no report, with its model cost', async () => {
+  const f = await setup();
+  try {
+    await withCostLedger(f, async (ledger, asked) => {
+      await f.q.control({ action: 'check' });
+      await f.run();
+      const [run] = ledger.summary().recent;
+      assert.equal(run.kind, 'quick_discovery');
+      assert.equal(run.outcome, 'no_report');
+      assert.equal(run.reported, false);
+      assert.equal(run.calls, 4);
+      assert.equal(run.inputTokens, 2000);
+      assert.equal(run.outputTokens, 300);
+      assert.deepEqual(asked, ['worker']);
+      assert.equal(f.delivered.size, 0);
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test('a quick run that hands a report to the Bot is recorded as reported', async () => {
+  const f = await setup();
+  try {
+    await withCostLedger(f, async (ledger) => {
+      f.agent.whenIdle = async () => {
+        f.q.report({ key: 'offer', messages: ['我可以帮你对比这两项。'] }, 'worker');
+      };
+      await f.q.control({ action: 'check' });
+      await f.run();
+      const [run] = ledger.summary().recent;
+      assert.equal(run.outcome, 'reported');
+      assert.equal(run.reported, true);
+      assert.equal(f.delivered.size, 1);
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test('a failed quick run is recorded as failed and its retry as a separate run', async () => {
+  const f = await setup();
+  try {
+    await withCostLedger(f, async (ledger) => {
+      f.fail(true);
+      await f.q.control({ action: 'check' });
+      await f.run();
+      assert.equal(ledger.summary().recent[0].outcome, 'failed');
+      f.fail(false);
+      f.advance(30 * 60000);
+      await f.run();
+      assert.deepEqual(
+        ledger.summary().recent.map((r) => r.outcome),
+        ['no_report', 'failed'],
+      );
+    });
+  } finally {
+    await f.close();
+  }
+});

@@ -1198,6 +1198,11 @@ export async function resolveExecutionTarget(
       ? {}
       : { defaultApiProtocol: resolved.connection.defaultApiProtocol }),
     defaultModel: model,
+    ...(resolved.connection.providerType === 'openai-codex' &&
+    resolved.connection.modelSource === 'fetched' &&
+    resolved.connection.modelsFetchedAt !== undefined
+      ? { codexCompactionMetadataFetchedAt: resolved.connection.modelsFetchedAt }
+      : {}),
     models: discovered
       ? [...resolved.connection.models]
       : [...resolved.connection.models, modelInfo],

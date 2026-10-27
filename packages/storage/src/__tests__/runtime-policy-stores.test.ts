@@ -436,13 +436,16 @@ describe('runtime policy stores', () => {
       assert.equal(fetch.kind, 'ready');
       if (fetch.kind !== 'ready') return;
       const discovered = await stores.operations.completeModelFetch(fetch.ticket, {
-        models: [{ id: 'model-b' }],
+        models: [{ id: 'model-b', codexCompactionHash: '3000' }],
         source: 'fetched',
         fetchedAt: 43,
       });
       assert.equal(discovered.kind, 'committed');
       if (discovered.kind !== 'committed') return;
       const after = discovered.snapshot.connections[0];
+      assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections[0]?.models, [
+        { id: 'model-b', codexCompactionHash: '3000' },
+      ]);
       assert.deepEqual(after?.enabledModelIds, ['model-a', 'model-b']);
       assert.deepEqual(after?.modelOverrides, {
         'model-a': { vision: true },

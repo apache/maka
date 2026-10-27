@@ -593,6 +593,7 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
       'description',
       'apiProtocol',
       'contextWindow',
+      'codexCompactionHash',
       'inputLimit',
       'maxOutputTokens',
       'knowledgeCutoff',
@@ -661,6 +662,15 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
             'model context window',
             1,
             Number.MAX_SAFE_INTEGER,
+          ),
+        }),
+    ...(item.codexCompactionHash === undefined
+      ? {}
+      : {
+          codexCompactionHash: nonEmptyStringValue(
+            item.codexCompactionHash,
+            'Codex compaction hash',
+            128,
           ),
         }),
     ...(item.inputLimit === undefined

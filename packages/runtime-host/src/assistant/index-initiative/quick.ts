@@ -25,6 +25,7 @@ import { InitiativeStore } from './store.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
+import type { AssistantRunOutcome } from '../run-cost.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
@@ -375,9 +376,14 @@ export class QuickDiscoveryController {
     // A wake whose worker ended waiting for the user is a pause, not a failure; only
     // the execution phase can observe it, so the finalization below needs the flag.
     let paused = false;
+    // Observation only (#6309): the model window of this attempt, when it ran one.
+    const startedAt = Date.now();
+    let modelFrom: number | undefined;
+    let outcome: AssistantRunOutcome = 'failed';
     try {
       this.forward();
       if (!active.executionCompleted) {
+        modelFrom = Date.now();
         this.parent.refreshNotebook();
         const version = hash(QUICK_DISCOVERY_TASK);
         const input = quickWakeInput(
@@ -414,6 +420,7 @@ export class QuickDiscoveryController {
         });
       }
       this.forward();
+      outcome = this.state()?.active?.reports?.length ? 'reported' : 'no_report';
       this.store.update((s) => {
         if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
         s.checkedThrough = active.to;
@@ -443,6 +450,16 @@ export class QuickDiscoveryController {
         });
     } finally {
       this.agent = undefined;
+      // A retry that only redelivers an earlier report ran no model: not a run.
+      if (modelFrom !== undefined)
+        await this.ctx.runCost?.record({
+          kind: 'quick_discovery',
+          runId: active.id,
+          startedAt,
+          endedAt: Date.now(),
+          outcome,
+          segments: [{ sessionId: agent.sessionId, from: modelFrom, to: Date.now() }],
+        });
     }
   }
   async close() {
