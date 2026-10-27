@@ -2133,6 +2133,7 @@ export function Conversation(props: ConversationProps) {
       <View
         style={{
           display: ownHandle.empty() ? 'none' : 'flex',
+          flexDirection: 'column',
           flex: 1,
           minHeight: 0,
           width: '100%',
