@@ -63,7 +63,8 @@ accessibility role indices 34/35 are separate from the preserved mount opcodes
 geometry refresh remains separate from selection notifications, while radial
 placement follows the pointer without requiring a finite Cartesian x value.
 
-The bounded RichEditor and typed-style synchronization through that revision
+The bounded RichEditor and typed-style synchronization through
+`1849776f68ee41d73c08970fe530cf952451af13`
 uses canonical typed styles for pointer events, text selection, line limits,
 image fitting and box shadows. Direct Maka callers migrate with these APIs;
 local selectable roots, source-backed TextView selection, Android mount opcodes
@@ -87,6 +88,12 @@ canonical primitive styles. A compiled-engine regression checks their mounted
 values and reactive updates. A separate bundler smoke test compiles the retained
 terminal workbench entry and its real import/asset graph. Neither test replaces
 application TypeScript checks or mounted example UI coverage.
+
+The subsequent keymap synchronization adds `try_os()` and constructs upstream
+RichEditor fixtures inside their engine. Public keymap factories follow the
+current host keyboard convention, with compilation-target fallback outside an
+engine. Maka retains its event-time dual tables for off-engine sessions, terminal
+and Apple-browser policies, and custom binding precedence.
 
 Independent local corrections retain RichEditor geometry on its owning thread,
 retire its session subscription before dropping the geometry payload, and keep
@@ -260,8 +267,8 @@ runtime and gallery appearance checks require their supported environments;
 Linux core tests are not evidence of those visual checks.
 
 The synchronization through `d4c43ea6` adds the Shader view, held typed-ahead
-text in GPUI fields, arrow-key movement in `Tabs` and `RadioGroup`, RichEditor
-keys chosen by the engine's OS, one unit per quantity, Android density remount,
+text in GPUI fields, arrow-key movement in `Tabs` and `RadioGroup`, one unit
+per quantity, Android density remount,
 `nsh/base` registry parts and the browser-engine web runtime. The GPUI hold
 queue wraps the local `set_focus_target` transition, so inline-link targets and
 focus admission tokens remain; any focus move arms it, and hover hint
@@ -274,4 +281,5 @@ terminal backend ignores Shader mount items, so a shader view shows its
 background and children. `wgpu` and `naga` follow version 30, which Maka's GPUI
 build already uses, instead of upstream's 29; the shader readback keeps its
 previous frame when wgpu 30 cannot map a range. Maka's root dependency graph
-gains no packages from this synchronization.
+gains no packages from this synchronization. RichEditor's platform keys keep
+the keymap synchronization's host keyboard convention above.
