@@ -20,12 +20,20 @@
 import { promises as fs, readdir } from 'node:fs';
 import { resolve } from 'node:path';
 import { globIterate } from 'glob';
+import { isPathInside } from './path-containment.js';
 
 export async function globFiles(input: {
   cwd: string;
   pattern: string;
   limit?: number;
   abortSignal?: AbortSignal;
+  /**
+   * When set, matched paths that resolve outside this root are dropped. Glob
+   * expands braces before walking, so a lexically clean pattern like
+   * `{a,../*}` can still walk above its search root; the walk cannot be
+   * contained, but its results can.
+   */
+  containmentRoot?: string;
 }): Promise<{ files: string[]; truncated: boolean }> {
   let failure: NodeJS.ErrnoException | undefined;
   const directories = new Set([resolve(input.cwd)]);
@@ -71,6 +79,13 @@ export async function globFiles(input: {
       },
     },
   })) {
+    // Dropped escapes do not count toward the limit: the cap bounds returned
+    // files, not walked ones.
+    if (
+      input.containmentRoot !== undefined &&
+      !isPathInside(input.containmentRoot, resolve(input.cwd, file))
+    )
+      continue;
     if (files.length >= limit) {
       // One match past the cap is the only proof the pattern had more to give.
       truncated = true;
