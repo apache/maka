@@ -10,7 +10,7 @@ demo: ui-navigation
 `nsh/base` is the base component layer of an app's UI: unstyled components that own behavior, state, focus and
 accessibility, on every platform. It sits between the primitives (`nsh`, `nsh/mobile` and `nsh/desktop`) and the
 app's own component library, as `gpui-base` sits between `gpui` and a styled library in GPUI Kit (see
-[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), the parts charts are built from (`Plot` with `Line`, `Area`, `Grid`, `Pie` and `Arc`, in `nsh/base/plot`), workspaces the user arranges (`ResizablePanel`s in a
+[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Slider`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), the parts charts are built from (`Plot` with `Line`, `Area`, `Bar`, `Grid`, `Pie` and `Arc`, in `nsh/base/plot`), workspaces the user arranges (`ResizablePanel`s in a
 `ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), documents of Markdown or HTML (`TextView`), a code editor (`Editor`) the changes between texts (`DiffView`) and tables of rows and columns (`Table` and its parts, `DataTable`), text inputs
 (`Input`), popups shown on top of everything (`Popover`, `Menu` and `ContextMenu` with their `MenuItem`,
 `MenuSeparator` and `Submenu`, `Tooltip`, `Sheet`), toasts (`Toast` in a `ToastStack`, their lifecycle in a `ToastManager`), navigation (a `NavStack` of `NavPage`s driven
@@ -55,6 +55,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
   Sheet,
+  Slider,
   Submenu,
   Switch,
   Tab,
@@ -115,6 +116,9 @@ import type {
   StatusBar,
   RadioGroupProps,
   RadioProps,
+  SliderProps,
+  SliderScale,
+  SliderValue,
   StatusBarForeground,
   SwitchProps,
   TabProps,
@@ -144,6 +148,7 @@ walkthroughs, see the [Navigation guide](../docs/navigation.md) and [Forms and k
 | [`Tab`](../elements/tabs.md), [`Tabs`](../elements/tabs.md) | `tab()`, `tabs()` | One tab of a tab list, and the list; the app owns which one is selected and shows its content. |
 | [`Collapsible`](../elements/collapsible.md) | `collapsible()` | A region whose content expands and collapses; the app owns `open` and its trigger. |
 | [`Progress`](../elements/progress.md) | `progress()` | A progress bar; the app owns `value` (0 to 100) and `indeterminate`. |
+| [`Slider`](../elements/slider.md) | `slider()` | A value, or a range of two, picked along a track; the app owns `value` (or the slider keeps its own from `defaultValue`). |
 | [`ResizablePanelGroup`, `ResizablePanel`](../elements/resizable.md) | `h_resizable()`, `v_resizable()`, `resizable_panel()` | Panels side by side or stacked, with handles the user drags to resize them. |
 | [`DockArea`](../elements/dock.md) | `dock_area()` | A workspace of splits, tab groups and edge docks the user arranges; its layout is the app's data. |
 | [`NavStack`, `NavPage`, `createNavStack`](../elements/nav-stack.md) | `nav_stack()`, `nav_page()` | A native navigation stack and its pages. |
@@ -218,14 +223,25 @@ width. The app owns `value` (0 to 100) and `indeterminate`; screen readers get t
 value, and no value while indeterminate, when the indicator's width and motion are the app's. See
 [Progress](../elements/progress.md).
 
+### Slider
+
+A value, or a range of two, picked along a track, with no look: a track that takes presses and drags, the indicator
+inside it that the values map onto, the range and one thumb per value on it. The app owns `value` (a number or
+`[start, end]`; or the slider keeps its own from `defaultValue`) and hears `onChange` for each new value, snapped to
+`step` from `min`, and `onChangeEnd` once per change; `scale` spreads the values linearly or by orders of magnitude,
+`axis` lays the track out horizontally or vertically. Each thumb is an adjustable element for screen readers with its
+own value, a stop of the keyboard focus, and moves with WAI-ARIA's slider keys. See [Slider](../elements/slider.md).
+
 ### Plot (`nsh/base/plot`)
 
-The parts charts are built from, as `gpui-base`'s `plot`, in a module of their own: `import { Plot, Line, Area, Grid }
-from "nsh/base/plot"`. A `Plot` holds the app's rows (`data`, generic over their type, so `x` and `y` are checked
-keys or functions of a row), the `point` or `linear` scales of its axes, the row under the pointer (`onHoverChange`)
-and its motion (`motion`: the appear, the hover's fade and glide); its marks draw natively from the rows, with no JS
-per point, and paint with the SVG paint properties (`stroke-*`, `fill-*`), `currentColor` where none is set; an
-`Area` shows a background (a gradient, `bg-linear-*`) inside its shape. The hover's cross line, dots (each mark's own
+The parts charts are built from, as `gpui-base`'s `plot`, in a module of their own: `import { Plot, Line, Area, Bar,
+Grid, Pie, Arc } from "nsh/base/plot"`. A `Plot` holds the app's rows (`data`, generic over their type, so `x` and `y`
+are checked keys or functions of a row), the `point`, `linear` or `band` scales of its axes, the row under the pointer
+(`onHoverChange`) and its motion (`motion`: the appear, the hover's fade and glide); its marks draw natively from the
+rows, with no JS per point, and paint with the SVG paint properties (`stroke-*`, `fill-*`), `currentColor` where none
+is set; an `Area` or a `Bar` shows a background (a gradient, `bg-linear-*`) inside its shapes. Bars stand in the
+bands of a `band` scale, side by side or piled in a `stack`, grow in as the plot appears and fade away from the row
+under the pointer, with a `label` part at each bar's end. The hover's cross line, dots (each mark's own
 with `hoverDotClass`) and tooltip (`tooltipPlacement`, kept inside the plot) are parts the app styles and fills, moved
 natively; axis labels are the app's own elements. A `Pie` splits the turn into a slice per row (a donut with an
 `innerRadius`), each painted with its own classes (`sliceClass`, a function of its row), and an `Arc` draws one sector
@@ -418,7 +434,7 @@ launch screen.
 
 - [Navigation guide](../docs/navigation.md).
 - [Forms and keyboard](../docs/forms-and-keyboard.md).
-- [Button](../elements/button.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Collapsible](../elements/collapsible.md), [Progress](../elements/progress.md), [Plot](../elements/plot.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md),
+- [Button](../elements/button.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Collapsible](../elements/collapsible.md), [Progress](../elements/progress.md), [Slider](../elements/slider.md), [Plot](../elements/plot.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md),
   [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md), [Editor](../elements/editor.md), [DiffView](../elements/diff-view.md), [Table](../elements/table.md), [DataTable](../elements/data-table.md),
   [Text](../elements/text.md) and
   [Input](../elements/input.md).

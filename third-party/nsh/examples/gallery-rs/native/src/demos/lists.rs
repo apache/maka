@@ -612,6 +612,7 @@ fn Chat(cx: Scope<NoEvent>) -> impl IntoElement {
                 .submit_behavior(SubmitBehavior::Submit)
                 .placeholder("Message")
                 .placeholder_color(|| color(colors::FAINT))
+                .caret_color(|| color(colors::ACCENT))
                 .selection_color(|| color(colors::ACCENT))
                 .return_key_type(ReturnKeyType::Send)
                 .flex_1()

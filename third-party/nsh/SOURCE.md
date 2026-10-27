@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`1e912e1a9e079c2dc632db7bb505ce40bed1d5f9`. The first upstream synchronization
+`ad7aadd5a3cb94ae3c90c485203e44d428ea8a78`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -62,6 +62,48 @@ accessibility role indices 34/35 are separate from the preserved mount opcodes
 34 (retire), 35 (project) and 36 (component slots). Cartesian stationary-hover
 geometry refresh remains separate from selection notifications, while radial
 placement follows the pointer without requiring a finite Cartesian x value.
+
+The bounded RichEditor and typed-style synchronization through
+`1849776f68ee41d73c08970fe530cf952451af13`
+uses canonical typed styles for pointer events, text selection, line limits,
+image fitting and box shadows. Direct Maka callers migrate with these APIs;
+local selectable roots, source-backed TextView selection, Android mount opcodes
+and terminal shadow rendering remain intact. Existing `ordered-float` 5.5.0 is
+retained with the required core dependency edge rather than an unrelated upgrade.
+
+This is a breaking source and bundle migration, not a compatibility alias layer.
+Primitive `pointerEvents` moves into typed `style`; Text `numberOfLines`,
+`ellipsizeMode` and `selectable` become style `numberOfLines`, `textOverflow` and
+`userSelect`, and Image `resizeMode` becomes `objectFit`. Selectable View roots
+and component-owned selection props remain distinct. Text, Image and Input
+state styles use their respective typed style domains; canonical `line-clamp-*`,
+`truncate`, `select-*`, `pointer-events-*` and `object-*` classes resolve through
+those same style rules. Legacy single-shadow fields become `boxShadow` layers.
+Consumers must regenerate declarations and rebuild old JS bundles with the
+matching compiler/runtime; old prop or style aliases are not restored.
+Maka's content-sized composer uses CSS `flex: initial`, and its conversation
+wrapper explicitly keeps column layout when setting `display: flex`.
+Retained terminal examples and selection/overlay documentation use the same
+canonical primitive styles. A compiled-engine regression checks their mounted
+values and reactive updates. A separate bundler smoke test compiles the retained
+terminal workbench entry and its real import/asset graph. Neither test replaces
+application TypeScript checks or mounted example UI coverage.
+
+The subsequent keymap synchronization adds `try_os()` and constructs upstream
+RichEditor fixtures inside their engine. Public keymap factories follow the
+current host keyboard convention, with compilation-target fallback outside an
+engine. Maka retains its event-time dual tables for off-engine sessions, terminal
+and Apple-browser policies, and custom binding precedence.
+
+Independent local corrections retain RichEditor geometry on its owning thread,
+retire its session subscription before dropping the geometry payload, and keep
+host-specific keyboard conventions and explicit event policy. Plot stationary
+geometry refresh also supports horizontal Bar bands without duplicate hover
+notifications. Headless view focus commands follow mount-item order so later
+blur and retirement decisions observe the current owner. The RichEditor terminal
+sink uses the same leaf `BoxNone` and native post-mount `autoFocus` approach as
+the code Editor; graphical backends and existing focus admission checks are not
+weakened. These are local quality adaptations, not upstream import bytes.
 
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while
@@ -133,6 +175,13 @@ OSC 777 `nsh-text-input` extension; a matching terminal-side IME producer must
 supply the composition snapshots. These local adaptations do not establish
 stock-terminal support or end-to-end OS IME validation.
 
+The code `Editor`'s terminal input sink uses `BoxNone` to leave pointer hits
+with the underlying content while remaining a keyboard focus target. Its native
+`autoFocus` prop handles initial focus after mounting; an early controller focus
+request can precede attachment. Other renderers retain their existing sink
+behavior, and terminal scope, disabled, ancestor and retirement checks remain
+unchanged. This is a local integration correction, not an upstream sync.
+
 The GPUI and terminal backends also implement node-scoped `Input.replaceRange`
 for completion edits. The command checks the observed native edit count,
 original text and UTF-16 selection before replacing a range in one undoable
@@ -166,6 +215,12 @@ when no paste listener is mounted, without inserting the paths as text.
 
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
+
+The bundler has a local Windows network-share adaptation: regular and hot entry
+paths use an ordinary UNC spelling only when re-canonicalizing it proves the
+same native file identity. This keeps entry, working-directory and plugin paths
+consistent for Rolldown without copying sources or changing the import baseline.
+The conversion preserves native path components, including non-Unicode names.
 
 A manual dispatch of Maka's existing CI also runs the nested NSH core, base,
 engine, JS, headless (with `agent`), terminal, bundler and development-tooling

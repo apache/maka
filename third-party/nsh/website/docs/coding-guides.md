@@ -624,7 +624,8 @@ Rules:
   token class (`bg-primary`), or add the missing role to the app's theme file;
 - app layout should use the spacing and type scales (`p-2`, `gap-3`, `w-64`, `text-sm`; `.p_2()`, `.gap_3()`,
   `.w_64()`, `.text_sm()`) instead of arbitrary values (`p-[13px]`, `px(13.0)`);
-- classes mean exactly what they mean in Tailwind CSS v4, and CSS values what they mean in a browser; an
+- classes mean exactly what they mean in Tailwind CSS v4, and style values what the
+  [style reference](../modules/style-reference.md) gives them (CSS's, in native forms: numbers are points); an
   `unknown class` warning is a finding to fix;
 - use semantic tokens for meaning, not palette position;
 - keep state-independent geometry in the ordinary builder chain or class string;

@@ -27,7 +27,7 @@ function Section(props: { label: string; detail: string; open: boolean; onToggle
           <Text style={{ fontSize: size.label, fontWeight: "500", color: ui().text }}>{props.label}</Text>
           <Text style={{ fontSize: size.detail, color: ui().muted }}>{props.detail}</Text>
         </View>
-        <View class="h-5 w-2 items-center justify-center transition-transform duration-150 motion-reduce:transition-none" style={{ transform: [{ rotate: props.open ? "90deg" : "0deg" }] }}>
+        <View class="h-5 w-2 items-center justify-center transition-transform duration-150 motion-reduce:transition-none" style={{ rotate: props.open ? "90deg" : "0deg" }}>
           <Text style={{ fontSize: 18, color: ui().muted }}>›</Text>
         </View>
       </View>

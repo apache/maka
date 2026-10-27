@@ -50,6 +50,291 @@ async fn pending(fixture: &Fixture, session: &str) -> InteractionRecord {
         commits.changed().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn root_app_stream_delivers_publication_and_removal_without_source_revision_change() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        async fn next_pending(
+            watch: &mut maka_host_runtime::application::Subscription,
+        ) -> Result<Value, String> {
+            loop {
+                let update = watch.recv().await.ok_or("interaction stream closed")?;
+                if update["kind"] == "interactions" {
+                    return Ok(update["pending"].clone());
+                }
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+        )
+        .await;
+        let session = fixture.create("Root app stream").await;
+        let started = fixture.send(&session).await.unwrap();
+        let (mut held, _) = listener.accept().await.unwrap();
+        request(&mut held).await;
+        let store = fixture.session(&session).await;
+        let projection = store
+            .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(&session)
+            .await
+            .unwrap()
+            .unwrap();
+        let source_revision = projection.session.revision;
+        let configuration = &projection.session.configuration;
+        let binding = projection
+            .session
+            .workspace_binding
+            .as_ref()
+            .unwrap()
+            .stamp();
+        let basis = maka_agent_facts::workspace::PermissionBasis {
+            boundary_revision: configuration
+                .workspace
+                .boundary_revision(configuration.boundary_revision, binding)
+                .unwrap(),
+            binding,
+        };
+        let invocation = projection.root_turn.unwrap().invocation;
+        let mut target = maka_workspace_api::computer::target();
+        target.scope = maka_agent_facts::interaction::GrantScope::ComputerApp {
+            platform: maka_agent_facts::interaction::ComputerAppPlatform::Macos,
+            application_id: "org.example.StreamFixture".into(),
+        };
+        let revision = store
+            .computer_app_authority_revision(&target)
+            .await
+            .unwrap();
+        let record = InteractionRecord {
+            session_id: session.clone(),
+            turn_id: invocation.turn_id.clone(),
+            run_id: invocation.run_id.clone(),
+            request_id: "stream_app_consent".into(),
+            created_at: 1,
+            outcome: None,
+            request: maka_agent_facts::interaction::InteractionRequest::ComputerApp {
+                tool_use_id: "stream_app_tool".into(),
+                native_operation_id: "stream_native_effect".into(),
+                target,
+                basis,
+                display: maka_agent_facts::interaction::ComputerAppDisplay {
+                    name: "Trusted stream fixture".into(),
+                    app_path: "/Stream Fixture.app".into(),
+                    risk: None,
+                    warning: None,
+                },
+                allow_always: false,
+                authority_revision: revision,
+            },
+        };
+        let mut watch = fixture
+            .app
+            .client()
+            .subscribe(
+                fixture.binding(2).await,
+                "watch".into(),
+                json!({"sessionId":session,"after":projection.through_sequence}),
+                scope(&fixture.issuer, true),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(15), async {
+            let empty = json!({"revision":source_revision,"entries":[]});
+            if next_pending(&mut watch).await? != empty {
+                return Err("initial canonical pending summary was not empty".to_owned());
+            }
+            if !store
+                .establish_run_interaction(&invocation, &record)
+                .await
+                .map_err(|error| error.to_string())?
+                .matches
+            {
+                return Err("app request publication conflicted".into());
+            }
+            let published = next_pending(&mut watch).await?;
+            let expected = json!({"revision":source_revision,"entries":[{
+                "requestId":"stream_app_consent","kind":"computer_app","toolUseId":"stream_app_tool"
+            }]});
+            if published != expected {
+                return Err(format!(
+                    "root app publication was not delivered exactly: {published}"
+                ));
+            }
+            let response = fixture
+                .mutation(
+                    2,
+                    "respond",
+                    json!({"sessionId":session,"requestId":record.request_id,
+                    "answer":{"kind":"computer_app","decision":"deny"}}),
+                    Uuid::new_v4(),
+                )
+                .await?;
+            if response["record"]["outcome"]["decision"] != "deny" {
+                return Err(format!("app answer was not committed: {response}"));
+            }
+            let removed = next_pending(&mut watch).await?;
+            if removed != empty {
+                return Err(format!(
+                    "root app removal was not delivered exactly: {removed}"
+                ));
+            }
+            let actual = store
+                .get::<maka_agent_api::session::StoredSessionConfiguration>()
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or("source Session disappeared")?;
+            if actual.revision != source_revision {
+                return Err("source revision changed during root-only consent".into());
+            }
+            Ok(())
+        })
+        .await;
+        drop(watch);
+        fixture
+            .mutation(
+                2,
+                "stop",
+                json!({"sessionId":session,"invocationId":started["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        fixture.drained().await;
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+        observed
+            .expect("root-only pending delivery timed out")
+            .unwrap();
+    })
+    .await
+    .expect("native root app interaction stream fixture timed out");
+}
+
+#[tokio::test]
+async fn native_browser_consent_accepts_original_producer_and_rejects_foreign_provider() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+        )
+        .await;
+        let session = fixture.create("Browser producer consent").await;
+        let started = fixture.send(&session).await.unwrap();
+        let (mut held, _) = listener.accept().await.unwrap();
+        request(&mut held).await;
+        let store = fixture.session(&session).await;
+        let projection = store
+            .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(&session)
+            .await
+            .unwrap()
+            .unwrap();
+        let binding = projection
+            .session
+            .workspace_binding
+            .as_ref()
+            .unwrap()
+            .stamp();
+        let configuration = &projection.session.configuration;
+        let basis = maka_agent_facts::workspace::PermissionBasis {
+            boundary_revision: configuration
+                .workspace
+                .boundary_revision(configuration.boundary_revision, binding)
+                .unwrap(),
+            binding,
+        };
+        let invocation = projection.root_turn.unwrap().invocation;
+        let observed: Result<(), String> = async {
+            for (id, original) in [("browser_original", true), ("browser_foreign", false)] {
+                let mut target = maka_workspace_api::computer::target();
+                target.capability = maka_agent_facts::interaction::GrantCapability::Browser;
+                target.scope = maka_agent_facts::interaction::GrantScope::BrowserOrigin {
+                    origin: "https://example.com".into(),
+                };
+                if !original {
+                    target.provider_id = "foreign_browser_provider".into();
+                }
+                let record = InteractionRecord {
+                    session_id: session.clone(),
+                    turn_id: invocation.turn_id.clone(),
+                    run_id: invocation.run_id.clone(),
+                    request_id: id.into(),
+                    created_at: 1,
+                    outcome: None,
+                    request: maka_agent_facts::interaction::InteractionRequest::ClientCapability {
+                        tool_use_id: "browser_tool".into(),
+                        target: target.clone(),
+                        basis: Some(basis),
+                    },
+                };
+                store
+                    .establish_run_interaction(&invocation, &record)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let result = fixture
+                    .mutation(
+                        2,
+                        "respond",
+                        json!({"sessionId":session,"requestId":id,
+                    "answer":{"kind":"client_capability","decision":"allow"}}),
+                        Uuid::new_v4(),
+                    )
+                    .await?;
+                let grant = store
+                    .client_capability_grant(&session, &target)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if original {
+                    if result["kind"] != "recorded"
+                        || result["record"]["outcome"]["decision"] != "allow"
+                        || grant.as_ref().map(|grant| &grant.target) != Some(&target)
+                    {
+                        return Err(format!(
+                            "original browser producer was not granted: {result}"
+                        ));
+                    }
+                } else {
+                    if result != json!({"kind":"rejected","reason":"unsupported"})
+                        || grant.is_some()
+                    {
+                        return Err(format!(
+                            "foreign browser producer acquired authority: {result}"
+                        ));
+                    }
+                    if store
+                        .interaction(id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or("foreign request disappeared")?
+                        .outcome
+                        .is_some()
+                    {
+                        return Err("unsupported producer was answered".into());
+                    }
+                }
+            }
+            Ok(())
+        }
+        .await;
+        fixture
+            .mutation(
+                2,
+                "stop",
+                json!({"sessionId":session,"invocationId":started["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        fixture.drained().await;
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+        observed.unwrap();
+    })
+    .await
+    .expect("native browser producer consent fixture timed out");
+}
+
 #[tokio::test]
 async fn native_question_roundtrip_is_bound_owned_and_first_wins() {
     tokio::time::timeout(Duration::from_secs(30), async {

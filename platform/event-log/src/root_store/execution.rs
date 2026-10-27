@@ -19,13 +19,23 @@
 
 use super::*;
 use maka_agent_facts::workspace::{BindingRef, PermissionBasis};
-use std::sync::Mutex;
+use maka_agent_facts::{event::Invocation, tools::ToolError};
+use maka_capabilities::call::{Resources, Scope, Ticket};
+use std::sync::{Mutex, OnceLock};
+use tokio_util::sync::CancellationToken;
+
+struct InvocationLifetime {
+    invocation: Invocation,
+    cancellation: CancellationToken,
+    effects: Arc<Resources>,
+}
 
 struct Guards {
     _work: gates::SharedPins,
     _binding: gates::SharedPins,
     _authority: Arc<root::RootOwner>,
     registry: Arc<gates::Gates>,
+    invocation: OnceLock<Arc<InvocationLifetime>>,
 }
 impl Drop for Guards {
     fn drop(&mut self) {
@@ -37,6 +47,21 @@ pub(super) struct Pins {
     guards: Mutex<Option<Arc<Guards>>>,
 }
 impl Pins {
+    fn invocation(&self, invocation: &Invocation) -> Result<Arc<InvocationLifetime>, StoreError> {
+        let guards = self.guards.lock().unwrap();
+        let lifetime = guards
+            .as_ref()
+            .ok_or(StoreError::ConnectionClosed)?
+            .invocation
+            .get()
+            .ok_or_else(|| StoreError::InvalidTransition("execution has no bound Run".into()))?;
+        if &lifetime.invocation != invocation {
+            return Err(StoreError::InvalidTransition(
+                "execution belongs to another Run".into(),
+            ));
+        }
+        Ok(lifetime.clone())
+    }
     pub(super) fn active(&self) -> bool {
         self.guards.lock().unwrap().is_some()
     }
@@ -84,7 +109,122 @@ pub struct SessionExecutionLease {
     store: SessionStore,
     pins: Option<Arc<Pins>>,
 }
+
+/// An original native journal operation which may outlive its evaluation
+/// observer, but must settle before its Run can be sealed.
+pub struct InvocationEffectLease {
+    lease: Option<SessionExecutionLease>,
+    ticket: Option<Ticket>,
+    lifetime: Arc<InvocationLifetime>,
+    cancellation: CancellationToken,
+}
+/// Completion authority retained only by the accepted Run owner. Child stores
+/// can register effects, but cannot seal the group while owning a ticket.
+pub struct InvocationEffects {
+    lifetime: Arc<InvocationLifetime>,
+}
+impl InvocationEffects {
+    pub fn is_idle(&self) -> bool {
+        self.lifetime.effects.is_idle()
+    }
+    pub async fn settle(&self) -> Result<(), ToolError> {
+        self.lifetime.effects.settle().await
+    }
+}
+impl InvocationEffectLease {
+    pub fn store(&self) -> SessionStore {
+        self.lease.as_ref().expect("live effect lease").store()
+    }
+    pub fn cancellation(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+    /// Construct the initial scope before journal admission. A stopped Run can
+    /// reject that construction without leaving an unowned effect ticket.
+    pub fn into_scope(self, source: &Scope) -> Result<(Self, Scope), ToolError> {
+        let scope = (|| {
+            if source.identity.agent() != Some(&self.lifetime.invocation) {
+                return Err(ToolError::Failed(
+                    "effect scope belongs to another Run".into(),
+                ));
+            }
+            source.for_execution(
+                self.store()
+                    .execution_custody()
+                    .map_err(|error| ToolError::Persistence(error.to_string()))?,
+                self.cancellation(),
+            )
+        })();
+        match scope {
+            Ok(scope) => Ok((self, scope)),
+            Err(error) => {
+                self.finish(Ok(()));
+                Err(error)
+            }
+        }
+    }
+    /// Only the original owner calls this after the journal's physical outcome
+    /// has committed. The receipt describes physical settlement, not the tool's
+    /// business result: a missing receipt quarantines the original admission.
+    pub fn finish(mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.lease.take().expect("live effect lease").finish();
+                self.ticket
+                    .take()
+                    .expect("live effect ticket")
+                    .complete(Ok(()));
+            }
+            Err(message) => self.fail(message),
+        }
+    }
+    pub fn retain_unconfirmed(mut self, message: String) {
+        self.fail(message);
+    }
+    fn fail(&mut self, message: String) {
+        if let Some(lease) = self.lease.take() {
+            lease.retain_unconfirmed();
+        }
+        if let Some(ticket) = self.ticket.take() {
+            ticket.complete(Err(message));
+        }
+        self.lifetime.cancellation.cancel();
+    }
+}
+impl Drop for InvocationEffectLease {
+    fn drop(&mut self) {
+        if self.ticket.is_some() {
+            self.fail("original invocation effect owner disappeared".into());
+        }
+    }
+}
 impl SessionStore {
+    fn invocation_lifetime(
+        &self,
+        invocation: &Invocation,
+    ) -> Result<Arc<InvocationLifetime>, StoreError> {
+        self.execution
+            .as_ref()
+            .ok_or_else(|| StoreError::InvalidTransition("Session has no active execution".into()))?
+            .invocation(invocation)
+    }
+    pub(super) fn fork_invocation_effect(
+        &self,
+        invocation: &Invocation,
+    ) -> Result<InvocationEffectLease, StoreError> {
+        let lifetime = self.invocation_lifetime(invocation)?;
+        let mut ticket = lifetime
+            .effects
+            .reserve()
+            .map_err(|error| StoreError::InvalidTransition(error.to_string()))?;
+        let lease = self.fork_execution()?;
+        ticket.start();
+        Ok(InvocationEffectLease {
+            lease: Some(lease),
+            ticket: Some(ticket),
+            cancellation: lifetime.cancellation.child_token(),
+            lifetime,
+        })
+    }
     pub(super) fn fork_execution(&self) -> Result<SessionExecutionLease, StoreError> {
         let pins = self
             .execution
@@ -100,6 +240,43 @@ impl SessionStore {
     }
 }
 impl SessionExecutionScope {
+    /// Bind the actual Run owner before any executor or tool can obtain custody.
+    pub fn accept_invocation(
+        mut self,
+        invocation: Invocation,
+        cancellation: CancellationToken,
+    ) -> Result<(SessionExecutionLease, InvocationEffects), StoreError> {
+        self.store.check_session(&invocation.session_id)?;
+        let lifetime = Arc::new(InvocationLifetime {
+            invocation,
+            cancellation,
+            effects: Arc::default(),
+        });
+        {
+            let guards = self
+                .pins
+                .as_ref()
+                .ok_or(StoreError::ConnectionClosed)?
+                .guards
+                .lock()
+                .unwrap();
+            guards
+                .as_ref()
+                .ok_or(StoreError::ConnectionClosed)?
+                .invocation
+                .set(lifetime.clone())
+                .map_err(|_| {
+                    StoreError::InvalidTransition("execution Run is already bound".into())
+                })?;
+        }
+        Ok((
+            SessionExecutionLease {
+                store: self.store.clone(),
+                pins: self.pins.take(),
+            },
+            InvocationEffects { lifetime },
+        ))
+    }
     pub fn store(&self) -> SessionStore {
         self.store.clone()
     }
@@ -195,6 +372,7 @@ impl SessionStore {
             _binding: binding,
             _authority: authority,
             registry: self.gates.clone(),
+            invocation: OnceLock::new(),
         });
         let id = self.id.to_string();
         let observed = owner.scoped(Arc::new((access, guards.clone())));

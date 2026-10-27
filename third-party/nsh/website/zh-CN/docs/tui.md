@@ -70,8 +70,8 @@ NSH 保持以 point 布局。默认情况下，一个终端单元格代表 **8×
 单元格几何。
 
 图片支持 PNG、JPEG、GIF 和 WebP，也支持解码器资源上限内的 GIF、WebP 动画。
-`resizeMode` 确定图片大小后，`objectPosition` 设置图片在框内的位置，同时用于字符和像素图像。
-`defaultSource` 在加载期间和
+`objectFit` 确定图片大小后，`objectPosition` 设置图片在框内的位置，同时用于字符和像素图像。
+`placeholder` 在加载期间和
 加载出错后保持可见。`blurRadius` 由工作线程处理；`fadeDuration` 设置已加载图片在占位图上的淡入时长，终端的
 默认值为 0 ms。下载进度最多每 100 ms 送达一次，并在完成时送达最终进度。
 
@@ -119,7 +119,7 @@ Ctrl+Y 撤销和重做。安全输入框隐藏内容并保护复制与剪切。�
 可选择文本支持鼠标选择，行内文本链接通过指针命中测试激活。
 [`View selectable`](../elements/text-selection.md) 让同一个选区跨越文本节点、多行文本和 `TextView` 文档块。
 拖动或 Shift+点击可扩展选区；按住指针拖出 Scroll 边缘时会自动滚动。Ctrl+A 选中区域内的全部文字，
-Ctrl+C 或 Ctrl+Insert 复制，Escape 清除非空选区。`selectable={false}` 的文字不参与选择，可用于排除标签和
+Ctrl+C 或 Ctrl+Insert 复制，Escape 清除非空选区。设置了 `style={{ userSelect: "none" }}` 的文字不参与选择，可用于排除标签和
 控件文字。复制使用底层文本及其中的换行和 Unicode 内容，经由上述同一套宿主剪贴板与 OSC 52 路径输出。
 模态界面或获得焦点的弹出层会暂停已保留的背景选区对键盘的处理；关闭弹出层后，该选区可再次接收复制等操作。
 原生提示框和操作表使用 Tab 或方向键选择按钮，Enter 激活按钮。

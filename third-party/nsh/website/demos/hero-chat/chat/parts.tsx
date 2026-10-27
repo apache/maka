@@ -99,7 +99,7 @@ export function FileChip(props: { file: FileRef; onRemove?: () => void }) {
         <Glyph name="file" size={16} tint={colors.danger} />
       </View>
       <View style={{ gap: 1 }}>
-        <Text numberOfLines={1} style={{ fontSize: 14, color: colors.text, maxWidth: 170 }}>
+        <Text style={{ numberOfLines: 1, fontSize: 14, color: colors.text, maxWidth: 170 }}>
           {props.file.name}
         </Text>
         <Text style={{ fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums"] }}>PDF · {props.file.size}</Text>
@@ -171,7 +171,7 @@ export function ToolCard(props: { tool: Tool }) {
         </View>
         <View style={{ flex: 1, gap: 1 }}>
           <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{head().title}</Text>
-          <Text numberOfLines={1} style={{ fontSize: 13, color: colors.muted }}>
+          <Text style={{ numberOfLines: 1, fontSize: 13, color: colors.muted }}>
             {head().detail}
           </Text>
         </View>
@@ -237,12 +237,12 @@ function ToolBody(props: { tool: Tool }) {
   return (
     <View style={{ borderTopWidth: 1, borderTopColor: colors.line }}>
       <View style={{ padding: 12, backgroundColor: colors.inset }}>
-        <Text selectable style={{ fontFamily: mono, fontSize: 12, lineHeight: 18, color: isDark() ? "#c9cdd3" : colors.code }}>{code().code}</Text>
+        <Text style={{ userSelect: "text", fontFamily: mono, fontSize: 12, lineHeight: 18, color: isDark() ? "#c9cdd3" : colors.code }}>{code().code}</Text>
       </View>
       <If when={code().state === "done"}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, height: 44, borderTopWidth: 1, borderTopColor: colors.line }}>
           <Text style={{ fontSize: 13, color: colors.muted }}>Output</Text>
-          <Text selectable style={{ flex: 1, fontFamily: mono, fontSize: 14, color: colors.up }}>{code().output}</Text>
+          <Text style={{ userSelect: "text", flex: 1, fontFamily: mono, fontSize: 14, color: colors.up }}>{code().output}</Text>
           <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>exit 0 · {code().ms} ms</Text>
         </View>
       </If>
@@ -257,7 +257,7 @@ function SourceRow(props: { source: Source; index: number }) {
         <Text style={{ fontSize: 12, fontWeight: "700", color: toneColor(props.source.tone) }}>{props.source.site[0].toUpperCase()}</Text>
       </View>
       <View style={{ flex: 1, gap: 1 }}>
-        <Text numberOfLines={1} style={{ fontSize: 14, color: colors.text }}>
+        <Text style={{ numberOfLines: 1, fontSize: 14, color: colors.text }}>
           {props.source.title}
         </Text>
         <Text style={{ fontSize: 12, color: colors.faint }}>{props.source.site}</Text>

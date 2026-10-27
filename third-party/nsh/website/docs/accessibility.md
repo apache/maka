@@ -52,7 +52,7 @@ view()
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | The value of a range or textual element. |
 | | `accessibilityActions` | `{ name, label? }[]` | Actions offered to assistive technologies. |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | An action was performed (Rust: its name). |
-| | `accessibilityElementsHidden` | `boolean` | Hides the view and its subtree from assistive technologies. |
+| `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | Hides the view and its subtree from assistive technologies. |
 | | `importantForAccessibility` | `"auto" \| "yes" \| "no" \| "no-hide-descendants"` | Whether the view (and its subtree) is exposed. |
 | | `android={{ accessibilityLiveRegion }}` | `"none" \| "polite" \| "assertive"` | Android: how changes of the view are announced to TalkBack. |
 | `.test_id(..)` | `testID` | `string` | An identifier for UI tests (the accessibility identifier on iOS, the resource id on Android); not read aloud. |
@@ -68,7 +68,8 @@ The most useful ones:
 - `"button"` for anything pressable that is not a link; `"link"` for navigation to content.
 - `"header"` for section titles: screen reader users jump between headers to skim a screen.
 - `"switch"`, `"checkbox"`, `"radio"` with `accessibilityState.checked`.
-- `"adjustable"` for sliders and steppers, with `accessibilityValue` and the `increment` / `decrement` actions.
+- `"adjustable"` for sliders and steppers, with `accessibilityValue` and the `increment` / `decrement` actions
+  (each thumb of a [`Slider`](../elements/slider.md) is one).
 - `"image"` for meaningful images, with a label; decorative images should be hidden instead.
 
 ```rust tabs
@@ -163,11 +164,13 @@ Some action names are standard and map to the platforms' own gestures:
 | Name | iOS (VoiceOver) | Android (TalkBack) |
 |---|---|---|
 | `activate` | Double tap | Double tap (click) |
-| `increment`, `decrement` | Swipe up / down on an adjustable element | Scroll forward / backward |
+| `increment`, `decrement` | Swipe up / down, then VoiceOver reads the new value | Scroll forward / backward |
 | `longpress` | | Double tap and hold |
 | `expand`, `collapse` | | Expand / collapse |
 | `magicTap` | Two-finger double tap | |
 | `escape` | Two-finger Z scrub | |
+
+An element with `increment` or `decrement` is adjustable whatever its role: a chart keeps its `"image"` role and steps through its points with VoiceOver's swipes and TalkBack's scrolls, its `accessibilityValue` read after each step.
 
 Any other name becomes a custom action, listed in VoiceOver's actions rotor and TalkBack's actions menu with its `label` (or its name). Custom actions are the accessible form of swipe-to-delete and similar gestures:
 

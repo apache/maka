@@ -42,6 +42,17 @@ impl SessionStore {
     }
 }
 impl RootStore {
+    /// Retain one accepted effect and its exact Run completion obligation.
+    /// Ordinary session-owned background resources use `fork_execution` instead.
+    pub fn fork_invocation_effect(
+        &self,
+        custody: &dyn ExecutionCustody,
+        invocation: &Invocation,
+    ) -> Result<super::InvocationEffectLease, StoreError> {
+        self.session_for_execution(custody, invocation)?
+            .fork_invocation_effect(invocation)
+    }
+
     /// Fork physical child work from the same original admission. The child
     /// retains those guards independently until its own confirmed cleanup.
     pub fn fork_execution(

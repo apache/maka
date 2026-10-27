@@ -680,7 +680,7 @@ impl Prepared {
     }
 
     /// `line` (starting at `start`) cut to `width` with an ellipsis, as
-    /// `ellipsizeMode` says, standing for the rest of the text.
+    /// `textOverflow` says, standing for the rest of the text.
     fn truncate(&self, start: CFIndex, width: f64) -> Option<CFRetained<CTLine>> {
         let kind = match self.ellipsize {
             EllipsizeMode::Tail => CTLineTruncationType::End,
@@ -1052,7 +1052,7 @@ pub(crate) struct DrawnText {
     pub(crate) layout: TextLayout,
     /// The content box in the view (inside padding and borders).
     pub(crate) content: nsh_core::Bounds<nsh_core::Points>,
-    /// The selection of `selectable` text, kept across new content.
+    /// The selection of selectable text, kept across new content.
     selection: Option<Selection>,
     /// The part of a selectable view's selection in this text
     /// ([`crate::selectable_view`]).
@@ -1104,7 +1104,7 @@ pub(crate) fn set(
     view.restyle();
 }
 
-/// The view draws `selectable` text: mouse drags over it select rather
+/// The view draws selectable text: mouse drags over it select rather
 /// than scroll, and its pointer is the I-beam.
 pub(crate) fn selectable(state: &crate::view::ViewState) -> bool {
     state.text.as_ref().is_some_and(|t| t.text.is_selectable())
@@ -1707,7 +1707,7 @@ enum Unit {
     Paragraph,
 }
 
-/// The range selection of a `selectable` text view, desktop style: a mouse
+/// The range selection of a selectable text view, desktop style: a mouse
 /// drag selects characters, a double click words and a triple click the
 /// paragraph (and drags on by them), Shift+click extends, Cmd+C copies,
 /// Cmd+A selects all, Escape or a press anywhere else clears. Offsets are

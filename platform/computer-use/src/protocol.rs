@@ -19,6 +19,12 @@
 
 use serde::{Deserialize, Serialize};
 
+mod browser_mutation;
+pub use browser_mutation::{
+    BrowserCheckOptions, BrowserClickOptions, BrowserKeyboardModifier, BrowserMouseButton,
+    BrowserMutationOperation, BrowserSelectOption, BrowserTextOptions,
+};
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -31,10 +37,19 @@ pub enum Handle {
     Tab(String),
 }
 
+pub use crate::browser_clipboard::{
+    Entry as ClipboardEntry, Item as ClipboardItem, Items as ClipboardItems,
+    Payload as ClipboardPayload, PresentationStyle as ClipboardPresentationStyle,
+};
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Command {
     Documentation,
+    StartAudioRecording {
+        options: AudioOptions,
+    },
+    StopAudioRecording,
     ConfigureCursor {
         options: crate::cursor::Options,
     },
@@ -74,6 +89,56 @@ pub enum Command {
     GetBrowser {
         options: BrowserOptions,
     },
+    BrowserTab {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+        reference: BrowserTabReference,
+    },
+    TabMetadata {
+        handle: Handle,
+    },
+    ClipboardRead {
+        handle: Handle,
+    },
+    ClipboardReadText {
+        handle: Handle,
+    },
+    ClipboardWrite {
+        handle: Handle,
+        items: ClipboardItems,
+    },
+    ClipboardWriteText {
+        handle: Handle,
+        text: String,
+    },
+    GetJsDialog {
+        handle: Handle,
+    },
+    HandleJsDialog {
+        handle: Handle,
+        #[serde(rename = "dialogId")]
+        dialog_id: String,
+        action: DialogAction,
+        #[serde(
+            default,
+            rename = "promptText",
+            deserialize_with = "dialog_prompt_text",
+            skip_serializing_if = "Option::is_none"
+        )]
+        prompt_text: Option<String>,
+    },
+    BrowserRead {
+        handle: Handle,
+        locator: LocatorPlan,
+        operation: BrowserReadOperation,
+        #[serde(default)]
+        options: BrowserReadOptions,
+    },
+    BrowserMutation {
+        handle: Handle,
+        locator: LocatorPlan,
+        operation: BrowserMutationOperation,
+    },
     GetTab {
         reference: TabReference,
         options: InventoryOptions,
@@ -81,9 +146,28 @@ pub enum Command {
     CreateBrowserTab {
         #[serde(rename = "browserId")]
         browser_id: String,
-        url: String,
+        url: Option<String>,
         options: CreateTabOptions,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DialogAction {
+    Accept,
+    Dismiss,
+}
+
+fn dialog_prompt_text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioOptions {
+    pub max_duration_ms: Option<u64>,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +204,43 @@ pub enum TabReference {
     Id(String),
     Url { url: String },
     Mention { mention: String },
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "id",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BrowserTabReference {
+    Existing(String),
+    New,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocatorPlan {
+    pub selector: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum BrowserReadOperation {
+    DomSnapshot,
+    Count,
+    AllTextContents,
+    TextContent,
+    InnerText,
+    GetAttribute { name: String },
+    IsEnabled,
+    IsVisible,
+    Rows { relative: Option<LocatorPlan> },
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserReadOptions {
+    pub timeout_ms: Option<u64>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -183,8 +304,8 @@ impl Direction {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Distance {
-    Pages(u64),
-    Pixels { pixels: u64 },
+    Pages(f64),
+    Pixels { pixels: f64 },
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -222,6 +343,15 @@ pub enum Action {
         target: Position,
         options: ClickOptions,
     },
+    LinuxClick {
+        input: serde_json::Value,
+    },
+    LinuxScroll {
+        input: serde_json::Value,
+    },
+    LinuxDrag {
+        input: serde_json::Value,
+    },
     Drag {
         from: [f64; 2],
         to: [f64; 2],
@@ -229,6 +359,11 @@ pub enum Action {
     Scroll {
         target: Position,
         direction: Direction,
+        #[serde(
+            default,
+            deserialize_with = "scroll_distance",
+            skip_serializing_if = "Option::is_none"
+        )]
         distance: Option<Distance>,
     },
     SetValue {
@@ -264,4 +399,11 @@ pub enum Action {
     Forward,
     Reload,
     Close,
+}
+
+fn scroll_distance<'de, D>(deserializer: D) -> Result<Option<Distance>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Distance::deserialize(deserializer).map(Some)
 }

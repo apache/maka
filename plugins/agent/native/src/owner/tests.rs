@@ -37,6 +37,8 @@ mod todo_tests;
 
 #[path = "tests/computer.rs"]
 mod computer;
+#[path = "tests/computer_controls.rs"]
+mod computer_controls;
 
 #[path = "tests/request_capture.rs"]
 mod request_capture;

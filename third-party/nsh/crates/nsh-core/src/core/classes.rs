@@ -3,8 +3,6 @@
 //! on changes: the appearance, the window size, the layout direction, the
 //! node's interaction states, its group's states or its sibling position.
 
-use std::sync::Arc;
-
 use super::{Core, Key, Kind, NO_KEY, dirty, disabling_changes};
 use crate::{
     geometry::{Points, Size},
@@ -23,7 +21,7 @@ use crate::{
 fn inline_color(patch: &StylePatch) -> Option<Color> {
     patch.decls().iter().rev().find_map(|d| match d {
         crate::style::StyleDecl::Set(crate::style::StyleKey::Color, value) => Some(match value {
-            crate::style::PatchValue::Str(s) => Color::parse(s),
+            crate::style::PropertyValue::Color(c) => *c,
             _ => None,
         }),
         _ => None,
@@ -84,15 +82,15 @@ impl Part {
 #[derive(Debug, Default)]
 pub(super) struct NodeParts {
     /// The classes as set, before the state styles are merged in.
-    base: Option<Arc<ClassList>>,
+    base: Option<std::rc::Rc<ClassList>>,
     /// The state styles, by [`Part`] (the first seven).
-    states: [Option<Arc<StylePatch>>; 7],
+    states: [Option<std::rc::Rc<StylePatch>>; 7],
     /// The state styles as rules (none without any).
-    state_rules: Option<Arc<ClassList>>,
+    state_rules: Option<std::rc::Rc<ClassList>>,
     /// The inline styles of the other parts.
-    styles: Vec<(Part, Arc<StylePatch>)>,
+    styles: Vec<(Part, std::rc::Rc<StylePatch>)>,
     /// The classes of the other parts.
-    classes: Vec<(Part, Arc<ClassList>)>,
+    classes: Vec<(Part, std::rc::Rc<ClassList>)>,
 }
 
 /// The state style parts, by their index in [`NodeParts::states`].
@@ -394,7 +392,12 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// Sets the inline style of `key`'s `part` (`None`: removes it).
-    pub(super) fn set_part_style(&mut self, key: Key, part: Part, patch: Option<Arc<StylePatch>>) {
+    pub(super) fn set_part_style(
+        &mut self,
+        key: Key,
+        part: Part,
+        patch: Option<std::rc::Rc<StylePatch>>,
+    ) {
         let node = &mut self.nodes[key as usize];
         let base = node.classes.clone();
         let parts = node.parts.get_or_insert_with(|| {
@@ -421,8 +424,8 @@ impl<M: TextEngine> Core<M> {
                         Some(Rule::state_style(states, rank, p.decls().to_vec()))
                     })
                     .collect();
-                parts.state_rules =
-                    (!rules.is_empty()).then(|| Arc::new(ClassList::from_rules(rules, Vec::new())));
+                parts.state_rules = (!rules.is_empty())
+                    .then(|| std::rc::Rc::new(ClassList::from_rules(rules, Vec::new())));
                 let base = parts.base.clone();
                 self.set_class_list(key, base);
             }
@@ -454,7 +457,7 @@ impl<M: TextEngine> Core<M> {
         &mut self,
         key: Key,
         part: Part,
-        classes: Option<Arc<ClassList>>,
+        classes: Option<std::rc::Rc<ClassList>>,
     ) {
         let node = &mut self.nodes[key as usize];
         let base = node.classes.clone();
@@ -527,9 +530,14 @@ impl<M: TextEngine> Core<M> {
             return None;
         }
         let mut style = Style::default();
+        let current = inline.and_then(|i| inline_color(i)).unwrap_or(Color::BLACK);
+        if let Some(i) = inline {
+            i.apply_defaults(&mut style, current);
+        }
         let apply = |s: &mut Style| {
             if let Some(i) = inline {
                 i.apply(s);
+                s.apply_current_color(current);
             }
         };
         match classes {
@@ -608,14 +616,14 @@ impl<M: TextEngine> Core<M> {
 
     /// Sets the resolved classes of `key` (a Rust component's styles go
     /// straight here).
-    pub(super) fn set_class_list(&mut self, key: Key, classes: Option<Arc<ClassList>>) {
+    pub(super) fn set_class_list(&mut self, key: Key, classes: Option<std::rc::Rc<ClassList>>) {
         let node = &mut self.nodes[key as usize];
         // The state styles go over the classes.
         let classes = match node.parts.as_deref_mut() {
             Some(parts) => {
                 parts.base = classes.clone();
                 match (classes, &parts.state_rules) {
-                    (Some(c), Some(s)) => Some(Arc::new(c.merged(s))),
+                    (Some(c), Some(s)) => Some(std::rc::Rc::new(c.merged(s))),
                     (None, Some(s)) => Some(s.clone()),
                     (c, None) => c,
                 }
@@ -666,8 +674,9 @@ impl<M: TextEngine> Core<M> {
         let Some(changed) = self.tailwind.set_tokens(&tokens) else {
             return;
         };
-        let reads =
-            |c: &Option<Arc<ClassList>>| c.as_ref().is_some_and(|c| c.deps() & changed != 0);
+        let reads = |c: &Option<std::rc::Rc<ClassList>>| {
+            c.as_ref().is_some_and(|c| c.deps() & changed != 0)
+        };
         let keys: Vec<Key> = self
             .nodes
             .iter()
@@ -701,7 +710,7 @@ impl<M: TextEngine> Core<M> {
             let app = self.app_class_list(&class);
             let user = self.merge_user(Some(app), outer);
             let list = match (own, user) {
-                (Some(a), Some(b)) => Some(Arc::new(a.merged(&b))),
+                (Some(a), Some(b)) => Some(std::rc::Rc::new(a.merged(&b))),
                 (a, b) => a.or(b),
             };
             if let Ok(key) = self.key(id) {
@@ -956,7 +965,7 @@ impl<M: TextEngine> Core<M> {
         // Under its own classes and style, as `:where()` is in CSS.
         let space = self.space_of(key);
         if let Some(space) = space {
-            space.apply(&mut base, false);
+            space.apply(&mut base, false, self.resolved_rtl(key));
         }
         let spaced = space.is_some();
         let node = &mut self.nodes[key as usize];
@@ -1009,6 +1018,7 @@ impl<M: TextEngine> Core<M> {
             let id = node.id;
             self.ch_styled.push((key, id));
         }
+        style.node_props(&mut props);
         self.set_class_props(key, props);
         let id = self.nodes[key as usize].id;
         let _ = self.set_style(id, style);
@@ -1127,10 +1137,14 @@ impl<M: TextEngine> Core<M> {
                 inherited: node.inherited_color,
                 inline: inline_color(inline),
             };
+            let text_color = classes.current_color(&cx, current);
+            inline.apply_defaults(style, text_color);
+            let rtl = cx.rtl;
             classes.apply_with(&cx, self.tailwind.theme(), current, ch, style, props, |s| {
                 inline.apply(s);
+                s.apply_current_color(text_color);
                 if let Some(space) = self.space_of(key) {
-                    space.apply(s, true);
+                    space.apply(s, true, rtl);
                 }
             });
             if positional {
@@ -1138,9 +1152,14 @@ impl<M: TextEngine> Core<M> {
                 self.nodes[parent as usize].positional_children = true;
             }
         } else {
+            let current = inline_color(&node.inline_style)
+                .or(node.inherited_color)
+                .unwrap_or(Color::BLACK);
+            node.inline_style.apply_defaults(style, current);
             node.inline_style.apply(style);
+            style.apply_current_color(current);
             if let Some(space) = self.space_of(key) {
-                space.apply(style, true);
+                space.apply(style, true, self.resolved_rtl(key));
             }
         }
     }
@@ -1171,10 +1190,11 @@ impl<M: TextEngine> Core<M> {
             // styled with is not the one it inherits then (a subtree built
             // from the inside out passes through several).
             if !node.color_queued
-                && node
-                    .classes
-                    .as_ref()
-                    .is_some_and(|c| c.deps() & deps::CURRENT_COLOR != 0)
+                && (node.inline_style.reads_current_color()
+                    || node
+                        .classes
+                        .as_ref()
+                        .is_some_and(|c| c.deps() & deps::CURRENT_COLOR != 0))
             {
                 node.color_queued = true;
                 let id = node.id;
@@ -1244,13 +1264,23 @@ impl<M: TextEngine> Core<M> {
             let own = node.class_props.as_ref().and_then(|c| c.pointer_events);
             let effective = own.or(inherited);
             let mounted = match effective {
+                // React Native's: the view's own, natively; what is in it
+                // takes touches (`box-none`) or none (`box-only`).
+                Some(p @ (PointerEvents::BoxNone | PointerEvents::BoxOnly)) if own.is_some() => p,
                 Some(PointerEvents::None) if node.pointer_auto_inside => PointerEvents::BoxNone,
                 // A view above already blocks the subtree.
                 Some(PointerEvents::None) if blocked => PointerEvents::Auto,
                 Some(PointerEvents::None) => PointerEvents::None,
                 _ => PointerEvents::Auto,
             };
-            let blocked = blocked || mounted == PointerEvents::None;
+            let blocked =
+                blocked || matches!(mounted, PointerEvents::None | PointerEvents::BoxOnly);
+            // Neither is inherited: the views in a `box-none` take touches,
+            // and those in a `box-only` are blocked natively.
+            let effective = match effective {
+                Some(PointerEvents::BoxNone | PointerEvents::BoxOnly) => Some(PointerEvents::Auto),
+                e => e,
+            };
             for &c in &node.children {
                 stack.push((c, effective, blocked));
             }
@@ -1269,7 +1299,11 @@ impl<M: TextEngine> Core<M> {
             .class_props
             .as_ref()
             .and_then(|c| c.pointer_events);
-        let effective = own.or(inherited);
+        let effective = match own.or(inherited) {
+            // Not inherited (`update_pointer_events`).
+            Some(PointerEvents::BoxNone | PointerEvents::BoxOnly) => Some(PointerEvents::Auto),
+            e => e,
+        };
         let children = std::mem::take(&mut self.nodes[key as usize].children);
         let mut inside = false;
         for &c in &children {
@@ -1277,11 +1311,14 @@ impl<M: TextEngine> Core<M> {
         }
         self.nodes[key as usize].children = children;
         self.nodes[key as usize].pointer_auto_inside = inside;
-        inside || own == Some(PointerEvents::Auto) && inherited == Some(PointerEvents::None)
+        // Any value of its own but `none` takes some touches under a `none`.
+        inside
+            || own.is_some_and(|o| o != PointerEvents::None)
+                && inherited == Some(PointerEvents::None)
     }
 
-    /// Applies the node props classes set (explicit props win).
-    fn set_class_props(&mut self, key: Key, props: ClassProps) {
+    /// Applies the node props classes and styles set.
+    pub(super) fn set_class_props(&mut self, key: Key, props: ClassProps) {
         let node = &mut self.nodes[key as usize];
         let old = node.class_props.take().map(|b| *b).unwrap_or_default();
         if old == props {
@@ -1300,7 +1337,6 @@ impl<M: TextEngine> Core<M> {
             _ => {}
         }
         let node = &mut self.nodes[key as usize];
-        let image = old.resize_mode != props.resize_mode;
         let space = old.space != props.space;
         let input = old.placeholder_color != props.placeholder_color
             || old.caret_color != props.caret_color
@@ -1321,9 +1357,6 @@ impl<M: TextEngine> Core<M> {
         if pointer {
             let top = self.pointer_region(key).unwrap_or(key);
             self.update_pointer_events(top);
-        }
-        if image {
-            self.mark(key, dirty::IMAGE);
         }
         if selection && kind == Kind::Text {
             self.mark_text_block(key);

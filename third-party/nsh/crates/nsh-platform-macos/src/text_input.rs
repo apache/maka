@@ -1038,12 +1038,21 @@ pub(crate) fn test_paste(
     board.clearContents();
     let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
     let item = || NSPasteboardItem::new();
-    if !content.text.is_empty() {
+    // Text and its HTML are one item, as a browser copies them.
+    if !content.text.is_empty() || !content.html.is_empty() {
         let text = item();
-        // SAFETY: an immutable AppKit constant.
-        text.setString_forType(&NSString::from_str(&content.text), unsafe {
-            NSPasteboardTypeString
-        });
+        if !content.text.is_empty() {
+            // SAFETY: an immutable AppKit constant.
+            text.setString_forType(&NSString::from_str(&content.text), unsafe {
+                NSPasteboardTypeString
+            });
+        }
+        if !content.html.is_empty() {
+            text.setString_forType(
+                &NSString::from_str(&content.html),
+                &NSString::from_str("public.html"),
+            );
+        }
         items.push(ProtocolObject::from_retained(text));
     }
     for file in &content.files {
@@ -1438,7 +1447,7 @@ impl InputState {
             NSColor::clearColor()
         } else {
             config
-                .selection_color
+                .caret_color
                 .map_or_else(|| self.text_color(), ns_color)
         };
         view.setInsertionPointColor(Some(&caret));

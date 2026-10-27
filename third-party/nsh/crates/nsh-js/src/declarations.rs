@@ -30,8 +30,9 @@ export type RecursiveArray<T> = readonly (T | RecursiveArray<T>)[];
  * right; falsy entries are skipped. */
 export type StyleProp<T> = T | RecursiveArray<T | false | null | undefined> | false | null | undefined;
 
-/** Props every host element accepts. */
-export interface CommonProps extends TouchProps, HostProps, StateStyleProps {
+/** Props every host element accepts; `S`, the style its state styles
+ * take (its `style`'s). */
+export interface CommonProps<S = ViewStyle> extends TouchProps, HostProps, StateStyleProps<S> {
   ref?: YNode | ((node: YNode) => void);
   children?: JSX.Element;
   /** iOS-only props (ignored elsewhere). */
@@ -49,22 +50,25 @@ export interface CommonProps extends TouchProps, HostProps, StateStyleProps {
  * classes, applied natively (no JS runs): as the `<state>:` classes.
  * Later states win (checked, then hover, focus, active); `disabledStyle`
  * wins over all, and the others do not apply while disabled. */
-export interface StateStyleProps {
+export interface StateStyleProps<S = ViewStyle> {
   /** While pressed (`active:`). */
-  activeStyle?: StyleProp<ViewStyle>;
+  activeStyle?: StyleProp<S>;
   /** While a pointer is over it (`hover:`). */
-  hoverStyle?: StyleProp<ViewStyle>;
+  hoverStyle?: StyleProp<S>;
   /** While it has focus (`focus:`). */
-  focusStyle?: StyleProp<ViewStyle>;
+  focusStyle?: StyleProp<S>;
   /** While `disabled` (`disabled:`). */
-  disabledStyle?: StyleProp<ViewStyle>;
+  disabledStyle?: StyleProp<S>;
+  /** While `accessibilityState.selected` is `true` (`selected:`): a
+   * tab, a segment or a `Button` that is selected. */
+  selectedStyle?: StyleProp<S>;
   /** While `accessibilityState.checked` is `true` (`checked:`; `"mixed"`
    * is not checked): a checkbox, a switch or a radio styled by its
    * value. */
-  checkedStyle?: StyleProp<ViewStyle>;
+  checkedStyle?: StyleProp<S>;
   /** While `accessibilityState.checked` is `"mixed"` (`indeterminate:`):
    * a checkbox that is neither checked nor unchecked. */
-  indeterminateStyle?: StyleProp<ViewStyle>;
+  indeterminateStyle?: StyleProp<S>;
 }
 
 /** iOS-only props of every element (`ios={{…}}`); elements add their own. */
@@ -85,7 +89,7 @@ export interface ViewProps extends CommonProps, ViewHostProps {
 }
 
 /** `<Text>`: nested `<Text>` elements are spans of the same paragraph. */
-export interface TextProps extends CommonProps, TextHostProps {
+export interface TextProps extends CommonProps<TextStyle>, TextHostProps {
   style?: StyleProp<TextStyle>;
 }
 
@@ -102,7 +106,7 @@ export interface ImageAsset {
 }
 
 /** `<Image>` */
-export interface ImageProps extends CommonProps, ImageHostProps {
+export interface ImageProps extends CommonProps<ImageStyle>, ImageHostProps {
   style?: StyleProp<ImageStyle>;
 }
 
@@ -263,8 +267,8 @@ fn set_part(out: &mut String, set: &SetDescription) {
 
 /// The props of `Input`, declared beside it (`nsh/base`).
 const INPUT_TYPES: &str = r#"/** `<Input>` */
-export interface InputProps extends CommonProps, InputHostProps {
-  style?: StyleProp<TextStyle>;
+export interface InputProps extends CommonProps<InputStyle>, InputHostProps {
+  style?: StyleProp<InputStyle>;
   ios?: IOSInputProps;
 }
 
@@ -738,7 +742,7 @@ mod tests {
             assert!(types[start..end].contains(&format!("  {event}?: () => void;")));
         }
         for inheritance in [
-            "export interface CommonProps extends TouchProps, HostProps, StateStyleProps {",
+            "export interface CommonProps<S = ViewStyle> extends TouchProps, HostProps, StateStyleProps<S> {",
             "export interface ViewProps extends CommonProps, ViewHostProps {",
             "export interface ScrollProps extends CommonProps, ScrollingHostProps, ScrollHostProps {",
         ] {
@@ -750,9 +754,9 @@ mod tests {
             .find(|(path, _)| path == "nsh/base.d.ts")
             .unwrap()
             .1;
-        assert!(
-            input.contains("export interface InputProps extends CommonProps, InputHostProps {")
-        );
+        assert!(input.contains(
+            "export interface InputProps extends CommonProps<InputStyle>, InputHostProps {"
+        ));
         assert!(crate::list::TYPES.contains(
             "export interface ListProps<T> extends Omit<ViewProps, \"children\">, ScrollingHostProps, ListHostProps {"
         ));
@@ -887,6 +891,40 @@ declare const text: "export default ignored";
                 }
             }
         }
+    }
+
+    /// No module declares a value (a class, function or constant) named as
+    /// a type `types.d.ts` declares: it would shadow the shared type
+    /// everywhere in that module (an extension class `TextStyle` made
+    /// `StyleProp<TextStyle>` mean the class). The same type alias
+    /// generated in both is the same type.
+    #[test]
+    fn no_module_shadows_a_shared_type() {
+        let files = bodies(&[nsh_base::registry().into()]);
+        let (_, types) = files
+            .iter()
+            .find(|(path, _)| path == "nsh/types.d.ts")
+            .expect("types.d.ts");
+        let shared = exported_names(types);
+        let mut clashes = Vec::new();
+        for (path, body) in files.iter().filter(|(path, _)| path != "nsh/types.d.ts") {
+            let (_, local) = references(body);
+            let value = |name: &str| {
+                ["class", "function", "const"].iter().any(|kind| {
+                    body.contains(&format!("declare {kind} {name}<"))
+                        || body.contains(&format!("declare {kind} {name} "))
+                        || body.contains(&format!("declare {kind} {name}("))
+                        || body.contains(&format!("declare {kind} {name}:"))
+                })
+            };
+            clashes.extend(
+                local
+                    .iter()
+                    .filter(|name| shared.contains(name) && value(name))
+                    .map(|name| format!("{path}: {name}")),
+            );
+        }
+        assert!(clashes.is_empty(), "{clashes:?}");
     }
 
     /// Each web class declares the members its spec defines, and no others.

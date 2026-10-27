@@ -318,6 +318,9 @@ pub(super) struct ListState {
     /// What `contentClass` sets.
     content_class: ListContentStyle,
     pub(super) horizontal: bool,
+    /// Shown mirrored (a horizontal list right to left): laid out left to
+    /// right, so the content's left padding is its main axis' end.
+    mirrored: bool,
     pub(super) inverted: bool,
     /// `maintainVisibleContentPosition`'s `autoscrollToBottomThreshold`:
     /// a list that is not inverted follows the end of its content while
@@ -435,6 +438,7 @@ impl ListState {
             retirement_requests,
             native_ops: Vec::new(),
             extras: [Extra::NONE; 3],
+            mirrored: false,
             content: ListContentStyle::default(),
             content_style: ListContentStyle::default(),
             content_class: ListContentStyle::default(),
@@ -1065,7 +1069,9 @@ impl ListState {
     /// Padding at the start / end of the main axis and of the cross axis.
     fn main_padding(&self) -> (f32, f32) {
         let p = &self.content.padding;
-        if self.horizontal {
+        if self.horizontal && self.mirrored {
+            (p.right.0, p.left.0)
+        } else if self.horizontal {
             (p.left.0, p.right.0)
         } else {
             (p.top.0, p.bottom.0)
@@ -1322,6 +1328,18 @@ impl ListState {
             self.horizontal = horizontal;
             self.sizes.fill(f32::NAN);
             self.rebuild_offsets();
+        }
+    }
+
+    /// Whether it shows mirrored (horizontal, right to left): its left and
+    /// right content padding keep their sides on screen.
+    pub(super) fn set_mirrored(&mut self, mirrored: bool) {
+        if mirrored != self.mirrored {
+            self.mirrored = mirrored;
+            let p = &self.content.padding;
+            if self.horizontal && p.left != p.right {
+                self.rebuild_offsets();
+            }
         }
     }
 
@@ -2387,6 +2405,25 @@ mod tests {
         let mut binds = Vec::new();
         l.update_window(&mut binds, None);
         assert_eq!(binds.len(), 10);
+    }
+
+    #[test]
+    fn a_mirrored_horizontal_list_keeps_its_left_padding_on_the_left() {
+        // Laid out left to right and shown mirrored: the left padding is the
+        // end of its main axis, so it shows on the left.
+        let mut l = list(3, 50.0, 1000.0);
+        l.set_horizontal(true);
+        l.set_content(ListContentStyle {
+            padding: EdgeInsets {
+                left: px(16.0),
+                ..EdgeInsets::default()
+            },
+            ..ListContentStyle::default()
+        });
+        assert_eq!(l.blocks().body, 16.0);
+        l.set_mirrored(true);
+        assert_eq!(l.blocks().body, 0.0);
+        assert_eq!(l.blocks().total, 3.0 * 50.0 + 16.0);
     }
 
     #[test]

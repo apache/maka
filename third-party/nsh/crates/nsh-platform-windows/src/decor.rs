@@ -2,25 +2,17 @@
 //! filters, blend modes and backdrop filters, drawn with Direct2D.
 //!
 //! Order, bottom to top (CSS painting order): the backdrop filter, outer
-//! shadows (React Native's `shadow*`, then `boxShadow` layers, last first),
-//! the background color, gradients (last first), inset shadows (inside the
+//! shadows (`boxShadow` layers, last first), the background color, gradients (last first), inset shadows (inside the
 //! padding box), the content and children ([`crate::render`]), the border
 //! and the outline. The border is drawn over the children, as UIKit draws
 //! layer borders: the core places content inside the border, so only
 //! overflowing children reach under it.
 //!
-//! React Native's shadow takes the rounded box's shape when the view has a
-//! fill (background color or gradient), else the content's (a shadow of
-//! everything the view draws, [`draw_layered`]), like iOS. Its radius is
-//! taken as half the CSS blur, as Core Animation's `shadowRadius` is; it is
-//! not cut out of a translucent fill (Core Animation draws it under the
-//! layer), while CSS box shadows are.
-//!
 //! Blurred shadows are drawn once into bitmaps kept by what they look like
 //! ([`cache`]): redrawing a view, or another view with the same shadow,
-//! does not blur again. Filters, the content's shadow and `mixBlendMode`
-//! draw the view's subtree offscreen first and composite it through
-//! Direct2D effects ([`layer`]). `mixBlendMode` and `backdropFilter` read
+//! does not blur again. Filters and `mixBlendMode` draw the view's
+//! subtree offscreen first and composite it through Direct2D effects
+//! ([`layer`]). `mixBlendMode` and `backdropFilter` read
 //! what the window drew behind the view ([`layer::backdrop`]); inside a view
 //! drawn offscreen (filtered or 3D-transformed) the blend is normal and the
 //! backdrop unfiltered.
@@ -65,23 +57,6 @@ use crate::{
     render::{DrawCx, color_f, rect_f},
     view::{NshView, ViewState},
 };
-
-/// `c` with its alpha multiplied by `a`.
-fn faded(c: Color, a: f32) -> Color {
-    let alpha = ((c.0 & 0xff) as f32 * a.clamp(0.0, 1.0)).round() as u32;
-    Color((c.0 & 0xffff_ff00) | alpha.min(255))
-}
-
-/// True if the view paints its box: its shadow then takes the box's shape.
-fn has_fill(state: &ViewState) -> bool {
-    !state.background().is_transparent()
-        || state.anim.background.is_some()
-        || state
-            .style
-            .effects
-            .as_ref()
-            .is_some_and(|e| !e.background_images.is_empty())
-}
 
 /// True if `backfaceVisibility: "hidden"` hides the view: with `world`
 /// (its full transform to the window) its front faces away from the
@@ -136,11 +111,7 @@ fn det4(m: &[[f32; 4]; 4]) -> f32 {
 /// How far the view's own decoration reaches out of its bounds (points):
 /// shadows, the outline, filters.
 pub(crate) fn outset(state: &ViewState) -> f32 {
-    let s = state.shadow();
     let mut o: f32 = 0.0;
-    if s.is_visible() {
-        o = s.offset_x.0.abs().max(s.offset_y.0.abs()) + 3.0 * s.radius.0.max(0.0);
-    }
     let outline = state.style.outline;
     if outline.is_visible() {
         o = o.max((outline.offset + outline.width).0);
@@ -157,11 +128,9 @@ pub(crate) fn outset(state: &ViewState) -> f32 {
 }
 
 /// True if the view is drawn offscreen and composited as one image
-/// ([`draw_layered`]): it has filters, React Native's shadow of its
-/// content, or a blend mode.
+/// ([`draw_layered`]): it has filters or a blend mode.
 pub(crate) fn layered(state: &ViewState) -> bool {
-    (state.shadow().is_visible() && !has_fill(state))
-        || state.style.blend_mode != nsh_core::BlendMode::Normal
+    state.style.blend_mode != nsh_core::BlendMode::Normal
         || state
             .style
             .effects
@@ -170,7 +139,7 @@ pub(crate) fn layered(state: &ViewState) -> bool {
 }
 
 /// Draws `view` (at `world`, set on the context) offscreen, then through
-/// its filters, its content's shadow and its blend mode.
+/// its filters and its blend mode.
 pub(crate) fn draw_layered(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     let Some(list) = layer::record(cx, |inner| {
         inner.set_transform(world);
@@ -185,30 +154,14 @@ pub(crate) fn draw_layered(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
         .effects
         .as_ref()
         .map_or(&[][..], |e| &e.filters[..]);
-    let shadow = state.shadow();
-    let content_shadow = shadow.is_visible() && !has_fill(&state);
     let image = (|| -> windows::core::Result<ID2D1Image> {
         let mut image = layer::apply_filters(cx.dc, list.cast()?, filters, &lin, false)?;
-        if content_shadow {
-            image = layer::drop_shadow(
-                cx.dc,
-                &image,
-                shadow.offset_x.0,
-                shadow.offset_y.0,
-                shadow.radius.0 * 2.0,
-                faded(shadow.color, shadow.opacity),
-                &lin,
-            )?;
-        }
         if let Some(mode) = layer::blend_mode(state.style.blend_mode)
             && cx.backdrop
         {
             let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
             let area = state.overflow.unwrap_or(rect(0.0, 0.0, w, h));
-            let mut o = layer::filters_outset(filters);
-            if content_shadow {
-                o += shadow.offset_x.0.abs().max(shadow.offset_y.0.abs()) + 3.0 * shadow.radius.0;
-            }
+            let o = layer::filters_outset(filters);
             let bounds = world.bounds(
                 area.origin.x.0 - o,
                 area.origin.y.0 - o,
@@ -305,18 +258,6 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
     let radii = state.radii();
     let effects = state.style.effects.as_deref();
 
-    let s = state.shadow();
-    if s.is_visible() && has_fill(state) {
-        let spec = ShadowSpec {
-            dx: s.offset_x.0,
-            dy: s.offset_y.0,
-            spread: 0.0,
-            blur: s.radius.0.max(0.0) * 2.0,
-            color: faded(s.color, s.opacity),
-            cut: false,
-        };
-        outer_shadow(cx, w, h, radii, &spec);
-    }
     if let Some(e) = effects {
         // CSS lists the top layer first.
         for b in e.box_shadows.iter().rev() {
@@ -436,7 +377,7 @@ fn draw_baked(cx: &DrawCx<'_>, b: &Baked) {
     }
 }
 
-/// One shadow: React Native's or a `boxShadow` layer.
+/// One shadow: a `boxShadow` layer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ShadowSpec {
     dx: f32,
@@ -1242,11 +1183,5 @@ mod tests {
         assert_eq!((r.origin.x.0, r.origin.y.0), (0.0, -0.5));
         assert!(r.origin.x.0 + r.size.width.0 >= 10.3 && r.origin.y.0 + r.size.height.0 >= 4.8);
         assert!(close(bake_scale(rect(0.0, 0.0, 8192.0, 10.0), 2.0), 0.5));
-    }
-
-    #[test]
-    fn faded_scales_alpha() {
-        assert_eq!(faded(Color(0x1020_30ff), 0.5).0, 0x1020_3080);
-        assert_eq!(faded(Color(0x1020_30ff), 2.0).0, 0x1020_30ff);
     }
 }

@@ -30,6 +30,30 @@ use tokio_util::sync::CancellationToken;
 type Execute = Box<dyn FnOnce(CancellationToken) -> ToolFuture<ToolSuccess> + Send>;
 type Admission = Box<dyn FnOnce() -> Result<Box<dyn Send>, ToolError> + Send>;
 
+/// In-process acknowledgment of the durable dispatch boundary. `NotStarted`
+/// means the one-shot effect never began; it does not assert that a failed
+/// database observation rolled its transaction back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectAdmission {
+    Durable { sequence: u64 },
+    NotStarted,
+}
+struct AdmissionObserver(Option<Box<dyn FnOnce(EffectAdmission) + Send>>);
+impl AdmissionObserver {
+    fn admitted(mut self, sequence: u64) {
+        if let Some(observe) = self.0.take() {
+            observe(EffectAdmission::Durable { sequence });
+        }
+    }
+}
+impl Drop for AdmissionObserver {
+    fn drop(&mut self) {
+        if let Some(observe) = self.0.take() {
+            observe(EffectAdmission::NotStarted);
+        }
+    }
+}
+
 /// The journal owns admission leases until the durable outcome is settled,
 /// including failures. Preparation itself does not begin a plugin call.
 pub struct PreparedEffect {
@@ -38,6 +62,7 @@ pub struct PreparedEffect {
     pub(super) presentation: Option<String>,
     admissions: Vec<Admission>,
     leases: Vec<Box<dyn Send>>,
+    admission_observers: Vec<AdmissionObserver>,
 }
 
 impl PreparedEffect {
@@ -50,6 +75,7 @@ impl PreparedEffect {
             presentation: None,
             admissions: Vec::new(),
             leases: Vec::new(),
+            admission_observers: Vec::new(),
         }
     }
 
@@ -73,6 +99,21 @@ impl PreparedEffect {
             admit().map(|guard| Box::new(guard) as Box<dyn Send>)
         }));
         self
+    }
+
+    /// A trusted bridge may close evaluation admission and wait for this
+    /// acknowledgment before returning its observer. This callback carries no
+    /// authority and cannot admit, replay, or cancel the original effect.
+    pub fn on_admission(mut self, observe: impl FnOnce(EffectAdmission) + Send + 'static) -> Self {
+        self.admission_observers
+            .push(AdmissionObserver(Some(Box::new(observe))));
+        self
+    }
+
+    pub(super) fn admitted(&mut self, sequence: u64) {
+        for observer in self.admission_observers.drain(..) {
+            observer.admitted(sequence);
+        }
     }
 
     pub(super) fn start(&mut self, cancellation: CancellationToken) -> ToolFuture<ToolSuccess> {

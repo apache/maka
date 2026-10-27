@@ -28,12 +28,12 @@ This directory turns reusable plugins and platform owners into the Maka applicat
 | [bundle](bundle/README.md) | Select packages and author Host/UI compositions |
 | [native](native/README.md) | Select compiled Host factories |
 | [cli](cli/README.md) | Start the terminal product and expose CLI commands |
-| [desktop-shell](desktop-shell/README.md) | Run the authored desktop app against public Host services |
+| [desktop-shell](desktop-shell/README.md) | Run the workbench in a desktop window against public Host services |
 | [acp](acp/README.md) | Serve editor clients over ACP |
 
 Run `just run` from the repository root. It builds the TypeScript product first, then starts Cargo. Development binaries read the bundle from disk, so a TypeScript-only edit does not invalidate Rust compilation. Release binaries embed the same bundle.
 
-Build the CLI and desktop shell with `just build` (`--release` and `--target` are supported). The build stages the authored app beside the shell executable. Run `target/debug/maka desktop --root HOST_ROOT` to initialize or reopen a business Host and launch the desktop from any working directory. The launcher verifies its endpoint and epoch and retains its own client until the child exits.
+Build the CLI and desktop shell with `just build` (`--release` and `--target` are supported); on macOS the shell is staged in `Maka.app`. Run `target/debug/maka desktop --root HOST_ROOT` to initialize or reopen a business Host and launch the desktop from any working directory. The launcher verifies its endpoint and epoch and retains its own client until the child exits; then it detaches, and the Host finishes the work it accepted.
 
 In the terminal interface, choose the shared language under **Settings → Appearance → Language**. It saves automatically in the business Root, separately from each terminal interface’s theme and custom colors. Other open terminal interfaces refresh their language when revisiting settings or using an explicit refresh; saving does not broadcast continuous updates. Previous per-interface language choices must be selected once again; appearance data is retained.
 

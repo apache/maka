@@ -200,13 +200,13 @@ let composing = false;
 | `onSubmit` | `{ text }` | 在会提交的输入框中按下回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | | 获得 / 失去焦点。 |
 | `onSelectionChange` | `{ start, end }` | 光标或选区移动（UTF-16 码元）。 |
-| `onPaste` | `{ text, files, uris }` | 用户粘贴了内容：文本、作为 `File` 的图片、本地文件的 URL（[粘贴](#粘贴图片和文件)）。 |
+| `onPaste` | `{ text, html, files, uris }` | 用户粘贴了内容：文本、带格式的 HTML（Linux、Web）、作为 `File` 的图片、本地文件的 URL（[粘贴](#粘贴图片和文件)）。 |
 | `onCaretMove` | `{ bounds, pageBounds }` | 光标移动：它在输入框和窗口中的位置（[光标位置](#光标位置)）。 |
 | `onKeyPress` | `{ key }` | 文本改变之前：`key` 是输入的文本、`"Backspace"` 或 `"Enter"`。 |
 | `onContentSizeChange` | `{ width, height }` | 文本尺寸改变（多行时按输入框的宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
 | `onCompositionChange` | `{ composing, text }` | 输入法的组字开始、变化或结束（见[输入法](#输入法)）。 |
 
-输入框的样式与文本相同：`fontSize`、`color`、`fontFamily`、`textAlign`、`letterSpacing` 以及其余[文本样式](./text.md)，再加上边框、内边距和背景。焦点样式（Rust 中是 `.focus(|s| ..)`，TSX 中是 Tailwind 的 `focus:` 变体或 `focusStyle`）在输入框获得焦点时生效。占位文字的颜色是 `.placeholder_color(..)`（样式键 `placeholderColor`，`placeholder:text-*`），光标和选区的颜色是 `.selection_color(..)`（`selectionColor`，`selection:text-*`）：
+输入框的样式与文本相同：`fontSize`、`color`、`fontFamily`、`textAlign`、`letterSpacing` 以及其余[文本样式](./text.md)，再加上边框、内边距和背景。焦点样式（Rust 中是 `.focus(|s| ..)`，TSX 中是 Tailwind 的 `focus:` 变体或 `focusStyle`）在输入框获得焦点时生效。占位文字的颜色是 `.placeholder_color(..)`（样式键 `placeholderColor`，`placeholder:text-*`），光标的颜色是 `.caret_color(..)`（`caretColor`，`caret-*`），选区高亮的颜色是 `.selection_color(..)`（`selectionColor`，`selection:text-*`）；UIKit 用同一种颜色绘制光标和选区，设置了光标颜色时以它为准：
 
 ```rust tabs
 input()
@@ -361,6 +361,8 @@ mount(SignIn);
 | `blur()` | `blur()` | 让它失去焦点。 |
 | `set_selection(start, end)` | `setSelection(start, end?)` | 选中 `start..end`（UTF-16 码元）；两者相等时为光标（TSX：不传 `end`）。 |
 
+在 macOS 和 Web 上，可按压视图的 ref 的 `focus()` 和 `blur()` 也会像 Tab 一样移动键盘焦点（[键盘焦点](../elements/index.md#键盘焦点)）。
+
 Rust 中的 `dismiss_keyboard()` 和 TSX 中 `nsh` 的 `Keyboard.dismiss()` 让当前拥有焦点的输入框失去焦点：
 
 ```rust tabs
@@ -498,7 +500,7 @@ const caret = signal<Bounds | null>(null);
 
 ## 粘贴图片和文件
 
-粘贴事件（`.on_paste(..)`，TSX 的 `onPaste`）报告用户粘贴了什么，无论来自快捷键、菜单中的“粘贴”，还是键盘插入的图片：`text`、`files` 和 `uris`。`files` 是剪贴板中以数据形式存在的内容，例如截图、从网页或其他应用复制的图片：应用可以上传或显示的 `File`，名为 `image.png`（或其实际类型）。`uris` 是在文件管理器中复制的文件的 `file:` URL，与拖放文件时一样。平台在用户粘贴时读取剪贴板，且只在那时读取。
+粘贴事件（`.on_paste(..)`，TSX 的 `onPaste`）报告用户粘贴了什么，无论来自快捷键、菜单中的“粘贴”，还是键盘插入的图片：`text`、`html`、`files` 和 `uris`。`html` 是带格式的同一内容，即浏览器、办公软件或富文本编辑器复制的 HTML（Linux 和 Web）。`files` 是剪贴板中以数据形式存在的内容，例如截图、从网页或其他应用复制的图片：应用可以上传或显示的 `File`，名为 `image.png`（或其实际类型）。`uris` 是在文件管理器中复制的文件的 `file:` URL，与拖放文件时一样。平台在用户粘贴时读取剪贴板，且只在那时读取。
 
 输入框照常自己插入粘贴的文本：事件在该文本的 `onChange` 之前到达。图片和文件从不插入，因为输入框只容纳文本。`pasteBehavior` 为 `"report"` 时输入框什么都不插入，由应用决定粘贴的效果：把长文本作为附件发送，或插入整理后的版本。由于系统要求当场作答，输入框根据这个属性立即决定。
 

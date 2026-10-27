@@ -101,7 +101,7 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
         .text_color(move || theme().foreground)
         .font_family(move || font_a().family)
         .text_size(move || Length::from(font_b().size))
-        .line_height(move || Length::from(font_c().line_height))
+        .line_height(move || nsh_core::LineHeight::from(font_c().line_height))
         .child(
             scroll()
                 .element_ref(&ed.vscroll)
@@ -1244,13 +1244,18 @@ fn sink(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
         .w(px(1.0))
         .h(move || Length::from(lh()))
         // Presses at the caret are the rows' (a click there places it).
-        .pointer_events(PointerEvents::None)
+        .pointer_events(if is_terminal() {
+            PointerEvents::BoxNone
+        } else {
+            PointerEvents::None
+        })
         .p_0()
         .border(px(0.0))
         .bg(AdaptiveColor::TRANSPARENT)
         .text_color(AdaptiveColor::TRANSPARENT)
         .caret(false)
         .multiline(true)
+        .auto_focus(move || is_terminal() && props.auto_focus.get())
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)

@@ -32,7 +32,7 @@ product:
 run *args: product
     node scripts/rust/run-cli.mjs "$@"
 
-# Build the native CLI, desktop shell and authored app (--release / --target).
+# Build the native CLI and desktop shell (--release / --target).
 build *args: product
     node scripts/rust/build-cli.mjs "$@"
 

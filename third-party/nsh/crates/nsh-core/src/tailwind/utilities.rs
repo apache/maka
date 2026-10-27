@@ -13,11 +13,11 @@ use crate::{
         BoxShadow, ColorStop, Filter, Gradient, GradientKind, GradientSize, KeyframeAnimation,
         Keyframes, Transition, TransitionProps,
     },
-    geometry::{DefiniteLength, Points, REM_SIZE, Size, deg, percentage, point, px},
-    ops::ResizeMode,
+    geometry::{DefiniteLength, Length, Points, REM_SIZE, Size, deg, percentage, point, px},
     props::PointerEvents,
     style::{
-        Color, EllipsizeMode, FontVariant, PatchValue, Style, StyleDecl, StyleKey, TextShadow,
+        Color, EllipsizeMode, FontVariant, LineHeight, PropertyValue, Style, StyleDecl, StyleKey,
+        StyleValue, TextShadow, TransformProperty,
     },
     transform::TransformKind,
 };
@@ -138,17 +138,10 @@ pub(crate) enum ColorSlot {
 /// A node property set by a class.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PropDecl {
-    Lines(u32),
-    Ellipsize(EllipsizeMode),
     NoWrap(bool),
-    PointerEvents(PointerEvents),
-    Resize(ResizeMode),
-    /// `select-text` / `select-none`; `None` (`select-auto`): what the
-    /// view around it says.
-    Selectable(Option<bool>),
     Caret(Color),
     /// `space-x-*` (`false`) / `space-y-*` (`true`).
-    Space(bool, PatchValue),
+    Space(bool, PropertyValue),
     /// `space-x-reverse` / `space-y-reverse`.
     SpaceReverse(bool),
 }
@@ -156,11 +149,11 @@ pub(crate) enum PropDecl {
 /// What one utility declares.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Decl {
-    Set(StyleKey, PatchValue),
+    Set(StyleKey, PropertyValue),
     /// A value the utility implies for another property, applied before
     /// every other rule so any utility of that property wins wherever it is
     /// in the string (`flex` is a row as in CSS, `flex-col flex` a column).
-    Default(StyleKey, PatchValue),
+    Default(StyleKey, PropertyValue),
     Style(StyleDecl),
     Part(Part),
     Prop(PropDecl),
@@ -169,7 +162,7 @@ pub(crate) enum Decl {
     Screen(StyleKey, f32, f32),
     /// One value in light appearance, another in dark (a theme color of a
     /// Rust component): one declaration, so a later plain one still wins.
-    Adaptive(StyleKey, [PatchValue; 2]),
+    Adaptive(StyleKey, [PropertyValue; 2]),
     /// [`Decl::Adaptive`] for a part (a shadow's, ring's or gradient
     /// stop's theme color).
     AdaptivePart(Box<[Part; 2]>),
@@ -188,64 +181,10 @@ pub(crate) enum Decl {
     Ch(StyleKey, f32),
 }
 
-/// `key` with the value it gets in a layout of direction `rtl`. Classes
-/// are physical, as in CSS (`pl-4` is the left padding right to left
-/// too), while the core lays left and right properties out as start and
-/// end right to left, React Native's rule for inline styles: right to
-/// left, a class names the other side, so it comes out on its own.
-pub(crate) fn directed<'a>(
-    key: StyleKey,
-    value: &'a PatchValue,
-    rtl: bool,
-) -> (StyleKey, std::borrow::Cow<'a, PatchValue>) {
-    use std::borrow::Cow;
-    if !rtl {
-        return (key, Cow::Borrowed(value));
-    }
-    if key == K::TextAlign {
-        let mirrored = match value {
-            PatchValue::Str(s) if &**s == "left" => "right",
-            PatchValue::Str(s) if &**s == "right" => "left",
-            _ => return (key, Cow::Borrowed(value)),
-        };
-        return (key, Cow::Owned(PatchValue::Str(mirrored.into())));
-    }
-    (mirrored(key).unwrap_or(key), Cow::Borrowed(value))
-}
-
-/// The left / right key on the other side.
-fn mirrored(key: StyleKey) -> Option<StyleKey> {
-    Some(match key {
-        K::PaddingLeft => K::PaddingRight,
-        K::PaddingRight => K::PaddingLeft,
-        K::MarginLeft => K::MarginRight,
-        K::MarginRight => K::MarginLeft,
-        K::Left => K::Right,
-        K::Right => K::Left,
-        K::BorderLeftWidth => K::BorderRightWidth,
-        K::BorderRightWidth => K::BorderLeftWidth,
-        K::BorderLeftColor => K::BorderRightColor,
-        K::BorderRightColor => K::BorderLeftColor,
-        K::BorderTopLeftRadius => K::BorderTopRightRadius,
-        K::BorderTopRightRadius => K::BorderTopLeftRadius,
-        K::BorderBottomLeftRadius => K::BorderBottomRightRadius,
-        K::BorderBottomRightRadius => K::BorderBottomLeftRadius,
-        _ => return None,
-    })
-}
-
-/// Whether `key = value` lands elsewhere right to left ([`directed`]).
-fn sided(key: StyleKey, value: &PatchValue) -> bool {
-    mirrored(key).is_some()
-        || key == K::TextAlign
-            && matches!(value, PatchValue::Str(s) if matches!(&**s, "left" | "right"))
-}
-
 impl Decl {
     pub(crate) fn apply(
         &self,
         dark: bool,
-        rtl: bool,
         important: bool,
         style: &mut Style,
         props: &mut ClassProps,
@@ -253,26 +192,12 @@ impl Decl {
     ) {
         match self {
             Decl::Set(key, value) => {
-                if *key == K::TextAlign {
-                    let _ = style.set_key(*key, value.as_value());
-                    style.text.text_align_physical = matches!(
-                        style.text.text_align,
-                        Some(crate::style::TextAlign::Left | crate::style::TextAlign::Right)
-                    );
-                } else {
-                    let (key, value) = directed(*key, value, rtl);
-                    let _ = style.set_key(key, value.as_value());
-                }
+                let _ = style.apply_value(*key, value);
             }
             // Applied by `ClassList::apply` before the rules.
             Decl::Default(..) | Decl::CurrentColor(_) => {}
             Decl::SetCurrentColor(key, alpha) => {
-                let key = if rtl {
-                    mirrored(*key).unwrap_or(*key)
-                } else {
-                    *key
-                };
-                style.set_color(key, mixed(parts.current, *alpha));
+                style.set_color(*key, mixed(parts.current, *alpha));
             }
             Decl::CurrentPart(slot, alpha) => {
                 let c = mixed(parts.current, *alpha);
@@ -297,12 +222,7 @@ impl Decl {
             }
             Decl::Part(part) => parts.push(part.clone()),
             Decl::Prop(p) => match p {
-                PropDecl::Lines(n) => props.number_of_lines = Some(*n),
-                PropDecl::Ellipsize(m) => props.ellipsize = Some(*m),
                 PropDecl::NoWrap(b) => props.no_wrap = Some(*b),
-                PropDecl::PointerEvents(p) => props.pointer_events = Some(*p),
-                PropDecl::Resize(m) => props.resize_mode = Some(*m),
-                PropDecl::Selectable(b) => props.selectable = *b,
                 PropDecl::Caret(c) => props.caret_color = Some(*c),
                 PropDecl::Space(y, v) => {
                     let space = props.space.get_or_insert_default();
@@ -328,11 +248,10 @@ impl Decl {
                 parts.touched |= touched::SCREEN;
             }
             Decl::Ch(key, n) => {
-                let _ = style.set_key(*key, crate::style::StyleValue::Number(n * parts.ch));
+                let _ = style.set_key(*key, StyleValue::Number(n * parts.ch));
             }
             Decl::Adaptive(key, values) => {
-                let (key, value) = directed(*key, &values[usize::from(dark)], rtl);
-                let _ = style.set_key(key, value.as_value());
+                let _ = style.apply_value(*key, &values[usize::from(dark)]);
             }
             Decl::AdaptivePart(pair) => parts.push(pair[usize::from(dark)].clone()),
         }
@@ -375,7 +294,7 @@ impl Decl {
 
     pub(crate) fn text_color(&self) -> Option<Color> {
         match self {
-            Decl::Set(StyleKey::Color, PatchValue::Str(s)) => Color::parse(s),
+            Decl::Set(StyleKey::Color, PropertyValue::Color(c)) => *c,
             // `placeholder:` rules are Tailwind's: never adaptive.
             _ => None,
         }
@@ -389,7 +308,7 @@ impl Decl {
             _ => return None,
         };
         Some(match value {
-            PatchValue::Str(s) => Color::parse(s),
+            PropertyValue::Color(c) => *c,
             _ => None,
         })
     }
@@ -397,7 +316,7 @@ impl Decl {
     /// The background color this declares, for `selection:` rules.
     pub(crate) fn background_color(&self) -> Option<Color> {
         match self {
-            Decl::Set(StyleKey::BackgroundColor, PatchValue::Str(s)) => Color::parse(s),
+            Decl::Set(StyleKey::BackgroundColor, PropertyValue::Color(c)) => *c,
             _ => None,
         }
     }
@@ -408,27 +327,18 @@ impl Decl {
                 (if *w != 0.0 { deps::WIDTH } else { 0 })
                     | (if *h != 0.0 { deps::HEIGHT } else { 0 })
             }
-            Decl::Adaptive(key, values) => {
-                deps::DARK
-                    | if sided(*key, &values[0]) {
-                        deps::RTL
-                    } else {
-                        0
-                    }
-            }
-            Decl::AdaptivePart(_) => deps::DARK,
-            Decl::Set(key, value) | Decl::Default(key, value) if sided(*key, value) => deps::RTL,
+            Decl::Adaptive(..) | Decl::AdaptivePart(_) => deps::DARK,
             Decl::CurrentColor(_)
             | Decl::CurrentPart(..)
+            | Decl::SetCurrentColor(..)
             | Decl::Part(Part::Ring(_) | Part::InsetRing(_)) => deps::CURRENT_COLOR,
-            Decl::SetCurrentColor(key, _) => {
-                deps::CURRENT_COLOR
-                    | if mirrored(*key).is_some() {
-                        deps::RTL
-                    } else {
-                        0
-                    }
-            }
+            // A value that writes `currentColor` inside it (a gradient's
+            // stop, a `color-mix()`): the style fills it in.
+            Decl::Set(_, PropertyValue::Deferred(..) | PropertyValue::CurrentColor)
+            | Decl::Style(StyleDecl::Set(
+                _,
+                PropertyValue::Deferred(..) | PropertyValue::CurrentColor,
+            )) => deps::CURRENT_COLOR,
             Decl::Ch(..) => deps::CH,
             _ => 0,
         }
@@ -450,11 +360,21 @@ pub(crate) mod touched {
     pub(crate) const ALL: u16 = u16::MAX;
 }
 
+/// The transform properties parts set ([`Parts::transform_parts`]).
+mod transform_part {
+    pub(super) const TRANSLATE: u8 = 1;
+    pub(super) const ROTATE: u8 = 2;
+    pub(super) const SCALE: u8 = 4;
+    pub(super) const TRANSFORM: u8 = 8;
+}
+
 /// Accumulated [`Part`]s of the matching rules, later ones winning.
 #[derive(Debug, Default)]
 pub(crate) struct Parts {
     /// [`touched`] groups the parts pushed since this was last cleared.
     pub(crate) touched: u16,
+    /// The [`transform_part`]s pushed since this was last cleared.
+    pub(crate) transform_parts: u8,
     translate: [Option<Len>; 2],
     /// The `rotate` property.
     rotate: Option<f32>,
@@ -537,6 +457,15 @@ impl Parts {
             }
             Animate(_) | Animation(_) => touched::ANIMATE,
             TextShadow(_) | TextShadowColor(_) | TextShadowAlpha(_) => touched::TEXT_SHADOW,
+        };
+        self.transform_parts |= match &part {
+            TranslateX(_) | TranslateY(_) | TranslateNone => transform_part::TRANSLATE,
+            Rotate(_) | RotateNone => transform_part::ROTATE,
+            ScaleX(_) | ScaleY(_) | ScaleNone => transform_part::SCALE,
+            RotateX(_) | RotateY(_) | RotateZ(_) | SkewX(_) | SkewY(_) | TransformNone => {
+                transform_part::TRANSFORM
+            }
+            _ => 0,
         };
         match part {
             TranslateX(l) => (self.translate[0], self.transform_set) = (Some(l), true),
@@ -654,53 +583,65 @@ impl Parts {
             );
         }
         if self.transform_set && has(touched::TRANSFORM) {
-            let _ = StyleDecl::ClearTransform.apply(style);
             // CSS: `translate`, `rotate`, `scale`, then `transform`
             // (`rotateX() rotateY() rotateZ() skewX() skewY()`, as Tailwind
-            // writes it); a list applies right to left.
+            // writes it); a list applies right to left. Each is a property of
+            // its own: only those the rules set are written, so an inline
+            // style's others stay (and an important rule's pass writes only
+            // its own).
             // `perspective-*` is CSS's `perspective` property: depth for the
             // children, not a step of the view's own transform.
             style.perspective = self.perspective.flatten().map(px);
-            let mut push = |kind: TransformKind, v: f32| {
-                let _ = style.view.transform.push(kind, v);
-            };
-            for (i, t) in self.translate.iter().enumerate() {
-                match (i, t) {
-                    (0, Some(Len::Points(v))) => push(TransformKind::TranslateX, *v),
-                    (0, Some(Len::Fraction(f))) => push(TransformKind::TranslateXFraction, *f),
-                    (1, Some(Len::Points(v))) => push(TransformKind::TranslateY, *v),
-                    (1, Some(Len::Fraction(f))) => push(TransformKind::TranslateYFraction, *f),
-                    _ => {}
+            let step = |kind, v| (kind, v, None);
+            if self.transform_parts & transform_part::TRANSLATE != 0 {
+                let mut steps = Vec::new();
+                for (i, t) in self.translate.iter().enumerate() {
+                    steps.extend(match (i, t) {
+                        (0, Some(Len::Points(v))) => Some(step(TransformKind::TranslateX, *v)),
+                        (0, Some(Len::Fraction(f))) => {
+                            Some(step(TransformKind::TranslateXFraction, *f))
+                        }
+                        (1, Some(Len::Points(v))) => Some(step(TransformKind::TranslateY, *v)),
+                        (1, Some(Len::Fraction(f))) => {
+                            Some(step(TransformKind::TranslateYFraction, *f))
+                        }
+                        _ => None,
+                    });
                 }
+                let _ = style.set_transform(TransformProperty::Translate, &steps);
             }
-            if let Some(r) = self.rotate {
-                push(TransformKind::Rotate, r);
+            if self.transform_parts & transform_part::ROTATE != 0 {
+                let steps: Vec<_> = self
+                    .rotate
+                    .map(|r| step(TransformKind::Rotate, r))
+                    .into_iter()
+                    .collect();
+                let _ = style.set_transform(TransformProperty::Rotate, &steps);
             }
-            match self.scale {
-                [Some(x), Some(y)] if x == y => push(TransformKind::Scale, x),
-                [x, y] => {
-                    if let Some(x) = x {
-                        push(TransformKind::ScaleX, x);
-                    }
-                    if let Some(y) = y {
-                        push(TransformKind::ScaleY, y);
-                    }
-                }
+            if self.transform_parts & transform_part::SCALE != 0 {
+                let steps: Vec<_> = match self.scale {
+                    [Some(x), Some(y)] if x == y => vec![step(TransformKind::Scale, x)],
+                    [x, y] => x
+                        .map(|x| step(TransformKind::ScaleX, x))
+                        .into_iter()
+                        .chain(y.map(|y| step(TransformKind::ScaleY, y)))
+                        .collect(),
+                };
+                let _ = style.set_transform(TransformProperty::Scale, &steps);
             }
-            if let Some(r) = self.rotate_3d[0] {
-                push(TransformKind::RotateX, r);
-            }
-            if let Some(r) = self.rotate_3d[1] {
-                push(TransformKind::RotateY, r);
-            }
-            if let Some(r) = self.rotate_3d[2] {
-                push(TransformKind::Rotate, r);
-            }
-            if let Some(s) = self.skew[0] {
-                push(TransformKind::SkewX, s);
-            }
-            if let Some(s) = self.skew[1] {
-                push(TransformKind::SkewY, s);
+            if self.transform_parts & transform_part::TRANSFORM != 0 {
+                let [x, y, z] = self.rotate_3d;
+                let steps: Vec<_> = [
+                    (TransformKind::RotateX, x),
+                    (TransformKind::RotateY, y),
+                    (TransformKind::Rotate, z),
+                    (TransformKind::SkewX, self.skew[0]),
+                    (TransformKind::SkewY, self.skew[1]),
+                ]
+                .into_iter()
+                .filter_map(|(kind, v)| Some(step(kind, v?)))
+                .collect();
+                let _ = style.set_transform(TransformProperty::Transform, &steps);
             }
         }
         if self.shadows_set && has(touched::SHADOWS) {
@@ -954,20 +895,17 @@ fn class_length(theme: &Theme, value: &str) -> Option<f32> {
 
 /// A length value of a spacing-like utility: steps, `px`, fractions,
 /// `full`, `auto` (when allowed), or arbitrary lengths / percentages.
-fn length_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchValue> {
+fn length_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<Length> {
     let sign = if neg { -1.0 } else { 1.0 };
     if let Some(n) = steps(v) {
-        return Some(PatchValue::Number(sign * n * theme.spacing));
+        return Some(px(sign * n * theme.spacing).into());
     }
     Some(match v {
-        "px" => PatchValue::Number(sign),
-        "0" => PatchValue::Number(0.0),
-        "full" => PatchValue::Str(if neg { "-100%" } else { "100%" }.into()),
-        "auto" if auto && !neg => PatchValue::Str("auto".into()),
-        v if v.contains('/') && !v.starts_with('[') => {
-            let f = fraction(v)?;
-            PatchValue::Str(format!("{}%", sign * f * 100.0).into())
-        }
+        "px" => px(sign).into(),
+        "0" => px(0.0).into(),
+        "full" => percentage(sign).into(),
+        "auto" if auto && !neg => Length::Auto,
+        v if v.contains('/') && !v.starts_with('[') => percentage(sign * fraction(v)?).into(),
         v => {
             let a = arbitrary(v)?;
             let a = arbitrary_hinted(&a, "length").unwrap_or(&a).to_string();
@@ -977,10 +915,8 @@ fn length_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchVa
                 px(class_length(theme, &a)?).into()
             };
             match length {
-                DefiniteLength::Absolute(l) => PatchValue::Number(sign * l.to_points(REM_SIZE).0),
-                DefiniteLength::Fraction(f) => {
-                    PatchValue::Str(format!("{}%", sign * f.0 * 100.0).into())
-                }
+                DefiniteLength::Absolute(l) => px(sign * l.to_points(REM_SIZE).0).into(),
+                DefiniteLength::Fraction(f) => percentage(sign * f.0).into(),
             }
         }
     })
@@ -988,24 +924,18 @@ fn length_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchVa
 
 /// [`length_value`] of a utility Tailwind CSS takes no fractions or
 /// `full` for (padding, margin, gaps).
-fn spacing_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchValue> {
-    if let Some(env) = env_value(v) {
-        // `-pb-[env(...)]`: Tailwind's negation is a `calc(... * -1)`,
-        // which NSH does not take with `env()`.
-        return if neg { None } else { env };
-    }
+fn spacing_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<Length> {
     if v == "full" || v.contains('/') && !v.starts_with('[') {
         return None;
     }
     length_value(theme, v, neg, auto)
 }
 
-/// An arbitrary padding or margin using `env()` (`[env(safe-area-inset-top)]`,
-/// `[calc(env(keyboard-inset-height)+8px)]`), as the style takes it: `None`
-/// when `v` uses no `env()`, `Some(None)` when it is not a value NSH
-/// supports. Operators get white space around them, as Tailwind CSS
-/// writes them.
-fn env_value(v: &str) -> Option<Option<PatchValue>> {
+/// An arbitrary spacing value that uses `env()` (`pt-[env(safe-area-inset-top)]`,
+/// `pb-[calc(env(keyboard-inset-height)+1rem)]`), the `+` spaced as CSS's
+/// `calc()` requires (Tailwind's class names cannot hold a space); `Some(None)`
+/// when it uses `env()` in a form NSH does not take.
+fn env_value(v: &str) -> Option<Option<String>> {
     let a = arbitrary(v).filter(|a| a.contains("env("))?;
     let mut out = String::with_capacity(a.len() + 4);
     let mut chars = a.chars().peekable();
@@ -1019,24 +949,25 @@ fn env_value(v: &str) -> Option<Option<PatchValue>> {
         }
     }
     Some(match crate::style::env_length(&out) {
-        Some(Ok(_)) => Some(PatchValue::Str(out.into())),
+        Some(Ok(_)) => Some(out),
         _ => None,
     })
 }
 
-/// [`spacing_value`] of a start / end utility: `env()`'s insets are
-/// physical, so they take none.
-fn logical_spacing_value(theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<PatchValue> {
-    if v.contains("env(") {
-        return None;
+/// A padding or margin utility's declaration: its length, or a length with
+/// an `env()` term (the physical keys only; Tailwind's negation is a
+/// `calc(... * -1)`, which NSH does not take with `env()`).
+fn spacing(key: StyleKey, theme: &Theme, v: &str, neg: bool, auto: bool) -> Option<Decl> {
+    if let Some(env) = env_value(v) {
+        return if neg { None } else { arb(key, &env?) };
     }
-    spacing_value(theme, v, neg, auto)
+    Some(set(key, spacing_value(theme, v, neg, auto)?))
 }
 
 /// A length in points (no percentages).
 fn points(theme: &Theme, v: &str) -> Option<f32> {
     match length_value(theme, v, false, false)? {
-        PatchValue::Number(n) => Some(n),
+        Length::Definite(DefiniteLength::Absolute(a)) => Some(a.to_points(REM_SIZE).0),
         _ => None,
     }
 }
@@ -1102,13 +1033,46 @@ fn alpha_modifier(m: &str) -> Option<f32> {
     }
 }
 
-/// `current` or `current/50`: currentColor at an alpha.
+/// `current`, `current/50`, `[currentColor]` or `[currentColor]/50`:
+/// currentColor at an alpha.
 fn current(v: &str) -> Option<f32> {
-    match v.split_once('/') {
-        None => (v == "current").then_some(1.0),
-        Some(("current", m)) => alpha_modifier(m),
-        _ => None,
+    let (base, modifier) = if v.starts_with('[') {
+        let end = v.find(']')?;
+        let rest = &v[end + 1..];
+        let modifier = match rest.strip_prefix('/') {
+            Some(m) => Some(m),
+            None if rest.is_empty() => None,
+            None => return None,
+        };
+        let a = arbitrary(&v[..=end])?;
+        let a = arbitrary_hinted(&a, "color").unwrap_or(&a);
+        (css::is_current_color(a).then_some("current")?, modifier)
+    } else {
+        match v.split_once('/') {
+            None => (v, None),
+            Some((b, m)) => (b, Some(m)),
+        }
+    };
+    if base != "current" {
+        return None;
     }
+    match modifier {
+        None => Some(1.0),
+        Some(m) => alpha_modifier(m),
+    }
+}
+
+/// An arbitrary color that writes `currentColor` inside it
+/// (`[color-mix(in_srgb,currentColor_50%,transparent)]`): the value as
+/// written, which the style fills in with the node's text color.
+fn mixes_current(v: &str) -> Option<Box<str>> {
+    let a = arbitrary(v)?;
+    let a = arbitrary_hinted(&a, "color").unwrap_or(&a);
+    if !css::mentions_current_color(a) {
+        return None;
+    }
+    css::color(&css::with_current_color(a, Color::BLACK))?;
+    Some(a.into())
 }
 
 /// `name/50` of a theme's shadow sizes: the layers, and the modifier's
@@ -1131,29 +1095,62 @@ fn sized<T: Copy>(
 
 /// A `fill-*` / `stroke-*` paint: `none`, `current` (`currentColor`),
 /// `inherit` or a color.
-fn svg_paint(theme: &Theme, v: &str) -> Option<PatchValue> {
-    Some(match v {
-        "none" => PatchValue::Str("none".into()),
-        "current" => PatchValue::Str("currentColor".into()),
-        "inherit" => PatchValue::Str("inherit".into()),
-        v => color_str(color(theme, v)?),
-    })
+fn svg_paint(theme: &Theme, v: &str) -> Option<PropertyValue> {
+    use crate::style::SvgPaint;
+    Some(PropertyValue::Paint(match v {
+        "none" => Some(SvgPaint::None),
+        "current" => Some(SvgPaint::CurrentColor),
+        "inherit" => None,
+        v => Some(SvgPaint::Color(color(theme, v)?)),
+    }))
 }
 
-fn color_str(c: Color) -> PatchValue {
-    PatchValue::Str(format!("#{:08x}", c.0).into())
+/// A value the utility table writes: valid by construction.
+fn checked(key: StyleKey, value: Result<PropertyValue, crate::StyleError>) -> Decl {
+    Decl::Set(
+        key,
+        value.unwrap_or_else(|_| {
+            debug_assert!(false, "a utility's value of `{}` is invalid", key.name());
+            PropertyValue::Default
+        }),
+    )
 }
 
-fn set(key: StyleKey, v: PatchValue) -> Decl {
-    Decl::Set(key, v)
+/// A length (`w-4`, `p-[10px]`, `top-1/2`).
+fn set(key: StyleKey, length: Length) -> Decl {
+    checked(key, key.length_value(length))
 }
 
+/// A color.
+fn setc(key: StyleKey, c: Color) -> Decl {
+    Decl::Set(key, PropertyValue::Color(Some(c)))
+}
+
+/// A number, as a TSX style's (points for lengths).
 fn setn(key: StyleKey, n: f32) -> Decl {
-    Decl::Set(key, PatchValue::Number(n))
+    checked(key, key.number_value(n))
 }
 
+/// A keyword of the utility table (`flex-start`), parsed once when the
+/// class compiles.
 fn sets(key: StyleKey, s: &str) -> Decl {
-    Decl::Set(key, PatchValue::Str(s.into()))
+    checked(key, key.parse_value(StyleValue::Str(s)))
+}
+
+/// An arbitrary value (`[…]`), parsed once when the class compiles: a
+/// value the property rejects makes the class unknown.
+fn arb(key: StyleKey, s: &str) -> Option<Decl> {
+    Some(Decl::Set(key, key.parse_value(StyleValue::Str(s)).ok()?))
+}
+
+/// `line-clamp-*` (0: none).
+fn clamp(lines: u32) -> Decl {
+    Decl::Set(K::NumberOfLines, PropertyValue::NumberOfLines(Some(lines)))
+}
+
+/// `text-ellipsis`, `text-clip`.
+fn overflow(mode: EllipsizeMode) -> Decl {
+    Decl::Set(K::TextOverflow, PropertyValue::TextOverflow(Some(mode)))
 }
 
 fn one(d: Decl) -> Option<Vec<Decl>> {
@@ -1251,9 +1248,19 @@ pub(crate) fn parse(theme: &Theme, utility: &str) -> Option<Vec<Decl>> {
 /// `decls`, unless one is a negative value of a property CSS takes none
 /// for (`p-[-4px]`, `w-[-10px]`): a browser drops that declaration.
 fn valid(decls: Vec<Decl>) -> Option<Vec<Decl>> {
-    let negative = |v: &PatchValue| match v {
-        PatchValue::Number(n) => *n < 0.0,
-        PatchValue::Str(s) => s.starts_with('-'),
+    let negative = |v: &PropertyValue| match v {
+        PropertyValue::Number(n) => n.0 < 0.0,
+        PropertyValue::Points(p) => p.0 < 0.0,
+        PropertyValue::OptPoints(p) => p.is_some_and(|p| p.0 < 0.0),
+        PropertyValue::Dimension(d) => d.into_raw().value() < 0.0,
+        PropertyValue::Lpa(d) => d.into_raw().value() < 0.0,
+        PropertyValue::Lp(d) => d.into_raw().value() < 0.0,
+        PropertyValue::OptLp(d) => d.is_some_and(|d| d.into_raw().value() < 0.0),
+        PropertyValue::LineHeight(
+            LineHeight::Points(crate::geometry::Points(n))
+            | LineHeight::Multiple(n)
+            | LineHeight::Em(n),
+        ) => *n < 0.0,
         _ => false,
     };
     let invalid = decls.iter().any(|d| match d {
@@ -1423,7 +1430,10 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
         "flex" | "inline-flex" => {
             return Some(vec![
                 sets(K::Display, "flex"),
-                Decl::Default(K::FlexDirection, PatchValue::Str("row".into())),
+                Decl::Default(
+                    K::FlexDirection,
+                    PropertyValue::FlexDirection(taffy::FlexDirection::Row),
+                ),
             ]);
         }
         // Inside a flex or grid container, which every NSH parent but a
@@ -1629,7 +1639,7 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
         "auto-rows-min" => sets(K::GridAutoRows, "min-content"),
         "auto-rows-max" => sets(K::GridAutoRows, "max-content"),
         "auto-rows-fr" => sets(K::GridAutoRows, "minmax(0, 1fr)"),
-        "aspect-auto" => Decl::Set(K::AspectRatio, PatchValue::Null),
+        "aspect-auto" => Decl::Set(K::AspectRatio, PropertyValue::Default),
         // Typography.
         "italic" => sets(K::FontStyle, "italic"),
         "not-italic" => sets(K::FontStyle, "normal"),
@@ -1651,14 +1661,8 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
         "text-center" => sets(K::TextAlign, "center"),
         "text-right" => sets(K::TextAlign, "right"),
         "text-justify" => sets(K::TextAlign, "justify"),
-        "text-start" => sets(K::TextAlign, "auto"),
-        // React Native's `right`, which the core lays out as the end right
-        // to left (an inline style's meaning, never mirrored as `text-right`
-        // is).
-        "text-end" => Decl::Style(StyleDecl::Set(
-            K::TextAlign,
-            PatchValue::Str("right".into()),
-        )),
+        "text-start" => sets(K::TextAlign, "start"),
+        "text-end" => sets(K::TextAlign, "end"),
         // `vertical-align` of views and images inside a text (`align-top`,
         // `align-bottom`, `align-sub` and `align-super` are the line box's
         // or the baseline's, which NSH does not place by).
@@ -1666,12 +1670,12 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
         "align-text-top" => sets(K::VerticalAlign, "text-top"),
         "align-text-bottom" => sets(K::VerticalAlign, "text-bottom"),
         "align-middle" => sets(K::VerticalAlign, "middle"),
-        "text-ellipsis" => Decl::Prop(PropDecl::Ellipsize(EllipsizeMode::Tail)),
-        "text-clip" => Decl::Prop(PropDecl::Ellipsize(EllipsizeMode::Clip)),
+        "text-ellipsis" => overflow(EllipsizeMode::Tail),
+        "text-clip" => overflow(EllipsizeMode::Clip),
         "truncate" => {
             return Some(vec![
-                Decl::Prop(PropDecl::Lines(1)),
-                Decl::Prop(PropDecl::Ellipsize(EllipsizeMode::Tail)),
+                clamp(1),
+                overflow(EllipsizeMode::Tail),
                 Decl::Prop(PropDecl::NoWrap(true)),
                 sets(K::Overflow, "hidden"),
             ]);
@@ -1680,7 +1684,7 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
         "whitespace-normal" | "text-wrap" | "text-balance" | "text-pretty" => {
             Decl::Prop(PropDecl::NoWrap(false))
         }
-        "line-clamp-none" => Decl::Prop(PropDecl::Lines(0)),
+        "line-clamp-none" => clamp(0),
         // `font-variant-numeric: normal`: the number forms only.
         "normal-nums" => Decl::Part(Part::FontVariant {
             set: 0,
@@ -1707,7 +1711,7 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
             clear: FontVariant::TABULAR_NUMS,
         }),
         // Backgrounds.
-        "text-inherit" | "text-current" => Decl::Set(K::Color, PatchValue::Null),
+        "text-inherit" | "text-current" => Decl::Set(K::Color, PropertyValue::Default),
         "bg-none" => Decl::Part(Part::GradientNone),
         "bg-linear-to-t" | "bg-gradient-to-t" => {
             Decl::Part(Part::Gradient(GradientKind::Linear { angle: deg(0.0) }))
@@ -1812,21 +1816,27 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
         "animate-bounce" => Decl::Part(Part::Animate(Some(Keyframes::Bounce))),
         "animate-none" => Decl::Part(Part::Animate(None)),
         // Interactivity.
-        "pointer-events-none" => Decl::Prop(PropDecl::PointerEvents(PointerEvents::None)),
-        "pointer-events-auto" => Decl::Prop(PropDecl::PointerEvents(PointerEvents::Auto)),
+        "pointer-events-none" => Decl::Set(
+            K::PointerEvents,
+            PropertyValue::PointerEvents(Some(PointerEvents::None)),
+        ),
+        "pointer-events-auto" => Decl::Set(
+            K::PointerEvents,
+            PropertyValue::PointerEvents(Some(PointerEvents::Auto)),
+        ),
         // `user-select` of a text that says `auto` is its parent's: the
         // classes of the views around it reach it (`Core::rebuild_text`).
-        "select-none" => Decl::Prop(PropDecl::Selectable(Some(false))),
-        "select-text" => Decl::Prop(PropDecl::Selectable(Some(true))),
-        "select-auto" => Decl::Prop(PropDecl::Selectable(None)),
+        "select-none" => Decl::Set(K::UserSelect, PropertyValue::OptBool(Some(false))),
+        "select-text" => Decl::Set(K::UserSelect, PropertyValue::OptBool(Some(true))),
+        "select-auto" => Decl::Set(K::UserSelect, PropertyValue::OptBool(None)),
         "space-x-reverse" => Decl::Prop(PropDecl::SpaceReverse(false)),
         "space-y-reverse" => Decl::Prop(PropDecl::SpaceReverse(true)),
         // Images.
-        "object-contain" => Decl::Prop(PropDecl::Resize(ResizeMode::Contain)),
-        "object-cover" => Decl::Prop(PropDecl::Resize(ResizeMode::Cover)),
-        "object-fill" => Decl::Prop(PropDecl::Resize(ResizeMode::Stretch)),
-        "object-none" => Decl::Prop(PropDecl::Resize(ResizeMode::Center)),
-        "object-scale-down" => Decl::Prop(PropDecl::Resize(ResizeMode::ScaleDown)),
+        "object-contain" => sets(K::ObjectFit, "contain"),
+        "object-cover" => sets(K::ObjectFit, "cover"),
+        "object-fill" => sets(K::ObjectFit, "fill"),
+        "object-none" => sets(K::ObjectFit, "none"),
+        "object-scale-down" => sets(K::ObjectFit, "scale-down"),
         _ => return None,
     };
     Some(vec![d])
@@ -1837,7 +1847,7 @@ fn keyword(u: &str) -> Option<Vec<Decl>> {
 fn outline_style(style: &str) -> Option<Vec<Decl>> {
     Some(vec![
         sets(K::OutlineStyle, style),
-        Decl::Default(K::OutlineWidth, PatchValue::Number(3.0)),
+        Decl::Default(K::OutlineWidth, PropertyValue::Points(px(3.0))),
         Decl::CurrentColor(K::OutlineColor),
     ])
 }
@@ -1847,7 +1857,10 @@ fn outline_style(style: &str) -> Option<Vec<Decl>> {
 fn outline_width(width: f32) -> Vec<Decl> {
     vec![
         setn(K::OutlineWidth, width),
-        Decl::Default(K::OutlineStyle, PatchValue::Str("solid".into())),
+        Decl::Default(
+            K::OutlineStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Solid, false),
+        ),
         Decl::CurrentColor(K::OutlineColor),
     ]
 }
@@ -1915,59 +1928,41 @@ fn filter(backdrop: bool, slot: u8, f: Filter) -> Decl {
 static PREFIXES: &[(&str, Handler)] = &[
     // Spacing.
     ("px", |t, v, n| {
-        one(set(K::PaddingHorizontal, spacing_value(t, v, n, false)?))
+        one(spacing(K::PaddingHorizontal, t, v, n, false)?)
     }),
     ("py", |t, v, n| {
-        one(set(K::PaddingVertical, spacing_value(t, v, n, false)?))
+        one(spacing(K::PaddingVertical, t, v, n, false)?)
     }),
-    ("pt", |t, v, n| {
-        one(set(K::PaddingTop, spacing_value(t, v, n, false)?))
-    }),
+    ("pt", |t, v, n| one(spacing(K::PaddingTop, t, v, n, false)?)),
     ("pr", |t, v, n| {
-        one(set(K::PaddingRight, spacing_value(t, v, n, false)?))
+        one(spacing(K::PaddingRight, t, v, n, false)?)
     }),
     ("pb", |t, v, n| {
-        one(set(K::PaddingBottom, spacing_value(t, v, n, false)?))
+        one(spacing(K::PaddingBottom, t, v, n, false)?)
     }),
     ("pl", |t, v, n| {
-        one(set(K::PaddingLeft, spacing_value(t, v, n, false)?))
+        one(spacing(K::PaddingLeft, t, v, n, false)?)
     }),
     ("ps", |t, v, n| {
-        one(set(K::PaddingStart, logical_spacing_value(t, v, n, false)?))
+        one(spacing(K::PaddingStart, t, v, n, false)?)
     }),
-    ("pe", |t, v, n| {
-        one(set(K::PaddingEnd, logical_spacing_value(t, v, n, false)?))
-    }),
-    ("p", |t, v, n| {
-        one(set(K::Padding, spacing_value(t, v, n, false)?))
-    }),
+    ("pe", |t, v, n| one(spacing(K::PaddingEnd, t, v, n, false)?)),
+    ("p", |t, v, n| one(spacing(K::Padding, t, v, n, false)?)),
     ("mx", |t, v, n| {
-        one(set(K::MarginHorizontal, spacing_value(t, v, n, true)?))
+        one(spacing(K::MarginHorizontal, t, v, n, true)?)
     }),
     ("my", |t, v, n| {
-        one(set(K::MarginVertical, spacing_value(t, v, n, true)?))
+        one(spacing(K::MarginVertical, t, v, n, true)?)
     }),
-    ("mt", |t, v, n| {
-        one(set(K::MarginTop, spacing_value(t, v, n, true)?))
-    }),
-    ("mr", |t, v, n| {
-        one(set(K::MarginRight, spacing_value(t, v, n, true)?))
-    }),
+    ("mt", |t, v, n| one(spacing(K::MarginTop, t, v, n, true)?)),
+    ("mr", |t, v, n| one(spacing(K::MarginRight, t, v, n, true)?)),
     ("mb", |t, v, n| {
-        one(set(K::MarginBottom, spacing_value(t, v, n, true)?))
+        one(spacing(K::MarginBottom, t, v, n, true)?)
     }),
-    ("ml", |t, v, n| {
-        one(set(K::MarginLeft, spacing_value(t, v, n, true)?))
-    }),
-    ("ms", |t, v, n| {
-        one(set(K::MarginStart, logical_spacing_value(t, v, n, true)?))
-    }),
-    ("me", |t, v, n| {
-        one(set(K::MarginEnd, logical_spacing_value(t, v, n, true)?))
-    }),
-    ("m", |t, v, n| {
-        one(set(K::Margin, spacing_value(t, v, n, true)?))
-    }),
+    ("ml", |t, v, n| one(spacing(K::MarginLeft, t, v, n, true)?)),
+    ("ms", |t, v, n| one(spacing(K::MarginStart, t, v, n, true)?)),
+    ("me", |t, v, n| one(spacing(K::MarginEnd, t, v, n, true)?)),
+    ("m", |t, v, n| one(spacing(K::Margin, t, v, n, true)?)),
     ("gap-x", |t, v, _| {
         one(set(K::ColumnGap, spacing_value(t, v, false, false)?))
     }),
@@ -1980,32 +1975,28 @@ static PREFIXES: &[(&str, Handler)] = &[
     // `space-*` gives the children but the last a margin (the view's
     // `ClassProps::space`, which the core gives them).
     ("space-x", |t, v, n| {
-        one(Decl::Prop(PropDecl::Space(
-            false,
-            spacing_value(t, v, n, false)?,
-        )))
+        let margin = K::MarginRight.length_value(spacing_value(t, v, n, false)?);
+        one(Decl::Prop(PropDecl::Space(false, margin.ok()?)))
     }),
     ("space-y", |t, v, n| {
-        one(Decl::Prop(PropDecl::Space(
-            true,
-            spacing_value(t, v, n, false)?,
-        )))
+        let margin = K::MarginBottom.length_value(spacing_value(t, v, n, false)?);
+        one(Decl::Prop(PropDecl::Space(true, margin.ok()?)))
     }),
     // Insets.
     ("inset-x", |t, v, n| {
         let l = length_value(t, v, n, true)?;
-        Some(vec![set(K::Left, l.clone()), set(K::Right, l)])
+        Some(vec![set(K::Left, l), set(K::Right, l)])
     }),
     ("inset-y", |t, v, n| {
         let l = length_value(t, v, n, true)?;
-        Some(vec![set(K::Top, l.clone()), set(K::Bottom, l)])
+        Some(vec![set(K::Top, l), set(K::Bottom, l)])
     }),
     ("inset", |t, v, n| {
         let l = length_value(t, v, n, true)?;
         Some(vec![
-            set(K::Top, l.clone()),
-            set(K::Right, l.clone()),
-            set(K::Bottom, l.clone()),
+            set(K::Top, l),
+            set(K::Right, l),
+            set(K::Bottom, l),
             set(K::Left, l),
         ])
     }),
@@ -2085,28 +2076,20 @@ static PREFIXES: &[(&str, Handler)] = &[
                 setn(K::FlexBasis, 0.0),
             ]);
         }
-        // `flex-[2]`, `flex-[2_1_0%]`: the CSS shorthand.
+        // `flex-[2]`, `flex-[2_1_0%]`, `flex-[auto]`: the CSS shorthand,
+        // as a style's `flex` reads it.
         let a = arbitrary(v)?;
-        let w = css::words(&a);
-        match w.as_slice() {
-            [g] => Some(vec![
-                setn(K::FlexGrow, arbitrary_num(g)?),
-                setn(K::FlexShrink, 1.0),
-                setn(K::FlexBasis, 0.0),
-            ]),
-            [g, s, b] => {
-                let basis = match *b {
-                    "auto" => PatchValue::Str("auto".into()),
-                    b => length_value(t, &format!("[{b}]"), false, true)?,
-                };
-                Some(vec![
-                    setn(K::FlexGrow, arbitrary_num(g)?),
-                    setn(K::FlexShrink, arbitrary_num(s)?),
-                    set(K::FlexBasis, basis),
-                ])
-            }
-            _ => None,
-        }
+        let (grow, shrink, basis) = css::flex(&a)?;
+        let basis = match basis {
+            None => px(0.0).into(),
+            Some("auto") => Length::Auto,
+            Some(b) => length_value(t, &format!("[{b}]"), false, true)?,
+        };
+        Some(vec![
+            setn(K::FlexGrow, grow),
+            setn(K::FlexShrink, shrink),
+            set(K::FlexBasis, basis),
+        ])
     }),
     ("grow", |_, v, _| {
         one(setn(
@@ -2122,59 +2105,89 @@ static PREFIXES: &[(&str, Handler)] = &[
     }),
     // Tailwind CSS has no negative grid templates, spans or auto tracks.
     ("grid-cols", |_, v, n| {
-        one(set(K::GridTemplateColumns, grid_template(v, n)?))
+        one(Decl::Set(K::GridTemplateColumns, grid_template(v, n)?))
     }),
     ("grid-rows", |_, v, n| {
-        one(set(K::GridTemplateRows, grid_template(v, n)?))
+        one(Decl::Set(K::GridTemplateRows, grid_template(v, n)?))
     }),
     ("col-span", |_, v, n| {
         let c = count(v, n)?;
-        one(sets(K::GridColumn, &format!("span {c} / span {c}")))
+        one(Decl::Set(
+            K::GridColumn,
+            PropertyValue::GridLine(crate::grid::span(c)),
+        ))
     }),
     ("row-span", |_, v, n| {
         let c = count(v, n)?;
-        one(sets(K::GridRow, &format!("span {c} / span {c}")))
+        one(Decl::Set(
+            K::GridRow,
+            PropertyValue::GridLine(crate::grid::span(c)),
+        ))
     }),
     ("col-start", |_, v, n| {
-        one(sets(K::GridColumnStart, &line_index(v, n)?))
+        one(Decl::Set(
+            K::GridColumnStart,
+            PropertyValue::GridPlacement(line_index(v, n)?),
+        ))
     }),
     ("col-end", |_, v, n| {
-        one(sets(K::GridColumnEnd, &line_index(v, n)?))
+        one(Decl::Set(
+            K::GridColumnEnd,
+            PropertyValue::GridPlacement(line_index(v, n)?),
+        ))
     }),
     ("row-start", |_, v, n| {
-        one(sets(K::GridRowStart, &line_index(v, n)?))
+        one(Decl::Set(
+            K::GridRowStart,
+            PropertyValue::GridPlacement(line_index(v, n)?),
+        ))
     }),
     ("row-end", |_, v, n| {
-        one(sets(K::GridRowEnd, &line_index(v, n)?))
+        one(Decl::Set(
+            K::GridRowEnd,
+            PropertyValue::GridPlacement(line_index(v, n)?),
+        ))
     }),
     ("col", |_, v, n| {
         let line = match arbitrary(v) {
             // Left to the style, which logs an invalid one and sets
             // nothing, as a browser drops an invalid declaration.
-            Some(a) if !n => unhinted(&a).to_string(),
+            Some(a) if !n => return Some(arb(K::GridColumn, unhinted(&a)).into_iter().collect()),
             // `-col-[2]`: Tailwind CSS's `calc(2 * -1)`; anything else
             // negated is a declaration a browser drops.
             Some(_) => {
-                return Some(
-                    line_index(v, n).map_or_else(Vec::new, |l| vec![sets(K::GridColumn, &l)]),
-                );
+                return Some(line_index(v, n).map_or_else(Vec::new, |l| {
+                    vec![Decl::Set(
+                        K::GridColumn,
+                        PropertyValue::GridLine(crate::grid::line_from(l)),
+                    )]
+                }));
             }
             None => line_index(v, n)?,
         };
-        one(sets(K::GridColumn, &line))
+        one(Decl::Set(
+            K::GridColumn,
+            PropertyValue::GridLine(crate::grid::line_from(line)),
+        ))
     }),
     ("row", |_, v, n| {
         let line = match arbitrary(v) {
             // As `col`.
-            Some(a) if !n => unhinted(&a).to_string(),
+            Some(a) if !n => return Some(arb(K::GridRow, unhinted(&a)).into_iter().collect()),
             Some(_) => {
-                return Some(
-                    line_index(v, n).map_or_else(Vec::new, |l| vec![sets(K::GridRow, &l)]),
-                );
+                return Some(line_index(v, n).map_or_else(Vec::new, |l| {
+                    vec![Decl::Set(
+                        K::GridRow,
+                        PropertyValue::GridLine(crate::grid::line_from(l)),
+                    )]
+                }));
             }
             None => line_index(v, n)?,
         };
-        one(sets(K::GridRow, &line))
+        one(Decl::Set(
+            K::GridRow,
+            PropertyValue::GridLine(crate::grid::line_from(line)),
+        ))
     }),
     ("auto-cols", |_, v, n| auto_tracks(K::GridAutoColumns, v, n)),
     ("auto-rows", |_, v, n| auto_tracks(K::GridAutoRows, v, n)),
@@ -2186,7 +2199,7 @@ static PREFIXES: &[(&str, Handler)] = &[
         if let Some(f) = t.fonts.get(v) {
             return one(match f {
                 Some(name) => sets(K::FontFamily, name),
-                None => Decl::Set(K::FontFamily, PatchValue::Null),
+                None => Decl::Set(K::FontFamily, PropertyValue::Default),
             });
         }
         let a = arbitrary(v)?;
@@ -2218,18 +2231,17 @@ static PREFIXES: &[(&str, Handler)] = &[
             Some(em) => *em,
             None => {
                 let a = arbitrary(v)?;
-                return one(sets(K::LetterSpacing, &a));
+                return one(arb(K::LetterSpacing, &a)?);
             }
         };
-        one(sets(
+        let em = if n { -em } else { em };
+        one(Decl::Set(
             K::LetterSpacing,
-            &format!("{}em", if n { -em } else { em }),
+            PropertyValue::LetterSpacing(None, Some(ordered_float::OrderedFloat(em))),
         ))
     }),
     ("leading", |t, v, _| one(line_height(t, v)?)),
-    ("line-clamp", |_, v, _| {
-        one(Decl::Prop(PropDecl::Lines(int(v)? as u32)))
-    }),
+    ("line-clamp", |_, v, _| one(clamp(int(v)? as u32))),
     ("decoration", |t, v, _| {
         if let Some(n) = int(v) {
             return one(setn(K::TextDecorationThickness, n));
@@ -2237,8 +2249,11 @@ static PREFIXES: &[(&str, Handler)] = &[
         if let Some(a) = current(v) {
             return one(Decl::SetCurrentColor(K::TextDecorationColor, a));
         }
+        if let Some(mix) = mixes_current(v) {
+            return one(arb(K::TextDecorationColor, &mix)?);
+        }
         if let Some(c) = color(t, v) {
-            return one(set(K::TextDecorationColor, color_str(c)));
+            return one(setc(K::TextDecorationColor, c));
         }
         one(setn(K::TextDecorationThickness, arbitrary_points(t, v)?))
     }),
@@ -2248,13 +2263,13 @@ static PREFIXES: &[(&str, Handler)] = &[
     }),
     // SVG paint (Tailwind's `fill-*` / `stroke-*`): what the shapes Rust
     // components draw paint with.
-    ("fill", |t, v, _| one(set(K::Fill, svg_paint(t, v)?))),
+    ("fill", |t, v, _| one(Decl::Set(K::Fill, svg_paint(t, v)?))),
     ("stroke", |t, v, _| {
         if let Some(n) = num(v) {
             return one(setn(K::StrokeWidth, n));
         }
         if let Some(p) = svg_paint(t, v) {
-            return one(set(K::Stroke, p));
+            return one(Decl::Set(K::Stroke, p));
         }
         let a = arbitrary(v)?;
         let a = arbitrary_hinted(&a, "length")
@@ -2297,7 +2312,7 @@ static PREFIXES: &[(&str, Handler)] = &[
         if let Some(a) = arbitrary(v)
             && a.contains("gradient(")
         {
-            if css::gradient(&a).is_none() {
+            if css::gradient(&css::with_current_color(&a, Color::BLACK)).is_none() {
                 // Reported here: the class is also unknown, but that does
                 // not say the gradient is what was rejected.
                 log::warn!("invalid gradient in class `bg-{v}`: {a}");
@@ -2305,13 +2320,16 @@ static PREFIXES: &[(&str, Handler)] = &[
             }
             return one(Decl::Style(StyleDecl::Set(
                 K::BackgroundImage,
-                PatchValue::Str(a.into()),
+                K::BackgroundImage.parse_value(StyleValue::Str(&a)).ok()?,
             )));
         }
         if let Some(a) = current(v) {
             return one(Decl::SetCurrentColor(K::BackgroundColor, a));
         }
-        one(set(K::BackgroundColor, color_str(color(t, v)?)))
+        if let Some(mix) = mixes_current(v) {
+            return one(arb(K::BackgroundColor, &mix)?);
+        }
+        one(setc(K::BackgroundColor, color(t, v)?))
     }),
     ("from", |t, v, _| match (stop_position(v), current(v)) {
         (Some(p), _) => part(Part::FromPos(p)),
@@ -2424,8 +2442,11 @@ static PREFIXES: &[(&str, Handler)] = &[
         if let Some(a) = current(v) {
             return one(Decl::SetCurrentColor(K::OutlineColor, a));
         }
+        if let Some(mix) = mixes_current(v) {
+            return one(arb(K::OutlineColor, &mix)?);
+        }
         if let Some(c) = color(t, v) {
-            return one(set(K::OutlineColor, color_str(c)));
+            return one(setc(K::OutlineColor, c));
         }
         Some(outline_width(arbitrary_points(t, v)?))
     }),
@@ -2483,8 +2504,10 @@ static PREFIXES: &[(&str, Handler)] = &[
         one(setn(K::Opacity, opacity_factor(v)?.clamp(0.0, 1.0)))
     }),
     ("mix-blend", |_, v, _| {
-        crate::effects::BlendMode::parse(v)?;
-        one(sets(K::MixBlendMode, v))
+        one(Decl::Set(
+            K::MixBlendMode,
+            PropertyValue::BlendMode(crate::effects::BlendMode::parse(v)?),
+        ))
     }),
     ("backdrop-blur", |t, v, _| blur(t, v, true)),
     ("backdrop-brightness", |_, v, _| {
@@ -2623,7 +2646,7 @@ static PREFIXES: &[(&str, Handler)] = &[
             "bottom-left" => "bottom left",
             "left" => "left",
             "top-left" => "top left",
-            v => return one(sets(K::TransformOrigin, &arbitrary(v)?)),
+            v => return one(arb(K::TransformOrigin, &arbitrary(v)?)?),
         };
         one(sets(K::TransformOrigin, o))
     }),
@@ -2647,8 +2670,10 @@ static PREFIXES: &[(&str, Handler)] = &[
     }),
     ("cursor", |_, v, _| {
         let name = arbitrary(v).unwrap_or_else(|| v.to_string());
-        crate::effects::Cursor::parse(&name)?;
-        one(sets(K::Cursor, &name))
+        one(Decl::Set(
+            K::Cursor,
+            PropertyValue::Cursor(crate::effects::Cursor::parse(&name)?),
+        ))
     }),
     // Images.
     ("object", |_, v, _| {
@@ -2664,15 +2689,15 @@ static PREFIXES: &[(&str, Handler)] = &[
             "bottom-right" | "right-bottom" => "right bottom",
             v => {
                 let a = arbitrary(v)?;
-                css::object_position(&a)?;
-                return one(sets(K::ObjectPosition, &a));
+                return one(Decl::Set(
+                    K::ObjectPosition,
+                    PropertyValue::ObjectPosition(css::object_position(&a)?),
+                ));
             }
         };
         one(sets(K::ObjectPosition, p))
     }),
-    ("tint", |t, v, _| {
-        one(set(K::TintColor, color_str(color(t, v)?)))
-    }),
+    ("tint", |t, v, _| one(setc(K::TintColor, color(t, v)?))),
 ];
 
 /// Forms without a value: `shadow`, `ring`, `border`, `rounded`, ...
@@ -2719,53 +2744,57 @@ fn signed(v: f32, neg: bool) -> f32 {
     if neg { -v } else { v }
 }
 
-fn count(v: &str, neg: bool) -> Option<u32> {
+fn count(v: &str, neg: bool) -> Option<u16> {
     if neg {
         return None;
     }
     match arbitrary(v) {
         Some(a) => unhinted(&a).trim().parse().ok().filter(|&n| n > 0),
-        None => int(v).map(|n| n as u32).filter(|&n| n > 0),
+        None => int(v).map(|n| n as u16).filter(|&n| n > 0),
     }
 }
 
-fn line_index(v: &str, neg: bool) -> Option<String> {
+fn line_index(v: &str, neg: bool) -> Option<taffy::GridPlacement<String>> {
     if v == "auto" {
-        return (!neg).then(|| "auto".into());
+        return (!neg).then_some(taffy::GridPlacement::Auto);
     }
-    let n: i32 = match arbitrary(v) {
+    let n: i16 = match arbitrary(v) {
         Some(a) => match unhinted(&a).trim().parse() {
             Ok(n) => n,
             // A named line (`col-start-[content-start]`).
-            Err(_) if !neg => {
-                let a = unhinted(&a);
-                return crate::grid::placement(a).map(|_| a.to_string());
-            }
+            Err(_) if !neg => return crate::grid::placement(unhinted(&a)),
             Err(_) => return None,
         },
-        None => int(v)? as i32,
+        None => int(v)? as i16,
     };
-    Some((if neg { -n } else { n }).to_string())
+    // CSS has no line 0.
+    (n != 0).then(|| crate::grid::line_number(if neg { -n } else { n }))
 }
 
-fn grid_template(v: &str, neg: bool) -> Option<PatchValue> {
+fn grid_template(v: &str, neg: bool) -> Option<PropertyValue> {
     if neg {
         return None;
     }
     if let Some(n) = int(v) {
-        return (n > 0.0).then(|| PatchValue::Str(format!("repeat({n}, minmax(0, 1fr))").into()));
+        return (n > 0.0)
+            .then(|| PropertyValue::grid_template(crate::grid::equal_tracks(n as u16)));
     }
     let a = arbitrary(v)?;
-    let a = track_list(&a)?;
-    crate::grid::template(a)?;
-    Some(PatchValue::Str(a.into()))
+    Some(PropertyValue::grid_template(crate::grid::template(
+        track_list(&a)?,
+    )?))
 }
 
 /// `auto-cols-[…]` / `auto-rows-[…]`: an invalid value is the style's to
 /// log, and sets nothing, as a browser drops the declaration.
 fn auto_tracks(key: StyleKey, v: &str, neg: bool) -> Option<Vec<Decl>> {
     let a = arbitrary(v).filter(|_| !neg)?;
-    Some(track_list(&a).map_or_else(Vec::new, |a| vec![sets(key, a)]))
+    Some(
+        track_list(&a)
+            .and_then(|a| arb(key, a))
+            .into_iter()
+            .collect(),
+    )
 }
 
 /// An arbitrary track list without its type hint; `None` when the hint
@@ -2828,7 +2857,7 @@ fn size(theme: &Theme, v: &str, key: StyleKey, width: bool) -> Option<Vec<Decl>>
         return one(Decl::Screen(key, fw, fh));
     }
     if v == "none" && matches!(key, K::MaxWidth | K::MaxHeight) {
-        return one(Decl::Set(key, PatchValue::Null));
+        return one(Decl::Set(key, PropertyValue::Default));
     }
     if matches!(key, K::MaxWidth | K::Width | K::MinWidth) {
         if let Some(w) = theme.containers.get(v) {
@@ -2839,7 +2868,7 @@ fn size(theme: &Theme, v: &str, key: StyleKey, width: bool) -> Option<Vec<Decl>>
             return one(Decl::Ch(key, 65.0));
         }
     }
-    let auto = matches!(key, K::Width | K::Height);
+    let auto = matches!(key, K::Width | K::Height | K::MinWidth | K::MinHeight);
     one(set(key, length_value(theme, v, false, auto)?))
 }
 
@@ -2874,8 +2903,11 @@ fn border(theme: &Theme, v: &str, widths: &[StyleKey], colors: &[StyleKey]) -> O
     {
         return Some(border_widths(widths, w));
     }
+    if let Some(mix) = mixes_current(v) {
+        return colors.iter().map(|k| arb(*k, &mix)).collect();
+    }
     let c = color(theme, v)?;
-    Some(colors.iter().map(|k| set(*k, color_str(c))).collect())
+    Some(colors.iter().map(|k| setc(*k, c)).collect())
 }
 
 /// Border widths, in `currentColor` unless a color utility says otherwise
@@ -2906,12 +2938,9 @@ fn translate(theme: &Theme, v: &str, neg: bool) -> Option<Len> {
         return Some(Len::Fraction(sign * fraction(v)?));
     }
     match length_value(theme, v, neg, false)? {
-        PatchValue::Number(n) => Some(Len::Points(n)),
-        PatchValue::Str(s) => {
-            let p = css::number(s.strip_suffix('%')?)?;
-            Some(Len::Fraction(p / 100.0))
-        }
-        PatchValue::Null => None,
+        Length::Definite(DefiniteLength::Absolute(a)) => Some(Len::Points(a.to_points(REM_SIZE).0)),
+        Length::Definite(DefiniteLength::Fraction(f)) => Some(Len::Fraction(f.0)),
+        Length::Auto => None,
     }
 }
 
@@ -2935,7 +2964,7 @@ fn text(theme: &Theme, v: &str, _neg: bool) -> Option<Vec<Decl>> {
                 if let Some(m) = multiple {
                     out.push(Decl::Default(
                         K::LineHeight,
-                        PatchValue::Str(m.to_string().into()),
+                        PropertyValue::LineHeight(LineHeight::Multiple(m)),
                     ));
                 }
             }
@@ -2948,7 +2977,7 @@ fn text(theme: &Theme, v: &str, _neg: bool) -> Option<Vec<Decl>> {
             return one(setn(K::FontSize, l));
         }
         if let Some(c) = arbitrary_hinted(&a, "color").and_then(css::color) {
-            return one(set(K::Color, color_str(c)));
+            return one(setc(K::Color, c));
         }
         if let Some(l) = class_length(theme, &a) {
             let mut out = vec![setn(K::FontSize, l)];
@@ -2958,7 +2987,7 @@ fn text(theme: &Theme, v: &str, _neg: bool) -> Option<Vec<Decl>> {
             return Some(out);
         }
     }
-    one(set(K::Color, color_str(color(theme, v)?)))
+    one(setc(K::Color, color(theme, v)?))
 }
 
 /// A line height (`leading-*`, `text-sm/<line>`): a theme multiple
@@ -2967,20 +2996,26 @@ fn text(theme: &Theme, v: &str, _neg: bool) -> Option<Vec<Decl>> {
 /// (`[1.5]`), a length is points (`[22px]`).
 fn line_height(theme: &Theme, v: &str) -> Option<Decl> {
     if let Some(m) = theme.leading.get(v) {
-        return Some(sets(K::LineHeight, &m.to_string()));
+        return Some(Decl::Set(
+            K::LineHeight,
+            PropertyValue::LineHeight(LineHeight::Multiple(*m)),
+        ));
     }
     if let Some(a) = arbitrary(v) {
         let a = a.trim();
         if a.ends_with('%') || a.ends_with("em") && !a.ends_with("rem") {
-            return Some(sets(K::LineHeight, a));
+            return arb(K::LineHeight, a);
         }
         let multiple = css::number(a);
         if let Some(m) = multiple.filter(|m| *m >= 0.0) {
-            return Some(sets(K::LineHeight, &m.to_string()));
+            return Some(Decl::Set(
+                K::LineHeight,
+                PropertyValue::LineHeight(LineHeight::Multiple(m)),
+            ));
         }
     }
     match length_value(theme, v, false, false)? {
-        PatchValue::Number(n) => Some(setn(K::LineHeight, n)),
+        l @ Length::Definite(DefiniteLength::Absolute(_)) => Some(set(K::LineHeight, l)),
         _ => None,
     }
 }

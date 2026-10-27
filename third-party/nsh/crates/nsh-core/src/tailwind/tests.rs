@@ -47,6 +47,8 @@ fn styled_with(
         group: &group,
     };
     list.apply(&context, &theme, &mut style, &mut props, |_| {});
+    // As the core does: the style's node props.
+    style.node_props(&mut props);
     (style, props)
 }
 
@@ -77,6 +79,13 @@ fn spacing_and_layout() {
     let s = styled("flex-[3_0_50%]");
     assert_eq!((s.layout.flex_grow, s.layout.flex_shrink), (3.0, 0.0));
     assert_eq!(s.layout.flex_basis, taffy::Dimension::percent(0.5));
+    // CSS's shorthand, read as a style's `flex` is.
+    let s = styled("flex-[auto]");
+    assert_eq!((s.layout.flex_grow, s.layout.flex_shrink), (1.0, 1.0));
+    assert_eq!(s.layout.flex_basis, taffy::Dimension::auto());
+    let s = styled("flex-[2_1rem]");
+    assert_eq!((s.layout.flex_grow, s.layout.flex_shrink), (2.0, 1.0));
+    assert_eq!(s.layout.flex_basis, taffy::Dimension::length(16.0));
     let s = styled("p-[13px] m-auto inset-0 absolute size-10 basis-1/3 flex-1");
     assert_eq!(s.layout.padding.left, taffy::LengthPercentage::length(13.0));
     assert_eq!(s.layout.margin.left, taffy::LengthPercentageAuto::auto());
@@ -87,17 +96,23 @@ fn spacing_and_layout() {
     );
     assert_eq!(s.layout.size.height, taffy::Dimension::length(40.0));
     assert_eq!(s.layout.flex_grow, 1.0);
+    // CSS's automatic minimum; unset, a minimum is 0 (Yoga's).
+    let s = styled("min-w-auto min-h-auto");
+    assert_eq!(s.layout.min_size.width, taffy::LengthPercentageAuto::auto());
+    assert_eq!(
+        s.layout.min_size.height,
+        taffy::LengthPercentageAuto::auto()
+    );
 }
 
 #[test]
-fn physical_classes_name_the_other_side_right_to_left() {
-    // The core lays left and right out as start and end right to left
-    // (React Native's rule for inline styles); classes are physical, so
-    // right to left they set the other side, and come out where they say.
+fn physical_classes_keep_their_sides_right_to_left() {
+    // As in CSS, and as style keys do: the core lays left and right out
+    // where they say in either direction, so a class needs no direction.
     let theme = themed();
     let resolve = |classes: &str, rtl: bool| {
         let list = parse(&theme, classes);
-        assert_ne!(list.deps() & deps::RTL, 0, "{classes}");
+        assert_eq!(list.deps() & deps::RTL, 0, "{classes}");
         let group = |_: &str| 0;
         let cx = Context {
             env: ClassEnvironment::default(),
@@ -111,30 +126,32 @@ fn physical_classes_name_the_other_side_right_to_left() {
         list.apply(&cx, &theme, &mut style, &mut ClassProps::default(), |_| {});
         style
     };
-    let s = resolve("pl-4 mr-2 left-1", true);
-    assert_eq!(
-        s.layout.padding.right,
-        taffy::LengthPercentage::length(16.0)
-    );
-    assert_eq!(
-        s.layout.margin.left,
-        taffy::LengthPercentageAuto::length(8.0)
-    );
-    assert_eq!(
-        s.layout.inset.right,
-        taffy::LengthPercentageAuto::length(4.0)
-    );
-    let s = resolve("pl-4", false);
-    assert_eq!(s.layout.padding.left, taffy::LengthPercentage::length(16.0));
+    for rtl in [false, true] {
+        let s = resolve("pl-4 mr-2 left-1", rtl);
+        assert_eq!(s.layout.padding.left, taffy::LengthPercentage::length(16.0));
+        assert_eq!(
+            s.layout.margin.right,
+            taffy::LengthPercentageAuto::length(8.0)
+        );
+        assert_eq!(
+            s.layout.inset.left,
+            taffy::LengthPercentageAuto::length(4.0)
+        );
+    }
     let s = resolve("text-left", true);
     assert_eq!(s.text.text_align, Some(crate::style::TextAlign::Left));
     assert!(s.text.text_align_physical);
-    // Logical classes need nothing: the core places them.
-    let list = parse(
-        &theme,
-        "ps-4 me-2 start-1 rounded-s-lg border-e-2 text-end text-center px-2",
+    // `text-start` and `text-end` follow the direction, as CSS's `start`
+    // and `end`.
+    let s = resolve("text-end", true);
+    assert_eq!(s.text.text_align, Some(crate::style::TextAlign::Right));
+    assert!(!s.text.text_align_physical);
+    let s = resolve(
+        "text-start ps-4 me-2 start-1 rounded-s-lg border-e-2 px-2",
+        true,
     );
-    assert_eq!(list.deps() & deps::RTL, 0);
+    assert_eq!(s.text.text_align, Some(crate::style::TextAlign::Left));
+    assert!(!s.text.text_align_physical);
 }
 
 #[test]
@@ -154,8 +171,9 @@ fn space_gives_the_children_margins() {
         taffy::LengthPercentageAuto::length(0.0)
     );
     let space = props.space.unwrap();
-    assert_eq!(space.x, Some(crate::style::PatchValue::Number(16.0)));
-    assert_eq!(space.y, Some(crate::style::PatchValue::Number(-1.0)));
+    let margin = |n: f32| crate::PropertyValue::Lpa(taffy::LengthPercentageAuto::length(n));
+    assert_eq!(space.x, Some(margin(16.0)));
+    assert_eq!(space.y, Some(margin(-1.0)));
     assert!(!space.reverse_x);
     let (_, props) = styled_with(
         "space-y-reverse space-y-2",
@@ -166,7 +184,7 @@ fn space_gives_the_children_margins() {
     let space = props.space.unwrap();
     assert!(space.reverse_y);
     let mut child = Style::default();
-    space.apply(&mut child, false);
+    space.apply(&mut child, false, false);
     assert_eq!(
         child.layout.margin.top,
         taffy::LengthPercentageAuto::length(8.0)
@@ -1277,7 +1295,7 @@ fn classes_without_a_native_meaning_are_unknown() {
 
 #[test]
 fn placeholder_and_props() {
-    let (_, props) = styled_with(
+    let (style, props) = styled_with(
         "placeholder:text-zinc-400 selection:bg-blue-500 caret-blue-500 line-clamp-2 pointer-events-none object-contain select-none",
         ClassEnvironment::default(),
         (390.0, 844.0),
@@ -1291,13 +1309,17 @@ fn placeholder_and_props() {
         props.pointer_events,
         Some(crate::props::PointerEvents::None)
     );
-    assert_eq!(props.resize_mode, Some(crate::ops::ResizeMode::Contain));
+    assert_eq!(
+        style.pending.object_fit,
+        Some(crate::ops::ResizeMode::Contain)
+    );
     assert_eq!(props.selectable, Some(false));
     // CSS's `object-fit: none` (natural size) and `scale-down`.
     let resize = |c| {
         styled_with(c, ClassEnvironment::default(), (390.0, 844.0), 0)
-            .1
-            .resize_mode
+            .0
+            .pending
+            .object_fit
     };
     assert_eq!(resize("object-none"), Some(crate::ops::ResizeMode::Center));
     assert_eq!(
@@ -1407,6 +1429,41 @@ fn current_colors_follow_the_cascade_and_inherit() {
 }
 
 #[test]
+fn arbitrary_current_colors_are_the_text_color() {
+    let red = Color(0xff00_00ff);
+    let s = styled(
+        "text-[#ff0000] bg-[currentColor] border-2 border-[currentColor]/50 outline-2 outline-[color:currentColor]",
+    );
+    assert_eq!(s.view.background_color, red);
+    assert_eq!(s.view.borders.colors[0].0 >> 8, 0xff_0000);
+    assert!((0x7f..=0x80).contains(&(s.view.borders.colors[0].0 & 0xff)));
+    assert_eq!(s.view.outline.color, red);
+    // `currentColor` inside a value: filled in with the text color.
+    let s = styled(
+        "text-[#ff0000] decoration-[color-mix(in_srgb,currentColor_50%,#0000ff)] bg-[linear-gradient(currentColor,#0000ff)]",
+    );
+    let mix = s.text.decoration_color.unwrap().0;
+    assert_eq!((mix >> 24, (mix >> 8) & 0xff), (0x80, 0x80), "{mix:x}");
+    let stops = &s.view.effects.as_ref().unwrap().background_images[0].stops;
+    assert_eq!(stops[0].color, red);
+    let theme = themed();
+    assert_ne!(
+        parse(
+            &theme,
+            "bg-[color-mix(in_srgb,currentColor_50%,transparent)]"
+        )
+        .deps()
+            & deps::CURRENT_COLOR,
+        0
+    );
+    assert!(
+        !parse(&theme, "bg-[color-mix(in_nope,currentColor,red)]")
+            .unknown()
+            .is_empty()
+    );
+}
+
+#[test]
 fn arbitrary_lengths_require_css_units_and_use_the_configured_rem() {
     let mut theme = themed();
     theme.rem = 20.0;
@@ -1507,14 +1564,17 @@ fn object_positions() {
         at("object-[right_10px_bottom_20%]"),
         ObjectPosition::parse("right 10px bottom 20%").unwrap()
     );
-    // `object-fit` stays a prop beside it.
-    let (style, props) = styled_with(
+    // `object-fit` beside it.
+    let (style, _) = styled_with(
         "object-cover object-top",
         ClassEnvironment::default(),
         (390.0, 844.0),
         0,
     );
-    assert_eq!(props.resize_mode, Some(crate::ops::ResizeMode::Cover));
+    assert_eq!(
+        style.pending.object_fit,
+        Some(crate::ops::ResizeMode::Cover)
+    );
     assert_eq!(style.view.object_position, at("object-top"));
     let list = parse(
         &theme,

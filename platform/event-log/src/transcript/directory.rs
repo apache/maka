@@ -155,6 +155,7 @@ pub(crate) async fn record_event(
         },
         Fact::ExecutorStarted { .. }
         | Fact::ModelRequested { .. }
+        | Fact::ContextCompactionWaiting
         | Fact::ToolResultArchived { .. }
         | Fact::ToolOperationObserved { .. }
         | Fact::ToolNotified { .. } => false,

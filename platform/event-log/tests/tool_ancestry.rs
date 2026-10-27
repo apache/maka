@@ -29,10 +29,14 @@ use maka_agent_facts::model::ModelPart;
 use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::tool_call::HostSdkParent;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_event_log::EventLog;
 use serde_json::json;
+
+#[path = "tool_ancestry/host_sdk.rs"]
+mod host_sdk;
 
 fn event(invocation: &str, fact: Fact) -> RuntimeEvent {
     RuntimeEvent::new(

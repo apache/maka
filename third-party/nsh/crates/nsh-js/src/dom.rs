@@ -340,13 +340,15 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         "focus",
         0,
         decl!("(): void"),
-        decl!("Focuses an `<Input>` (shows the keyboard)."),
+        decl!(
+            "Focuses an `<Input>` (shows the keyboard), or gives a view that takes presses the keyboard focus where Tab stops at it (macOS, the web), as Tab does: `focus:` styles, `onFocus`. A view `focusable={false}`, disabled or hidden stays unfocused."
+        ),
     ),
     (
         "blur",
         0,
         decl!("(): void"),
-        decl!("Unfocuses an `<Input>`."),
+        decl!("Unfocuses an `<Input>`, or takes the keyboard focus off a view that takes presses."),
     ),
     (
         "setSelection",
@@ -1117,7 +1119,7 @@ fn part_style(
     cx: *mut JsContext,
     name: &str,
     value: JsValue,
-) -> Result<Option<std::sync::Arc<nsh_core::StylePatch>>, JsValue> {
+) -> Result<Option<std::rc::Rc<nsh_core::StylePatch>>, JsValue> {
     // SAFETY: a context reference for the decoder, which reads a dup.
     let js_cx = unsafe { Ctx::from_raw(std::ptr::NonNull::new_unchecked(cx)) };
     let v = unsafe { Value::from_raw(js_cx, qjs::JS_DupValue(cx, value)) };
@@ -1125,7 +1127,7 @@ fn part_style(
     let patch = crate::protocol::style_patch(&v, &mut warnings);
     dom(cx).shared.warnings.borrow_mut().merge(warnings);
     match patch {
-        Ok(patch) => Ok((!patch.is_empty()).then(|| std::sync::Arc::new(patch))),
+        Ok(patch) => Ok((!patch.is_empty()).then(|| std::rc::Rc::new(patch))),
         Err(rquickjs::Error::Exception) => Err(qjs::JS_EXCEPTION),
         Err(e) => Err(throw_type(cx, &format!("nsh: prop `{name}`: {e}"))),
     }
@@ -2106,12 +2108,16 @@ fn new_array(cx: *mut JsContext, mut values: Vec<JsValue>) -> JsValue {
     unsafe { qjs::JS_NewArrayFrom(cx, values.len() as c_int, values.as_mut_ptr()) }
 }
 
-/// A run of a dynamic insert of a function: calls it, and the functions it
-/// returns, tracked by this effect. An array holding functions gets an
-/// effect of its own ([`insert_items`]), made again only when this one
-/// runs again: a component's `children` getter makes every node of the
-/// array, and a change in one of its functions (an `<If>`, a ternary)
-/// must run only that one, not the getter.
+/// A run of a dynamic insert of a function: calls it, tracked by this
+/// effect. A function it returns (what a component whose root is an
+/// `<If>` returns) gets a render effect of its own under this one, as
+/// Solid's `insertExpression` does: a change in what that function reads
+/// runs only it, never this one, which would call the expression again
+/// and make the component again. An array holding functions gets an
+/// effect of its own likewise ([`insert_items`]): a component's
+/// `children` getter makes every node of the array, and a change in one
+/// of its functions (an `<If>`, a ternary) must run only that one, not
+/// the getter.
 unsafe extern "C" fn insert_run(
     cx: *mut JsContext,
     _this: JsValue,
@@ -2123,21 +2129,22 @@ unsafe extern "C" fn insert_run(
     // SAFETY: four data values (`insert_effect`).
     let (parent, marker, value, shown) =
         unsafe { (*data, *data.add(1), *data.add(2), *data.add(3)) };
-    // SAFETY: a dup of a live value; each call's result replaces it.
+    // SAFETY: a dup of a live value; the call's result replaces it.
     let mut value = unsafe { qjs::JS_DupValue(cx, value) };
-    let mut depth = 0;
-    while unsafe { qjs::JS_IsFunction(cx, value) } && node_ptr(cx, value).is_null() {
-        if depth > MAX_DEPTH {
-            unsafe { qjs::JS_FreeValue(cx, value) };
-            return throw_type(cx, "nsh: children nested too deeply");
-        }
+    if unsafe { qjs::JS_IsFunction(cx, value) } && node_ptr(cx, value).is_null() {
         let r = unsafe { qjs::JS_Call(cx, value, UNDEFINED, 0, ptr::null_mut()) };
         unsafe { qjs::JS_FreeValue(cx, value) };
         if unsafe { qjs::JS_IsException(r) } {
             return r;
         }
         value = r;
-        depth += 1;
+        if unsafe { qjs::JS_IsFunction(cx, value) } && node_ptr(cx, value).is_null() {
+            // The nested effect shows what the function gives, in this
+            // insert's place; it goes when this effect runs again.
+            let nested = insert_effect(cx, insert_run, [parent, marker, value, shown]);
+            unsafe { qjs::JS_FreeValue(cx, value) };
+            return nested.err().unwrap_or(UNDEFINED);
+        }
     }
     let r = if unsafe { qjs::JS_IsArray(value) } && is_dynamic(cx, value, 0) {
         insert_items(cx, parent, marker, value, shown)
@@ -3895,6 +3902,43 @@ mod tests {
         );
     }
 
+    /// A component whose root is an `<If>`, shown by a dynamic child: the
+    /// condition flipping shows the other branch and leaves the
+    /// component, and the expression that made it, as they are (Solid's
+    /// nested render effect).
+    #[test]
+    fn a_components_root_condition_does_not_make_it_again() {
+        let host = Host::new().unwrap();
+        host.eval_source(&format!(
+            r#"{REPORT}
+            import {{ mount, signal }} from "nsh";
+            import {{ element, insert, cond, component }} from "nsh:rt";
+            const on = signal(false);
+            const made = [];
+            globalThis.toggle = () => on.update((v) => !v);
+            globalThis.count = () => report(made);
+            function Panel() {{
+                made.push("panel");
+                return cond(() => on(), () => text("zoomed"), () => text("inline"));
+            }}
+            mount(() => {{
+                const v = element("view");
+                insert(v, () => {{ made.push("expression"); return component(Panel, {{}}); }});
+                return v;
+            }});
+            "#
+        ))
+        .unwrap();
+        host.eval_script("toggle.js", "toggle(); toggle(); toggle(); count()")
+            .unwrap();
+        let texts = reported(&host);
+        assert_eq!(
+            texts.last().map(String::as_str),
+            Some(r#"["expression","panel"]"#),
+            "{texts:?}"
+        );
+    }
+
     /// `key="index"` keeps rows by position: changed strings update their
     /// rows in place; a key function gets the index too.
     #[test]
@@ -4209,7 +4253,12 @@ mod tests {
             i.focus();
             i.setSelection(2);
             i.replaceRange({ start: 0, end: 2, text: "😀\nskill", expectedText: "ab", expectedSelection: { start: 2, end: 2 } });
-            globalThis.keep = [s, i];
+            // A view that takes presses: the platforms move the keyboard
+            // focus to it, as Tab does.
+            const v = element("view");
+            v.focus();
+            v.blur();
+            globalThis.keep = [s, i, v];
             "#,
         )
         .unwrap();
@@ -4226,6 +4275,8 @@ mod tests {
                 "Command { id: 4, command: Focus }",
                 "Command { id: 4, command: SetSelection { start: 2, end: 2 } }",
                 r#"Command { id: 4, command: ReplaceRange { range: 0..2, text: "😀\nskill", expected_text: "ab", expected_selection: 2..2, count: 0 } }"#,
+                "Command { id: 6, command: Focus }",
+                "Command { id: 6, command: Blur }",
             ]
         );
     }

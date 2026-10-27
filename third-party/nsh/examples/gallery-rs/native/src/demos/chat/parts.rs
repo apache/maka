@@ -378,7 +378,7 @@ fn tool_body(kind: &ToolKind, done: bool) -> Option<View> {
                 .child(
                     view().p_3().bg(colors::INSET).child(
                         text(*code)
-                            .selectable(true)
+                            .select_text()
                             .font_family(MONO)
                             .text_size(px(12.0))
                             .line_height(px(18.0))
@@ -398,7 +398,7 @@ fn tool_body(kind: &ToolKind, done: bool) -> Option<View> {
                             .child(text("Output").text_size(px(13.0)).text_color(colors::MUTED))
                             .child(
                                 text(*output)
-                                    .selectable(true)
+                                    .select_text()
                                     .flex_1()
                                     .font_family(MONO)
                                     .text_size(px(14.0))

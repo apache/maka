@@ -8,7 +8,7 @@ export const palette = {
 };
 
 export function Label(props: { children: JSX.Element; color?: string; strong?: boolean; align?: "left" | "right"; lines?: number }) {
-  return <Text numberOfLines={props.lines ?? 1} style={{ height: 16 * (props.lines ?? 1), fontSize: 14, lineHeight: 16, fontWeight: props.strong ? "600" : "400", color: props.color ?? palette.muted, textAlign: props.align ?? "left" }}>{props.children}</Text>;
+  return <Text style={{ numberOfLines: props.lines ?? 1, height: 16 * (props.lines ?? 1), fontSize: 14, lineHeight: 16, fontWeight: props.strong ? "600" : "400", color: props.color ?? palette.muted, textAlign: props.align ?? "left" }}>{props.children}</Text>;
 }
 
 export function Action(props: { label: string; onPress: () => void; testID: string; accessibilityLabel?: string; primary?: boolean; active?: boolean; width?: number }) {

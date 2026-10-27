@@ -72,9 +72,9 @@ pub fn Tooltip(props: TooltipProps, cx: Scope<TooltipEvent>) -> impl IntoElement
         if next && props.disabled.get_untracked() {
             return;
         }
-        if open.request(next) {
+        open.request(next, || {
             cx.emit(TooltipEvent::OpenChange(next, OpenChangeReason::Hover));
-        }
+        });
     };
     let shown = move || open.get() && !props.disabled.get();
     lifecycle(

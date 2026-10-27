@@ -45,7 +45,6 @@ async function inputs(root) {
     'products/maka/cli/build.rs',
     'products/maka/cli/build/product.rs',
     'scripts/rust/notices-sources.json',
-    'products/maka/desktop-shell/app/.gitignore',
     'platform/computer-use/THIRD_PARTY_NOTICES',
     'scripts/rust/v8-source.json',
     'scripts/rust/build-v8.mjs',
@@ -64,7 +63,6 @@ async function inputs(root) {
       'tools/**/Cargo.toml',
       'platform/js-runtime/third-party/**/*',
       'products/maka/bundle/src/**/*.ts',
-      'products/maka/desktop-shell/app/**/*',
       'products/maka/bundle/package-inputs.json',
       'plugins/**/*.ts',
       'plugins/**/*.mjs',
@@ -73,14 +71,7 @@ async function inputs(root) {
       'patches/*.patch',
       'third-party/**/*',
     ],
-    {
-      cwd: root,
-      withFileTypes: true,
-      exclude: [
-        'products/maka/desktop-shell/app/gpui-kit.d.ts',
-        'products/maka/desktop-shell/app/dev.js',
-      ],
-    },
+    { cwd: root, withFileTypes: true },
   )) {
     if (entry.isFile())
       names.push(relative(root, join(entry.parentPath, entry.name)).replaceAll('\\', '/'));
@@ -153,6 +144,22 @@ export async function generateNotices(root = repository) {
         })(),
       );
     return downloaded.get(url);
+  }
+  // The native browser host embeds only Playwright's published injected script,
+  // outside Cargo and the JavaScript bundle dependency graphs.
+  const playwrightDirectory = join(root, 'third-party/playwright');
+  const playwright = JSON.parse(await readFile(join(playwrightDirectory, 'upstream.json'), 'utf8'));
+  const playwrightComponent = `${playwright.registry_package}@${playwright.registry_version} (${playwright.license}; vendored injected script)`;
+  for (const file of ['injected.js', 'LICENSE', 'NOTICE', 'ThirdPartyNotices.txt']) {
+    const content = await readFile(join(playwrightDirectory, file));
+    if (hash(content) !== playwright.files[file])
+      throw new Error(`Vendored Playwright ${file} does not match upstream.json`);
+    if (file !== 'injected.js')
+      add(
+        playwrightComponent,
+        `${playwright.archive.url} (SHA-256 ${playwright.archive.sha256}) :: package/${file}`,
+        content.toString('utf8'),
+      );
   }
   const upstream = new Map();
   async function upstreamFiles(pkg, directory, provenance) {
@@ -360,7 +367,7 @@ export async function generateNotices(root = repository) {
     join(root, manifestPath),
     JSON.stringify({ inputs: await inputs(root), sha256: hash(content) }, null, 2) + '\n',
   );
-  return { components: packages.size, texts: groups.size, bytes: Buffer.byteLength(content) };
+  return { components: packages.size + 1, texts: groups.size, bytes: Buffer.byteLength(content) };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -1655,9 +1655,18 @@ impl Mounter {
             (Command::Blur, Native::Input(input)) => {
                 input.editor_view().resignFirstResponder();
             }
-            // On the root: whatever is focused.
+            // On the root: whatever is focused, also in the modals this
+            // surface presents (UIKit hosts them outside the root view). Not
+            // the window's: that is the embedding app's too.
             (Command::Blur, native) if id == nsh_core::ROOT_ID => {
                 native.view().endEditing(true);
+                for slot in self.views.iter().flatten() {
+                    if let Native::Modal(modal) = &slot.native
+                        && modal.presented
+                    {
+                        modal.view.endEditing(true);
+                    }
+                }
             }
             (Command::ScrollTo { x, y, animated }, Native::Scroll(scroll)) => {
                 let inset = scroll.adjustedContentInset();
@@ -2538,8 +2547,7 @@ impl Mounter {
             s.native.view(),
             kind,
             bound.as_ref().unwrap_or(&s.style),
-            background.0,
-            background.1,
+            background,
             mtm,
         );
         if bound.is_some() {
@@ -2680,16 +2688,7 @@ impl Mounter {
         let Some(s) = self.views.get_mut(id as usize).and_then(Option::as_mut) else {
             return;
         };
-        let mut background = s.style.background_color;
-        let mut animated = false;
-        for &(prop, node) in &s.bindings {
-            if prop == AnimationProp::BackgroundColor {
-                animated = true;
-                if let AnimationValue::Color(c) = animator.eval(node) {
-                    background = Color(c);
-                }
-            }
-        }
+        let background = dynamic_background(s, animator);
         let kind = s.native.kind();
         let bound = bound_style(s, animator);
         s.decor.apply(
@@ -2697,7 +2696,6 @@ impl Mounter {
             kind,
             bound.as_ref().unwrap_or(&s.style),
             background,
-            animated,
             mtm,
         );
         if bound.is_some() {
@@ -4504,18 +4502,16 @@ fn set_frame(view: &UIView, frame: Bounds<Points>) {
 }
 
 /// The opacity to show: the style's or its animated value.
-fn dynamic_background(slot: &Slot, animator: &Animator) -> (Color, bool) {
+fn dynamic_background(slot: &Slot, animator: &Animator) -> Color {
     let mut background = slot.style.background_color;
-    let mut animated = false;
     for &(prop, node) in &slot.bindings {
-        if prop == AnimationProp::BackgroundColor {
-            animated = true;
-            if let AnimationValue::Color(c) = animator.eval(node) {
-                background = Color(c);
-            }
+        if prop == AnimationProp::BackgroundColor
+            && let AnimationValue::Color(c) = animator.eval(node)
+        {
+            background = Color(c);
         }
     }
-    (background, animated)
+    background
 }
 
 fn dynamic_opacity(slot: &Slot, animator: &Animator) -> f32 {
@@ -4620,82 +4616,30 @@ fn scaled_transform(t: &CATransform3D, f: CGFloat) -> CATransform3D {
     out
 }
 
-/// The style to shape a view's decoration by when its border or shadow is
-/// bound: the bound values in place of the static ones, and the layers for
-/// them made even while they are transparent (they may not stay so).
+/// The style to shape a view's decoration by when its border color is
+/// bound: the bound color in place of the static one, and the layers for it
+/// made even while it is transparent (it may not stay so).
 fn bound_style(slot: &Slot, animator: &Animator) -> Option<ViewStyle> {
-    let decor = |p: &AnimationProp| {
-        matches!(
-            p,
-            AnimationProp::BorderColor
-                | AnimationProp::ShadowColor
-                | AnimationProp::ShadowOpacity
-                | AnimationProp::ShadowRadius
-        )
-    };
-    if !slot.bindings.iter().any(|(p, _)| decor(p)) {
-        return None;
-    }
+    let node = slot
+        .bindings
+        .iter()
+        .find_map(|&(p, node)| (p == AnimationProp::BorderColor).then_some(node))?;
     let mut style = slot.style.clone();
-    let (mut border, mut shadow) = (false, false);
-    for &(prop, node) in &slot.bindings {
-        let value = animator.eval(node);
-        match (prop, value) {
-            (AnimationProp::BorderColor, AnimationValue::Color(c)) => {
-                style.borders.colors = [Color(c); 4];
-                border = true;
-            }
-            (AnimationProp::ShadowColor, AnimationValue::Color(c)) => {
-                style.shadow.color = Color(c);
-                shadow = true;
-            }
-            (AnimationProp::ShadowOpacity, v) => {
-                style.shadow.opacity = v.number().clamp(0.0, 1.0);
-                shadow = true;
-            }
-            (AnimationProp::ShadowRadius, v) => {
-                style.shadow.radius = Points(v.number().max(0.0));
-                shadow = true;
-            }
-            _ => {}
-        }
-    }
-    if border {
-        for c in &mut style.borders.colors {
-            c.0 |= 0xff;
-        }
-    }
-    if shadow {
-        style.shadow.color.0 |= 0xff;
-        style.shadow.opacity = style.shadow.opacity.max(f32::MIN_POSITIVE);
+    if let AnimationValue::Color(c) = animator.eval(node) {
+        style.borders.colors = [Color(c | 0xff); 4];
     }
     Some(style)
 }
 
-/// Bound border colors and shadows onto the layers made for them.
+/// Bound border colors onto the layers made for them.
 fn apply_bound_decor(slot: &Slot, animator: &Animator) {
     let view = slot.native.view();
-    let mut shadow = None;
     for &(prop, node) in &slot.bindings {
-        let value = animator.eval(node);
-        match (prop, value) {
-            (AnimationProp::BorderColor, AnimationValue::Color(c)) => {
-                slot.decor.set_border_color(view, Color(c))
-            }
-            (AnimationProp::ShadowColor, AnimationValue::Color(c)) => {
-                shadow.get_or_insert(slot.style.shadow).color = Color(c)
-            }
-            (AnimationProp::ShadowOpacity, v) => {
-                shadow.get_or_insert(slot.style.shadow).opacity = v.number()
-            }
-            (AnimationProp::ShadowRadius, v) => {
-                shadow.get_or_insert(slot.style.shadow).radius = Points(v.number())
-            }
-            _ => {}
+        if prop == AnimationProp::BorderColor
+            && let AnimationValue::Color(c) = animator.eval(node)
+        {
+            slot.decor.set_border_color(view, Color(c))
         }
-    }
-    if let Some(s) = shadow {
-        slot.decor.set_shadow(view, s.color, s.opacity, s.radius.0);
     }
 }
 

@@ -152,7 +152,7 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 | Escape | 离开有焦点的输入框；否则清除文本选区，再关闭最上层的对话框或返回上一页 |
 | Alt+Left、浏览器后退键、鼠标的后退键 | 返回上一页（在输入框中也是） |
 | Ctrl+方向键、Home / End、Ctrl+Home / End，加 Shift；Ctrl+Backspace / Delete | 在输入框中按词和行移动、选择、删除，与其他 Windows 应用一致 |
-| Ctrl+Z、Ctrl+Y、Ctrl+X / C / V / A；Shift+Delete、Ctrl+Insert、Shift+Insert | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Ctrl+A / Ctrl+C 选择并复制 `selectable` 文本 |
+| Ctrl+Z、Ctrl+Y、Ctrl+X / C / V / A；Shift+Delete、Ctrl+Insert、Shift+Insert | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Ctrl+A / Ctrl+C 选择并复制 可选择的文本 |
 | 方向键；Page Up / Down、Space、Shift+Space；Home / End、Ctrl+Home / End | 滚动有焦点的视图所在或鼠标下方的滚动视图：一行、一页、到开头 / 结尾（输入框有焦点时不滚动） |
 | F11、Alt+F4 | 全屏、关闭窗口（`nsh package` 和 `nsh run` 的应用） |
 | Ctrl+R、F5 | 重新加载最新的构建（`nsh run`） |

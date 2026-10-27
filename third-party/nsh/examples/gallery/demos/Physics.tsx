@@ -88,7 +88,7 @@ export function Physics() {
           <IconTile name="physics" tint={colors.accent} />
           <View style={{ flex: 1, gap: 2 }}>
             <Text style={{ fontSize: 17, fontWeight: "600", color: colors.text }}>Drag and release</Text>
-            <Text numberOfLines={1} style={{ fontSize: 13, color: colors.muted }}>
+            <Text style={{ numberOfLines: 1, fontSize: 13, color: colors.muted }}>
               {hint("Tap to pulse, long press to reset", "Click to pulse, press and hold to reset")}
             </Text>
           </View>
@@ -112,8 +112,7 @@ export function Physics() {
         }}
       >
         <Canvas
-          pointerEvents="none"
-          style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}
+          style={{ pointerEvents: "none", position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}
           draw={(cx, { width, height }) => {
             const centerX = width / 2;
             const cy = height / 2;
@@ -155,15 +154,16 @@ export function Physics() {
           }}
         />
         <View
-          pointerEvents="none"
           style={{
+            pointerEvents: "none",
             position: "absolute",
             width: CARD,
             height: CARD,
             borderRadius: 30,
             backgroundColor: tints.accent,
             opacity: lift,
-            transform: [...follow, { scale: lift.interpolate({ inputRange: [0, 1], outputRange: [1, 1.32] }) }],
+            translate: [x, y],
+            scale: lift.interpolate({ inputRange: [0, 1], outputRange: [1, 1.32] }),
           }}
         />
         <View

@@ -244,10 +244,11 @@ impl Ring {
 }
 
 /// The ring's appear: the angles sweep from `from`, each `from + (angle -
-/// from) * reveal` (`gpui-component`'s pie, `chart/pie_chart.rs:318-334`).
+/// from) * reveal`, `reveal` the appear's eased progress
+/// (`gpui-component`'s pie, `chart/pie_chart.rs:318-334`).
 #[derive(Clone, Copy)]
 struct Sweep {
-    reveal: AnimatedValue,
+    reveal: AnimatedNode,
     from: f32,
 }
 
@@ -643,7 +644,7 @@ pub fn Pie(props: PieProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                 let ring = ring.get();
                 let lift = lifts.then(|| lifted.mul(&plot.fade).mul(lift.get().0));
                 let sweep = plot.appearing.get().then(|| Sweep {
-                    reveal: plot.reveal,
+                    reveal: plot.appear.progress(),
                     from: start.get().0,
                 });
                 let morph = morph.ring(plot.size.get());
@@ -735,7 +736,7 @@ pub fn Arc(props: ArcProps, _cx: Scope<NoEvent>) -> impl IntoElement {
             let Some(plot) = plot else { return p };
             let ring = ring(plot);
             let sweep = plot.appearing.get().then(|| Sweep {
-                reveal: plot.reveal,
+                reveal: plot.appear.progress(),
                 from: start.get().0,
             });
             let morph = morph.and_then(|m| m.ring(plot.size.get()));

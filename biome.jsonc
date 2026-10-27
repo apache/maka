@@ -38,10 +38,7 @@
       "!plugins/settings/store/data/*.json",
       "!website/**",
       // Vendored NSH keeps upstream formatting; provenance is recorded in SOURCE.md.
-      "!third-party/nsh/**",
-      // Verbatim gpui-kit source; third-party/gpui-kit/upstream.json records
-      // its hash.
-      "!third-party/gpui-kit/crates/shell/component-inventory.json"
+      "!third-party/nsh/**"
     ]
   },
   // Formatter enabled together with the one-time whole-tree baseline commit
@@ -53,7 +50,9 @@
     "indentStyle": "space",
     "indentWidth": 2,
     "lineWidth": 100,
-    "includes": ["**"]
+    // The extracted Playwright payload is checked against its recorded upstream
+    // hash. Format the authored adapter files without rewriting that payload.
+    "includes": ["**", "!third-party/playwright/injected.js"]
   },
   "javascript": {
     "formatter": {

@@ -1,6 +1,7 @@
 //! [`Rows`]: the rows of data a component takes from JS (`data: T[]`), read
 //! natively as columns of numbers by key, and [`RowAccessor`]: how it reads
-//! a value of each row (a key, or the app's function of a row).
+//! a value of each row (a key, or the app's function of a row), and
+//! [`RowText`]: how it reads a text of each row (a label beside a value).
 
 use std::{fmt, rc::Rc, sync::Arc};
 
@@ -310,6 +311,140 @@ impl JsValue for RowAccessor {
     }
 }
 
+/// How a component reads a text of each of its [`Rows`] (TS
+/// `Extract<keyof T, string> | ((d: T, index: number) => string)`): the
+/// number field of a name, written as JS writes a number (`String(n)`),
+/// read natively; or the app's function of a row and its index, for text
+/// the app formats (units, separators, its locale), which a component
+/// calls once per row when the rows or the function change, in the next
+/// JS turn, and never while it draws (so the function is pure: the same
+/// row, the same text). [`RowAccessor`]'s twin for what a component shows
+/// as text, such as a value beside a bar.
+#[derive(Clone)]
+pub enum RowText {
+    /// The number field `key`, as JS writes it.
+    Key(SharedString),
+    /// The app's JS function of a row and its index.
+    Js(Callback<(RowRef, u32), SharedString>),
+    /// A Rust function of a row's index, for components made in Rust.
+    Rust(Rc<dyn Fn(usize) -> SharedString>),
+}
+
+impl RowText {
+    /// The field `key`, as JS writes its numbers.
+    pub fn key(key: impl Into<SharedString>) -> Self {
+        RowText::Key(key.into())
+    }
+
+    /// The text of row `index` that `f` gives (Rust).
+    pub fn from_fn(f: impl Fn(usize) -> SharedString + 'static) -> Self {
+        RowText::Rust(Rc::new(f))
+    }
+
+    /// The texts of `rows` when they need no JS (a key or a Rust
+    /// function); `None` for a JS function ([`RowText::texts`]). A row
+    /// without a number in the field has no text (empty).
+    pub fn texts_now(&self, rows: &Rows) -> Option<Arc<[SharedString]>> {
+        match self {
+            RowText::Key(key) => Some(match rows.column(key) {
+                Some(values) => values.iter().map(|&v| js_number_text(v)).collect(),
+                None => vec![SharedString::default(); rows.len()].into(),
+            }),
+            RowText::Rust(f) => Some((0..rows.len()).map(|i| f(i)).collect()),
+            RowText::Js(_) => None,
+        }
+    }
+
+    /// The texts of `rows`: a JS function is called once per row, in the
+    /// next JS turn (a row whose call throws or returns no string has no
+    /// text).
+    pub async fn texts(&self, rows: &Rows) -> Arc<[SharedString]> {
+        if let Some(texts) = self.texts_now(rows) {
+            return texts;
+        }
+        let RowText::Js(f) = self else {
+            unreachable!("the other texts need no JS")
+        };
+        let answers: Vec<_> = (0..rows.len())
+            .filter_map(|i| rows.row(i).map(|row| f.call_async((row, i as u32))))
+            .collect();
+        let mut out = Vec::with_capacity(answers.len());
+        for answer in answers {
+            out.push(answer.await.unwrap_or_default());
+        }
+        out.into()
+    }
+}
+
+/// `n` as JS's `String(n)` writes the numbers rows hold: whole numbers
+/// without a fraction, `-0` as `0`, nothing for a gap (`NaN`).
+fn js_number_text(n: f64) -> SharedString {
+    if n.is_nan() {
+        return SharedString::default();
+    }
+    if n == 0.0 {
+        return "0".into();
+    }
+    if n.is_infinite() {
+        return if n > 0.0 { "Infinity" } else { "-Infinity" }.into();
+    }
+    // Rust writes 1820.0 as "1820" and 0.25 as "0.25", as JS does, short
+    // of the exponents JS switches to past 1e21 and below 1e-6.
+    format!("{n}").into()
+}
+
+impl fmt::Debug for RowText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RowText::Key(key) => f.debug_tuple("Key").field(key).finish(),
+            RowText::Js(_) => f.write_str("Js"),
+            RowText::Rust(_) => f.write_str("Rust"),
+        }
+    }
+}
+
+/// The same key, or the same function.
+impl PartialEq for RowText {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (RowText::Key(a), RowText::Key(b)) => a == b,
+            (RowText::Js(a), RowText::Js(b)) => Rc::ptr_eq(a.handle(), b.handle()),
+            (RowText::Rust(a), RowText::Rust(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl From<&str> for RowText {
+    fn from(key: &str) -> Self {
+        RowText::key(key.to_owned())
+    }
+}
+
+impl JsValue for RowText {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "Extract<keyof T, string> | ((d: T, index: number) => string)".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        match value.kind() {
+            JsKind::String => <SharedString as JsValue>::from_js(value).map(RowText::Key),
+            JsKind::Function => {
+                <Callback<(RowRef, u32), SharedString> as Arg>::from_js(value).map(RowText::Js)
+            }
+            _ => Err(value.expected("a field name or a function of a row")),
+        }
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        match self {
+            RowText::Key(key) => key.to_js(host),
+            // A function stays the app's: it is not handed back.
+            _ => Ok(JsOwned::new(host, host.undefined())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +489,24 @@ mod tests {
         // Rust rows have no JS value to hand a function.
         assert!(rows.row(0).is_some_and(|r| r.rows.is_none()));
         assert!(rows.row(3).is_none());
+    }
+
+    /// A field's numbers as JS writes them, gaps empty; a Rust function's
+    /// texts; the same key or function is equal.
+    #[test]
+    fn texts_read_a_text_of_each_row() {
+        let rows = Rows::from_columns(4, [("v".into(), vec![1820.0, 0.25, -0.0, f64::NAN])]);
+        let key = RowText::key("v");
+        let texts = key.texts_now(&rows).unwrap();
+        assert_eq!(
+            texts.iter().map(|t| &**t).collect::<Vec<_>>(),
+            ["1820", "0.25", "0", ""]
+        );
+        let missing = RowText::key("w").texts_now(&rows).unwrap();
+        assert!(missing.len() == 4 && missing.iter().all(|t| t.is_empty()));
+        let named = RowText::from_fn(|i| format!("#{i}").into());
+        assert_eq!(&*named.texts_now(&rows).unwrap()[3], "#3");
+        assert_eq!(key, RowText::from("v"));
+        assert_ne!(named, RowText::from_fn(|i| format!("#{i}").into()));
     }
 }

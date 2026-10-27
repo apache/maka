@@ -31,9 +31,11 @@ maka-agent-authority.workspace = true
 maka-capabilities.workspace = true
 maka-computer-use.workspace = true
 maka-event-log.workspace = true
+maka-fs-tools.workspace = true
 maka-host-runtime.workspace = true
 maka-js-runtime.workspace = true
 maka-plugin-core.workspace = true
+maka-sandbox.workspace = true
 maka-workspace-api.workspace = true
 futures-util.workspace = true
 jsonschema.workspace = true
@@ -42,3 +44,8 @@ sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+url = "2.5.8"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-tungstenite.workspace = true

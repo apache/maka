@@ -106,7 +106,7 @@ logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
 <Image src={star} style={{ width: 36, height: 36, tintColor: "#0969da" }} />
 ```
 
-An SVG is sharp at the size it is shown. The browser draws it as vectors; iOS, macOS and Android draw it at the size the view shows it, in pixels, when the image loads (as they downsample bitmaps; a view that grows afterwards scales that drawing, until the image loads again); Windows, Linux and GPUI draw it once at four pixels per point (up to 2048 pixels a side) and scale it to each view. Everything else works as for bitmaps: `resizeMode`, `tintColor` (through the SVG's opaque shapes, so one-color icons follow the theme), filters, `blurRadius`, placeholders, the load events, `Image.getSize` and `Image.prefetch`. `onLoad` and `Image.getSize` report an SVG's size in whole points; the image lays out at its exact size. Remote SVG files load the same way, through the same downloads and [capability](./sandbox-and-capabilities.md) checks; NSH recognizes an SVG by its content (also gzip-compressed, `.svgz`), whatever its URL ends with.
+An SVG is sharp at the size it is shown. The browser draws it as vectors; iOS, macOS and Android draw it at the size the view shows it, in pixels, when the image loads (as they downsample bitmaps; a view that grows afterwards scales that drawing, until the image loads again); Windows, Linux and GPUI draw it once at four pixels per point (up to 2048 pixels a side) and scale it to each view. Everything else works as for bitmaps: `objectFit`, `tintColor` (through the SVG's opaque shapes, so one-color icons follow the theme), filters, `blurRadius`, placeholders, the load events, `Image.getSize` and `Image.prefetch`. `onLoad` and `Image.getSize` report an SVG's size in whole points; the image lays out at its exact size. Remote SVG files load the same way, through the same downloads and [capability](./sandbox-and-capabilities.md) checks; NSH recognizes an SVG by its content (also gzip-compressed, `.svgz`), whatever its URL ends with.
 
 **What native platforms draw.** iOS, macOS, Android, Windows, Linux and GPUI draw SVGs with one renderer (resvg), so a drawing looks the same on each: shapes and paths, fills and strokes, gradients and patterns, clip paths and masks, opacity, filters and transforms. Text (`<text>`), animation (SMIL and CSS), embedded images (`<image>`) and HTML (`<foreignObject>`) show in the browser; native platforms draw the rest of the SVG, still, and `nsh build` names the files that use them. Export text as outlines (paths) for the same result everywhere.
 
@@ -184,35 +184,36 @@ each app in `<app id>/images` there. The system may clear these directories when
 
 ## Resize modes
 
-The resize mode (`.resize_mode(..)` in Rust, `resizeMode` in TSX) decides how an image fills a box of a different shape:
+The `objectFit` style, CSS's `object-fit` (`.object_fit(..)` in Rust), decides how an image fills a box of a different shape:
 
 | Value | Result |
 |---|---|
 | `"cover"` (`ResizeMode::Cover`, default) | Fills the box, keeping the aspect ratio, cropping what overflows |
 | `"contain"` (`ResizeMode::Contain`) | Fits inside the box, keeping the aspect ratio, leaving empty bands |
-| `"stretch"` (`ResizeMode::Stretch`) | Fills the box exactly, distorting the image |
-| `"center"` (`ResizeMode::Center`) | Natural size, centered |
+| `"fill"` (`ResizeMode::Stretch`) | Fills the box exactly, distorting the image |
+| `"none"` (`ResizeMode::Center`) | Natural size, placed at `objectPosition` (centered by default) |
+| `"scale-down"` (`ResizeMode::ScaleDown`) | Natural size, shrunk to fit where larger |
 
 ```rust tabs
-image(photo).resize_mode(ResizeMode::Contain).size(px(140.0)).bg(rgb(0xeaeef2))
+image(photo).object_fit(ResizeMode::Contain).size(px(140.0)).bg(rgb(0xeaeef2))
 ```
 
 ```tsx tabs
-<Image src={photo} resizeMode="contain" style={{ width: 140, height: 140, backgroundColor: "#eaeef2" }} />
+<Image src={photo} style={{ width: 140, height: 140, objectFit: "contain", backgroundColor: "#eaeef2" }} />
 ```
 
-The Tailwind classes `object-cover`, `object-contain`, ... do the same.
+The Tailwind classes `object-cover`, `object-contain`, `object-fill`, `object-none` and `object-scale-down` set the same style.
 
 ### Image position
 
 Where the sized image sits in its box is the `objectPosition` style (`.object_position(..)` and `.object_top()`, ... in Rust), CSS's `object-position`: the center by default. A covering image is cropped around it, a contained one moves within its bands. It takes keywords (`"top"`, `"left bottom"`), percentages and lengths (`"25% 75%"`, `"10px 0"`) and edges with offsets (`"right 10px bottom 20%"`). A tall photo in a chat bubble shows its top this way:
 
 ```rust tabs
-image(photo).resize_mode(ResizeMode::Cover).object_top().w(px(220.0)).h(px(160.0)).rounded(px(16.0))
+image(photo).object_fit(ResizeMode::Cover).object_top().w(px(220.0)).h(px(160.0)).rounded(px(16.0))
 ```
 
 ```tsx tabs
-<Image src={photo} resizeMode="cover" style={{ width: 220, height: 160, borderRadius: 16, objectPosition: "top" }} />
+<Image src={photo} style={{ width: 220, height: 160, borderRadius: 16, objectPosition: "top" }} />
 ```
 
 The Tailwind classes are Tailwind's: `object-top`, `object-bottom`, `object-left`, `object-right`, `object-center`, `object-top-left`, `object-top-right`, `object-bottom-left`, `object-bottom-right` and arbitrary values (`object-[25%_75%]`).
@@ -269,7 +270,7 @@ image(cover).blur_radius(px(16.0)).absolute().inset_0()
 
 ## Animated images
 
-Animated GIF, WebP and APNG files play automatically, as assets or from URLs. They take the same styles and resize modes; a tinted animated image shows its first frame on iOS.
+Animated GIF, WebP and APNG files play automatically, as assets or from URLs. They take the same styles, `objectFit` included; a tinted animated image shows its first frame on iOS.
 
 ## Load events
 

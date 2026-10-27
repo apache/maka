@@ -23,7 +23,7 @@ import test from 'node:test';
 
 const boundary = { pending: [], event: null, releases: 0 };
 globalThis.__terminalLoginBoundary = boundary;
-const appRoot = new URL('../../products/maka/terminal-shell/app/', import.meta.url);
+const appRoot = new URL('../../products/maka/workbench/app/', import.meta.url);
 const native = {
   nsh: `export const signal = initial => { let value = initial; const read = () => value; read.set = next => { value = next; }; return read; }; export const cleanup = () => {}; export const Clipboard = { writeText: async () => {} };`,
   host: `export const host = {

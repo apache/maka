@@ -16,7 +16,7 @@ function PaintObjectPosition() {
         <Text>Flip</Text>
       </View>
       <Image testID="centered" src={SRC} style={{ width: 16, height: 16 }} />
-      <Image testID="top" src={SRC} resizeMode="cover" style={{ width: 16, height: 16, objectPosition: "top" }} />
+      <Image testID="top" src={SRC} style={{ width: 16, height: 16, objectPosition: "top" }} />
       <Image testID="top-left" src={SRC} style={{ width: 16, height: 16, objectPosition: "top left" }} />
       <Image testID="bottom-right" src={SRC} style={{ width: 16, height: 16, objectPosition: "right bottom" }} />
       <Image testID="percent" src={SRC} style={{ width: 16, height: 16, objectPosition: "25% 75%" }} />

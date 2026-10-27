@@ -104,11 +104,10 @@ async fn prepared_head_replacement_and_removal_coalesce_pending_retirement_witho
         drain(&log).await;
         assert!(
             session
-                .prepared_semantic_page(&retained, 0, 1)
+                .prepared_semantic_group(&retained, 0)
                 .await
                 .unwrap()
-                .groups
-                .is_empty()
+                .is_none()
         );
         let expected = first.clone();
         log.connection.read(move |connection| Box::pin(async move {
@@ -128,11 +127,10 @@ async fn prepared_head_replacement_and_removal_coalesce_pending_retirement_witho
     drain(&log).await;
     assert!(
         session
-            .prepared_semantic_page(&retained, 0, 1)
+            .prepared_semantic_group(&retained, 0)
             .await
             .unwrap()
-            .groups
-            .is_empty()
+            .is_none()
     );
     drop(retained);
     drop(retained_wire);

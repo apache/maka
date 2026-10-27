@@ -82,7 +82,7 @@ function App() {
           </View>
           <View style={{ ...ui().card, borderRadius: 12, padding: 12, gap: 4 }}>
             <Text style={{ color: ui().muted, fontSize: 12 }}>onLoad</Text>
-            <Text style={{ color: ui().text, fontFamily: "monospace", fontSize: 13 }} numberOfLines={1}>
+            <Text style={{ numberOfLines: 1, color: ui().text, fontFamily: "monospace", fontSize: 13 }}>
               {nav() ? `title "${nav()!.title}"` : "…"}
             </Text>
             <Text style={{ color: ui().muted, fontSize: 12, marginTop: 6 }}>onMessage, newest first</Text>

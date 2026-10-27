@@ -38,9 +38,8 @@ use self::{
 };
 use crate::{
     geometry::{Points, Size},
-    ops::ResizeMode,
     props::PointerEvents,
-    style::{Color, EllipsizeMode, PatchValue, Style, TextShadow},
+    style::{Color, EllipsizeMode, PropertyValue, Style, TextShadow},
 };
 
 /// Interaction states a class can depend on (`active:`, `hover:`, ...).
@@ -422,7 +421,17 @@ impl Rule {
         rank: impl Into<Rank>,
         decls: Vec<crate::StyleDecl>,
     ) -> Self {
-        let mut rule = Self::new(states, rank, decls.into_iter().map(Decl::Style).collect());
+        // A style's defaults and its `currentColor` are the classes' own
+        // kinds, applied before the rules and read with the text color.
+        let decls = decls
+            .into_iter()
+            .map(|d| match d {
+                crate::StyleDecl::Default(key, value) => Decl::Default(key, value),
+                crate::StyleDecl::CurrentColor(key) => Decl::CurrentColor(key),
+                d => Decl::Style(d),
+            })
+            .collect();
+        let mut rule = Self::new(states, rank, decls);
         if states & state::DISABLED == 0 {
             rule.cond.not_states = state::DISABLED;
         }
@@ -446,23 +455,24 @@ impl Rule {
     }
 }
 
-/// Node properties classes can set (an explicit prop wins over them).
+/// Node properties classes and styles set: those that are not layout or
+/// drawing (the core takes them from the style, [`crate::Style`]'s
+/// `numberOfLines`, `textOverflow`, `userSelect` and `pointerEvents`, and from
+/// the classes for the rest).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClassProps {
-    /// `line-clamp-*`, `truncate`; `Some(0)` removes a clamp.
+    /// `numberOfLines` (`line-clamp-*`, `truncate`); `Some(0)` removes a clamp.
     pub number_of_lines: Option<u32>,
-    /// `text-ellipsis`, `text-clip`, `truncate`.
+    /// `textOverflow` (`text-ellipsis`, `text-clip`, `truncate`).
     pub ellipsize: Option<EllipsizeMode>,
     /// `whitespace-nowrap`, `text-nowrap`, `truncate`: lines never wrap.
     /// Inherited, as CSS's `white-space`: a view's reaches the texts in it.
     pub no_wrap: Option<bool>,
-    /// `pointer-events-none` / `-auto`.
+    /// `pointerEvents` (`pointer-events-none` / `-auto`).
     pub pointer_events: Option<PointerEvents>,
-    /// `object-cover` and friends (images).
-    pub resize_mode: Option<ResizeMode>,
-    /// `select-none` / `select-text` (`select-auto`: none). A view's reach
-    /// the texts in it that say none, as CSS's `user-select: auto` takes
-    /// its parent's.
+    /// `userSelect` (`select-none` / `select-text`; `auto`: none). A
+    /// view's reach the texts in it that say none, as CSS's `user-select:
+    /// auto` takes its parent's.
     pub selectable: Option<bool>,
     /// `placeholder:text-*` (inputs).
     pub placeholder_color: Option<Color>,
@@ -485,10 +495,10 @@ pub struct ClassProps {
 pub struct Space {
     /// `space-x-*`: the end margin (`margin-inline-end`; the start one
     /// with `space-x-reverse`).
-    pub x: Option<PatchValue>,
+    pub x: Option<PropertyValue>,
     /// `space-y-*`: the bottom margin (`margin-block-end`; the top one
     /// with `space-y-reverse`).
-    pub y: Option<PatchValue>,
+    pub y: Option<PropertyValue>,
     /// `space-x-reverse`.
     pub reverse_x: bool,
     /// `space-y-reverse`.
@@ -500,25 +510,26 @@ pub struct Space {
 }
 
 impl Space {
-    /// The margins of a child: React Native's `marginRight` is the end
-    /// side in either direction, `marginLeft` the start side.
-    pub(crate) fn apply(&self, style: &mut Style, important: bool) {
+    /// The margins of a child laid out in direction `rtl`: Tailwind's
+    /// `margin-inline-end`, the right side left to right and the left side
+    /// right to left (the start side when reversed).
+    pub(crate) fn apply(&self, style: &mut Style, important: bool, rtl: bool) {
         use crate::style::StyleKey as K;
         if let Some(v) = &self.x
             && self.important_x == important
         {
-            let key = if self.reverse_x {
-                K::MarginLeft
+            let (end, start) = if rtl {
+                (K::MarginLeft, K::MarginRight)
             } else {
-                K::MarginRight
+                (K::MarginRight, K::MarginLeft)
             };
-            let other = if self.reverse_x {
-                K::MarginRight
+            let (key, other) = if self.reverse_x {
+                (start, end)
             } else {
-                K::MarginLeft
+                (end, start)
             };
             let _ = style.set_key(other, crate::style::StyleValue::Number(0.0));
-            let _ = style.set_key(key, v.as_value());
+            let _ = style.apply_value(key, v);
         }
         if let Some(v) = &self.y
             && self.important_y == important
@@ -534,7 +545,7 @@ impl Space {
                 K::MarginTop
             };
             let _ = style.set_key(other, crate::style::StyleValue::Number(0.0));
-            let _ = style.set_key(key, v.as_value());
+            let _ = style.apply_value(key, v);
         }
     }
 }
@@ -621,12 +632,7 @@ impl ClassList {
         parts.ch = ch;
         let mut important = false;
         let current = if self.deps & deps::CURRENT_COLOR != 0 {
-            let [plain, important] = self.text_colors(cx);
-            important
-                .or(current.inline)
-                .or(plain)
-                .or(current.inherited)
-                .unwrap_or(Color::BLACK)
+            self.current_color(cx, current)
         } else {
             Color::BLACK
         };
@@ -638,8 +644,7 @@ impl ClassList {
             for decl in &rule.decls {
                 match decl {
                     Decl::Default(key, value) => {
-                        let (key, value) = utilities::directed(*key, value, cx.rtl);
-                        let _ = style.set_key(key, value.as_value());
+                        let _ = style.apply_value(*key, value);
                     }
                     Decl::CurrentColor(key) => style.set_color(*key, current),
                     _ => {}
@@ -657,14 +662,7 @@ impl ClassList {
             }
             important |= rule.important;
             for decl in &rule.decls {
-                decl.apply(
-                    cx.env.dark,
-                    cx.rtl,
-                    rule.important,
-                    style,
-                    props,
-                    &mut parts,
-                );
+                decl.apply(cx.env.dark, rule.important, style, props, &mut parts);
             }
             let background = rule.decls.iter().any(Decl::sets_background_color);
             if rule.cond.interactive() {
@@ -694,12 +692,17 @@ impl ClassList {
         }
         parts.finish(style, props, theme, cx.window, touched::ALL);
         inline(style);
+        if self.deps & deps::CURRENT_COLOR != 0 {
+            // What the classes set to `currentColor` inside a value.
+            style.apply_current_color(current);
+        }
         if important {
             // `!` utilities win over the inline style too, as in CSS. The
             // parts keep every rule's values (a `!scale-*` still composes
             // with a plain `translate-*`); only the groups the important
             // rules touch are written again.
             parts.touched = 0;
+            parts.transform_parts = 0;
             parts.screen.clear();
             for rule in self
                 .rules
@@ -708,18 +711,14 @@ impl ClassList {
             {
                 if rule.cond.matches(cx) {
                     for decl in &rule.decls {
-                        decl.apply(
-                            cx.env.dark,
-                            cx.rtl,
-                            rule.important,
-                            style,
-                            props,
-                            &mut parts,
-                        );
+                        decl.apply(cx.env.dark, rule.important, style, props, &mut parts);
                     }
                 }
             }
             parts.finish(style, props, theme, cx.window, parts.touched);
+            if self.deps & deps::CURRENT_COLOR != 0 {
+                style.apply_current_color(current);
+            }
         }
         // Unless the inline style replaced the state's color.
         if state_background && !state_image && style.view.background_color == state_color {
@@ -729,6 +728,18 @@ impl ClassList {
 }
 
 impl ClassList {
+    /// CSS's `currentColor` of a node with these classes in `cx`: the text
+    /// color of its `!` classes, its inline style, its classes, else the
+    /// one it inherits, else black.
+    pub(crate) fn current_color(&self, cx: &Context<'_>, current: CurrentColor) -> Color {
+        let [plain, important] = self.text_colors(cx);
+        important
+            .or(current.inline)
+            .or(plain)
+            .or(current.inherited)
+            .unwrap_or(Color::BLACK)
+    }
+
     /// The text colors the rules matching `cx` set: the plain ones' and
     /// the `!` ones' (which win over the inline style).
     fn text_colors(&self, cx: &Context<'_>) -> [Option<Color>; 2] {
@@ -798,7 +809,7 @@ impl ClassList {
 #[derive(Debug, Default)]
 pub struct Tailwind {
     theme: Theme,
-    cache: FxHashMap<Box<str>, Arc<ClassList>>,
+    cache: FxHashMap<Box<str>, std::rc::Rc<ClassList>>,
 }
 
 impl Tailwind {
@@ -842,17 +853,17 @@ impl Tailwind {
     }
 
     /// The parsed form of `classes` (cached by string).
-    pub fn classes(&mut self, classes: &str) -> Arc<ClassList> {
+    pub fn classes(&mut self, classes: &str) -> std::rc::Rc<ClassList> {
         self.get(classes).0
     }
 
     /// Like [`Tailwind::classes`], and whether `classes` was parsed just
     /// now (to report its unknown classes once).
-    pub fn get(&mut self, classes: &str) -> (Arc<ClassList>, bool) {
+    pub fn get(&mut self, classes: &str) -> (std::rc::Rc<ClassList>, bool) {
         if let Some(c) = self.cache.get(classes) {
             return (c.clone(), false);
         }
-        let parsed = Arc::new(parse(&self.theme, classes));
+        let parsed = std::rc::Rc::new(parse(&self.theme, classes));
         // Class strings are static in practice; a bound keeps generated
         // ones (`w-[${n}px]`) from growing the cache forever.
         if self.cache.len() >= 4096 {

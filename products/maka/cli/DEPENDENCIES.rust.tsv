@@ -32,7 +32,6 @@ apple-metal@0.8.8		X										X
 apple-native-keyring-store@1.0.2		X										X						
 apply-patch@0.2.0		X																
 ar_archive_writer@0.5.3			X															
-arbitrary@1.5.0		X										X						
 arc-swap@1.9.3		X										X						
 arcstr@1.2.0		X										X						X
 arraydeque@0.5.1		X										X						
@@ -83,7 +82,6 @@ bindgen@0.73.2					X
 bit_field@0.10.3		X										X						
 bit-set@0.10.0		X										X						
 bit-set@0.8.0		X										X						
-bit-set@0.9.1		X										X						
 bit-vec@0.8.0		X										X						
 bit-vec@0.9.1		X										X						
 bitflags@1.3.2		X										X						
@@ -105,7 +103,6 @@ brotli-decompressor@6.0.1					X							X
 brotli@6.0.0					X							X						
 brotli@9.0.0					X							X						
 bstr@1.13.1		X										X						
-bumpalo@3.20.3		X										X						
 by_address@1.2.1		X										X						
 bytecount@0.6.9		X										X						
 bytemuck_derive@1.12.1		X										X						X
@@ -173,7 +170,6 @@ cooked-waker@5.0.0														X
 core_maths@0.1.1												X						
 core-foundation-sys@0.8.7		X										X						
 core-foundation@0.10.1		X										X						
-core-foundation@0.9.4		X										X						
 core-graphics-types@0.2.0		X										X						
 core-graphics@0.24.0		X										X						
 core-text@21.0.0		X										X						
@@ -183,18 +179,6 @@ cow-utils@0.1.3												X
 cpubits@0.1.1		X										X						
 cpufeatures@0.2.17		X										X						
 cpufeatures@0.3.1		X										X						
-cranelift-bforest@0.116.1			X															
-cranelift-bitset@0.116.1			X															
-cranelift-codegen-meta@0.116.1			X															
-cranelift-codegen-shared@0.116.1			X															
-cranelift-codegen@0.116.1			X															
-cranelift-control@0.116.1			X															
-cranelift-entity@0.116.1			X															
-cranelift-frontend@0.116.1			X															
-cranelift-isle@0.116.1			X															
-cranelift-module@0.116.1			X															
-cranelift-native@0.116.1			X															
-cranelift-object@0.116.1			X															
 crc-catalog@2.5.0		X										X						
 crc@3.4.0		X										X						
 crc32c@0.6.8		X										X						
@@ -220,11 +204,12 @@ cssparser@0.37.0														X
 ctor@1.0.13		X										X						
 ctr@0.10.1		X										X						
 ctutils@0.4.5		X										X						
-cua-driver-contract@0.32.0												X						
-cua-driver-core@0.32.0												X						
-cua-driver-sdk@0.32.0												X						
+cua-cursor-motion@0.38.0												X						
+cua-driver-contract@0.38.0												X						
+cua-driver-core@0.38.0												X						
+cua-driver-sdk@0.38.0												X						
 cursor-icon@1.2.0		X										X						X
-cursor-overlay@0.32.0												X						
+cursor-overlay@0.38.0												X						
 curve25519-dalek-derive@0.1.1		X										X						
 curve25519-dalek@4.1.3					X													
 curve25519-dalek@5.0.0					X													
@@ -322,7 +307,6 @@ float_next_after@1.0.0												X
 float-cmp@0.10.0												X						
 float-cmp@0.9.0												X						
 float-ord@0.3.2		X										X						
-fluent-uri@0.1.4												X						
 fluent-uri@0.4.1												X						
 flume@0.12.0		X										X						
 fnv@1.0.7		X										X						
@@ -371,7 +355,6 @@ getrandom@0.3.4		X										X
 getrandom@0.4.3		X										X						
 ghash@0.6.0		X										X						
 gif@0.14.2		X										X						
-gimli@0.31.1		X										X						
 gimli@0.32.3		X										X						
 gix-actor@0.44.1		X										X						
 gix-attributes@0.37.1		X										X						
@@ -431,9 +414,6 @@ globset@0.4.20												X					X
 glow@0.17.0		X										X						X
 glutin_wgl_sys@0.6.1		X																
 gpu-allocator@0.28.0		X										X						
-gpu-descriptor-types@0.2.0		X										X						
-gpu-descriptor@0.3.2		X										X						
-gpui-base@0.8.0		X																
 gpui-fast-apple@0.1.10		X																
 gpui-fast-linux@0.1.10		X																
 gpui-fast-macos@0.1.10		X																
@@ -442,34 +422,21 @@ gpui-fast-platform@0.1.10		X
 gpui-fast-wgpu@0.1.10		X																
 gpui-fast-windows@0.1.10		X																
 gpui-fast@0.1.10		X																
-gpui-fps@0.8.0		X																
-gpui-kit@0.8.0		X																
-gpui-pre-apple@0.3.9		X																
 gpui-pre-collections@0.3.9		X																
 gpui-pre-derive-refineable@0.3.9		X																
 gpui-pre-http-client@0.3.9		X																
-gpui-pre-linux@0.3.9		X																
-gpui-pre-macos@0.3.9		X																
-gpui-pre-macros@0.3.9		X																
-gpui-pre-platform@0.3.9		X																
 gpui-pre-refineable@0.3.9		X																
-gpui-pre-reqwest@0.12.15		X										X						
 gpui-pre-scheduler@0.3.9		X																
 gpui-pre-shared-string@0.3.9		X																
 gpui-pre-sum-tree@0.3.9		X																
 gpui-pre-util@0.3.9		X																
-gpui-pre-wgpu@0.3.9		X																
-gpui-pre-windows@0.3.9		X																
 gpui-pre-ztracing-macro@0.3.9		X																
 gpui-pre-ztracing@0.3.9		X																
-gpui-pre@0.3.9		X																
-gpui-shell@0.8.0		X																
 grep-matcher@0.1.9												X					X	
 grep-regex@0.1.14												X					X	
 grep-searcher@0.1.17												X					X	
 group@0.14.0		X										X						
 gzip-header@1.1.0		X										X						
-h2@0.4.20												X						
 half@2.7.1		X										X						
 halfbrown@0.4.0		X										X						
 harfrust@0.5.2												X						
@@ -481,7 +448,6 @@ hashbrown@0.16.1		X										X
 hashbrown@0.17.1		X										X						
 hashlink@0.11.1		X										X						
 hashlink@0.12.2		X										X						
-hdrhistogram@7.6.0		X										X						
 heapless@0.7.17		X										X						
 heapless@0.8.0		X										X						
 heapless@0.9.3		X										X						
@@ -489,7 +455,6 @@ heck@0.4.1		X										X
 heck@0.5.0		X										X						
 hex-simd@0.8.0												X						
 hex@0.4.3		X										X						
-hexf-parse@0.2.1								X										
 hkdf@0.12.4		X										X						
 hkdf@0.13.0		X										X						
 hmac-sha1-compact@1.1.8											X							
@@ -541,7 +506,6 @@ inotify@0.11.5											X
 inout@0.1.4		X										X						
 inout@0.2.5		X										X						
 instability@0.3.14												X						
-instant@0.1.13					X													
 interpolator@0.5.0		X										X						
 inventory@0.3.25		X										X						
 io-close@0.3.7		X										X						
@@ -599,7 +563,6 @@ litrs@1.0.1		X										X
 lock_api@0.4.14		X										X						
 log@0.4.34		X										X						
 lru@0.18.5												X						
-lsp-types@0.97.0												X						
 lyon_algorithms@1.0.22		X										X						
 lyon_geom@1.0.20		X										X						
 lyon_path@1.0.19		X										X						
@@ -670,6 +633,7 @@ maka-ui-authoring@0.2.0		X
 maka-ui-runtime@0.2.0		X																
 maka-web-api@0.2.0		X																
 maka-web@0.2.0		X																
+maka-workbench@0.2.0		X																
 maka-workspace-api@0.2.0		X																
 maka-workspace-support@0.2.0		X																
 malloc_buf@0.0.6												X						
@@ -689,7 +653,6 @@ memoffset@0.9.1												X
 metal@0.33.0		X										X						
 meval@0.2.0												X					X	
 micromap@0.3.0												X						
-mime_guess@2.0.5												X						
 mime@0.3.17		X										X						
 minicbor-serde@0.7.2							X											
 minicbor@2.3.1							X											
@@ -706,7 +669,6 @@ moxcms@0.8.1		X			X
 msvc_spectre_libs@0.1.3		X										X						
 mxc-sdk@1.0.1												X						
 naga-types@30.0.1		X										X						
-naga@29.0.4		X										X						
 naga@30.0.1		X										X						
 native-tls@0.2.18		X										X						
 new_debug_unreachable@1.0.6												X						
@@ -733,7 +695,6 @@ nsh-macros@0.3.0		X
 nsh-package@0.3.0		X																
 nsh-platform-gpui@0.3.0		X																
 nsh-platform-tui@0.3.0		X																
-ntapi@0.4.3		X										X						
 nu-ansi-term@0.50.3												X						
 num_cpus@1.17.0		X										X						
 num-bigint-dig@0.9.1		X										X						
@@ -762,7 +723,6 @@ objc2-core-video@0.3.2		X										X						X
 objc2-encode@4.1.0												X						
 objc2-foundation@0.2.2												X						
 objc2-foundation@0.3.2												X						
-objc2-io-kit@0.3.2		X										X						X
 objc2-metal@0.3.2		X										X						X
 objc2-quartz-core@0.2.2												X						
 objc2-quartz-core@0.3.2		X										X						X
@@ -770,7 +730,6 @@ objc2-security@0.3.2		X										X						X
 objc2-user-notifications@0.3.2		X										X						X
 objc2@0.5.3												X						
 objc2@0.6.5												X						
-object@0.36.7		X										X						
 object@0.37.3		X										X						
 object@0.39.1		X										X						
 once_cell@1.21.4		X										X						
@@ -850,14 +809,14 @@ pico-args@0.5.0												X
 pin-project-internal@1.1.13		X										X						
 pin-project-lite@0.2.17		X										X						
 pin-project@1.1.13		X										X						
-pip-preview@0.32.0												X						
+pip-preview@0.38.0												X						
 piper@0.2.5		X										X						
 pkcs1@0.8.0-rc.5		X										X						
 pkcs8@0.11.0		X										X						
 pkg-config@0.3.34		X										X						
-platform-linux@0.32.0												X						
-platform-macos@0.32.0												X						
-platform-windows@0.32.0												X						
+platform-linux@0.38.0												X						
+platform-macos@0.38.0												X						
+platform-windows@0.38.0												X						
 png@0.17.16		X										X						
 png@0.18.1		X										X						
 pnp@0.12.12				X														
@@ -891,7 +850,6 @@ quick-error@2.0.1		X										X
 quick-xml@0.41.0												X						
 quickjs-jit-core@0.14.1												X						
 quickjs-jit-macro@0.14.1												X						
-quickjs-jit-runtime@0.14.1												X						
 quickjs-jit-stdlib@0.14.1		X																
 quickjs-jit-sys@0.14.1												X						
 quickjs-jit@0.14.1												X						
@@ -928,7 +886,6 @@ ref-cast-impl@1.0.27		X										X
 ref-cast@1.0.27		X										X						
 referencing@0.46.10												X						
 referencing@0.60.1												X						
-regalloc2@0.11.2			X															
 regex-automata@0.4.18		X										X						
 regex-syntax@0.8.11		X										X						
 regex@1.13.1		X										X						
@@ -968,9 +925,11 @@ rolldown_utils@1.2.13												X
 rolldown-ariadne@0.6.0												X						
 rolldown@1.2.13												X						
 ropey@1.6.1												X						
-ropey@2.0.0-beta.1		X										X						
 roxmltree@0.20.0		X										X						
 roxmltree@0.21.2		X										X						
+rquickjs-core@0.14.0												X						
+rquickjs-sys@0.14.0												X						
+rquickjs@0.14.0												X						
 rsa@0.10.0-rc.19		X										X						
 ruff_python_ast@0.0.14												X						
 ruff_python_codegen@0.0.14												X						
@@ -990,7 +949,6 @@ rustix-openpty@0.2.0		X	X									X
 rustix@0.38.44		X	X									X						
 rustix@1.1.5		X	X									X						
 rustls-native-certs@0.8.5		X									X	X						
-rustls-pemfile@2.2.0		X									X	X						
 rustls-pki-types@1.15.1		X										X						
 rustls-platform-verifier@0.7.1		X										X						
 rustls-webpki@0.103.16											X							
@@ -1111,15 +1069,10 @@ syntect@5.3.0												X
 sys_traits_macros@0.1.0												X						
 sys_traits@0.1.29												X						
 sys-locale@0.3.2		X										X						
-sysinfo@0.37.2												X						
-system-configuration-sys@0.6.0		X										X						
-system-configuration@0.6.1		X										X						
-taffy@0.13.0												X						
 taffy@0.14.0												X						
 taffy@0.15.0												X						
 tap@1.0.1												X						
 tar@0.4.46		X										X						
-target-lexicon@0.13.5			X															
 tauri-winrt-notification@0.8.1		X										X						
 tempfile@3.27.0		X										X						
 temporal_capi@0.2.6		X										X						
@@ -1158,7 +1111,6 @@ tokio-tungstenite@0.30.0												X
 tokio-util@0.7.20												X						
 tokio@1.54.1												X						
 toml_datetime@0.6.11		X										X						
-toml_datetime@0.7.5+spec-1.1.0		X										X						
 toml_datetime@1.1.2+spec-1.1.0		X										X						
 toml_edit@0.22.27		X										X						
 toml_edit@0.25.17+spec-1.1.0		X										X						
@@ -1166,7 +1118,6 @@ toml_parser@1.1.5+spec-1.1.0		X										X
 toml_write@0.1.2		X										X						
 toml_writer@1.1.3+spec-1.1.0		X										X						
 toml@0.8.23		X										X						
-toml@0.9.12+spec-1.1.0		X										X						
 toml@1.1.8+spec-1.1.0		X										X						
 tower-http@0.6.11												X						
 tower-layer@0.3.3												X						
@@ -1187,14 +1138,12 @@ ts-rs@12.0.1												X
 ttf-parser@0.25.1		X										X						
 tungstenite@0.24.0		X										X						
 tungstenite@0.28.0		X										X						
-tungstenite@0.29.0		X										X						
 tungstenite@0.30.0		X										X						
 two-face@0.4.5		X										X						
 typed-path@0.13.0		X										X						
 typedmap@0.6.0		X										X						
 typenum@1.20.1		X										X						
 uds_windows@1.2.1												X						
-unicase@2.10.0		X										X						
 unicode_names2_generator@1.3.0		X										X						
 unicode_names2@1.3.0		X										X				X		
 unicode-bidi-mirroring@0.4.0		X										X						
@@ -1242,7 +1191,6 @@ vsimd@0.8.0												X
 vswhom-sys@0.1.3												X						
 vswhom@0.1.0												X						
 vte@0.15.0		X										X						
-wait-timeout@0.2.1		X										X						
 waker-fn@1.2.0		X										X						
 walkdir@2.5.0												X					X	
 want@0.3.2												X						
@@ -1260,19 +1208,12 @@ web-time@1.1.0		X										X
 webpki-roots@0.26.11									X									
 webpki-roots@1.0.11									X									
 weezl@0.1.12		X										X						
-wgpu-core-deps-apple@29.0.4		X										X						
 wgpu-core-deps-apple@30.0.1		X										X						
-wgpu-core-deps-windows-linux-android@29.0.4		X										X						
 wgpu-core-deps-windows-linux-android@30.0.1		X										X						
-wgpu-core@29.0.4		X										X						
 wgpu-core@30.0.1		X										X						
-wgpu-hal@29.0.4		X										X						
 wgpu-hal@30.0.1		X										X						
-wgpu-naga-bridge@29.0.4		X										X						
 wgpu-naga-bridge@30.0.1		X										X						
-wgpu-types@29.0.4		X										X						
 wgpu-types@30.0.1		X										X						
-wgpu@29.0.4		X										X						
 wgpu@30.0.1		X										X						
 which@6.0.3												X						
 which@8.0.6												X						
@@ -1286,13 +1227,11 @@ windows_x86_64_gnu@0.53.1		X										X
 windows_x86_64_msvc@0.48.5		X										X						
 windows_x86_64_msvc@0.52.6		X										X						
 windows_x86_64_msvc@0.53.1		X										X						
-windows-collections@0.2.0		X										X						
 windows-collections@0.3.2		X										X						
 windows-core@0.58.0		X										X						
 windows-core@0.59.0		X										X						
 windows-core@0.61.2		X										X						
 windows-core@0.62.2		X										X						
-windows-future@0.2.1		X										X						
 windows-future@0.3.2		X										X						
 windows-implement@0.58.0		X										X						
 windows-implement@0.59.0		X										X						
@@ -1302,9 +1241,7 @@ windows-interface@0.59.3		X										X
 windows-link@0.1.3		X										X						
 windows-link@0.2.1		X										X						
 windows-native-keyring-store@1.1.0		X										X						
-windows-numerics@0.2.0		X										X						
 windows-numerics@0.3.1		X										X						
-windows-registry@0.4.0		X										X						
 windows-registry@0.6.1		X										X						
 windows-result@0.2.0		X										X						
 windows-result@0.3.4		X										X						
@@ -1315,18 +1252,15 @@ windows-strings@0.4.2		X										X
 windows-strings@0.5.1		X										X						
 windows-sys@0.48.0		X										X						
 windows-sys@0.59.0		X										X						
-windows-sys@0.60.2		X										X						
 windows-sys@0.61.2		X										X						
 windows-targets@0.48.5		X										X						
 windows-targets@0.52.6		X										X						
 windows-targets@0.53.5		X										X						
-windows-threading@0.1.0		X										X						
 windows-threading@0.2.1		X										X						
 windows-version@0.1.7		X										X						
 windows-win@3.0.0						X												
 windows@0.58.0		X										X						
 windows@0.59.0		X										X						
-windows@0.61.3		X										X						
 windows@0.62.2		X										X						
 winnow@0.7.15												X						
 winnow@1.0.4												X						

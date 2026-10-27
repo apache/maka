@@ -36,7 +36,7 @@ The rest of the Rust UI API (`nsh_core::element`) follows GPUI's element APIs:
   `perspective`) take `impl IntoReactive<AbsoluteLength>`, as GPUI's border widths are `AbsoluteLength`s: points or
   rems (a rem at `REM_SIZE`). `translate_x` / `translate_y` take a `DefiniteLength`: points, or `relative(-0.5)` of the
   view's own size. Shadow and decoration geometry is `Points`, as GPUI's `BoxShadow` and `UnderlineStyle` have it
-  (`shadow_radius`, `shadow_offset(point(px(0.0), px(2.0)))`, `text_decoration_thickness`, `underline_offset`, `blur`,
+  (`BoxShadow`'s offsets, blur and spread, `text_decoration_thickness`, `underline_offset`, `blur`,
   `backdrop_blur`, `Image::blur_radius`, `Interactive::elevation`).
 - **Angles** are `Radians` (`rotate(deg(45.0))`, `skew_x`, `bg_linear`, `bg_conic`, `hue_rotate`, a rotation's
   `GestureEvent<Radians>`); **fractions** are `Percentage` (`gradient_*_position`, `scroll_to_index`'s
@@ -52,7 +52,7 @@ The rest of the Rust UI API (`nsh_core::element`) follows GPUI's element APIs:
   line height, letter spacing, decoration thickness and underline offset), side widths `Edges<Points>`
   (`Borders.widths`), corners `Corners<Option<Points>>` (`ViewStyle.corner_radius`, unset corners take the
   `border_radius`), and `CornerRadii` is a `Corners<Points>` with its curve (`corners()`, `fit(Size<Points>)`,
-  `inset(Points)`); offsets are `Point<Points>` (`shadowOffset`, `textShadowOffset`); `transformOrigin`'s x and y are
+  `inset(Points)`); offsets are `Point<Points>` (`TextStyle.shadow_offset`); `transformOrigin`'s x and y are
   `DefiniteLength`s (points or a fraction of the side; `TransformOrigin::offset(Size<Points>)`), `textAlignVertical`
   a `Percentage`.
 - **The engine** (`nsh_engine`): what platforms report is typed as the core takes it: `EngineControl::scroll` takes a

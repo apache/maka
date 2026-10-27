@@ -57,7 +57,7 @@ text("")
 text("提交前先运行 ")
     .text_size(px(15.0))
     .line_height(px(22.0))
-    .selectable(true)
+    .select_text()
     .child(
         text(" cargo test ")
             .font_family("ui-monospace")
@@ -69,7 +69,7 @@ text("提交前先运行 ")
 ```
 
 ```tsx tabs
-<Text style={{ fontSize: 15, lineHeight: 22 }} selectable>
+<Text style={{ userSelect: "text", fontSize: 15, lineHeight: 22 }}>
   {"提交前先运行 "}
   <Text style={{ fontFamily: "ui-monospace", fontSize: 13, backgroundColor: "#eff1f3", borderRadius: 4 }}>
     {" cargo test "}
@@ -151,21 +151,21 @@ JSX 文本遵循 React 的规则：除文本首尾外，每行都会去掉首尾
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `numberOfLines` | `.number_of_lines(n)` | `number` | `0` | 最多显示的行数；`0` 表示不限。 |
-| `ellipsizeMode` | `.ellipsize_mode(EllipsizeMode::Tail)` | `"tail" \| "head" \| "middle" \| "clip"` | `"tail"` | 超出 `numberOfLines` 的文本在哪里截断。 |
+| `numberOfLines`（样式） | `.number_of_lines(n)`、`.truncate()` | `number` | `0` | 最多显示的行数；`0` 显示全部行。 |
+| `textOverflow`（样式） | `.text_overflow(EllipsizeMode::Middle)` | `"ellipsis" \| "clip" \| "ellipsis-start" \| "ellipsis-middle"` | `"ellipsis"` | 超出 `numberOfLines` 的文本如何截断：省略号在末尾、开头或中间，或者直接裁掉。 |
 | `allowFontScaling` | `.allow_font_scaling(..)` | `boolean` | `true` | 跟随系统的文字大小设置。 |
 | `maxFontSizeMultiplier` | `.max_font_size_multiplier(..)` | `number` | `0` | 系统缩放的上限；`0` 表示不限。 |
 | `adjustsFontSizeToFit` | `.shrink_to_fit(min_scale)` | `boolean` | `false` | 缩小字号，直到文本能放进其行数（`numberOfLines`）和盒子。 |
 | `minimumFontScale` | `.shrink_to_fit(min_scale)` | `number` | | `adjustsFontSizeToFit` 最多缩小到的比例（0..1；至少 0.1）。 |
-| `selectable` | `.selectable(..)` | `boolean` | | 用户可以选择文本的任意范围：长按选中一个词，拖动选择柄扩展，编辑菜单复制。不设置时文字不可选择，但桌面浏览器除外：在那里文字默认可选，交互元素里的除外；设为 `false` 在那里也不可选择。 |
+| `userSelect`（样式） | `.select_text()`、`.select_none()` | `"auto" \| "none" \| "text"` | `"auto"` | `"text"`：用户可以选择文本的任意范围：长按选中一个词，拖动选择柄扩展，编辑菜单复制。`"auto"` 取外层视图的设置；都没有设置时文字不可选择，但桌面浏览器除外：在那里文字默认可选，交互元素里的除外；设为 `"none"` 在那里也不可选择。 |
 | `selectionColor`（样式） | `.selection_color(..)` | `ColorValue` | 平台的强调色 | 选区高亮和选择柄的颜色。 |
 | `onTextLayout` | | `(e: { lines: TextLayoutLine[] }) => void` | | 每次布局后给出排好的各行。 |
 
-Tailwind 类 `select-text` 等同于 `selectable`。选区高亮和选择柄的颜色由样式键 `selectionColor`（`selection:text-*`）设置，默认为平台的强调色。
+Tailwind 类 `select-text`、`select-none` 和 `select-auto` 设置 `userSelect`，`line-clamp-*` 设置 `numberOfLines`，`text-ellipsis` 和 `text-clip` 设置 `textOverflow`，`truncate` 是单行并以省略号截断。选区高亮和选择柄的颜色由样式键 `selectionColor`（`selection:text-*`）设置，默认为平台的强调色。
 
 ## 文本样式
 
-`TextStyle` 在视图样式之上增加了：`color`、`fontSize`、`fontWeight`（`"normal"`、`"bold"` 或 100–900）、`fontStyle`、`fontFamily`、`lineHeight`、`letterSpacing`、`textAlign`、`textAlignVertical`、`textTransform`、`textDecorationLine`、`textDecorationColor`、`textDecorationStyle`、`textDecorationThickness`、`textUnderlineOffset`、`textShadowColor`、`textShadowOffset`、`textShadowRadius`、`fontVariant` 和 `writingDirection`。在 Rust 中它们是 `Styled` 方法：`.text_color(..)`、`.text_size(..)`（或 `.text_sm()`、`.text_lg()` 等）、`.font_weight(FontWeight::SEMIBOLD)`、`.italic()`、`.font_family(..)`、`.line_height(..)`、`.letter_spacing(..)`、`.text_center()`、`.uppercase()`、`.underline()`、`.line_through()`、`.tabular_nums()` 等。参见[样式参考](../modules/style-reference.md#textstyle)和[文本](../docs/text.md)。
+`TextStyle` 在视图样式之上增加了：`color`、`fontSize`、`fontWeight`（`"normal"`、`"bold"` 或 100–900）、`fontStyle`、`fontFamily`、`lineHeight`、`letterSpacing`、`textAlign`、`textAlignVertical`、`textTransform`、`textDecorationLine`、`textDecorationColor`、`textDecorationStyle`、`textDecorationThickness`、`textUnderlineOffset`、`textShadow`（CSS 的 `text-shadow`）、`fontVariant`、`writingDirection`、`numberOfLines` 和 `textOverflow`。在 Rust 中它们是 `Styled` 方法：`.text_color(..)`、`.text_size(..)`（或 `.text_sm()`、`.text_lg()` 等）、`.font_weight(FontWeight::SEMIBOLD)`、`.italic()`、`.font_family(..)`、`.line_height(..)`、`.letter_spacing(..)`、`.text_center()`、`.uppercase()`、`.underline()`、`.line_through()`、`.tabular_nums()`、`.number_of_lines(..)` 等。参见[样式参考](../modules/style-reference.md#textstyle)和[文本](../docs/text.md)。
 
 字体族可以是系统字体族，也可以是应用的字体文件：
 

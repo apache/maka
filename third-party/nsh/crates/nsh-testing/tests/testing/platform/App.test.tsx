@@ -62,3 +62,19 @@ test("an image's size is answered as a failed load", async () => {
   await app.press("Measure");
   await app.waitFor("Size: not loaded");
 });
+
+test("focus() gives a view that takes presses the keyboard focus where Tab stops at it", async () => {
+  const app = await open("./App.tsx", { platform: "macos" });
+  await app.press("Focus it");
+  await app.waitFor("Key focus: focused");
+  // Return presses the view the focus is on, and its blur() lets it go.
+  await app.keyboard.press("enter");
+  await app.waitFor("Key focus: focused blurred");
+});
+
+test("focus() leaves views that take presses alone where Tab skips them", async () => {
+  const app = await open("./App.tsx");
+  await app.press("Focus it");
+  await app.wait(100);
+  expect(app.texts()).toContain("Key focus: none");
+});

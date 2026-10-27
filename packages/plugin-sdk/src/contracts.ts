@@ -9284,6 +9284,222 @@ export const contracts = {
           },
           resources: {},
         },
+        computerApps: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentComputerApps',
+            type: 'object',
+            properties: {
+              entries: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentComputerAppActivityState',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['entries'],
+            $defs: {
+              AgentComputerAppActivityState: {
+                type: 'object',
+                properties: {
+                  activity: {
+                    $ref: '#/$defs/ComputerAppActivity',
+                  },
+                  stopped: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['activity', 'stopped'],
+              },
+              ComputerAppActivity: {
+                type: 'object',
+                properties: {
+                  invocation: {
+                    $ref: '#/$defs/Invocation',
+                  },
+                  operationId: {
+                    type: 'string',
+                  },
+                  target: {
+                    $ref: '#/$defs/GrantTarget',
+                  },
+                  display: {
+                    $ref: '#/$defs/ComputerAppDisplay',
+                  },
+                },
+                additionalProperties: false,
+                required: ['invocation', 'operationId', 'target', 'display'],
+              },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+              },
+              GrantTarget: {
+                type: 'object',
+                properties: {
+                  providerId: {
+                    type: 'string',
+                  },
+                  contractId: {
+                    type: 'string',
+                  },
+                  serverId: {
+                    type: 'string',
+                  },
+                  toolName: {
+                    type: 'string',
+                  },
+                  capability: {
+                    $ref: '#/$defs/GrantCapability',
+                  },
+                  scope: {
+                    $ref: '#/$defs/GrantScope',
+                  },
+                },
+                required: [
+                  'providerId',
+                  'contractId',
+                  'serverId',
+                  'toolName',
+                  'capability',
+                  'scope',
+                ],
+              },
+              GrantCapability: {
+                type: 'string',
+                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+              },
+              GrantScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_origin',
+                      },
+                      origin: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'origin'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'capability',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'mcp_tool',
+                      },
+                      serverId: {
+                        type: 'string',
+                      },
+                      toolName: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'serverId', 'toolName'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      platform: {
+                        $ref: '#/$defs/ComputerAppPlatform',
+                      },
+                      applicationId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'platform', 'applicationId'],
+                  },
+                ],
+              },
+              ComputerAppPlatform: {
+                type: 'string',
+                enum: ['macos'],
+              },
+              ComputerAppDisplay: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  appPath: {
+                    type: 'string',
+                  },
+                  risk: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ComputerAppRisk',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  warning: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'appPath'],
+              },
+              ComputerAppRisk: {
+                type: 'string',
+                enum: ['low', 'high'],
+              },
+            },
+          },
+          resources: {},
+        },
         context: {
           mode: 'query',
           input: {
@@ -15937,6 +16153,49 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'target'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      nativeOperationId: {
+                        type: 'string',
+                      },
+                      target: {
+                        $ref: '#/$defs/GrantTarget',
+                      },
+                      basis: {
+                        $ref: '#/$defs/PermissionBasis',
+                      },
+                      display: {
+                        $ref: '#/$defs/ComputerAppDisplay',
+                      },
+                      allowAlways: {
+                        type: 'boolean',
+                      },
+                      authorityRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: [
+                      'kind',
+                      'toolUseId',
+                      'nativeOperationId',
+                      'target',
+                      'basis',
+                      'display',
+                      'allowAlways',
+                      'authorityRevision',
+                    ],
+                  },
                 ],
               },
               PermissionBasis: {
@@ -16361,7 +16620,7 @@ export const contracts = {
               },
               GrantCapability: {
                 type: 'string',
-                enum: ['browser', 'computer_use', 'desktop_mcp', 'mcp'],
+                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
               },
               GrantScope: {
                 oneOf: [
@@ -16407,7 +16666,58 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'serverId', 'toolName'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      platform: {
+                        $ref: '#/$defs/ComputerAppPlatform',
+                      },
+                      applicationId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'platform', 'applicationId'],
+                  },
                 ],
+              },
+              ComputerAppPlatform: {
+                type: 'string',
+                enum: ['macos'],
+              },
+              ComputerAppDisplay: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  appPath: {
+                    type: 'string',
+                  },
+                  risk: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ComputerAppRisk',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  warning: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'appPath'],
+              },
+              ComputerAppRisk: {
+                type: 'string',
+                enum: ['low', 'high'],
               },
               InteractionOutcome: {
                 oneOf: [
@@ -16549,6 +16859,25 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'computer_app_decision',
+                      },
+                      decision: {
+                        $ref: '#/$defs/ComputerAppDecision',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'closure',
                       },
                       reason: {
@@ -16624,6 +16953,10 @@ export const contracts = {
                     },
                   },
                 ],
+              },
+              ComputerAppDecision: {
+                type: 'string',
+                enum: ['once', 'session', 'always', 'deny'],
               },
               ClosureReason: {
                 type: 'string',
@@ -18271,7 +18604,14 @@ export const contracts = {
                 $ref: '#/$defs/AgentSession',
               },
               compacting: {
-                type: 'boolean',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentCompactionProgress',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               rememberedBackend: {
                 anyOf: [
@@ -18324,7 +18664,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['session', 'through', 'parts', 'toolSeeds'],
+            required: ['session', 'compacting', 'through', 'parts', 'toolSeeds'],
             $defs: {
               AgentSession: {
                 type: 'object',
@@ -18678,6 +19018,22 @@ export const contracts = {
                 type: 'string',
                 enum: ['idle', 'working', 'waiting'],
               },
+              AgentCompactionProgress: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  startedAt: {
+                    description: 'Original compaction start in milliseconds since the Unix epoch.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'startedAt'],
+              },
               AgentSessionMetrics: {
                 description: 'Display-only readings from the latest completed main-model request.',
                 type: 'object',
@@ -18836,7 +19192,14 @@ export const contracts = {
               },
               AgentInteractionKind: {
                 type: 'string',
-                enum: ['service_approval', 'question', 'permissions', 'form', 'client_capability'],
+                enum: [
+                  'service_approval',
+                  'question',
+                  'permissions',
+                  'form',
+                  'client_capability',
+                  'computer_app',
+                ],
               },
             },
           },
@@ -21511,6 +21874,31 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'decision'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      decision: {
+                        $ref: '#/$defs/ComputerAppDecision',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app_cancel',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
                 ],
               },
               Decision: {
@@ -21665,6 +22053,10 @@ export const contracts = {
                     },
                   },
                 ],
+              },
+              ComputerAppDecision: {
+                type: 'string',
+                enum: ['once', 'session', 'always', 'deny'],
               },
             },
           },
@@ -21886,6 +22278,49 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'target'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      nativeOperationId: {
+                        type: 'string',
+                      },
+                      target: {
+                        $ref: '#/$defs/GrantTarget',
+                      },
+                      basis: {
+                        $ref: '#/$defs/PermissionBasis',
+                      },
+                      display: {
+                        $ref: '#/$defs/ComputerAppDisplay',
+                      },
+                      allowAlways: {
+                        type: 'boolean',
+                      },
+                      authorityRevision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: [
+                      'kind',
+                      'toolUseId',
+                      'nativeOperationId',
+                      'target',
+                      'basis',
+                      'display',
+                      'allowAlways',
+                      'authorityRevision',
+                    ],
                   },
                 ],
               },
@@ -22311,7 +22746,7 @@ export const contracts = {
               },
               GrantCapability: {
                 type: 'string',
-                enum: ['browser', 'computer_use', 'desktop_mcp', 'mcp'],
+                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
               },
               GrantScope: {
                 oneOf: [
@@ -22357,7 +22792,58 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'serverId', 'toolName'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      platform: {
+                        $ref: '#/$defs/ComputerAppPlatform',
+                      },
+                      applicationId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'platform', 'applicationId'],
+                  },
                 ],
+              },
+              ComputerAppPlatform: {
+                type: 'string',
+                enum: ['macos'],
+              },
+              ComputerAppDisplay: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  appPath: {
+                    type: 'string',
+                  },
+                  risk: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ComputerAppRisk',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  warning: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'appPath'],
+              },
+              ComputerAppRisk: {
+                type: 'string',
+                enum: ['low', 'high'],
               },
               InteractionOutcome: {
                 oneOf: [
@@ -22499,6 +22985,25 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'computer_app_decision',
+                      },
+                      decision: {
+                        $ref: '#/$defs/ComputerAppDecision',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'closure',
                       },
                       reason: {
@@ -22574,6 +23079,10 @@ export const contracts = {
                     },
                   },
                 ],
+              },
+              ComputerAppDecision: {
+                type: 'string',
+                enum: ['once', 'session', 'always', 'deny'],
               },
               ClosureReason: {
                 type: 'string',
@@ -26206,6 +26715,39 @@ export const contracts = {
           },
           resources: {},
         },
+        stopComputerApp: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentStopComputerApp',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              operationId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'operationId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentStopped',
+            type: 'object',
+            properties: {
+              requested: {
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['requested'],
+          },
+          resources: {},
+        },
         toolImage: {
           mode: 'query',
           input: {
@@ -26663,6 +27205,20 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'pending'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'computer_apps',
+                  },
+                  apps: {
+                    $ref: '#/$defs/AgentComputerApps',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'apps'],
               },
             ],
             $defs: {
@@ -27171,7 +27727,209 @@ export const contracts = {
               },
               AgentInteractionKind: {
                 type: 'string',
-                enum: ['service_approval', 'question', 'permissions', 'form', 'client_capability'],
+                enum: [
+                  'service_approval',
+                  'question',
+                  'permissions',
+                  'form',
+                  'client_capability',
+                  'computer_app',
+                ],
+              },
+              AgentComputerApps: {
+                type: 'object',
+                properties: {
+                  entries: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentComputerAppActivityState',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['entries'],
+              },
+              AgentComputerAppActivityState: {
+                type: 'object',
+                properties: {
+                  activity: {
+                    $ref: '#/$defs/ComputerAppActivity',
+                  },
+                  stopped: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['activity', 'stopped'],
+              },
+              ComputerAppActivity: {
+                type: 'object',
+                properties: {
+                  invocation: {
+                    $ref: '#/$defs/Invocation',
+                  },
+                  operationId: {
+                    type: 'string',
+                  },
+                  target: {
+                    $ref: '#/$defs/GrantTarget',
+                  },
+                  display: {
+                    $ref: '#/$defs/ComputerAppDisplay',
+                  },
+                },
+                additionalProperties: false,
+                required: ['invocation', 'operationId', 'target', 'display'],
+              },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+              },
+              GrantTarget: {
+                type: 'object',
+                properties: {
+                  providerId: {
+                    type: 'string',
+                  },
+                  contractId: {
+                    type: 'string',
+                  },
+                  serverId: {
+                    type: 'string',
+                  },
+                  toolName: {
+                    type: 'string',
+                  },
+                  capability: {
+                    $ref: '#/$defs/GrantCapability',
+                  },
+                  scope: {
+                    $ref: '#/$defs/GrantScope',
+                  },
+                },
+                required: [
+                  'providerId',
+                  'contractId',
+                  'serverId',
+                  'toolName',
+                  'capability',
+                  'scope',
+                ],
+              },
+              GrantCapability: {
+                type: 'string',
+                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+              },
+              GrantScope: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_origin',
+                      },
+                      origin: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'origin'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'capability',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'mcp_tool',
+                      },
+                      serverId: {
+                        type: 'string',
+                      },
+                      toolName: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'serverId', 'toolName'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      platform: {
+                        $ref: '#/$defs/ComputerAppPlatform',
+                      },
+                      applicationId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'platform', 'applicationId'],
+                  },
+                ],
+              },
+              ComputerAppPlatform: {
+                type: 'string',
+                enum: ['macos'],
+              },
+              ComputerAppDisplay: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  appPath: {
+                    type: 'string',
+                  },
+                  risk: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ComputerAppRisk',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  warning: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'appPath'],
+              },
+              ComputerAppRisk: {
+                type: 'string',
+                enum: ['low', 'high'],
               },
             },
           },
@@ -57460,7 +58218,7 @@ export const contracts = {
                 format: 'uint64',
                 minimum: 1,
                 description:
-                  'Wall-clock limit including asynchronous waits. Interrupted REPLs require reset.',
+                  'Execution budget. Trusted consent and macOS/Windows native waits pause it.\nOrdinary asynchronous waits remain charged. Interrupted REPLs require reset.',
                 default: 30000,
               },
               title: {

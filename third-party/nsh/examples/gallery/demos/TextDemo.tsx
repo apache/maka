@@ -17,7 +17,7 @@ function Specimen(props: { label: string; code?: string; first?: boolean; childr
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
         <Text style={{ flex: 1, fontSize: 13, color: colors.muted }}>{props.label}</Text>
         <If when={props.code}>
-          <Text numberOfLines={1} style={{ fontSize: 12, color: colors.faint, fontFamily: mono }}>
+          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint, fontFamily: mono }}>
             {props.code}
           </Text>
         </If>
@@ -117,16 +117,14 @@ function Fonts() {
           uppercase <Text style={{ textTransform: "capitalize", color: colors.muted }}>capitalized words here</Text>
         </Text>
       </Specimen>
-      <Specimen label="Shadows" code="textShadow*">
+      <Specimen label="Shadows" code="textShadow">
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
           <Text
             style={{
               fontSize: 26,
               fontWeight: "800",
               color: colors.accent,
-              textShadowColor: alpha(colors.accent, isDark() ? 0.6 : 0.3),
-              textShadowOffset: { width: 0, height: 0 },
-              textShadowRadius: 10,
+              textShadow: `0 0 10px ${alpha(colors.accent, isDark() ? 0.6 : 0.3)}`,
             }}
           >
             Glow
@@ -149,9 +147,7 @@ function Fonts() {
                 fontSize: 26,
                 fontWeight: "800",
                 color: colors.info,
-                textShadowColor: isDark() ? "rgba(0,0,0,0.9)" : "rgba(20,20,10,0.22)",
-                textShadowOffset: { width: 2, height: 3 },
-                textShadowRadius: 3,
+                textShadow: isDark() ? "2px 3px 3px rgba(0,0,0,0.9)" : "2px 3px 3px rgba(20,20,10,0.22)",
               }}
             >
               Drop shadow
@@ -185,29 +181,29 @@ function Scaling() {
 
 function Truncation() {
   return (
-    <Card icon="lists" title="Truncation" subtitle="numberOfLines and ellipsizeMode">
-      <Specimen label="Two lines, tail" code="numberOfLines={2}" first>
-        <Text numberOfLines={2} style={body()}>
+    <Card icon="lists" title="Truncation" subtitle="numberOfLines and textOverflow">
+      <Specimen label="Two lines, tail" code="numberOfLines: 2" first>
+        <Text style={[body(), { numberOfLines: 2 }]}>
           {LOREM}
         </Text>
       </Specimen>
-      <Specimen label="One line, head" code={`ellipsizeMode="head"`}>
-        <Text numberOfLines={1} ellipsizeMode="head" style={body()}>
+      <Specimen label="One line, head" code={`textOverflow: "ellipsis-start"`}>
+        <Text style={[body(), { numberOfLines: 1, textOverflow: "ellipsis-start" }]}>
           {LOREM}
         </Text>
       </Specimen>
-      <Specimen label="One line, middle" code={`ellipsizeMode="middle"`}>
-        <Text numberOfLines={1} ellipsizeMode="middle" style={body()}>
+      <Specimen label="One line, middle" code={`textOverflow: "ellipsis-middle"`}>
+        <Text style={[body(), { numberOfLines: 1, textOverflow: "ellipsis-middle" }]}>
           {LOREM}
         </Text>
       </Specimen>
-      <Specimen label="One line, clip" code={`ellipsizeMode="clip"`}>
-        <Text numberOfLines={1} ellipsizeMode="clip" style={body()}>
+      <Specimen label="One line, clip" code={`textOverflow: "clip"`}>
+        <Text style={[body(), { numberOfLines: 1, textOverflow: "clip" }]}>
           {LOREM}
         </Text>
       </Specimen>
       <Specimen label="Centered, three lines" code={`textAlign="center"`}>
-        <Text numberOfLines={3} style={{ ...body(), textAlign: "center", color: colors.muted }}>
+        <Text style={{ numberOfLines: 3, ...body(), textAlign: "center", color: colors.muted }}>
           {LOREM} {LOREM}
         </Text>
       </Specimen>
@@ -229,13 +225,13 @@ function Cjk() {
       <Specimen label="Japanese: kana, kanji and Latin">
         <Text style={body()}>{JAPANESE}</Text>
       </Specimen>
-      <Specimen label="Two lines, tail" code="numberOfLines={2}">
-        <Text numberOfLines={2} style={body()}>
+      <Specimen label="Two lines, tail" code="numberOfLines: 2">
+        <Text style={[body(), { numberOfLines: 2 }]}>
           {CHINESE}
         </Text>
       </Specimen>
-      <Specimen label="One line, middle" code={`ellipsizeMode="middle"`}>
-        <Text numberOfLines={1} ellipsizeMode="middle" style={body()}>
+      <Specimen label="One line, middle" code={`textOverflow: "ellipsis-middle"`}>
+        <Text style={[body(), { numberOfLines: 1, textOverflow: "ellipsis-middle" }]}>
           {JAPANESE}
         </Text>
       </Specimen>
@@ -255,8 +251,8 @@ function RightToLeft() {
       <Specimen label="Hebrew">
         <Text style={body()}>שלום! הגרסה 2.0 של nsh זמינה עכשיו (גם ב-Linux).</Text>
       </Specimen>
-      <Specimen label="One line, tail" code="numberOfLines={1}">
-        <Text numberOfLines={1} style={body()}>
+      <Specimen label="One line, tail" code="numberOfLines: 1">
+        <Text style={[body(), { numberOfLines: 1 }]}>
           {ARABIC}
         </Text>
       </Specimen>

@@ -21,7 +21,7 @@ test("the Gestures demo shows its cards", async () => {
     "Touch here, try two fingers",
     "0 taps",
     "hitSlop={30}",
-    'pointerEvents="none"',
+    'pointerEvents: "none"',
     "Long press after 250 ms",
     "pressIn",
     "longPress",

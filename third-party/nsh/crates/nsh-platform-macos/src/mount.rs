@@ -458,9 +458,19 @@ impl Mounter {
     fn command(&self, surface: &Rc<Surface>, id: NodeId, command: &Command) {
         let view = self.views.get(&id);
         match command {
-            Command::Focus => view.map_or((), crate::text_input::focus),
+            // An input edits; a pressable takes the keyboard focus as Tab
+            // gives it.
+            Command::Focus => match view {
+                Some(view) if view.kind() == ViewKind::Input => crate::text_input::focus(view),
+                Some(view) if id != ROOT_ID => crate::input::focus_control(surface, view),
+                _ => {}
+            },
             Command::Blur => match view {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
+                Some(view) if id != ROOT_ID => {
+                    crate::input::blur_control(surface, view);
+                    crate::text_input::blur_all(surface);
+                }
                 _ => crate::text_input::blur_all(surface),
             },
             Command::SetSelection { start, end } => {

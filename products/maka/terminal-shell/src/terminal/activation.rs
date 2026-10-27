@@ -60,6 +60,7 @@ impl Activation {
         self.observe(&Event::FocusOut);
     }
 
+    #[cfg(test)]
     pub(crate) fn foreground(&self) -> bool {
         *self.0.borrow()
     }

@@ -164,7 +164,6 @@ const isUnder =
 const gpuiUpstreamFiles = new Set(
   [
     'gpui-fast',
-    'gpui-kit',
     'async-io',
     'gix-index',
     'gix-discover',
@@ -173,6 +172,7 @@ const gpuiUpstreamFiles = new Set(
     'image-webp',
     'termina',
     'nsh',
+    'playwright',
   ].flatMap((project) =>
     Object.keys(
       JSON.parse(

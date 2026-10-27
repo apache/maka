@@ -40,7 +40,10 @@ async fn publish(fixture: &Fixture, id: &str, mut request: Value) -> Interaction
         .await
         .unwrap()
         .unwrap();
-    if request["kind"] == "client_capability" {
+    if matches!(
+        request["kind"].as_str(),
+        Some("client_capability" | "computer_app")
+    ) {
         let configuration = &projection.session.configuration;
         let binding = projection
             .session
@@ -86,6 +89,28 @@ fn computer_request() -> Value {
         "kind":"client_capability",
         "toolUseId":"original_computer_call",
         "target":maka_workspace_api::computer::target()
+    })
+}
+
+fn computer_app_request(operation: &str, allow_always: bool) -> Value {
+    let mut target = maka_workspace_api::computer::target();
+    target.scope = maka_agent_facts::interaction::GrantScope::ComputerApp {
+        platform: maka_agent_facts::interaction::ComputerAppPlatform::Macos,
+        application_id: "org.example.ConsentFixture".into(),
+    };
+    json!({
+        "kind":"computer_app",
+        "toolUseId":"original_computer_app_call",
+        "nativeOperationId":operation,
+        "target":target,
+        "display":{
+            "name":"Trusted consent fixture",
+            "appPath":"/Volumes/Test/Consent Fixture.app",
+            "risk":if allow_always { json!("low") } else { Value::Null },
+            "warning":null
+        },
+        "allowAlways":allow_always,
+        "authorityRevision":0
     })
 }
 
@@ -295,6 +320,335 @@ async fn computer_consent_keeps_the_original_target_boundary_and_single_click_re
         bindings.close().await.unwrap();
         fixture.finish().await;
     }).await.expect("real Host computer consent workflow timed out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn app_consent_ui_shows_trusted_identity_and_commits_only_offered_choices() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let mut fixture = Fixture::open().await;
+        let client = fixture.client().await;
+        support::mutate(&client, "send", json!({"sessionId":fixture.session,"message":"Keep the app consent fixture Run active","model":fixture.selection})).await;
+        let original = fixture.next_request().await;
+        let pending = publish(&fixture, "app_consent_unknown", computer_app_request("native_unknown", false)).await;
+        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+        wait_request(&mut view, "Application access request", "Trusted consent fixture").await;
+        wait_view(&mut view, |screen| screen.contains("/Volumes/Test/Consent Fixture.app") && screen.contains("org.example.ConsentFixture")).await;
+        tab_to_label(&mut view, "Request content").await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        wait_view(&mut view, |screen| screen.contains("Application risk is unknown.")).await;
+        for choice in ["Allow once", "Allow for this session", "Deny", "Cancel request"] {
+            wait_enabled_node(&mut view, choice).await;
+        }
+        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Always allow"));
+        let rejected = support::mutate(&client, "respond", json!({
+            "sessionId":fixture.session,"requestId":pending.request_id,
+            "answer":{"kind":"computer_app","decision":"always"}
+        })).await;
+        assert_eq!(rejected, json!({"kind":"rejected","reason":"invalid_answer"}));
+        assert!(fixture.store.session(&fixture.session).await.unwrap().interaction(&pending.request_id).await.unwrap().unwrap().outcome.is_none());
+        support::click_button(&mut view, "Deny").await;
+        wait_view(&mut view, |screen| screen.contains("Application access denied")).await;
+        assert!(matches!(fixture.store.session(&fixture.session).await.unwrap().interaction(&pending.request_id).await.unwrap().unwrap().outcome,
+            Some(InteractionOutcome::ComputerAppDecision { decision:maka_agent_facts::interaction::ComputerAppDecision::Deny, .. })));
+
+        for (id, button, expected) in [
+            ("app_consent_once", "Allow once", "once"),
+            ("app_consent_session", "Allow for this session", "session"),
+            ("app_consent_always", "Always allow", "always"),
+            ("app_consent_cancel", "Cancel request", "cancel"),
+        ] {
+            let record = publish(&fixture, id, computer_app_request(id, true)).await;
+            wait_request(&mut view, "Application access request", "Trusted consent fixture").await;
+            wait_enabled_node(&mut view, "Always allow").await;
+            support::click_button(&mut view, button).await;
+            wait_view(&mut view, |screen| screen.contains(if expected == "cancel" { "Request closed" } else { "Application access allowed" })).await;
+            let canonical = fixture.store.session(&fixture.session).await.unwrap().interaction(&record.request_id).await.unwrap().unwrap();
+            let outcome = serde_json::to_value(canonical.outcome.unwrap()).unwrap();
+            if expected == "cancel" {
+                assert_eq!(outcome["kind"], "closure");
+                assert_eq!(outcome["reason"], "producer_cancelled");
+            } else {
+                assert_eq!(outcome["kind"], "computer_app_decision");
+                assert_eq!(outcome["decision"], expected);
+            }
+            assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1, "consent must not issue another model request");
+        }
+        original.finish().await;
+        fixture.idle(&client, &fixture.session).await;
+        bindings.close().await.unwrap();
+        fixture.finish().await;
+    }).await.expect("real Host app consent UI workflow timed out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn computer_audio_consent_is_an_independent_session_capability() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let mut fixture = Fixture::open().await;
+        let client = fixture.client().await;
+        support::mutate(&client, "send", json!({"sessionId":fixture.session,"message":"Keep the audio consent fixture Run active","model":fixture.selection})).await;
+        let original = fixture.next_request().await;
+        let target = maka_workspace_api::computer::audio_target();
+        let pending = publish(&fixture, "computer_audio_consent", json!({
+            "kind":"client_capability","toolUseId":"original_output_audio_call","target":target
+        })).await;
+        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+        wait_request(&mut view, "Capability request", "Computer output audio for this session").await;
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node| node.label.contains("record audio played by the computer"))).await;
+        wait_enabled_node(&mut view, "Allow").await;
+        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Always allow"));
+        support::click_button(&mut view, "Allow").await;
+        wait_view(&mut view, |screen| screen.contains("Capability allowed")).await;
+        let store = fixture.store.session(&fixture.session).await.unwrap();
+        assert!(matches!(store.interaction(&pending.request_id).await.unwrap().unwrap().outcome,
+            Some(InteractionOutcome::ClientCapabilityDecision { decision:Decision::Allow, .. })));
+        let audio = store.client_capability_grant(&fixture.session, &target).await.unwrap().unwrap();
+        assert_eq!(audio.target, target);
+        assert_eq!(audio.basis.unwrap().boundary_revision, 0);
+        assert!(store.client_capability_grant(&fixture.session, &maka_workspace_api::computer::target()).await.unwrap().is_none());
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+        original.finish().await;
+        fixture.idle(&client, &fixture.session).await;
+        bindings.close().await.unwrap();
+        fixture.finish().await;
+    }).await.expect("real Host computer output audio consent workflow timed out");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn app_stop_controls_remain_independent_while_another_original_receipt_is_held() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        use maka_agent_facts::event::{
+            EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+        };
+        use maka_agent_facts::interaction::{
+            ComputerAppDecision, ComputerAppDisplay, ComputerAppPlatform, GrantScope,
+            InteractionRequest,
+        };
+        let fixture = Fixture::open().await;
+        let store = fixture.store.session(&fixture.session).await.unwrap();
+        let configuration = store
+            .get::<StoredSessionConfiguration>()
+            .await
+            .unwrap()
+            .unwrap();
+        let stamp = configuration.workspace_binding.as_ref().unwrap().stamp();
+        let basis = maka_agent_facts::workspace::PermissionBasis {
+            boundary_revision: configuration
+                .configuration
+                .workspace
+                .boundary_revision(configuration.configuration.boundary_revision, stamp)
+                .unwrap(),
+            binding: stamp,
+        };
+        let invocation = Invocation {
+            session_id: fixture.session.clone(),
+            turn_id: "ui-stop-turn".into(),
+            run_id: "ui-stop-run".into(),
+            invocation_id: "ui-stop-invocation".into(),
+        };
+        store
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    invocation.clone(),
+                    Fact::InvocationOpened {
+                        configuration: None,
+                        input: InvocationInput::Message {
+                            source_messages: Vec::new(),
+                            content: "Host app Stop UI fixture".into(),
+                            request_fingerprint: None,
+                        },
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let broad = maka_workspace_api::computer::target();
+        let consent = |id: &str, request| InteractionRecord {
+            session_id: fixture.session.clone(),
+            turn_id: invocation.turn_id.clone(),
+            run_id: invocation.run_id.clone(),
+            request_id: id.into(),
+            created_at: 1,
+            request,
+            outcome: None,
+        };
+        store
+            .establish_run_interaction(
+                &invocation,
+                &consent(
+                    "ui-stop-broad",
+                    InteractionRequest::ClientCapability {
+                        tool_use_id: "ui-stop-tool".into(),
+                        target: broad.clone(),
+                        basis: Some(basis),
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+        store
+            .commit_interaction_outcome(
+                "ui-stop-broad",
+                InteractionOutcome::ClientCapabilityDecision {
+                    decision: Decision::Allow,
+                    committed_at: 2,
+                },
+            )
+            .await
+            .unwrap();
+        for (id, name) in [
+            ("first", "First controlled app"),
+            ("second", "Second controlled app"),
+        ] {
+            let mut target = broad.clone();
+            target.scope = GrantScope::ComputerApp {
+                platform: ComputerAppPlatform::Macos,
+                application_id: format!("org.example.{id}"),
+            };
+            let display = ComputerAppDisplay {
+                name: name.into(),
+                app_path: format!("/{id}.app"),
+                risk: None,
+                warning: None,
+            };
+            store
+                .establish_run_interaction(
+                    &invocation,
+                    &consent(
+                        id,
+                        InteractionRequest::ComputerApp {
+                            tool_use_id: "ui-stop-tool".into(),
+                            native_operation_id: id.into(),
+                            target: target.clone(),
+                            basis,
+                            display: display.clone(),
+                            allow_always: false,
+                            authority_revision: 0,
+                        },
+                    ),
+                )
+                .await
+                .unwrap();
+            store
+                .commit_interaction_outcome(
+                    id,
+                    InteractionOutcome::ComputerAppDecision {
+                        decision: ComputerAppDecision::Session,
+                        committed_at: 2,
+                    },
+                )
+                .await
+                .unwrap();
+            let event = EventWrite::plain(RuntimeEvent::new(
+                invocation.clone(),
+                Fact::ToolDispatched {
+                    presentation: None,
+                    title: None,
+                    operation_id: id.into(),
+                    call: maka_agent_facts::tool_call::ToolCallIdentity::standalone(format!(
+                        "call-{id}"
+                    )),
+                    name: "native-fixture".into(),
+                    input: json!({}),
+                },
+            ))
+            .unwrap();
+            store
+                .append_computer_app_dispatch(
+                    &event,
+                    std::slice::from_ref(&broad),
+                    &target,
+                    &display,
+                    &basis,
+                )
+                .await
+                .unwrap();
+            let (settled, _) = EventWrite::tool_success(
+                format!("settled-{id}"),
+                std::time::SystemTime::now(),
+                invocation.clone(),
+                id.into(),
+                maka_agent_facts::tool_output::ToolOutput::Text(
+                    "Completed fixture without native input".into(),
+                )
+                .into(),
+            )
+            .unwrap();
+            store.append(&settled).await.unwrap();
+        }
+        let gate = ReplyGate::stop_computer_app(fixture.directory.path(), fixture.address.clone());
+        let client = fixture.client_at(&gate.address).await;
+        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+        wait_enabled_node(&mut view, "Stop access to First controlled app").await;
+        wait_enabled_node(&mut view, "Stop access to Second controlled app").await;
+        gate.arm();
+        support::click_button(&mut view, "Stop access to First controlled app").await;
+        await_response_gate(&mut view, &gate).await;
+        wait_view_state(&mut view, |view, _| {
+            view.accessibility_snapshot().iter().any(|node| {
+                node.label == "Stop access to First controlled app" && node.state.disabled
+            })
+        })
+        .await;
+        let originals = client.pending_controls().await.unwrap();
+        let first = originals
+            .iter()
+            .find(|operation| {
+                operation.method == "stopComputerApp"
+                    && operation.correlation["operationId"] == "first"
+            })
+            .expect("original app Stop receipt missing");
+        assert_eq!(
+            first.correlation,
+            json!({"kind":"agent-control","operationId":"first"})
+        );
+        wait_enabled_node(&mut view, "Stop access to Second controlled app").await;
+        tab_to_label(&mut view, "Computer application access").await;
+        view.handle_event(Event::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)));
+        support::click_button(&mut view, "Stop access to Second controlled app").await;
+        wait_view_state(&mut view, |view, _| {
+            view.accessibility_snapshot().iter().any(|node| {
+                node.label == "Stop access to Second controlled app" && node.state.disabled
+            })
+        })
+        .await;
+        let stopped: std::collections::BTreeMap<_, _> = store
+            .computer_apps(&fixture.session)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(activity, stopped)| (activity.operation_id, stopped))
+            .collect();
+        assert_eq!(
+            stopped,
+            std::collections::BTreeMap::from([
+                ("first".to_owned(), true),
+                ("second".to_owned(), true)
+            ])
+        );
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+        gate.release();
+        store
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    invocation,
+                    Fact::InvocationEnded {
+                        outcome: InvocationOutcome::Completed,
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        wait_view(&mut view, |screen| {
+            !screen.contains("Computer access this turn")
+        })
+        .await;
+        bindings.close().await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .expect("real Host app Stop controls workflow timed out");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

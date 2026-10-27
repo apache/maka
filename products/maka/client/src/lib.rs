@@ -47,13 +47,14 @@ use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, String>;
 
-const CONTROL_METHODS: [&str; 11] = [
+const CONTROL_METHODS: [&str; 12] = [
     "create",
     "trustProjectMcp",
     "selectBackend",
     "compact",
     "markRead",
     "stop",
+    "stopComputerApp",
     "respond",
     "editQueue",
     "metadata",
@@ -92,6 +93,7 @@ fn control_correlation(method: &str, input: &Value) -> Result<Value> {
     let key = match method {
         "stop" => Some("invocationId"),
         "respond" => Some("requestId"),
+        "stopComputerApp" => Some("operationId"),
         _ => None,
     };
     if let Some(key) = key {
@@ -99,7 +101,11 @@ fn control_correlation(method: &str, input: &Value) -> Result<Value> {
             .get(key)
             .and_then(Value::as_str)
             .filter(|target| !target.is_empty())
-            .ok_or("agent control requires a valid invocationId or requestId")?;
+            .ok_or(if key == "operationId" {
+                "agent control requires a valid operationId"
+            } else {
+                "agent control requires a valid invocationId or requestId"
+            })?;
         correlation[key] = Value::String(target.to_owned());
     }
     if matches!(method, "metadata" | "changeSession" | "fork") {

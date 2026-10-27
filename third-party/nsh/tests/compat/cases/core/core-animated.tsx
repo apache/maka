@@ -42,7 +42,7 @@ function App() {
       <Text>
         Created: {custom.duration} {custom.create?.type} {custom.create?.property}
       </Text>
-      <View testID="faded" style={{ width: 40, height: 40, opacity, transform: [{ translateX: mapped }] }} />
+      <View testID="faded" style={{ width: 40, height: 40, opacity, translate: [mapped, 0] }} />
       <View
         testID="grow"
         onPress={() => {

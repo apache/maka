@@ -57,7 +57,8 @@ async fn fenced_bootstrap_and_bounded_catchup_survive_coalescing_and_reopen() {
         maka_event_log::observation::ObservationVersion {
             metadata: 1,
             queue: 0,
-            event: 0
+            event: 0,
+            root_control_revision: 0,
         }
     );
     let first = Invocation {

@@ -496,6 +496,8 @@ export interface CaretEvent {
 export interface PasteEvent {
   /** The plain text, `""` when there was none. */
   text: string;
+  /** The same content as HTML (`text/html`), with its formatting: what a browser, an office suite or a rich text editor copied; `""` when there was none. */
+  html: string;
   /** Files with their bytes: images (a screenshot, an image copied from a page or an app), as `File`s an app can upload. */
   files: File[];
   /** `file:` URLs of local files copied in a file manager (as `onFileDrop`'s). */

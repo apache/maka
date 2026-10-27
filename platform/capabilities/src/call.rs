@@ -179,6 +179,24 @@ impl Scope {
         Ok(child)
     }
 
+    /// Transfer a host-owned effect to its actual execution lifetime. The caller
+    /// must supply custody recovered from the issuing Root, never wire identity.
+    /// Finishing the observation request cannot cancel this accepted effect.
+    pub fn for_execution(
+        &self,
+        execution: Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        cancellation: CancellationToken,
+    ) -> Result<Self, ToolError> {
+        let mut child = Self::new(
+            self.source.clone(),
+            self.identity.clone(),
+            self.evidence.clone(),
+            cancellation,
+        )?;
+        child.execution = Some(execution);
+        Ok(child)
+    }
+
     pub async fn finish(&self) -> Result<(), ToolError> {
         self.cancellation.cancel();
         self.resources.finish().await

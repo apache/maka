@@ -24,7 +24,7 @@ export function TitleBar(props: { leading?: JSX.Element }) {
       >
         <Logo size={20} />
         {props.leading}
-        <Text numberOfLines={1} style={{ flex: 1, fontSize: 13, fontWeight: "600", color: colors.text }}>Gallery</Text>
+        <Text style={{ numberOfLines: 1, flex: 1, fontSize: 13, fontWeight: "600", color: colors.text }}>Gallery</Text>
         <Text style={{ fontSize: 11, color: colors.muted }}>NSH</Text>
       </View>
     </If>

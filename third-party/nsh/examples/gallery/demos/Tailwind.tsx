@@ -40,7 +40,7 @@ function Card(props: { icon: IconName; title: string; subtitle: string; children
         </View>
         <View class="flex-1 gap-0.5">
           <Text class="text-[17px] font-semibold text-zinc-900 dark:text-zinc-100">{props.title}</Text>
-          <Text numberOfLines={2} class="font-mono text-xs leading-4 text-zinc-500 dark:text-zinc-400">
+          <Text style={{ numberOfLines: 2 }} class="font-mono text-xs leading-4 text-zinc-500 dark:text-zinc-400">
             {props.subtitle}
           </Text>
         </View>
@@ -99,7 +99,7 @@ function Stats() {
             <View class="gap-1 rounded-[10px] border border-line bg-linear-to-b from-white to-[#fafaf8] p-3 inset-shadow-[0_1px_0_#ffffff] dark:from-[#1d1e22] dark:to-[#17181b] dark:inset-shadow-[0_1px_0_rgba(255,255,255,0.05)]">
               <Text class="text-xs text-zinc-500">{s().label}</Text>
               <Text class="text-[26px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 tabular-nums">{s().value}</Text>
-              <Text numberOfLines={1} class={`text-xs tabular-nums ${s().tone}`}>
+              <Text style={{ numberOfLines: 1 }} class={`text-xs tabular-nums ${s().tone}`}>
                 {s().note}
               </Text>
             </View>

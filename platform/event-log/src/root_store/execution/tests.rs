@@ -33,6 +33,189 @@ fn namespaces(path: &std::path::Path) -> root::RootNamespaces {
     }
 }
 
+fn invocation() -> Invocation {
+    Invocation {
+        session_id: "session".into(),
+        turn_id: "turn".into(),
+        run_id: "run".into(),
+        invocation_id: "invocation".into(),
+    }
+}
+
+#[tokio::test]
+async fn invocation_effect_retains_run_cancellation_and_settlement_after_observer_finishes() {
+    use maka_capabilities::call::{Identity, Issuer};
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    let prepared = session.execution_scope(None).await.unwrap();
+    let selected = prepared.store();
+    let stop = CancellationToken::new();
+    let (parent, effects) = prepared
+        .accept_invocation(invocation(), stop.clone())
+        .unwrap();
+    let custody = selected.execution_custody().unwrap();
+    let effect = root
+        .fork_invocation_effect(custody.as_ref(), &invocation())
+        .unwrap();
+    let issuer = Issuer::default();
+    let original = issuer
+        .issue_with_execution(
+            Identity::Agent {
+                invocation: invocation(),
+                operation_id: Some("observer".into()),
+            },
+            42u64,
+            CancellationToken::new(),
+            custody.clone(),
+        )
+        .unwrap();
+    let (effect, accepted) = effect.into_scope(&original).unwrap();
+    assert_eq!(issuer.evidence::<u64>(&accepted), Some(&42));
+    assert!(issuer.owns(&accepted));
+    original.finish().await.unwrap();
+    assert!(original.cancellation.is_cancelled());
+    assert!(!accepted.cancellation.is_cancelled());
+    let sibling = root
+        .fork_invocation_effect(custody.as_ref(), &invocation())
+        .unwrap();
+    let (sibling, sibling_scope) = sibling.into_scope(&original).unwrap();
+    let local_stop = effect.cancellation();
+    local_stop.cancel();
+    assert!(accepted.cancellation.is_cancelled());
+    assert!(effect.cancellation().is_cancelled());
+    assert!(!sibling_scope.cancellation.is_cancelled());
+    assert!(!stop.is_cancelled());
+    let mut foreign = invocation();
+    foreign.invocation_id = "another-invocation".into();
+    assert!(
+        root.fork_invocation_effect(custody.as_ref(), &foreign)
+            .is_err()
+    );
+    let mut drain = Box::pin(effects.settle());
+    assert!(poll!(&mut drain).is_pending());
+    assert!(
+        root.fork_invocation_effect(custody.as_ref(), &invocation())
+            .is_err()
+    );
+    // Sealing native journal admission leaves existing session-owned background
+    // resource admission unchanged.
+    let background = root
+        .fork_execution(custody.as_ref(), &invocation())
+        .unwrap();
+    stop.cancel();
+    assert!(accepted.cancellation.is_cancelled());
+    assert!(sibling_scope.cancellation.is_cancelled());
+    assert!(poll!(&mut drain).is_pending());
+    effect.finish(Ok(()));
+    sibling.finish(Ok(()));
+    drain.await.unwrap();
+    assert!(effects.is_idle());
+    background.finish();
+    parent.finish();
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn stopped_run_before_effect_scope_has_no_dispatch_or_unconfirmed_owner() {
+    use maka_capabilities::call::{Identity, Issuer};
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    let prepared = session.execution_scope(None).await.unwrap();
+    let selected = prepared.store();
+    let stop = CancellationToken::new();
+    let (parent, effects) = prepared
+        .accept_invocation(invocation(), stop.clone())
+        .unwrap();
+    let custody = selected.execution_custody().unwrap();
+    let original = Issuer::default()
+        .issue_with_execution(
+            Identity::Agent {
+                invocation: invocation(),
+                operation_id: Some("observer".into()),
+            },
+            (),
+            CancellationToken::new(),
+            custody.clone(),
+        )
+        .unwrap();
+    let effect = root
+        .fork_invocation_effect(custody.as_ref(), &invocation())
+        .unwrap();
+    stop.cancel();
+    assert!(matches!(
+        effect.into_scope(&original),
+        Err(ToolError::Failed(_))
+    ));
+    effects.settle().await.unwrap();
+    assert!(effects.is_idle());
+    assert!(session.get::<Value>().await.unwrap().is_some());
+    let journal = selected
+        .scoped_prefix(
+            maka_agent_facts::event::LogScope::Session {
+                id: "session".into(),
+            },
+            10,
+            4096,
+        )
+        .await
+        .unwrap();
+    assert!(journal.events.is_empty());
+    parent.finish();
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn lost_invocation_effect_is_observable_after_every_other_original_owner_settles() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    let prepared = session.execution_scope(None).await.unwrap();
+    let selected = prepared.store();
+    let stop = CancellationToken::new();
+    let (parent, effects) = prepared
+        .accept_invocation(invocation(), stop.clone())
+        .unwrap();
+    let custody = selected.execution_custody().unwrap();
+    let lost = root
+        .fork_invocation_effect(custody.as_ref(), &invocation())
+        .unwrap();
+    let live = root
+        .fork_invocation_effect(custody.as_ref(), &invocation())
+        .unwrap();
+    drop(lost);
+    assert!(stop.is_cancelled());
+    assert!(matches!(
+        session.get::<Value>().await,
+        Err(StoreError::ConnectionClosed)
+    ));
+    let mut drain = Box::pin(effects.settle());
+    assert!(poll!(&mut drain).is_pending());
+    live.finish(Ok(()));
+    let error = drain.await.unwrap_err();
+    assert!(
+        matches!(error, ToolError::CleanupUnconfirmed(message) if message.contains("owner disappeared"))
+    );
+    assert!(!effects.is_idle());
+    parent.retain_unconfirmed();
+    assert!(root.shutdown().await.is_err());
+    // Uncertain original authority remains quarantined, as with every other
+    // accepted execution whose owner disappears.
+    let _ = directory.keep();
+}
+
 #[tokio::test]
 async fn prepared_scope_can_cancel_and_shutdown_drains_accepted_work_before_sql() {
     let directory = tempfile::tempdir().unwrap();

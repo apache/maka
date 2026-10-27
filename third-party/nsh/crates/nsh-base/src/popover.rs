@@ -86,9 +86,7 @@ pub enum PopoverEvent {
 pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement {
     let open = OpenState::new(props.open, props.default_open);
     let change = move |next: bool, reason: OpenChangeReason| {
-        if open.request(next) {
-            cx.emit(PopoverEvent::OpenChange(next, reason));
-        }
+        open.request(next, || cx.emit(PopoverEvent::OpenChange(next, reason)));
     };
     // A press outside or Escape: an attempt, which closes it when allowed.
     let cancel = move |reason: OpenChangeReason, allowed: bool| {

@@ -386,11 +386,11 @@ import { pixelRatio } from "nsh";
 
 ## Right to left
 
-When the device language is written right to left (Arabic, Hebrew, Persian, ...), NSH lays the app out right to left: rows run from the right, `left` and `right` style properties swap, text aligns to the right, and native widgets mirror. The layout direction follows the user's language by itself. A view's `direction` style (`"ltr"`, `"rtl"` or `"inherit"`; `.direction(LayoutDirection::..)` in Rust) sets the direction of its subtree; on the root view it sets the app's.
+When the device language is written right to left (Arabic, Hebrew, Persian, ...), NSH lays the app out right to left: rows run from the right, the logical style properties take their right-to-left sides, text aligns to the right, and native widgets mirror. The layout direction follows the user's language by itself. A view's `direction` style (`"ltr"`, `"rtl"` or `"inherit"`; `.direction(LayoutDirection::..)` in Rust) sets the direction of its subtree; on the root view it sets the app's.
 
 Changes apply at once, without restarting the app; the demo on this page toggles the `direction` style.
 
-Write layouts that work both ways with the logical properties: in Rust `ms` / `me` and `ps` / `pe` (Tailwind's names), in TSX `marginStart` / `marginEnd`, `paddingStart` / `paddingEnd`, `start` / `end`, `borderTopStartRadius` and so on, which mean left and right in left-to-right layouts and the reverse right to left. `left` and `right` themselves also swap. The `direction` style (`"inherit"`, `"ltr"`, `"rtl"`) overrides the direction for a subtree, for example to keep a phone number or a media player's controls left to right. The `rtl:` and `ltr:` Tailwind variants apply per direction.
+Write layouts that work both ways with the logical properties: in Rust `ms` / `me` and `ps` / `pe` (Tailwind's names), in TSX `marginStart` / `marginEnd`, `paddingStart` / `paddingEnd`, `start` / `end`, `borderTopStartRadius`, `textAlign: "start"` and so on, which mean left and right in left-to-right layouts and the reverse right to left. `left` and `right` (`marginLeft`, `paddingRight`, `left`, `textAlign: "left"`, ...) keep their sides in both, as in CSS. The `direction` style (`"inherit"`, `"ltr"`, `"rtl"`) overrides the direction for a subtree, for example to keep a phone number or a media player's controls left to right. The `rtl:` and `ltr:` Tailwind variants apply per direction.
 
 Horizontal scroll views and lists start at the right end in right-to-left layouts. On Android, the host app must declare `android:supportsRtl="true"` in its manifest for native widgets to mirror.
 

@@ -28,7 +28,7 @@ function Field(
   });
   const box = () => (props.multiline ? { minHeight: 46, paddingTop: 13, paddingBottom: 13 } : { height: 46 });
   return (
-    <View style={{ gap: 6, transform: [{ translateX: shake }] }}>
+    <View style={{ gap: 6, translate: [shake, 0] }}>
       <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
         <Text style={{ flex: 1, fontSize: 13, fontWeight: "500", color: colors.muted }}>{own.label}</Text>
         <If when={own.api}>
@@ -66,11 +66,11 @@ function Field(
             own.onBlur?.();
           }}
           {...input}
-          style={[{ flex: 1, paddingHorizontal: 14, fontSize: 15, color: props.readonly ? colors.muted : colors.text, placeholderColor: colors.faint, selectionColor: colors.accent, ...box() }, ...(Array.isArray(own.style) ? own.style : [own.style])]}
+          style={[{ flex: 1, paddingHorizontal: 14, fontSize: 15, color: props.readonly ? colors.muted : colors.text, placeholderColor: colors.faint, caretColor: colors.accent, selectionColor: colors.accent, ...box() }, ...(Array.isArray(own.style) ? own.style : [own.style])]}
         />
         <View
-          pointerEvents="none"
           style={{
+            pointerEvents: "none",
             position: "absolute",
             top: -1,
             left: -1,
@@ -114,7 +114,7 @@ function LinkRow(props: { icon: IconName; title: string; note: string; first?: b
         <IconTile name={props.icon} size={34} />
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ fontSize: 15, fontWeight: "500", color: colors.text }}>{props.title}</Text>
-          <Text numberOfLines={1} style={{ fontSize: 12, color: colors.faint, fontFamily: mono }}>
+          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint, fontFamily: mono }}>
             {props.note}
           </Text>
         </View>
@@ -337,7 +337,7 @@ export function Form() {
               label="Custom colors"
               api="placeholderColor, selectionColor"
               placeholder="A blue placeholder, an amber selection"
-              style={{ placeholderColor: colors.info, selectionColor: colors.warn }}
+              style={{ placeholderColor: colors.info, caretColor: colors.warn, selectionColor: colors.warn }}
             />
             <View style={{ gap: 8 }}>
               <Field
@@ -515,6 +515,7 @@ function MessageBar() {
             returnKeyType="send"
             style={{
               placeholderColor: colors.faint,
+              caretColor: colors.accent,
               selectionColor: colors.accent,
               flex: 1,
               height: 44,

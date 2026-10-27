@@ -1,11 +1,48 @@
 # Styles, classes and effects
 
-- **CSS and Tailwind as in a browser**: CSS values (colors, lengths, gradients, filters, shadows, transforms,
-  alignment keywords, ...) and Tailwind utilities and variants mean exactly what they mean in a browser and in Tailwind
-  CSS (v4), whose generated CSS is the reference for each utility (the tests compare against it). What NSH cannot
-  support is unsupported (an unknown class, a rejected value with a warning), never given a different meaning. Inline
-  style objects keep React Native's defaults for unset keys (a column, `flexShrink: 0`, `alignContent: flex-start`
-  outside grids). Colors (`crates/nsh-core/src/css.rs`) are hex, `rgb()`, `hsl()`, `oklch()`, `oklab()`, names and
+- **Principles** (frozen with the first recorded release):
+  1. One set of properties, three ways to write it (Rust `Styled`, `style` keys, classes), one meaning; the names are
+     CSS's properties, but for the few a common form says more plainly ("Forms past CSS's").
+  2. Native first: defaults, units and value forms serve the platforms and performance, not compatibility with the
+     web (lengths are points, `"50%"` or `"auto"`, never `"30px"` in a style: classes take CSS's units, which depend on
+     the theme and the window).
+  3. A static value may be a CSS-like string, parsed once in Rust; a value that changes takes numbers and structured
+     forms (`translate: [x, y]`, a `transform` list, shadows' layers), which JS builds without strings and which take
+     animated values where the platforms animate them.
+  4. Each key takes the form most used and easiest to write, CSS's by default; where common use and CSS differ, the
+     common form wins ("Forms past CSS's" below). React Native is a reference for what is common, not an API to
+     match: no names or aliases for its sake. A Tailwind (v4) utility means what Tailwind's generated CSS does (the
+     tests compare against it). What NSH cannot support is unsupported (an unknown class, a rejected value with a
+     warning), never given another meaning. What the platforms do that CSS cannot say is an extension ("Extensions"
+     below), named apart from CSS's.
+  5. Frozen is the contract (keys, value forms, defaults); what a platform draws of it is its support, documented.
+  6. Below TSX, values are typed: Rust's `Styled` and Tailwind classes lower to typed values (a core type of their own
+     where one is needed, as `LineHeight`), never to strings the core parses again; only a TSX `style`'s values are
+     parsed from strings (in `nsh-js`'s decoding and `Style::set_key`).
+- **Forms past CSS's**, where the common form wins: a `lineHeight` number is points, as React Native's (CSS's is a
+  multiple of the font size, which strings say: `"1.5"`, `"150%"`, `"1.5em"`); both sides of an axis are
+  `marginHorizontal` / `marginVertical` / `paddingHorizontal` / `paddingVertical` (CSS's `margin-inline` / `-block`,
+  the same sides in NSH's horizontal text, by the names people read at once), and the sides by the direction are
+  `marginStart` / `marginEnd`, `paddingStart` / `paddingEnd`, `start` / `end`, `borderStartWidth` / `Color` and
+  `borderTopStartRadius` and its family (CSS's `margin-inline-start`, `inset-inline-start`, `border-start-start-radius`,
+  ..., shorter); lengths are numbers of points; unset
+  properties keep React Native's / Yoga's defaults ("CSS's meanings" below).
+- **Extensions**, the keys and classes NSH has that CSS / Tailwind do not: `placeholderColor` (`<Input>`'s
+  `InputStyle`), `selectionColor` (inputs and selectable texts), `tintColor` (`<Image>`; class `tint-*`),
+  `borderCurve` (`continuous` corners, not CSS's `corner-shape: squircle`, a different curve), `glassEffect` (Apple's
+  Liquid Glass on iOS 26 / macOS 26, the `backdropFilter` elsewhere), `writingDirection` (a text's base direction, from
+  its content by default as the platforms' text views do, beside `direction`, the layout's), `textAlignVertical` (where
+  text shorter than its `<Text>` box sits); value forms past CSS's:
+  `transform` lists, `translate` / `scale` pairs, shadows' layers (`{ x, y, blur, spread, color, inset }`),
+  `pointerEvents`' `box-none` / `box-only` (React Native's, for the view alone), `textOverflow`'s `ellipsis-start` /
+  `ellipsis-middle` (where a clamped text is cut), `textAlign`'s `auto` (React Native's: the text's natural side, by its
+  direction); variants past Tailwind's: `selected:` (`accessibilityState.selected`, `selectedStyle`), `ios:` /
+  `android:` / `web:` (the platform). A new one joins this list.
+- **CSS's meanings**: inline styles mean what classes mean: a style key is the CSS property of its name (or of the form
+  "Forms past CSS's" gives it). Every view, however it is styled, keeps
+  React Native's defaults for what nothing sets (a column while no display is set, `flexShrink: 0`,
+  `alignContent: flex-start` outside grids, minimum sizes of 0: Yoga's, which spare measuring every item's
+  min-content size; `min-width: auto` written out is CSS's automatic minimum). Colors (`crates/nsh-core/src/css.rs`) are hex, `rgb()`, `hsl()`, `oklch()`, `oklab()`, names and
   `color-mix()` of any of them (CSS Color 5: `in srgb`, `srgb-linear`, `xyz`, `oklab`, `oklch` or `hsl`, hue methods
   for the polar spaces, premultiplied alpha), packed to sRGB with clamped channels.
 - **Tailwind** (`class` / `classList` on every element): JS only passes the strings; the core resolves them (how, and
@@ -15,7 +52,9 @@
   Tailwind compares the bit sets of a candidate's variants (`group-*` by inner state, then name; breakpoints by unit
   name, then value, `max-*` widest first), so `dark:hover:` follows `dark:`. Display follows CSS: `flex` / `inline-flex` are rows unless a direction
   utility says otherwise, wherever it is in the string (`flex-col flex` is a column; the implied row is a
-  `Decl::Default`, applied before every rule), while views without them keep React Native's column; `block` /
+  `Decl::Default`, applied before every rule), and so are a style's `display: "flex"` (its `StyleDecl::Default`, which
+  `StylePatch::apply_defaults` applies before the classes) and the typed `.flex()`, while views that set no display
+  keep React Native's column; `block` /
   `flow-root` use Taffy's block layout, and so do `inline` / `inline-block`: a browser blockifies inline boxes in flex
   and grid containers, which every NSH parent but a block is (there is no inline formatting context). Variants: `dark:`, `sm:`…`2xl:` / `max-*:` / `min-[..]:`, `portrait:` /
   `landscape:`, `ios:` / `android:` / `web:`, `rtl:` / `ltr:`, `motion-safe:` / `motion-reduce:`, `active:` / `hover:` /
@@ -31,7 +70,7 @@
   states). `disabled` (any element) applies `disabled:` and drops
   the node's press listeners from what is mounted, so it shows no press feedback either. A part of a Rust component
   shows its control's `checked`, `indeterminate` and `disabled` to its own classes and state styles
-  (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`; `Prop::ProjectedStates`): a switch's thumb styled `checked:translate-x-4`, with no accessibility
+  (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`, and `project_focused` for the part the keys act on; `Prop::ProjectedStates`): a switch's thumb styled `checked:translate-x-4`, with no accessibility
   state or press change on the part, so screen readers hear the control alone. `dark:` follows the appearance
   shown: the app's own when it set one (`nsh.json` `"appearance"`, `setColorScheme`; `Core::set_appearance`), else the
   system's. The theme is Tailwind 4's
@@ -51,10 +90,12 @@
   tokens the app draws with change (`Core::set_tokens`, `set_host_tokens`; a host's keep the app's names they lack,
   `Tokens::over`), `Core::class_tokens_changed` drops the cached strings that name tokens and resolves
   their nodes (and the app's classes on Rust components) again; when the names change, every class. `nsh build` / `nsh dev` warn about unknown static classes in app code (`file:line:col:
-  unknown class '...'`, target `nsh::build`); the core logs each unknown class once at run time. Class-only settings
-  that are props in React Native (`line-clamp-*`, `truncate`, `whitespace-nowrap`, `pointer-events-*`, `object-*`,
-  `caret-*`) lose to explicit props; `placeholder:text-*` / `selection:bg-*` lose to the `placeholderColor` /
-  `selectionColor` style keys. Not supported, so unknown: `peer-*`, pseudo-elements, arbitrary CSS properties, and every
+  unknown class '...'`, target `nsh::build`); the core logs each unknown class once at run time. Settings
+  that are props in React Native are style keys here, as in CSS (`numberOfLines`, `textOverflow`, `userSelect`,
+  `pointerEvents`, `objectFit`; `line-clamp-*`, `truncate`, `text-ellipsis`, `select-*`, `pointer-events-*`,
+  `object-*`), and the inline style wins over their classes as over any; `whitespace-nowrap` is class-only. `caret-*`,
+  `placeholder:text-*` / `selection:bg-*` set the `caretColor`, `placeholderColor` / `selectionColor` style keys (the caret and the selection highlight are apart; UIKit tints both
+  with one color, the caret's when set). Not supported, so unknown: `peer-*`, pseudo-elements, arbitrary CSS properties, and every
   utility without a native meaning (`order-*`, `transform-3d`, `select-all`, `border-double`, intrinsic min/max constraints,
   `snap-*`, `scroll-*`, `overscroll-*`, `touch-*`, `isolate`) or without CSS in Tailwind (a negative
   where Tailwind has none: `-gap-4`, `-p-2`; fractions and `full` on padding, margin and gaps; non-integer `z-*`; bare
@@ -74,7 +115,8 @@
   origin's distance from the parent's center (`classes.rs` `mounted_view_style`; sent again when either frame changes;
   the child's animated steps move by those five, `perspective_steps`). iOS, macOS, the web and the desktops draw it
   exactly; Android decomposes the matrix into its view properties, a camera distance about the child's own pivot. The
-  inline `transform: [{ perspective }]` stays a step of the view's own transform (React Native).
+  `perspective()` function of a `transform` (and a `{ perspective }` step of its list) stays a step of the view's own
+  transform, as in CSS.
 - **Boxes** (kept, documented in the guide): `overflow-x-hidden` / `overflow-y-hidden` clip both axes and never scroll
   (views are no scroll containers; CSS's other axis would be scrollable); `invisible` hides the subtree (`setHidden`,
   `View.INVISIBLE`; CSS's `visible` child would show); `mix-blend-*` blends with everything drawn behind (no stacking
@@ -104,23 +146,35 @@
   `right` stickiness and a zoomable scroll view are not supported. The `sticky` class sets it, as Tailwind's does.
 - **Line heights**: unitless values inherit as multipliers. Percentages and `em` resolve against the element's
   font size before inheritance, so descendants inherit a computed length (`TextStyle::line_height_em`).
-- **`pointer-events-*` classes** inherit as CSS's `pointer-events` (the `pointerEvents` prop keeps React Native's
-  subtree meaning, and wins): a view that is `none` by its own class or the nearest one above mounts `box-none` when a
-  `pointer-events-auto` inside it is a target, `none` at the top of what it blocks, and nothing below that
-  (`classes.rs` `update_pointer_events`, run over a region when a class, an insert or a removal changes it; the node
+- **`pointerEvents`** (the style key and the `pointer-events-*` classes) inherits `none` as CSS's `pointer-events`;
+  `box-none` and `box-only`, React Native's, apply to the view alone (the views in it inherit `auto`): a view that is
+  `none` by its own value or the nearest one above mounts `box-none` when a view inside it that sets another value is a
+  target, `none` at the top of what it blocks, and nothing below that (`classes.rs` `update_pointer_events`, run over
+  a region when a style or a class, an insert or a removal changes it; the node
   keeps what it mounts, `class_pointer`, so only changes are sent; `pointer_none_classes` counts the views with
   `none`, so apps without one skip it).
 - **`currentColor`**: a border, an outline or a ring whose classes set a width and no color (`border`, `outline-2`,
   `ring`; preflight's `border: 0 solid`) is drawn in the node's text color: its inline style's, its classes', else the one
   it inherits, else black (`CurrentColor`, `Decl::CurrentColor`; such classes depend on `deps::CURRENT_COLOR`). Each node
   keeps the color it inherits (`inherited_color`): an insert compares it with its new parent's, and a change of a node's
-  color passes down to the descendants that set none (`Core::inherit_color`), restyling those that read it. Inline
-  styles keep React Native's black.
-- **Right to left**, classes are physical as in a browser: `pl-*`, `ml-*`, `left-*`, `border-l*`, `rounded-l*` /
-  `-tl` ..., `text-left` / `text-right` keep their side, while style keys keep React Native's swap. The core swaps every
-  left / right property of a node right to left (`apply_direction`), so a class names the other side there
-  (`utilities::directed`, applied with the node's resolved direction; such classes depend on `deps::RTL`), and the
-  swap puts it back. `text-end` is React Native's `right`, which the swap makes the end.
+  color passes down to the descendants that set none (`Core::inherit_color`), restyling those that read it. A style
+  that sets a border or an outline width and not its color does the same (`StyleDecl::CurrentColor`, applied before
+  the classes by `StylePatch::apply_defaults`; such a node is styled as one with classes, and again when its inherited
+  color changes). So does a style's `boxShadow` / `textShadow` layer that names no color (`StyleDecl::CurrentColor(BoxShadow)`, the layers in `Pending`, filled in by `Style::apply_current_color` once the node's text color is known),
+  and a `filter`'s `drop-shadow()` without a color (CSS's default). `currentColor` written out takes the text color too,
+  in a style or an arbitrary class value (`bg-[currentColor]` is `bg-current`): a color property set to it last
+  (`Pending::current_colors`; `color: currentColor` is the inherited color), or a value that writes it inside (a
+  gradient's stop, a shadow's color, a `color-mix()`), checked when set with a stand-in color and parsed again with the
+  node's (`Pending::current_values`, `css::with_current_color`); a class with one depends on `deps::CURRENT_COLOR`, and
+  `ClassList::apply_with` fills them after the inline style and after the `!` rules. Where nothing fills it in
+  (`tintColor`, a `color` mixing it, Tailwind's arbitrary shadows) it is rejected, never drawn black.
+- **Right to left**, classes and style keys are physical as in a browser: `pl-*`, `ml-*`, `left-*`, `border-l*`,
+  `rounded-l*` / `-tl` ..., `text-left` / `text-right` and `paddingLeft`, `left`, `borderTopLeftRadius`,
+  `textAlign: "left"` ... keep their side. The logical ones take the side the direction gives them: the classes `ps-*`,
+  `ms-*`, `start-*`, `border-s*`, `rounded-s*`, `text-start` / `text-end` and the start / end style keys
+  (`marginStart`, `paddingEnd`, `start`, `borderStartWidth` / `Color`, `borderTopStartRadius`, ...; `textAlign: "start"` /
+  `"end"`), which the core places with the node's resolved direction (`apply_direction`, from `Logical`; a direction
+  change restyles the nodes that have them).
 - **SVG paint** (`fill`, `stroke`, `strokeWidth`, `strokeDasharray`; Tailwind's `fill-*`, `stroke-<color>`,
   `stroke-<number>`): CSS's properties of SVG shapes, which CSS lets any element set and inherits, so they mean what
   they mean in a browser: a color, `none` or `currentColor` (the element's text color), a width that is a length, and
@@ -135,7 +189,7 @@
   the text's own, else the nearest view's that says; `select-auto` says none, so it takes the view's). Inset padding / margin (set by Rust
   components with `.inset_padding(..)` / `.inset_margin(..)`) and `env()` terms ("Environment variables") are added to the resolved padding / margin, so classes and
   styles keep their own.
-- **Effects** (styles and classes; `effects.rs`): `boxShadow` (CSS syntax, several, `inset`; also `shadow-*` / `ring-*`),
+- **Effects** (styles and classes; `effects.rs`): `boxShadow` (CSS syntax, several, `inset`; also `shadow-*` / `ring-*`; a style also takes its layers, `[{ x, y, blur, spread, color, inset }]`, which `nsh-js`'s `shadow_list` writes as the same CSS, so both forms mean one thing),
   `backgroundImage` (linear / radial / conic gradients and their `repeating-` forms,
   drawn over `backgroundColor` as in CSS; stops at percentages, at lengths along linear and radial gradients
   (a `DefiniteLength::Absolute` position: `Gradient::resolve_stops` places them against `Gradient::line_length` of the box when it is
@@ -154,7 +208,7 @@
   matrix), `backdropFilter` (blur; iOS chooses its system material through the
   `ios={{ backdropMaterial }}` prop: `ultraThin` by default, then `thin`, `regular`, `thick`, `chrome`;
   the radius approximates strength as a fraction of the material, rather than a Gaussian radius), `glassEffect`
-  (Apple's Liquid Glass, drawn in the `backdropFilter`'s place on iOS 26 and later and nowhere else, so give a glass
+  (Apple's Liquid Glass, drawn in the `backdropFilter`'s place on iOS 26 and macOS 26 and later (`UIGlassEffect`, `NSGlassEffectView`, both looked up at run time) and nowhere else, so give a glass
   view a blur to fall back to), `maskImage` (a gradient whose alpha decides how much of the view is drawn, its backdrop
   filter included; iOS and web, the topmost layer of several), `mixBlendMode`, `outline*`, `visibility`, `cursor`, `transition*` (CSS: property groups,
   duration, delay, easing) and `animation*` (Tailwind's `spin` / `ping` / `pulse` / `bounce`), `display: grid` with
@@ -194,10 +248,15 @@
   (`continuous`: corners easing into the edges, Figma's 60% corner smoothing, shrinking to circular where the box is too
   small, so pills stay pills; the outline geometry is `nsh_core::shape::rounded_rect`, ported to `Decor.java`; iOS layers that
   draw their own corners use `cornerCurve`), `overflow`, `opacity`,
-  `transform` (translate / scale / rotate / rotateX / rotateY / skew / perspective, applied right to left like CSS; Android has no
-  skew), `zIndex` (stable order of the native views), `shadowColor` / `shadowOffset` / `shadowOpacity` / `shadowRadius` (RN
-  defaults: offset `(0, -3)`, radius 3, opacity 0), `tintColor` (images), `objectPosition` (images: where the fitted image sits, CSS's `object-position`; `images.md`), `android={{ elevation }}` (a prop, not a style: Android's material shadow, with
-  `shadowColor` from API 28), `transformOrigin` (keywords / percentages / lengths; iOS conjugates the matrix around it,
+  the transform properties as CSS composes them (`Style::set_transform`: `translate`, `rotate`, `scale`, then
+  `transform`, CSS's string of `translate()` / `scale()` / `rotate()` / `rotateX()` / `rotateY()` / `skew()` /
+  `perspective()` functions (`transform::parse_css`) or a list of steps whose amounts may be animated values, which
+  CSS's string cannot hold (the bridge's `decode_transform_list`); last the steps Rust components bind). Each is a property of its
+  own, in classes too (`translate-*`, `rotate-*`, `scale-*` are `translate`, `rotate`, `scale`; `rotate-x-*`, `skew-*`
+  the `transform`): a style's `scale` replaces a class's scale and leaves its rotation. The list keeps how many steps
+  each property holds (`Pending::transform_counts`), so setting one moves the animated bindings of those after it.
+  Applied right to left like CSS; Android has no skew, `zIndex` (stable order of the native views), `boxShadow`
+  (CSS's, the one shadow of styles, classes and typed styles alike; `effects.rs`), `tintColor` (images), `objectPosition` (images: where the fitted image sits, CSS's `object-position`; `images.md`), `android={{ elevation }}` (a prop, not a style: Android's material shadow), `transformOrigin` (keywords / percentages / lengths; iOS conjugates the matrix around it,
   Android sets the pivot), `backfaceVisibility` (iOS `doubleSided`; Android hides the view while its rotations turn it away). `style` may be an array of styles merged left to right
   (falsy entries skipped), decoded in Rust. In one style object (an array is flattened into one, as React Native does) a
   longhand wins over its shorthand whatever the key order (`StylePatch::set`, `StyleKey::longhands`: border widths and
@@ -208,7 +267,8 @@
   (`apply_direction`). Between layers (classes, then the inline style; a Rust component's own style, then the app's)
   order still decides, and classes keep "later wins". `outlineStyle: "none"` hides the outline whatever the width, and
   the `animation*` timing keys apply with or before `animationName` (`Style::pending` keeps them); `transition*` keys
-  already combine in any order (`transitionProperty` defaults to `all`). Text adds `textShadowColor` / `textShadowOffset` / `textShadowRadius`,
+  already combine in any order (`transitionProperty` defaults to `all`). Text adds `textShadow` (CSS's `text-shadow`; several layers draw as the widest, as
+  `text-shadow-*` do),
   `fontVariant` (OpenType `smcp` / `onum` / `lnum` / `tnum` / `pnum`: CoreText feature settings, `Paint.setFontFeatureSettings`)
   and `writingDirection`.
   On Apple everything is drawn by Core Animation, escalating only as needed (`crates/nsh-platform-ios/src/decor.rs`

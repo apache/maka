@@ -269,11 +269,6 @@ pub(crate) fn css_color(c: Color) -> String {
     }
 }
 
-fn with_alpha(c: Color, opacity: f32) -> Color {
-    let a = ((c.0 & 0xff) as f32 * opacity).round().clamp(0.0, 255.0) as u32;
-    Color((c.0 & !0xff) | a)
-}
-
 /// `FooBar` (a `Debug` name) as `foo-bar`.
 fn kebab(name: &str) -> String {
     let mut out = String::new();
@@ -460,15 +455,6 @@ pub(crate) fn view_css(s: &ViewStyle) -> (String, Option<String>) {
         css.push_str("overflow:clip;");
     }
     let mut shadows = Vec::new();
-    if s.shadow.opacity > 0.0 && !s.shadow.color.is_transparent() {
-        shadows.push(format!(
-            "{}px {}px {}px {}",
-            s.shadow.offset_x.0,
-            s.shadow.offset_y.0,
-            s.shadow.radius.0,
-            css_color(with_alpha(s.shadow.color, s.shadow.opacity))
-        ));
-    }
     if let Some(effects) = &s.effects {
         for b in &effects.box_shadows {
             shadows.push(format!(
@@ -848,7 +834,7 @@ fn field_css(c: &InputConfig) -> String {
     if let Some(c) = c.placeholder_color {
         let _ = write!(css, "--ph:{};", css_color(c));
     }
-    if let Some(c) = c.selection_color {
+    if let Some(c) = c.caret_color {
         let _ = write!(css, "caret-color:{};", css_color(c));
     }
     css

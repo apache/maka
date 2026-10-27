@@ -516,7 +516,7 @@ impl Hosted for InputState {
             // On whole pixels, so that the caret stays sharp.
             let snap = |v: f32| (v * cx.scale).round() / cx.scale;
             let x = snap(ox + x);
-            let tint = config.selection_color.unwrap_or(color);
+            let tint = config.caret_color.unwrap_or(color);
             cx.fill_rect(
                 crate::geom::rect(x, oy + y, CARET_WIDTH, ch),
                 [0.0; 4],

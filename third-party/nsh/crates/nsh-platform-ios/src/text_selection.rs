@@ -1,4 +1,4 @@
-//! Range selection of `selectable` text. [`TextView`] draws CoreText lines
+//! Range selection of selectable text. [`TextView`] draws CoreText lines
 //! itself, so it adopts `UITextInput` (non-editable) and lets a
 //! `UITextInteraction` do the rest, as UIKit's own text views do: the long
 //! press that selects a word, the loupe, the handles, the highlight (in the

@@ -387,6 +387,11 @@ export interface ServiceMethods {
         defaultCompactionPrompt: string;
       };
     };
+    computerApps: {
+      mode: 'query';
+      input: Runtime.AgentSessionRead;
+      output: Runtime.AgentComputerApps;
+    };
     context: {
       mode: 'query';
       input: Runtime.AgentContextRead;
@@ -704,6 +709,14 @@ export interface ServiceMethods {
     stop: {
       mode: 'mutation';
       input: Runtime.AgentStop;
+      output: Runtime.AgentStopped;
+    };
+    stopComputerApp: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        operationId: string;
+      };
       output: Runtime.AgentStopped;
     };
     toolImage: {

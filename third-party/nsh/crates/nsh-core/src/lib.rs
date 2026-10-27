@@ -100,11 +100,11 @@ pub use crate::{
         PointerEvents, Ripple, ViewProps,
     },
     style::{
-        BorderStyle, Borders, Color, CornerRadii, DecorationStyle, EllipsizeMode, FontFamily,
-        FontVariant, ObjectPosition, PaintStyle, PatchValue, PositionAxis, Shadow, Style,
-        StyleDecl, StyleError, StyleKey, StylePatch, StyleValue, SvgPaint, TextAlign,
-        TextDecoration, TextShadow, TextStyle, TextTransform, TransformOrigin, VerticalAlign,
-        ViewStyle,
+        BorderStyle, Borders, Color, CornerRadii, DecorationStyle, EllipsizeMode, EnvVar,
+        FontFamily, FontVariant, GridTemplateValue, LineHeight, ObjectPosition, PaintStyle,
+        PositionAxis, PropertyValue, Style, StyleDecl, StyleError, StyleKey, StylePatch,
+        StyleValue, SvgPaint, TextAlign, TextDecoration, TextShadow, TextStyle, TextTransform,
+        TransformOrigin, TransformProperty, VerticalAlign, ViewStyle,
     },
     text::{
         ATTACHMENT_CHAR, Affinity, ApproxTextEngine, AttachmentAlignments, AttributedText,
@@ -112,5 +112,7 @@ pub use crate::{
         TextBackground, TextEngine, TextLayout, TextLine, TextLink, TextPosition, TextSpan,
     },
     text_source::{ListSourceRows, TextSource, TextSourceKind, TextSourceSegment},
-    transform::{Decomposed, MAX_TRANSFORMS, Matrix, Transform, TransformKind, TransformOp},
+    transform::{
+        Decomposed, MAX_TRANSFORMS, Matrix, Transform, TransformKind, TransformOp, translation,
+    },
 };

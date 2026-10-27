@@ -1014,9 +1014,7 @@ async fn connect_reader(
     {
         return Err(close_startup(connection, error).await);
     }
-    if let Some(control) = control
-        && let Err(error) = control.attach(&mut connection).await
-    {
+    if let Err(error) = control::initialize_views(&mut connection, control).await {
         return Err(close_startup(connection, error).await);
     }
     Ok(connection)

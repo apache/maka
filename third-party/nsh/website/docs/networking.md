@@ -79,7 +79,7 @@ function App() {
     <Scroll style={{ flex: 1 }}>
       <View style={{ padding: 16, paddingTop: 60, gap: 8 }}>
         <Text style={{ color: "#57606a" }}>{posts.loading() ? "loading…" : String(posts.error() ?? "")}</Text>
-        <Each of={posts() ?? []}>{(post) => <Text numberOfLines={1}>{post().title}</Text>}</Each>
+        <Each of={posts() ?? []}>{(post) => <Text style={{ numberOfLines: 1 }}>{post().title}</Text>}</Each>
       </View>
     </Scroll>
   );

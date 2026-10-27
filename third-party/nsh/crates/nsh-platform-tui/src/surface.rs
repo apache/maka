@@ -1517,9 +1517,6 @@ impl Surface {
                 AnimationProp::Opacity => style.opacity = value.number(),
                 AnimationProp::BackgroundColor => style.background_color = color,
                 AnimationProp::BorderColor => style.borders.colors = [color; 4],
-                AnimationProp::ShadowColor => style.shadow.color = color,
-                AnimationProp::ShadowOpacity => style.shadow.opacity = value.number(),
-                AnimationProp::ShadowRadius => style.shadow.radius = px(value.number()),
                 _ => {}
             }
         }

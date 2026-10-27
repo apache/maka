@@ -4,9 +4,10 @@
 //! The cheap path is the view's own layer: `cornerRadius` covers every
 //! shape whose corners share one radius. Other corners need shape layers
 //! (scroll views take the largest radius instead). A view
-//! that both clips its children and casts a shadow gets a container
-//! ([`NshView::ensure_container`]) that clips the children, so its own
-//! layer keeps the shadow (clipping a layer clips its shadow too). Scroll
+//! that both clips its children and draws outside its box (an outer box
+//! shadow, an outline) gets a container ([`NshView::ensure_container`])
+//! that clips the children, so its own layer keeps what it draws outside
+//! (clipping a layer clips that too). Scroll
 //! views always have a container: there it clips too, and the decoration
 //! stays in the view's own layer, where it does not scroll.
 //!
@@ -15,8 +16,8 @@
 //! layer's own, never a fill layer, and nothing inside the box is drawn over
 //! them but borders.
 //!
-//! With a background a shadow gets a `shadowPath` (no offscreen pass); with
-//! a transparent background it follows the content (text shadows).
+//! A `drop-shadow()` filter is the layer's own shadow: it follows the
+//! content.
 //!
 //! [`apply`] runs on every frame of an animation that touches the view
 //! (transitions, animated colors): it compares what it applied last and
@@ -87,9 +88,6 @@ struct Shape {
     border_style: BorderStyle,
     /// Whether every side has the same color (one ring layer, or four).
     one_color: bool,
-    shadow: bool,
-    shadow_offset: (Points, Points),
-    solid: bool,
     tint: Option<Color>,
     outline: nsh_core::Outline,
     effects: Option<std::sync::Arc<nsh_core::Effects>>,
@@ -100,7 +98,6 @@ struct Shape {
 struct Colors {
     background: Color,
     borders: [Color; 4],
-    shadow: (Color, f32, Points),
 }
 
 /// The layers decoration added to a view, created on demand.
@@ -230,7 +227,7 @@ impl Decor {
         self.mode
     }
 
-    /// How an image view fits its image (`resizeMode`) and where it places
+    /// How an image view fits its image (`objectFit`) and where it places
     /// it (`objectPosition`).
     pub(crate) fn set_fit(&mut self, mode: ResizeMode, position: ObjectPosition) {
         if self.mode != mode || self.position != position || self.image.is_none() {
@@ -340,13 +337,6 @@ impl Decor {
         if border_layer.borderWidth() > 0.0 {
             border_layer.setBorderColor(cg_color(b.colors[0]).as_deref());
         }
-    }
-
-    /// Sets the shadow's color, opacity and radius.
-    fn set_shadow(layer: &CALayer, shadow: &nsh_core::Shadow) {
-        layer.setShadowColor(cg_color(shadow.color).as_deref());
-        layer.setShadowOpacity(shadow.opacity.clamp(0.0, 1.0));
-        layer.setShadowRadius(shadow.radius.max(Points::ZERO).0 as CGFloat);
     }
 
     /// Shapes the layers of `view` after `s` at its current size.
@@ -500,7 +490,6 @@ impl Decor {
         // view on every scroll step. Not with a shadow or anything drawn
         // outside, which the mask would cut.
         let contained = kind == Kind::Text
-            && !shape.shadow
             && !crate::visual::draws_outside(style)
             && crate::visual::drop_shadow(style).is_none();
         if let Some(cl) = clip_layer {
@@ -537,17 +526,7 @@ impl Decor {
             self.fit_contents();
         }
 
-        // Shadow. With a background the shape is known and passed as a
-        // path, which spares Core Animation an offscreen pass.
-        if shape.shadow {
-            let sh = style.shadow;
-            layer.setShadowOffset(CGSize::new(
-                sh.offset_x.0 as CGFloat,
-                sh.offset_y.0 as CGFloat,
-            ));
-            let path = shape.solid.then(|| rounded(local, radii));
-            layer.setShadowPath(path.as_deref().map(|p| &**p));
-        } else if let Some((x, y, blur, color)) = crate::visual::drop_shadow(style) {
+        if let Some((x, y, blur, color)) = crate::visual::drop_shadow(style) {
             // `drop-shadow()`: follows the content's shape (no path).
             layer.setShadowColor(cg_color(Color(color.0 | 0xff)).as_deref());
             layer.setShadowOpacity((color.0 & 0xff) as f32 / 255.0);
@@ -655,9 +634,7 @@ pub(crate) fn apply(view: &NshView) {
     // an outline) clips them in a container instead.
     let needs_container = {
         let s = view.state();
-        kind == Kind::View
-            && s.clips()
-            && (s.style.shadow.is_visible() || crate::visual::draws_outside(&s.style))
+        kind == Kind::View && s.clips() && crate::visual::draws_outside(&s.style)
     };
     if needs_container && view.container_view().is_none() {
         view.ensure_container();
@@ -666,12 +643,10 @@ pub(crate) fn apply(view: &NshView) {
     let mut guard = view.state_mut();
     let state = &mut *guard;
     let shape = shape_of(state, kind);
-    let shadow = state.shadow();
     let borders = state.borders();
     let colors = Colors {
         background: state.background(),
         borders: borders.colors,
-        shadow: (shadow.color, shadow.opacity, shadow.radius),
     };
     let reshape = state.decor.shape.as_deref() != Some(&shape);
     if !reshape && state.decor.colors == Some(colors) {
@@ -687,9 +662,6 @@ pub(crate) fn apply(view: &NshView) {
         let d = &state.decor;
         d.set_background(&layer, colors.background);
         d.set_border_colors(&layer, container.as_deref(), &borders);
-        if shape.shadow {
-            Decor::set_shadow(&layer, &shadow);
-        }
     });
     state.decor.shape = Some(Box::new(shape));
     state.decor.colors = Some(colors);
@@ -705,7 +677,6 @@ fn shape_of(s: &ViewState, kind: Kind) -> Shape {
     let style = &s.style;
     let (w, h) = (s.frame.size.width.0, s.frame.size.height.0);
     let borders = s.borders();
-    let shadow = s.shadow();
     Shape {
         kind,
         size: (w, h),
@@ -714,9 +685,6 @@ fn shape_of(s: &ViewState, kind: Kind) -> Shape {
         widths: borders.widths,
         border_style: borders.style,
         one_color: borders.colors.iter().all(|&c| c == borders.colors[0]),
-        shadow: shadow.is_visible() || s.anim.shadow_opacity.is_some(),
-        shadow_offset: (style.shadow.offset_x, style.shadow.offset_y),
-        solid: !style.background_color.is_transparent() || s.anim.background.is_some(),
         tint: style.tint_color,
         outline: style.outline,
         effects: style.effects.clone(),

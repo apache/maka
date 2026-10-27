@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
+use ordered_float::OrderedFloat;
 use taffy::{
     AlignContent, AlignItems, Dimension, Display, FlexDirection, FlexWrap, LengthPercentage,
     LengthPercentageAuto, Position,
@@ -211,7 +212,7 @@ impl TextTransform {
     }
 }
 
-/// Where text that does not fit `numberOfLines` is cut (`ellipsizeMode`).
+/// Where text that does not fit `numberOfLines` is cut (`textOverflow`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PropEnum)]
 pub enum EllipsizeMode {
     /// "Lorem ips…" (default).
@@ -352,44 +353,6 @@ impl From<CornerRadii> for Corners<Points> {
     }
 }
 
-/// A drop shadow (React Native's `shadow*` properties).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Shadow {
-    /// Shadow color; its alpha is multiplied by `opacity`.
-    pub color: Color,
-    /// Horizontal offset.
-    pub offset_x: Points,
-    /// Vertical offset.
-    pub offset_y: Points,
-    /// Opacity in `0.0..=1.0`; 0 (the default) means no shadow.
-    pub opacity: f32,
-    /// Blur radius.
-    pub radius: Points,
-}
-
-impl Shadow {
-    /// React Native's defaults: black, offset `(0, -3)`, radius 3, opacity 0.
-    pub const DEFAULT: Shadow = Shadow {
-        color: Color::BLACK,
-        offset_x: Points(0.0),
-        offset_y: Points(-3.0),
-        opacity: 0.0,
-        radius: Points(3.0),
-    };
-
-    /// True if the shadow draws anything.
-    #[inline]
-    pub fn is_visible(&self) -> bool {
-        self.opacity > 0.0 && !self.color.is_transparent()
-    }
-}
-
-impl Default for Shadow {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
 /// How borders are drawn (`borderStyle`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BorderStyle {
@@ -484,8 +447,6 @@ pub struct ViewStyle {
     pub opacity: f32,
     /// Clip children to the (rounded) bounds.
     pub overflow_hidden: bool,
-    /// Drop shadow.
-    pub shadow: Shadow,
     /// Static transform, around the view's center.
     pub transform: Transform,
     /// `tintColor`: recolors an image's opaque pixels.
@@ -666,7 +627,7 @@ impl PositionAxis {
 }
 
 /// `objectPosition`: where an image sits in its box once
-/// `resizeMode` / `object-fit` has sized it, as CSS's `object-position`
+/// `objectFit` / `object-*` has sized it, as CSS's `object-position`
 /// places it (the center by default). The parts of a covering image
 /// outside the box are cropped.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -823,7 +784,6 @@ impl Default for ViewStyle {
             borders: Borders::NONE,
             opacity: 1.0,
             overflow_hidden: false,
-            shadow: Shadow::DEFAULT,
             transform: Transform::IDENTITY,
             tint_color: None,
             elevation: Points::ZERO,
@@ -843,8 +803,8 @@ impl Default for ViewStyle {
     }
 }
 
-/// A shadow behind text (`textShadow*`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A shadow behind text (`textShadow`, `text-shadow-*`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TextShadow {
     /// Color.
     pub color: Color,
@@ -870,7 +830,9 @@ pub struct TextStyle {
     pub line_height: Option<Points>,
     /// Block alignment (only meaningful on a text block).
     pub text_align: Option<TextAlign>,
-    /// Physical class alignment, preserved across direction changes in descendants.
+    /// Whether `text_align`'s left or right is a side (`left`, `right`),
+    /// kept right to left, rather than the start or the end (`start`,
+    /// `end`), which right to left is the other side.
     pub text_align_physical: bool,
     /// Font family; `None` inherits (the system font at the root).
     pub font_family: Option<FontFamily>,
@@ -899,25 +861,28 @@ pub struct TextStyle {
     pub decoration_color: Option<Color>,
     /// Case transform.
     pub transform: Option<TextTransform>,
-    /// `textShadowColor`.
+    /// The text shadow's color (`textShadow`, `text-shadow-*`: its widest
+    /// layer's).
     pub shadow_color: Option<Color>,
-    /// `textShadowOffset`.
+    /// The text shadow's offset.
     pub shadow_offset: Option<Point<Points>>,
-    /// `textShadowRadius`.
+    /// The text shadow's blur radius.
     pub shadow_radius: Option<Points>,
     /// `fontVariant`.
     pub font_variant: Option<FontVariant>,
     /// `writingDirection`: right to left (`Some(true)`), left to right, or
-    /// the layout's direction (`None`, `auto`).
+    /// from the content (`None`, `auto`).
     pub writing_direction: Option<bool>,
     /// `textAlignVertical`: where text shorter than its box sits, 0% top
     /// (`auto`, `top`), 50% `center`, 100% `bottom`.
     pub align_vertical: Option<Percentage>,
     /// `placeholderColor`: an input's placeholder (not inherited).
     pub placeholder_color: Option<Color>,
-    /// `selectionColor`: an input's caret and selection, a selectable
-    /// text's selection highlight (not inherited).
+    /// `selectionColor`: an input's or a selectable text's selection
+    /// highlight (not inherited).
     pub selection_color: Option<Color>,
+    /// `caretColor`: an input's caret (not inherited).
+    pub caret_color: Option<Color>,
 }
 
 impl TextStyle {
@@ -1028,7 +993,7 @@ pub struct Style {
 /// `borderStyle: "none"` (no outline, no border, as in CSS),
 /// `animationDuration` and the other `animation*` keys before
 /// `animationName`.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Pending {
     /// `outlineWidth` as set.
     outline_width: Points,
@@ -1056,6 +1021,57 @@ pub(crate) struct Pending {
     /// The `env()` terms of the padding and margin, added by the core to
     /// the lengths their declarations set.
     pub(crate) env: EnvEdges,
+    /// `objectFit`: how an image or a video fits its box (`None`: the
+    /// element's default).
+    pub(crate) object_fit: Option<crate::ResizeMode>,
+    /// `numberOfLines`: the most lines of a text (`Some(0)`, `none`: no clamp
+    /// over a class's).
+    pub(crate) number_of_lines: Option<u32>,
+    /// `textOverflow`: where a clamped text is cut.
+    pub(crate) text_overflow: Option<EllipsizeMode>,
+    /// `userSelect`: whether a text can be selected (`None`, `auto`: the
+    /// view's around it, else the platform's).
+    pub(crate) user_select: Option<bool>,
+    /// `pointerEvents`: which touches the view and the views in it take.
+    pub(crate) pointer_events: Option<crate::props::PointerEvents>,
+    /// The `boxShadow` layers (by index) that name no color: CSS's
+    /// `currentColor`, filled in by [`Style::apply_current_color`].
+    current_shadows: u64,
+    /// The `textShadow` names no color.
+    current_text_shadow: bool,
+    /// The color properties set to `currentColor` last ([`current_bits`]),
+    /// filled in by [`Style::apply_current_color`].
+    current_colors: u16,
+    /// The `filter` list's `drop-shadow()`s (by index) that name no color:
+    /// CSS's `currentColor`.
+    current_drop_shadows: u64,
+    /// Values that write `currentColor` inside them (a gradient's stop, a
+    /// `color-mix()`, a shadow's color), by property: parsed again with
+    /// the color by [`Style::apply_current_color`].
+    current_values: Vec<(StyleKey, Box<str>)>,
+    /// How many entries of the transform list each [`TransformProperty`]
+    /// holds, in their order, then the steps Rust components bind after
+    /// them ([`StyleDecl::Transform`]).
+    transform_counts: [u8; TRANSFORM_PARTS],
+}
+
+/// [`TransformProperty`]'s parts of a transform list, and the bound steps
+/// after them.
+const TRANSFORM_PARTS: usize = 5;
+
+/// The properties a view's transform is made of, in the order CSS
+/// composes them: `translate`, `rotate`, `scale`, then `transform` (CSS's
+/// string, or a list of steps whose amounts may be animated values).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransformProperty {
+    /// `translate`.
+    Translate,
+    /// `rotate`.
+    Rotate,
+    /// `scale`.
+    Scale,
+    /// `transform`.
+    Transform,
 }
 
 /// Bookkeeping, not what the style shows: styles that look the same print
@@ -1087,7 +1103,7 @@ impl Pending {
 
 /// A CSS environment variable (`env()`) a padding or margin may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EnvVar {
+pub enum EnvVar {
     /// `safe-area-inset-top`: the top inset of the root view the node
     /// renders in.
     SafeAreaInsetTop,
@@ -1130,14 +1146,6 @@ impl EnvEdges {
     /// Whether no edge has a term.
     pub(crate) fn is_empty(&self) -> bool {
         *self == Self::default()
-    }
-
-    /// Left and right swapped, as their declarations are in right-to-left
-    /// layouts ([`swap_sides`]).
-    pub(crate) fn swapped(mut self) -> Self {
-        self.padding.swap(1, 3);
-        self.margin.swap(1, 3);
-        self
     }
 }
 
@@ -1197,6 +1205,29 @@ pub(crate) fn env_length(s: &str) -> Option<Result<(f32, Option<EnvVar>), StyleE
         Some((a.0 + b.0, a.1.or(b.1)))
     };
     Some(parse(s).ok_or(StyleError::InvalidValue))
+}
+
+/// The physical edges (top, right, bottom, left) a margin or padding key
+/// sets.
+fn edges(key: StyleKey) -> &'static [usize] {
+    use StyleKey as K;
+    match key {
+        K::Margin | K::Padding => &[0, 1, 2, 3],
+        K::MarginHorizontal | K::PaddingHorizontal => &[1, 3],
+        K::MarginVertical | K::PaddingVertical => &[0, 2],
+        K::MarginTop | K::PaddingTop => &[0],
+        K::MarginRight | K::PaddingRight => &[1],
+        K::MarginBottom | K::PaddingBottom => &[2],
+        _ => &[3],
+    }
+}
+
+/// The length part of an `env()` value, in points ([`env_length`]).
+fn env_points(v: StyleValue<'_>) -> Points {
+    match v {
+        StyleValue::Str(s) => px(env_length(s).and_then(Result::ok).map_or(0.0, |(l, _)| l)),
+        _ => Points::ZERO,
+    }
 }
 
 /// A padding edge: its length and its `env()` term.
@@ -1260,23 +1291,6 @@ fn set_side<T>(rect: &mut taffy::Rect<T>, left: bool, value: T) {
     }
 }
 
-/// Swaps the left and right properties: in right-to-left layouts they
-/// mean start and end, as in React Native. An involution.
-pub(crate) fn swap_sides(layout: &mut taffy::Style, view: &mut ViewStyle) {
-    fn swap<T>(r: &mut taffy::Rect<T>) {
-        std::mem::swap(&mut r.left, &mut r.right);
-    }
-    swap(&mut layout.margin);
-    swap(&mut layout.padding);
-    swap(&mut layout.inset);
-    swap(&mut layout.border);
-    let (w, r) = (&mut view.borders.widths, &mut view.corner_radius);
-    std::mem::swap(&mut w.left, &mut w.right);
-    view.borders.colors.swap(1, 3);
-    std::mem::swap(&mut r.top_left, &mut r.top_right);
-    std::mem::swap(&mut r.bottom_left, &mut r.bottom_right);
-}
-
 /// Gives an unset `alignContent` (taffy's `normal`) its meaning for the
 /// node's display: React Native's `flex-start` for flex (and block)
 /// containers, where taffy's `normal` would stretch wrapped lines, and
@@ -1289,8 +1303,9 @@ pub(crate) fn resolve_normal_alignment(layout: &mut taffy::Style) {
     }
 }
 
-/// Lays a node out in direction `rtl`: swaps its left and right
-/// properties when right to left, then places the start / end ones.
+/// Lays a node out in direction `rtl`: its left and right properties keep
+/// their sides, as in CSS, and its start / end ones take the sides the
+/// direction gives them.
 pub(crate) fn apply_direction(
     layout: &mut taffy::Style,
     view: &mut ViewStyle,
@@ -1302,9 +1317,6 @@ pub(crate) fn apply_direction(
     } else {
         taffy::Direction::Ltr
     };
-    if rtl {
-        swap_sides(layout, view);
-    }
     if logical.is_empty() {
         return;
     }
@@ -1359,7 +1371,7 @@ impl Default for Style {
             // Unset: `flex-start` (React Native) outside grids, CSS's
             // `normal` in grids (`resolve_normal_alignment`).
             align_content: AlignContent::NORMAL,
-            // Yoga has no automatic minimum size (see `min_len`).
+            // Unset: 0, as in Yoga (`min_len`).
             min_size: taffy::Size {
                 width: LengthPercentageAuto::length(0.0),
                 height: LengthPercentageAuto::length(0.0),
@@ -1390,6 +1402,7 @@ pub(crate) enum StyleGroup {
     View,
     Text,
     Image,
+    Input,
 }
 
 /// A style property's TypeScript declaration (`js::style`).
@@ -1403,26 +1416,7 @@ pub(crate) struct StyleType {
 
 /// The style properties the JS bridge decodes itself (objects and lists,
 /// `crates/nsh-js/src/protocol.rs`), for the TypeScript declarations.
-pub(crate) const OBJECT_STYLE_TYPES: &[StyleType] = &[
-    StyleType {
-        name: "transform",
-        group: StyleGroup::View,
-        ts: "TransformStep[]",
-        doc: None,
-    },
-    StyleType {
-        name: "shadowOffset",
-        group: StyleGroup::View,
-        ts: "{ width: number; height: number }",
-        doc: Some("Default `{ width: 0, height: -3 }`, as in React Native."),
-    },
-    StyleType {
-        name: "textShadowOffset",
-        group: StyleGroup::Text,
-        ts: "{ width: number; height: number }",
-        doc: None,
-    },
-];
+pub(crate) const OBJECT_STYLE_TYPES: &[StyleType] = &[];
 
 macro_rules! style_keys {
     ($($key:ident = $name:literal: $group:ident $ts:literal $($doc:literal)?),* $(,)?) => {
@@ -1465,12 +1459,12 @@ macro_rules! style_keys {
 }
 
 style_keys! {
-    Display = "display": Layout "\"flex\" | \"grid\" | \"block\" | \"flow-root\" | \"none\"",
+    Display = "display": Layout "\"flex\" | \"grid\" | \"block\" | \"flow-root\" | \"none\"" "`flex` lays the children out in a row unless `flexDirection` (or a class) sets a direction, as in CSS; a view that sets no display lays them out in a column.",
     BoxSizing = "boxSizing": Layout "\"border-box\" | \"content-box\"" "The box that width and height include.",
     Position = "position": Layout "\"relative\" | \"absolute\" | \"static\" | \"fixed\" | \"sticky\"" "`static` stays in flow and lets absolute descendants use the nearest positioned ancestor as their containing block. `fixed` lays an element out in its root view and mounts it above that root view's children. `sticky`: in the flow, and while its parent shows it stays `top` (in a horizontal scroll view `left`) from the start of the viewport of the scroll view around it, as far as the end of its parent's content box; it draws above its siblings of the same `zIndex`.",
     FlexDirection = "flexDirection": Layout "\"row\" | \"column\" | \"row-reverse\" | \"column-reverse\"",
     FlexWrap = "flexWrap": Layout "\"wrap\" | \"nowrap\" | \"wrap-reverse\"",
-    Flex = "flex": Layout "number",
+    Flex = "flex": Layout "number | \"none\" | \"auto\" | \"initial\" | (string & {})" "CSS's shorthand: `1` is `1 1 0`, `\"none\"` is `0 0 auto`, `\"auto\"` is `1 1 auto`, or grow, shrink and basis written out (`\"2 0 50%\"`).",
     FlexGrow = "flexGrow": Layout "number",
     FlexShrink = "flexShrink": Layout "number",
     FlexBasis = "flexBasis": Layout "DimensionValue | \"min-content\" | \"max-content\" | \"fit-content\"",
@@ -1484,7 +1478,7 @@ style_keys! {
     MinHeight = "minHeight": Layout "LengthValue",
     MaxWidth = "maxWidth": Layout "LengthValue",
     MaxHeight = "maxHeight": Layout "LengthValue",
-    AspectRatio = "aspectRatio": Layout "number",
+    AspectRatio = "aspectRatio": Layout "number | \"auto\" | `${number}/${number}` | `${number} / ${number}`" "Width over height: a number (`1.5`) or CSS's ratio (`\"16 / 9\"`); `\"auto\"` is none.",
     Top = "top": Layout "DimensionValue | AnimatedNode" "An animated value only for a `position: \"sticky\"` view: how far from the top of the scroll view's viewport it sticks, following the value (below a header that moves).",
     Right = "right": Layout "DimensionValue",
     Bottom = "bottom": Layout "DimensionValue",
@@ -1512,12 +1506,12 @@ style_keys! {
     BorderBottomWidth = "borderBottomWidth": View "number",
     BorderLeftWidth = "borderLeftWidth": View "number",
     ZIndex = "zIndex": Layout "number" "Order among siblings (stable); also the native stacking order.",
-    BoxShadow = "boxShadow": View "string" "CSS `box-shadow`: offsets, blur, spread and color, several separated by commas, `inset` for inner shadows.",
+    BoxShadow = "boxShadow": View "string | BoxShadowLayer[]" "CSS `box-shadow`: offsets, blur, spread and color, several separated by commas, `inset` for inner shadows; or its layers (`[{ x: 0, y: 6, blur: 18, color: \"#0000004d\" }]`), which take numbers, not strings. A layer without a color is the text color (CSS's `currentColor`).",
     BackgroundImage = "backgroundImage": View "string" "CSS gradients drawn over the background color: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`, several separated by commas.",
     Filter = "filter": View "string" "CSS filters of the view and its content: `brightness()`, `contrast()`, `grayscale()`, `hue-rotate()`, `invert()`, `saturate()`, `sepia()`, `opacity()`, `blur()`, `drop-shadow()`.",
     BackdropFilter = "backdropFilter": View "string" "CSS filters of what is behind the view (`blur(10px)`).",
     MaskImage = "maskImage": View "string" "A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included.",
-    GlassEffect = "glassEffect": View "\"none\" | \"regular\" | \"clear\"" "A glass material behind the view's content (Apple's Liquid Glass). Drawn on iOS 26 and later; elsewhere the view's `backdropFilter` is drawn as before, so give a glass view a blur to fall back to.",
+    GlassEffect = "glassEffect": View "\"none\" | \"regular\" | \"clear\"" "A glass material behind the view's content (Apple's Liquid Glass). Drawn on iOS 26 and macOS 26 and later; elsewhere the view's `backdropFilter` is drawn as before, so give a glass view a blur to fall back to.",
     MixBlendMode = "mixBlendMode": View "\"normal\" | \"multiply\" | \"screen\" | \"overlay\" | \"darken\" | \"lighten\" | \"color-dodge\" | \"color-burn\" | \"hard-light\" | \"soft-light\" | \"difference\" | \"exclusion\" | \"hue\" | \"saturation\" | \"color\" | \"luminosity\" | \"plus-darker\" | \"plus-lighter\"" "How the view blends with what is behind it.",
     OutlineWidth = "outlineWidth": View "number" "A line outside the border that takes no space.",
     OutlineColor = "outlineColor": View "ColorValue",
@@ -1550,7 +1544,7 @@ style_keys! {
     GridRowEnd = "gridRowEnd": Layout "number | string",
     JustifyItems = "justifyItems": Layout "Align" "How grid items sit in their areas along the row.",
     JustifySelf = "justifySelf": Layout "Align | \"auto\"",
-    Direction = "direction": Layout "\"inherit\" | \"ltr\" | \"rtl\"" "Layout direction; inherited by default. Right to left, `left` and `right` properties mean start and end (as in React Native).",
+    Direction = "direction": Layout "\"inherit\" | \"ltr\" | \"rtl\"" "Layout direction; inherited by default. As in CSS, `left` and `right` properties keep their sides right to left, while the `inlineStart` / `inlineEnd` ones (`marginStart`, `end`, ...) take the sides the direction gives them.",
     MarginStart = "marginStart": Layout "DimensionValue",
     MarginEnd = "marginEnd": Layout "DimensionValue",
     PaddingStart = "paddingStart": Layout "LengthValue",
@@ -1571,9 +1565,6 @@ style_keys! {
     BorderTopRightRadius = "borderTopRightRadius": View "number",
     BorderBottomRightRadius = "borderBottomRightRadius": View "number",
     BorderBottomLeftRadius = "borderBottomLeftRadius": View "number",
-    ShadowColor = "shadowColor": View "ColorValue | AnimatedNode",
-    ShadowOpacity = "shadowOpacity": View "number | AnimatedNode",
-    ShadowRadius = "shadowRadius": View "number | AnimatedNode",
     BorderColor = "borderColor": View "ColorValue | AnimatedNode",
     BorderTopColor = "borderTopColor": View "ColorValue",
     BorderRightColor = "borderRightColor": View "ColorValue",
@@ -1582,8 +1573,13 @@ style_keys! {
     BorderStyle = "borderStyle": View "\"solid\" | \"dashed\" | \"dotted\" | \"none\" | \"hidden\"" "`none` and `hidden`: no border whatever the widths (they take no space).",
     BorderCurve = "borderCurve": View "\"circular\" | \"continuous\"" "`continuous`: corners whose curvature eases into the edges (iOS app icons).",
     TintColor = "tintColor": Image "ColorValue" "Recolors a template image.",
-    ObjectPosition = "objectPosition": Image "string" "Where the image sits in its box once `resizeMode` has sized it, as CSS's `object-position`: keywords, percentages and lengths (`\"top\"`, `\"left bottom\"`, `\"25% 75%\"`, `\"right 10px bottom 20%\"`). A covering image is cropped around it. Default the center.",
+    ObjectFit = "objectFit": View "\"fill\" | \"contain\" | \"cover\" | \"none\" | \"scale-down\"" "CSS's `object-fit`: how an image or a video fits its box. Images cover it by default, videos are contained in it.",
+    ObjectPosition = "objectPosition": Image "string" "Where the image sits in its box once `objectFit` has sized it, as CSS's `object-position`: keywords, percentages and lengths (`\"top\"`, `\"left bottom\"`, `\"25% 75%\"`, `\"right 10px bottom 20%\"`). A covering image is cropped around it. Default the center.",
     BackfaceVisibility = "backfaceVisibility": View "\"visible\" | \"hidden\"" "`\"hidden\"`: invisible while turned away (3D rotations).",
+    Translate = "translate": View "string | number | AnimatedNode | [x: number | string | AnimatedNode, y?: number | string | AnimatedNode]" "CSS's `translate`: x, then y (`\"10px 20px\"`; percentages of the view's size, `\"-50% 0\"`); a number is points. An animated value moves it natively, along x (along both, each its own, in the `[x, y]` form).",
+    Rotate = "rotate": View "string | number | AnimatedNode" "CSS's `rotate`: `\"45deg\"`, or about an axis, `\"x 90deg\"`; a number, and an animated value, is degrees about z.",
+    Scale = "scale": View "string | number | AnimatedNode | [x: number | AnimatedNode, y: number | AnimatedNode]" "CSS's `scale`: `1.5`, `\"150%\"`, x and y (`\"1 2\"`, `[x, y]`).",
+    Transform = "transform": View "string | TransformStep[]" "CSS's `transform`: `\"translateX(10px) rotate(45deg) scale(1.5)\"` (`translate()`, `scale()`, `rotate()` on any axis, `skew()` and `perspective()` functions), or `\"none\"`; or a list of steps whose amounts may be animated values (`[{ perspective: 800 }, { rotateY: angle }]`, a motion's `transform`). Applies after `translate`, `rotate` and `scale`, as in CSS.",
     TransformOrigin = "transformOrigin": View "string | (number | string)[]" "The point `transform` acts around: keywords, percentages and lengths (\"top left\", \"50% 0\", `[10, 20]`). Default the center.",
     Opacity = "opacity": View "number | AnimatedNode",
     Overflow = "overflow": View "\"visible\" | \"hidden\"",
@@ -1598,17 +1594,21 @@ style_keys! {
     TextDecorationColor = "textDecorationColor": Text "ColorValue",
     WritingDirection = "writingDirection": Text "\"auto\" | \"ltr\" | \"rtl\"" "Base direction of the text; `auto` takes it from the content.",
     TextAlignVertical = "textAlignVertical": Text "\"auto\" | \"top\" | \"center\" | \"bottom\"" "Where text shorter than its box sits (`<Text>` with a height).",
-    FontVariant = "fontVariant": Text "(\"small-caps\" | \"oldstyle-nums\" | \"lining-nums\" | \"tabular-nums\" | \"proportional-nums\")[]" "OpenType number and letter forms.",
-    TextShadowColor = "textShadowColor": Text "ColorValue",
-    TextShadowRadius = "textShadowRadius": Text "number",
+    FontVariant = "fontVariant": Text "FontVariantName[] | (string & {})" "OpenType number and letter forms: a list (`[\"tabular-nums\"]`), or CSS's names separated by spaces (`\"tabular-nums small-caps\"`).",
+    TextShadow = "textShadow": Text "string | TextShadowLayer[]" "CSS's `text-shadow`: offsets, blur and color (`\"0 1px 2px rgb(0 0 0 / 0.3)\"`), several separated by commas, drawn as the widest one; or its layers (`[{ x: 0, y: 1, blur: 2, color: \"#0000004d\" }]`); a layer without a color is the text color; `\"none\"`.",
     TextTransform = "textTransform": Text "\"none\" | \"uppercase\" | \"lowercase\" | \"capitalize\"",
-    TextAlign = "textAlign": Text "\"auto\" | \"left\" | \"center\" | \"right\" | \"justify\"",
-    PlaceholderColor = "placeholderColor": Text "ColorValue" "An input's placeholder (`placeholder:text-*`).",
-    SelectionColor = "selectionColor": Text "ColorValue" "An input's caret and selection, a selectable text's selection highlight (`selection:bg-*`).",
+    TextAlign = "textAlign": Text "\"auto\" | \"left\" | \"center\" | \"right\" | \"justify\" | \"start\" | \"end\"" "`left` and `right` keep their sides in right-to-left layouts; `start` and `end` follow the direction.",
+    PlaceholderColor = "placeholderColor": Input "ColorValue" "An input's placeholder (`placeholder:text-*`).",
+    SelectionColor = "selectionColor": Text "ColorValue" "An input's or a selectable text's selection highlight (`selection:bg-*`); iOS draws an input's caret in it too, unless `caretColor` is set (UIKit tints both with one color).",
+    CaretColor = "caretColor": Input "ColorValue" "CSS's `caret-color`: an input's caret (`caret-*`); on iOS also its selection highlight (UIKit tints both with one color).",
     Fill = "fill": View "\"none\" | \"currentColor\" | ColorValue" "What the shapes a component draws are filled with (CSS's and SVG's `fill`, inherited; `fill-*`): a chart's areas.",
     Stroke = "stroke": View "\"none\" | \"currentColor\" | ColorValue" "What the outlines of the shapes a component draws are painted with (CSS's and SVG's `stroke`, inherited; `stroke-<color>`): a chart's lines and grid lines.",
     StrokeWidth = "strokeWidth": View "number | string" "The width of those outlines, a length (CSS's and SVG's `stroke-width`, inherited, 1 by default; `stroke-<number>`).",
     StrokeDasharray = "strokeDasharray": View "number | string" "The dashes and gaps of those outlines, lengths separated by spaces or commas, an odd list repeated, or `none` (CSS's and SVG's `stroke-dasharray`, inherited).",
+    NumberOfLines = "numberOfLines": Text "number" "The most lines a `<Text>` shows (CSS's `line-clamp`, class `line-clamp-*`); 0 shows them all.",
+    TextOverflow = "textOverflow": Text "\"ellipsis\" | \"clip\" | \"ellipsis-start\" | \"ellipsis-middle\"" "CSS's `text-overflow`: how a clamped `<Text>` is cut, with an ellipsis at its end (the default), clipped, or with the ellipsis at its start or in its middle.",
+    UserSelect = "userSelect": View "\"auto\" | \"none\" | \"text\"" "CSS's `user-select`: whether a `<Text>` can be selected (`\"text\"`) or not (`\"none\"`); a view's reaches the texts in it; `\"auto\"` leaves it to the view around it, else to the platform.",
+    PointerEvents = "pointerEvents": View "\"auto\" | \"none\" | \"box-none\" | \"box-only\"" "CSS's `pointer-events`: `\"none\"` takes no touches, for the view and the views in it unless one says `\"auto\"`; `\"box-none\"` takes none on the view itself, only on the views in it; `\"box-only\"` takes them on the view itself, never on the views in it.",
     VerticalAlign = "verticalAlign": View "\"baseline\" | \"text-top\" | \"text-bottom\" | \"middle\"" "Where a view or image inside a `<Text>` sits in its line (CSS `vertical-align`, `align-*`): its bottom on the baseline (the default), its top or bottom at the top or bottom of the text's font, or its middle half the font's x height above the baseline. The line grows to hold it.",
 }
 
@@ -1623,34 +1623,205 @@ pub enum StyleValue<'a> {
     Null,
 }
 
-/// A style property value owned by a [`StylePatch`].
-#[derive(Debug, Clone, PartialEq)]
-pub enum PatchValue {
-    /// A number.
-    Number(f32),
-    /// A string.
-    Str(Box<str>),
-    /// Resets the property to its default.
-    Null,
+/// CSS's `line-height` (`lineHeight`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LineHeight {
+    /// The font's own (`normal`).
+    #[default]
+    Normal,
+    /// Points (`"20px"`).
+    Points(Points),
+    /// A multiple of the font size, which nested texts take with their own
+    /// size (a number: `1.5`).
+    Multiple(f32),
+    /// A multiple of the element's own font size, which nested texts take
+    /// as points (`"1.5em"`, `"150%"`).
+    Em(f32),
 }
 
-impl PatchValue {
-    /// The value as [`Style::set`] takes it.
-    pub fn as_value(&self) -> StyleValue<'_> {
-        match self {
-            PatchValue::Number(n) => StyleValue::Number(*n),
-            PatchValue::Str(s) => StyleValue::Str(s),
-            PatchValue::Null => StyleValue::Null,
-        }
+impl From<Points> for LineHeight {
+    fn from(points: Points) -> Self {
+        LineHeight::Points(points)
     }
 }
 
-impl From<StyleValue<'_>> for PatchValue {
-    fn from(v: StyleValue<'_>) -> Self {
-        match v {
-            StyleValue::Number(n) => PatchValue::Number(n),
-            StyleValue::Str(s) => PatchValue::Str(s.into()),
-            StyleValue::Null => PatchValue::Null,
+impl From<crate::geometry::Rems> for LineHeight {
+    fn from(rems: crate::geometry::Rems) -> Self {
+        LineHeight::Points(rems.to_points(crate::geometry::REM_SIZE))
+    }
+}
+
+impl From<crate::geometry::AbsoluteLength> for LineHeight {
+    fn from(length: crate::geometry::AbsoluteLength) -> Self {
+        LineHeight::Points(length.to_points(crate::geometry::REM_SIZE))
+    }
+}
+
+/// A grid template as a style holds it (`gridTemplateColumns`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridTemplateValue(Rc<grid::Template>);
+
+/// A style property's value, parsed ([`StyleKey::parse_value`]): what
+/// [`Style::apply_value`] sets without parsing. TSX styles are parsed into
+/// it once; classes and Rust's typed styles make it directly.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyValue {
+    /// The property's default (`null`).
+    Default,
+    /// `display`.
+    Display(Display),
+    /// `boxSizing`.
+    BoxSizing(taffy::BoxSizing),
+    /// `position`: Taffy's, then whether it is `fixed` and `sticky`.
+    Position(Position, bool, bool),
+    /// `flexDirection`.
+    FlexDirection(FlexDirection),
+    /// `flexWrap`.
+    FlexWrap(FlexWrap),
+    /// `flex`: grow, shrink and basis.
+    Flex(OrderedFloat<f32>, OrderedFloat<f32>, Dimension),
+    /// A number (`flexGrow`, `zIndex`, `opacity`).
+    Number(OrderedFloat<f32>),
+    /// A number or none (`aspectRatio`).
+    OptNumber(Option<OrderedFloat<f32>>),
+    /// A size (`width`, `flexBasis`).
+    Dimension(Dimension),
+    /// A length, a percentage or `auto` (`margin`, `top`, `minWidth`).
+    Lpa(LengthPercentageAuto),
+    /// A length or a percentage (`padding`, `gap`).
+    Lp(LengthPercentage),
+    /// [`PropertyValue::Lpa`] or unset (`marginStart`).
+    OptLpa(Option<LengthPercentageAuto>),
+    /// [`PropertyValue::Lp`] or unset (`paddingStart`).
+    OptLp(Option<LengthPercentage>),
+    /// Points (`borderWidth`, `borderRadius`, `outlineWidth`).
+    Points(Points),
+    /// Points or unset (`fontSize`, a corner's radius).
+    OptPoints(Option<Points>),
+    /// `alignContent`, `justifyContent`.
+    AlignContent(AlignContent),
+    /// `alignItems`, `alignSelf` (`None`: `auto`), `justifyItems`.
+    AlignItems(Option<AlignItems>),
+    /// `verticalAlign`.
+    VerticalAlign(VerticalAlign),
+    /// Right to left (`Some(true)`), left to right, or unset (`direction`,
+    /// `writingDirection`, `fontStyle`'s italic).
+    OptBool(Option<bool>),
+    /// A flag (`overflow: hidden`, `visibility: hidden`, `borderCurve:
+    /// continuous`, `backfaceVisibility: hidden`).
+    Bool(bool),
+    /// A color or unset.
+    Color(Option<Color>),
+    /// CSS's `currentColor`, written out: the node's text color.
+    CurrentColor,
+    /// A value that writes `currentColor` inside it, parsed with a
+    /// stand-in color, and its text, parsed again with the node's color.
+    Deferred(Box<str>, Box<PropertyValue>),
+    /// `borderStyle`, `outlineStyle`: the style and whether it hides the
+    /// line (`none`).
+    BorderStyle(BorderStyle, bool),
+    /// `objectFit` (`None`: the element's default).
+    ObjectFit(Option<crate::ResizeMode>),
+    /// `objectPosition`.
+    ObjectPosition(ObjectPosition),
+    /// A transform property's steps, each with its animated value if any.
+    Transform(Box<[(TransformKind, f32, Option<crate::animation::NodeId>)]>),
+    /// `transformOrigin`.
+    TransformOrigin(TransformOrigin),
+    /// `fontWeight`.
+    FontWeight(Option<u16>),
+    /// `lineHeight`.
+    LineHeight(LineHeight),
+    /// `fontFamily`.
+    FontFamily(Option<FontFamily>),
+    /// `letterSpacing`: points, or ems of the font size.
+    LetterSpacing(Option<Points>, Option<OrderedFloat<f32>>),
+    /// `textDecorationLine`.
+    TextDecoration(Option<TextDecoration>),
+    /// `fontVariant`.
+    FontVariant(Option<FontVariant>),
+    /// `textShadow`: the widest layer and whether it names its color.
+    TextShadow(Option<(TextShadow, bool)>),
+    /// `textTransform`.
+    TextTransform(Option<TextTransform>),
+    /// `textAlign`, and whether it is physical (`left` / `right`).
+    TextAlign(Option<TextAlign>, bool),
+    /// `boxShadow`'s layers, each with whether it names its color.
+    Shadows(Rc<[(BoxShadow, bool)]>),
+    /// `backgroundImage`, `maskImage`.
+    Gradients(Rc<[Gradient]>),
+    /// `filter`, `backdropFilter`, each with whether a `drop-shadow()`
+    /// names its color.
+    Filters(Rc<[(Filter, bool)]>),
+    /// `glassEffect`.
+    GlassEffect(GlassEffect),
+    /// `mixBlendMode`.
+    BlendMode(BlendMode),
+    /// `cursor`.
+    Cursor(Cursor),
+    /// `transitionProperty`.
+    TransitionProps(TransitionProps),
+    /// Milliseconds (durations, delays).
+    Ms(OrderedFloat<f32>),
+    /// A timing function's cubic Bézier control points.
+    Easing([OrderedFloat<f32>; 4]),
+    /// `animationName`.
+    Keyframes(Option<Keyframes>),
+    /// `animationIterationCount` (`None`: forever).
+    Iterations(Option<u32>),
+    /// `fill`, `stroke` (`None`: unset, inherited).
+    Paint(Option<SvgPaint>),
+    /// `strokeDasharray` (empty: `none`).
+    Dashes(Option<Arc<[Points]>>),
+    /// A margin or padding of a length (points) plus an environment
+    /// variable (`calc(env(safe-area-inset-top) + 8px)`).
+    EnvLength(Points, EnvVar),
+    /// `textAlignVertical`: 0% the top, 50% the middle, 100% the bottom.
+    AlignVertical(Option<Percentage>),
+    /// `numberOfLines` (`Some(0)`: no clamp).
+    NumberOfLines(Option<u32>),
+    /// `textOverflow`.
+    TextOverflow(Option<EllipsizeMode>),
+    /// `pointerEvents`.
+    PointerEvents(Option<crate::props::PointerEvents>),
+    /// `textDecorationStyle`.
+    DecorationStyle(Option<DecorationStyle>),
+    /// `gridTemplateColumns`, `gridTemplateRows`.
+    GridTemplate(GridTemplateValue),
+    /// `gridAutoColumns`, `gridAutoRows`.
+    GridTracks(Rc<[taffy::TrackSizingFunction]>),
+    /// `gridAutoFlow`.
+    GridAutoFlow(taffy::GridAutoFlow),
+    /// `gridColumn`, `gridRow`.
+    GridLine(taffy::Line<taffy::GridPlacement<String>>),
+    /// `gridColumnStart` and the other lines.
+    GridPlacement(taffy::GridPlacement<String>),
+}
+
+impl PropertyValue {
+    /// A grid template's value.
+    pub(crate) fn grid_template(template: grid::Template) -> Self {
+        PropertyValue::GridTemplate(GridTemplateValue(Rc::new(template)))
+    }
+}
+
+impl Eq for PropertyValue {}
+
+impl std::hash::Hash for PropertyValue {
+    /// The variant and its plain payloads: values that compare equal hash
+    /// alike (list payloads are only compared).
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            PropertyValue::Number(n) | PropertyValue::Ms(n) => n.hash(state),
+            PropertyValue::Points(p) => OrderedFloat(p.0).hash(state),
+            PropertyValue::OptPoints(p) => p.map(|p| OrderedFloat(p.0)).hash(state),
+            PropertyValue::Color(c) => c.hash(state),
+            PropertyValue::Bool(b) => b.hash(state),
+            PropertyValue::OptBool(b) => b.hash(state),
+            PropertyValue::FontWeight(w) => w.hash(state),
+            PropertyValue::Deferred(s, _) => s.hash(state),
+            _ => {}
         }
     }
 }
@@ -1659,39 +1830,44 @@ impl From<StyleValue<'_>> for PatchValue {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StyleDecl {
     /// A property.
-    Set(StyleKey, PatchValue),
-    /// Starts the `transform` list over: a `transform` replaces the
-    /// transforms set before it (by classes).
-    ClearTransform,
-    /// Appends a `transform` entry, driven by an animated value when given
-    /// (the amount is then the identity until it is bound).
+    Set(StyleKey, PropertyValue),
+    /// Sets a transform property to its steps, each driven by an animated
+    /// value when it has one (the amount is then the identity until it is
+    /// bound): the steps of other properties stay.
+    SetTransform(
+        TransformProperty,
+        Box<[(TransformKind, f32, Option<crate::animation::NodeId>)]>,
+    ),
+    /// Appends a transform step after every property's, driven by an
+    /// animated value when given (a Rust component's `bind_transform`).
     Transform(TransformKind, f32, Option<crate::animation::NodeId>),
-    /// `shadowOffset`; `None` restores the default.
-    ShadowOffset(Option<Point<Points>>),
-    /// `textShadowOffset`.
-    TextShadowOffset(Option<Point<Points>>),
     /// A property driven by a native animation node.
     Animated(crate::animation::AnimationProp, crate::animation::NodeId),
+    /// A value the property takes unless a class or the style itself sets
+    /// it (`display: "flex"`'s row, as CSS's): applied before the classes
+    /// ([`StylePatch::apply_defaults`]), never by [`StyleDecl::apply`].
+    Default(StyleKey, PropertyValue),
+    /// The color property is the node's text color unless a class or the
+    /// style sets it: CSS's `currentColor`, the color of a border or an
+    /// outline whose width the style sets. Applied before the classes, as
+    /// [`StyleDecl::Default`].
+    CurrentColor(StyleKey),
 }
 
 impl StyleDecl {
     /// Applies the declaration to `style`.
     pub fn apply(&self, style: &mut Style) -> Result<(), StyleError> {
         match self {
-            StyleDecl::Set(key, value) => style.set_key(*key, value.as_value()),
-            StyleDecl::ClearTransform => {
-                style.view.transform = Transform::IDENTITY;
-                style.animated.retain(|(prop, _)| {
-                    !matches!(prop, crate::animation::AnimationProp::Transform(_))
-                });
-                Ok(())
-            }
+            StyleDecl::Set(key, value) => style.apply_value(*key, value),
+            StyleDecl::SetTransform(property, steps) => style.set_transform(*property, steps),
             StyleDecl::Transform(kind, amount, node) => {
+                // The bound steps are the list's last part: they go at its end.
                 let index = style
                     .view
                     .transform
                     .push(*kind, *amount)
                     .ok_or(StyleError::InvalidValue)?;
+                style.pending.transform_counts[TRANSFORM_PARTS - 1] += 1;
                 if let Some(node) = node {
                     style
                         .animated
@@ -1699,18 +1875,11 @@ impl StyleDecl {
                 }
                 Ok(())
             }
-            StyleDecl::ShadowOffset(offset) => {
-                style.set_shadow_offset(*offset);
-                Ok(())
-            }
-            StyleDecl::TextShadowOffset(offset) => {
-                style.set_text_shadow_offset(*offset);
-                Ok(())
-            }
             StyleDecl::Animated(prop, node) => {
                 style.animated.push((*prop, *node));
                 Ok(())
             }
+            StyleDecl::Default(..) | StyleDecl::CurrentColor(_) => Ok(()),
         }
     }
 }
@@ -1724,9 +1893,15 @@ pub struct StylePatch {
 }
 
 impl StylePatch {
-    /// Applies `decl` to `style` and records it if it applied.
+    /// Applies `decl` to `style` and records it if it applied. A default
+    /// ([`StyleDecl::Default`]) applies unless the patch sets the property.
     pub fn push(&mut self, style: &mut Style, decl: StyleDecl) -> Result<(), StyleError> {
-        decl.apply(style)?;
+        match &decl {
+            StyleDecl::Default(key, value) if !self.sets(*key) => {
+                style.apply_value(*key, value)?;
+            }
+            decl => decl.apply(style)?,
+        }
         self.decls.push(decl);
         Ok(())
     }
@@ -1748,8 +1923,41 @@ impl StylePatch {
         if matches!(value, StyleValue::Null) && self.has_shorthand_of(key) {
             return Ok(());
         }
-        style.set_key(key, value)?;
-        let decl = StyleDecl::Set(key, value.into());
+        let parsed = key.parse_value(value)?;
+        style.apply_value(key, &parsed)?;
+        if key == StyleKey::Display && matches!(value, StyleValue::Str("flex")) {
+            // A CSS flex container is a row unless a direction is set
+            // (by a class or this style, before or after).
+            let row = PropertyValue::FlexDirection(FlexDirection::Row);
+            if !self.sets(StyleKey::FlexDirection) {
+                let _ = style.apply_value(StyleKey::FlexDirection, &row);
+            }
+            self.decls
+                .push(StyleDecl::Default(StyleKey::FlexDirection, row));
+        }
+        if matches!(
+            key,
+            StyleKey::BoxShadow | StyleKey::TextShadow | StyleKey::Filter
+        ) {
+            // Its layers (`drop-shadow()`s) without a color are the text
+            // color's: as a width's.
+            let colorless = match key {
+                StyleKey::BoxShadow => style.pending.current_shadows != 0,
+                StyleKey::Filter => style.pending.current_drop_shadows != 0,
+                _ => style.pending.current_text_shadow,
+            };
+            if colorless {
+                self.insert_current_color(key);
+            } else {
+                self.decls.retain(|d| *d != StyleDecl::CurrentColor(key));
+            }
+        }
+        if let Some(color) = key.current_color()
+            && !matches!(value, StyleValue::Null)
+        {
+            self.insert_current_color(color);
+        }
+        let decl = StyleDecl::Set(key, parsed);
         let longhands = key.longhands();
         let Some(at) = self
             .decls
@@ -1761,15 +1969,16 @@ impl StylePatch {
         };
         // Nulls set before are dropped (the shorthand shows); the others
         // apply again over it.
-        self.decls
-            .retain(|d| !matches!(d, StyleDecl::Set(k, PatchValue::Null) if longhands.contains(k)));
+        self.decls.retain(
+            |d| !matches!(d, StyleDecl::Set(k, PropertyValue::Default) if longhands.contains(k)),
+        );
         let at = at.min(self.decls.len());
         self.decls.insert(at, decl);
         for d in &self.decls[at + 1..] {
             if let StyleDecl::Set(k, v) = d
                 && longhands.contains(k)
             {
-                let _ = style.set_key(*k, v.as_value());
+                let _ = style.apply_value(*k, v);
             }
         }
         Ok(())
@@ -1782,12 +1991,78 @@ impl StylePatch {
             .any(|d| matches!(d, StyleDecl::Set(k, _) if k.longhands().contains(&key)))
     }
 
+    /// Records that `key` is the node's text color where nothing sets it
+    /// ([`StyleDecl::CurrentColor`]), once. These are kept first and in key
+    /// order: they apply before the classes in any order, so styles that
+    /// set the same keys compare equal.
+    fn insert_current_color(&mut self, key: StyleKey) {
+        let decl = StyleDecl::CurrentColor(key);
+        if self.decls.contains(&decl) {
+            return;
+        }
+        let at = self
+            .decls
+            .iter()
+            .take_while(
+                |d| matches!(d, StyleDecl::CurrentColor(k) if (*k as usize) < (key as usize)),
+            )
+            .count();
+        self.decls.insert(at, decl);
+    }
+
+    /// Whether a declaration sets `key`.
+    fn sets(&self, key: StyleKey) -> bool {
+        self.decls
+            .iter()
+            .any(|d| matches!(d, StyleDecl::Set(k, _) if *k == key))
+    }
+
     /// Applies every declaration to `style`, in order.
     pub fn apply(&self, style: &mut Style) {
         for decl in &self.decls {
             // Declarations were checked when they were recorded.
             let _ = decl.apply(style);
         }
+    }
+
+    /// Applies the values the style gives properties that nothing sets
+    /// ([`StyleDecl::Default`], [`StyleDecl::CurrentColor`] with `current`,
+    /// the node's text color): to the style before its classes, which
+    /// [`StylePatch::apply`] then follows.
+    pub fn apply_defaults(&self, style: &mut Style, current: Color) {
+        for decl in &self.decls {
+            match decl {
+                StyleDecl::Default(key, value) => {
+                    let _ = style.apply_value(*key, value);
+                }
+                // A shadow's colorless layers take the color once the
+                // style is in place ([`Style::apply_current_color`]).
+                StyleDecl::CurrentColor(
+                    StyleKey::BoxShadow | StyleKey::TextShadow | StyleKey::Filter,
+                ) => {}
+                StyleDecl::CurrentColor(key) => style.set_color(*key, current),
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether a color of the style is the node's text color
+    /// ([`StyleDecl::CurrentColor`]): it is styled again when the color
+    /// it inherits changes.
+    pub fn reads_current_color(&self) -> bool {
+        // A side's color is set by its own key or by `borderColor`.
+        let set = |k: StyleKey| match k {
+            // A colorless shadow layer reads it for as long as it is there.
+            StyleKey::BoxShadow | StyleKey::TextShadow | StyleKey::Filter => false,
+            StyleKey::OutlineColor | StyleKey::BorderColor => self.sets(k),
+            _ => self.sets(k) || self.sets(StyleKey::BorderColor),
+        };
+        self.decls.iter().any(|d| match d {
+            StyleDecl::CurrentColor(k) => !set(*k),
+            // `currentColor` written out, or inside a value.
+            StyleDecl::Set(_, PropertyValue::CurrentColor | PropertyValue::Deferred(..)) => true,
+            _ => false,
+        })
     }
 
     /// Whether there are no declarations.
@@ -1802,6 +2077,23 @@ impl StylePatch {
 }
 
 impl StyleKey {
+    /// The color a width property draws in, CSS's `currentColor` unless
+    /// something sets it.
+    fn current_color(self) -> Option<StyleKey> {
+        use StyleKey as K;
+        Some(match self {
+            K::BorderWidth => K::BorderColor,
+            K::BorderTopWidth => K::BorderTopColor,
+            K::BorderRightWidth => K::BorderRightColor,
+            K::BorderBottomWidth => K::BorderBottomColor,
+            K::BorderLeftWidth => K::BorderLeftColor,
+            K::BorderStartWidth => K::BorderStartColor,
+            K::BorderEndWidth => K::BorderEndColor,
+            K::OutlineWidth => K::OutlineColor,
+            _ => return None,
+        })
+    }
+
     /// The properties that override this shorthand in a style object
     /// whatever their order (Yoga takes an edge's own value before its
     /// axis' and that of all edges, `flexGrow` before `flex`).
@@ -1935,14 +2227,55 @@ fn opt_lp(v: StyleValue<'_>) -> Result<Option<LengthPercentage>, StyleError> {
     }
 }
 
-/// A minimum size: unset is 0, as in Yoga. Taffy's `auto` would be CSS's
-/// automatic minimum (the min-content size), which keeps flex items from
-/// shrinking below their content (`flex: 1` text in a row would overflow).
+/// Whether a value of `key` may write `currentColor` inside it (CSS's
+/// properties that take a color, alone or in a gradient, a shadow or a
+/// filter; `color` itself takes it alone: the inherited color).
+fn defers_current_color(key: StyleKey) -> bool {
+    matches!(
+        key,
+        StyleKey::BackgroundImage
+            | StyleKey::MaskImage
+            | StyleKey::Filter
+            | StyleKey::BackdropFilter
+            | StyleKey::BoxShadow
+            | StyleKey::TextShadow
+    ) || current_bits(key).is_some()
+}
+
+/// The color properties `currentColor` fills, by bit of
+/// `Pending::current_colors` ([`current_bits`]).
+const CURRENT_KEYS: [StyleKey; 10] = [
+    StyleKey::BorderTopColor,
+    StyleKey::BorderRightColor,
+    StyleKey::BorderBottomColor,
+    StyleKey::BorderLeftColor,
+    StyleKey::BorderStartColor,
+    StyleKey::BorderEndColor,
+    StyleKey::OutlineColor,
+    StyleKey::BackgroundColor,
+    StyleKey::TextDecorationColor,
+    StyleKey::CaretColor,
+];
+
+/// The bits of [`CURRENT_KEYS`] color property `key` sets (`borderColor`:
+/// every side's), if it takes `currentColor`.
+fn current_bits(key: StyleKey) -> Option<u16> {
+    if key == StyleKey::BorderColor {
+        return Some(0b1111);
+    }
+    let bit = CURRENT_KEYS.iter().position(|k| *k == key)?;
+    Some(1 << bit)
+}
+
+/// A minimum size: unset is 0, as in Yoga, so that flex items shrink
+/// without measuring their content (React Native's layout, NSH's
+/// default); `auto` is CSS's automatic minimum, which keeps a flex item
+/// from shrinking below its content's min-content size.
 fn min_len(v: StyleValue<'_>) -> Result<LengthPercentageAuto, StyleError> {
-    Ok(match Len::parse(v)? {
-        Len::Auto => LengthPercentageAuto::length(0.0),
-        len => len.lpa(),
-    })
+    match v {
+        StyleValue::Null => Ok(LengthPercentageAuto::length(0.0)),
+        v => Ok(Len::parse(v)?.lpa()),
+    }
 }
 
 fn lpa_or_zero(v: StyleValue<'_>) -> Result<LengthPercentageAuto, StyleError> {
@@ -2196,10 +2529,34 @@ fn grid_template(v: StyleValue<'_>) -> Result<grid::Template, StyleError> {
 fn grid_placement(v: StyleValue<'_>) -> Result<taffy::GridPlacement<String>, StyleError> {
     match v {
         StyleValue::Null => Ok(taffy::GridPlacement::Auto),
-        StyleValue::Number(n) => {
-            grid::placement(&(n as i32).to_string()).ok_or(StyleError::InvalidValue)
-        }
+        StyleValue::Number(n) => line_index(n),
         StyleValue::Str(s) => grid::placement(s).ok_or(StyleError::InvalidValue),
+    }
+}
+
+/// CSS's `aspect-ratio`: `16 / 9`, `1.5`, `auto` (none).
+fn aspect_ratio(s: &str) -> Result<Option<f32>, StyleError> {
+    let s = s.trim();
+    if s == "auto" {
+        return Ok(None);
+    }
+    let ratio = match s.split_once('/') {
+        Some((w, h)) => css::number(w.trim())
+            .zip(css::number(h.trim()))
+            .map(|(w, h)| w / h),
+        None => css::number(s),
+    };
+    match ratio {
+        Some(r) if r.is_finite() && r > 0.0 => Ok(Some(r)),
+        _ => Err(StyleError::InvalidValue),
+    }
+}
+
+/// A grid line by its number (CSS has no line 0).
+fn line_index(n: f32) -> Result<taffy::GridPlacement<String>, StyleError> {
+    match n as i16 {
+        0 => Err(StyleError::InvalidValue),
+        n => Ok(grid::line_number(n)),
     }
 }
 
@@ -2209,14 +2566,716 @@ fn grid_line(v: StyleValue<'_>) -> Result<taffy::Line<taffy::GridPlacement<Strin
             start: taffy::GridPlacement::Auto,
             end: taffy::GridPlacement::Auto,
         }),
-        StyleValue::Number(n) => {
-            grid::line(&(n as i32).to_string()).ok_or(StyleError::InvalidValue)
-        }
+        StyleValue::Number(n) => Ok(grid::line_from(line_index(n)?)),
         StyleValue::Str(s) => grid::line(s).ok_or(StyleError::InvalidValue),
     }
 }
 
+impl StyleKey {
+    /// Parses `value` for this property: what [`Style::apply_value`] sets.
+    /// Only a TSX style's values (and class strings, once) come here.
+    pub fn parse_value(self, value: StyleValue<'_>) -> Result<PropertyValue, StyleError> {
+        if let StyleValue::Str(s) = value {
+            if css::is_current_color(s) && (current_bits(self).is_some() || self == StyleKey::Color)
+            {
+                return Ok(PropertyValue::CurrentColor);
+            }
+            if defers_current_color(self) && css::mentions_current_color(s) {
+                // Checked now with a stand-in color, parsed again with the
+                // node's once the style is in place.
+                let probe = css::with_current_color(s, Color::BLACK);
+                let probe = self.parse_inner(StyleValue::Str(&probe))?;
+                return Ok(PropertyValue::Deferred(s.into(), Box::new(probe)));
+            }
+        }
+        match value {
+            StyleValue::Null => Ok(PropertyValue::Default),
+            value => self.parse_inner(value),
+        }
+    }
+
+    /// `n` as this property's value, as a number in a TSX style is
+    /// (points for lengths, a multiple for `lineHeight`).
+    pub fn number_value(self, n: f32) -> Result<PropertyValue, StyleError> {
+        self.parse_inner(StyleValue::Number(n))
+    }
+
+    /// `length` as this property's value: points, a fraction of the
+    /// containing block or `auto`, where the property takes them.
+    pub fn length_value(
+        self,
+        length: crate::geometry::Length,
+    ) -> Result<PropertyValue, StyleError> {
+        use StyleKey as K;
+
+        use crate::geometry::Length;
+        let len = match length {
+            Length::Definite(DefiniteLength::Absolute(a)) => Len::Px(a.to_points(REM_SIZE).0),
+            Length::Definite(DefiniteLength::Fraction(f)) => Len::Pct(f.0),
+            Length::Auto => Len::Auto,
+        };
+        Ok(match (self, len) {
+            (K::FlexBasis | K::Width | K::Height, len) => PropertyValue::Dimension(len.dim()),
+            (
+                K::MinWidth
+                | K::MinHeight
+                | K::MaxWidth
+                | K::MaxHeight
+                | K::Top
+                | K::Right
+                | K::Bottom
+                | K::Left
+                | K::Margin
+                | K::MarginHorizontal
+                | K::MarginVertical
+                | K::MarginTop
+                | K::MarginRight
+                | K::MarginBottom
+                | K::MarginLeft,
+                len,
+            ) => PropertyValue::Lpa(len.lpa()),
+            (
+                K::Padding
+                | K::PaddingHorizontal
+                | K::PaddingVertical
+                | K::PaddingTop
+                | K::PaddingRight
+                | K::PaddingBottom
+                | K::PaddingLeft
+                | K::Gap
+                | K::RowGap
+                | K::ColumnGap,
+                len,
+            ) => PropertyValue::Lp(len.lp()?),
+            (K::MarginStart | K::MarginEnd | K::Start | K::End, len) => {
+                PropertyValue::OptLpa(Some(len.lpa()))
+            }
+            (K::PaddingStart | K::PaddingEnd, len) => PropertyValue::OptLp(Some(len.lp()?)),
+            (K::LineHeight, Len::Px(n)) => PropertyValue::LineHeight(LineHeight::Points(px(n))),
+            (K::LineHeight, Len::Pct(f)) => PropertyValue::LineHeight(LineHeight::Em(f)),
+            (key, Len::Px(n)) => key.number_value(n)?,
+            _ => return Err(StyleError::InvalidValue),
+        })
+    }
+
+    /// The value `null` gives the property.
+    fn default_value(self) -> PropertyValue {
+        self.parse_inner(StyleValue::Null)
+            .expect("every property takes null")
+    }
+
+    fn parse_inner(self, value: StyleValue<'_>) -> Result<PropertyValue, StyleError> {
+        use StyleKey as K;
+        let of = OrderedFloat;
+        Ok(match self {
+            // Layout
+            K::Display => PropertyValue::Display(match keyword(value)? {
+                None | Some("flex") => Display::Flex,
+                Some("grid") => Display::Grid,
+                Some("block") => Display::Block,
+                Some("flow-root") => Display::FlowRoot,
+                Some("none") => Display::None,
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::BoxSizing => PropertyValue::BoxSizing(match keyword(value)? {
+                None | Some("border-box") => taffy::BoxSizing::BorderBox,
+                Some("content-box") => taffy::BoxSizing::ContentBox,
+                _ => return Err(StyleError::InvalidValue),
+            }),
+            K::Position => {
+                let (position, fixed, sticky) = match keyword(value)? {
+                    None | Some("relative") => (Position::Relative, false, false),
+                    Some("absolute") => (Position::Absolute, false, false),
+                    Some("fixed") => (Position::Fixed, true, false),
+                    Some("static") => (Position::Static, false, false),
+                    Some("sticky") => (Position::Relative, false, true),
+                    Some(_) => return Err(StyleError::InvalidValue),
+                };
+                PropertyValue::Position(position, fixed, sticky)
+            }
+            K::FlexDirection => PropertyValue::FlexDirection(match keyword(value)? {
+                None | Some("column") => FlexDirection::Column,
+                Some("row") => FlexDirection::Row,
+                Some("column-reverse") => FlexDirection::ColumnReverse,
+                Some("row-reverse") => FlexDirection::RowReverse,
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::FlexWrap => PropertyValue::FlexWrap(match keyword(value)? {
+                None | Some("nowrap") => FlexWrap::NoWrap,
+                Some("wrap") => FlexWrap::Wrap,
+                Some("wrap-reverse") => FlexWrap::WrapReverse,
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::Flex => {
+                // CSS's shorthand. Unset: the defaults (React Native's
+                // `flexShrink: 0`).
+                let (grow, shrink, basis) = match value {
+                    StyleValue::Null => (0.0, 0.0, Dimension::auto()),
+                    StyleValue::Number(n) if n >= 0.0 => (n, 1.0, Dimension::length(0.0)),
+                    StyleValue::Number(_) => return Err(StyleError::InvalidValue),
+                    StyleValue::Str(s) => {
+                        let (grow, shrink, basis) = css::flex(s).ok_or(StyleError::InvalidValue)?;
+                        let basis = match basis.map(|b| (b, css::length_or_percent(b))) {
+                            None => Dimension::length(0.0),
+                            // A CSS length (`30px`, `2rem`) or a percentage.
+                            Some((_, Some(DefiniteLength::Absolute(a)))) => {
+                                Dimension::length(a.to_points(crate::geometry::REM_SIZE).0)
+                            }
+                            Some((_, Some(DefiniteLength::Fraction(f)))) => Dimension::percent(f.0),
+                            // `auto`, `min-content`, ...
+                            Some((b, None)) => dimension(StyleValue::Str(b))?,
+                        };
+                        (grow, shrink, basis)
+                    }
+                };
+                PropertyValue::Flex(of(grow), of(shrink), basis)
+            }
+            K::FlexGrow | K::FlexShrink | K::ZIndex => {
+                PropertyValue::Number(of(number(value, 0.0)?))
+            }
+            K::Opacity => PropertyValue::Number(of(number(value, 1.0)?.clamp(0.0, 1.0))),
+            K::FlexBasis | K::Width | K::Height => PropertyValue::Dimension(dimension(value)?),
+            K::JustifyContent | K::AlignContent => {
+                PropertyValue::AlignContent(align_content(value)?)
+            }
+            K::AlignItems | K::JustifyItems => PropertyValue::AlignItems(align_items(value)?),
+            K::AlignSelf | K::JustifySelf => PropertyValue::AlignItems(match value {
+                StyleValue::Str("auto") => None,
+                v => align_items(v)?,
+            }),
+            K::MinWidth | K::MinHeight => PropertyValue::Lpa(min_len(value)?),
+            K::MaxWidth | K::MaxHeight | K::Top | K::Right | K::Bottom | K::Left => {
+                PropertyValue::Lpa(Len::parse(value)?.lpa())
+            }
+            K::AspectRatio => PropertyValue::OptNumber(match value {
+                StyleValue::Str(s) => aspect_ratio(s)?.map(of),
+                v => opt_number(v)?.map(of),
+            }),
+            K::Margin
+            | K::MarginHorizontal
+            | K::MarginVertical
+            | K::MarginTop
+            | K::MarginRight
+            | K::MarginBottom
+            | K::MarginLeft => match margin_edge(value)? {
+                (_, Some(var)) => PropertyValue::EnvLength(env_points(value), var),
+                (v, None) => PropertyValue::Lpa(v),
+            },
+            K::Padding
+            | K::PaddingHorizontal
+            | K::PaddingVertical
+            | K::PaddingTop
+            | K::PaddingRight
+            | K::PaddingBottom
+            | K::PaddingLeft => match padding_edge(value)? {
+                (_, Some(var)) => PropertyValue::EnvLength(env_points(value), var),
+                (v, None) => PropertyValue::Lp(v),
+            },
+            K::Gap | K::RowGap | K::ColumnGap => PropertyValue::Lp(lp_or_zero(value)?),
+            K::BorderWidth
+            | K::BorderTopWidth
+            | K::BorderRightWidth
+            | K::BorderBottomWidth
+            | K::BorderLeftWidth => PropertyValue::Points(px(number(value, 0.0)?.max(0.0))),
+            K::VerticalAlign => PropertyValue::VerticalAlign(match keyword(value)? {
+                None => VerticalAlign::Baseline,
+                Some(k) => VerticalAlign::parse(k).ok_or(StyleError::InvalidValue)?,
+            }),
+            K::Direction => PropertyValue::OptBool(match keyword(value)? {
+                None | Some("inherit") => None,
+                Some("ltr") => Some(false),
+                Some("rtl") => Some(true),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::MarginStart | K::MarginEnd | K::Start | K::End => {
+                PropertyValue::OptLpa(opt_lpa(value)?)
+            }
+            K::PaddingStart | K::PaddingEnd => PropertyValue::OptLp(opt_lp(value)?),
+            K::BorderStartWidth | K::BorderEndWidth => {
+                PropertyValue::OptPoints(opt_points(value)?.map(|w| w.max(Points::ZERO)))
+            }
+            K::BorderStartColor
+            | K::BorderEndColor
+            | K::BackgroundColor
+            | K::BorderColor
+            | K::BorderTopColor
+            | K::BorderRightColor
+            | K::BorderBottomColor
+            | K::BorderLeftColor
+            | K::TintColor
+            | K::OutlineColor
+            | K::Color
+            | K::TextDecorationColor
+            | K::PlaceholderColor
+            | K::SelectionColor
+            | K::CaretColor => PropertyValue::Color(color(value)?),
+            K::BorderTopStartRadius
+            | K::BorderTopEndRadius
+            | K::BorderBottomEndRadius
+            | K::BorderBottomStartRadius
+            | K::BorderTopLeftRadius
+            | K::BorderTopRightRadius
+            | K::BorderBottomRightRadius
+            | K::BorderBottomLeftRadius
+            | K::FontSize => PropertyValue::OptPoints(opt_points(value)?),
+            K::BorderRadius => PropertyValue::Points(px(number(value, 0.0)?)),
+            K::BorderStyle | K::OutlineStyle => {
+                // `none` (and `hidden`) draws and lays out no line whatever
+                // the width, set before or after it (CSS).
+                let (style, hidden) = match keyword(value)? {
+                    None | Some("solid") => (BorderStyle::Solid, false),
+                    Some("dashed") => (BorderStyle::Dashed, false),
+                    Some("dotted") => (BorderStyle::Dotted, false),
+                    Some("none") | Some("hidden") => (BorderStyle::Solid, true),
+                    Some(_) => return Err(StyleError::InvalidValue),
+                };
+                PropertyValue::BorderStyle(style, hidden)
+            }
+            K::BorderCurve => PropertyValue::Bool(match keyword(value)? {
+                None | Some("circular") => false,
+                Some("continuous") => true,
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::BackfaceVisibility | K::Overflow => PropertyValue::Bool(match keyword(value)? {
+                None | Some("visible") => false,
+                Some("hidden") => true,
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::Visibility => PropertyValue::Bool(match keyword(value)? {
+                None | Some("visible") => false,
+                Some("hidden") | Some("collapse") => true,
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::ObjectFit => PropertyValue::ObjectFit(match keyword(value)? {
+                None => None,
+                Some("fill") => Some(crate::ResizeMode::Stretch),
+                Some("contain") => Some(crate::ResizeMode::Contain),
+                Some("cover") => Some(crate::ResizeMode::Cover),
+                Some("none") => Some(crate::ResizeMode::Center),
+                Some("scale-down") => Some(crate::ResizeMode::ScaleDown),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::ObjectPosition => PropertyValue::ObjectPosition(match keyword(value)? {
+                None => ObjectPosition::CENTER,
+                Some(s) => ObjectPosition::parse(s).ok_or(StyleError::InvalidValue)?,
+            }),
+            K::Transform => transform_value(value, crate::transform::parse_css, None)?,
+            K::Translate => transform_value(
+                value,
+                crate::transform::parse_translate,
+                Some(TransformKind::TranslateX),
+            )?,
+            K::Rotate => transform_value(
+                value,
+                crate::transform::parse_rotate,
+                Some(TransformKind::Rotate),
+            )?,
+            K::Scale => transform_value(
+                value,
+                crate::transform::parse_scale,
+                Some(TransformKind::Scale),
+            )?,
+            K::TransformOrigin => PropertyValue::TransformOrigin(match keyword(value)? {
+                None => TransformOrigin::CENTER,
+                Some(s) => TransformOrigin::parse(s).ok_or(StyleError::InvalidValue)?,
+            }),
+
+            // Text
+            K::Fill | K::Stroke => PropertyValue::Paint(svg_paint(value)?),
+            K::StrokeWidth => PropertyValue::OptPoints(match value {
+                StyleValue::Null => None,
+                StyleValue::Number(n) if n >= 0.0 => Some(px(n)),
+                StyleValue::Str(s) => match css::length(s) {
+                    Some(n) if n >= 0.0 => Some(px(n)),
+                    _ => return Err(StyleError::InvalidValue),
+                },
+                StyleValue::Number(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::StrokeDasharray => PropertyValue::Dashes(dasharray(value)?),
+            K::FontWeight => PropertyValue::FontWeight(font_weight(value)?),
+            K::LineHeight => PropertyValue::LineHeight(line_height(value)?),
+            K::FontFamily => {
+                PropertyValue::FontFamily(keyword(value)?.map(|name| FontFamily::new(name.trim())))
+            }
+            K::FontStyle => PropertyValue::OptBool(match keyword(value)? {
+                None => None,
+                Some("normal") => Some(false),
+                Some("italic") => Some(true),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::LetterSpacing => {
+                let (points, em) = match value {
+                    StyleValue::Str(s) if s.ends_with("em") && !s.ends_with("rem") => {
+                        let n = css::number(&s[..s.len() - 2]).ok_or(StyleError::InvalidValue)?;
+                        (None, Some(of(n)))
+                    }
+                    StyleValue::Str(s) => (
+                        Some(px(css::length(s).ok_or(StyleError::InvalidValue)?)),
+                        None,
+                    ),
+                    v => (opt_points(v)?, None),
+                };
+                PropertyValue::LetterSpacing(points, em)
+            }
+            K::TextDecorationLine => PropertyValue::TextDecoration(match keyword(value)? {
+                None => None,
+                Some(words) => {
+                    let mut d = TextDecoration::default();
+                    for word in words.split_whitespace() {
+                        match word {
+                            "none" => {}
+                            "underline" => d.underline = true,
+                            "line-through" => d.line_through = true,
+                            _ => return Err(StyleError::InvalidValue),
+                        }
+                    }
+                    Some(d)
+                }
+            }),
+            K::WritingDirection => PropertyValue::OptBool(match keyword(value)? {
+                None | Some("auto") => None,
+                Some("ltr") => Some(false),
+                Some("rtl") => Some(true),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::FontVariant => PropertyValue::FontVariant(match keyword(value)? {
+                None => None,
+                Some(s) => Some(FontVariant::parse(s).ok_or(StyleError::InvalidValue)?),
+            }),
+            K::TextShadow => {
+                let layers = match keyword(value)? {
+                    None => Vec::new(),
+                    Some(s) => crate::css::text_shadows(s).ok_or(StyleError::InvalidValue)?,
+                };
+                // One text shadow natively: the widest layer stands for all,
+                // as the classes' does.
+                PropertyValue::TextShadow(
+                    layers
+                        .into_iter()
+                        .max_by(|a, b| a.0.radius.0.total_cmp(&b.0.radius.0)),
+                )
+            }
+            K::NumberOfLines => PropertyValue::NumberOfLines(match value {
+                StyleValue::Null => None,
+                StyleValue::Number(n) if n >= 0.0 => Some(n as u32),
+                _ => return Err(StyleError::InvalidValue),
+            }),
+            K::TextOverflow => PropertyValue::TextOverflow(match keyword(value)? {
+                None => None,
+                Some("ellipsis") => Some(EllipsizeMode::Tail),
+                Some("clip") => Some(EllipsizeMode::Clip),
+                Some("ellipsis-start") => Some(EllipsizeMode::Head),
+                Some("ellipsis-middle") => Some(EllipsizeMode::Middle),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::UserSelect => PropertyValue::OptBool(match keyword(value)? {
+                None | Some("auto") => None,
+                Some("none") => Some(false),
+                Some("text") => Some(true),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::PointerEvents => {
+                use crate::props::PointerEvents as P;
+                PropertyValue::PointerEvents(match keyword(value)? {
+                    None => None,
+                    Some("auto") => Some(P::Auto),
+                    Some("none") => Some(P::None),
+                    Some("box-none") => Some(P::BoxNone),
+                    Some("box-only") => Some(P::BoxOnly),
+                    Some(_) => return Err(StyleError::InvalidValue),
+                })
+            }
+            K::TextAlignVertical => PropertyValue::AlignVertical(match keyword(value)? {
+                None => None,
+                Some("auto" | "top") => Some(percentage(0.0)),
+                Some("center") => Some(percentage(0.5)),
+                Some("bottom") => Some(percentage(1.0)),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::TextTransform => PropertyValue::TextTransform(match keyword(value)? {
+                None => None,
+                Some("none") => Some(TextTransform::None),
+                Some("uppercase") => Some(TextTransform::Uppercase),
+                Some("lowercase") => Some(TextTransform::Lowercase),
+                Some("capitalize") => Some(TextTransform::Capitalize),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::TextAlign => {
+                // `left` and `right` keep their sides right to left, as in
+                // CSS; `start` and `end` are left and right there.
+                let (align, physical) = match keyword(value)? {
+                    None => (None, false),
+                    Some("auto") => (Some(TextAlign::Auto), false),
+                    Some("left") => (Some(TextAlign::Left), true),
+                    Some("center") => (Some(TextAlign::Center), false),
+                    Some("right") => (Some(TextAlign::Right), true),
+                    Some("justify") => (Some(TextAlign::Justify), false),
+                    Some("start") => (Some(TextAlign::Left), false),
+                    Some("end") => (Some(TextAlign::Right), false),
+                    Some(_) => return Err(StyleError::InvalidValue),
+                };
+                PropertyValue::TextAlign(align, physical)
+            }
+
+            // Effects
+            K::BoxShadow => PropertyValue::Shadows(match keyword(value)? {
+                None => Rc::from([]),
+                Some(s) => css::shadow_layers(s)
+                    .ok_or(StyleError::InvalidValue)?
+                    .into(),
+            }),
+            K::BackgroundImage => PropertyValue::Gradients(match keyword(value)? {
+                None => Rc::from([]),
+                Some(s) => css::gradients(s).ok_or(StyleError::InvalidValue)?.into(),
+            }),
+            K::MaskImage => PropertyValue::Gradients(match keyword(value)? {
+                None | Some("none") => Rc::from([]),
+                Some(s) => css::gradients(s).ok_or(StyleError::InvalidValue)?.into(),
+            }),
+            K::Filter => PropertyValue::Filters(match keyword(value)? {
+                None => Rc::from([]),
+                Some(s) => css::filter_list(s).ok_or(StyleError::InvalidValue)?.into(),
+            }),
+            K::BackdropFilter => PropertyValue::Filters(match keyword(value)? {
+                None => Rc::from([]),
+                Some(s) => css::filters(s)
+                    .ok_or(StyleError::InvalidValue)?
+                    .into_iter()
+                    .map(|f| (f, true))
+                    .collect(),
+            }),
+            K::GlassEffect => PropertyValue::GlassEffect(match keyword(value)? {
+                None => GlassEffect::None,
+                Some(s) => GlassEffect::parse(s).ok_or(StyleError::InvalidValue)?,
+            }),
+            K::MixBlendMode => PropertyValue::BlendMode(match keyword(value)? {
+                None => BlendMode::Normal,
+                Some(s) => BlendMode::parse(s).ok_or(StyleError::InvalidValue)?,
+            }),
+            K::OutlineWidth => PropertyValue::Points(px(length_value(value, 0.0)?.max(0.0))),
+            K::OutlineOffset => PropertyValue::Points(px(length_value(value, 0.0)?)),
+            K::Cursor => PropertyValue::Cursor(match keyword(value)? {
+                None => Cursor::Auto,
+                Some(s) => Cursor::parse(s).ok_or(StyleError::InvalidValue)?,
+            }),
+            K::TransitionProperty => PropertyValue::TransitionProps(match keyword(value)? {
+                None => TransitionProps(TransitionProps::ALL),
+                Some(s) => transition_properties(s).ok_or(StyleError::InvalidValue)?,
+            }),
+            K::TransitionDuration
+            | K::TransitionDelay
+            | K::AnimationDuration
+            | K::AnimationDelay => PropertyValue::Ms(of(duration(value)?)),
+            K::TransitionTimingFunction | K::AnimationTimingFunction => {
+                PropertyValue::Easing(timing_function(value)?.map(of))
+            }
+            K::AnimationName => PropertyValue::Keyframes(match keyword(value)? {
+                None | Some("none") => None,
+                Some("spin") => Some(Keyframes::Spin),
+                Some("ping") => Some(Keyframes::Ping),
+                Some("pulse") => Some(Keyframes::Pulse),
+                Some("bounce") => Some(Keyframes::Bounce),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::AnimationIterationCount => PropertyValue::Iterations(match value {
+                StyleValue::Str("infinite") | StyleValue::Null => None,
+                v => Some(number(v, 1.0)?.max(0.0) as u32),
+            }),
+            K::TextDecorationStyle => PropertyValue::DecorationStyle(match keyword(value)? {
+                None => None,
+                Some("solid") => Some(DecorationStyle::Solid),
+                Some("double") => Some(DecorationStyle::Double),
+                Some("dotted") => Some(DecorationStyle::Dotted),
+                Some("dashed") => Some(DecorationStyle::Dashed),
+                Some("wavy") => Some(DecorationStyle::Wavy),
+                Some(_) => return Err(StyleError::InvalidValue),
+            }),
+            K::TextDecorationThickness => PropertyValue::OptPoints(match value {
+                StyleValue::Null | StyleValue::Str("auto") | StyleValue::Str("from-font") => None,
+                v => Some(px(length_value(v, 1.0)?.max(0.0))),
+            }),
+            K::TextUnderlineOffset => PropertyValue::OptPoints(match value {
+                StyleValue::Null | StyleValue::Str("auto") => None,
+                v => Some(px(length_value(v, 0.0)?)),
+            }),
+
+            // Grid
+            K::GridTemplateColumns | K::GridTemplateRows => {
+                PropertyValue::GridTemplate(GridTemplateValue(Rc::new(grid_template(value)?)))
+            }
+            K::GridAutoColumns | K::GridAutoRows => {
+                PropertyValue::GridTracks(grid_value(value, grid::auto_tracks)?.into())
+            }
+            K::GridAutoFlow => PropertyValue::GridAutoFlow(match keyword(value)? {
+                None => taffy::GridAutoFlow::Row,
+                Some(s) => grid::auto_flow(s).ok_or(StyleError::InvalidValue)?,
+            }),
+            K::GridColumn | K::GridRow => PropertyValue::GridLine(grid_line(value)?),
+            K::GridColumnStart | K::GridColumnEnd | K::GridRowStart | K::GridRowEnd => {
+                PropertyValue::GridPlacement(grid_placement(value)?)
+            }
+        })
+    }
+}
+
+/// A transform property's value: CSS's syntax as `parse` reads it, a
+/// number as one `number` step, `null` as none.
+fn transform_value(
+    value: StyleValue<'_>,
+    parse: fn(&str) -> Option<Vec<crate::TransformOp>>,
+    number: Option<TransformKind>,
+) -> Result<PropertyValue, StyleError> {
+    let ops = match value {
+        StyleValue::Null => Vec::new(),
+        StyleValue::Number(n) => {
+            let kind = number.ok_or(StyleError::InvalidValue)?;
+            vec![crate::TransformOp { kind, value: n }]
+        }
+        StyleValue::Str(s) => parse(s).ok_or(StyleError::InvalidValue)?,
+    };
+    Ok(PropertyValue::Transform(
+        ops.iter().map(|op| (op.kind, op.value, None)).collect(),
+    ))
+}
+
+/// `lineHeight`: a number is points (React Native); strings, which
+/// classes write, are a multiple of the font size (`"1.5"`), a multiple
+/// of the element's own font size (`"1.5em"`, `"150%"`), points
+/// (`"20px"`) or the font's own (`"normal"`).
+fn line_height(value: StyleValue<'_>) -> Result<LineHeight, StyleError> {
+    Ok(match value {
+        StyleValue::Null | StyleValue::Str("normal") => LineHeight::Normal,
+        StyleValue::Number(n) => LineHeight::Points(px(n)),
+        StyleValue::Str(s) if s.ends_with("px") || s.ends_with("pt") || s.ends_with("rem") => {
+            LineHeight::Points(px(css::length(s).ok_or(StyleError::InvalidValue)?))
+        }
+        StyleValue::Str(s) if s.ends_with('%') || s.ends_with("em") => {
+            let n = if let Some(n) = s.strip_suffix('%') {
+                css::number(n).map(|n| n / 100.0)
+            } else {
+                css::number(s.strip_suffix("em").unwrap_or(s))
+            }
+            .filter(|n| *n >= 0.0)
+            .ok_or(StyleError::InvalidValue)?;
+            LineHeight::Em(n)
+        }
+        StyleValue::Str(s) => LineHeight::Multiple(
+            css::number(s)
+                .filter(|n| *n >= 0.0)
+                .ok_or(StyleError::InvalidValue)?,
+        ),
+    })
+}
+
 impl Style {
+    /// Gives the shadow layers a style wrote without a color the node's
+    /// text color, `current` (CSS's `currentColor`).
+    pub(crate) fn apply_current_color(&mut self, current: Color) {
+        if !self.pending.current_values.is_empty() {
+            // Taken out while they apply: setting a key drops its entry.
+            let values = std::mem::take(&mut self.pending.current_values);
+            for (key, value) in &values {
+                let value = css::with_current_color(value, current);
+                let _ = self.set_key(*key, StyleValue::Str(&value));
+            }
+            self.pending.current_values = values;
+        }
+        let mask = self.pending.current_drop_shadows;
+        if mask != 0 {
+            self.edit_effects(|e| {
+                for (i, filter) in e.filters.iter_mut().enumerate().take(64) {
+                    if mask & 1 << i != 0
+                        && let Filter::DropShadow { color, .. } = filter
+                    {
+                        *color = current;
+                    }
+                }
+            });
+        }
+        let mask = self.pending.current_shadows;
+        if mask != 0 {
+            self.edit_effects(|e| {
+                for (i, layer) in e.box_shadows.iter_mut().enumerate().take(64) {
+                    if mask & 1 << i != 0 {
+                        layer.color = current;
+                    }
+                }
+            });
+        }
+        if self.pending.current_text_shadow {
+            self.text.shadow_color = Some(current);
+        }
+        let colors = self.pending.current_colors;
+        for (bit, key) in CURRENT_KEYS.iter().enumerate() {
+            if colors & 1 << bit != 0 {
+                self.put_color(*key, current);
+            }
+        }
+    }
+
+    /// What the style says of the node's own props: `numberOfLines`,
+    /// `textOverflow`, `userSelect` and `pointerEvents`, into `props`.
+    pub(crate) fn node_props(&self, props: &mut crate::tailwind::ClassProps) {
+        let p = &self.pending;
+        props.number_of_lines = p.number_of_lines;
+        props.ellipsize = p.text_overflow;
+        props.selectable = p.user_select;
+        props.pointer_events = p.pointer_events;
+    }
+
+    /// `objectFit` (the `object-*` classes set it too): how an image or a
+    /// video fits its box; `None` leaves the element's default.
+    pub fn object_fit(&self) -> Option<crate::ResizeMode> {
+        self.pending.object_fit
+    }
+
+    /// Sets transform property `property` to `steps` in its place in the
+    /// transform list, the other properties' steps around it; a step with
+    /// an animated value is bound to it.
+    pub fn set_transform(
+        &mut self,
+        property: TransformProperty,
+        steps: &[(TransformKind, f32, Option<crate::animation::NodeId>)],
+    ) -> Result<(), StyleError> {
+        use crate::animation::AnimationProp;
+        let part = property as usize;
+        let counts = self.pending.transform_counts;
+        let start: usize = counts[..part].iter().map(|&c| usize::from(c)).sum();
+        let old = usize::from(counts[part]);
+        let ops = self.view.transform.ops();
+        if ops.len() - old + steps.len() > crate::MAX_TRANSFORMS {
+            return Err(StyleError::InvalidValue);
+        }
+        let mut list = Transform::IDENTITY;
+        let kept = ops[..start].iter().map(|op| (op.kind, op.value));
+        let after = ops[start + old..].iter().map(|op| (op.kind, op.value));
+        for (kind, value) in kept
+            .chain(steps.iter().map(|&(kind, value, _)| (kind, value)))
+            .chain(after)
+        {
+            let _ = list.push(kind, value);
+        }
+        self.view.transform = list;
+        // The bindings of the steps after it move with them.
+        let moved = steps.len() as isize - old as isize;
+        self.animated.retain_mut(|(prop, _)| match prop {
+            AnimationProp::Transform(i) if usize::from(*i) >= start + old => {
+                *i = (*i as isize + moved) as u8;
+                true
+            }
+            AnimationProp::Transform(i) => usize::from(*i) < start,
+            _ => true,
+        });
+        for (k, &(_, _, node)) in steps.iter().enumerate() {
+            if let Some(node) = node {
+                self.animated
+                    .push((AnimationProp::Transform((start + k) as u8), node));
+            }
+        }
+        self.pending.transform_counts[part] = steps.len() as u8;
+        Ok(())
+    }
+
     /// Changes the effects lists (copying them if shared).
     pub fn edit_effects(&mut self, f: impl FnOnce(&mut Effects)) {
         let mut effects = self
@@ -2259,43 +3318,13 @@ impl Style {
         })
     }
 
-    /// Appends an entry to the `transform` list (`translateX`, `scale`,
-    /// ...); rotations and skews are degrees (`"45deg"` strings are parsed
-    /// by the caller). Returns the entry's index.
-    pub fn push_transform(&mut self, key: &str, value: f32) -> Result<u8, StyleError> {
-        let kind = TransformKind::parse(key).ok_or(StyleError::UnknownProperty)?;
-        self.view
-            .transform
-            .push(kind, value)
-            .ok_or(StyleError::InvalidValue)
-    }
-
-    /// Sets `shadowOffset: { width, height }`; `None` restores the default.
-    pub fn set_shadow_offset(&mut self, offset: Option<Point<Points>>) {
-        let offset =
-            offset.unwrap_or_else(|| point(Shadow::DEFAULT.offset_x, Shadow::DEFAULT.offset_y));
-        self.view.shadow.offset_x = offset.x;
-        self.view.shadow.offset_y = offset.y;
-    }
-
-    /// Sets `textShadowOffset: { width, height }`.
-    pub fn set_text_shadow_offset(&mut self, offset: Option<Point<Points>>) {
-        self.text.shadow_offset = offset;
-    }
-
-    fn set_border_width(
-        &mut self,
-        sides: &[usize],
-        value: StyleValue<'_>,
-    ) -> Result<(), StyleError> {
-        let w = px(number(value, 0.0)?.max(0.0));
+    fn set_border_width(&mut self, sides: &[usize], w: Points) {
         for &side in sides {
             self.pending.border_widths[side] = w;
             if !self.pending.border_hidden {
                 self.set_used_border_width(side, w);
             }
         }
-        Ok(())
     }
 
     /// The width side `side` lays out and draws with.
@@ -2311,34 +3340,31 @@ impl Style {
         }
     }
 
-    fn set_logical_border_width(
-        &mut self,
-        i: usize,
-        value: StyleValue<'_>,
-    ) -> Result<(), StyleError> {
-        let w = opt_points(value)?.map(|w| w.max(Points::ZERO));
+    fn set_logical_border_width(&mut self, i: usize, w: Option<Points>) {
         self.pending.border_logical[i] = w;
         if !self.pending.border_hidden {
             self.logical.border_width[i] = w;
         }
-        Ok(())
     }
 
-    fn set_border_color(
-        &mut self,
-        sides: &[usize],
-        value: StyleValue<'_>,
-    ) -> Result<(), StyleError> {
-        let c = color(value)?.unwrap_or(Color::BLACK);
+    fn set_border_color(&mut self, sides: &[usize], c: Option<Color>) {
+        let c = c.unwrap_or(Color::BLACK);
         for &side in sides {
             self.view.borders.colors[side] = c;
         }
-        Ok(())
     }
 
     /// Sets color property `key` (`borderColor`, `outlineColor`) to `color`;
     /// other keys are left as they are.
     pub(crate) fn set_color(&mut self, key: StyleKey, color: Color) {
+        if let Some(bits) = current_bits(key) {
+            self.pending.current_colors &= !bits;
+        }
+        self.put_color(key, color);
+    }
+
+    /// [`Style::set_color`], leaving what `currentColor` fills alone.
+    fn put_color(&mut self, key: StyleKey, color: Color) {
         match key {
             StyleKey::BorderColor => self.view.borders.colors = [color; 4],
             StyleKey::OutlineColor => self.view.outline.color = color,
@@ -2350,6 +3376,7 @@ impl Style {
             StyleKey::BorderStartColor => self.logical.border_color[0] = Some(color),
             StyleKey::BorderEndColor => self.logical.border_color[1] = Some(color),
             StyleKey::TextDecorationColor => self.text.decoration_color = Some(color),
+            StyleKey::CaretColor => self.text.caret_color = Some(color),
             _ => debug_assert!(false, "set_color({key:?})"),
         }
     }
@@ -2364,245 +3391,175 @@ impl Style {
 
     /// Sets one property.
     pub fn set_key(&mut self, key: StyleKey, value: StyleValue<'_>) -> Result<(), StyleError> {
-        let l = &mut self.layout;
-        match key {
-            // Layout
-            StyleKey::Display => {
-                l.display = match keyword(value)? {
-                    None | Some("flex") => Display::Flex,
-                    Some("grid") => Display::Grid,
-                    Some("block") => Display::Block,
-                    Some("flow-root") => Display::FlowRoot,
-                    Some("none") => Display::None,
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
+        let value = key.parse_value(value)?;
+        self.apply_value(key, &value)
+    }
+
+    /// Sets property `key` to `value`, parsed before ([`StyleKey::parse_value`])
+    /// or made typed (classes, Rust's styles). A value of another property's
+    /// kind is rejected.
+    pub fn apply_value(&mut self, key: StyleKey, value: &PropertyValue) -> Result<(), StyleError> {
+        use PropertyValue as V;
+        use StyleKey as K;
+        if !self.pending.current_values.is_empty() {
+            self.pending.current_values.retain(|(k, _)| *k != key);
+        }
+        match value {
+            V::Default => return self.apply_value(key, &key.default_value()),
+            V::Deferred(text, probe) => {
+                self.apply_value(key, probe)?;
+                self.pending.current_values.push((key, text.clone()));
+                return Ok(());
             }
-            StyleKey::BoxSizing => {
-                l.box_sizing = match keyword(value)? {
-                    None | Some("border-box") => taffy::BoxSizing::BorderBox,
-                    Some("content-box") => taffy::BoxSizing::ContentBox,
+            _ => {}
+        }
+        let current = matches!(value, V::CurrentColor);
+        if let Some(bits) = current_bits(key) {
+            // The last value wins: `currentColor` is filled in once the
+            // style is in place, another value takes its place.
+            if current {
+                self.pending.current_colors |= bits;
+                return Ok(());
+            }
+            self.pending.current_colors &= !bits;
+        } else if current {
+            if key != K::Color {
+                return Err(StyleError::InvalidValue);
+            }
+            // CSS: `color: currentColor` is the inherited color.
+            self.text.color = None;
+            return Ok(());
+        }
+        let l = &mut self.layout;
+        match (key, value) {
+            // Layout
+            (K::Display, V::Display(v)) => l.display = *v,
+            (K::BoxSizing, V::BoxSizing(v)) => l.box_sizing = *v,
+            (K::Position, V::Position(position, fixed, sticky)) => {
+                l.position = *position;
+                self.pending.fixed_position = *fixed;
+                self.pending.sticky_position = *sticky;
+            }
+            (K::FlexDirection, V::FlexDirection(v)) => l.flex_direction = *v,
+            (K::FlexWrap, V::FlexWrap(v)) => l.flex_wrap = *v,
+            (K::Flex, V::Flex(grow, shrink, basis)) => {
+                (l.flex_grow, l.flex_shrink, l.flex_basis) = (grow.0, shrink.0, *basis);
+            }
+            (K::FlexGrow, V::Number(n)) => l.flex_grow = n.0,
+            (K::FlexShrink, V::Number(n)) => l.flex_shrink = n.0,
+            (K::FlexBasis, V::Dimension(v)) => l.flex_basis = *v,
+            (K::JustifyContent, V::AlignContent(v)) => l.justify_content = *v,
+            (K::AlignItems, V::AlignItems(v)) => l.align_items = v.unwrap_or(AlignItems::STRETCH),
+            (K::AlignSelf, V::AlignItems(v)) => l.align_self = *v,
+            (K::AlignContent, V::AlignContent(v)) => l.align_content = *v,
+            (K::Width, V::Dimension(v)) => l.size.width = *v,
+            (K::Height, V::Dimension(v)) => l.size.height = *v,
+            (K::MinWidth, V::Lpa(v)) => l.min_size.width = *v,
+            (K::MinHeight, V::Lpa(v)) => l.min_size.height = *v,
+            (K::MaxWidth, V::Lpa(v)) => l.max_size.width = *v,
+            (K::MaxHeight, V::Lpa(v)) => l.max_size.height = *v,
+            (K::AspectRatio, V::OptNumber(v)) => l.aspect_ratio = v.map(|n| n.0),
+            (K::Top, V::Lpa(v)) => l.inset.top = *v,
+            (K::Right, V::Lpa(v)) => l.inset.right = *v,
+            (K::Bottom, V::Lpa(v)) => l.inset.bottom = *v,
+            (K::Left, V::Lpa(v)) => l.inset.left = *v,
+            (
+                K::Margin
+                | K::MarginHorizontal
+                | K::MarginVertical
+                | K::MarginTop
+                | K::MarginRight
+                | K::MarginBottom
+                | K::MarginLeft,
+                v,
+            ) => {
+                let (length, var) = match v {
+                    V::Lpa(v) => (*v, None),
+                    V::EnvLength(p, var) => (LengthPercentageAuto::length(p.0), Some(*var)),
                     _ => return Err(StyleError::InvalidValue),
                 };
+                let m = &mut l.margin;
+                for &side in edges(key) {
+                    *[&mut m.top, &mut m.right, &mut m.bottom, &mut m.left][side] = length;
+                    self.pending.env.margin[side] = var;
+                }
             }
-            StyleKey::Position => {
-                let (position, fixed, sticky) = match keyword(value)? {
-                    None | Some("relative") => (Position::Relative, false, false),
-                    Some("absolute") => (Position::Absolute, false, false),
-                    Some("fixed") => (Position::Fixed, true, false),
-                    Some("static") => (Position::Static, false, false),
-                    Some("sticky") => (Position::Relative, false, true),
-                    Some(_) => return Err(StyleError::InvalidValue),
+            (
+                K::Padding
+                | K::PaddingHorizontal
+                | K::PaddingVertical
+                | K::PaddingTop
+                | K::PaddingRight
+                | K::PaddingBottom
+                | K::PaddingLeft,
+                v,
+            ) => {
+                let (length, var) = match v {
+                    V::Lp(v) => (*v, None),
+                    V::EnvLength(p, var) => (LengthPercentage::length(p.0), Some(*var)),
+                    _ => return Err(StyleError::InvalidValue),
                 };
-                l.position = position;
-                self.pending.fixed_position = fixed;
-                self.pending.sticky_position = sticky;
-            }
-            StyleKey::FlexDirection => {
-                l.flex_direction = match keyword(value)? {
-                    None | Some("column") => FlexDirection::Column,
-                    Some("row") => FlexDirection::Row,
-                    Some("column-reverse") => FlexDirection::ColumnReverse,
-                    Some("row-reverse") => FlexDirection::RowReverse,
-                    Some(_) => return Err(StyleError::InvalidValue),
+                let p = &mut l.padding;
+                for &side in edges(key) {
+                    *[&mut p.top, &mut p.right, &mut p.bottom, &mut p.left][side] = length;
+                    self.pending.env.padding[side] = var;
                 }
             }
-            StyleKey::FlexWrap => {
-                l.flex_wrap = match keyword(value)? {
-                    None | Some("nowrap") => FlexWrap::NoWrap,
-                    Some("wrap") => FlexWrap::Wrap,
-                    Some("wrap-reverse") => FlexWrap::WrapReverse,
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
-            }
-            StyleKey::Flex => {
-                // React Native semantics, not the CSS shorthand.
-                let f = number(value, 0.0)?;
-                if f > 0.0 {
-                    l.flex_grow = f;
-                    l.flex_shrink = 1.0;
-                    l.flex_basis = Dimension::length(0.0);
-                } else if f < 0.0 {
-                    l.flex_grow = 0.0;
-                    l.flex_shrink = -f;
-                    l.flex_basis = Dimension::auto();
-                } else {
-                    l.flex_grow = 0.0;
-                    l.flex_shrink = 0.0;
-                    l.flex_basis = Dimension::auto();
-                }
-            }
-            StyleKey::FlexGrow => l.flex_grow = number(value, 0.0)?,
-            StyleKey::FlexShrink => l.flex_shrink = number(value, 0.0)?,
-            StyleKey::FlexBasis => l.flex_basis = dimension(value)?,
-            StyleKey::JustifyContent => l.justify_content = align_content(value)?,
-            StyleKey::AlignItems => {
-                l.align_items = align_items(value)?.unwrap_or(AlignItems::STRETCH)
-            }
-            StyleKey::AlignSelf => {
-                l.align_self = match value {
-                    StyleValue::Str("auto") => None,
-                    v => align_items(v)?,
-                }
-            }
-            StyleKey::AlignContent => l.align_content = align_content(value)?,
-            StyleKey::Width => l.size.width = dimension(value)?,
-            StyleKey::Height => l.size.height = dimension(value)?,
-            StyleKey::MinWidth => l.min_size.width = min_len(value)?,
-            StyleKey::MinHeight => l.min_size.height = min_len(value)?,
-            StyleKey::MaxWidth => l.max_size.width = Len::parse(value)?.lpa(),
-            StyleKey::MaxHeight => l.max_size.height = Len::parse(value)?.lpa(),
-            StyleKey::AspectRatio => l.aspect_ratio = opt_number(value)?,
-            StyleKey::Top => l.inset.top = Len::parse(value)?.lpa(),
-            StyleKey::Right => l.inset.right = Len::parse(value)?.lpa(),
-            StyleKey::Bottom => l.inset.bottom = Len::parse(value)?.lpa(),
-            StyleKey::Left => l.inset.left = Len::parse(value)?.lpa(),
-            StyleKey::Margin => {
-                let (v, e) = margin_edge(value)?;
-                l.margin = taffy::Rect {
-                    left: v,
-                    right: v,
-                    top: v,
-                    bottom: v,
-                };
-                self.pending.env.margin = [e; 4];
-            }
-            StyleKey::MarginHorizontal => {
-                let (v, e) = margin_edge(value)?;
-                (l.margin.left, l.margin.right) = (v, v);
-                (self.pending.env.margin[1], self.pending.env.margin[3]) = (e, e);
-            }
-            StyleKey::MarginVertical => {
-                let (v, e) = margin_edge(value)?;
-                (l.margin.top, l.margin.bottom) = (v, v);
-                (self.pending.env.margin[0], self.pending.env.margin[2]) = (e, e);
-            }
-            StyleKey::MarginTop => (l.margin.top, self.pending.env.margin[0]) = margin_edge(value)?,
-            StyleKey::MarginRight => {
-                (l.margin.right, self.pending.env.margin[1]) = margin_edge(value)?
-            }
-            StyleKey::MarginBottom => {
-                (l.margin.bottom, self.pending.env.margin[2]) = margin_edge(value)?
-            }
-            StyleKey::MarginLeft => {
-                (l.margin.left, self.pending.env.margin[3]) = margin_edge(value)?
-            }
-            StyleKey::Padding => {
-                let (v, e) = padding_edge(value)?;
-                l.padding = taffy::Rect {
-                    left: v,
-                    right: v,
-                    top: v,
-                    bottom: v,
-                };
-                self.pending.env.padding = [e; 4];
-            }
-            StyleKey::PaddingHorizontal => {
-                let (v, e) = padding_edge(value)?;
-                (l.padding.left, l.padding.right) = (v, v);
-                (self.pending.env.padding[1], self.pending.env.padding[3]) = (e, e);
-            }
-            StyleKey::PaddingVertical => {
-                let (v, e) = padding_edge(value)?;
-                (l.padding.top, l.padding.bottom) = (v, v);
-                (self.pending.env.padding[0], self.pending.env.padding[2]) = (e, e);
-            }
-            StyleKey::PaddingTop => {
-                (l.padding.top, self.pending.env.padding[0]) = padding_edge(value)?
-            }
-            StyleKey::PaddingRight => {
-                (l.padding.right, self.pending.env.padding[1]) = padding_edge(value)?
-            }
-            StyleKey::PaddingBottom => {
-                (l.padding.bottom, self.pending.env.padding[2]) = padding_edge(value)?
-            }
-            StyleKey::PaddingLeft => {
-                (l.padding.left, self.pending.env.padding[3]) = padding_edge(value)?
-            }
-            StyleKey::Gap => {
-                let v = lp_or_zero(value)?;
+            (K::Gap, V::Lp(v)) => {
                 l.gap = taffy::Size {
-                    width: v,
-                    height: v,
+                    width: *v,
+                    height: *v,
                 };
             }
-            StyleKey::RowGap => l.gap.height = lp_or_zero(value)?,
-            StyleKey::ColumnGap => l.gap.width = lp_or_zero(value)?,
-            StyleKey::BorderWidth => self.set_border_width(&[0, 1, 2, 3], value)?,
-            StyleKey::BorderTopWidth => self.set_border_width(&[0], value)?,
-            StyleKey::BorderRightWidth => self.set_border_width(&[1], value)?,
-            StyleKey::BorderBottomWidth => self.set_border_width(&[2], value)?,
-            StyleKey::BorderLeftWidth => self.set_border_width(&[3], value)?,
-            StyleKey::ZIndex => self.z_index = number(value, 0.0)? as i32,
-            StyleKey::VerticalAlign => {
-                self.vertical_align = match keyword(value)? {
-                    None => VerticalAlign::Baseline,
-                    Some(k) => VerticalAlign::parse(k).ok_or(StyleError::InvalidValue)?,
-                }
-            }
-            StyleKey::Direction => {
-                self.direction = match keyword(value)? {
-                    None | Some("inherit") => None,
-                    Some("ltr") => Some(false),
-                    Some("rtl") => Some(true),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
-            }
-            StyleKey::MarginStart => self.logical.margin[0] = opt_lpa(value)?,
-            StyleKey::MarginEnd => self.logical.margin[1] = opt_lpa(value)?,
-            StyleKey::PaddingStart => self.logical.padding[0] = opt_lp(value)?,
-            StyleKey::PaddingEnd => self.logical.padding[1] = opt_lp(value)?,
-            StyleKey::Start => self.logical.inset[0] = opt_lpa(value)?,
-            StyleKey::End => self.logical.inset[1] = opt_lpa(value)?,
-            StyleKey::BorderStartWidth => self.set_logical_border_width(0, value)?,
-            StyleKey::BorderEndWidth => self.set_logical_border_width(1, value)?,
-            StyleKey::BorderStartColor => self.logical.border_color[0] = color(value)?,
-            StyleKey::BorderEndColor => self.logical.border_color[1] = color(value)?,
-            StyleKey::BorderTopStartRadius => self.logical.radius[0] = opt_points(value)?,
-            StyleKey::BorderTopEndRadius => self.logical.radius[1] = opt_points(value)?,
-            StyleKey::BorderBottomEndRadius => self.logical.radius[2] = opt_points(value)?,
-            StyleKey::BorderBottomStartRadius => self.logical.radius[3] = opt_points(value)?,
+            (K::RowGap, V::Lp(v)) => l.gap.height = *v,
+            (K::ColumnGap, V::Lp(v)) => l.gap.width = *v,
+            (K::BorderWidth, V::Points(w)) => self.set_border_width(&[0, 1, 2, 3], *w),
+            (K::BorderTopWidth, V::Points(w)) => self.set_border_width(&[0], *w),
+            (K::BorderRightWidth, V::Points(w)) => self.set_border_width(&[1], *w),
+            (K::BorderBottomWidth, V::Points(w)) => self.set_border_width(&[2], *w),
+            (K::BorderLeftWidth, V::Points(w)) => self.set_border_width(&[3], *w),
+            (K::ZIndex, V::Number(n)) => self.z_index = n.0 as i32,
+            (K::VerticalAlign, V::VerticalAlign(v)) => self.vertical_align = *v,
+            (K::Direction, V::OptBool(v)) => self.direction = *v,
+            (K::MarginStart, V::OptLpa(v)) => self.logical.margin[0] = *v,
+            (K::MarginEnd, V::OptLpa(v)) => self.logical.margin[1] = *v,
+            (K::PaddingStart, V::OptLp(v)) => self.logical.padding[0] = *v,
+            (K::PaddingEnd, V::OptLp(v)) => self.logical.padding[1] = *v,
+            (K::Start, V::OptLpa(v)) => self.logical.inset[0] = *v,
+            (K::End, V::OptLpa(v)) => self.logical.inset[1] = *v,
+            (K::BorderStartWidth, V::OptPoints(w)) => self.set_logical_border_width(0, *w),
+            (K::BorderEndWidth, V::OptPoints(w)) => self.set_logical_border_width(1, *w),
+            (K::BorderStartColor, V::Color(c)) => self.logical.border_color[0] = *c,
+            (K::BorderEndColor, V::Color(c)) => self.logical.border_color[1] = *c,
+            (K::BorderTopStartRadius, V::OptPoints(r)) => self.logical.radius[0] = *r,
+            (K::BorderTopEndRadius, V::OptPoints(r)) => self.logical.radius[1] = *r,
+            (K::BorderBottomEndRadius, V::OptPoints(r)) => self.logical.radius[2] = *r,
+            (K::BorderBottomStartRadius, V::OptPoints(r)) => self.logical.radius[3] = *r,
 
             // View
-            StyleKey::BackgroundColor => {
-                self.view.background_color = color(value)?.unwrap_or(Color::TRANSPARENT)
+            (K::BackgroundColor, V::Color(c)) => {
+                self.view.background_color = c.unwrap_or(Color::TRANSPARENT)
             }
-            StyleKey::BorderRadius => self.view.border_radius = px(number(value, 0.0)?),
-            StyleKey::BorderTopLeftRadius => self.view.corner_radius.top_left = opt_points(value)?,
-            StyleKey::BorderTopRightRadius => {
-                self.view.corner_radius.top_right = opt_points(value)?
+            (K::BorderRadius, V::Points(r)) => self.view.border_radius = *r,
+            (K::BorderTopLeftRadius, V::OptPoints(r)) => self.view.corner_radius.top_left = *r,
+            (K::BorderTopRightRadius, V::OptPoints(r)) => self.view.corner_radius.top_right = *r,
+            (K::BorderBottomRightRadius, V::OptPoints(r)) => {
+                self.view.corner_radius.bottom_right = *r
             }
-            StyleKey::BorderBottomRightRadius => {
-                self.view.corner_radius.bottom_right = opt_points(value)?
+            (K::BorderBottomLeftRadius, V::OptPoints(r)) => {
+                self.view.corner_radius.bottom_left = *r
             }
-            StyleKey::BorderBottomLeftRadius => {
-                self.view.corner_radius.bottom_left = opt_points(value)?
-            }
-            StyleKey::ShadowColor => {
-                self.view.shadow.color = color(value)?.unwrap_or(Shadow::DEFAULT.color)
-            }
-            StyleKey::ShadowOpacity => {
-                self.view.shadow.opacity = number(value, Shadow::DEFAULT.opacity)?.clamp(0.0, 1.0)
-            }
-            StyleKey::ShadowRadius => {
-                self.view.shadow.radius = px(number(value, Shadow::DEFAULT.radius.0)?.max(0.0))
-            }
-            StyleKey::BorderColor => self.set_border_color(&[0, 1, 2, 3], value)?,
-            StyleKey::BorderTopColor => self.set_border_color(&[0], value)?,
-            StyleKey::BorderRightColor => self.set_border_color(&[1], value)?,
-            StyleKey::BorderBottomColor => self.set_border_color(&[2], value)?,
-            StyleKey::BorderLeftColor => self.set_border_color(&[3], value)?,
-            StyleKey::BorderStyle => {
+            (K::BorderColor, V::Color(c)) => self.set_border_color(&[0, 1, 2, 3], *c),
+            (K::BorderTopColor, V::Color(c)) => self.set_border_color(&[0], *c),
+            (K::BorderRightColor, V::Color(c)) => self.set_border_color(&[1], *c),
+            (K::BorderBottomColor, V::Color(c)) => self.set_border_color(&[2], *c),
+            (K::BorderLeftColor, V::Color(c)) => self.set_border_color(&[3], *c),
+            (K::BorderStyle, V::BorderStyle(style, hidden)) => {
                 // `none` (and `hidden`, the same outside tables) draws and
                 // lays out no border whatever the widths, set before or
                 // after it (CSS).
-                let (style, hidden) = match keyword(value)? {
-                    None | Some("solid") => (BorderStyle::Solid, false),
-                    Some("dashed") => (BorderStyle::Dashed, false),
-                    Some("dotted") => (BorderStyle::Dotted, false),
-                    Some("none") | Some("hidden") => (BorderStyle::Solid, true),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                };
-                self.view.borders.style = style;
+                let hidden = *hidden;
+                self.view.borders.style = *style;
                 if hidden != self.pending.border_hidden {
                     self.pending.border_hidden = hidden;
                     for side in 0..4 {
@@ -2620,311 +3577,143 @@ impl Style {
                     };
                 }
             }
-            StyleKey::BorderCurve => {
-                self.view.continuous_corners = match keyword(value)? {
-                    None | Some("circular") => false,
-                    Some("continuous") => true,
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
+            (K::BorderCurve, V::Bool(v)) => self.view.continuous_corners = *v,
+            (K::TintColor, V::Color(c)) => self.view.tint_color = *c,
+            (K::ObjectFit, V::ObjectFit(v)) => self.pending.object_fit = *v,
+            (K::ObjectPosition, V::ObjectPosition(v)) => self.view.object_position = *v,
+            (K::BackfaceVisibility, V::Bool(v)) => self.view.backface_hidden = *v,
+            (K::Transform, V::Transform(steps)) => {
+                self.set_transform(TransformProperty::Transform, steps)?
             }
-            StyleKey::TintColor => self.view.tint_color = color(value)?,
-            StyleKey::ObjectPosition => {
-                self.view.object_position = match keyword(value)? {
-                    None => ObjectPosition::CENTER,
-                    Some(s) => ObjectPosition::parse(s).ok_or(StyleError::InvalidValue)?,
-                }
+            (K::Translate, V::Transform(steps)) => {
+                self.set_transform(TransformProperty::Translate, steps)?
             }
-            StyleKey::BackfaceVisibility => {
-                self.view.backface_hidden = match keyword(value)? {
-                    None | Some("visible") => false,
-                    Some("hidden") => true,
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
+            (K::Rotate, V::Transform(steps)) => {
+                self.set_transform(TransformProperty::Rotate, steps)?
             }
-            StyleKey::TransformOrigin => {
-                self.view.transform_origin = match keyword(value)? {
-                    None => TransformOrigin::CENTER,
-                    Some(s) => TransformOrigin::parse(s).ok_or(StyleError::InvalidValue)?,
-                }
+            (K::Scale, V::Transform(steps)) => {
+                self.set_transform(TransformProperty::Scale, steps)?
             }
-            StyleKey::Opacity => self.view.opacity = number(value, 1.0)?.clamp(0.0, 1.0),
-            StyleKey::Overflow => {
-                self.view.overflow_hidden = match keyword(value)? {
-                    None | Some("visible") => false,
-                    Some("hidden") => true,
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
-            }
+            (K::TransformOrigin, V::TransformOrigin(v)) => self.view.transform_origin = *v,
+            (K::Opacity, V::Number(n)) => self.view.opacity = n.0.clamp(0.0, 1.0),
+            (K::Overflow, V::Bool(v)) => self.view.overflow_hidden = *v,
 
             // Text
-            StyleKey::Color => self.text.color = color(value)?,
-            StyleKey::Fill => self.paint.fill = svg_paint(value)?,
-            StyleKey::Stroke => self.paint.stroke = svg_paint(value)?,
-            StyleKey::StrokeWidth => {
-                self.paint.stroke_width = match value {
-                    StyleValue::Null => None,
-                    StyleValue::Number(n) if n >= 0.0 => Some(px(n)),
-                    StyleValue::Str(s) => match css::length(s) {
-                        Some(n) if n >= 0.0 => Some(px(n)),
-                        _ => return Err(StyleError::InvalidValue),
-                    },
-                    StyleValue::Number(_) => return Err(StyleError::InvalidValue),
-                }
-            }
-            StyleKey::StrokeDasharray => self.paint.stroke_dasharray = dasharray(value)?,
-            StyleKey::FontSize => self.text.font_size = opt_points(value)?,
-            StyleKey::FontWeight => self.text.font_weight = font_weight(value)?,
-            StyleKey::LineHeight => {
-                // Numbers are points (React Native); strings may be a
-                // multiple of the font size (`"1.5"`, `"1.5em"`) or points.
-                let (points, multiple, em) = match value {
-                    StyleValue::Str(s)
-                        if s.ends_with("px") || s.ends_with("pt") || s.ends_with("rem") =>
-                    {
-                        (
-                            Some(px(css::length(s).ok_or(StyleError::InvalidValue)?)),
-                            None,
-                            None,
-                        )
-                    }
-                    StyleValue::Str(s) if s.ends_with('%') || s.ends_with("em") => {
-                        let n = if let Some(n) = s.strip_suffix('%') {
-                            css::number(n).map(|n| n / 100.0)
-                        } else {
-                            css::number(s.strip_suffix("em").unwrap())
-                        }
-                        .filter(|n| *n >= 0.0)
-                        .ok_or(StyleError::InvalidValue)?;
-                        (None, None, Some(n))
-                    }
-                    StyleValue::Str(s) => {
-                        let n = css::number(s)
-                            .filter(|n| *n >= 0.0)
-                            .ok_or(StyleError::InvalidValue)?;
-                        (None, Some(n), None)
-                    }
-                    v => (opt_points(v)?, None, None),
+            (K::Color, V::Color(c)) => self.text.color = *c,
+            (K::Fill, V::Paint(v)) => self.paint.fill = *v,
+            (K::Stroke, V::Paint(v)) => self.paint.stroke = *v,
+            (K::StrokeWidth, V::OptPoints(v)) => self.paint.stroke_width = *v,
+            (K::StrokeDasharray, V::Dashes(v)) => self.paint.stroke_dasharray = v.clone(),
+            (K::FontSize, V::OptPoints(v)) => self.text.font_size = *v,
+            (K::FontWeight, V::FontWeight(v)) => self.text.font_weight = *v,
+            (K::LineHeight, V::LineHeight(v)) => {
+                let t = &mut self.text;
+                (t.line_height, t.line_height_multiple, t.line_height_em) = match *v {
+                    LineHeight::Normal => (None, None, None),
+                    LineHeight::Points(p) => (Some(p), None, None),
+                    LineHeight::Multiple(n) => (None, Some(n), None),
+                    LineHeight::Em(n) => (None, None, Some(n)),
                 };
-                self.text.line_height = points;
-                self.text.line_height_multiple = multiple;
-                self.text.line_height_em = em;
             }
-            StyleKey::FontFamily => {
-                self.text.font_family = keyword(value)?.map(|name| FontFamily::new(name.trim()))
+            (K::FontFamily, V::FontFamily(v)) => self.text.font_family = *v,
+            (K::FontStyle, V::OptBool(v)) => self.text.italic = *v,
+            (K::LetterSpacing, V::LetterSpacing(points, em)) => {
+                self.text.letter_spacing = *points;
+                self.text.letter_spacing_em = em.map(|n| n.0);
             }
-            StyleKey::FontStyle => {
-                self.text.italic = match keyword(value)? {
-                    None => None,
-                    Some("normal") => Some(false),
-                    Some("italic") => Some(true),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
+            (K::TextDecorationLine, V::TextDecoration(v)) => self.text.decoration = *v,
+            (K::TextDecorationColor, V::Color(c)) => self.text.decoration_color = *c,
+            (K::PlaceholderColor, V::Color(c)) => self.text.placeholder_color = *c,
+            (K::SelectionColor, V::Color(c)) => self.text.selection_color = *c,
+            (K::CaretColor, V::Color(c)) => self.text.caret_color = *c,
+            (K::WritingDirection, V::OptBool(v)) => self.text.writing_direction = *v,
+            (K::TextAlignVertical, V::AlignVertical(v)) => self.text.align_vertical = *v,
+            (K::NumberOfLines, V::NumberOfLines(v)) => self.pending.number_of_lines = *v,
+            (K::TextOverflow, V::TextOverflow(v)) => self.pending.text_overflow = *v,
+            (K::UserSelect, V::OptBool(v)) => self.pending.user_select = *v,
+            (K::PointerEvents, V::PointerEvents(v)) => self.pending.pointer_events = *v,
+            (K::FontVariant, V::FontVariant(v)) => self.text.font_variant = *v,
+            (K::TextShadow, V::TextShadow(v)) => {
+                self.pending.current_text_shadow = v.is_some_and(|(_, colored)| !colored);
+                let widest = v.map(|(s, _)| s);
+                self.text.shadow_color = widest.map(|s| s.color);
+                self.text.shadow_offset = widest.map(|s| point(s.offset_x, s.offset_y));
+                self.text.shadow_radius = widest.map(|s| s.radius);
             }
-            StyleKey::LetterSpacing => {
-                let (points, em) = match value {
-                    StyleValue::Str(s) if s.ends_with("em") && !s.ends_with("rem") => {
-                        let n = css::number(&s[..s.len() - 2]).ok_or(StyleError::InvalidValue)?;
-                        (None, Some(n))
-                    }
-                    StyleValue::Str(s) => (
-                        Some(px(css::length(s).ok_or(StyleError::InvalidValue)?)),
-                        None,
-                    ),
-                    v => (opt_points(v)?, None),
-                };
-                self.text.letter_spacing = points;
-                self.text.letter_spacing_em = em;
-            }
-            StyleKey::TextDecorationLine => {
-                self.text.decoration = match keyword(value)? {
-                    None => None,
-                    Some(words) => {
-                        let mut d = TextDecoration::default();
-                        for word in words.split_whitespace() {
-                            match word {
-                                "none" => {}
-                                "underline" => d.underline = true,
-                                "line-through" => d.line_through = true,
-                                _ => return Err(StyleError::InvalidValue),
-                            }
-                        }
-                        Some(d)
-                    }
-                }
-            }
-            StyleKey::TextDecorationColor => self.text.decoration_color = color(value)?,
-            StyleKey::PlaceholderColor => self.text.placeholder_color = color(value)?,
-            StyleKey::SelectionColor => self.text.selection_color = color(value)?,
-            StyleKey::TextAlignVertical => {
-                self.text.align_vertical = match keyword(value)? {
-                    None => None,
-                    Some("auto" | "top") => Some(percentage(0.0)),
-                    Some("center") => Some(percentage(0.5)),
-                    Some("bottom") => Some(percentage(1.0)),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
-            }
-            StyleKey::WritingDirection => {
-                self.text.writing_direction = match keyword(value)? {
-                    None | Some("auto") => None,
-                    Some("ltr") => Some(false),
-                    Some("rtl") => Some(true),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
-            }
-            StyleKey::FontVariant => {
-                self.text.font_variant = match keyword(value)? {
-                    None => None,
-                    Some(s) => Some(FontVariant::parse(s).ok_or(StyleError::InvalidValue)?),
-                }
-            }
-            StyleKey::TextShadowColor => self.text.shadow_color = color(value)?,
-            StyleKey::TextShadowRadius => self.text.shadow_radius = opt_points(value)?,
-            StyleKey::TextTransform => {
-                self.text.transform = match keyword(value)? {
-                    None => None,
-                    Some("none") => Some(TextTransform::None),
-                    Some("uppercase") => Some(TextTransform::Uppercase),
-                    Some("lowercase") => Some(TextTransform::Lowercase),
-                    Some("capitalize") => Some(TextTransform::Capitalize),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
-            }
-            StyleKey::TextAlign => {
-                self.text.text_align_physical = false;
-                self.text.text_align = match keyword(value)? {
-                    None => None,
-                    Some("auto") => Some(TextAlign::Auto),
-                    Some("left") => Some(TextAlign::Left),
-                    Some("center") => Some(TextAlign::Center),
-                    Some("right") => Some(TextAlign::Right),
-                    Some("justify") => Some(TextAlign::Justify),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
+            (K::TextTransform, V::TextTransform(v)) => self.text.transform = *v,
+            (K::TextAlign, V::TextAlign(align, physical)) => {
+                self.text.text_align = *align;
+                self.text.text_align_physical = *physical;
             }
 
             // Effects
-            StyleKey::BoxShadow => {
-                let list = match keyword(value)? {
-                    None => Vec::new(),
-                    Some(s) => css::box_shadows(s).ok_or(StyleError::InvalidValue)?,
-                };
+            (K::BoxShadow, V::Shadows(layers)) => {
+                self.pending.current_shadows = layers
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, (_, colored))| *i < 64 && !colored)
+                    .fold(0, |mask, (i, _)| mask | 1 << i);
+                let list = layers.iter().map(|(l, _)| *l).collect();
                 self.edit_effects(|e| e.box_shadows = list);
             }
-            StyleKey::BackgroundImage => {
-                let list = match keyword(value)? {
-                    None => Vec::new(),
-                    Some(s) => css::gradients(s).ok_or(StyleError::InvalidValue)?,
-                };
+            (K::BackgroundImage, V::Gradients(list)) => {
+                let list = list.to_vec();
                 self.edit_effects(|e| e.background_images = list);
             }
-            StyleKey::MaskImage => {
-                let list = match keyword(value)? {
-                    None => Vec::new(),
-                    Some("none") => Vec::new(),
-                    Some(s) => css::gradients(s).ok_or(StyleError::InvalidValue)?,
-                };
+            (K::MaskImage, V::Gradients(list)) => {
+                let list = list.to_vec();
                 self.edit_effects(|e| e.mask_images = list);
             }
-            StyleKey::Filter => {
-                let list = match keyword(value)? {
-                    None => Vec::new(),
-                    Some(s) => css::filters(s).ok_or(StyleError::InvalidValue)?,
-                };
+            (K::Filter, V::Filters(list)) => {
+                // A `drop-shadow()` without a color is the text color's.
+                self.pending.current_drop_shadows = list
+                    .iter()
+                    .take(64)
+                    .enumerate()
+                    .filter(|(_, (_, named))| !named)
+                    .fold(0, |m, (i, _)| m | 1 << i);
+                let list = list.iter().map(|(f, _)| *f).collect();
                 self.edit_effects(|e| e.filters = list);
             }
-            StyleKey::BackdropFilter => {
-                let list = match keyword(value)? {
-                    None => Vec::new(),
-                    Some(s) => css::filters(s).ok_or(StyleError::InvalidValue)?,
-                };
+            (K::BackdropFilter, V::Filters(list)) => {
+                let list = list.iter().map(|(f, _)| *f).collect();
                 self.edit_effects(|e| e.backdrop_filters = list);
             }
-            StyleKey::GlassEffect => {
-                self.view.glass_effect = match keyword(value)? {
-                    None => GlassEffect::None,
-                    Some(s) => GlassEffect::parse(s).ok_or(StyleError::InvalidValue)?,
-                }
-            }
-            StyleKey::MixBlendMode => {
-                self.view.blend_mode = match keyword(value)? {
-                    None => BlendMode::Normal,
-                    Some(s) => BlendMode::parse(s).ok_or(StyleError::InvalidValue)?,
-                }
-            }
-            StyleKey::OutlineWidth => {
-                let width = px(length_value(value, 0.0)?.max(0.0));
-                self.pending.outline_width = width;
+            (K::GlassEffect, V::GlassEffect(v)) => self.view.glass_effect = *v,
+            (K::MixBlendMode, V::BlendMode(v)) => self.view.blend_mode = *v,
+            (K::OutlineWidth, V::Points(width)) => {
+                self.pending.outline_width = *width;
                 if !self.pending.outline_hidden {
-                    self.view.outline.width = width;
+                    self.view.outline.width = *width;
                 }
             }
-            StyleKey::OutlineColor => {
-                self.view.outline.color = color(value)?.unwrap_or(Outline::NONE.color)
+            (K::OutlineColor, V::Color(c)) => {
+                self.view.outline.color = c.unwrap_or(Outline::NONE.color)
             }
-            StyleKey::OutlineOffset => self.view.outline.offset = px(length_value(value, 0.0)?),
-            StyleKey::OutlineStyle => {
+            (K::OutlineOffset, V::Points(v)) => self.view.outline.offset = *v,
+            (K::OutlineStyle, V::BorderStyle(style, hidden)) => {
                 // `none` draws no outline whatever the width, set before
                 // or after it (CSS).
-                let (style, hidden) = match keyword(value)? {
-                    None | Some("solid") => (BorderStyle::Solid, false),
-                    Some("dashed") => (BorderStyle::Dashed, false),
-                    Some("dotted") => (BorderStyle::Dotted, false),
-                    Some("none") | Some("hidden") => (BorderStyle::Solid, true),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                };
-                self.view.outline.style = style;
-                self.pending.outline_hidden = hidden;
-                self.view.outline.width = if hidden {
+                self.view.outline.style = *style;
+                self.pending.outline_hidden = *hidden;
+                self.view.outline.width = if *hidden {
                     Points::ZERO
                 } else {
                     self.pending.outline_width
                 };
             }
-            StyleKey::Visibility => {
-                self.view.hidden = match keyword(value)? {
-                    None | Some("visible") => false,
-                    Some("hidden") | Some("collapse") => true,
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
+            (K::Visibility, V::Bool(v)) => self.view.hidden = *v,
+            (K::Cursor, V::Cursor(v)) => self.view.cursor = *v,
+            (K::TransitionProperty, V::TransitionProps(v)) => self.transition_mut().properties = *v,
+            (K::TransitionDuration, V::Ms(ms)) => self.transition_mut().duration = ms.0,
+            (K::TransitionDelay, V::Ms(ms)) => self.transition_mut().delay = ms.0,
+            (K::TransitionTimingFunction, V::Easing(e)) => {
+                self.transition_mut().easing = e.map(|n| n.0)
             }
-            StyleKey::Cursor => {
-                self.view.cursor = match keyword(value)? {
-                    None => Cursor::Auto,
-                    Some(s) => Cursor::parse(s).ok_or(StyleError::InvalidValue)?,
-                }
-            }
-            StyleKey::TransitionProperty => {
-                let props = match keyword(value)? {
-                    None => TransitionProps(TransitionProps::ALL),
-                    Some(s) => transition_properties(s).ok_or(StyleError::InvalidValue)?,
-                };
-                self.transition_mut().properties = props;
-            }
-            StyleKey::TransitionDuration => {
-                let ms = duration(value)?;
-                self.transition_mut().duration = ms;
-            }
-            StyleKey::TransitionDelay => {
-                let ms = duration(value)?;
-                self.transition_mut().delay = ms;
-            }
-            StyleKey::TransitionTimingFunction => {
-                let easing = timing_function(value)?;
-                self.transition_mut().easing = easing;
-            }
-            StyleKey::AnimationName => {
-                let keyframes = match keyword(value)? {
-                    None | Some("none") => None,
-                    Some("spin") => Some(Keyframes::Spin),
-                    Some("ping") => Some(Keyframes::Ping),
-                    Some("pulse") => Some(Keyframes::Pulse),
-                    Some("bounce") => Some(Keyframes::Bounce),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                };
+            (K::AnimationName, V::Keyframes(keyframes)) => {
                 // An animation already running (a class's) keeps its
                 // values; a new one takes those set before its name.
-                let pending = self.pending;
+                let pending = &self.pending;
                 self.view.animation = keyframes.map(|keyframes| {
                     let base = self
                         .view
@@ -2933,97 +3722,56 @@ impl Style {
                     KeyframeAnimation { keyframes, ..base }
                 });
             }
-            StyleKey::AnimationDuration => {
-                let ms = duration(value)?;
-                self.pending.animation_duration = Some(ms);
+            (K::AnimationDuration, V::Ms(ms)) => {
+                self.pending.animation_duration = Some(ms.0);
                 if let Some(a) = self.view.animation.as_mut() {
-                    a.duration = ms;
+                    a.duration = ms.0;
                 }
             }
-            StyleKey::AnimationDelay => {
-                let ms = duration(value)?;
-                self.pending.animation_delay = Some(ms);
+            (K::AnimationDelay, V::Ms(ms)) => {
+                self.pending.animation_delay = Some(ms.0);
                 if let Some(a) = self.view.animation.as_mut() {
-                    a.delay = ms;
+                    a.delay = ms.0;
                 }
             }
-            StyleKey::AnimationTimingFunction => {
-                let easing = timing_function(value)?;
+            (K::AnimationTimingFunction, V::Easing(e)) => {
+                let easing = e.map(|n| n.0);
                 self.pending.animation_easing = Some(easing);
                 if let Some(a) = self.view.animation.as_mut() {
                     a.easing = easing;
                 }
             }
-            StyleKey::AnimationIterationCount => {
-                let count = match value {
-                    StyleValue::Str("infinite") | StyleValue::Null => None,
-                    v => Some(number(v, 1.0)?.max(0.0) as u32),
-                };
-                self.pending.animation_iterations = Some(count);
+            (K::AnimationIterationCount, V::Iterations(count)) => {
+                self.pending.animation_iterations = Some(*count);
                 if let Some(a) = self.view.animation.as_mut() {
-                    a.iterations = count;
+                    a.iterations = *count;
                 }
             }
-            StyleKey::TextDecorationStyle => {
-                self.text.decoration_style = match keyword(value)? {
-                    None => None,
-                    Some("solid") => Some(DecorationStyle::Solid),
-                    Some("double") => Some(DecorationStyle::Double),
-                    Some("dotted") => Some(DecorationStyle::Dotted),
-                    Some("dashed") => Some(DecorationStyle::Dashed),
-                    Some("wavy") => Some(DecorationStyle::Wavy),
-                    Some(_) => return Err(StyleError::InvalidValue),
-                }
-            }
-            StyleKey::TextDecorationThickness => {
-                self.text.decoration_thickness = match value {
-                    StyleValue::Null | StyleValue::Str("auto") | StyleValue::Str("from-font") => {
-                        None
-                    }
-                    v => Some(px(length_value(v, 1.0)?.max(0.0))),
-                }
-            }
-            StyleKey::TextUnderlineOffset => {
-                self.text.underline_offset = match value {
-                    StyleValue::Null | StyleValue::Str("auto") => None,
-                    v => Some(px(length_value(v, 0.0)?)),
-                }
-            }
+            (K::TextDecorationStyle, V::DecorationStyle(v)) => self.text.decoration_style = *v,
+            (K::TextDecorationThickness, V::OptPoints(v)) => self.text.decoration_thickness = *v,
+            (K::TextUnderlineOffset, V::OptPoints(v)) => self.text.underline_offset = *v,
 
             // Grid
-            StyleKey::GridTemplateColumns => {
-                (l.grid_template_columns, l.grid_template_column_names) = grid_template(value)?;
+            (K::GridTemplateColumns, V::GridTemplate(t)) => {
+                (l.grid_template_columns, l.grid_template_column_names) = (*t.0).clone();
             }
-            StyleKey::GridTemplateRows => {
-                (l.grid_template_rows, l.grid_template_row_names) = grid_template(value)?;
+            (K::GridTemplateRows, V::GridTemplate(t)) => {
+                (l.grid_template_rows, l.grid_template_row_names) = (*t.0).clone();
             }
-            StyleKey::GridAutoColumns => {
-                l.grid_auto_columns = grid_value(value, grid::auto_tracks)?;
+            (K::GridAutoColumns, V::GridTracks(v)) => l.grid_auto_columns = v.to_vec(),
+            (K::GridAutoRows, V::GridTracks(v)) => l.grid_auto_rows = v.to_vec(),
+            (K::GridAutoFlow, V::GridAutoFlow(v)) => l.grid_auto_flow = *v,
+            (K::GridColumn, V::GridLine(v)) => l.grid_column = v.clone(),
+            (K::GridRow, V::GridLine(v)) => l.grid_row = v.clone(),
+            (K::GridColumnStart, V::GridPlacement(v)) => l.grid_column.start = v.clone(),
+            (K::GridColumnEnd, V::GridPlacement(v)) => l.grid_column.end = v.clone(),
+            (K::GridRowStart, V::GridPlacement(v)) => l.grid_row.start = v.clone(),
+            (K::GridRowEnd, V::GridPlacement(v)) => l.grid_row.end = v.clone(),
+            (K::JustifyItems, V::AlignItems(v)) => {
+                l.justify_items = v.unwrap_or(AlignItems::STRETCH)
             }
-            StyleKey::GridAutoRows => {
-                l.grid_auto_rows = grid_value(value, grid::auto_tracks)?;
-            }
-            StyleKey::GridAutoFlow => {
-                l.grid_auto_flow = match keyword(value)? {
-                    None => taffy::GridAutoFlow::Row,
-                    Some(s) => grid::auto_flow(s).ok_or(StyleError::InvalidValue)?,
-                }
-            }
-            StyleKey::GridColumn => l.grid_column = grid_line(value)?,
-            StyleKey::GridRow => l.grid_row = grid_line(value)?,
-            StyleKey::GridColumnStart => l.grid_column.start = grid_placement(value)?,
-            StyleKey::GridColumnEnd => l.grid_column.end = grid_placement(value)?,
-            StyleKey::GridRowStart => l.grid_row.start = grid_placement(value)?,
-            StyleKey::GridRowEnd => l.grid_row.end = grid_placement(value)?,
-            StyleKey::JustifyItems => {
-                l.justify_items = align_items(value)?.unwrap_or(AlignItems::STRETCH);
-            }
-            StyleKey::JustifySelf => {
-                l.justify_self = match value {
-                    StyleValue::Str("auto") => None,
-                    v => align_items(v)?,
-                }
-            }
+            (K::JustifySelf, V::AlignItems(v)) => l.justify_self = *v,
+            _ => return Err(StyleError::InvalidValue),
         }
         Ok(())
     }
@@ -3065,6 +3813,156 @@ mod tests {
         assert!(s.set("fill", StyleValue::Str("nope")).is_err());
         s.set("stroke", StyleValue::Null).unwrap();
         assert_eq!(s.paint.stroke, None);
+    }
+
+    #[test]
+    fn transform_properties_keep_css_order_and_their_bindings() {
+        use TransformKind::*;
+
+        use crate::animation::AnimationProp::Transform as Step;
+        let kinds = |s: &Style| {
+            s.view
+                .transform
+                .ops()
+                .iter()
+                .map(|o| o.kind)
+                .collect::<Vec<_>>()
+        };
+        let mut s = Style::default();
+        s.set_transform(TransformProperty::Scale, &[(Scale, 1.0, Some(7))])
+            .unwrap();
+        // A `transform` list with an animated step.
+        s.set_transform(TransformProperty::Transform, &[(RotateY, 0.0, Some(9))])
+            .unwrap();
+        assert_eq!(s.animated, vec![(Step(0), 7), (Step(1), 9)]);
+        // `translate` goes before them, moving their bindings.
+        s.set_key(StyleKey::Translate, StyleValue::Str("10px 20px"))
+            .unwrap();
+        assert_eq!(kinds(&s), [TranslateX, TranslateY, Scale, RotateY]);
+        assert_eq!(s.animated, vec![(Step(2), 7), (Step(3), 9)]);
+        // Unset, a property's steps and bindings go.
+        s.set_key(StyleKey::Scale, StyleValue::Null).unwrap();
+        assert_eq!(kinds(&s), [TranslateX, TranslateY, RotateY]);
+        assert_eq!(s.animated, vec![(Step(2), 9)]);
+        // A Rust component's bound step goes after them all.
+        StyleDecl::Transform(Rotate, 0.0, Some(11))
+            .apply(&mut s)
+            .unwrap();
+        s.set_key(StyleKey::Rotate, StyleValue::Number(30.0))
+            .unwrap();
+        assert_eq!(kinds(&s), [TranslateX, TranslateY, Rotate, RotateY, Rotate]);
+        assert_eq!(s.animated, vec![(Step(3), 9), (Step(4), 11)]);
+        // CSS's string replaces the list, its binding with it.
+        s.set_key(StyleKey::Transform, StyleValue::Str("skewX(5deg)"))
+            .unwrap();
+        assert_eq!(kinds(&s), [TranslateX, TranslateY, Rotate, SkewX, Rotate]);
+        assert_eq!(s.animated, vec![(Step(4), 11)]);
+        assert_eq!(
+            s.set_key(StyleKey::Transform, StyleValue::Str("rotate(45)")),
+            Err(StyleError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn aspect_ratios_and_font_variants_take_css_strings() {
+        let ratio = |v| {
+            let mut s = Style::default();
+            s.set("aspectRatio", v).map(|_| s.layout.aspect_ratio)
+        };
+        assert_eq!(ratio(StyleValue::Str("16 / 9")), Ok(Some(16.0 / 9.0)));
+        assert_eq!(ratio(StyleValue::Str("2/1")), Ok(Some(2.0)));
+        assert_eq!(ratio(StyleValue::Str("1.5")), Ok(Some(1.5)));
+        assert_eq!(ratio(StyleValue::Number(1.5)), Ok(Some(1.5)));
+        assert_eq!(ratio(StyleValue::Str("auto")), Ok(None));
+        assert_eq!(
+            ratio(StyleValue::Str("1 / 0")),
+            Err(StyleError::InvalidValue)
+        );
+        let mut s = Style::default();
+        s.set("fontVariant", StyleValue::Str("tabular-nums small-caps"))
+            .unwrap();
+        let v = s.text.font_variant.unwrap();
+        assert!(v.has(FontVariant::TABULAR_NUMS) && v.has(FontVariant::SMALL_CAPS));
+    }
+
+    #[test]
+    fn line_height_numbers_are_points() {
+        let mut s = Style::default();
+        s.set("lineHeight", StyleValue::Number(20.0)).unwrap();
+        assert_eq!(s.text.line_height, Some(px(20.0)));
+        // Strings are what classes write: a multiple, or a length.
+        s.set("lineHeight", StyleValue::Str("1.5")).unwrap();
+        assert_eq!(
+            (s.text.line_height, s.text.line_height_multiple),
+            (None, Some(1.5))
+        );
+        s.set("lineHeight", StyleValue::Str("150%")).unwrap();
+        assert_eq!(s.text.line_height_em, Some(1.5));
+        s.set("lineHeight", StyleValue::Str("20px")).unwrap();
+        assert_eq!(s.text.line_height, Some(px(20.0)));
+        s.set("lineHeight", StyleValue::Null).unwrap();
+        assert_eq!(
+            (
+                s.text.line_height,
+                s.text.line_height_multiple,
+                s.text.line_height_em
+            ),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn values_parse_once_and_apply_typed() {
+        let key = StyleKey::PaddingTop;
+        let value = key.parse_value(StyleValue::Str("25%")).unwrap();
+        assert_eq!(value, PropertyValue::Lp(LengthPercentage::percent(0.25)));
+        let mut s = Style::default();
+        s.apply_value(key, &value).unwrap();
+        assert_eq!(s.layout.padding.top, LengthPercentage::percent(0.25));
+        // A value of another property's kind is rejected.
+        assert_eq!(
+            s.apply_value(key, &PropertyValue::Color(None)),
+            Err(StyleError::InvalidValue)
+        );
+        // `null` is the property's default.
+        s.apply_value(key, &PropertyValue::Default).unwrap();
+        assert_eq!(s.layout.padding.top, LengthPercentage::length(0.0));
+        // Equal values hash alike, signed zeros included.
+        let hash = |v: &PropertyValue| {
+            use std::hash::{BuildHasher, BuildHasherDefault};
+            BuildHasherDefault::<rustc_hash::FxHasher>::default().hash_one(v)
+        };
+        let (a, b) = (
+            PropertyValue::Points(px(0.0)),
+            PropertyValue::Points(px(-0.0)),
+        );
+        assert_eq!(a, b);
+        assert_eq!(hash(&a), hash(&b));
+    }
+
+    #[test]
+    fn typed_lengths_are_the_numbers_and_percentages_of_styles() {
+        use crate::geometry::{Length, percentage};
+        for key in [
+            StyleKey::Width,
+            StyleKey::MarginLeft,
+            StyleKey::Gap,
+            StyleKey::LineHeight,
+        ] {
+            assert_eq!(
+                key.length_value(px(12.0).into()),
+                key.parse_value(StyleValue::Number(12.0))
+            );
+        }
+        assert_eq!(
+            StyleKey::Width.length_value(percentage(0.5).into()),
+            StyleKey::Width.parse_value(StyleValue::Str("50%"))
+        );
+        assert_eq!(
+            StyleKey::Top.length_value(Length::Auto),
+            StyleKey::Top.parse_value(StyleValue::Str("auto"))
+        );
+        assert!(StyleKey::Padding.length_value(Length::Auto).is_err());
     }
 
     #[test]
@@ -3172,6 +4070,18 @@ mod tests {
     }
 
     #[test]
+    fn auto_minimum_sizes_are_css_automatic_minimums() {
+        let mut s = Style::default();
+        s.set("minWidth", StyleValue::Str("auto")).unwrap();
+        s.set("minHeight", StyleValue::Str("auto")).unwrap();
+        assert_eq!(s.layout.min_size.width, LengthPercentageAuto::auto());
+        assert_eq!(s.layout.min_size.height, LengthPercentageAuto::auto());
+        // Unset again: back to Yoga's 0.
+        s.set("minWidth", StyleValue::Null).unwrap();
+        assert_eq!(s.layout.min_size.width, LengthPercentageAuto::length(0.0));
+    }
+
+    #[test]
     fn css_alignment_keywords() {
         let mut s = Style::default();
         let k = StyleValue::Str;
@@ -3231,12 +4141,51 @@ mod tests {
     }
 
     #[test]
-    fn flex_shorthand() {
+    fn text_align_vertical_places_text_down_its_box() {
+        let at = |v: &str| {
+            let mut s = Style::default();
+            s.set("textAlignVertical", StyleValue::Str(v)).unwrap();
+            s.text.align_vertical
+        };
+        assert_eq!(at("top"), Some(percentage(0.0)));
+        assert_eq!(at("center"), Some(percentage(0.5)));
+        assert_eq!(at("bottom"), Some(percentage(1.0)));
+        // `alignContent` is layout only.
         let mut s = Style::default();
-        s.set("flex", StyleValue::Number(2.0)).unwrap();
-        assert_eq!(s.layout.flex_grow, 2.0);
-        assert_eq!(s.layout.flex_shrink, 1.0);
-        assert_eq!(s.layout.flex_basis, Dimension::length(0.0));
+        s.set("alignContent", StyleValue::Str("center")).unwrap();
+        assert_eq!(s.text.align_vertical, None);
+    }
+
+    #[test]
+    fn flex_shorthand() {
+        // CSS's: grow, shrink and basis.
+        let flex = |v: StyleValue<'_>| {
+            let mut s = Style::default();
+            s.set("flex", v).map(|()| {
+                (
+                    s.layout.flex_grow,
+                    s.layout.flex_shrink,
+                    s.layout.flex_basis,
+                )
+            })
+        };
+        let (n, t) = (StyleValue::Number, StyleValue::Str);
+        let (zero, auto) = (Dimension::length(0.0), Dimension::auto());
+        assert_eq!(flex(n(2.0)), Ok((2.0, 1.0, zero)));
+        // `0` shrinks as CSS's does (React Native's did not).
+        assert_eq!(flex(n(0.0)), Ok((0.0, 1.0, zero)));
+        assert_eq!(flex(t("none")), Ok((0.0, 0.0, auto)));
+        assert_eq!(flex(t("auto")), Ok((1.0, 1.0, auto)));
+        assert_eq!(flex(t("initial")), Ok((0.0, 1.0, auto)));
+        assert_eq!(flex(t("2 0 50%")), Ok((2.0, 0.0, Dimension::percent(0.5))));
+        assert_eq!(flex(t("30px 2")), Ok((2.0, 1.0, Dimension::length(30.0))));
+        assert_eq!(flex(t("1 0")), Ok((1.0, 0.0, zero)));
+        assert_eq!(flex(t("0 0 0")), Ok((0.0, 0.0, zero)));
+        assert_eq!(flex(StyleValue::Null), Ok((0.0, 0.0, auto)));
+        // Negative factors (React Native's `flex: -1`) are no CSS.
+        for v in [n(-1.0), t("-1"), t("1 -1"), t("1 2 3 4"), t("nope")] {
+            assert_eq!(flex(v), Err(StyleError::InvalidValue), "{v:?}");
+        }
     }
 
     /// Every order of `decls`.
@@ -3533,19 +4482,197 @@ mod tests {
     }
 
     #[test]
-    fn shadow_defaults_follow_react_native() {
-        let mut s = Style::default();
-        assert!(!s.view.shadow.is_visible());
-        s.set("shadowOpacity", StyleValue::Number(0.3)).unwrap();
-        s.set("shadowRadius", StyleValue::Number(8.0)).unwrap();
-        s.set_shadow_offset(Some(point(px(0.0), px(4.0))));
-        assert!(s.view.shadow.is_visible());
-        assert_eq!(s.view.shadow.offset_y, px(4.0));
-        s.set("shadowColor", StyleValue::Str("transparent"))
+    fn a_replayed_flex_display_keeps_its_row() {
+        // A Rust component's host replays an app's style with `push`.
+        let mut first = Style::default();
+        let mut patch = StylePatch::default();
+        patch
+            .set(&mut first, "display", StyleValue::Str("flex"))
             .unwrap();
-        assert!(!s.view.shadow.is_visible());
-        s.set_shadow_offset(None);
-        assert_eq!(s.view.shadow.offset_y, px(-3.0));
+        let mut style = Style::default();
+        let mut replayed = StylePatch::default();
+        for decl in patch.decls() {
+            replayed.push(&mut style, decl.clone()).unwrap();
+        }
+        assert_eq!(style.layout.flex_direction, FlexDirection::Row);
+        // A width with its own side's color reads no text color.
+        let mut patch = StylePatch::default();
+        patch
+            .set(&mut first, "borderBottomWidth", StyleValue::Number(1.0))
+            .unwrap();
+        assert!(patch.reads_current_color());
+        patch
+            .set(&mut first, "borderBottomColor", StyleValue::Str("#eee"))
+            .unwrap();
+        assert!(!patch.reads_current_color());
+    }
+
+    #[test]
+    fn current_color_written_out_is_the_text_color() {
+        let text = Color(0x1234_56ff);
+        let mut s = Style::default();
+        let mut patch = StylePatch::default();
+        for (key, value) in [
+            ("backgroundColor", "currentColor"),
+            ("borderColor", "CurrentColor"),
+            // A later value wins over `currentColor`.
+            ("borderTopColor", "red"),
+            ("outlineColor", "currentcolor"),
+            ("textDecorationColor", "currentColor"),
+            ("boxShadow", "0 2px 4px currentColor"),
+            ("textShadow", "0 1px 2px currentColor"),
+        ] {
+            patch.set(&mut s, key, StyleValue::Str(value)).unwrap();
+        }
+        assert!(patch.reads_current_color());
+        s.apply_current_color(text);
+        assert_eq!(s.view.background_color, text);
+        assert_eq!(
+            s.view.borders.colors,
+            [Color(0xff00_00ff), text, text, text]
+        );
+        assert_eq!(s.view.outline.color, text);
+        assert_eq!(s.text.decoration_color, Some(text));
+        assert_eq!(s.view.effects.as_ref().unwrap().box_shadows[0].color, text);
+        assert_eq!(s.text.shadow_color, Some(text));
+        // And `currentColor` wins over an earlier value.
+        let mut s = Style::default();
+        s.set("backgroundColor", StyleValue::Str("red")).unwrap();
+        s.set("backgroundColor", StyleValue::Str("currentColor"))
+            .unwrap();
+        s.apply_current_color(text);
+        assert_eq!(s.view.background_color, text);
+        // `color: currentColor` is the inherited color.
+        s.set("color", StyleValue::Str("red")).unwrap();
+        s.set("color", StyleValue::Str("currentColor")).unwrap();
+        assert_eq!(s.text.color, None);
+        // Where nothing fills it in, it is no color: rejected, never black.
+        assert_eq!(
+            s.set("tintColor", StyleValue::Str("currentColor")),
+            Err(StyleError::InvalidValue)
+        );
+        assert_eq!(crate::css::box_shadows("0 2px 4px currentColor"), None);
+    }
+
+    #[test]
+    fn current_color_inside_values_is_the_text_color() {
+        let text = Color(0x1234_56ff);
+        let close = |a: Color, b: u32| {
+            (0..4).all(|i| ((a.0 >> (i * 8)) & 0xff).abs_diff((b >> (i * 8)) & 0xff) <= 1)
+        };
+        let mut s = Style::default();
+        let mut set = |key: &str, value: &str| s.set(key, StyleValue::Str(value));
+        set("backgroundImage", "linear-gradient(currentColor, #ffffff)").unwrap();
+        // CSS: a `drop-shadow()` without a color is the text color's too.
+        set(
+            "filter",
+            "drop-shadow(0 1px 2px) drop-shadow(0 1px 2px CurrentColor) drop-shadow(0 1px 2px red)",
+        )
+        .unwrap();
+        set(
+            "boxShadow",
+            "0 1px 2px color-mix(in srgb, currentColor 50%, transparent)",
+        )
+        .unwrap();
+        set(
+            "backgroundColor",
+            "color-mix(in srgb, currentColor, #ffffff)",
+        )
+        .unwrap();
+        // Checked with a stand-in color: a wrong value is rejected now.
+        assert_eq!(
+            set("maskImage", "linear-gradient(nope(currentColor), red)"),
+            Err(StyleError::InvalidValue)
+        );
+        // `color` takes it alone only (the inherited color).
+        assert_eq!(
+            set("color", "color-mix(in srgb, currentColor, red)"),
+            Err(StyleError::InvalidValue)
+        );
+        s.apply_current_color(text);
+        let effects = s.view.effects.as_ref().unwrap();
+        assert_eq!(effects.background_images[0].stops[0].color, text);
+        let shadow_colors: Vec<Color> = effects
+            .filters
+            .iter()
+            .map(|f| match f {
+                Filter::DropShadow { color, .. } => *color,
+                _ => Color::TRANSPARENT,
+            })
+            .collect();
+        assert_eq!(shadow_colors, [text, text, Color(0xff00_00ff)]);
+        assert!(close(effects.box_shadows[0].color, 0x1234_5680));
+        assert!(
+            close(s.view.background_color, 0x899a_abff),
+            "{:x}",
+            s.view.background_color.0
+        );
+        // A style with a `drop-shadow()` that names no color reads it.
+        let mut patch = StylePatch::default();
+        let mut styled = Style::default();
+        patch
+            .set(
+                &mut styled,
+                "filter",
+                StyleValue::Str("drop-shadow(0 1px 2px)"),
+            )
+            .unwrap();
+        assert!(patch.reads_current_color());
+        // A later value replaces one that waits for the color.
+        s.set("backgroundImage", StyleValue::Str("none")).unwrap();
+        s.apply_current_color(text);
+        assert!(
+            s.view
+                .effects
+                .as_ref()
+                .unwrap()
+                .background_images
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn box_shadows_take_any_css_color() {
+        // A color expression of the app's (`color-mix()`) is one word of the
+        // layer.
+        let mut s = Style::default();
+        s.set(
+            "boxShadow",
+            StyleValue::Str("0 6px 18px color-mix(in srgb, #00ff00 50%, transparent)"),
+        )
+        .unwrap();
+        let layer = s.view.effects.as_ref().unwrap().box_shadows[0];
+        assert_eq!((layer.offset_y, layer.blur), (px(6.0), px(18.0)));
+        assert_eq!(layer.color.0 >> 8, 0x00ff00);
+        assert!(
+            (0x7e..=0x81).contains(&(layer.color.0 & 0xff)),
+            "{:x}",
+            layer.color.0
+        );
+    }
+
+    #[test]
+    fn text_shadows_are_css() {
+        // The widest layer stands for all, as the classes' does.
+        let mut s = Style::default();
+        s.set(
+            "textShadow",
+            StyleValue::Str("0 1px 1px rgb(0 0 0 / 0.2), 2px 3px 6px red"),
+        )
+        .unwrap();
+        assert_eq!(s.text.shadow_radius, Some(px(6.0)));
+        assert_eq!(s.text.shadow_offset, Some(point(px(2.0), px(3.0))));
+        assert_eq!(s.text.shadow_color, Color::parse("red"));
+        // A layer without a color is the text color, filled in once known.
+        s.set("textShadow", StyleValue::Str("0 1px 2px")).unwrap();
+        s.apply_current_color(Color(0x1234_56ff));
+        assert_eq!(s.text.shadow_color, Some(Color(0x1234_56ff)));
+        assert_eq!(
+            s.set("textShadow", StyleValue::Str("inset 0 1px red")),
+            Err(StyleError::InvalidValue)
+        );
+        s.set("textShadow", StyleValue::Str("none")).unwrap();
+        assert_eq!(s.text.shadow_radius, None);
     }
 
     #[test]

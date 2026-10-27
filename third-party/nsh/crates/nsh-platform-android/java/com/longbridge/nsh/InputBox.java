@@ -281,7 +281,8 @@ final class InputBox extends FrameLayout implements Node {
                    int align, String placeholder, boolean hasPlaceholderColor, int placeholderColor,
                    boolean secure, int keyboard, int returnKey, int capitalize, boolean autoCorrect,
                    boolean multiline, int maxLength, boolean editable, boolean autoFocus,
-                   boolean hasSelectionColor, int selectionColor, int submit) {
+                   boolean hasSelectionColor, int selectionColor, boolean hasCaretColor, int caretColor,
+                   int submit) {
         boolean restart = this.submit != submit && multiline && configured;
         this.multiline = multiline;
         this.submit = submit;
@@ -341,17 +342,15 @@ final class InputBox extends FrameLayout implements Node {
         edit.setImeOptions(ime);
         edit.setFilters(maxLength >= 0 ? new InputFilter[] {new InputFilter.LengthFilter(maxLength)} : new InputFilter[0]);
         edit.setEnabled(editable);
-        if (hasSelectionColor && Build.VERSION.SDK_INT >= 29) {
-            edit.setTextCursorDrawable(new ColorDrawable(selectionColor) {
+        if (hasCaretColor && Build.VERSION.SDK_INT >= 29) {
+            edit.setTextCursorDrawable(new ColorDrawable(caretColor) {
                 @Override
                 public int getIntrinsicWidth() {
                     return Math.round(2 * mounter.density);
                 }
             });
-            edit.setHighlightColor((selectionColor & 0x00ffffff) | 0x55000000);
-        } else if (!hasSelectionColor) {
-            edit.setHighlightColor(0x5533b5e5);
         }
+        edit.setHighlightColor(hasSelectionColor ? (selectionColor & 0x00ffffff) | 0x55000000 : 0x5533b5e5);
         boolean first = !configured;
         configured = true;
         if (first && autoFocus) post(this.autoFocus);
@@ -389,7 +388,7 @@ final class InputBox extends FrameLayout implements Node {
         float[] now = {
             (left + layout.getPrimaryHorizontal(end)) / d,
             (top + layout.getLineTop(line)) / d,
-            // The cursor drawable is 2dp wide (`selectionColor`'s too).
+            // The cursor drawable is 2dp wide (`caretColor`'s too).
             2,
             (layout.getLineBottom(line) - layout.getLineTop(line)) / d,
         };

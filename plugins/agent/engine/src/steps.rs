@@ -34,6 +34,7 @@ pub(super) async fn run(
     handoff: &crate::HandoffGate,
     prior_unknown: bool,
     mut inspected_through: u64,
+    effects: &maka_event_log::root_store::InvocationEffects,
 ) -> Result<maka_agent_facts::event::InvocationOutcome, RunError> {
     let crate::runner::ModelWork {
         tools: catalog,
@@ -79,7 +80,7 @@ pub(super) async fn run(
                     }
                     // Live cells retain the current step's capabilities and effects.
                     // A handoff can seal only after those independent jobs settle.
-                    if !tools.code_idle() {
+                    if !tools.code_idle() || !effects.is_idle() {
                         return None;
                     }
                     let context = model_attempt::read_source(inner, input, false, cancellation)
@@ -145,13 +146,14 @@ pub(super) async fn run(
             }
             input.refresh_model(cancellation).await?;
             if tools.code_idle()
+                && effects.is_idle()
                 && pending
                     .as_ref()
                     .is_some_and(auto_context::Pending::is_finished)
                 && pending
                     .take()
                     .expect("finished candidate")
-                    .adopt(inner, cancellation)
+                    .adopt(inner, &input.invocation, cancellation)
                     .await?
             {
                 compaction = CompactionBudget::Reshaped;
@@ -170,27 +172,37 @@ pub(super) async fn run(
             .await?;
             let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
             if tools.code_idle()
-                && compaction == CompactionBudget::Available
-                && pending.is_none()
+                && effects.is_idle()
                 && !prior_unknown
-                && (needs_compaction || auto_context::due(input, &context))
+                && ((needs_compaction && pending.is_some())
+                    || (compaction == CompactionBudget::Available
+                        && pending.is_none()
+                        && (needs_compaction || auto_context::due(input, &context))))
             {
                 drop(prompt);
                 drop(context);
                 compaction = CompactionBudget::Failed;
-                if let Some(candidate) = auto_context::start(
-                    inner,
-                    input,
-                    opening_id,
-                    main_progress,
-                    cancellation,
-                    continuation_base,
-                )
-                .await?
-                {
+                let candidate = match pending.take() {
+                    Some(candidate) => Some(candidate),
+                    None => {
+                        auto_context::start(
+                            inner,
+                            input,
+                            opening_id,
+                            main_progress,
+                            cancellation,
+                            continuation_base,
+                        )
+                        .await?
+                    }
+                };
+                if let Some(candidate) = candidate {
                     if !needs_compaction {
                         pending = Some(candidate);
-                    } else if candidate.adopt(inner, cancellation).await? {
+                    } else if candidate
+                        .adopt(inner, &input.invocation, cancellation)
+                        .await?
+                    {
                         compaction = CompactionBudget::Reshaped;
                     }
                 }
@@ -269,6 +281,7 @@ pub(super) async fn run(
                     }),
                 ) if (compaction == CompactionBudget::Available || pending.is_some())
                     && tools.code_idle()
+                    && effects.is_idle()
                     && !cancellation.is_cancelled() =>
                 {
                     let candidate = match pending.take() {
@@ -286,7 +299,9 @@ pub(super) async fn run(
                         }
                     };
                     if let Some(candidate) = candidate
-                        && candidate.adopt(inner, cancellation).await?
+                        && candidate
+                            .adopt(inner, &input.invocation, cancellation)
+                            .await?
                     {
                         compaction = CompactionBudget::Reshaped;
                         continue;
@@ -318,7 +333,7 @@ pub(super) async fn run(
             // Pruning/compaction require a settled boundary. A yielded cell is
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
-            if tools.code_idle() && pending.is_none() && !prior_unknown {
+            if tools.code_idle() && effects.is_idle() && pending.is_none() && !prior_unknown {
                 prune::run(inner, input, cancellation, &mut inspected_through).await?;
             }
             if request_tools.finished() {

@@ -77,15 +77,15 @@ mount(App);
 
 view 用 flexbox 布局子元素，默认值为：`flexDirection: "column"`、`flexShrink: 0`、`alignContent: "flex-start"`、`position: "relative"`。`display: "grid"`（Rust 中为 `.grid()`）切换为 CSS grid，`display: "block"` 切换为块布局。尺寸单位是点。参见[布局](../docs/layout.md)和[样式参考](../modules/style-reference.md)。
 
-Tailwind 的 `flex` 类遵循 CSS 而不是样式的默认值：`class="flex"` 是横向排列。需要纵向排列时用 `flex-col`。Rust 中用 `.flex_row()` 和 `.flex_col()` 指定方向。
+`display: "flex"` 遵循 CSS：无论在样式中，还是作为 `flex` 类和 Rust 的 `.flex()`，它都是横向排列，除非设置了方向（`flexDirection: "column"`、`flex-col`、`.flex_col()`）。未设置 display 的视图把子元素纵向排列。
 
 ## 属性
 
-`View` 有一个自己的属性 `selectable`（Rust 中为 `.selectable(true)`）：视图中的文字作为一个选区一起选择（[文字选择](./text-selection.md)）。其余是[通用属性](./index.md#通用属性)：样式（`style`、`class`、`classList`；Rust 中为 `Styled` 方法）、`disabled`，按压属性（`onPress`、`onLongPress`、`onPressDown`、`onPressUp`、`delayLongPress`、`hitSlop`、`pointerEvents`），状态样式（`activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`），`onHoverIn` / `onHoverMove` / `onHoverOut`、`onContextMenu`，`onFileDragEnter` / `onFileDragLeave` / `onFileDrop`，`focusable`、`onLayout`、`ref`、`nativeID`、`testID`，手势属性（`pan`、`pinch`、`rotation` 及其事件），触摸与响应者属性，无障碍属性，以及 `ios` / `android` / `desktop`。
+`View` 有一个自己的属性 `selectable`（Rust 中为 `.selectable(true)`）：视图中的文字作为一个选区一起选择（[文字选择](./text-selection.md)）。其余是[通用属性](./index.md#通用属性)：样式（`style`、`class`、`classList`；Rust 中为 `Styled` 方法）、`disabled`，按压属性（`onPress`、`onLongPress`、`onPressDown`、`onPressUp`、`delayLongPress`、`hitSlop`），状态样式（`activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`），`onHoverIn` / `onHoverMove` / `onHoverOut`、`onContextMenu`，`onFileDragEnter` / `onFileDragLeave` / `onFileDrop`，`focusable`、`onLayout`、`ref`、`nativeID`、`testID`，手势属性（`pan`、`pinch`、`rotation` 及其事件），触摸与响应者属性，无障碍属性，以及 `ios` / `android` / `desktop`。
 
 ## 可选择的视图
 
-设置 `selectable` 后，选区按阅读顺序跨越视图中的 [`Text`](./text.md) 元素和 [`TextView`](./text-view.md)；设置了 `selectable={false}` 的文字不参与，可选择视图中的另一个可选择视图属于外层视图。各平台的手势参见[文字选择](./text-selection.md)。
+设置 `selectable` 后，选区按阅读顺序跨越视图中的 [`Text`](./text.md) 元素和 [`TextView`](./text-view.md)；设置了 `style={{ userSelect: "none" }}` 的文字不参与，可选择视图中的另一个可选择视图属于外层视图。各平台的手势参见[文字选择](./text-selection.md)。
 
 ```tsx
 <View selectable class="gap-3 p-4">
@@ -214,9 +214,9 @@ const files = signal<string[]>([]);
 
 ## 平台说明
 
-- `boxShadow` 以及阴影属性（`shadowColor`、`shadowOpacity`、`shadowRadius`、`shadowOffset`）在两个平台上都会绘制；`android={{ elevation }}` 则改用 Android 的 Material 阴影。在 Android 上阴影需要背景色（背景透明的视图不会投下阴影）。
+- `boxShadow` 在所有平台上都会绘制；`android={{ elevation }}` 则改用 Android 的 Material 阴影。在 Android 上阴影需要背景色（背景透明的视图不会投下阴影）。
 - view 上的 `filter`：iOS 支持 `opacity()`、不超过 1 的 `brightness()` 和 `drop-shadow()`（图片支持所有颜色滤镜和 `blur()`）；Android 从 API 31 起全部支持，低于该版本支持颜色滤镜。
 - `backdropFilter: "blur(…)"` 在 iOS 上是系统材质（近似效果），在 Android 上需要 API 31。
-- Android 绘制 `translate`、`scale` 和 `rotate` 变换；`skewX` / `skewY` 在其他平台上生效。
+- Android 绘制 `translate`、`scale` 和 `rotate` 变换；斜切（`skew()`、`skewX()`、`skewY()`）在其他平台上生效。
 - `borderCurve: "continuous"`（`.border_curve(BorderCurve::Continuous)`）在两个平台上都会绘制平滑过渡到边的圆角（如同 iOS 应用图标）。
 - `cursor` 样式在有指针的场合生效（Mac Catalyst、连接指针设备的 iPad、桌面平台）。

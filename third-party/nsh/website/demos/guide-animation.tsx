@@ -66,7 +66,7 @@ function App() {
             borderRadius: on() ? 32 : 12,
             backgroundColor: on() ? ui().info : ui().accent,
             opacity: on() ? 0.6 : 1,
-            transform: [{ rotate: on() ? "45deg" : "0deg" }],
+            rotate: on() ? "45deg" : "0deg",
             transitionProperty: "all",
             transitionDuration: reduceMotion() ? 0 : 400,
             transitionTimingFunction: "ease-in-out",
@@ -84,15 +84,15 @@ function App() {
   );
   const tracks = () => (
       <>
-        <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: ui().accent, transform: [{ translateX: timed }] }} />
-        <View style={{ width: 20, height: 20, borderRadius: 4, backgroundColor: ui().info, transform: [{ translateX: sprung }] }} />
+        <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: ui().accent, translate: [timed, 0] }} />
+        <View style={{ width: 20, height: 20, borderRadius: 4, backgroundColor: ui().info, translate: [sprung, 0] }} />
         <View
           style={{
             height: 8,
             borderRadius: 4,
             // One value, interpolated into a color and a width fraction.
             backgroundColor: timed.interpolate({ inputRange: [0, TRACK], outputRange: [ui().border, ui().up] }),
-            transform: [{ scaleX: timed.interpolate({ inputRange: [0, TRACK], outputRange: [0.1, 1] }) }],
+            scale: [timed.interpolate({ inputRange: [0, TRACK], outputRange: [0.1, 1] }), 1],
             transformOrigin: "left",
             width: wide() ? TRACK + 20 : undefined,
           }}
@@ -110,10 +110,8 @@ function App() {
                 height: 32,
                 borderRadius: 8,
                 backgroundColor: color(),
-                transform: [
-                  { translateY: ys[i()] },
-                  { rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] }) },
-                ],
+                translate: [0, ys[i()]],
+                rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] }),
               }}
             />
           )}

@@ -135,8 +135,7 @@ class Box extends ViewGroup implements Node {
 
     /** Applies clipping after a style change. */
     void updateClip() {
-        // Not `hasShadow()`: the background may arrive (or animate in) later.
-        boolean split = clip && (decor.shadowColor >>> 24) != 0;
+        boolean split = clip && decor.hasOuterShadows();
         if (split && content == null) {
             // Clipping this view would clip its shadow: children move into a
             // content box that clips instead.

@@ -16,12 +16,6 @@ pub enum AnimationProp {
     BorderColor,
     /// `color` of a text: the whole text takes it.
     Color,
-    /// `shadowColor`.
-    ShadowColor,
-    /// `shadowOpacity`, 0..1.
-    ShadowOpacity,
-    /// `shadowRadius`, in points.
-    ShadowRadius,
     /// The value of entry `n` of the view's `transform` list (translations
     /// in points, rotations and skews in degrees).
     Transform(u8),
@@ -87,9 +81,6 @@ impl AnimationProp {
             "backgroundColor" => AnimationProp::BackgroundColor,
             "borderColor" => AnimationProp::BorderColor,
             "color" => AnimationProp::Color,
-            "shadowColor" => AnimationProp::ShadowColor,
-            "shadowOpacity" => AnimationProp::ShadowOpacity,
-            "shadowRadius" => AnimationProp::ShadowRadius,
             "top" => AnimationProp::StickyTop,
             "left" => AnimationProp::StickyLeft,
             _ => return None,

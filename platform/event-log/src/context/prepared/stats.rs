@@ -86,34 +86,6 @@ impl EventLog {
             tx.commit().await?;lease.wake();Ok(())
         })).await
     }
-    pub async fn prepared_group_snapshot(
-        &self,
-        view: &PreparedView,
-        group: &PreparedGroup,
-    ) -> Result<MediaManifest, StoreError> {
-        self.validate_root()?;
-        let expected_session = self.expected_session.clone();
-        let scope_id = view.build_id.clone();
-        view.lease.validate(&self.prepared)?;
-        self.check_bound_session(&view.selection.session)?;
-        let lease = view.lease.clone();
-        let root = view.root.clone();
-        let sequence = group_number(group)?;
-        self.connection
-            .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut scope_transaction = connection.begin().await?;
-                    let connection = &mut *scope_transaction;
-                    require_build_session(connection, expected_session.as_deref(), &scope_id)
-                        .await?;
-                    let _lease = lease;
-                    Ok(tree::find(connection, root.as_deref(), sequence)
-                        .await?
-                        .manifest)
-                })
-            })
-            .await
-    }
 }
 struct HashWriter(Sha256);
 impl std::io::Write for HashWriter {

@@ -19,12 +19,16 @@
 
 # Computer-use behavior comparison
 
-The [case manifest](../../../scripts/computer-use-parity/cases.json) is an initial
+The [case manifest](../../../scripts/computer-use-parity/cases.json) is a 33-case
 ledger for comparing Maka with the original runtime used by LCU. It covers named
-native, browser, audio, approval and lifecycle scenarios. It is not a complete
-inventory of the original product and carries no passing runtime results.
+native, browser, audio, approval and lifecycle scenarios. The controlled
+Linux/x64 results below match one explicitly selected case. They do
+not complete the ledger or establish parity for the original product.
 The [static capability inventory](inventory.md) enumerates the original member
 surface separately and keeps declarations without behavioral coverage visible.
+Full coverage of its 147 interface members, the 33 cases and the required
+architectures across Linux, macOS and Windows remains incomplete. macOS
+cross-target metadata checks do not establish native macOS behavior.
 
 The [comparator](../../../scripts/computer-use-parity/compare.py) checks independently
 recorded effects for one platform and architecture. It executes no application,
@@ -68,6 +72,177 @@ window-input adaptations; a direct original-runtime probe and an LCU probe do no
 necessarily have the same outcome. Give each reference a distinct subject name,
 artifact inventory and recording.
 
+### Linux native geometry: recorded scope
+
+On 2026-10-26, original reference run `run-20261026T072511Z` and Maka candidate
+run `run-20261026T084022Z` independently executed the same immutable fixture in
+ordinary-user namespace containers with private HOME, X11, D-Bus and Openbox,
+no host networking, and a 3840-by-2160 Xvfb display. Caller sandbox and approval
+settings were preserved. The original subject was the unmodified Linux native
+runtime with `@oai/cua` version `0.2.5`; the candidate was Maka `0.2.0`'s public
+REPL with embedded Cua and `native-desktop` enabled. These runs used no personal
+desktop or agent credentials.
+
+Both receipts report exit `0`. The comparator reports
+`matched_for_recorded_scope`, with no errors, for Linux/x64 and only
+`native.capture-scale-and-window-move`. Its explicit one-case manifest has
+SHA-256 `05ec8976a81e6bab97576a307b3ab0aa51391b437693422a1959c508b8b6b6ee`;
+it does not replace or satisfy the full manifest. The four oracles remain exact:
+`capture_dimensions`, `refusal`, `recipient` and `input_events`. Each assembled
+record has 33 hash-verified evidence attachments from its own run.
+
+The six stages cover input without capture, a stable large capture, movement
+after capture, resizing after capture, a fresh capture after resizing, and AX
+observation after resizing. All 14 click/scroll actions succeeded. The fixture
+independently received all 28 press/release events at target-local `(37, 41)`,
+with no sibling recipient or coordinate reinterpretation. The five actual JPEG
+outputs are byte-identical between the two runs: four are 2400 by 1200, and the
+fresh capture after resizing is 2600 by 1300. This establishes these controlled
+opaque frames and these actions; it does not establish arbitrary-image,
+gradient, MIME, boundary-input, or other-platform equivalence.
+
+The candidate receipt records this actual build command from the repository
+root:
+
+```sh
+cargo test --offline -p maka-computer-use --features native-desktop \
+  --test repl_native_geometry --no-run
+```
+
+The tested ELF SHA-256 is
+`e4cf2ffb0234f548aaac0d3fddc189be8b29bd6287074d001ca1b689ab1e861a`.
+The retained source freeze identifies the inputs to that build; later source
+edits require their own execution evidence. The private records are identified
+here without publishing their contents or machine paths:
+
+| Record | SHA-256 |
+| --- | --- |
+| Original capture, `run-20261026T072511Z` | `0d9f6a96f6a6ac099fe992514164dd5727325b1a8f88fbeeae895d7627c48c07` |
+| Candidate capture, `run-20261026T084022Z` | `5a6495b243163b14db4fb395811598be68878c04a96264dfcff004a4d0d3522d` |
+| Comparator report | `29e67cdfbf976fe93ccfb10e438c6f6d88a6cced492c415108c047acb5a8f6ed` |
+| Five-JPEG byte comparison | `edd659ce5cd6629044d0360c3eeffefac6f0462a887556dfec1e516e19067098` |
+| Candidate build source freeze | `8c82919f95f264c5821e830302bccc556c18d8aa782a85a90438dc0542597c9a` |
+
+### Linux image encoding evidence and remaining probes
+
+REA evidence
+`ev_07bae53b3c17fd10ea70548a23c0caf2fb7b8fca3c1c47f2413a2948af3dd8ef`
+covers the selected Sky screenshot JavaScript, and
+`ev_f5b3eb6c48ef4c2b8e848bcd5d90b7bf0ac0b90a067ca309712f210a99bb23e6`
+covers the native capture path. The original native helper SHA-256 is
+`6d6971a8d09fa1c932587442d771c8beaf41b75e2a1e25e098b6112b46a691ad`.
+The source-facts record has SHA-256
+`c05cda5246bfa7868bb157547044c0e3ddf4f734d438d603cebb41e703a016c1`.
+It records a source-backed inference of JPEG quality 80 from the encoder
+formula and constructed quantization tables, corroborated by all 128 DQT bytes
+of an original live JPEG. Quality 80 was uniquely matching in that analysis;
+it was not recovered original configuration text. The observed JPEG and native
+constructor use 1-by-1 sampling for all three components, without chroma
+subsampling. Extracted code, assembly, tables and generated fragments stay
+private.
+
+### Linux coordinate boundaries and pointer API shape
+
+Original run `run-20261026T075804Z` observed click/scroll refusal outside current
+window bounds and native parsing refusal for fractional or out-of-i16
+coordinates. Those refused calls produced no fixture input. Its capture SHA-256
+is `12f822dea5a041e28135fa865da5c2e74b0ce9643a5ddef2fa03d23469b8c62a`.
+Candidate run `run-20261026T094949Z` independently completed all 14 actions with
+positive controls against the same immutable boundary fixture and exited `0`.
+The strict comparator reports `matched_for_recorded_scope`, with no errors, for
+Linux/x64 and only `native.capture-scale-and-window-move`, using the same explicit
+one-case manifest identified above. All four exact oracles match, including
+fractional, out-of-range, negative and window-edge refusals and their absence of
+fixture input. This adds boundary coverage within that case; it does not satisfy
+the full ledger.
+
+The boundary candidate ELF SHA-256 is
+`f505ada37370187b98b5adb44f42c239f72f1743a011e0e28c3fdb043af1bc64`.
+Its capture SHA-256 is
+`14664fa09f14de33f69ab0b23ae33e74512699a8e96f3e355f1d5448c6f71d59`,
+and its comparator report SHA-256 is
+`f89f5ca16f5af39a8791f71aaad73c1ca428d41192e0c39fc36aaa45be1a0a89`.
+Later source edits require their own execution evidence.
+
+Original run `run-20261026T085724Z` observed that the selected app object has no
+`moveCursor` function; drag refused invalid bounds and numeric types, while a
+valid drag delivered its target press/release. Its capture SHA-256 is
+`6a0d2829ca0c9d7f3c3e09147d32c5bbe6a65a61011f038e3ab3d8a3730a01ee`.
+The candidate pointer/drag probe `run-20261026T095321Z` exited `101` with an
+incomplete capture and a `Promise was collected` REPL error. It is not a passing
+comparison. Pointer/drag parity remains pending a fresh desktop run of the fixed
+runtime; the original observations do not establish a candidate result.
+
+### Kernel reset and native settlement
+
+The selected original Linux runtime was also observed with a 300 ms JavaScript
+budget and a native 5001-pixel scroll. It returned timeout at about 308 ms while
+the fixture continued receiving the complete 50 wheel pairs. The next cell
+accepted fresh JavaScript bindings immediately; previous bindings were gone.
+A new native observation completed before the old input ended. Executable inode
+and process observations identified a different native engine for that new cell.
+An explicit kernel reset also returned before the earlier input completed.
+
+The original Linux audio recorder continued to its duration limit after kernel
+reset, while a new kernel's stop call reported no active recording. These are
+separate observations from ordinary logical-turn completion. They do not prove
+macOS or Windows reset behavior, or concurrent mutation behavior within one
+kernel.
+
+The Linux product-evaluation fixture now verifies early observation with an
+independently owned native epoch: a 300 ms cell times out while its original
+5001-pixel scroll continues, a fresh VM loses the old bindings, and fresh window
+inventory and explicit reset complete before the scroll ends. The candidate
+records exactly one durable dispatch and 50 balanced wheel pairs. Its inner
+T2 precedes final Run termination even though the outer timeout T2 was earlier.
+This exercises the real product evaluator, grants, journals and native SDK;
+Host transport and permission UI remain separate tests.
+
+This does not establish exact latency parity. The recorded candidate call took
+about 518 ms overall, versus about 308 ms in the original native reference. The
+measurement boundaries include different surrounding work; their contribution
+has not been profiled.
+
+Separate Linux product audio fixtures now verify that an old epoch's recording
+survives reset, a new VM cannot stop it, and its natural completion does not
+stop a replacement recording. They also verify cleanup after canonical Computer
+permission revocation and final owner close against exact private Pulse stream
+identities. Start's T2 confirms startup; background capture belongs to the
+Session/Epoch and can remain active after its Run ends. The owner-close fixture
+checks that distinction without inventing an unfinished Start operation.
+The public Stop result's audio bytes also match the independently retained WAV.
+These tests use generated output on an isolated null sink; physical audio,
+Host transport and permission UI remain separate verification scopes.
+
+### Windows worker lifecycle: implementation and evidence limits
+
+The WSL transport now keeps one logical owner for browser and cursor resources,
+with separate native epochs and request identities. An old epoch's operation or
+cleanup does not hold the parent Driver lock while awaiting its original reply.
+Each epoch retains FIFO ordering, and closing it retains the original cleanup
+result. The existing native operation cancellation token can cancel that exact
+request; dropping a response observer, a REPL timeout, or epoch retirement alone
+does not send a cancellation. A lost acknowledgement remains unknown or cleanup
+unconfirmed and is never replayed.
+
+Audio startup binds an observation to the exact capture before acknowledging
+Start. Later captures cannot replace that observation, and capture/output
+completion remains separate from native stop/join and temporary-file cleanup.
+The completion event is sent after the successful Start reply. An epoch's turn
+cleanup and the logical owner's shared browser cleanup have separate replies.
+
+Static Windows evidence from REA
+`ev_6fd85691ee36ba091fe8ef6b8b27296346bce5a06feb982802d3c4bc1966ff04`
+and native subject SHA-256
+`9493af2cebd3c11e2e38ce692f6ccd8e00f4320bdbbcf14f242d036a9736635f`
+shows that the selected original helper stops and joins active audio at
+`end_turn` and consumes its cleanup errors. Maka reuses its existing owned
+audio-discard path on Windows and retains unconfirmed cleanup errors. This is
+an explicit adapter difference. The new transport and cancellation behavior
+requires its own actual Windows desktop validation; structural inspection and
+hermetic transport tests cannot establish original Windows reset triggers or
+native parity. macOS native reset verification also remains pending.
+
 ## Capture records
 
 Keep captures outside Git. Run each side against a fresh copy of the same
@@ -77,9 +252,12 @@ caller's sandbox and approval policy. macOS behavior requires macOS; cross
 compilation or a Linux container cannot establish AX, Quartz or permission
 behavior.
 
-A runner writes one JSON record per side. There is no automatic live runner in
-this scaffold. Existing desktop tests below do not emit this record format and
-must not be presented as though they had completed a differential comparison.
+A runner writes one JSON record per side. This comparison scaffold does not
+automatically execute live tests. Capture execution and record assembly must be
+explicit: the controlled results above used independently recorded captures per
+side and an explicit one-case manifest. Other existing desktop tests below do
+not emit this record format and must not be presented as though they had
+completed a differential comparison.
 Record the command actually executed, its working directory and exit code; do
 not substitute an intended command. Do not log passwords, tokens or the complete
 environment.
@@ -168,6 +346,28 @@ fixture tests. Their ignored-test requirements and platform guards are the
 authority for execution prerequisites. A broad `cargo test` does not run those
 ignored tests.
 
+The Linux product-epoch fixture is
+[`live_tests.rs`](../../../plugins/workspace/workspace-computer/native/src/live_tests.rs).
+Build the `maka-computer-native` lib tests with dependency feature
+`maka-computer-use/native-desktop`, then run the ignored
+`live_tests::linux_product_timeout_retires_vm_but_run_waits_for_exact_native_t2`
+inside the disposable X11/D-Bus desktop. It requires
+`MAKA_COMPUTER_LIVE_FIXTURE_BIN` pointing to the separately built `repl_browser`
+fixture executable and `MAKA_COMPUTER_LIVE_ARTIFACT_DIR` pointing to its own
+writable capture directory. Unix sockets must remain on a Linux filesystem;
+`MAKA_COMPUTER_LIVE_SOCKET_DIR` can select that task-owned location. The fixture
+records raw input, timings and canonical ledgers and never selects a personal
+desktop.
+
+The same lib-test executable contains three ignored `live_tests::audio::`
+fixtures. Run them serially through Cua's existing private Pulse runner with
+`--ignored --nocapture --test-threads=1`, an explicit
+`MAKA_COMPUTER_LIVE_ARTIFACT_DIR`, and dependency feature
+`maka-computer-use/native-desktop`. The recording fixture refuses a normal audio
+server and requires that runner's output-only null sink. It needs no host display
+or host audio socket. Keep the generated tone, recorder, HOME and session bus in
+the disposable container.
+
 LCU's `tests/run.sh linux/amd64 /absolute/verified-package.deb` runs its offline
 installation and real Linux desktop gates inside disposable containers; its
 `tests/differential_baseline.py` starts the untouched official REPL for a
@@ -180,3 +380,11 @@ observe the container, remove it and insert a replacement at its ordinal without
 another observation, then scroll using the old token. Record the refusal and
 independent replacement/sibling offsets. Merely refreshing before dispatch tests
 a different state transition and can hide retargeting.
+
+The ignored Linux GTK test
+`linux_screenshot_only_keeps_exact_observed_elements_until_replacement` exercises
+screenshot-only retention, stale-token refusal and a newly observed replacement
+at the same ordinal. It keeps the default AX budget and checks the fixture's
+visible state and a positive wheel effect. Run it with `HARNESS_GTK3_EXE` pointing
+to the task-owned Cua GTK3 fixture on the disposable X11/AT-SPI desktop. This
+integration test does not emit the differential record format above.

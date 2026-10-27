@@ -757,7 +757,7 @@ fn pointer_events() -> impl IntoElement {
                 "Taps on the hatched band reach the button",
                 "Clicks on the hatched band reach the button",
             ),
-            "pointerEvents=\"none\"",
+            "pointerEvents: \"none\"",
         ))
 }
 

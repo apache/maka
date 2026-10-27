@@ -18,18 +18,27 @@
  */
 
 //! Private, parent-owned desktop worker. There is no listener or reconnect path.
+mod connection;
+#[cfg(feature = "native-desktop")]
+mod epochs;
+pub(in crate::desktop) use connection::{AudioObservation, Connection};
+#[cfg(feature = "native-desktop")]
+use epochs::serve;
+
 use super::failed;
 #[cfg(feature = "native-desktop")]
 use super::local_platform;
-use crate::protocol::Command;
+#[cfg(all(test, unix))]
+use crate::BrowserAuthorization;
 #[cfg(feature = "native-desktop")]
-use crate::{Driver, session::Session};
+use crate::Driver;
+use crate::{BrowserAccess, protocol::Command};
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::computer::BrowserConnection;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-#[cfg(feature = "native-desktop")]
-use std::{collections::HashMap, sync::Arc};
+#[cfg(any(feature = "native-desktop", all(test, unix)))]
+use std::sync::Arc;
 use std::{
     io,
     path::PathBuf,
@@ -37,12 +46,11 @@ use std::{
     time::Duration,
 };
 #[cfg(feature = "native-desktop")]
+use tokio::sync::Mutex;
+#[cfg(feature = "native-desktop")]
+use tokio::sync::mpsc;
 use tokio::{
-    io::AsyncWrite,
-    sync::{Mutex, mpsc},
-};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout},
 };
 use tokio_util::sync::CancellationToken;
@@ -57,24 +65,48 @@ const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 struct Hello {
     protocol: u32,
     platform: String,
+    audio_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
     Invoke {
+        owner: String,
+        epoch: String,
         session: String,
+        turn: String,
         browsers: Vec<BrowserConnection>,
         command: Command,
         language: maka_agent_facts::language::Language,
     },
-    CloseSession {
+    CloseEpoch {
+        owner: String,
+        epoch: String,
+    },
+    CloseOwner {
+        owner: String,
+    },
+    DiscardAudio {
+        owner: String,
+        epoch: String,
+    },
+    FinishTurn {
+        owner: String,
+        epoch: String,
         session: String,
+        turn: String,
+        language: maka_agent_facts::language::Language,
+    },
+    FinishOwnerTurn {
+        owner: String,
+        turn: String,
+        language: maka_agent_facts::language::Language,
     },
     Shutdown,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 enum Failure {
     Failed(String),
@@ -106,17 +138,67 @@ impl From<Failure> for ToolError {
 }
 type Response = Result<Value, Failure>;
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ParentFrame {
+    Request {
+        id: u64,
+        request: Box<Request>,
+    },
+    Cancel {
+        id: u64,
+    },
+    BrowserAuthorizationResult {
+        id: u64,
+        authorization_id: u64,
+        result: Result<(), Failure>,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum WorkerFrame {
+    Response {
+        id: u64,
+        result: Response,
+    },
+    AudioFinished {
+        id: u64,
+        result: Result<(), Failure>,
+    },
+    BrowserAuthorization {
+        id: u64,
+        authorization_id: u64,
+        mode: AuthorizationMode,
+        access: BrowserAccess,
+    },
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AuthorizationMode {
+    Authorize,
+    Check,
+}
+
 #[derive(Default)]
 pub(crate) struct Worker {
-    process: Option<Process>,
-    fault: Option<ToolError>,
+    connection: Option<Connection>,
     closed: bool,
+    audio_enabled: bool,
 }
 struct Process {
     child: Child,
     pipes: Option<(ChildStdin, BufReader<ChildStdout>)>,
 }
 impl Worker {
+    pub(crate) fn with_audio(audio_enabled: bool) -> Self {
+        Self {
+            audio_enabled,
+            ..Default::default()
+        }
+    }
+
     pub(crate) async fn prepare(
         &mut self,
         cancellation: &CancellationToken,
@@ -124,92 +206,39 @@ impl Worker {
         if self.closed {
             return Err(failed("Windows desktop worker is closed"));
         }
-        if let Some(error) = &self.fault {
-            return Err(error.clone());
+        if let Some(error) = self.connection.as_ref().and_then(Connection::fault) {
+            return Err(error);
         }
-        if self.process.is_none() {
+        if self.connection.is_none() {
             let executable = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(failed("Computer Use preparation cancelled")),
                 executable = windows_executable() => executable?,
             };
-            // The worker only advertises its protocol here. Native Cua state
-            // remains idle until a separately admitted operation is sent.
-            self.process = Some(Process::start(executable).await?);
+            let process = Process::start(executable, self.audio_enabled).await?;
+            self.connection = Some(Connection::start(process));
         }
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use preparation cancelled"));
         }
         Ok(())
     }
-    pub(crate) async fn release_session(&mut self, session: &str) -> Result<(), ToolError> {
-        if self.process.is_some() {
-            self.call(
-                Request::CloseSession {
-                    session: session.into(),
-                },
-                &CancellationToken::new(),
-            )
-            .await?;
-        }
-        Ok(())
-    }
-    pub(crate) async fn call(
-        &mut self,
-        request: Request,
-        cancellation: &CancellationToken,
-    ) -> Result<Value, ToolError> {
-        if cancellation.is_cancelled() {
-            return Err(failed("Computer Use cancelled before dispatch"));
-        }
-        let frame = encode(&request).map_err(failed)?;
-        self.prepare(cancellation).await?;
-        let process = self.process.as_mut().unwrap();
-        // Once a frame is sent, wait for settlement. A cancelled REPL must not
-        // drop native input or infer that an unacknowledged action did not run.
-        match process.exchange(&frame).await {
-            Ok(response) => response.map_err(Into::into),
-            Err(error) => {
-                let message = format!(
-                    "Windows desktop connection lost: {error}; restart the Host before using Computer Use again"
-                );
-                let result = match process.disconnect().await {
-                    Ok(()) => ToolError::OutcomeUnknown(message.clone()),
-                    Err(cleanup) => ToolError::CleanupUnconfirmed(format!("{message}; {cleanup}")),
-                };
-                self.fault = Some(match &result {
-                    ToolError::OutcomeUnknown(_) => failed(&message),
-                    _ => result.clone(),
-                });
-                Err(result)
-            }
-        }
+
+    pub(in crate::desktop) fn connection(&self) -> Option<Connection> {
+        self.connection.clone()
     }
 
     pub(crate) async fn close(&mut self) -> Result<(), ToolError> {
-        let mut failure = None;
-        if !self.closed
-            && self.process.is_some()
-            && self.fault.is_none()
-            && let Err(error) = self
-                .call(Request::Shutdown, &CancellationToken::new())
-                .await
-        {
-            failure = Some(error);
-        }
         self.closed = true;
-        if let Some(process) = &mut self.process {
-            process
-                .disconnect()
-                .await
-                .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))?;
+        match &self.connection {
+            Some(connection) => connection.close().await,
+            None => Ok(()),
         }
-        self.process = None;
-        failure.map_or(Ok(()), Err)
     }
 }
+
 impl Process {
-    async fn start(executable: PathBuf) -> Result<Self, ToolError> {
+    async fn start(executable: PathBuf, audio_enabled: bool) -> Result<Self, ToolError> {
         let mut command = tokio::process::Command::new(executable);
         command
             .arg(ENTRY)
@@ -217,6 +246,9 @@ impl Process {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        if audio_enabled {
+            command.arg("--audio");
+        }
         #[cfg(unix)]
         command.process_group(0);
         let mut child = command.spawn().map_err(|error| failed(format!(
@@ -229,11 +261,11 @@ impl Process {
             )),
             child,
         }
-        .handshake()
+        .handshake(audio_enabled)
         .await
     }
 
-    async fn handshake(mut self) -> Result<Self, ToolError> {
+    async fn handshake(mut self, expected_audio: bool) -> Result<Self, ToolError> {
         let hello = tokio::time::timeout(
             STARTUP_TIMEOUT,
             read::<_, Hello>(&mut self.pipes.as_mut().unwrap().1),
@@ -243,7 +275,8 @@ impl Process {
             Ok(Ok(Hello {
                 protocol: PROTOCOL,
                 platform,
-            })) if platform == "windows" => return Ok(self),
+                audio_enabled,
+            })) if platform == "windows" && audio_enabled == expected_audio => return Ok(self),
             Ok(Ok(_)) => {
                 "incompatible desktop worker; install a matching Windows Maka build".to_owned()
             }
@@ -256,26 +289,30 @@ impl Process {
         Err(failed(problem))
     }
 
-    async fn exchange(&mut self, frame: &[u8]) -> io::Result<Response> {
-        let (input, output) = self
-            .pipes
-            .as_mut()
-            .ok_or_else(|| io::Error::other("desktop channel closed"))?;
-        input.write_all(frame).await?;
-        input.flush().await?;
-        read(output).await
-    }
-
     async fn disconnect(&mut self) -> io::Result<()> {
         // Close both directions so a peer writing a failed response cannot
         // stay blocked on its output while we wait for its cleanup.
         self.pipes.take();
         // WSL's interop process represents a Windows process, so killing the
         // Linux PID alone does not prove that native work has stopped.
-        tokio::time::timeout(EXIT_TIMEOUT, self.child.wait())
+        let status = tokio::time::timeout(EXIT_TIMEOUT, self.child.wait())
             .await
             .map_err(|_| io::Error::other("Windows desktop worker exit was not confirmed"))??;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "Windows desktop worker exited with {status}; native cleanup was not confirmed"
+            )));
+        }
         Ok(())
+    }
+}
+
+fn authorization_cleanup(result: Result<(), ToolError>) -> Option<ToolError> {
+    match result {
+        Ok(()) | Err(ToolError::Failed(_) | ToolError::Io { .. }) => None,
+        Err(error) => Some(ToolError::CleanupUnconfirmed(format!(
+            "Browser authorization cleanup was not confirmed: {error}"
+        ))),
     }
 }
 
@@ -300,15 +337,17 @@ pub fn bootstrap() -> Option<ExitCode> {
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(ENTRY)) {
         return None;
     }
-    let result = if std::env::args_os().len() != 2 {
-        Err(io::Error::other("desktop worker takes no arguments"))
+    let audio_enabled =
+        std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--audio"));
+    let result = if std::env::args_os().len() != if audio_enabled { 3 } else { 2 } {
+        Err(io::Error::other("desktop worker accepts only --audio"))
     } else {
         #[cfg(feature = "native-desktop")]
         {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .and_then(|runtime| runtime.block_on(serve_stdio()))
+                .and_then(|runtime| runtime.block_on(serve_stdio(audio_enabled)))
         }
         #[cfg(not(feature = "native-desktop"))]
         {
@@ -328,7 +367,7 @@ pub fn bootstrap() -> Option<ExitCode> {
 }
 
 #[cfg(feature = "native-desktop")]
-async fn serve_stdio() -> io::Result<()> {
+async fn serve_stdio(audio_enabled: bool) -> io::Result<()> {
     let (send, receive) = mpsc::channel(1);
     let disconnected = CancellationToken::new();
     let eof = disconnected.clone();
@@ -343,96 +382,8 @@ async fn serve_stdio() -> io::Result<()> {
         }
         eof.cancel();
     });
-    let driver = Arc::new(Mutex::new(Driver::default()));
+    let driver = Arc::new(Mutex::new(Driver::with_audio(audio_enabled)));
     serve(receive, tokio::io::stdout(), disconnected, driver).await
-}
-
-#[cfg(feature = "native-desktop")]
-async fn serve(
-    mut receive: mpsc::Receiver<Request>,
-    mut output: impl AsyncWrite + Unpin,
-    disconnected: CancellationToken,
-    driver: Arc<Mutex<Driver>>,
-) -> io::Result<()> {
-    let mut sessions = HashMap::<String, Session>::new();
-    write(
-        &mut output,
-        &Hello {
-            protocol: PROTOCOL,
-            platform: local_platform().into(),
-        },
-    )
-    .await?;
-    let mut shutdown = false;
-    let mut transport_error = None;
-    while let Some(request) = tokio::select! {
-        biased;
-        _ = disconnected.cancelled() => None,
-        request = receive.recv() => request,
-    } {
-        let result = match request {
-            Request::Invoke {
-                session,
-                browsers,
-                command,
-                language,
-            } => {
-                if session.is_empty() {
-                    Err(failed("invalid desktop Session identity"))
-                } else if sessions.len() >= 16 && !sessions.contains_key(&session) {
-                    Err(failed("desktop Session capacity reached"))
-                } else {
-                    let local = sessions
-                        .entry(session.clone())
-                        .or_insert_with(|| Session::new(driver.clone()));
-                    match local.configure_browsers(browsers, language) {
-                        Ok(()) => {
-                            local
-                                .invoke(command, &session, &disconnected, language)
-                                .await
-                        }
-                        Err(error) => Err(error),
-                    }
-                }
-            }
-            Request::CloseSession { session } => {
-                let result = match sessions.get_mut(&session) {
-                    Some(local) => local.close().await,
-                    None => Ok(()),
-                };
-                if result.is_ok() {
-                    sessions.remove(&session);
-                }
-                result.map(|()| Value::Null)
-            }
-            Request::Shutdown => {
-                shutdown = true;
-                break;
-            }
-        };
-        if let Err(error) = write(&mut output, &result.map_err(Failure::from)).await {
-            transport_error = Some(error);
-            break;
-        }
-    }
-    let mut cleanup = Ok(Value::Null);
-    for local in sessions.values_mut() {
-        if let Err(error) = local.close().await {
-            cleanup = Err(Failure::from(error));
-        }
-    }
-    if let Err(error) = driver.lock().await.close().await {
-        cleanup = Err(Failure::from(error));
-    }
-    if shutdown {
-        write(&mut output, &cleanup).await?;
-    }
-    if let Some(error) = transport_error {
-        return Err(error);
-    }
-    cleanup
-        .map(|_| ())
-        .map_err(|error| io::Error::other(format!("{error:?}")))
 }
 
 fn length(length: u32) -> io::Result<usize> {
@@ -464,7 +415,6 @@ fn encode(value: &impl Serialize) -> io::Result<Vec<u8>> {
     bytes[..4].copy_from_slice(&size.to_be_bytes());
     Ok(bytes)
 }
-#[cfg(feature = "native-desktop")]
 async fn write(output: &mut (impl AsyncWrite + Unpin), value: &impl Serialize) -> io::Result<()> {
     output.write_all(&encode(value)?).await?;
     output.flush().await
@@ -488,17 +438,63 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(feature = "native-desktop")]
+    struct TestRequests {
+        send: mpsc::Sender<ParentFrame>,
+        id: std::sync::atomic::AtomicU64,
+    }
+
+    #[cfg(feature = "native-desktop")]
+    impl TestRequests {
+        async fn send(&self, request: Request) -> Result<(), mpsc::error::SendError<ParentFrame>> {
+            let id = self.id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            self.send
+                .send(ParentFrame::Request {
+                    id,
+                    request: Box::new(request),
+                })
+                .await
+        }
+    }
+
+    #[cfg(feature = "native-desktop")]
+    fn requests() -> (TestRequests, mpsc::Receiver<ParentFrame>) {
+        let (send, receive) = mpsc::channel(1);
+        (
+            TestRequests {
+                send,
+                id: std::sync::atomic::AtomicU64::new(0),
+            },
+            receive,
+        )
+    }
+
+    #[cfg(feature = "native-desktop")]
+    async fn response(output: &mut (impl AsyncRead + Unpin)) -> io::Result<Response> {
+        match read::<_, WorkerFrame>(output).await? {
+            WorkerFrame::Response { result, .. } => Ok(result),
+            _ => Err(io::Error::other(
+                "unexpected callback in non-browser fixture",
+            )),
+        }
+    }
+
+    #[cfg(any(feature = "native-desktop", unix))]
     fn request(session: &str, command: Value) -> Request {
         Request::Invoke {
+            owner: session.into(),
+            epoch: "fixture-epoch".into(),
             session: session.into(),
+            turn: "fixture-turn".into(),
             browsers: Vec::new(),
             command: serde_json::from_value(command).unwrap(),
             language: maka_agent_facts::language::Language::En,
         }
     }
 
-    #[test]
-    fn desktop_frames_preserve_invoke_language() {
+    #[tokio::test]
+    async fn desktop_frames_preserve_invoke_language() {
+        use crate::protocol::{Action, Direction, Distance, Handle, Position};
         use maka_agent_facts::language::Language;
 
         for (language, tag) in [
@@ -507,30 +503,191 @@ mod tests {
             (Language::En, "en"),
         ] {
             let request = Request::Invoke {
+                owner: "fixture-owner".into(),
+                epoch: "fixture-epoch".into(),
                 session: "same-session".into(),
+                turn: "fixture-turn".into(),
                 browsers: Vec::new(),
                 command: Command::Documentation,
                 language,
             };
-            let framed = encode(&request).unwrap();
-            let decoded: Request = read_sync(&mut framed.as_slice()).unwrap();
+            let framed = encode(&ParentFrame::Request {
+                id: 42,
+                request: Box::new(request),
+            })
+            .unwrap();
+            let decoded: ParentFrame = read_sync(&mut framed.as_slice()).unwrap();
             assert_eq!(
                 serde_json::to_value(decoded).unwrap(),
                 json!({
-                    "method": "invoke",
-                    "session": "same-session",
-                    "browsers": [],
-                    "command": { "method": "documentation" },
-                    "language": tag,
+                    "kind": "request",
+                    "id": 42,
+                    "request": {
+                        "method": "invoke",
+                        "owner": "fixture-owner",
+                        "epoch": "fixture-epoch",
+                        "session": "same-session",
+                        "turn": "fixture-turn",
+                        "browsers": [],
+                        "command": { "method": "documentation" },
+                        "language": tag,
+                    },
                 }),
+            );
+        }
+
+        // Preserve the caller's binary64 values through the actual parent /
+        // helper framing in both directions, before any OS-specific policy.
+        // Decimal values: 0.12345678901234569, 17.123456789012344,
+        // 5.123456789012345. The first loses one ULP with the approximate
+        // JSON float parser, even though its printed value looks equivalent.
+        let expected = [
+            0x3fbf_9add_3746_f660,
+            0x4031_1f9a_dd37_46f6,
+            0x4014_7e6b_74dd_1bd9,
+        ];
+        for pixels in [false, true] {
+            let [amount, x, y] = expected.map(f64::from_bits);
+            let request = ParentFrame::Request {
+                id: 42,
+                request: Box::new(Request::Invoke {
+                    owner: "fixture-owner".into(),
+                    epoch: "fixture-epoch".into(),
+                    session: "same-session".into(),
+                    turn: "fixture-turn".into(),
+                    browsers: Vec::new(),
+                    command: Command::Action {
+                        handle: Handle::App("numeric-target".into()),
+                        action: Action::Scroll {
+                            target: Position::Point([x, y]),
+                            direction: Direction::Down,
+                            distance: Some(if pixels {
+                                Distance::Pixels { pixels: amount }
+                            } else {
+                                Distance::Pages(amount)
+                            }),
+                        },
+                    },
+                    language: Language::En,
+                }),
+            };
+            let framed = encode(&request).unwrap();
+            assert_eq!(
+                u32::from_be_bytes(framed[..4].try_into().unwrap()) as usize,
+                framed.len() - 4
+            );
+            let ParentFrame::Request { id, request } = read_sync(&mut framed.as_slice()).unwrap()
+            else {
+                panic!("numeric action changed its typed worker frame");
+            };
+            let Request::Invoke {
+                session,
+                turn,
+                command:
+                    Command::Action {
+                        handle: Handle::App(target),
+                        action:
+                            Action::Scroll {
+                                target: Position::Point(point),
+                                direction: Direction::Down,
+                                distance,
+                            },
+                    },
+                ..
+            } = *request
+            else {
+                panic!("numeric action changed its typed worker request");
+            };
+            assert_eq!(
+                (id, session.as_str(), turn.as_str(), target.as_str()),
+                (42, "same-session", "fixture-turn", "numeric-target")
+            );
+            let amount = match (pixels, distance) {
+                (false, Some(Distance::Pages(amount)))
+                | (true, Some(Distance::Pixels { pixels: amount })) => amount,
+                _ => panic!("scroll distance changed its typed unit across the worker boundary"),
+            };
+            assert_eq!(
+                [amount.to_bits(), point[0].to_bits(), point[1].to_bits()],
+                expected
+            );
+
+            let (mut parent, mut helper) = tokio::io::duplex(1024);
+            write(
+                &mut helper,
+                &WorkerFrame::Response {
+                    id,
+                    result: Ok(json!({"amount":amount,"x":point[0],"y":point[1]})),
+                },
+            )
+            .await
+            .unwrap();
+            let WorkerFrame::Response {
+                id: response_id,
+                result: Ok(response),
+            } = read(&mut parent).await.unwrap()
+            else {
+                panic!("numeric response changed its worker frame");
+            };
+            assert_eq!(response_id, id);
+            assert_eq!(
+                ["amount", "x", "y"].map(|field| response[field].as_f64().unwrap().to_bits()),
+                expected
             );
         }
     }
 
     #[cfg(feature = "native-desktop")]
     #[tokio::test]
+    async fn discard_audio_only_visits_an_existing_helper_session() {
+        let (send, receive) = requests();
+        let (mut output, writer) = tokio::io::duplex(64 * 1024);
+        let driver = Arc::new(Mutex::new(Driver::with_audio(true)));
+        let task = tokio::spawn(serve(receive, writer, CancellationToken::new(), driver));
+        let _: Hello = read(&mut output).await.unwrap();
+        send.send(Request::DiscardAudio {
+            owner: "absent".into(),
+            epoch: "absent".into(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(response(&mut output).await.unwrap().unwrap(), Value::Null);
+        send.send(request(
+            "owner",
+            json!({"method":"configureCursor","options":{"label":"retained","enabled":false}}),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            response(&mut output).await.unwrap().unwrap()["settings"]["label"],
+            "retained"
+        );
+        send.send(Request::DiscardAudio {
+            owner: "owner".into(),
+            epoch: "fixture-epoch".into(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(response(&mut output).await.unwrap().unwrap(), Value::Null);
+        send.send(request(
+            "owner",
+            json!({"method":"cursorState","options":{}}),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            response(&mut output).await.unwrap().unwrap()["settings"]["label"],
+            "retained"
+        );
+        send.send(Request::Shutdown).await.unwrap();
+        assert!(response(&mut output).await.unwrap().is_ok());
+        task.await.unwrap().unwrap();
+    }
+
+    #[cfg(feature = "native-desktop")]
+    #[tokio::test]
     async fn desktop_sessions_own_targets_and_reset_independently() {
-        let (send, receive) = mpsc::channel(1);
+        let (send, receive) = requests();
         let (mut output, writer) = tokio::io::duplex(64 * 1024);
         let driver = Arc::new(Mutex::new(Driver::default()));
         let task = tokio::spawn(serve(receive, writer, CancellationToken::new(), driver));
@@ -543,32 +700,48 @@ mod tests {
             ))
             .await
             .unwrap();
-            let result: Response = read(&mut output).await.unwrap();
+            let result: Response = response(&mut output).await.unwrap();
             assert_eq!(result.unwrap()["settings"]["label"], label);
         }
-        send.send(Request::CloseSession {
+        send.send(Request::FinishTurn {
+            owner: "a".into(),
+            epoch: "fixture-epoch".into(),
             session: "a".into(),
+            turn: "fixture-turn".into(),
+            language: maka_agent_facts::language::Language::En,
         })
         .await
         .unwrap();
-        assert!(read::<_, Response>(&mut output).await.unwrap().is_ok());
-        for (session, label) in [("a", "Maka"), ("b", "Bob")] {
+        assert_eq!(response(&mut output).await.unwrap().unwrap(), Value::Null);
+        send.send(request("a", json!({"method":"cursorState","options":{}})))
+            .await
+            .unwrap();
+        assert_eq!(
+            response(&mut output).await.unwrap().unwrap()["settings"]["label"],
+            "Alice",
+            "turn cleanup must retain the Session's configuration"
+        );
+        send.send(Request::CloseOwner { owner: "a".into() })
+            .await
+            .unwrap();
+        assert!(response(&mut output).await.unwrap().is_ok());
+        for (session, label) in [("a-new", "Maka"), ("b", "Bob")] {
             send.send(request(
                 session,
                 json!({"method":"cursorState","options":{}}),
             ))
             .await
             .unwrap();
-            let result: Response = read(&mut output).await.unwrap();
+            let result: Response = response(&mut output).await.unwrap();
             assert_eq!(result.unwrap()["settings"]["label"], label);
         }
-        send.send(request("a", json!({"method":"observe","handle":{"kind":"app","id":"unbound"},"kind":"ax","options":{}}))).await.unwrap();
-        let error = read::<_, Response>(&mut output).await.unwrap().unwrap_err();
+        send.send(request("a-new", json!({"method":"observe","handle":{"kind":"app","id":"unbound"},"kind":"ax","options":{}}))).await.unwrap();
+        let error = response(&mut output).await.unwrap().unwrap_err();
         assert!(
             matches!(error, Failure::Failed(message) if message == "stale_target: bind the app again")
         );
         send.send(Request::Shutdown).await.unwrap();
-        assert!(read::<_, Response>(&mut output).await.unwrap().is_ok());
+        assert!(response(&mut output).await.unwrap().is_ok());
         task.await.unwrap().unwrap();
     }
 
@@ -576,7 +749,7 @@ mod tests {
     #[tokio::test]
     async fn desktop_transport_keeps_language_per_invoke_not_per_session() {
         use maka_agent_facts::language::Language;
-        let (send, receive) = mpsc::channel(1);
+        let (send, receive) = requests();
         let (mut output, writer) = tokio::io::duplex(64 * 1024);
         let task = tokio::spawn(serve(
             receive,
@@ -591,7 +764,10 @@ mod tests {
             (Language::En, "en", "target rebinding"),
         ] {
             let request = Request::Invoke {
+                owner: "fixture-owner".into(),
+                epoch: "fixture-epoch".into(),
                 session: "same-session".into(),
+                turn: "fixture-turn".into(),
                 browsers: Vec::new(),
                 command: Command::Documentation,
                 language,
@@ -602,7 +778,7 @@ mod tests {
             let decoded: Request = read_sync(&mut framed.as_slice()).unwrap();
             assert_eq!(serde_json::to_value(&decoded).unwrap()["language"], tag);
             send.send(decoded).await.unwrap();
-            let response: Response = read(&mut output).await.unwrap();
+            let response: Response = response(&mut output).await.unwrap();
             let text = response.unwrap();
             let text = text.as_str().unwrap();
             assert!(
@@ -612,14 +788,14 @@ mod tests {
             );
         }
         send.send(Request::Shutdown).await.unwrap();
-        assert!(read::<_, Response>(&mut output).await.unwrap().is_ok());
+        assert!(response(&mut output).await.unwrap().is_ok());
         task.await.unwrap().unwrap();
     }
 
     #[cfg(feature = "native-desktop")]
     #[tokio::test]
     async fn disconnected_desktop_discards_queued_work_and_closes_output() {
-        let (send, receive) = mpsc::channel(1);
+        let (send, receive) = requests();
         send.send(request("queued", json!({"method":"documentation"})))
             .await
             .unwrap();
@@ -634,7 +810,7 @@ mod tests {
         ));
         let _: Hello = read(&mut output).await.unwrap();
         assert_eq!(
-            read::<_, Response>(&mut output).await.unwrap_err().kind(),
+            response(&mut output).await.unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
         task.await.unwrap().unwrap();
@@ -668,18 +844,74 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn browser_access(url: &str) -> BrowserAccess {
+        BrowserAccess::Read {
+            document: crate::BrowserDocument {
+                browser_id: "fixture-browser".into(),
+                generation: "ws://127.0.0.1/devtools/browser/fixture".into(),
+                tab_id: "fixture-tab".into(),
+                url: url.into(),
+            },
+        }
+    }
+
+    #[cfg(unix)]
+    struct UnconfirmedAuthorization {
+        started: Arc<tokio::sync::Notify>,
+    }
+    #[cfg(unix)]
+    impl BrowserAuthorization for UnconfirmedAuthorization {
+        fn authorize(
+            &self,
+            _: BrowserAccess,
+            cancellation: CancellationToken,
+        ) -> crate::AuthorizationFuture {
+            let started = self.started.clone();
+            Box::pin(async move {
+                started.notify_one();
+                cancellation.cancelled().await;
+                Err(ToolError::CleanupUnconfirmed(
+                    "canonical withdrawal unavailable".into(),
+                ))
+            })
+        }
+        fn check(
+            &self,
+            _: BrowserAccess,
+            cancellation: CancellationToken,
+        ) -> crate::AuthorizationFuture {
+            self.authorize(browser_access("https://cancel.test/"), cancellation)
+        }
+    }
+
+    #[cfg(unix)]
     fn child(hello: Hello) -> Process {
+        child_reply(hello, &[])
+    }
+
+    #[cfg(unix)]
+    fn child_reply(hello: Hello, reply: &[WorkerFrame]) -> Process {
         let frame = encode(&hello)
             .unwrap()
             .iter()
             .map(|byte| format!("\\{:03o}", byte))
             .collect::<String>();
-        // This disposable peer exits after receiving input, without acknowledging
-        // it. Exercise the same real pipes and process wait as the WSL client.
+        let reply = reply
+            .iter()
+            .flat_map(|message| encode(message).unwrap())
+            .map(|byte| format!("\\{:03o}", byte))
+            .collect::<String>();
+        let completion = if reply.is_empty() {
+            String::new()
+        } else {
+            format!("; printf '%b' '{reply}'; cat >/dev/null")
+        };
+        // A disposable peer exercises the real pipes and process wait. Replying
+        // peers wait for parent EOF so cleanup must actually close both pipes.
         let mut child = tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(format!(
-                "printf '%b' '{frame}'; dd bs=1 count=1 of=/dev/null 2>/dev/null"
+                "printf '%b' '{frame}'; dd bs=1 count=1 of=/dev/null 2>/dev/null{completion}"
             ))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -697,50 +929,163 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn unconfirmed_callback_cleanup_retires_the_worker_before_another_request() {
+        let process = child_reply(
+            Hello {
+                protocol: PROTOCOL,
+                platform: "windows".into(),
+                audio_enabled: false,
+            },
+            &[
+                WorkerFrame::BrowserAuthorization {
+                    id: 1,
+                    authorization_id: 1,
+                    mode: AuthorizationMode::Authorize,
+                    access: browser_access("https://cancel.test/"),
+                },
+                WorkerFrame::Response {
+                    id: 1,
+                    result: Ok(json!("native settled")),
+                },
+            ],
+        )
+        .handshake(false)
+        .await
+        .unwrap();
+        let connection = Connection::start(process);
+        let mut worker = Worker {
+            connection: Some(connection.clone()),
+            ..Default::default()
+        };
+        let error = connection
+            .invoke(
+                request("owner", json!({"method":"documentation"})),
+                Some(Arc::new(UnconfirmedAuthorization {
+                    started: Arc::new(tokio::sync::Notify::new()),
+                })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ToolError::CleanupUnconfirmed(message) if message.contains("canonical withdrawal unavailable"))
+        );
+        assert!(connection.fault().is_some());
+        let repeated = connection
+            .invoke(
+                request("next-owner", json!({"method":"documentation"})),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            repeated.to_string(),
+            error.to_string(),
+            "a retired transport cannot borrow a later invocation's authority"
+        );
+        assert_eq!(
+            worker.close().await.unwrap_err().to_string(),
+            error.to_string(),
+            "confirmed process exit cannot erase the original cleanup failure"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn lost_acknowledgment_is_unknown_and_never_replayed() {
         let process = child(Hello {
             protocol: PROTOCOL,
             platform: "windows".into(),
+            audio_enabled: false,
         })
-        .handshake()
+        .handshake(false)
         .await
         .unwrap();
+        let connection = Connection::start(process);
         let mut worker = Worker {
-            process: Some(process),
+            connection: Some(connection.clone()),
             ..Default::default()
         };
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert!(
-            matches!(worker.call(request("a", json!({"method":"documentation"})), &cancelled).await,
+            matches!(connection.invoke(request("a", json!({"method":"documentation"})), None, cancelled).await,
             Err(ToolError::Failed(message)) if message == "Computer Use cancelled before dispatch")
         );
         assert!(matches!(
-            worker
-                .call(
+            connection
+                .invoke(
                     request("a", json!({"method":"documentation"})),
-                    &CancellationToken::new()
+                    None,
+                    CancellationToken::new()
                 )
                 .await,
             Err(ToolError::OutcomeUnknown(_))
         ));
         assert!(
-            matches!(worker.call(request("a", json!({"method":"documentation"})), &CancellationToken::new()).await, Err(ToolError::Failed(message)) if message.contains("restart the Host"))
+            matches!(connection.invoke(request("a", json!({"method":"documentation"})), None, CancellationToken::new()).await,
+            Err(ToolError::Failed(message)) if message.contains("restart the Host"))
         );
-        worker.close().await.unwrap();
+        assert!(
+            matches!(worker.close().await, Err(ToolError::CleanupUnconfirmed(message)) if message.contains("Windows desktop cleanup was not confirmed"))
+        );
+        child(Hello {
+            protocol: PROTOCOL,
+            platform: "windows".into(),
+            audio_enabled: true,
+        })
+        .handshake(true)
+        .await
+        .unwrap()
+        .disconnect()
+        .await
+        .unwrap();
         for hello in [
             Hello {
                 protocol: PROTOCOL + 1,
                 platform: "windows".into(),
+                audio_enabled: false,
             },
             Hello {
                 protocol: PROTOCOL,
                 platform: "linux".into(),
+                audio_enabled: false,
+            },
+            Hello {
+                protocol: PROTOCOL,
+                platform: "windows".into(),
+                audio_enabled: true,
             },
         ] {
             assert!(
-                matches!(child(hello).handshake().await, Err(ToolError::Failed(message)) if message.contains("incompatible desktop worker"))
+                matches!(child(hello).handshake(false).await, Err(ToolError::Failed(message)) if message.contains("incompatible desktop worker"))
             );
         }
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_worker_exit_does_not_confirm_native_cleanup() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 7")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut process = Process {
+            pipes: Some((
+                child.stdin.take().unwrap(),
+                BufReader::new(child.stdout.take().unwrap()),
+            )),
+            child,
+        };
+        let error = process.disconnect().await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            error.to_string(),
+            "Windows desktop worker exited with exit status: 7; native cleanup was not confirmed"
+        );
     }
 }

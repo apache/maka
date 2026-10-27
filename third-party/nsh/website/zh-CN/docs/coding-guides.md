@@ -573,7 +573,7 @@ view()
   语义角色时补入应用的主题文件；
 - 应用布局使用间距和字号刻度（`p-2`、`gap-3`、`w-64`、`text-sm`；`.p_2()`、`.gap_3()`、`.w_64()`、`.text_sm()`），而不是
   任意值（`p-[13px]`、`px(13.0)`）；
-- 类名的含义与 Tailwind CSS v4 完全相同，CSS 值的含义与浏览器中相同；`unknown class` 警告是需要修复的问题；
+- 类名的含义与 Tailwind CSS v4 完全相同，样式值的含义见[样式参考](../modules/style-reference.md)（即 CSS 的含义，采用原生的写法：数字的单位是点）；`unknown class` 警告是需要修复的问题；
 - token 按语义而不是调色板位置使用；
 - 与状态无关的几何放在普通的构建器链或类名字符串中；
 - 运行时交互状态使用 `active:`、`hover:` 和 `focus:`（`.active(..)`、`.hover(..)`、`.focus(..)`），它们原生生效，不需要往返

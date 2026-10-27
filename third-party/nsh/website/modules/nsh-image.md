@@ -62,7 +62,7 @@ next.forEach((p) => Image.prefetch(p.url));
 
 ## Related
 
-- [`<Image>`](../elements/image.md): `src`, `resizeMode`, `placeholder`, `onLoad`, `onProgress`, `onError` and the other props.
+- [`<Image>`](../elements/image.md): `src`, `placeholder`, the `objectFit` style, `onLoad`, `onProgress`, `onError` and the other props.
 - Importing an image file (`import logo from "./logo.png"`) gives an `ImageAsset` (`{ url, size, scales? }`, sized in points) that `<Image src>` and canvas `drawImage` accept.
 
 > [!NOTE]

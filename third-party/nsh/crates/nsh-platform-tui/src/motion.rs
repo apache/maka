@@ -553,8 +553,7 @@ fn differs(a: &ViewStyle, b: &ViewStyle, props: TransitionProps) -> bool {
             || a.tint_color != b.tint_color))
         || (props.has(TransitionProps::OPACITY) && a.opacity != b.opacity)
         || (props.has(TransitionProps::TRANSFORM) && a.transform != b.transform)
-        || (props.has(TransitionProps::SHADOW)
-            && (a.shadow != b.shadow || box_shadows(a) != box_shadows(b)))
+        || (props.has(TransitionProps::SHADOW) && box_shadows(a) != box_shadows(b))
         || (props.has(TransitionProps::SHAPE)
             && (a.border_radius != b.border_radius
                 || a.corner_radius != b.corner_radius
@@ -587,11 +586,6 @@ fn lerp_style(
         out.transform = transform;
     }
     if props.has(TransitionProps::SHADOW) {
-        out.shadow.color = lerp_color(from.shadow.color, to.shadow.color, p);
-        out.shadow.offset_x = lerp_points(from.shadow.offset_x, to.shadow.offset_x, p);
-        out.shadow.offset_y = lerp_points(from.shadow.offset_y, to.shadow.offset_y, p);
-        out.shadow.opacity = lerp(from.shadow.opacity, to.shadow.opacity, p).clamp(0.0, 1.0);
-        out.shadow.radius = lerp_points(from.shadow.radius, to.shadow.radius, p).max(Points::ZERO);
         if box_shadows(from) != box_shadows(to)
             && let Some(shadows) = lerp_box_shadows(box_shadows(from), box_shadows(to), p)
         {

@@ -125,7 +125,7 @@ fn headless_runs_play_the_platform_s_part() {
     let results = run_file(&run, &dir.join("App.test.tsx"), &mut |_| {}).unwrap();
     let failed: Vec<_> = results.iter().filter(|r| r.failure.is_some()).collect();
     assert!(failed.is_empty(), "{failed:#?}");
-    assert_eq!(results.len(), 8);
+    assert_eq!(results.len(), 10);
 }
 
 #[test]

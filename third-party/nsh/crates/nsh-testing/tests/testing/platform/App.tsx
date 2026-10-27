@@ -1,6 +1,6 @@
 // What a platform does besides drawing, as headless runs play it: going
-// back, dialogs, the clipboard, native animations, a dialog, and images
-// that never load.
+// back, dialogs, the clipboard, native animations, a dialog, images
+// that never load, and the keyboard focus a ref's `focus()` moves.
 import { Image, mount, signal, Text, View } from "nsh";
 import { Animated, createAnimatedValue } from "nsh";
 import { Clipboard } from "nsh";
@@ -24,6 +24,8 @@ function Home() {
   const measured = signal("unmeasured");
   const sheet = signal(false);
   const shown = signal(0);
+  const keyFocus = signal("none");
+  let target: YNode | undefined;
   const x = createAnimatedValue(0);
   return (
     <NavPage title="Home">
@@ -72,6 +74,16 @@ function Home() {
           }
         />
         <Text>{`Size: ${measured()}`}</Text>
+        <View
+          ref={target}
+          onPress={() => target?.blur()}
+          onFocus={() => keyFocus.set("focused")}
+          onBlur={() => keyFocus.set(`${keyFocus()} blurred`)}
+        >
+          <Text>Focus target</Text>
+        </View>
+        <Press label="Focus it" onPress={() => target?.focus()} />
+        <Text>{`Key focus: ${keyFocus()}`}</Text>
         <Press label="Sheet" onPress={() => sheet.set(true)} />
         <Dialog open={sheet()} onOpenChange={(open) => sheet.set(open)} onOpen={() => shown.set(shown() + 1)}>
           <Text>In the sheet</Text>

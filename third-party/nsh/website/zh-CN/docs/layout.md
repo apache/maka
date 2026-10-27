@@ -14,11 +14,11 @@ NSH 使用 [Taffy](https://github.com/DioxusLabs/taffy) 为每个元素做布局
 
 ## Flexbox
 
-视图用 flexbox 排列子元素。默认值与 Web 不同：
+视图用 flexbox 排列子元素。未设置 `display` 的视图把子元素纵向排列；样式中的 `display: "flex"` 表示横向，除非设置了 `flexDirection`，与 CSS 以及 Tailwind 的 `flex` 类完全一致。没有设置时采用以下默认值：
 
 | 属性 | NSH 默认值 | Web 默认值 |
 |---|---|---|
-| `flexDirection` | `"column"` | `row` |
+| `flexDirection` | `"column"`（未设置 `display` 的视图）；设置 `display: "flex"` 后为 `"row"` | `row` |
 | `flexShrink` | `0` | `1` |
 | `alignContent` | `"flex-start"`（网格：`"normal"`） | `normal` |
 | `alignItems` | `"stretch"` | `stretch` |
@@ -47,7 +47,7 @@ view()
   <Image src={avatar} style={{ width: 40, height: 40, borderRadius: 20 }} />
   <View style={{ flex: 1, gap: 2 }}>
     <Text style={{ fontWeight: "600" }}>{props.name}</Text>
-    <Text style={{ color: "#6e7781" }} numberOfLines={1}>{props.message}</Text>
+    <Text style={{ numberOfLines: 1, color: "#6e7781" }}>{props.message}</Text>
   </View>
   <Text style={{ color: "#6e7781" }}>{props.time}</Text>
 </View>
@@ -67,7 +67,7 @@ view()
 
 `flex-start` 和 `flex-end` 跟随 flex 方向；`start` 和 `end` 与 CSS 一样跟随书写方向（从右到左时，`start` 是右侧），`self-start` / `self-end` 跟随子元素自身的方向。
 
-`flex` 只取一个数字，不是 CSS 简写：正数 `n` 表示按 `n` 增长、按 1 收缩、基准尺寸为 0，因此 `flex: 1` 的兄弟元素（Rust 中的 `.flex_1()`）无论内容多少都会平分空间；`flex: 0`（默认值）让视图按内容确定大小；负数表示按该值收缩，直到最小尺寸。
+`flex` 是 CSS 的简写，与 Tailwind 的 `flex-*` 类相同：数字 `n` 表示按 `n` 增长、按 1 收缩、基准尺寸为 0，因此 `flex: 1` 的兄弟元素（Rust 中的 `.flex_1()`、类 `flex-1`）无论内容多少都会平分空间；`"none"` 即 `0 0 auto`（视图保持自身尺寸），`"auto"` 即 `1 1 auto`，`"initial"` 即 `0 1 auto`，也可以写出增长、收缩和基准尺寸（`"2 0 50%"`、`"1 1 120px"`）。由于最小尺寸默认为 0，`flex: 0`（`0 1 0`）会把视图压缩到 0，除非用 `minWidth: "auto"` 保留内容的尺寸。
 
 ```rust tabs
 view()
@@ -89,17 +89,17 @@ view()
 </View>
 ```
 
-由于最小尺寸默认为 0，行内 `flex: 1` 的文字会收缩并换行，而不会把兄弟元素挤出去。
+由于最小尺寸默认为 0，行内 `flex: 1` 的文字会收缩并换行，而不会把兄弟元素挤出去。`minWidth: "auto"` / `minHeight: "auto"`（`min-w-auto` / `min-h-auto`，Rust 中为 `.min_w(auto())`）是 CSS 的自动最小尺寸：收缩的元素停在内容的最小尺寸，文字即最长的单词，与 Web 一致。
 
 > [!NOTE]
-> 样式中的 `display: "flex"` 仍保持纵向默认值。只有 Tailwind 的 `flex` 类才像 CSS 那样表示横向（[Tailwind](./tailwind.md)）；在 Rust 中由 `.flex_row()` 设置方向。
+> 无论在样式、类（`flex`）还是 Rust（`.flex()`）中，`display: "flex"` 都表示横向，除非设置了方向：`{ display: "flex", flexDirection: "column" }`、`flex flex-col`、`.flex().flex_col()`。未设置 `display` 的视图无需任何设置就是纵向。
 
 ## 尺寸
 
 | 属性 | 取值 | Rust |
 |---|---|---|
 | `width`、`height` | 点、相对父元素的百分比（`"50%"`）或 `"auto"` | `.w(px(120.0))`、`.h(relative(0.5))`、`.w_full()`、`.size(px(44.0))`、刻度方法 `.w_10()` 等 |
-| `minWidth`、`maxWidth`、`minHeight`、`maxHeight` | 点或百分比 | `.min_w(..)`、`.max_w(..)`、`.min_h(..)`、`.max_h(..)` |
+| `minWidth`、`maxWidth`、`minHeight`、`maxHeight` | 点或百分比；`minWidth` / `minHeight` 还可以是 `"auto"`，即内容的最小尺寸 | `.min_w(..)`、`.max_w(..)`、`.min_h(..)`、`.max_h(..)` |
 | `aspectRatio` | 宽除以高：`1`、`16 / 9` | `.aspect_ratio(16.0 / 9.0)`、`.aspect_square()` |
 | `padding`、`paddingHorizontal`、`paddingVertical`、`paddingTop` 等 | 点或百分比 | `.p(..)`、`.px(..)`、`.py(..)`、`.pt(..)` 等，以及刻度方法 `.p_4()`、`.px_2()` 等 |
 | `margin`、`marginHorizontal`、`marginVertical`、`marginTop` 等 | 点、百分比或 `"auto"` | `.m(..)`、`.mx(..)`、`.my(..)`、`.mt(..)` 等，`.mx(auto())` |
@@ -251,8 +251,8 @@ Tailwind 的断点（`sm:`、`md:` 等）以及 `portrait:` / `landscape:` 不�
 应用的布局方向跟随系统语言，视图的 `direction` 样式（`"ltr"`、`"rtl"` 或 `"inherit"`；Rust 中为 `.direction(LayoutDirection::Rtl)`）设置其子树的方向。当应用以从右到左方式布局时：
 
 - 行从右侧开始排列；
-- `left` 和 `right` 样式键（外边距、内边距、位置、边框、圆角）与 React Native 一样左右互换；Tailwind 的物理方向类则与浏览器一样保持原侧：`pl-4`、`ml-2`、`left-0`、`border-l`、`rounded-tl-lg` 和 `text-left` 仍在左侧（`ps-4`、`ms-2`、`start-0`、`border-s`、`rounded-ss-lg` 和 `text-start` 跟随方向）；
-- `start` 和 `end` 属性始终表示起始侧和结束侧：`marginStart`、`marginEnd`、`paddingStart`、`paddingEnd`、`start`、`end`、`borderStartWidth`、`borderTopStartRadius` 等（Rust 中的 `.ms(..)`、`.me(..)`、`.ps(..)`、`.pe(..)`、`.border_s(..)`、`.rounded_ss(..)` 等）；
+- `left` 和 `right` 与浏览器一样保持原侧，样式键和类都是如此：`paddingLeft`、`marginLeft`、`left`、`borderLeftWidth`、`borderTopLeftRadius`、`textAlign: "left"` 以及 `pl-4`、`ml-2`、`left-0`、`border-l`、`rounded-tl-lg`、`text-left` 仍在左侧；
+- 逻辑属性跟随方向，行内起始侧是右侧：`marginStart`、`marginEnd`、`paddingStart`、`paddingEnd`、`start`、`end`、`borderStartWidth`、`borderEndColor`、`borderTopStartRadius` 等，以及 `textAlign: "start"` / `"end"`（类为 `ps-4`、`ms-2`、`start-0`、`border-s`、`rounded-ss-lg`、`text-start`；Rust 中为 `.ms(..)`、`.me(..)`、`.ps(..)`、`.pe(..)`、`.border_s(..)`、`.rounded_ss(..)` 等）；`marginHorizontal` 和 `paddingHorizontal` 同时设置两侧；
 - `textAlign: "auto"` 的文字右对齐，原生控件也会镜像。
 
 ```rust tabs

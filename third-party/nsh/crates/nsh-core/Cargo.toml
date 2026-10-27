@@ -23,6 +23,7 @@ serde_json.workspace = true
 nsh-macros.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 log.workspace = true
+ordered-float.workspace = true
 resvg = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 url.workspace = true

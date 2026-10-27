@@ -39,11 +39,29 @@ export type TransformStep =
   | { skewY: number | string }
   | { perspective: number };
 
+/** One layer of `boxShadow`: offsets, blur and spread in points; `color`
+ * the text color when unset (CSS's `currentColor`); `inset` draws it inside
+ * the box. */
+export type BoxShadowLayer = {
+  x: number;
+  y: number;
+  blur?: number;
+  spread?: number;
+  color?: ColorValue;
+  inset?: boolean;
+};
+
+/** One layer of `textShadow`: offsets and blur in points; `color` the text
+ * color when unset. */
+export type TextShadowLayer = { x: number; y: number; blur?: number; color?: ColorValue };
+
 /** `start` / `end` (and `self-start` / `self-end`, by the item's own
  * direction) follow the writing direction, as in CSS; `flex-start` /
  * `flex-end` follow the flex direction; `normal` is CSS's (`stretch` for
  * items without an aspect ratio). */
 type Align = "flex-start" | "flex-end" | "center" | "stretch" | "baseline" | "start" | "end" | "self-start" | "self-end" | "normal";
+/** An OpenType number or letter form (`fontVariant`). */
+export type FontVariantName = "small-caps" | "oldstyle-nums" | "lining-nums" | "tabular-nums" | "proportional-nums";
 /** `normal` is the default: `flex-start` in flex containers, while grid
  * tracks sized `auto` stretch to fill the container (CSS). */
 type Distribute = "flex-start" | "flex-end" | "center" | "stretch" | "space-between" | "space-around" | "space-evenly" | "start" | "end" | "normal";
@@ -54,7 +72,7 @@ const INTERFACES: &[(StyleGroup, &str, &str)] = &[
     (
         StyleGroup::Layout,
         "LayoutStyle",
-        "Layout (flexbox with React Native's defaults: `column`, no shrinking; CSS grid).",
+        "Layout (CSS's flexbox and grid; a view that sets no display lays its children out in a column, and nothing shrinks unless `flexShrink` says so).",
     ),
     (
         StyleGroup::View,
@@ -65,6 +83,11 @@ const INTERFACES: &[(StyleGroup, &str, &str)] = &[
         StyleGroup::Text,
         "TextStyle extends ViewStyle",
         "Styles of text (inherited by nested `<Text>` spans) and inputs.",
+    ),
+    (
+        StyleGroup::Input,
+        "InputStyle extends TextStyle",
+        "Styles of inputs: text's, and the placeholder's and the caret's colors.",
     ),
     (
         StyleGroup::Image,

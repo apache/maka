@@ -176,6 +176,7 @@ describe('ASF header classification', () => {
       'scripts/asf-source-release.mjs',
       'locales/zh-CN.ftl',
       'products/maka/cli/src/main.rs',
+      'scripts/rust/verify-windows-dpi.ps1',
       'Dockerfile',
       'justfile',
       '.husky/pre-commit',
@@ -396,11 +397,6 @@ test('vendored provenance is finite and does not exempt Maka additions', () => {
     'covered',
   );
   assert.equal(classifyPath('third-party/gpui-fast/crates/gpui/src/new.rs').status, 'covered');
-  assert.equal(
-    classifyPath('third-party/gpui-kit/crates/base/src/scrollbar.rs').status,
-    'excluded',
-  );
-  assert.equal(classifyPath('third-party/gpui-kit/crates/base/src/new.rs').status, 'covered');
   assert.equal(classifyPath('third-party/sqlx-sqlite/src/connection/mod.rs').status, 'excluded');
   assert.equal(classifyPath('third-party/sqlx-sqlite/src/new.rs').status, 'covered');
   assert.equal(classifyPath('third-party/image-webp/src/vp8.rs').status, 'excluded');

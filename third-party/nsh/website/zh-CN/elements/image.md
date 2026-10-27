@@ -23,7 +23,7 @@ view()
     .child(
         image("https://example.com/avatar.jpg")
             .placeholder(LOGO)
-            .resize_mode(ResizeMode::Cover)
+            .object_fit(ResizeMode::Cover)
             .size(px(64.0))
             .rounded_full(),
     )
@@ -38,7 +38,6 @@ import logo from "./assets/logo.png";
   <Image
     src="https://example.com/avatar.jpg"
     placeholder={logo}
-    resizeMode="cover"
     style={{ width: 64, height: 64, borderRadius: 32 }}
   />
 </View>;
@@ -93,12 +92,12 @@ upload(photo).then((url) => {
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `src` | `image(src)` | `string \| ImageAsset` | | 图片。 |
-| `resizeMode` | `.resize_mode(ResizeMode::Contain)` | `"cover" \| "contain" \| "stretch" \| "center" \| "scale-down"` | `"cover"` | 图片如何适配其盒子：`"center"` 以原始尺寸居中显示（CSS 的 `object-fit: none`）；`"scale-down"` 同样居中，较大时缩小以适应。 |
 | `placeholder` | `.placeholder(src)` | `string \| ImageAsset` | | `src` 加载完成前显示的图片；最好是本地资源。 |
 | `blurRadius` | `.blur_radius(px(..))` | `number` | | 以该半径（点）模糊图片（在解码时于主线程外处理一次）。 |
 | `fadeDuration` | `.fade_duration(ms)` | `number` | iOS `0`，Android `300` | 图片加载完成后淡入的时长，单位毫秒。 |
 | `tintColor`（样式） | `.tint_color(..)` | `ColorValue` | | 为模板图片（单色绘制的图标）重新着色。 |
-| `objectPosition`（样式） | `.object_position(..)`、`.object_top()` 等 | `string` | `"center"` | `resizeMode` 确定尺寸后图片在盒子中的位置，同 CSS 的 `object-position`（`"top"`、`"25% 75%"`、`"right 10px bottom 20%"`）；覆盖盒子的图片围绕它裁剪。 |
+| `objectFit`（样式） | `.object_fit(ResizeMode::Contain)` | `"cover" \| "contain" \| "fill" \| "none" \| "scale-down"` | `"cover"` | 图片如何适配其盒子，同 CSS 的 `object-fit`（`object-*` 类）：`"cover"` 填满并裁剪，`"contain"` 完整放入其中，`"fill"` 拉伸，`"none"` 以原始尺寸显示，`"scale-down"` 同样以原始尺寸显示，较大时缩小以适应。 |
+| `objectPosition`（样式） | `.object_position(..)`、`.object_top()` 等 | `string` | `"center"` | `objectFit` 确定尺寸后图片在盒子中的位置，同 CSS 的 `object-position`（`"top"`、`"25% 75%"`、`"right 10px bottom 20%"`）；覆盖盒子的图片围绕它裁剪。 |
 | `onLoadStart` | `.on_load_start(..)` | `() => void` | | 开始加载。 |
 | `onProgress` | `.on_progress(..)` | `(e: { loaded: number; total: number }) => void` | | 以字节计的下载进度（未知时 `total` 为 0），最多每 100 ms 一次。 |
 | `onLoad` | `.on_load(..)` | `(e: { width: number; height: number }) => void` | | 加载完成；给出源图片的像素尺寸（不是解码、降采样后的尺寸；SVG 为它的点尺寸，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）；带有变体的图片给出所加载变体的尺寸。 |

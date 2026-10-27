@@ -296,7 +296,7 @@ pub struct ViewProps {
     /// restore a still-valid opener when their popup closes.
     pub focus_return_parent: Option<crate::NodeId>,
     /// The view is a selectable view (`View` with `selectable`): the
-    /// texts in its subtree that are not `selectable={false}` share one
+    /// texts in its subtree whose style is not `userSelect: "none"` share one
     /// selection, from text to text ([`crate::selection`]); an area inside
     /// another is part of the outer one. Texts outside areas select alone.
     pub selectable_view: bool,

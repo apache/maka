@@ -5,9 +5,9 @@
 
 use nsh_core::{
     Color, Command, EventKind, LayoutAnimation, NodeId, Op, Prop, Style, StyleDecl, StyleError,
-    StylePatch, StyleValue, TransformKind,
+    StylePatch, StyleValue, TransformKind, TransformProperty,
     animation::{AnimationOp, AnimationProp, Driver, Easing, Extrapolate, MathOp, Operand, Output},
-    geometry::{Percentage, Points, point, px},
+    geometry::{Percentage, Points, point},
     js::{
         host::{HostCx, HostInput, HostList, HostProps, HostValue},
         protocol::*,
@@ -486,9 +486,49 @@ fn decode_style<'js>(
         if value.is_undefined() {
             continue;
         }
-        if key == "transform" {
-            decode_transform(&value, &mut style, &mut patch, warnings)?;
+        if (key == "boxShadow" || key == "textShadow")
+            && let Some(layers) = value.as_array()
+        {
+            // The structured form: the same layers as the string's.
+            match shadow_list(&key, layers) {
+                Ok(css) => {
+                    if let Err(e) = patch.set(&mut style, &key, StyleValue::Str(&css)) {
+                        warnings.warn(format!("style `{key}`: {e:?}"));
+                    }
+                }
+                Err(message) => warnings.warn(format!("style `{key}`: {message}")),
+            }
             continue;
+        }
+        if key == "transform"
+            && let Some(items) = value.as_array()
+        {
+            // The list of steps, which CSS's string cannot hold with
+            // animated values.
+            decode_transform_list(items, &mut style, &mut patch, warnings)?;
+            continue;
+        }
+        if let Some((property, axes)) = transform_property(&key) {
+            // `[x, y]`, or an animated value: the bridge's forms, which CSS's
+            // string cannot hold.
+            let steps = match value.as_array() {
+                Some(items) => match transform_axes(&key, items, axes, warnings)? {
+                    Some(steps) => Some(steps),
+                    None => continue,
+                },
+                None => animated_value(&value)
+                    .map(|node| vec![(axes[0], axes[0].identity(), Some(node))]),
+            };
+            if let Some(steps) = steps {
+                let decl = StyleDecl::SetTransform(property, steps.into());
+                if patch.push(&mut style, decl).is_err() {
+                    warnings.warn(format!(
+                        "too many transforms (at most {})",
+                        nsh_core::MAX_TRANSFORMS
+                    ));
+                }
+                continue;
+            }
         }
         if (key == "fontVariant" || key == "transformOrigin")
             && let Some(items) = value.as_array()
@@ -507,33 +547,6 @@ fn decode_style<'js>(
             if let Err(e) = patch.set(&mut style, &key, StyleValue::Str(&joined)) {
                 warnings.warn(format!("style `{key}`: {e:?}"));
             }
-            continue;
-        }
-        if key == "textShadowOffset" {
-            let offset = match value.as_object() {
-                Some(o) => Some(point(
-                    px(o.get::<_, Option<f64>>("width")?.unwrap_or(0.0) as f32),
-                    px(o.get::<_, Option<f64>>("height")?.unwrap_or(0.0) as f32),
-                )),
-                None => None,
-            };
-            let _ = patch.push(&mut style, StyleDecl::TextShadowOffset(offset));
-            continue;
-        }
-        if key == "shadowOffset" {
-            // `{ width, height }`; null / undefined restores the default.
-            let offset = match value.as_object() {
-                Some(o) => Some(point(
-                    px(o.get::<_, Option<f64>>("width")?.unwrap_or(0.0) as f32),
-                    px(o.get::<_, Option<f64>>("height")?.unwrap_or(0.0) as f32),
-                )),
-                None if value.is_null() || value.is_undefined() => None,
-                None => {
-                    warnings.warn("style `shadowOffset` must be `{ width, height }`".to_owned());
-                    continue;
-                }
-            };
-            let _ = patch.push(&mut style, StyleDecl::ShadowOffset(offset));
             continue;
         }
         if let Some(node) = animated_value(&value) {
@@ -573,18 +586,158 @@ fn decode_style<'js>(
     Ok((style, patch))
 }
 
-/// `transform: [{ translateX: 10 }, { rotate: "45deg" }, { scale: animatedValue }]`.
-fn decode_transform(
-    value: &Value<'_>,
+/// `boxShadow` / `textShadow` as a list of layers (`{ x, y, blur, spread,
+/// color, inset }`; a text shadow has no spread and no inset), written as
+/// the CSS the string form takes, so both forms mean the same (a layer
+/// without a color is the text color). A field of the wrong kind drops the
+/// whole value.
+fn shadow_list(key: &str, layers: &rquickjs::Array<'_>) -> Result<String, String> {
+    let boxed = key == "boxShadow";
+    let mut out = Vec::new();
+    for layer in layers.iter::<Value>() {
+        let layer = layer.map_err(|e| e.to_string())?;
+        let object = layer
+            .as_object()
+            .ok_or_else(|| "a layer is an object".to_owned())?;
+        let (mut x, mut y, mut blur, mut spread) = (None, None, 0.0, 0.0);
+        let (mut color, mut inset) = (None, false);
+        for entry in object.props::<String, Value>() {
+            let (field, value) = entry.map_err(|e| e.to_string())?;
+            if value.is_undefined() {
+                continue;
+            }
+            let length = || {
+                if animated_value(&value).is_some() {
+                    return Err(format!("`{field}` cannot be animated natively"));
+                }
+                number(&value).ok_or_else(|| format!("`{field}` is a number"))
+            };
+            match field.as_str() {
+                "x" => x = Some(length()?),
+                "y" => y = Some(length()?),
+                "blur" => blur = length()?.max(0.0),
+                "spread" if boxed => spread = length()?,
+                "color" => {
+                    let c = value
+                        .as_string()
+                        .and_then(|s| s.to_string().ok())
+                        .ok_or_else(|| "`color` is a color string".to_owned())?;
+                    color = Some(c);
+                }
+                "inset" if boxed => {
+                    inset = value
+                        .as_bool()
+                        .ok_or_else(|| "`inset` is a boolean".to_owned())?;
+                }
+                _ => return Err(format!("unsupported field `{field}`")),
+            }
+        }
+        let (Some(x), Some(y)) = (x, y) else {
+            return Err("a layer needs `x` and `y`".to_owned());
+        };
+        let mut css = String::new();
+        if inset {
+            css.push_str("inset ");
+        }
+        css.push_str(&format!("{x}px {y}px {blur}px"));
+        if boxed {
+            css.push_str(&format!(" {spread}px"));
+        }
+        if let Some(color) = color {
+            css.push(' ');
+            css.push_str(&color);
+        }
+        out.push(css);
+    }
+    Ok(if out.is_empty() {
+        "none".to_owned()
+    } else {
+        out.join(", ")
+    })
+}
+
+/// The transform property `key` names that takes `[x, y]` or an animated
+/// value, and the steps of its axes (an animated value alone is the
+/// first's).
+fn transform_property(key: &str) -> Option<(TransformProperty, [TransformKind; 2])> {
+    use TransformKind as K;
+    Some(match key {
+        "translate" => (TransformProperty::Translate, [K::TranslateX, K::TranslateY]),
+        "rotate" => (TransformProperty::Rotate, [K::Rotate, K::Rotate]),
+        "scale" => (TransformProperty::Scale, [K::Scale, K::ScaleY]),
+        _ => return None,
+    })
+}
+
+/// `translate: [x, y]` / `scale: [x, y]`: numbers, CSS strings or animated
+/// values per axis (`translate: [x]` is x alone, `scale: [k]` both).
+fn transform_axes(
+    key: &str,
+    items: &rquickjs::Array<'_>,
+    axes: [TransformKind; 2],
+    warnings: &mut Warnings,
+) -> rquickjs::Result<Option<TransformSteps>> {
+    let translate = key == "translate";
+    let len = items.len();
+    if key == "rotate" || !(1..=2).contains(&len) {
+        warnings.warn(format!("style `{key}` takes one value, or `[x, y]`"));
+        return Ok(None);
+    }
+    let mut steps = Vec::with_capacity(len);
+    for (i, item) in items.iter::<Value>().enumerate() {
+        let item = item?;
+        let kind = match (translate, i, len) {
+            (true, 0, _) => TransformKind::TranslateX,
+            (true, _, _) => TransformKind::TranslateY,
+            (false, 0, 1) => TransformKind::Scale,
+            (false, 0, _) => TransformKind::ScaleX,
+            (false, _, _) => axes[1],
+        };
+        if let Some(node) = animated_value(&item) {
+            steps.push((kind, kind.identity(), Some(node)));
+            continue;
+        }
+        let step = match (item.as_number(), item.as_string()) {
+            (Some(n), _) => Some((kind, n as f32)),
+            (None, Some(s)) if translate => {
+                nsh_core::translation(i == 1, &s.to_string()?).map(|op| (op.kind, op.value))
+            }
+            (None, Some(s)) => {
+                let s = s.to_string()?;
+                let s = s.trim();
+                match s.strip_suffix('%') {
+                    Some(p) => p.trim().parse::<f32>().ok().map(|p| p / 100.0),
+                    None => s.parse().ok(),
+                }
+                .map(|v| (kind, v))
+            }
+            _ => None,
+        };
+        match step {
+            Some((kind, value)) => steps.push((kind, value, None)),
+            None => {
+                // As CSS drops a declaration with an invalid value: the
+                // property stays as it was.
+                warnings.warn(format!("invalid value in style `{key}`"));
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(steps))
+}
+
+/// Transform steps, each driven by an animated value when it has one.
+type TransformSteps = Vec<(TransformKind, f32, Option<nsh_core::animation::NodeId>)>;
+
+/// `transform: [{ perspective: 800 }, { rotateY: animatedValue }]`: steps
+/// whose amounts may be animated values, in `transform`'s place.
+fn decode_transform_list(
+    items: &rquickjs::Array<'_>,
     style: &mut Style,
     patch: &mut StylePatch,
     warnings: &mut Warnings,
 ) -> rquickjs::Result<()> {
-    // A `transform` replaces the class transforms (and an earlier one).
-    let _ = patch.push(style, StyleDecl::ClearTransform);
-    let Some(items) = value.as_array() else {
-        return Ok(());
-    };
+    let mut steps = Vec::new();
     for item in items.iter::<Object>() {
         for entry in item?.props::<String, Value>() {
             let (key, value) = entry?;
@@ -592,8 +745,8 @@ fn decode_transform(
                 warnings.warn(format!("unsupported transform `{key}`"));
                 continue;
             };
-            // Animated entries keep their place in the list; the animated value
-            // replaces the placeholder amount.
+            // Animated entries keep their place in the list; the animated
+            // value replaces the placeholder amount.
             let (amount, node) = match animated_value(&value) {
                 Some(node) => (Some(kind.identity()), Some(node)),
                 None => (
@@ -605,18 +758,18 @@ fn decode_transform(
                     None,
                 ),
             };
-            let Some(amount) = amount else {
-                warnings.warn(format!("invalid transform `{key}`"));
-                continue;
-            };
-            match patch.push(style, StyleDecl::Transform(kind, amount, node)) {
-                Ok(()) => {}
-                Err(_) => warnings.warn(format!(
-                    "too many transforms (at most {})",
-                    nsh_core::MAX_TRANSFORMS
-                )),
+            match amount {
+                Some(amount) => steps.push((kind, amount, node)),
+                None => warnings.warn(format!("invalid transform `{key}`")),
             }
         }
+    }
+    let decl = StyleDecl::SetTransform(TransformProperty::Transform, steps.into());
+    if patch.push(style, decl).is_err() {
+        warnings.warn(format!(
+            "too many transforms (at most {})",
+            nsh_core::MAX_TRANSFORMS
+        ));
     }
     Ok(())
 }
@@ -1050,7 +1203,7 @@ mod decode_bench {
 #[cfg(test)]
 mod tests {
     use nsh_core::{
-        LayoutCurve, LayoutProperty, LayoutTransition,
+        LayoutCurve, LayoutProperty, LayoutTransition, PropertyValue, StyleKey,
         animation::{Curve, EaseMode},
     };
     use rquickjs::{Context, Runtime};
@@ -1076,6 +1229,42 @@ mod tests {
             style_entries(&v.0, &mut entries).unwrap();
             decode_style(entries, &mut Warnings::default()).unwrap().1
         })
+    }
+
+    #[test]
+    fn shadows_take_their_layers() {
+        // The structured form draws what the string draws.
+        let drawn = |source: &str| {
+            let mut s = nsh_core::Style::default();
+            style(source).apply(&mut s);
+            let boxed = s.view.effects.map(|e| e.box_shadows.clone());
+            (
+                boxed,
+                s.text.shadow_color,
+                s.text.shadow_offset,
+                s.text.shadow_radius,
+            )
+        };
+        assert_eq!(
+            drawn(
+                "{ boxShadow: [{ x: 0, y: 6, blur: 18, color: '#0000004d' }, { x: 1, y: 2, spread: -1, inset: true, color: 'red' }] }"
+            ),
+            drawn("{ boxShadow: '0 6px 18px #0000004d, inset 1px 2px 0 -1px red' }")
+        );
+        assert_eq!(
+            drawn("{ textShadow: [{ x: 0, y: 1, blur: 2, color: 'red' }] }"),
+            drawn("{ textShadow: '0 1px 2px red' }")
+        );
+        assert_eq!(drawn("{ boxShadow: [] }"), drawn("{ boxShadow: 'none' }"));
+        // A field of the wrong kind drops the whole value.
+        for wrong in [
+            "{ boxShadow: [{ x: '1px', y: 2 }] }",
+            "{ boxShadow: [{ x: 1 }] }",
+            "{ boxShadow: [{ x: 1, y: 1, offsetX: 2 }] }",
+            "{ textShadow: [{ x: 1, y: 1, spread: 2 }] }",
+        ] {
+            assert_eq!(style(wrong), style("{}"), "{wrong}");
+        }
     }
 
     #[test]
@@ -1141,6 +1330,42 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn transforms_decode_as_css_and_their_steps() {
+        use TransformKind::*;
+        let decls = |source: &str| style(source).decls().to_vec();
+        let set = |property, steps: &[(TransformKind, f32)]| {
+            StyleDecl::SetTransform(property, steps.iter().map(|&(k, v)| (k, v, None)).collect())
+        };
+        assert_eq!(
+            decls("{ translate: [10, '50%'], scale: [2, 3] }"),
+            [
+                set(
+                    TransformProperty::Translate,
+                    &[(TranslateX, 10.0), (TranslateYFraction, 0.5)]
+                ),
+                set(TransformProperty::Scale, &[(ScaleX, 2.0), (ScaleY, 3.0)]),
+            ]
+        );
+        // `transform`: CSS's string, a style value, or a list of steps.
+        assert_eq!(
+            decls("{ transform: [{ perspective: 800 }, { rotateY: '90deg' }] }"),
+            [set(
+                TransformProperty::Transform,
+                &[(Perspective, 800.0), (RotateY, 90.0)]
+            )]
+        );
+        assert_eq!(
+            decls("{ transform: 'rotate(45deg)' }"),
+            [StyleDecl::Set(
+                StyleKey::Transform,
+                PropertyValue::Transform(Box::new([(Rotate, 45.0, None)]))
+            )]
+        );
+        // An invalid item drops the whole value, as CSS drops a declaration.
+        assert_eq!(decls("{ translate: [10, 'bogus'] }"), []);
     }
 
     #[test]

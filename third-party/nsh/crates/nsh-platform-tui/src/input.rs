@@ -6181,6 +6181,42 @@ mod tests {
     }
 
     #[test]
+    fn box_none_input_keeps_keyboard_focus_but_not_pointer_ownership() {
+        let mut surface = form();
+        surface.node_mut(2).unwrap().props.pointer_events = PointerEvents::BoxNone;
+        assert!(surface.keyboard_stop(2));
+        surface.set_focus(None);
+        key(&mut surface, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(surface.focused(), Some(2));
+        let frame = surface.global_frame(2).unwrap();
+        let x = frame.origin.x.0 + frame.size.width.0 / 2.0;
+        let y = frame.origin.y.0 + frame.size.height.0 / 2.0;
+        assert_ne!(surface.hit_test(x, y), Some(2));
+        surface
+            .node_mut(2)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = true;
+        assert!(!surface.keyboard_stop(2));
+        surface.reconcile_focus(false);
+        assert_eq!(surface.focused(), Some(4));
+        surface
+            .node_mut(2)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = false;
+        surface.node_mut(ROOT_ID).unwrap().props.pointer_events = PointerEvents::None;
+        assert!(!surface.keyboard_stop(2));
+        surface.reconcile_focus(false);
+        surface.set_focus(Some(2));
+        assert_eq!(surface.focused(), None);
+    }
+
+    #[test]
     fn disabled_controls_and_pointer_none_subtrees_are_skipped() {
         let mut surface = form();
         surface

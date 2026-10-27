@@ -401,7 +401,7 @@ impl Screen {
         }
     }
 
-    fn apply_item(&mut self, item: &MountItem) {
+    pub(crate) fn apply_item(&mut self, item: &MountItem) {
         match item {
             MountItem::Create { id, kind } => {
                 let view = View {

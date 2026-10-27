@@ -22,9 +22,12 @@
 use super::*;
 
 // Parameters 1/2/4 are invocation, upper cut, and whether independent work is allowed.
-const INDEPENDENT_CELLS: &str = "WITH RECURSIVE independent(operation_id) AS (
+const INDEPENDENT_TOOLS: &str = "WITH RECURSIVE independent(operation_id) AS (
   SELECT operation_id FROM runtime_events WHERE ?4 AND invocation_id=?1 AND sequence<=?2
-    AND kind='tool_dispatched' AND json_extract(event_json,'$.fact.call.origin.kind')='code_cell'
+    AND kind='tool_dispatched' AND (
+      json_extract(event_json,'$.fact.call.origin.kind')='code_cell'
+      OR (json_extract(event_json,'$.fact.call.origin.kind')='host_sdk'
+        AND json_extract(event_json,'$.fact.call.origin.parent_relationship.kind')='evaluation_observer'))
   UNION ALL
   SELECT child.operation_id FROM runtime_events child JOIN independent parent
     ON json_extract(child.event_json,'$.fact.call.origin.parent_operation_id')=parent.operation_id
@@ -51,7 +54,7 @@ async fn canonical_execution_boundary(
 ) -> Result<(), StoreError> {
     let accepted_calls = crate::model_items::accepted_calls!();
     let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{INDEPENDENT_CELLS}, {PRIVATE_SUMMARIES}, {accepted_calls}
+        "{INDEPENDENT_TOOLS}, {PRIVATE_SUMMARIES}, {accepted_calls}
         SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id = ?1 AND e.sequence <= ?2 AND (
           (e.kind = 'tool_dispatched' AND NOT EXISTS(SELECT 1 FROM runtime_events t
              WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind = 'tool_settled' AND t.sequence <= ?2)
@@ -243,6 +246,104 @@ async fn intervals_preserve_tool_call_and_independent_descendant_cuts() {
         .await
         .unwrap();
     assert!(model_boundary(&mut db, "invocation", before).await.is_err());
+}
+
+#[tokio::test]
+async fn intervals_keep_observer_effects_pending_after_outer_settlement() {
+    let mut db = database().await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("outer"),
+        json!({"call":{"origin":{"kind":"standalone"}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("observer"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"outer","parent_relationship":{"kind":"evaluation_observer","epoch":"00000000-0000-0000-0000-000000000017"}}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_rejected",
+        Some("rejected"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"observer"}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("effect"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"observer"}}}),
+    )
+    .await;
+    let outer_settled = checked(&mut db, "tool_settled", Some("outer"), json!({})).await;
+    model_boundary(&mut db, "invocation", outer_settled)
+        .await
+        .unwrap();
+    assert!(
+        settled_boundary(&mut db, "invocation", outer_settled)
+            .await
+            .is_err()
+    );
+    checked(&mut db, "tool_settled", Some("effect"), json!({})).await;
+    assert!(
+        settled_boundary(&mut db, "invocation", i64::MAX as u64)
+            .await
+            .is_err()
+    );
+    checked(&mut db, "tool_settled", Some("observer"), json!({})).await;
+    settled_boundary(&mut db, "invocation", i64::MAX as u64)
+        .await
+        .unwrap();
+    assert!(
+        settled_boundary(&mut db, "invocation", outer_settled)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn intervals_keep_nested_effects_blocking_model_progress() {
+    let mut db = database().await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("outer"),
+        json!({"call":{"origin":{"kind":"standalone"}}}),
+    )
+    .await;
+    let effect_opened = checked(
+        &mut db,
+        "tool_dispatched",
+        Some("effect"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"outer"}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_rejected",
+        Some("rejected"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"effect","parent_relationship":{"kind":"evaluation_observer","epoch":"00000000-0000-0000-0000-000000000018"}}}}),
+    )
+    .await;
+    let outer_settled = checked(&mut db, "tool_settled", Some("outer"), json!({})).await;
+    assert!(
+        model_boundary(&mut db, "invocation", outer_settled)
+            .await
+            .is_err()
+    );
+    checked(&mut db, "tool_settled", Some("effect"), json!({})).await;
+    model_boundary(&mut db, "invocation", i64::MAX as u64)
+        .await
+        .unwrap();
+    assert!(
+        model_boundary(&mut db, "invocation", effect_opened)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

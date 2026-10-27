@@ -36,7 +36,7 @@ function Browser() {
       <View style={{ flexDirection: "row", gap: 16, padding: 12 }}>
         <Text onPress={() => web.goBack()} style={{ opacity: nav()?.canGoBack ? 1 : 0.4 }}>Back</Text>
         <Text onPress={() => web.reload()}>Reload</Text>
-        <Text numberOfLines={1} style={{ flex: 1 }}>{nav()?.title ?? ""}</Text>
+        <Text style={{ numberOfLines: 1, flex: 1 }}>{nav()?.title ?? ""}</Text>
       </View>
       <WebView ref={web} src="https://example.com" style={{ flex: 1 }} onNavigationStateChange={(n) => nav.set(n)} />
     </View>

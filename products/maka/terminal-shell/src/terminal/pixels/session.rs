@@ -97,9 +97,12 @@ fn run(
         }
         state.trace.is_some()
     };
+    let control = super::super::UiScaleControl(presentation.clone());
     config.context = config
         .context
-        .with(super::super::UiScaleControl(presentation.clone()));
+        .with(maka_workbench::UiScale(Box::new(move |scale| {
+            control.preview(scale)
+        })));
     if ready.send(Ok(())).is_err() {
         return Ok(());
     }
@@ -207,7 +210,7 @@ fn run(
         .map_err(|error| error.to_string())?;
     config
         .assets
-        .get_or_insert_with(|| Arc::new(crate::ApplicationAssets));
+        .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
     let error = presentation.clone();
     let window = Rc::new(RefCell::new(None));
     let created = window.clone();

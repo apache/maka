@@ -1080,6 +1080,7 @@ fn inputs() -> AnyElement {
             input()
                 .placeholder("Focus me")
                 .placeholder_color(|| color(zinc(400, 600)))
+                .caret_color(|| color(colors::ACCENT))
                 .selection_color(|| color(colors::ACCENT))
                 .h_11()
                 .rounded(px(10.0))

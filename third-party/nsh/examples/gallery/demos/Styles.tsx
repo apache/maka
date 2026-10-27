@@ -43,12 +43,12 @@ function Tile(props: { label: string; code?: string; note?: string; onPress?: ()
       <View style={{ gap: 3, paddingHorizontal: 2 }}>
         <Text style={{ fontSize: 13, fontWeight: "500", color: colors.text }}>{props.label}</Text>
         <If when={props.code}>
-          <Text numberOfLines={1} style={{ fontSize: 12, color: colors.muted, fontFamily: mono }}>
+          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.muted, fontFamily: mono }}>
             {props.code}
           </Text>
         </If>
         <If when={props.note}>
-          <Text numberOfLines={1} style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>
+          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>
             {props.note}
           </Text>
         </If>
@@ -146,25 +146,22 @@ function Borders() {
 /** Shadows that read on a dark page: colored glows rather than black. */
 function Shadows() {
   return (
-    <Card icon="spark" title="Shadows and glow" subtitle="shadowColor · elevation · text shadow">
+    <Card icon="spark" title="Shadows and glow" subtitle="boxShadow · elevation · text shadow">
       <Grid>
-        <Tile label="Glow" code="shadowColor" note="A colored shadow">
+        <Tile label="Glow" code="boxShadow" note="A colored shadow">
           <View
             style={{
               ...box(),
               borderRadius: 16,
               borderCurve: "continuous",
               backgroundColor: colors.accentFill,
-              shadowColor: colors.accentFill,
-              shadowOpacity: 0.55,
-              shadowRadius: 18,
-              shadowOffset: { width: 0, height: 6 },
+              boxShadow: `0 6px 18px ${alpha(colors.accentFill, 0.55)}`,
             }}
           >
             <Label color={colors.onAccent}>Glow</Label>
           </View>
         </Tile>
-        <Tile label="Offset shadow" code="shadowOffset" note="4, 8 pt · radius 10">
+        <Tile label="Offset shadow" code="boxShadow" note="4, 8 pt · blur 10">
           <View
             style={{
               ...box(),
@@ -173,10 +170,7 @@ function Shadows() {
               borderBottomRightRadius: 30,
               borderWidth: 1,
               borderColor: colors.info,
-              shadowColor: colors.info,
-              shadowOpacity: 0.45,
-              shadowRadius: 10,
-              shadowOffset: { width: 4, height: 8 },
+              boxShadow: `4px 8px 10px ${alpha(colors.info, 0.45)}`,
             }}
           >
             <Label color={colors.info}>Offset</Label>
@@ -191,16 +185,23 @@ function Shadows() {
               borderTopLeftRadius: 28,
               borderBottomRightRadius: 28,
               backgroundColor: colors.raised,
-              shadowColor: "#000000",
-              shadowOpacity: isDark() ? 0.6 : 0.22,
-              shadowRadius: 12,
-              shadowOffset: { width: 0, height: 8 },
+              boxShadow: isDark() ? "0 8px 12px rgb(0 0 0 / 0.6)" : "0 8px 12px rgb(0 0 0 / 0.22)",
             }}
           />
         </Tile>
-        <Tile label="Text shadow" note="Shadow of the content">
-          <View style={{ ...box(), backgroundColor: "transparent", shadowColor: colors.danger, shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 } }}>
-            <Text style={{ fontSize: 24, fontWeight: "800", color: colors.text, letterSpacing: -0.5 }}>Shadow</Text>
+        <Tile label="Text shadow" note="Shadow of the glyphs">
+          <View style={{ ...box(), backgroundColor: "transparent" }}>
+            <Text
+              style={{
+                fontSize: 24,
+                fontWeight: "800",
+                color: colors.text,
+                letterSpacing: -0.5,
+                textShadow: `0 0 8px ${alpha(colors.danger, 0.9)}`,
+              }}
+            >
+              Shadow
+            </Text>
           </View>
         </Tile>
         <Tile label="Text corners" note="Radii on a Text">
@@ -220,7 +221,7 @@ function Shadows() {
           </Text>
         </Tile>
         <Tile label="Elevation" code="elevation: 10" note="Android">
-          <View android={{ elevation: 10 }} style={{ ...box(), borderRadius: 16, backgroundColor: colors.raised, shadowOpacity: 0.5, shadowRadius: 10, shadowOffset: { width: 0, height: 6 } }}>
+          <View android={{ elevation: 10 }} style={{ ...box(), borderRadius: 16, backgroundColor: colors.raised, boxShadow: "0 6px 10px rgb(0 0 0 / 0.5)" }}>
             <Label>Elevation</Label>
           </View>
         </Tile>
@@ -271,10 +272,7 @@ function Layers() {
                     borderWidth: front() === i() ? 2 : 0,
                     borderColor: colors.text,
                     zIndex: front() === i() ? 10 : 0,
-                    shadowColor: "#000000",
-                    shadowOpacity: isDark() ? 0.5 : 0.18,
-                    shadowRadius: 6,
-                    shadowOffset: { width: 0, height: 3 },
+                    boxShadow: isDark() ? "0 3px 6px rgb(0 0 0 / 0.5)" : "0 3px 6px rgb(0 0 0 / 0.18)",
                   }}
                 />
               )}
@@ -411,13 +409,13 @@ function Transforms() {
             <Label color={colors.info}>Y axis</Label>
           </View>
         </Tile>
-        <Tile label="Tilt" code="rotateX: 40deg">
-          <View style={{ ...box(), borderRadius: 14, backgroundColor: tints.accent, borderWidth: 1, borderColor: colors.accent, transform: [{ perspective: 400 }, { rotateX: "40deg" }] }}>
+        <Tile label="Tilt" code="rotateX(40deg)">
+          <View style={{ ...box(), borderRadius: 14, backgroundColor: tints.accent, borderWidth: 1, borderColor: colors.accent, transform: "perspective(400px) rotateX(40deg)" }}>
             <Label color={colors.accent}>X axis</Label>
           </View>
         </Tile>
-        <Tile label="Skew" code="skewX: -12deg" note="iOS">
-          <View style={{ ...box(), borderRadius: 10, backgroundColor: tints.warn, borderWidth: 1, borderColor: colors.warn, transform: [{ skewX: "-12deg" }] }}>
+        <Tile label="Skew" code="skewX(-12deg)" note="iOS">
+          <View style={{ ...box(), borderRadius: 10, backgroundColor: tints.warn, borderWidth: 1, borderColor: colors.warn, transform: "skewX(-12deg)" }}>
             <Label color={colors.warn}>Skew</Label>
           </View>
         </Tile>
@@ -434,7 +432,7 @@ function Transforms() {
                 borderRadius: 6,
                 backgroundColor: alpha(colors.danger, 0.55),
                 transformOrigin: "top left",
-                transform: [{ rotate: "30deg" }],
+                transform: "rotate(30deg)",
               }}
             />
             <View style={{ position: "absolute", left: 26, top: 10, width: 8, height: 8, borderRadius: 4, backgroundColor: colors.text }} />
@@ -527,7 +525,7 @@ function RightToLeft() {
         )}
       </List>
       <View style={{ height: 1, backgroundColor: colors.line }} />
-      <Text style={{ fontSize: 13, textAlign: "left", color: colors.muted }}>textAlign left (the start side right to left)</Text>
+      <Text style={{ fontSize: 13, textAlign: "start", color: colors.muted }}>textAlign start (the right side right to left)</Text>
       <Text style={{ fontSize: 13, writingDirection: "rtl", color: colors.muted }}>مرحبا بالعالم — writingDirection rtl</Text>
       </View>
     </Card>

@@ -19,9 +19,9 @@
 
 # Host plugins and shell interfaces
 
-Maka's terminal and desktop shells author their own interfaces and connect to the same business Host. The default product contains one Host composition, its exact packages and explicit publication/native grants. It does not install an editable SDK UI deployment, a separate management Host, or a foreground authoring worker.
+Maka's terminal and desktop shells run the same workbench, which connects to the business Host. The default product contains one Host composition, its exact packages and explicit publication/native grants. It does not install an editable SDK UI deployment, a separate management Host, or a foreground authoring worker.
 
-Use the shell's Plugins page to inspect and change the selected Host composition. Preserve the observed source revision and every unrelated instance UUID. Installation stores checked immutable package bytes; adding an instance and selecting its bindings are separate operations. Read the original mutation receipt after a disconnect instead of submitting the mutation again. A committed source establishes desired state; it does not prove activation or visible success.
+Use the workbench's Plugins page to inspect and change the selected Host composition. Preserve the observed source revision and every unrelated instance UUID. Installation stores checked immutable package bytes; adding an instance and selecting its bindings are separate operations. Read the original mutation receipt after a disconnect instead of submitting the mutation again. A committed source establishes desired state; it does not prove activation or visible success.
 
 For an inactive Host, the generic `maka application check`, `commit`, `read` and `serve` commands operate on explicit sources and deployments. `maka application compose` emits `host.json`, `endpoints.json`, `native-grants.json` and resolved installation identities for the bundled business services. `update-defaults` previews selected package replacements without changing the source's identities, settings or grants. See the CLI `--help` and [Testing and shipping](testing-and-shipping.md).
 

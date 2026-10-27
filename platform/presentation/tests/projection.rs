@@ -943,7 +943,7 @@ fn complete_tool_parts_and_pending_records_remain_available() {
                         package_id: "fixture".into(),
                         entry_id: "echo".into(),
                         activation: "test".into(),
-                        parent_operation_id: None,
+                        parent: None,
                     },
                 },
                 name: "echo".into(),

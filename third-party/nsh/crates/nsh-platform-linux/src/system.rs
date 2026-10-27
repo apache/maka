@@ -1102,6 +1102,7 @@ pub(crate) fn read_pasted(
     done: impl FnOnce(nsh_core::PasteEvent) + 'static,
 ) {
     let types = board.formats().union_deserialize_types();
+    let has_html = board.formats().contain_mime_type("text/html");
     let (has_image, has_files) = (
         types.contains_type(gdk::Texture::static_type()),
         types.contains_type(gdk::FileList::static_type()),
@@ -1109,6 +1110,9 @@ pub(crate) fn read_pasted(
     glib::spawn_future_local(async move {
         let text = board.read_text_future().await.ok().flatten();
         let mut paste = nsh_core::PasteEvent::new(text.map(|t| t.to_string()).unwrap_or_default());
+        if has_html {
+            paste.html = read_html(&board).await.unwrap_or_default();
+        }
         if has_files
             && let Ok(value) = board
                 .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
@@ -1133,6 +1137,39 @@ pub(crate) fn read_pasted(
         }
         done(paste);
     });
+}
+
+/// The clipboard's `text/html`: UTF-8, or UTF-16 with a byte order mark as
+/// Firefox writes it.
+async fn read_html(board: &gdk::Clipboard) -> Option<String> {
+    let (stream, _) = board
+        .read_future(&["text/html"], glib::Priority::DEFAULT)
+        .await
+        .ok()?;
+    let out = gio::MemoryOutputStream::new_resizable();
+    out.splice_future(
+        &stream,
+        gio::OutputStreamSpliceFlags::CLOSE_SOURCE | gio::OutputStreamSpliceFlags::CLOSE_TARGET,
+        glib::Priority::DEFAULT,
+    )
+    .await
+    .ok()?;
+    let bytes = out.steal_as_bytes();
+    Some(decode_html(&bytes))
+}
+
+/// Clipboard HTML bytes as text.
+fn decode_html(bytes: &[u8]) -> String {
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes),
+        _ => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+fn utf16(bytes: &[u8], word: fn([u8; 2]) -> u16) -> String {
+    let words: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| word(*c)).collect();
+    String::from_utf16_lossy(&words)
 }
 
 /// `Picker.pickImages`: GTK's file dialog (the portal's where there is

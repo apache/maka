@@ -23,7 +23,7 @@ import {
   completionToken,
   fileInvocation,
   referenceEdit,
-} from '../../products/maka/terminal-shell/app/composerCompletion.ts';
+} from '../../products/maka/workbench/app/composerCompletion.ts';
 
 test('composer completion replaces the caret token while preserving Unicode prose and paths', () => {
   const source = '先😀 /rev旧尾 后文';

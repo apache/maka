@@ -186,7 +186,7 @@ The environment is a desktop's: the safe area and the keyboard height are 0, `id
 [Device and environment](./device-and-environment.md).
 
 Input is a desktop's: the mouse, the trackpad (scrolling with momentum, pinch and rotation) and the keyboard.
-`selectable` text is selected by dragging, double- and triple-clicking, and copied with Cmd+C. Escape, Option+Left,
+Selectable text is selected by dragging, double- and triple-clicking, and copied with Cmd+C. Escape, Option+Left,
 Cmd+[ and the mouse's back button close the newest dialog or go back in a stack (Escape in a focused field or web page
 only leaves it; a page gets these keys first, and keeps those it uses); a `Dialog` is a layer over the whole window
 that shows the app's popup and backdrop. Pages show their `header` at the top. A click anywhere in an `Input`, its padding too, puts the caret at the nearest
@@ -205,7 +205,7 @@ their order with the cancel action last and no default; Escape chooses the cance
 | Escape | Leaves the focused field; else clears a text selection, then closes the newest dialog or goes back |
 | Option+Left, Cmd+[, mouse back button | Go back (not while a field has the focus: there Option+Left moves the caret) |
 | Option / Cmd + arrows, with Shift; Option+Delete, Cmd+Delete; Ctrl+A / E / K | Move, select and delete by word and line in a field, as in every Mac app |
-| Cmd+Z, Shift+Cmd+Z, Cmd+X / C / V / A | Undo, redo, cut, copy, paste, select all (a `masked` field refuses cut and copy); Cmd+A / Cmd+C select and copy `selectable` text |
+| Cmd+Z, Shift+Cmd+Z, Cmd+X / C / V / A | Undo, redo, cut, copy, paste, select all (a `masked` field refuses cut and copy); Cmd+A / Cmd+C select and copy selectable text |
 | Arrows; Page Up / Down, Space, Shift+Space, Option+Up / Down; Home / End, Cmd+Up / Down | Scroll the scroll view around the focused view or under the mouse by a line, a page, to the start / end (not while a field has the focus) |
 | Cmd+W, Cmd+M, Ctrl+Cmd+F, Cmd+H, Option+Cmd+H, Cmd+Q | Close, minimize, full screen, hide, hide others, quit (`nsh package` and `nsh run` apps' menus) |
 | Cmd+R | Reloads the latest build (`nsh run`) |

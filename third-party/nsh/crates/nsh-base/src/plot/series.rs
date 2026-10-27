@@ -10,20 +10,21 @@ use nsh_core::{
     prelude::*,
 };
 
-use super::{PlotContext, scale::extent};
+use super::{Axis, PlotContext, scale::extent};
 
-/// A mark the plot knows: its extent along the y axis, its points, where
-/// its hover dot is and the app's classes and style of it (`hoverDotClass`
-/// / `hoverDotStyle`; the plot's `dotClass` / `dotStyle` where it sets
-/// none).
+/// A mark the plot knows: the extent of its values and the axis they go
+/// along, its points, where its hover dot is and the app's classes and
+/// style of it (`hoverDotClass` / `hoverDotStyle`; the plot's `dotClass` /
+/// `dotStyle` where it sets none; bars have none).
 #[derive(Clone, Copy)]
 pub(super) struct Mark {
     pub(super) key: u64,
     pub(super) extent: Memo<Option<[f64; 2]>>,
+    pub(super) value_axis: Memo<Axis>,
     pub(super) points: Memo<Arc<[Point<Points>]>>,
     pub(super) dot_x: AnimatedValue,
     pub(super) dot_y: AnimatedValue,
-    pub(super) dot: HoverDot,
+    pub(super) dot: Option<HoverDot>,
 }
 
 /// A mark's own part of the hover's dots (`hoverDotClass` /
@@ -156,13 +157,15 @@ impl Series {
         });
         let points = self.points;
         let (dot_x, dot_y) = (animated_value(0.0), animated_value(0.0));
+        let value_axis = computed(|| Axis::Y);
         plot.add(move |key| Mark {
             key,
             extent,
+            value_axis,
             points,
             dot_x,
             dot_y,
-            dot,
+            dot: Some(dot),
         });
     }
 }

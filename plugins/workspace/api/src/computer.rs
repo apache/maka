@@ -28,7 +28,8 @@ use std::collections::BTreeMap;
 #[serde(deny_unknown_fields)]
 pub struct Evaluate {
     pub code: String,
-    /// Wall-clock limit including asynchronous waits. Interrupted REPLs require reset.
+    /// Execution budget. Trusted consent and macOS/Windows native waits pause it.
+    /// Ordinary asynchronous waits remain charged. Interrupted REPLs require reset.
     #[serde(default = "default_timeout")]
     #[schemars(range(min = 1))]
     pub timeout_ms: u64,
@@ -69,6 +70,9 @@ pub struct Configuration {
     pub desktop: maka_capabilities::computer::Desktop,
     #[serde(default)]
     pub browsers: Vec<maka_capabilities::computer::BrowserConnection>,
+    /// Explicit opt-in to recording computer output audio.
+    #[serde(default)]
+    pub audio: bool,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, JsonSchema)]
@@ -106,6 +110,27 @@ pub fn target() -> maka_agent_facts::interaction::GrantTarget {
         capability: GrantCapability::ComputerUse,
         scope: GrantScope::Capability {},
     }
+}
+
+pub fn audio_target() -> maka_agent_facts::interaction::GrantTarget {
+    maka_agent_facts::interaction::GrantTarget {
+        capability: maka_agent_facts::interaction::GrantCapability::ComputerAudio,
+        ..target()
+    }
+}
+
+pub fn is_browser_target(candidate: &maka_agent_facts::interaction::GrantTarget) -> bool {
+    use maka_agent_facts::interaction::{GrantCapability, GrantScope};
+    if candidate.validate().is_err()
+        || candidate.capability != GrantCapability::Browser
+        || !matches!(candidate.scope, GrantScope::BrowserOrigin { .. })
+    {
+        return false;
+    }
+    let mut expected = target();
+    expected.capability = GrantCapability::Browser;
+    expected.scope = candidate.scope.clone();
+    candidate == &expected
 }
 
 pub fn configuration_schema() -> Value {
@@ -159,4 +184,37 @@ pub fn native() -> maka_plugin_core::package::NativeDefinition {
         configuration_schema(),
         [(EXPORT, contract())],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::interaction::{GrantCapability, GrantScope};
+
+    #[test]
+    fn browser_consent_requires_the_original_computer_producer_and_canonical_origin() {
+        let mut browser = target();
+        browser.capability = GrantCapability::Browser;
+        browser.scope = GrantScope::BrowserOrigin {
+            origin: "https://example.com".into(),
+        };
+        assert!(is_browser_target(&browser));
+        for field in ["provider", "contract", "server", "tool"] {
+            let mut foreign = browser.clone();
+            match field {
+                "provider" => foreign.provider_id = "foreign".into(),
+                "contract" => foreign.contract_id = "foreign".into(),
+                "server" => foreign.server_id = "foreign".into(),
+                "tool" => foreign.tool_name = "foreign".into(),
+                _ => unreachable!(),
+            }
+            assert!(!is_browser_target(&foreign));
+        }
+        browser.scope = GrantScope::BrowserOrigin {
+            origin: "https://example.com/private".into(),
+        };
+        assert!(!is_browser_target(&browser));
+        assert!(!is_browser_target(&target()));
+        assert!(!is_browser_target(&audio_target()));
+    }
 }

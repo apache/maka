@@ -7,17 +7,27 @@
 // its marks `Grid` (`x`, `y`), `Area` (`y1`, `y0`, `curve`, a gradient
 // `background`, its own `hoverDot`) and `Line` (`y` as a field and as a
 // function, `data` / `x` of its own, `curve`, `dot`, its own `hoverDot`),
-// painted with the paint style keys. A headless run paints nothing, so the
-// script checks the plot's layout, its role, label and value, the
-// tooltip's text, where the layout puts the tooltip and the hover's dots,
-// and what it reports. A `Pie` (`value`, `startAngle`, `endAngle`,
-// `innerRadius`, `outerRadius`) over an `Arc` reports the slice under the
-// pointer, none in its hole, outside its ring or past its last angle; its
-// hole closes with `motion.update`, the pointer finding the new ring at once.
+// painted with the paint style keys; and `Bar` on a `band` scale (`value`,
+// `base`, `stack`, `label` as a field and as a function with its part,
+// `cornerRadii`, `stagger`, `inactiveOpacity`, a gradient `background`),
+// upright and across. A headless run paints nothing, so the script checks
+// the plot's layout, its role, label and value, the tooltip's text, where
+// the layout puts the tooltip, the hover's dots, the bars' labels and the
+// cross line on a band, and what it reports. A `Pie` (`value`,
+// `startAngle`, `endAngle`, `innerRadius`, `outerRadius`) over an `Arc`
+// reports the slice under the pointer, none in its hole, outside its ring
+// or past its last angle; its hole closes with `motion.update`, the pointer
+// finding the new ring at once.
 import { Text, View, signal } from "nsh";
-import { Arc, Area, Grid, Line, Pie, Plot } from "nsh/base/plot";
+import { Arc, Area, Bar, Grid, Line, Pie, Plot } from "nsh/base/plot";
 
 type Row = { t: number; price: number; avg: number };
+type Sale = { v: number; w: number };
+const SALES: Sale[] = [
+  { v: 10, w: 20 },
+  { v: 30, w: 10 },
+  { v: -10, w: 5 },
+];
 
 function App() {
   const rows = signal<Row[]>([
@@ -27,6 +37,7 @@ function App() {
   ]);
   const hovered = signal<number | null>(null);
   const placement = signal<"top" | "pointer">("top");
+  const barHovered = signal<number | null>(null);
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Plot
@@ -75,6 +86,37 @@ function App() {
       {/* A sparkline: no pointer. */}
       <Plot testID="spark" data={rows()} y="price" interactive={false} accessibilityLabel="Spark" onHoverChange={(index) => hovered.set(index)} style={{ width: 100, height: 20 }}>
         <Line />
+      </Plot>
+      {/* Bars in bands: one standing alone, a stack beside it. */}
+      <Plot
+        testID="bars"
+        data={SALES}
+        xScale={{ type: "band", paddingInner: 0.2, paddingOuter: 0.1, maxBandWidth: 60, bandCount: 4, groupPadding: 0 }}
+        yScale={{ type: "linear", domain: [-20, 60] }}
+        crossLineClass="w-full h-full bg-[#eeeeee]"
+        tooltipContent={<View testID="bar-tip" style={{ width: 10, height: 10 }} />}
+        onHoverChange={(index) => barHovered.set(index)}
+        style={{ width: 400, height: 80 }}
+      >
+        <Bar
+          value="v"
+          base={-20}
+          label="v"
+          labelClass="h-[14px]"
+          labelStyle={{ width: 30 }}
+          cornerRadii={{ topLeft: 2, topRight: 2 }}
+          stagger={0.3}
+          inactiveOpacity={0.5}
+          backgroundClass="bg-linear-to-t from-[#3366ff] to-[#3366ff]/40"
+          backgroundStyle={{ opacity: 0.9 }}
+          class="fill-[#3366ff]"
+        />
+        <Bar value="w" stack="s" label={(d: Sale) => `w${d.w}`} labelClass="h-[14px] w-[30px]" />
+      </Plot>
+      <Text>{`bar ${barHovered()}`}</Text>
+      {/* Bars across: bands down the y axis. */}
+      <Plot data={SALES} yScale={{ type: "band" }} style={{ width: 100, height: 60 }}>
+        <Bar value="w" label={(d: Sale) => `x${d.w}`} labelClass="h-[14px] w-[30px]" cornerRadii={2} />
       </Plot>
       <PieCase />
     </View>
