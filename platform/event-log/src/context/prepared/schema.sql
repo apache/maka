@@ -24,13 +24,13 @@ CREATE TABLE prepared_cache.context_prepared_builds (
  id TEXT PRIMARY KEY, cache_key TEXT NOT NULL, selection_json TEXT NOT NULL,
  through_sequence INTEGER NOT NULL, captured_revision INTEGER NOT NULL,
  before_sequence INTEGER NOT NULL, previous_revision INTEGER NOT NULL,
- root TEXT, parent_id TEXT, complete INTEGER NOT NULL DEFAULT 0, discovery_json TEXT,
+ root TEXT, parent_id TEXT, complete INTEGER NOT NULL DEFAULT 0, discovered INTEGER NOT NULL DEFAULT 0 CHECK(discovered IN (0,1)),
  identity TEXT NOT NULL, retiring INTEGER NOT NULL DEFAULT 0 CHECK(retiring IN (0,1))
 ) WITHOUT ROWID;
 CREATE INDEX prepared_cache.context_prepared_cut ON context_prepared_builds(cache_key,complete,captured_revision DESC,through_sequence DESC);
 CREATE TABLE prepared_cache.context_prepared_dirty (
  build_id TEXT NOT NULL, group_sequence INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, leader_sequence INTEGER, covered INTEGER NOT NULL DEFAULT 0, expanded INTEGER NOT NULL DEFAULT 0,
- content TEXT, cart_left INTEGER, cart_right INTEGER, cart_parent INTEGER,
+ content TEXT, cart_left INTEGER, cart_right INTEGER,
  PRIMARY KEY(build_id,group_sequence)
 ) WITHOUT ROWID;
 -- Group membership and pending work must seek the selected cluster rather
@@ -39,16 +39,21 @@ CREATE INDEX prepared_cache.context_prepared_group_members ON context_prepared_d
 CREATE INDEX prepared_cache.context_prepared_pending ON context_prepared_dirty(build_id,group_sequence) WHERE done=0;
 CREATE TABLE prepared_cache.context_prepared_nodes (id TEXT PRIMARY KEY, node_json TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE prepared_cache.context_prepared_groups (id TEXT PRIMARY KEY, group_json TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE prepared_cache.context_prepared_chunks (
- wire_id TEXT NOT NULL, piece_index INTEGER NOT NULL, message_index INTEGER NOT NULL,
- item_start INTEGER NOT NULL, item_end INTEGER NOT NULL, metadata_json TEXT, bytes BLOB NOT NULL,
- PRIMARY KEY(wire_id,piece_index)
+CREATE TABLE prepared_cache.context_prepared_payloads (
+ storage_id TEXT PRIMARY KEY, digest TEXT UNIQUE
 ) WITHOUT ROWID;
-CREATE INDEX prepared_cache.context_prepared_wire_seek ON context_prepared_chunks(wire_id,message_index,piece_index);
+-- NULL withdraws a complete body before incremental collection can remove pieces.
+CREATE INDEX prepared_cache.context_prepared_payload_retirement ON context_prepared_payloads(storage_id) WHERE digest IS NULL;
+CREATE TABLE prepared_cache.context_prepared_chunks (
+ storage_id TEXT NOT NULL, piece_index INTEGER NOT NULL, message_index INTEGER NOT NULL,
+ item_start INTEGER NOT NULL, item_end INTEGER NOT NULL, metadata_json TEXT, bytes BLOB NOT NULL,
+ PRIMARY KEY(storage_id,piece_index)
+) WITHOUT ROWID;
+CREATE INDEX prepared_cache.context_prepared_wire_seek ON context_prepared_chunks(storage_id,message_index,piece_index);
 
 CREATE TABLE prepared_cache.context_prepared_wire_views (
     id TEXT PRIMARY KEY, build_id TEXT NOT NULL, codec TEXT NOT NULL,
-    format_json TEXT NOT NULL, root TEXT, complete INTEGER NOT NULL DEFAULT 0, discovery_json TEXT, discovery_root TEXT,
+    format_json TEXT NOT NULL, root TEXT, complete INTEGER NOT NULL DEFAULT 0, discovered INTEGER NOT NULL DEFAULT 0 CHECK(discovered IN (0,1)), discovery_root TEXT,
     retiring INTEGER NOT NULL DEFAULT 0 CHECK(retiring IN (0,1))
 ) WITHOUT ROWID;
 CREATE UNIQUE INDEX prepared_cache.context_prepared_wire_identity ON context_prepared_wire_views(build_id,codec,format_json) WHERE retiring=0;
@@ -56,12 +61,12 @@ CREATE INDEX prepared_cache.context_prepared_wire_build ON context_prepared_wire
 
 CREATE TABLE prepared_cache.context_prepared_wire_dirty (
  view_id TEXT NOT NULL, group_sequence INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0,
- content TEXT, cart_left INTEGER, cart_right INTEGER, cart_parent INTEGER,
+ content TEXT, cart_left INTEGER, cart_right INTEGER,
  PRIMARY KEY(view_id,group_sequence)
 ) WITHOUT ROWID;
 CREATE INDEX prepared_cache.context_prepared_wire_pending ON context_prepared_wire_dirty(view_id,group_sequence) WHERE done=0;
-CREATE INDEX prepared_cache.context_prepared_metadata_page ON context_prepared_chunks(wire_id,piece_index,message_index) WHERE metadata_json IS NOT NULL;
-CREATE INDEX prepared_cache.context_prepared_metadata_seek ON context_prepared_chunks(wire_id,message_index,piece_index) WHERE metadata_json IS NOT NULL;
+CREATE INDEX prepared_cache.context_prepared_metadata_page ON context_prepared_chunks(storage_id,piece_index,message_index) WHERE metadata_json IS NOT NULL;
+CREATE INDEX prepared_cache.context_prepared_metadata_seek ON context_prepared_chunks(storage_id,message_index,piece_index) WHERE metadata_json IS NOT NULL;
 CREATE TABLE prepared_cache.context_prepared_mcp_ids (
  content_id TEXT NOT NULL, call_id TEXT NOT NULL, message_index INTEGER NOT NULL, group_sequence INTEGER NOT NULL,
  PRIMARY KEY(content_id,call_id,message_index)
@@ -185,16 +190,19 @@ BEGIN
     INSERT INTO context_prepared_retire SELECT 'wire_view',OLD.wire_view_id WHERE OLD.wire_view_id IS NOT NULL ON CONFLICT(kind,id) DO NOTHING;
 END;
 
--- A frozen staging generation and its bounded, resumable construction stack.
-CREATE TABLE prepared_cache.context_prepared_assembly (
- kind TEXT NOT NULL, owner_id TEXT NOT NULL, state_json TEXT NOT NULL,
- PRIMARY KEY(kind,owner_id)
+-- Each newly composed final node has one generation ownership edge.
+CREATE TABLE prepared_cache.context_prepared_generation_nodes (
+ kind TEXT NOT NULL, owner_id TEXT NOT NULL, node_id TEXT NOT NULL,
+ PRIMARY KEY(kind,owner_id,node_id)
 ) WITHOUT ROWID;
-CREATE TABLE prepared_cache.context_prepared_frames (
- kind TEXT NOT NULL, owner_id TEXT NOT NULL, depth INTEGER NOT NULL,
- frame_json TEXT NOT NULL, left_root TEXT, right_root TEXT,
- PRIMARY KEY(kind,owner_id,depth)
-) WITHOUT ROWID;
+CREATE TRIGGER prepared_cache.context_prepared_generation_nodes_insert AFTER INSERT ON context_prepared_generation_nodes
+BEGIN
+ INSERT INTO context_prepared_refs(kind,id,refs) VALUES('node',NEW.node_id,1) ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
+END;
+CREATE TRIGGER prepared_cache.context_prepared_generation_nodes_delete AFTER DELETE ON context_prepared_generation_nodes
+BEGIN
+ UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.node_id;
+END;
 CREATE TRIGGER prepared_cache.context_prepared_dirty_stage_insert AFTER INSERT ON context_prepared_dirty
 
 BEGIN
@@ -227,29 +235,6 @@ CREATE TRIGGER prepared_cache.context_prepared_wire_dirty_stage_delete AFTER DEL
 BEGIN
  UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='group' AND id=OLD.content;
 END;
-CREATE TRIGGER prepared_cache.context_prepared_frames_insert AFTER INSERT ON context_prepared_frames
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node',NEW.left_root,1 WHERE NEW.left_root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node',NEW.right_root,1 WHERE NEW.right_root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_frames_update_left_root AFTER UPDATE OF left_root ON context_prepared_frames
-WHEN OLD.left_root IS NOT NEW.left_root
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node',NEW.left_root,1 WHERE NEW.left_root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.left_root;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_frames_update_right_root AFTER UPDATE OF right_root ON context_prepared_frames
-WHEN OLD.right_root IS NOT NEW.right_root
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node',NEW.right_root,1 WHERE NEW.right_root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.right_root;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_frames_delete AFTER DELETE ON context_prepared_frames
-BEGIN
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.left_root;
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.right_root;
-END;
-
 CREATE INDEX prepared_cache.context_prepared_uncovered ON context_prepared_dirty(build_id,group_sequence) WHERE covered=0;
 CREATE INDEX prepared_cache.context_prepared_unexpanded ON context_prepared_dirty(build_id,group_sequence) WHERE expanded=0;
 

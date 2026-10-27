@@ -42,7 +42,7 @@ npm --workspace @maka-agent/plugin-sdk run typecheck
 
 Generation uses [maka-schema](../../tools/schema/README.md) and does not build the product or V8. The runtime also exports its catalog through `maka application schema`.
 
-UI modules export synchronous `activate(context)` and return the commands, panels, settings pages and tool renderers declared by their package. They use ordinary NSH components in the shared workbench on desktop and terminal. Installed plugins are trusted and use the existing client capabilities; `nsh.cleanup` releases their activation-owned subscriptions and resources. Host services receive request-scoped imports and attachments, without ambient Node APIs.
+UI modules export synchronous `activate(context)` and return the root, commands, panels, settings pages and tool renderers declared by their package. A `root` export provides the complete application selected by the deployment source’s `ui: { path, id }`; it uses the same package, activation and NSH components as other UI contributions. There is no built-in Maka fallback for an absent root. They use ordinary NSH components in the shared workbench on desktop and terminal. Installed plugins are trusted and use the existing client capabilities; `nsh.cleanup` releases their activation-owned subscriptions and resources. Host services receive request-scoped imports and attachments, without ambient Node APIs.
 
 Guest realms provide `TextEncoder`, `TextDecoder`, `atob`, `URL` and `URLSearchParams` for pure text and byte conversion. Decode Base64 to bytes with `Uint8Array.from(atob(value), c => c.charCodeAt(0))`; these APIs grant no filesystem or network access.
 

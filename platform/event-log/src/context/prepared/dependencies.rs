@@ -134,8 +134,8 @@ pub(super) async fn prior(
     }
     Ok(found.into_iter().collect())
 }
-/// A durable cursor over direct call dependencies and the following role run.
-#[derive(Serialize, Deserialize)]
+/// An owner-local cursor over direct call dependencies and the following role run.
+#[derive(Clone)]
 pub(super) struct Discovery {
     sequence: u64,
     new_content: String,
@@ -258,7 +258,7 @@ impl EventLog {
         let view = view.clone();
         let sequence = group_number(group)?;
         let wanted = wanted.to_vec();
-        self.connection
+        self.prepared_store()?
             .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut scope_transaction = connection.begin().await?;

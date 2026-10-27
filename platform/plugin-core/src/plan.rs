@@ -30,7 +30,7 @@ use crate::{
     Error,
     composition::{self, Configuration, Input, InstanceId, Node, Override, PackageUse, Target},
     contract::{Availability, Export, Import, Transport},
-    package::{EntryDeclaration, PackageRef, PackageSelection, Packages, UiEntry},
+    package::{EntryDeclaration, PackageRef, PackageSelection, Packages, UiContribution, UiEntry},
 };
 
 /// Remote declarations are observations supplied by the execution adapter.
@@ -156,6 +156,14 @@ impl Instance {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     instances: BTreeMap<InstanceId, Instance>,
+    ui: Option<UiRoot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiRoot {
+    pub instance: InstanceId,
+    pub id: String,
 }
 
 #[derive(Debug)]
@@ -184,6 +192,9 @@ impl Plan {
         replace: impl Fn(&PackageRef) -> Option<PackageRef>,
     ) -> Result<(Self, Vec<PackageChange>), Error> {
         composition::validate_nodes(&input.instances)?;
+        if let Some(ui) = &input.ui {
+            ui.validate()?;
+        }
         let mut builder = Builder {
             packages,
             nodes: BTreeMap::new(),
@@ -236,11 +247,49 @@ impl Plan {
             instances.insert(id.clone(), instance);
         }
         validate_dependencies(&instances)?;
-        Ok((Self { instances }, builder.package_changes))
+        let ui = input
+            .ui
+            .as_ref()
+            .map(|target| {
+                let id = builder.aliases.get(&target.path).ok_or_else(|| {
+                    Error::Composition(format!(
+                        "selected UI instance does not exist: {:?}",
+                        target.path
+                    ))
+                })?;
+                let instance = &instances[id];
+                if instance.disabled {
+                    return Err(Error::Composition(
+                        "selected UI instance is disabled".into(),
+                    ));
+                }
+                let entry = instance.ui_entry().ok_or_else(|| {
+                    Error::Composition("selected UI instance has no UI entry".into())
+                })?;
+                if !matches!(
+                    entry.contributions.get(&target.id),
+                    Some(UiContribution::Root)
+                ) {
+                    return Err(Error::Composition(format!(
+                        "selected UI contribution is not a root: {}",
+                        target.id
+                    )));
+                }
+                Ok(UiRoot {
+                    instance: id.clone(),
+                    id: target.id.clone(),
+                })
+            })
+            .transpose()?;
+        Ok((Self { instances, ui }, builder.package_changes))
     }
 
     pub fn instances(&self) -> &BTreeMap<InstanceId, Instance> {
         &self.instances
+    }
+
+    pub fn ui(&self) -> Option<&UiRoot> {
+        self.ui.as_ref()
     }
 
     /// Source-driven lifetime of one consumer and its transitive effective providers.

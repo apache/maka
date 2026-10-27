@@ -907,33 +907,35 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
             });
         }
         Command::ReadClipboard { id, has_only } => {
-            let (key, id, has_only) = (surface.key(), *id, *has_only);
-            crate::rt::on_app(move |cx| {
-                let text = cx.read_from_clipboard().and_then(|item| item.text());
-                let has = text.is_some();
-                let text = if has_only { None } else { text };
-                if let Some(surface) = Surface::by_key(key) {
-                    surface.event(
+            let (id, has_only) = (*id, *has_only);
+            surface.control(|control| {
+                let control = control.clone();
+                crate::rt::on_app(move |cx| {
+                    let text = cx.read_from_clipboard().and_then(|item| item.text());
+                    let has = text.is_some();
+                    let text = if has_only { None } else { text };
+                    control.dispatch_event(
                         ROOT_ID,
                         EventKind::Clipboard,
                         clipboard_answer(id, has, text),
                     );
-                }
+                });
             });
         }
         Command::SetClipboardImage(uri) => set_clipboard_image(uri),
-        Command::ReadClipboardImage { id, has_only } => {
-            read_clipboard_image(surface.key(), *id, *has_only)
-        }
+        Command::ReadClipboardImage { id, has_only } => surface.control(|control| {
+            read_clipboard_image(control.clone(), *id, *has_only);
+        }),
         Command::OpenUrl { id, url } => {
-            let (key, id, url) = (surface.key(), *id, url.clone());
-            crate::rt::on_app(move |cx| {
-                // GPUI hands it to the system's opener (`NSWorkspace`,
-                // `ShellExecuteW`, the desktop portal / `xdg-open`) and
-                // reports nothing back: it went out.
-                cx.open_url(&url);
-                if let Some(surface) = Surface::by_key(key) {
-                    surface.event(
+            let (id, url) = (*id, url.clone());
+            surface.control(|control| {
+                let control = control.clone();
+                crate::rt::on_app(move |cx| {
+                    // GPUI hands it to the system's opener (`NSWorkspace`,
+                    // `ShellExecuteW`, the desktop portal / `xdg-open`) and
+                    // reports nothing back: it went out.
+                    cx.open_url(&url);
+                    control.dispatch_event(
                         ROOT_ID,
                         EventKind::OpenUrl,
                         EventPayload::Map(vec![
@@ -941,31 +943,32 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
                             ("opened", PayloadValue::Bool(true)),
                         ]),
                     );
-                }
+                });
             });
         }
         Command::ReadClipboardFiles { id } => {
-            let (key, id) = (surface.key(), *id);
-            crate::rt::on_app(move |cx| {
-                let files: Vec<String> = cx
-                    .read_from_clipboard()
-                    .into_iter()
-                    .flat_map(|item| item.into_entries())
-                    .filter_map(|entry| match entry {
-                        gpui::ClipboardEntry::ExternalPaths(paths) => Some(paths),
-                        _ => None,
-                    })
-                    .flat_map(|paths| paths.paths().to_vec())
-                    .filter(|path| path.is_absolute())
-                    .map(|path| clipboard::file_url(&path.to_string_lossy()))
-                    .collect();
-                if let Some(surface) = Surface::by_key(key) {
-                    surface.event(
+            let id = *id;
+            surface.control(|control| {
+                let control = control.clone();
+                crate::rt::on_app(move |cx| {
+                    let files: Vec<String> = cx
+                        .read_from_clipboard()
+                        .into_iter()
+                        .flat_map(|item| item.into_entries())
+                        .filter_map(|entry| match entry {
+                            gpui::ClipboardEntry::ExternalPaths(paths) => Some(paths),
+                            _ => None,
+                        })
+                        .flat_map(|paths| paths.paths().to_vec())
+                        .filter(|path| path.is_absolute())
+                        .map(|path| clipboard::file_url(&path.to_string_lossy()))
+                        .collect();
+                    control.dispatch_event(
                         ROOT_ID,
                         EventKind::Clipboard,
                         clipboard::files_answer(id, &files),
                     );
-                }
+                });
             });
         }
         Command::PickImages { id, request } => pick_images(surface, *id, *request),
@@ -1062,7 +1065,7 @@ fn set_clipboard_image(uri: &str) {
 /// `Clipboard.readImage` / `hasImage`: answers read `id` from GPUI's
 /// clipboard. Formats other than PNG, JPEG, GIF, BMP and WebP (a TIFF) are
 /// converted to PNG on a worker thread, so every image source shows them.
-fn read_clipboard_image(key: u64, id: u32, has_only: bool) {
+fn read_clipboard_image(control: nsh_engine::EngineControl, id: u32, has_only: bool) {
     crate::rt::on_app(move |cx| {
         let image = cx
             .read_from_clipboard()
@@ -1073,9 +1076,7 @@ fn read_clipboard_image(key: u64, id: u32, has_only: bool) {
                 _ => None,
             });
         let answer = move |payload| {
-            if let Some(surface) = Surface::by_key(key) {
-                surface.event(ROOT_ID, EventKind::Clipboard, payload);
-            }
+            control.dispatch_event(ROOT_ID, EventKind::Clipboard, payload);
         };
         let image = match image {
             Some(image) if !has_only => image,
@@ -1203,7 +1204,7 @@ pub(crate) fn surface_resized(surface: &Surface, width: f32, height: f32) {
     }
 }
 
-/// The app stopped: its dialogs go too.
+/// The app stopped: its dialogs and requested appearance go too.
 pub(crate) fn clear(surface: &Surface) {
     let removed: Vec<Overlay> = OVERLAYS.with(|o| {
         let mut o = o.borrow_mut();
@@ -1216,6 +1217,9 @@ pub(crate) fn clear(surface: &Surface) {
     for overlay in removed {
         surface.root.remove_native(&overlay.kind.item());
     }
+    surface.appearance.set(surface.initial_appearance.get());
+    update(surface);
+    surface.invalidate();
 }
 
 /// Hosts a new overlay over all of `surface` and fades it in. Overlays
@@ -1838,6 +1842,7 @@ struct DialogTexts {
 /// (it takes every pointer event: the dialog is modal).
 struct DialogItem {
     key: u64,
+    generation: u64,
     serial: u64,
     id: u32,
     sheet: bool,
@@ -1933,9 +1938,11 @@ impl DialogItem {
         if self.closing.replace(true) {
             return;
         }
-        let (key, serial, id) = (self.key, self.serial, self.id);
+        let (key, generation, serial, id) = (self.key, self.generation, self.serial, self.id);
         crate::rt::invoke(move || {
-            let Some(surface) = Surface::by_key(key) else {
+            let Some(surface) =
+                Surface::by_key(key).filter(|surface| surface.load_generation() == generation)
+            else {
                 return;
             };
             remove_overlay(&surface, serial);
@@ -2181,6 +2188,7 @@ fn show_dialog(surface: &Rc<Surface>, dialog: &Dialog) {
     let serial = next_serial();
     let item = Rc::new(DialogItem {
         key: surface.key(),
+        generation: surface.load_generation(),
         serial,
         id: dialog.id,
         sheet,

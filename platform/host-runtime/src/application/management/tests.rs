@@ -49,6 +49,7 @@ impl Fixture {
         );
         let store = Arc::new(RootStore::open(owner).await.unwrap());
         let input = Input {
+            ui: None,
             instances: BTreeMap::new(),
         };
         let source = store
@@ -263,7 +264,10 @@ async fn ui_catalog_tracks_enabled_instances_at_the_original_revision() {
                             "configuration": {"type":"object", "properties": {
                                 "greeting": {"type":"string", "default":"Hello"}
                             }},
-                            "contributions": {"panel": {"kind":"panel", "title":{"fallback":"Example panel","translations":{}}}}
+                            "contributions": {
+                                "panel": {"kind":"panel", "title":{"fallback":"Example panel","translations":{}}},
+                                "root": {"kind":"root"}
+                            }
                         }}
                     }).to_string(),
                     "panel.js": "throw new Error('UI modules must not execute in the Host');"
@@ -305,22 +309,51 @@ async fn ui_catalog_tracks_enabled_instances_at_the_original_revision() {
             json!({"source": enabled, "instances": [{
                 "instance": instance, "bindingBasis":basis, "path":["example"], "package":package,
                 "configuration":{"greeting":"Hello"}, "module":"panel.js", "imports":{},
-                "contributions":{"panel":{"kind":"panel", "title":{"fallback":"Example panel","translations":{}}}}
+                "contributions":{
+                    "panel":{"kind":"panel", "title":{"fallback":"Example panel","translations":{}}},
+                    "root":{"kind":"root"}
+                }
             }]})
         );
+        let loaded=fixture.manager.source_at(None).await.unwrap();
+        let mut document=DeploymentDocument {
+            input:loaded.source().input.clone(),
+            remote_exports:loaded.source().remote_exports.clone(),
+            packages:loaded.packages().iter().map(Package::application_ref).collect(),
+        };
+        document.input.ui=Some(maka_plugin_core::composition::UiTarget {path:vec!["example".into()],id:"root".into()});
+        let selected=fixture.manager.replace_source(json!({"expectedRevision":3,"document":document})).await.unwrap();
+        assert_eq!(selected["status"],"committed","{selected}");
+        assert_eq!(changes.recv().await.unwrap(),selected["value"]);
+        let selected_catalog=fixture.manager.read_ui(json!({})).await.unwrap();
+        assert_eq!(selected_catalog["ui"],json!({"instance":instance,"id":"root"}));
+
+        let original=document.input.instances.remove("example").unwrap();
+        document.input.instances.insert("renamed".into(),original);
+        document.input.ui.as_mut().unwrap().path=vec!["renamed".into()];
+        let renamed=fixture.manager.replace_source(json!({"expectedRevision":4,"document":document})).await.unwrap();
+        assert_eq!(renamed["status"],"committed","{renamed}");
+        assert_eq!(changes.recv().await.unwrap(),renamed["value"]);
+        let renamed_catalog=fixture.manager.read_ui(json!({})).await.unwrap();
+        assert_eq!(renamed_catalog["ui"],selected_catalog["ui"]);
+        assert_eq!(renamed_catalog["instances"][0]["path"],json!(["renamed"]));
         let disabled = fixture
             .manager
             .set_enabled(json!({
-                "expectedRevision": 3, "instance":instance, "enabled":false
+                "expectedRevision": 5, "instance":instance, "enabled":false
             }))
             .await
             .unwrap();
-        assert_eq!(disabled["status"], "committed", "{disabled}");
-        assert_eq!(changes.recv().await.unwrap(), disabled["value"]);
+        assert_eq!(disabled["status"], "rejected", "{disabled}");
+        document.input.ui=None;
+        document.input.instances.get_mut("renamed").unwrap().disabled=true;
+        let cleared=fixture.manager.replace_source(json!({"expectedRevision":5,"document":document})).await.unwrap();
+        assert_eq!(cleared["status"],"committed","{cleared}");
+        assert_eq!(changes.recv().await.unwrap(),cleared["value"]);
         assert_eq!(
             fixture.manager.read_ui(json!({})).await.unwrap(),
             json!({
-                "source": disabled["value"], "instances": []
+                "source": cleared["value"], "instances": []
             })
         );
         assert_eq!(
@@ -331,6 +364,7 @@ async fn ui_catalog_tracks_enabled_instances_at_the_original_revision() {
                 .unwrap(),
             catalog
         );
+        assert_eq!(fixture.manager.read_ui(json!({"source":selected["value"]})).await.unwrap(),selected_catalog);
         changes.cancel();
         let completion = changes.completion().await;
         completion.cleanup.unwrap();

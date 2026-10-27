@@ -63,51 +63,62 @@ impl EventLog {
         view: &PreparedView,
         format: WireFormat,
         codec: &str,
+        prior: Option<&PreparedWireView>,
     ) -> Result<PreparedWireBuild, StoreError> {
         self.validate_root()?;
         let expected_session = self.expected_session.clone();
         let scope_id = view.build_id.clone();
         view.lease.validate(&self.prepared)?;
         self.check_bound_session(&view.selection.session)?;
+        if let Some(prior) = prior {
+            prior.lease.validate(&self.prepared)?;
+            if prior.session != view.selection.session {
+                return Err(invalid("foreign prepared Session wire base"));
+            }
+        }
+        let prior = prior.cloned();
         let view = view.clone();
         let codec = codec.to_owned();
         let registry = self.prepared.clone();
-        let build=self.connection.run(move |connection| Box::pin(async move {
+        let build=self.prepared_store()?.run(move |connection, in_flight| Box::pin(async move {
             let mut tx = connection.begin().await?;
             require_build_session(&mut tx, expected_session.as_deref(), &scope_id).await?;
             let exists: Option<String> = sqlx::query_scalar("SELECT id FROM context_prepared_wire_views WHERE build_id=? AND codec=? AND format_json=? AND retiring=0")
                 .bind(&view.build_id).bind(&codec).bind(encoded(&format)?).fetch_optional(&mut *tx).await?;
             if let Some(id) = exists {
                 let lease=registry.acquire("wire_view",&id,Some(view.lease.clone()))?;
-                tx.commit().await?;
+                tx.commit().await.map_err(StoreError::CommitUnknown)?;
                 return Ok(PreparedWireBuild {id,view,format,codec,lease});
             }
             let parent_id: Option<String> = sqlx::query_scalar("SELECT parent_id FROM context_prepared_builds WHERE id=? AND retiring=0").bind(&view.build_id).fetch_one(&mut *tx).await?;
-            let previous = sqlx::query("SELECT w.root,b.root AS logical_root FROM context_prepared_wire_views w JOIN context_prepared_builds b ON b.id=w.build_id
+            let explicit = if let Some(prior) = prior {
+                sqlx::query("SELECT w.root,b.root AS logical_root FROM context_prepared_wire_views w JOIN context_prepared_builds b ON b.id=w.build_id
+                    WHERE w.id=? AND w.build_id=? AND w.codec=? AND w.format_json=? AND w.complete=1 AND w.retiring=0 AND b.complete=1 AND b.retiring=0")
+                    .bind(&prior.id).bind(&parent_id).bind(&codec).bind(encoded(&format)?).fetch_optional(&mut *tx).await?
+            } else { None };
+            let previous = if explicit.is_some() { explicit } else { sqlx::query("SELECT w.root,b.root AS logical_root FROM context_prepared_wire_views w JOIN context_prepared_builds b ON b.id=w.build_id
                 WHERE w.build_id=? AND w.codec=? AND w.format_json=? AND w.complete=1 AND w.retiring=0 AND b.retiring=0")
-                .bind(parent_id).bind(&codec).bind(encoded(&format)?).fetch_optional(&mut *tx).await?;
+                .bind(parent_id).bind(&codec).bind(encoded(&format)?).fetch_optional(&mut *tx).await? };
             let warm=previous.is_some();
             let root:Option<String>=previous.as_ref().map(|row|row.try_get("root")).transpose()?.flatten();
             let old_logical:Option<String>=previous.as_ref().map(|row|row.try_get("logical_root")).transpose()?.flatten();
             let id=uuid::Uuid::new_v4().to_string();
             let lease=registry.acquire("wire_view",&id,Some(view.lease.clone()))?;
-            sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,discovery_json,discovery_root) VALUES(?,?,?,?,?,?,?)")
-                .bind(&id).bind(&view.build_id).bind(&codec).bind(encoded(&format)?).bind(root).bind(encoded(&discovery::Wire::new(warm,old_logical.clone()))?).bind(old_logical).execute(&mut *tx).await?;
-            tx.commit().await?;
+            sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,discovery_root) VALUES(?,?,?,?,?,?)")
+                .bind(&id).bind(&view.build_id).bind(&codec).bind(encoded(&format)?).bind(root).bind(&old_logical).execute(&mut *tx).await?;
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            in_flight.insert(assembly::Kind::Wire,&id,runtime::Generation::Wire(discovery::Wire::new(warm,old_logical)));
             lease.wake();
             Ok(PreparedWireBuild{id,view,format,codec,lease})
         })).await?;
         loop {
             let chunk_build = build.clone();
             let ready = self
-                .connection
-                .run(move |connection| {
-                    Box::pin(async move {
-                        let mut tx = connection.begin().await?;
-                        let ready = discovery::wire(&mut tx, &chunk_build).await?;
-                        tx.commit().await?;
-                        Ok(ready)
-                    })
+                .prepared_store()?
+                .run(move |connection, in_flight| {
+                    Box::pin(
+                        async move { discovery::wire(connection, in_flight, &chunk_build).await },
+                    )
                 })
                 .await?;
             if ready {
@@ -137,7 +148,7 @@ impl EventLog {
         if limit == 0 {
             return Err(invalid("wire group page limit must be positive"));
         }
-        self.connection.read_interruptible(move |connection|Box::pin(async move {
+        self.prepared_store()?.read_interruptible(move |connection|Box::pin(async move {
             let mut scope_transaction = connection.begin().await?;
             let connection = &mut *scope_transaction;
             require_wire_session(connection, expected_session.as_deref(), &scope_id).await?;let _lease=lease;
@@ -163,7 +174,7 @@ impl EventLog {
         if wire.codec != build.codec || wire.format != build.format {
             return Err(invalid("prepared wire codec does not match its view"));
         }
-        self.connection.run(move |connection|Box::pin(async move {
+        self.prepared_store()?.run(move |connection, in_flight|Box::pin(async move {
             let mut tx=connection.begin().await?;
             require_wire_session(&mut tx, expected_session.as_deref(), &scope_id).await?;
             assembly::require_discovered(&mut tx,assembly::Kind::Wire,&build.id).await?;
@@ -172,8 +183,8 @@ impl EventLog {
             let logical_content=tree::content_id(&mut tx,build.view.root.as_deref(),sequence).await?;
             let mut group=tree::group(&mut tx,&logical_content).await?;
             if wire.message_count!=group.messages.len(){return Err(invalid("wire group changed the logical message count"));}
-            let stage=format!("pending:{}:{sequence}",build.id);
-            sqlx::query("DELETE FROM context_prepared_chunks WHERE wire_id=?").bind(&stage).execute(&mut *tx).await?;
+            let storage_id=uuid::Uuid::new_v4().to_string();
+            sqlx::query("INSERT INTO context_prepared_payloads(storage_id) VALUES(?)").bind(&storage_id).execute(&mut *tx).await?;
             let mut digest=Sha256::new();let mut previous_message=0usize;let mut wire_bytes=0usize;
             for (index,result) in wire.chunks.enumerate() {
                 let chunk=result.map_err(|error|StoreError::InvalidTransition(format!("prepared wire encoding: {error}")))?;
@@ -187,16 +198,17 @@ impl EventLog {
                 digest.update((chunk.bytes.len() as u64).to_be_bytes());digest.update(&chunk.bytes);
                 let descriptor=encoded(&(chunk.message_index,chunk.item_start,chunk.item_end,&metadata))?;
                 digest.update((descriptor.len() as u64).to_be_bytes());digest.update(descriptor.as_bytes());
-                sqlx::query("INSERT INTO context_prepared_chunks(wire_id,piece_index,message_index,item_start,item_end,metadata_json,bytes) VALUES(?,?,?,?,?,?,?)")
-                    .bind(&stage).bind(index as i64).bind(chunk.message_index as i64).bind(chunk.item_start).bind(chunk.item_end).bind(metadata).bind(chunk.bytes).execute(&mut *tx).await?;
+                sqlx::query("INSERT INTO context_prepared_chunks(storage_id,piece_index,message_index,item_start,item_end,metadata_json,bytes) VALUES(?,?,?,?,?,?,?)")
+                    .bind(&storage_id).bind(index as i64).bind(chunk.message_index as i64).bind(chunk.item_start).bind(chunk.item_end).bind(metadata).bind(chunk.bytes).execute(&mut *tx).await?;
             }
             let wire_id=hex::encode(digest.finalize());
-            sqlx::query("INSERT OR IGNORE INTO context_prepared_chunks SELECT ?,piece_index,message_index,item_start,item_end,metadata_json,bytes FROM context_prepared_chunks WHERE wire_id=?").bind(&wire_id).bind(&stage).execute(&mut *tx).await?;
-            sqlx::query("DELETE FROM context_prepared_chunks WHERE wire_id=?").bind(stage).execute(&mut *tx).await?;
+            // A duplicate keeps the published complete body. Its new storage
+            // remains unpublished and follows the bounded retirement queue.
+            publish_payload(&mut tx, &storage_id, &wire_id).await?;
             group.wire_id=Some(wire_id);group.wire_bytes=wire_bytes;
             let content=tree::save_group(&mut tx,&group).await?;
-            assembly::stage(&mut tx,assembly::Kind::Wire,&build.id,sequence,&content).await?;
-            tx.commit().await?;build.lease.wake();Ok(())
+            assembly::stage(&mut tx,in_flight,assembly::Kind::Wire,&build.id,sequence,&content).await?;
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;build.lease.wake();Ok(())
         })).await
     }
     pub async fn finish_prepared_wire(
@@ -213,15 +225,12 @@ impl EventLog {
             let lease = build.lease.clone();
             let expected = expected_session.clone();
             let ready = self
-                .connection
-                .run(move |connection| {
+                .prepared_store()?
+                .run(move |connection, in_flight| {
                     Box::pin(async move {
                         let _lease = lease;
-                        let mut tx = connection.begin().await?;
-                        require_wire_session(&mut tx, expected.as_deref(), &id).await?;
-                        let ready = assembly::advance(&mut tx, assembly::Kind::Wire, &id).await?;
-                        tx.commit().await?;
-                        Ok(ready)
+                        require_wire_session(connection, expected.as_deref(), &id).await?;
+                        assembly::advance(connection, in_flight, assembly::Kind::Wire, &id).await
                     })
                 })
                 .await?;
@@ -230,7 +239,7 @@ impl EventLog {
             }
         }
         let build = build.clone();
-        self.connection.run(move |connection|Box::pin(async move {
+        self.prepared_store()?.run(move |connection, in_flight|Box::pin(async move {
             let mut tx=connection.begin().await?;
             require_wire_session(&mut tx, expected_session.as_deref(), &scope_id).await?;
             let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_wire_dirty WHERE view_id=? AND done=0)").bind(&build.id).fetch_one(&mut *tx).await?;
@@ -242,7 +251,7 @@ impl EventLog {
             let identity=hash(encoded(&(&root,build.format,&build.codec))?.as_bytes());
             if first { let weight=tree::weight(&mut tx,root.as_deref()).await?;
             gc::publish_wire(&mut tx,&build.view.build_id,&build.id,weight).await?; }
-            tx.commit().await?;build.lease.wake();Ok(PreparedWireView{id:build.id.clone(),session:build.view.selection.session.clone(),identity,message_count:count,format:build.format,codec:build.codec,root,lease:build.lease})
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;in_flight.remove("wire_view",&build.id);build.lease.wake();Ok(PreparedWireView{id:build.id.clone(),session:build.view.selection.session.clone(),identity,message_count:count,format:build.format,codec:build.codec,root,lease:build.lease})
         })).await
     }
     pub async fn prepared_wire_page(
@@ -260,7 +269,7 @@ impl EventLog {
             return Err(invalid("invalid prepared wire page"));
         }
         let view = view.clone();
-        self.connection.read_interruptible(move |connection|Box::pin(async move {
+        self.prepared_store()?.read_interruptible(move |connection|Box::pin(async move {
             let mut scope_transaction = connection.begin().await?;
             let connection = &mut *scope_transaction;
             require_wire_session(connection, expected_session.as_deref(), &scope_id).await?;
@@ -270,13 +279,13 @@ impl EventLog {
             let mut walk=tree::GroupWalk::at(connection,view.root.as_deref(),cursor.message_offset).await?;
             while chunks.len()<limit && cursor.message_offset<view.message_count {
                 let (_,base,content,group_count)=walk.next_descriptor(connection).await?.ok_or_else(||invalid("wire cursor is outside its root"))?;
-                let wire_id=wire_id(connection,&content).await?;
-                let Some(piece)=starting_piece(connection,&wire_id,cursor.message_offset-base,cursor.piece_index,false).await? else {
+                let storage_id=storage_id(connection,&content).await?;
+                let Some(piece)=starting_piece(connection,&storage_id,cursor.message_offset-base,cursor.piece_index,false).await? else {
                     cursor=PreparedWireCursor{message_offset:base+group_count,piece_index:0};continue;
                 };
                 cursor.piece_index=piece;
-                let rows=sqlx::query("SELECT piece_index,message_index,item_start,item_end,metadata_json,bytes FROM context_prepared_chunks WHERE wire_id=? AND message_index>=? AND piece_index>=? ORDER BY piece_index LIMIT ?")
-                    .bind(wire_id).bind((cursor.message_offset-base) as i64).bind(cursor.piece_index as i64).bind((limit-chunks.len()+1) as i64).fetch_all(&mut *connection).await?;
+                let rows=sqlx::query("SELECT piece_index,message_index,item_start,item_end,metadata_json,bytes FROM context_prepared_chunks WHERE storage_id=? AND message_index>=? AND piece_index>=? ORDER BY piece_index LIMIT ?")
+                    .bind(storage_id).bind((cursor.message_offset-base) as i64).bind(cursor.piece_index as i64).bind((limit-chunks.len()+1) as i64).fetch_all(&mut *connection).await?;
                 if rows.is_empty() {cursor=PreparedWireCursor{message_offset:base+group_count,piece_index:0};continue;}
                 let more=rows.len()>limit-chunks.len();
                 for row in rows.into_iter().take(limit-chunks.len()) {
@@ -306,7 +315,7 @@ impl EventLog {
             return Err(invalid("invalid prepared metadata page"));
         }
         let view = view.clone();
-        self.connection.read_interruptible(move |connection|Box::pin(async move {
+        self.prepared_store()?.read_interruptible(move |connection|Box::pin(async move {
             let mut scope_transaction = connection.begin().await?;
             let connection = &mut *scope_transaction;
             require_wire_session(connection, expected_session.as_deref(), &scope_id).await?;
@@ -316,13 +325,13 @@ impl EventLog {
             let mut walk=tree::GroupWalk::at(connection,view.root.as_deref(),cursor.message_offset).await?;
             while items.len()<limit && cursor.message_offset<view.message_count {
                 let (_,base,content,group_count)=walk.next_descriptor(connection).await?.ok_or_else(||invalid("metadata cursor is outside its root"))?;
-                let wire_id=wire_id(connection,&content).await?;
-                let Some(piece)=starting_piece(connection,&wire_id,cursor.message_offset-base,cursor.piece_index,true).await? else {
+                let storage_id=storage_id(connection,&content).await?;
+                let Some(piece)=starting_piece(connection,&storage_id,cursor.message_offset-base,cursor.piece_index,true).await? else {
                     cursor=PreparedWireCursor{message_offset:base+group_count,piece_index:0};continue;
                 };
                 cursor.piece_index=piece;
-                let rows=sqlx::query("SELECT piece_index,message_index,metadata_json FROM context_prepared_chunks INDEXED BY context_prepared_metadata_page WHERE wire_id=? AND message_index>=? AND piece_index>=? AND metadata_json IS NOT NULL ORDER BY piece_index LIMIT ?")
-                    .bind(wire_id).bind((cursor.message_offset-base) as i64).bind(cursor.piece_index as i64).bind((limit-items.len()+1) as i64).fetch_all(&mut *connection).await?;
+                let rows=sqlx::query("SELECT piece_index,message_index,metadata_json FROM context_prepared_chunks INDEXED BY context_prepared_metadata_page WHERE storage_id=? AND message_index>=? AND piece_index>=? AND metadata_json IS NOT NULL ORDER BY piece_index LIMIT ?")
+                    .bind(storage_id).bind((cursor.message_offset-base) as i64).bind(cursor.piece_index as i64).bind((limit-items.len()+1) as i64).fetch_all(&mut *connection).await?;
                 if rows.is_empty() {cursor=PreparedWireCursor{message_offset:base+group_count,piece_index:0};continue;}
                 let more=rows.len()>limit-items.len();
                 for row in rows.into_iter().take(limit-items.len()) {
@@ -350,7 +359,7 @@ impl EventLog {
             return Err(invalid("wire prefix exceeds view"));
         }
         let view = view.clone();
-        self.connection
+        self.prepared_store()?
             .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut scope_transaction = connection.begin().await?;
@@ -368,6 +377,19 @@ impl EventLog {
     }
 }
 
+pub(super) async fn publish_payload(
+    connection: &mut SqliteConnection,
+    storage: &str,
+    digest: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("UPDATE context_prepared_payloads SET digest=?1 WHERE storage_id=?2 AND NOT EXISTS(SELECT 1 FROM context_prepared_payloads WHERE digest=?1)")
+        .bind(digest)
+        .bind(storage)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
 /// An offset cursor first seeks the message index. Reading in piece order from
 /// zero and filtering earlier messages would walk the skipped prefix's chunks.
 async fn starting_piece(
@@ -381,9 +403,9 @@ async fn starting_piece(
         return Ok(Some(piece));
     }
     let query = if metadata {
-        "SELECT piece_index FROM context_prepared_chunks INDEXED BY context_prepared_metadata_seek WHERE wire_id=? AND message_index>=? AND metadata_json IS NOT NULL ORDER BY message_index,piece_index LIMIT 1"
+        "SELECT piece_index FROM context_prepared_chunks INDEXED BY context_prepared_metadata_seek WHERE storage_id=? AND message_index>=? AND metadata_json IS NOT NULL ORDER BY message_index,piece_index LIMIT 1"
     } else {
-        "SELECT piece_index FROM context_prepared_chunks INDEXED BY context_prepared_wire_seek WHERE wire_id=? AND message_index>=? ORDER BY message_index,piece_index LIMIT 1"
+        "SELECT piece_index FROM context_prepared_chunks INDEXED BY context_prepared_wire_seek WHERE storage_id=? AND message_index>=? ORDER BY message_index,piece_index LIMIT 1"
     };
     let value: Option<i64> = sqlx::query_scalar(query)
         .bind(wire)
@@ -395,15 +417,15 @@ async fn starting_piece(
 
 /// Wire readers need no semantic members, resource manifest or per-message
 /// counters. Extract only the immutable body address on the SQLite worker.
-async fn wire_id(
+async fn storage_id(
     connection: &mut sqlx::sqlite::SqliteWorkerConnection<'_>,
     content: &str,
 ) -> Result<String, StoreError> {
     let id: Option<String> = sqlx::query_scalar(
-        "SELECT json_extract(group_json,'$.wire_id') FROM context_prepared_groups WHERE id=?",
+        "SELECT p.storage_id FROM context_prepared_groups g JOIN context_prepared_payloads p ON p.digest=json_extract(g.group_json,'$.wire_id') WHERE g.id=?",
     )
     .bind(content)
-    .fetch_one(connection)
+    .fetch_optional(connection)
     .await?;
-    id.ok_or_else(|| invalid("wire group has no body"))
+    id.ok_or_else(|| invalid("wire group has no complete body"))
 }

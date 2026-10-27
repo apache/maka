@@ -24,6 +24,11 @@ import type {
   HistoryTool,
   InstanceId,
   PackageRef,
+  UiCatalog,
+  UiContribution,
+  UiInstance,
+  UiRead,
+  UiRoot,
 } from './generated/runtime.js';
 
 export interface UiSubscription<T = unknown> {
@@ -38,6 +43,7 @@ export interface UiHost {
   subscribe(endpoint: string, method: string, input: unknown): Promise<UiSubscription>;
   mutation(endpoint: string, method: string, input: unknown): Promise<UiOperation>;
   beginMutation(endpoint: string, method: string, input: unknown): Promise<UiMutation>;
+  readUi(input: UiRead): Promise<UiCatalog>;
   settingsMutation(
     endpoint: string,
     method: string,
@@ -108,8 +114,59 @@ export interface UiToolProps {
   userScroll(): void;
 }
 
+export interface UiContributionRef {
+  readonly key: string;
+  readonly id: string;
+  readonly instance: UiInstance;
+  readonly declaration: UiContribution;
+}
+
+export type UiRootSelection = UiRoot;
+
+export interface UiContributionProps {
+  readonly sessionId: string | null;
+  readonly input?: unknown;
+  readonly tool?: Omit<UiToolProps, 'context'>;
+}
+
+/** The shared catalog and components; the selected root owns their presentation. */
+export interface UiRuntime<Element = unknown> {
+  source(): DeploymentRef | null;
+  root(): UiRootSelection | null;
+  ready(): boolean;
+  contributions(): readonly UiContributionRef[];
+  panels(): readonly UiContributionRef[];
+  settings(): readonly UiContributionRef[];
+  renderer(presentation: string | null | undefined): UiContributionRef | undefined;
+  render(contribution: UiContributionRef, props: UiContributionProps): Element;
+  invoke(
+    contribution: UiContributionRef,
+    context: UiCommandContext,
+    current?: () => boolean,
+  ): Promise<boolean>;
+  handlePanels(handler: (contribution: UiContributionRef, input?: unknown) => void): () => void;
+  locale(): string;
+  setLocale(locale: string): void;
+  reloading(): boolean;
+  updateError(): unknown | null;
+  retryUpdates(): void;
+}
+
+export interface UiRootProps<Element = unknown> {
+  readonly context: UiContext;
+  readonly runtime: UiRuntime<Element>;
+  /** JSON returned by this root's prepareReload, or null on its first mount. */
+  readonly restored: unknown;
+}
+
 export type UiImplementation<Element = unknown> =
   | { kind: 'command'; run(context: UiCommandContext): void | Promise<void> }
+  | {
+      kind: 'root';
+      render(props: UiRootProps<Element>): Element;
+      /** Persist owned drafts and return JSON before replacing the shared VM. */
+      prepareReload?(): Promise<unknown>;
+    }
   | { kind: 'panel' | 'settings'; render(props: UiViewProps): Element }
   | { kind: 'tool_renderer'; render(props: UiToolProps): Element };
 

@@ -342,6 +342,7 @@ impl AppView {
             terminal_keyboard: options.terminal_keyboard,
             ..initial_environment()
         });
+        surface.initial_appearance.set(options.appearance);
         surface.appearance.set(options.appearance);
         if options.fps {
             *surface.stats.borrow_mut() = Some(Default::default());

@@ -587,7 +587,11 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_frames_preserve_invoke_language() {
-        use crate::protocol::{Action, Direction, Distance, Handle, Position};
+        use crate::protocol::{
+            Action, BrowserCheckOptions, BrowserClickOptions, BrowserMutationOperation,
+            BrowserSelectOption, BrowserTextOptions, Direction, Distance, Handle, LocatorPlan,
+            Position,
+        };
         use maka_agent_facts::language::Language;
 
         for (language, tag) in [
@@ -641,8 +645,7 @@ mod tests {
             0x4031_1f9a_dd37_46f6,
             0x4014_7e6b_74dd_1bd9,
         ];
-        for pixels in [false, true] {
-            let [amount, x, y] = expected.map(f64::from_bits);
+        let roundtrip_command = |command| {
             let request = ParentFrame::Request {
                 id: 42,
                 request: Box::new(Request::Invoke {
@@ -653,18 +656,7 @@ mod tests {
                     operation_id: None,
                     browsers: Vec::new(),
                     preparation_policy: Default::default(),
-                    command: Command::Action {
-                        handle: Handle::App("numeric-target".into()),
-                        action: Action::Scroll {
-                            target: Position::Point([x, y]),
-                            direction: Direction::Down,
-                            distance: Some(if pixels {
-                                Distance::Pixels { pixels: amount }
-                            } else {
-                                Distance::Pages(amount)
-                            }),
-                        },
-                    },
+                    command,
                     language: Language::En,
                 }),
             };
@@ -680,25 +672,44 @@ mod tests {
             let Request::Invoke {
                 session,
                 turn,
-                command:
-                    Command::Action {
-                        handle: Handle::App(target),
-                        action:
-                            Action::Scroll {
-                                target: Position::Point(point),
-                                direction: Direction::Down,
-                                distance,
-                            },
-                    },
+                command,
                 ..
             } = *request
             else {
                 panic!("numeric action changed its typed worker request");
             };
             assert_eq!(
-                (id, session.as_str(), turn.as_str(), target.as_str()),
-                (42, "same-session", "fixture-turn", "numeric-target")
+                (id, session.as_str(), turn.as_str()),
+                (42, "same-session", "fixture-turn")
             );
+            command
+        };
+        let [amount, x, y] = expected.map(f64::from_bits);
+        for pixels in [false, true] {
+            let Command::Action {
+                handle: Handle::App(target),
+                action:
+                    Action::Scroll {
+                        target: Position::Point(point),
+                        direction: Direction::Down,
+                        distance,
+                    },
+            } = roundtrip_command(Command::Action {
+                handle: Handle::App("numeric-target".into()),
+                action: Action::Scroll {
+                    target: Position::Point([x, y]),
+                    direction: Direction::Down,
+                    distance: Some(if pixels {
+                        Distance::Pixels { pixels: amount }
+                    } else {
+                        Distance::Pages(amount)
+                    }),
+                },
+            })
+            else {
+                panic!("numeric action changed its typed worker request");
+            };
+            assert_eq!(target, "numeric-target");
             let amount = match (pixels, distance) {
                 (false, Some(Distance::Pages(amount)))
                 | (true, Some(Distance::Pixels { pixels: amount })) => amount,
@@ -713,7 +724,7 @@ mod tests {
             write(
                 &mut helper,
                 &WorkerFrame::Response {
-                    id,
+                    id: 42,
                     result: Ok(json!({"amount":amount,"x":point[0],"y":point[1]})),
                 },
             )
@@ -726,11 +737,98 @@ mod tests {
             else {
                 panic!("numeric response changed its worker frame");
             };
-            assert_eq!(response_id, id);
+            assert_eq!(response_id, 42);
             assert_eq!(
                 ["amount", "x", "y"].map(|field| response[field].as_f64().unwrap().to_bits()),
                 expected
             );
+        }
+
+        let Command::Action {
+            action: Action::Drag { from, to },
+            ..
+        } = roundtrip_command(Command::Action {
+            handle: Handle::App("numeric-target".into()),
+            action: Action::Drag {
+                from: [x, y],
+                to: [y, amount],
+            },
+        })
+        else {
+            panic!("drag coordinates changed their typed worker request");
+        };
+        assert_eq!(from.map(f64::to_bits), [expected[1], expected[2]]);
+        assert_eq!(to.map(f64::to_bits), [expected[2], expected[0]]);
+
+        for operation in [
+            BrowserMutationOperation::Click {
+                options: BrowserClickOptions {
+                    timeout_ms: Some(amount),
+                    ..Default::default()
+                },
+            },
+            BrowserMutationOperation::Fill {
+                value: "text".into(),
+                options: BrowserTextOptions {
+                    timeout_ms: Some(amount),
+                },
+            },
+            BrowserMutationOperation::SetChecked {
+                checked: true,
+                options: BrowserCheckOptions {
+                    timeout_ms: Some(amount),
+                    ..Default::default()
+                },
+            },
+            BrowserMutationOperation::SelectOption {
+                values: vec![BrowserSelectOption {
+                    index: Some(y),
+                    ..Default::default()
+                }],
+                options: BrowserTextOptions {
+                    timeout_ms: Some(amount),
+                },
+            },
+        ] {
+            let Command::BrowserMutation { operation, .. } =
+                roundtrip_command(Command::BrowserMutation {
+                    handle: Handle::Tab("numeric-target".into()),
+                    locator: LocatorPlan {
+                        selector: "select".into(),
+                    },
+                    operation,
+                })
+            else {
+                panic!("browser mutation changed its typed worker request");
+            };
+            let timeout = match operation {
+                BrowserMutationOperation::Click { options } => options.timeout_ms,
+                BrowserMutationOperation::Fill { options, .. } => options.timeout_ms,
+                BrowserMutationOperation::SetChecked { options, .. } => options.timeout_ms,
+                BrowserMutationOperation::SelectOption { values, options } => {
+                    assert_eq!(values[0].index.map(f64::to_bits), Some(expected[2]));
+                    options.timeout_ms
+                }
+                _ => panic!("browser mutation changed its operation"),
+            };
+            assert_eq!(timeout.map(f64::to_bits), Some(expected[0]));
+        }
+        for input in [
+            r#"{"kind":"click","options":{}}"#,
+            r#"{"kind":"setChecked","checked":true,"options":{}}"#,
+            r#"{"kind":"selectOption","values":[{}],"options":{}}"#,
+        ] {
+            let operation: BrowserMutationOperation = serde_json::from_str(input).unwrap();
+            let timeout = match operation {
+                BrowserMutationOperation::Click { options } => options.timeout_ms,
+                BrowserMutationOperation::SetChecked { options, .. } => options.timeout_ms,
+                BrowserMutationOperation::SelectOption { values, options } => {
+                    assert!(values[0].index.is_none());
+                    options.timeout_ms
+                }
+                _ => panic!("browser mutation changed its operation"),
+            };
+            assert!(timeout.is_none(), "{input}");
         }
     }
 

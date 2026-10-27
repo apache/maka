@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-New stores install only the current initial SQL schema. Old internal layouts and record formats are not upgraded. Canonical writes maintain durable projections in the same transaction; disposable indexes retain their current rebuild behavior.
+Stores initialize through the current SQL migrations. Unsupported internal layouts and record formats are rejected. Canonical writes maintain durable projections in the same transaction; disposable indexes retain their current rebuild behavior.
 
 Owns the SQLite event store and State Root lease. It persists application sources and packages, operation receipts, sessions, turns and recovery records. Start with `root` for exclusive ownership, `applications` for committed compositions, and `recovery` for interrupted work. Opening a Root establishes the durable owner before services activate; plugins keep their own policy while this crate records canonical facts.
 
@@ -41,7 +41,7 @@ Control batches caller intents, project registrations, workspace attachments, an
 
 New runtime events use UUIDv7 identities to keep event and derived message index writes local. Imported and replayed identities remain unchanged, and database sequence remains the ordering authority. Semantic event-identity lookup indexes only tool results, which need it for archival; incremental revision reads use the change directory, while historical source copies seek the source-position primary key.
 
-Canonical runtime-event ingress inserts each event, captures its sequence, then records its source and semantic projections as separate statements on the same writer transaction. The next event cannot begin before those projections finish. Projection storage failures roll back the entire batch, including imported events; notifications remain tied to successful commit. Copied-prefix projections are maintained by their current copy paths.
+Canonical runtime-event ingress inserts each event, captures its sequence, then maintains safety, execution, source and semantic projections as separate statements on the same SQLite worker and writer transaction. Typed facts select the safety and execution statements to run. The next event cannot begin before those projections finish. Projection storage failures roll back the entire batch, including imported events; notifications remain tied to successful commit. Copied-prefix projections are maintained by their current copy paths.
 
 A statement failure rolls back the entire group unless it is a domain rejection isolated by its own savepoint. Former ordinary writer requests can continue recovery on the same owner after acknowledged rollback and fresh authority validation; pure observation batches retain their stricter retirement policy. Failed commits always return unknown outcomes without execution claims. Reusing a former ordinary writer group after a failed commit additionally requires acknowledged cleanup and zero transaction depth. Savepoint, authority and unconfirmed cleanup failures retire the writer. Single-key and paged plugin-data reads use the independent reader owner and see committed snapshots; dependent reads must still await their preceding write receipt.
 

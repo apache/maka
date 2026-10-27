@@ -595,6 +595,7 @@ async fn original_receipt_survives_restart_and_new_composition_without_provider(
         let mut replacement_node = node(&replacement, 2, true);
         replacement_node.bindings.clear();
         let replacement_input = Input {
+            ui: None,
             instances: BTreeMap::from([("recovery-client".into(), replacement_node)]),
         };
         // Acceptance precedes committed withdrawal; new admission is revoked
@@ -1948,6 +1949,7 @@ async fn commit_caller_source(
         }],
     );
     let input = Input {
+        ui: None,
         instances: BTreeMap::from([("caller".into(), node)]),
     };
     let observed = maka_plugin_core::deployment::RemoteObservation {

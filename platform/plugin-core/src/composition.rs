@@ -50,6 +50,22 @@ impl InstanceId {
 #[schemars(rename = "CompositionInput")]
 pub struct Input {
     pub instances: BTreeMap<String, Node>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiTarget {
+    pub path: Vec<String>,
+    pub id: String,
+}
+
+impl UiTarget {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        validate_path(&self.path)?;
+        crate::name(&self.id)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

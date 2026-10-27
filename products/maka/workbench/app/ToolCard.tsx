@@ -30,7 +30,7 @@ import { cardFamily, processFamily, toolArguments, toolResult } from './toolCard
 import { ToolReader } from './ToolReader';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
-import { pluginContext } from './plugins/registry';
+import { pluginContext } from './plugins/context';
 import { PluginView } from './plugins/PluginView';
 
 const detailsGap = 8;

@@ -91,7 +91,7 @@ impl Bindings {
         }
     }
 
-    /// Bundled assets and immutable tool images read through this original Host.
+    /// Package assets and immutable tool images read through this original Host.
     pub fn assets(&self) -> Arc<dyn nsh_engine::Assets> {
         Arc::new(assets::HostAssets(self.owner.clone()))
     }
@@ -431,7 +431,7 @@ impl ApplicationHost {
         Ok(Instance::new(original))
     }
 
-    /// Query a service exposed by the original Host catalogue.
+    /// Query any service exposed by the original Host catalogue.
     pub async fn query(
         this: Instance<Self>,
         endpoint: String,
@@ -441,23 +441,31 @@ impl ApplicationHost {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
         execute(owner.clone(), async move {
+            owner.client.query(&endpoint, &method, input).await
+        })
+        .await
+    }
+
+    /// Read the platform UI catalog and publish its immutable package locators.
+    pub async fn read_ui(this: Instance<Self>, input: JsonValue) -> Result<JsonValue, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner.clone(), async move {
             require_contract(
-                &endpoint,
-                &method,
-                &owner.client.describe(&endpoint).await?.contract,
+                "management",
+                "readUi",
+                &owner.client.describe("management").await?.contract,
             )?;
-            let value = owner.client.query(&endpoint, &method, input).await?;
-            if endpoint == "management" && method == "readUi" {
-                owner.plugins.observe(
-                    serde_json::from_value(value.clone()).map_err(|error| error.to_string())?,
-                );
-            }
+            let value = owner.client.query("management", "readUi", input).await?;
+            owner
+                .plugins
+                .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
             Ok(value)
         })
         .await
     }
 
-    /// Return an owned native subscription, with no second handle table.
+    /// Return an owned generic subscription, with no second handle table.
     pub async fn subscribe(
         this: Instance<Self>,
         endpoint: String,
@@ -466,24 +474,38 @@ impl ApplicationHost {
     ) -> Result<Instance<ScopedSubscription>, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        let kind = if endpoint == AGENT && method == "readFile" {
-            SubscriptionKind::File(Some(
-                serde_json::from_value(input.clone()).map_err(|_| "Invalid file read selector")?,
-            ))
-        } else {
-            SubscriptionKind::Events
-        };
         let subscription = execute(owner.clone(), async move {
-            require_contract(
-                &endpoint,
-                &method,
-                &owner.client.describe(&endpoint).await?.contract,
-            )?;
             let subscription = owner.client.subscribe(&endpoint, &method, input).await?;
             Ok(ScopedSubscription {
                 owner,
                 subscription: Arc::new(subscription),
-                kind,
+                kind: SubscriptionKind::Events,
+            })
+        })
+        .await?;
+        Ok(Instance::new(subscription))
+    }
+
+    /// Keep the original Agent file stream with its typed native collector.
+    pub async fn read_file(
+        this: Instance<Self>,
+        input: JsonValue,
+    ) -> Result<Instance<ScopedSubscription>, String> {
+        let source: maka_agent_api::contract::FileRead =
+            serde_json::from_value(input.clone()).map_err(|_| "Invalid file read selector")?;
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        let subscription = execute(owner.clone(), async move {
+            require_contract(
+                AGENT,
+                "readFile",
+                &owner.client.describe(AGENT).await?.contract,
+            )?;
+            let subscription = owner.client.subscribe(AGENT, "readFile", input).await?;
+            Ok(ScopedSubscription {
+                owner,
+                subscription: Arc::new(subscription),
+                kind: SubscriptionKind::File(Some(source)),
             })
         })
         .await?;

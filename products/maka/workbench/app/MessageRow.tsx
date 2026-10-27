@@ -21,7 +21,7 @@ import { textTooltip } from './ui';
 import { tr } from './locale';
 import { CompactionDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
-import type { JSX } from 'nsh';
+import type { JSX, Signal } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform } from 'nsh';
 import { messageKey, type Row } from './history';
@@ -35,8 +35,8 @@ import { MessageCopy } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
 
 export type MessageViewState = {
-  expanded: ReturnType<typeof signal<boolean>>;
-  sourceMode: ReturnType<typeof signal<boolean>>;
+  expanded: Signal<boolean>;
+  sourceMode: Signal<boolean>;
 };
 type MessageRowToggle = {
   sessionId: string;

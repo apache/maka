@@ -77,7 +77,9 @@ if (values.target === 'host') {
     ui: {
       module: 'ui.js',
       configuration,
+      imports: {},
       contributions: {
+        root: { kind: 'root' },
         counter: { kind: 'panel', title: { fallback: 'Counter' } },
         openCounter: { kind: 'command', title: { fallback: 'Open counter' } },
       },
@@ -88,11 +90,12 @@ write(join(packageDirectory, 'maka.extension.json'), {
   schemaVersion: 1,
   id: 'example.plugin',
   displayName: values.target === 'host' ? 'Echo service' : 'Counter',
-  description: values.target === 'host' ? 'Echo a string.' : 'An NSH counter panel and command.',
+  description:
+    values.target === 'host' ? 'Echo a string.' : 'An NSH counter application, panel and command.',
   application,
 });
 const composition = join(output, 'composition.json');
-write(composition, {
+const input = {
   instances: {
     example: {
       key: randomUUID(),
@@ -103,7 +106,9 @@ write(composition, {
       usePackage: values.target,
     },
   },
-});
+};
+if (values.target === 'ui') input.ui = { path: ['example'], id: 'root' };
+write(composition, input);
 const packages = [packageDirectory];
 run(['check', '--input', composition, '--package', packageDirectory]);
 console.log(JSON.stringify({ input: composition, packages }));

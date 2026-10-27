@@ -218,7 +218,33 @@ async fn startup_preserves_unrelated_components_with_product_process_names() {
 #[tokio::test]
 async fn selected_and_override_pins_upgrade_without_reauthoring_custom_composition() {
     let directory = tempfile::tempdir().unwrap();
-    let f = Fixture::new(directory.path()).await;
+    let mut f = Fixture::new(directory.path()).await;
+    let custom_root = Package::new(BTreeMap::from([
+        (
+            "maka.extension.json".into(),
+            serde_json::to_vec(&json!({
+                "schemaVersion":1,"id":"example.custom-root",
+                "application":{"ui":{
+                    "module":"root.js","configuration":{"type":"object"},
+                    "contributions":{"root":{"kind":"root"}}
+                }}
+            }))
+            .unwrap(),
+        ),
+        (
+            "root.js".into(),
+            b"export function activate(){return {}; }".to_vec(),
+        ),
+    ]))
+    .unwrap();
+    f.input.instances.insert("custom-ui".into(),serde_json::from_value(json!({
+        "key":Uuid::new_v4(),"package":{"source":"pinned","package":custom_root.application_ref()},
+        "usePackage":"ui"
+    })).unwrap());
+    f.input.ui = Some(maka_plugin_core::composition::UiTarget {
+        path: vec!["custom-ui".into()],
+        id: "root".into(),
+    });
     let installed = leaf("Installed but not selected", "string");
     f.store
         .commit_application(
@@ -226,7 +252,12 @@ async fn selected_and_override_pins_upgrade_without_reauthoring_custom_compositi
             1,
             f.input.clone(),
             vec![],
-            vec![f.previous.clone(), f.template.clone(), installed.clone()],
+            vec![
+                f.previous.clone(),
+                f.template.clone(),
+                installed.clone(),
+                custom_root,
+            ],
         )
         .await
         .unwrap();

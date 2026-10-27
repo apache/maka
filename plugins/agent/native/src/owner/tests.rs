@@ -351,6 +351,7 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
         overrides: vec![],
     };
     let mut input = Input {
+        ui: None,
         instances: BTreeMap::from([
             ("provider".into(), node(1, true)),
             ("a".into(), node(2, false)),

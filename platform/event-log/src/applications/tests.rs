@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 pub(super) fn input() -> Input {
     Input {
+        ui: None,
         instances: BTreeMap::new(),
     }
 }

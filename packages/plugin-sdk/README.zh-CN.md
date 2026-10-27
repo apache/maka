@@ -42,7 +42,7 @@ npm --workspace @maka-agent/plugin-sdk run typecheck
 
 生成过程使用 [maka-schema](../../tools/schema/README.zh-CN.md)，无需构建产品或 V8。运行时也可通过 `maka application schema` 导出目录。
 
-UI 模块导出同步的 `activate(context)`，返回包中声明的命令、面板、设置页和工具渲染器。它们通过普通 NSH 组件运行在桌面和终端共用的工作台中。安装的插件视为已获用户信任，可使用客户端现有能力；`nsh.cleanup` 负责清理激活实例拥有的订阅和资源。Host 服务接收请求作用域内的导入与附件，不提供环境级 Node API。
+UI 模块导出同步的 `activate(context)`，返回包中声明的根界面、命令、面板、设置页和工具渲染器。`root` 导出提供完整应用，由部署来源的 `ui: { path, id }` 选择，使用与其他 UI 贡献相同的包、激活和 NSH 组件。缺少根入口时不会回退到内置 Maka 界面。它们通过普通 NSH 组件运行在桌面和终端共用的工作台中。安装的插件视为已获用户信任，可使用客户端现有能力；`nsh.cleanup` 负责清理激活实例拥有的订阅和资源。Host 服务接收请求作用域内的导入与附件，不提供环境级 Node API。
 
 客体运行时提供 `TextEncoder`、`TextDecoder`、`atob`、`URL` 和 `URLSearchParams` 进行纯文本与字节转换。可用 `Uint8Array.from(atob(value), c => c.charCodeAt(0))` 将 Base64 解码成字节；这些 API 不授予文件或网络访问权限。
 

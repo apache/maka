@@ -425,8 +425,13 @@ async fn computer_audio_consent_is_an_independent_session_capability() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn app_stop_controls_remain_independent_while_another_original_receipt_is_held() {
     tokio::time::timeout(Duration::from_secs(90), async {
+        use maka_agent_api::contract::WorkspaceAccess;
         use maka_agent_facts::event::{
             EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+        };
+        use maka_agent_facts::execution::{
+            ApprovalPolicy, BehaviorId, InvocationConfiguration, SandboxMode, ToolMode,
+            WorkspaceOrigin,
         };
         use maka_agent_facts::interaction::{
             ComputerAppDecision, ComputerAppDisplay, ComputerAppPlatform, GrantScope,
@@ -459,12 +464,67 @@ async fn app_stop_controls_remain_independent_while_another_original_receipt_is_
                 &EventWrite::plain(RuntimeEvent::new(
                     invocation.clone(),
                     Fact::InvocationOpened {
-                        configuration: None,
+                        configuration: Some(Box::new(InvocationConfiguration {
+                            language: maka_agent_facts::language::Language::En,
+                            compaction_prompt: None,
+                            editing_tools: None,
+                            tool_discovery: false,
+                            tool_composition: None,
+                            system_prompt: None,
+                            cwd: fixture
+                                .directory
+                                .path()
+                                .join("workspace")
+                                .to_string_lossy()
+                                .into_owned(),
+                            workspace_identity: None,
+                            workspace_binding: Some(stamp),
+                            workspace_origin: WorkspaceOrigin::Selected,
+                            sandbox_mode: match configuration.configuration.permissions.access {
+                                WorkspaceAccess::ReadOnly => SandboxMode::ReadOnly,
+                                WorkspaceAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+                                WorkspaceAccess::DangerFullAccess => SandboxMode::DangerFullAccess,
+                            },
+                            approval_policy: if configuration
+                                .configuration
+                                .permissions
+                                .request_permissions
+                            {
+                                ApprovalPolicy::OnRequest
+                            } else {
+                                ApprovalPolicy::Never
+                            },
+                            boundary_revision: basis.boundary_revision,
+                            collaboration_mode: configuration.configuration.collaboration_mode,
+                            orchestration_mode: BehaviorId::default(),
+                            tool_mode: ToolMode::Direct,
+                            code_language: Default::default(),
+                            model: None,
+                            thinking_level: None,
+                        })),
                         input: InvocationInput::Message {
                             source_messages: Vec::new(),
                             content: "Host app Stop UI fixture".into(),
                             request_fingerprint: None,
                         },
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    invocation.clone(),
+                    Fact::ExecutorStarted {
+                        binding: maka_agent_facts::executor::Binding {
+                            executor_id: "fixture".to_owned().try_into().unwrap(),
+                            package_id: "fixture".into(),
+                            entry_id: "computer-access".into(),
+                            activation: "ui-stop-executor".into(),
+                        },
+                        settings: Default::default(),
                     },
                 ))
                 .unwrap(),
@@ -554,9 +614,15 @@ async fn app_stop_controls_remain_independent_while_another_original_receipt_is_
                     presentation: None,
                     title: None,
                     operation_id: id.into(),
-                    call: maka_agent_facts::tool_call::ToolCallIdentity::standalone(format!(
-                        "call-{id}"
-                    )),
+                    call: maka_agent_facts::tool_call::ToolCallIdentity {
+                        tool_call_id: format!("call-{id}"),
+                        origin: maka_agent_facts::tool_call::ToolOrigin::HostSdk {
+                            package_id: "workspace.computer".into(),
+                            entry_id: "computer".into(),
+                            activation: format!("ui-stop-{id}"),
+                            parent: None,
+                        },
+                    },
                     name: "native-fixture".into(),
                     input: json!({}),
                 },
@@ -637,6 +703,18 @@ async fn app_stop_controls_remain_independent_while_another_original_receipt_is_
         );
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
         gate.release();
+        store
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    invocation.clone(),
+                    Fact::ExecutorCompleted {
+                        text: "Completed computer application access fixture".into(),
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
         store
             .append(
                 &EventWrite::plain(RuntimeEvent::new(
@@ -847,7 +925,7 @@ async fn the_production_pty_leaves_requests_unanswered_then_records_cancel_and_d
         let request = fixture.next_request().await;
         let prompt = json!({"kind":"form","toolUseId":"physical_form_call","message":"Physical form decision","requester":{"name":"Trusted fixture"},"fields":[]});
         let cancelled = publish(&fixture, "physical_form_cancel", prompt.clone()).await;
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
         terminal.wait_for("Physical form decision").await;
         // Reading the original detail enters this request's keyboard scope.
         // Escape returns to the editor without answering or stopping the Run.

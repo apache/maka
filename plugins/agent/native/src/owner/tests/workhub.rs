@@ -724,15 +724,15 @@ async fn query_import(fixture: &Fixture, import: &str, method: &str, input: Valu
         .start(
             imported(fixture, import).await,
             method.into(),
-            input,
+            input.clone(),
             scope(&fixture.issuer, true),
             Attachments::default().into(),
         )
         .await
-        .unwrap()
+        .unwrap_or_else(|error| panic!("start {import}.{method}({input}) failed: {error:?}"))
         .result()
         .await
-        .unwrap()
+        .unwrap_or_else(|error| panic!("query {import}.{method}({input}) failed: {error:?}"))
 }
 async fn worker_mutation(fixture: &Fixture, method: &str, input: Value) -> Value {
     let client = fixture.app.client();
@@ -1515,6 +1515,13 @@ async fn workhub_session_tool_browses_live_catalog_across_coordinator_turns() {
 
 #[tokio::test]
 async fn workhub_wait_returns_worker_answer_in_the_routing_turn_and_cancels_only_observation() {
+    let _log_guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_test_writer()
+            .with_ansi(false)
+            .finish(),
+    );
     tokio::time::timeout(Duration::from_secs(60), async {
         for cancel in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

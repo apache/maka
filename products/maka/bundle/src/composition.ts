@@ -33,6 +33,7 @@ import {
 } from '../../../../packages/plugin-sdk/src/index.js';
 export { installation } from './installation.js';
 export const packageNames = [
+  'workbench',
   'workhub',
   'host-logs',
   'recovery-gateway',
@@ -62,6 +63,7 @@ export const instanceNames = [
   'host-deployment-gateway',
   'coordinator-workspace-processes',
   'coordinator-protocol-processes',
+  'workbench-ui',
   'workspace-files-ui',
 ] as const;
 export type InstanceName = (typeof instanceNames)[number];
@@ -140,7 +142,12 @@ function settingsComposition(configuration: CompositionConfiguration) {
     bindings,
   });
   const host: CompositionInput = {
+    ui: { path: ['workbench-ui'], id: 'root' },
     instances: {
+      'workbench-ui': {
+        ...node('workbench', {}, {}, 'workbench-ui'),
+        usePackage: 'ui',
+      },
       'host-deployment-manager': node('host-deployment-manager'),
       'host-logs': node('host-logs'),
       'host-deployment-gateway': node(
@@ -235,9 +242,16 @@ function settingsComposition(configuration: CompositionConfiguration) {
 }
 /** Keys and deployment belong to the installation, not to a build or shell. */
 export function composition(configuration: CompositionConfiguration): ApplicationSources {
-  return configuration.coordinator
+  const source = configuration.coordinator
     ? workhubComposition(configuration)
     : agentComposition(configuration);
+  source.host.instances['workbench-ui']!.bindings = {
+    ...source.host.instances.gateway!.bindings,
+    management: [{ kind: 'instance', path: ['host-deployment-manager'], export: 'Management' }],
+    receipts: [{ kind: 'instance', path: ['receipts'], export: 'Receipts' }],
+    skillOutcomes: [{ kind: 'instance', path: ['skill-outcomes'], export: 'Outcomes' }],
+  };
+  return source;
 }
 
 function agentComposition(configuration: CompositionConfiguration): ApplicationSources {

@@ -51,6 +51,7 @@ impl Manager {
             .collect::<Result<Vec<_>>>()?;
         serde_json::to_value(UiCatalog {
             source: loaded.source().reference.clone(),
+            ui: plan.ui().cloned(),
             instances,
         })
         .map_err(|error| error.to_string())

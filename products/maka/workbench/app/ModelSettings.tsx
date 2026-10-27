@@ -23,13 +23,13 @@ import { Button, Dialog } from 'nsh/base';
 import { windowSize } from 'nsh';
 import { createSettingsOperations } from './settingsOperations';
 import { createModelSettings } from './settings';
-import { createGeneralSettings } from './generalSettings.ts';
-import { createNetworkSettings } from './networkSettings.ts';
+import { createGeneralSettings } from './generalSettingsState.ts';
+import { createNetworkSettings } from './networkSettingsState.ts';
 import { ConnectionSettings } from './ConnectionSettings';
 import { GeneralSettings } from './GeneralSettings';
 import { NetworkSettings } from './NetworkSettings';
 import { PluginSettings } from './PluginSettings';
-import { createPluginSettings } from './pluginSettings.ts';
+import { createPluginSettings } from './pluginSettingsState.ts';
 import {
   C,
   compact,
@@ -42,7 +42,7 @@ import {
 } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { contributionTitle, pluginContext, type Contribution } from './plugins/registry';
+import { contributionTitle, pluginContext, type Contribution } from './plugins/context';
 import { sameValue } from '../../../../plugins/shared/value';
 import { PluginView } from './plugins/PluginView';
 import type {
@@ -57,7 +57,7 @@ export type SettingsRoute =
   | { kind: 'builtin'; section: BuiltinSection }
   | { kind: 'plugin'; instance: InstanceId; id: string };
 const pluginSection = (item: Contribution): Section =>
-  `ui:${JSON.stringify([item.entry.instance.instance, item.id])}`;
+  `ui:${JSON.stringify([item.instance.instance, item.id])}`;
 type BackAction = { section: Section; identity: string };
 const sections = [
   { id: 'general', label: 'General' },
@@ -133,9 +133,7 @@ export function ModelSettings(props: {
       restoring = null;
       const item = uiPlugins
         .settings()
-        .find(
-          (item) => item.id === route.id && sameValue(item.entry.instance.instance, route.instance),
-        );
+        .find((item) => item.id === route.id && sameValue(item.instance.instance, route.instance));
       choose({ from: section(), to: item ? pluginSection(item) : 'plugins' });
     }
   });
@@ -148,7 +146,7 @@ export function ModelSettings(props: {
       if (item)
         props.routeChanged?.({
           kind: 'plugin',
-          instance: item.entry.instance.instance,
+          instance: item.instance.instance,
           id: item.id,
         });
     }
@@ -186,19 +184,26 @@ export function ModelSettings(props: {
     });
   const title = () => {
     const current = section();
-    return current === 'connections'
-      ? {
+    switch (current) {
+      case 'connections':
+        return {
           connections: tr('Connections & models'),
           providers: tr('Add connection'),
           connection: tr('Connection settings'),
           models: tr('Connection models'),
           model: tr('Model settings'),
-        }[connections.page()]
-      : (page(current)?.title() ??
-          (() => {
-            const item = contributed();
-            return item ? contributionTitle(item) : '';
-          })());
+        }[connections.page()];
+      case 'general':
+        return general.title();
+      case 'network':
+        return network.title();
+      case 'plugins':
+        return plugins.title();
+      default: {
+        const item = contributed();
+        return item ? contributionTitle(item) : '';
+      }
+    }
   };
   const nested = () =>
     section() === 'connections'

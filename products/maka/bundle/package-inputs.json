@@ -1,4 +1,5 @@
 {
+  "workbench": "products/maka/workbench",
   "host-logs": "plugins/application/host-logs",
   "recovery-gateway": "plugins/agent/recovery-gateway",
   "host-deployment-manager": "plugins/application/host-deployment-manager",

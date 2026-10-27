@@ -8,5 +8,5 @@
     "declaration": false,
     "declarationMap": false
   },
-  "include": ["src", "../../../plugins/**/*.ts"]
+  "include": ["src", "../../../plugins/**/*.ts", "../workbench/package.ts"]
 }

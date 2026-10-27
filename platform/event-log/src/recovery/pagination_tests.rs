@@ -18,45 +18,46 @@
  */
 
 use super::*;
+use rusqlite::params;
 
-fn page(db: &Connection, after: i64, limit: usize) -> (Vec<(String, i64)>, i32) {
-    let mut query = db.prepare(UNFINISHED_INVOCATIONS).unwrap();
-    let rows = query
-        .query_map(params![after, i64::try_from(limit).unwrap()], |r| {
-            Ok((r.get(3)?, r.get(4)?))
-        })
-        .unwrap()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    (rows, query.get_status(StatementStatus::VmStep))
+async fn page(db: &mut SqliteConnection, after: i64, limit: usize) -> (Vec<(String, i64)>, i32) {
+    inspect(db, move |db| {
+        let mut query = db.prepare(UNFINISHED_INVOCATIONS)?;
+        let rows = query
+            .query_map(params![after, i64::try_from(limit).unwrap()], |r| {
+                Ok((r.get(3)?, r.get(4)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((rows, query.get_status(StatementStatus::VmStep)))
+    })
+    .await
 }
 
-#[test]
-fn more_than_ten_thousand_openings_page_without_rescanning_or_skipping_deleted_pages() {
-    let mut db = database();
-    let transaction = db.transaction().unwrap();
+#[tokio::test]
+async fn more_than_ten_thousand_openings_page_without_rescanning_or_skipping_deleted_pages() {
+    let mut db = database().await;
+    let mut transaction = db.begin().await.unwrap();
     let mut initial_work = 0;
     for n in 0..10_017 {
-        append(
-            &transaction,
-            &format!("run-{n}"),
-            "invocation_opened",
-            None,
-            json!({}),
-        );
+        let invocation = format!("run-{n}");
+        crate::connection::worker_query(&mut transaction, move |worker| {
+            Box::pin(async move { append_worker(worker, &invocation, opening()).await })
+        })
+        .await
+        .unwrap();
         if n == 1023 {
-            initial_work = page(&transaction, 0, 64).1;
+            initial_work = page(&mut transaction, 0, 64).await.1;
         }
     }
-    transaction.commit().unwrap();
+    transaction.commit().await.unwrap();
     assert!(
-        page(&db, 0, 64).1 <= initial_work + 32,
+        page(&mut db, 0, 64).await.1 <= initial_work + 32,
         "page reads must not materialize every unfinished opening"
     );
     let mut cursor = 0;
     let mut seen = 0;
     loop {
-        let (rows, _) = page(&db, cursor, 64);
+        let (rows, _) = page(&mut db, cursor, 64).await;
         if rows.is_empty() {
             break;
         }
@@ -64,32 +65,29 @@ fn more_than_ten_thousand_openings_page_without_rescanning_or_skipping_deleted_p
         for (invocation, sequence) in rows {
             assert!(sequence > cursor);
             assert_eq!(invocation, format!("run-{seen}"));
-            append(
-                &db,
-                &invocation,
-                "invocation_ended",
-                None,
-                json!({"outcome":{"class":"host_interrupted"}}),
-            );
+            append(&mut db, &invocation, ended("host_interrupted")).await;
             cursor = sequence;
             seen += 1;
         }
     }
     assert_eq!(seen, 10_017);
-    assert!(page(&db, 0, 64).0.is_empty());
+    assert!(page(&mut db, 0, 64).await.0.is_empty());
 }
 
-#[test]
-fn imported_openings_do_not_hide_later_local_pages() {
-    let db = database();
+#[tokio::test]
+async fn imported_openings_do_not_hide_later_local_pages() {
+    let mut db = database().await;
     for n in 0..130 {
         let id = format!("import-{n}");
-        append(&db, &id, "invocation_opened", None, json!({}));
-        db.execute("INSERT INTO imported_invocations VALUES(?)", [&id])
+        append(&mut db, &id, opening()).await;
+        sqlx::query("INSERT INTO imported_invocations VALUES(?)")
+            .bind(&id)
+            .execute(&mut db)
+            .await
             .unwrap();
     }
-    append(&db, "local", "invocation_opened", None, json!({}));
-    assert_eq!(page(&db, 0, 1).0, vec![("local".into(), 131)]);
+    append(&mut db, "local", opening()).await;
+    assert_eq!(page(&mut db, 0, 1).await.0, vec![("local".into(), 131)]);
 }
 
 #[tokio::test]

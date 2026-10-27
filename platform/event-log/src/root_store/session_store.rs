@@ -628,11 +628,12 @@ impl SessionStore {
         &self,
         selection: SemanticSelection,
         policy: &str,
+        prior: Option<&PreparedView>,
     ) -> Result<PreparedBuild, StoreError> {
         self.check_session(&selection.session)?;
         self.scoped()
             .await?
-            .prepare_model_view(selection, policy)
+            .prepare_model_view(selection, policy, prior)
             .await
     }
 
@@ -1030,10 +1031,11 @@ impl SessionStore {
         view: &PreparedView,
         format: WireFormat,
         codec: &str,
+        prior: Option<&PreparedWireView>,
     ) -> Result<PreparedWireBuild, StoreError> {
         self.scoped()
             .await?
-            .prepare_wire_view(view, format, codec)
+            .prepare_wire_view(view, format, codec, prior)
             .await
     }
 

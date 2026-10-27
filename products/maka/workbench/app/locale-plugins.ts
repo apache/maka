@@ -20,6 +20,29 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const pluginMessages = {
+  'This deployment has no root UI selected.': [
+    'This deployment has no root UI selected.',
+    '当前部署没有选择根界面。',
+    '目前部署尚未選擇根介面。',
+  ],
+  'The selected root UI does not handle panels.': [
+    'The selected root UI does not handle panels.',
+    '当前根界面没有提供面板展示。',
+    '目前根介面未提供面板呈現。',
+  ],
+  Interface: ['Interface', '界面', '介面'],
+  'Choose interface': ['Choose interface', '选择界面', '選擇介面'],
+  'Search interfaces': ['Search interfaces', '搜索界面', '搜尋介面'],
+  'Search interfaces…': ['Search interfaces…', '搜索界面…', '搜尋介面…'],
+  'No matching interfaces.': ['No matching interfaces.', '没有匹配的界面。', '沒有符合的介面。'],
+  'Use interface {name}': ['Use interface {name}', '使用界面 {name}', '使用介面 {name}'],
+  'Interface selected.': ['Interface selected.', '已选择界面。', '已選擇介面。'],
+  'Check interface changes': ['Check interface changes', '检查界面更改', '檢查介面變更'],
+  'Abandon unconfirmed interface change': [
+    'Abandon unconfirmed interface change',
+    '放弃未确认的界面更改',
+    '放棄未確認的介面變更',
+  ],
   'Plugin services are not ready.': [
     'Plugin services are not ready.',
     '插件服务尚未就绪。',

@@ -126,6 +126,7 @@ mod tests {
                 0,
                 Input {
                     instances: BTreeMap::new(),
+                    ui: None,
                 },
                 Vec::new(),
                 Vec::new(),

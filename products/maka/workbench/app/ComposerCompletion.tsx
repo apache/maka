@@ -35,8 +35,8 @@ import {
   fileInvocation,
   referenceEdit,
   validSelection,
-} from './composerCompletion.ts';
-import type { CompletionToken, Selection } from './composerCompletion.ts';
+} from './composerCompletionSyntax.ts';
+import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
 import { createComposerPaste } from './composerPaste';

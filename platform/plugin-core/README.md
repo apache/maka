@@ -21,9 +21,11 @@
 
 [简体中文](README.zh-CN.md)
 
-Defines package declarations, contracts and a single deployment source containing Host, UI and composition instances. `plan` validates the entire graph and stable identities; `runtime` owns Host registrations, UI consumer bindings, admitted work and retirement. Enabled UI instances are projected from that same source and run in the client’s shared NSH workbench.
+Defines package declarations, contracts and a single deployment source containing Host, UI and composition instances. `plan` validates the entire graph and stable identities; `runtime` owns Host registrations, UI consumer bindings, admitted work and retirement. Enabled UI instances are projected from that same source and run in the client's shared NSH runtime. Host Runtime does not execute UI code.
 
-Packages declare `host`, `ui` and/or `composition`. Each source node selects one through `usePackage`; installing a package alone does not enable it. UI entries name an NSH module, service imports and command, panel, settings or tool-renderer contributions. UI consumer registration resolves those imports without executing UI code on the Host.
+Packages declare `host`, `ui` and/or `composition`. Each source node selects one through `usePackage`; installing a package alone does not enable it. UI entries name an NSH module, service imports and root, command, panel, settings or tool-renderer contributions. UI consumer registration resolves those imports.
+
+`Input.ui` is the deployment's only product root selection: `{path, id}` identifies an enabled UI instance and one of its `UiContribution::Root` contributions. `None` selects headless operation. A `Template` defines a reusable instance graph and does not own the product root. Any UI package can provide the complete product UI, including replacing the default Maka Workbench.
 
 The kernel has no Agent policy or native layout vocabulary. A binding selects an export that satisfies an import; the receiving Host still checks permission when a call arrives.
 

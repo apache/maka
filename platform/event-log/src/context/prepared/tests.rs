@@ -142,7 +142,7 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     }
     async fn publish(log: &EventLog, through: u64, generation: &str) -> PreparedView {
         let build = log
-            .prepare_model_view(selection(through), "single-semantic-read")
+            .prepare_model_view(selection(through), "single-semantic-read", None)
             .await
             .unwrap();
         loop {
@@ -294,8 +294,9 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     const NODE_SQL: &str = "SELECT node_json FROM context_prepared_nodes WHERE id=?";
     const GROUP_SQL: &str = "SELECT group_json FROM context_prepared_groups WHERE id=?";
     let root = view.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::seek(connection, root.as_deref(), 1).await?;
                 Ok(())
@@ -309,10 +310,16 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     );
     first.unwrap().unwrap();
     second.unwrap().unwrap();
-    let before = log.sqlite_resource_stats().await.unwrap();
+    let before = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let root = view.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::seek(connection, root.as_deref(), 1).await?;
                 Ok(())
@@ -320,7 +327,12 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
         })
         .await
         .unwrap();
-    let sought = log.sqlite_resource_stats().await.unwrap();
+    let sought = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let node_reads = run_delta(&before, &sought, NODE_SQL);
     assert!(node_reads > 0);
     assert_eq!(run_delta(&before, &sought, GROUP_SQL), 1);
@@ -331,7 +343,12 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
         .unwrap();
     assert_eq!(read.rows, middle.rows);
     assert_eq!(read.manifest, middle.manifest);
-    let after = log.sqlite_resource_stats().await.unwrap();
+    let after = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let actual_node_reads = run_delta(&sought, &after, NODE_SQL);
     let actual_group_reads = run_delta(&sought, &after, GROUP_SQL);
     assert!(actual_node_reads <= node_reads);
@@ -350,10 +367,11 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     assert_eq!(changed.rows[0].row.revision, 260);
     assert_eq!(changed.manifest, frozen_manifest("new", "1"));
     let registry = log.prepared.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, in_flight| {
             Box::pin(async move {
-                while gc::maintain(connection, &registry).await? {}
+                while gc::maintain(connection, &registry, in_flight).await? {}
                 Ok(())
             })
         })
@@ -394,8 +412,9 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     }
 
     let root = sparse.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::find(connection, root.as_deref(), 1000).await?;
                 Ok(())
@@ -409,10 +428,16 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     );
     first.unwrap();
     second.unwrap();
-    let before = log.sqlite_resource_stats().await.unwrap();
+    let before = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let root = sparse.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::find(connection, root.as_deref(), 1000).await?;
                 Ok(())
@@ -420,14 +445,24 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
         })
         .await
         .unwrap();
-    let found = log.sqlite_resource_stats().await.unwrap();
+    let found = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let node_reads = run_delta(&before, &found, NODE_SQL);
     assert!(node_reads > 0);
     assert_eq!(run_delta(&before, &found, GROUP_SQL), 1);
     let read = log.prepared_view_group(&sparse, &group).await.unwrap();
     assert_eq!(read.rows, sparse_read.rows);
     assert_eq!(read.manifest, sparse_read.manifest);
-    let after = log.sqlite_resource_stats().await.unwrap();
+    let after = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let actual_node_reads = run_delta(&found, &after, NODE_SQL);
     let actual_group_reads = run_delta(&found, &after, GROUP_SQL);
     assert!(actual_node_reads <= node_reads);
@@ -491,7 +526,7 @@ async fn encode(
     values: &BTreeMap<String, Vec<Message>>,
 ) -> (PreparedWireView, usize) {
     let build = log
-        .prepare_wire_view(view, format, "fixture-v1")
+        .prepare_wire_view(view, format, "fixture-v1", None)
         .await
         .unwrap();
     let mut encoded = 0;
@@ -550,11 +585,11 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         ("3".into(), vec![Message::user("bc")]),
     ]);
     let build = log
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     let concurrent = log
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     let captured_groups = log
@@ -580,7 +615,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         measure::prompt_breakdown(&values.values().flatten().cloned().collect::<Vec<_>>())
     );
     let slow_wire = log
-        .prepare_wire_view(&view, WireFormat::Responses, "fixture-v1")
+        .prepare_wire_view(&view, WireFormat::Responses, "fixture-v1", None)
         .await
         .unwrap();
     let slow_wire_groups = log
@@ -604,7 +639,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
     );
     let old_bytes = bytes(&log, &wire).await;
     let retry = log
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &retry, &values).await, 0);
@@ -612,7 +647,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
     assert_eq!(encoded, 0);
     seed(&log, 4, 4, false).await;
     let next = log
-        .prepare_model_view(selection(4), "stable-render")
+        .prepare_model_view(selection(4), "stable-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &next, &values).await, 1);
@@ -645,7 +680,8 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         .unwrap();
     assert!(seek.chunks[0].item_start);
     let maximum: i64 = log
-        .connection
+        .prepared_store()
+        .unwrap()
         .read_interruptible(|connection| {
             Box::pin(async move {
                 Ok(
@@ -673,7 +709,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
     );
     assert!(reopened.prepared_prefix_identity(&view, 1).await.is_err());
     let retry = reopened
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     assert_eq!(render(&reopened, &retry, &values).await, 2);
@@ -717,7 +753,7 @@ async fn changed_mcp_presence_reencodes_only_referenced_group_and_keeps_old_root
     seed(&log, 3, 3, true).await;
     let mut values = BTreeMap::from([("1".into(), vec![call()]), ("3".into(), vec![result()])]);
     let build = log
-        .prepare_model_view(selection(3), "anthropic-render")
+        .prepare_model_view(selection(3), "anthropic-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &values).await, 2);
@@ -745,7 +781,7 @@ async fn changed_mcp_presence_reencodes_only_referenced_group_and_keeps_old_root
         }],
     );
     let next = log
-        .prepare_model_view(selection(4), "anthropic-render")
+        .prepare_model_view(selection(4), "anthropic-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &next, &values).await, 1);
@@ -774,17 +810,17 @@ async fn out_of_order_cut_completion_never_rolls_back_the_reusable_head() {
     }
     let values = BTreeMap::new();
     let base = log
-        .prepare_model_view(selection(1), "policy")
+        .prepare_model_view(selection(1), "policy", None)
         .await
         .unwrap();
     render(&log, &base, &values).await;
     log.finish_prepared(&base).await.unwrap();
     let low = log
-        .prepare_model_view(selection(6), "policy")
+        .prepare_model_view(selection(6), "policy", None)
         .await
         .unwrap();
     let high = log
-        .prepare_model_view(selection(8), "policy")
+        .prepare_model_view(selection(8), "policy", None)
         .await
         .unwrap();
     render(&log, &high, &values).await;
@@ -794,7 +830,7 @@ async fn out_of_order_cut_completion_never_rolls_back_the_reusable_head() {
     assert_eq!(low_view.message_count, 2);
     assert_eq!(high_view.message_count, 3);
     let next = log
-        .prepare_model_view(selection(9), "policy")
+        .prepare_model_view(selection(9), "policy", None)
         .await
         .unwrap();
     assert_eq!(next.previous_revision, 8);
@@ -818,7 +854,7 @@ async fn mcp_role_boundary_and_selection_changes_bind_cached_wire_context() {
         ("3".into(), vec![result()]),
     ]);
     let build = log
-        .prepare_model_view(selection(3), "anthropic")
+        .prepare_model_view(selection(3), "anthropic", None)
         .await
         .unwrap();
     render(&log, &build, &values).await;
@@ -837,7 +873,7 @@ async fn mcp_role_boundary_and_selection_changes_bind_cached_wire_context() {
         }],
     );
     let build = log
-        .prepare_model_view(selection(4), "anthropic")
+        .prepare_model_view(selection(4), "anthropic", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &values).await, 1);
@@ -858,7 +894,10 @@ async fn mcp_role_boundary_and_selection_changes_bind_cached_wire_context() {
     // The cached result must be selected by empty prior-presence context.
     let mut cut = selection(4);
     cut.after = 1;
-    let build = log.prepare_model_view(cut, "anthropic").await.unwrap();
+    let build = log
+        .prepare_model_view(cut, "anthropic", None)
+        .await
+        .unwrap();
     assert_eq!(render(&log, &build, &values).await, 2);
     let cut = log.finish_prepared(&build).await.unwrap();
     assert!(
@@ -1052,13 +1091,13 @@ async fn bounded_worker_wire_pages_preserve_midgroup_pieces_and_metadata_only_it
         ("3".into(), vec![Message::user("last")]),
     ]);
     let build = log
-        .prepare_model_view(selection(3), "worker-pages")
+        .prepare_model_view(selection(3), "worker-pages", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &values).await, 3);
     let view = log.finish_prepared(&build).await.unwrap();
     let build = log
-        .prepare_wire_view(&view, WireFormat::Responses, "worker-pages")
+        .prepare_wire_view(&view, WireFormat::Responses, "worker-pages", None)
         .await
         .unwrap();
     let records = vec![
@@ -1235,8 +1274,8 @@ async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {
         seed(&log, sequence, sequence, false).await;
     }
     let (a, b) = tokio::join!(
-        log.prepare_model_view(selection(130), "paged"),
-        log.prepare_model_view(selection(130), "paged")
+        log.prepare_model_view(selection(130), "paged", None),
+        log.prepare_model_view(selection(130), "paged", None)
     );
     let a = a.unwrap();
     let b = b.unwrap();
@@ -1249,8 +1288,8 @@ async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {
     assert_eq!(first.identity, second.identity);
     assert_eq!(first.message_count, 128);
     let (a, b) = tokio::join!(
-        log.prepare_wire_view(&first, WireFormat::Responses, "fixture-v1"),
-        log.prepare_wire_view(&second, WireFormat::Responses, "fixture-v1")
+        log.prepare_wire_view(&first, WireFormat::Responses, "fixture-v1", None),
+        log.prepare_wire_view(&second, WireFormat::Responses, "fixture-v1", None)
     );
     let a = a.unwrap();
     let b = b.unwrap();
@@ -1265,7 +1304,7 @@ async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {
     // Cold wire discovery must include both zero-width nodes, even though they
     // are absent from message-offset pages and require no encoder invocation.
     let id = a.id.clone();
-    let staged:i64=log.connection.run(move |db|Box::pin(async move {Ok(sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_wire_dirty WHERE view_id=? AND content IS NOT NULL").bind(id).fetch_one(db).await?)})).await.unwrap();
+    let staged:i64=log.prepared_store().unwrap().run(move |db, _in_flight|Box::pin(async move {Ok(sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_wire_dirty WHERE view_id=? AND content IS NOT NULL").bind(id).fetch_one(db).await?)})).await.unwrap();
     assert_eq!(staged, 130);
     log.close().await.unwrap();
 }
@@ -1421,13 +1460,13 @@ async fn prior_mcp_lookup_seeks_current_content_without_materializing_old_versio
         ("4".into(), vec![result()]),
     ]);
     let build = log
-        .prepare_model_view(selection(4), "prior-bounded")
+        .prepare_model_view(selection(4), "prior-bounded", None)
         .await
         .unwrap();
     render(&log, &build, &values).await;
     let original = log.finish_prepared(&build).await.unwrap();
     let measured_view = original.clone();
-    let counts=log.connection.run(move |db|Box::pin(async move {
+    let counts=log.prepared_store().unwrap().run(move |db, _in_flight|Box::pin(async move {
         let view=measured_view;
         let content=tree::content_id(db,view.root.as_deref(),1).await?;
         // Same current content has two real producers, one before the role
@@ -1480,7 +1519,7 @@ async fn prior_mcp_lookup_seeks_current_content_without_materializing_old_versio
         ],
     );
     let build = log
-        .prepare_model_view(selection(5), "prior-bounded")
+        .prepare_model_view(selection(5), "prior-bounded", None)
         .await
         .unwrap();
     render(&log, &build, &values).await;
@@ -1529,8 +1568,9 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         })).await.unwrap();
         let counter = Arc::new(AtomicU64::new(0));
         let observed = counter.clone();
-        log.connection
-            .run(move |db| {
+        log.prepared_store()
+            .unwrap()
+            .run(move |db, _in_flight| {
                 Box::pin(async move {
                     db.lock_handle().await?.set_progress_handler(1, move || {
                         observed.fetch_add(1, Ordering::Relaxed);
@@ -1549,11 +1589,12 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         // Count the complete production discovery, including every resumable
         // transaction and neighbor call, before rendering any payload.
         let build = log
-            .prepare_model_view(selected, "window-growth")
+            .prepare_model_view(selected, "window-growth", None)
             .await
             .unwrap();
-        log.connection
-            .run(|db| {
+        log.prepared_store()
+            .unwrap()
+            .run(|db, _in_flight| {
                 Box::pin(async move {
                     db.lock_handle().await?.remove_progress_handler();
                     Ok(())
@@ -1578,8 +1619,9 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         let measured = counter.load(Ordering::Relaxed);
         let cleanup = Arc::new(AtomicU64::new(0));
         let observed = cleanup.clone();
-        log.connection
-            .run(move |db| {
+        log.prepared_store()
+            .unwrap()
+            .run(move |db, _in_flight| {
                 Box::pin(async move {
                     db.lock_handle().await?.set_progress_handler(1, move || {
                         observed.fetch_add(1, Ordering::Relaxed);
@@ -1592,10 +1634,11 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
             .unwrap();
         drop(build);
         let registry = log.prepared.clone();
-        log.connection
-            .run(move |db| {
+        log.prepared_store()
+            .unwrap()
+            .run(move |db, in_flight| {
                 Box::pin(async move {
-                    while gc::maintain(db, &registry).await? {}
+                    while gc::maintain(db, &registry, in_flight).await? {}
                     db.lock_handle().await?.remove_progress_handler();
                     let remaining: i64 =
                         sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_dirty")
@@ -1628,3 +1671,12 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         );
     }
 }
+
+#[path = "active_head_eviction_tests.rs"]
+mod active_head_eviction_tests;
+
+#[path = "wire_storage_tests.rs"]
+mod wire_storage_tests;
+
+#[path = "newspace_reuse_tests.rs"]
+mod newspace_reuse_tests;

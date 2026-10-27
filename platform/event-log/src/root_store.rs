@@ -159,7 +159,8 @@ impl SessionStore {
 }
 
 impl RootStore {
-    /// Observe each original owner once: control first, then partition order.
+    /// Observe canonical owners once: control first, then partition order.
+    /// Disposable prepared actors are excluded.
     pub async fn sqlite_resource_stats(
         &self,
     ) -> Result<Vec<crate::connection::ConnectionResourceStats>, StoreError> {
@@ -262,9 +263,9 @@ impl RootStore {
         self.closed.store(true, Ordering::Release);
         self.gates.close();
         if self.lifecycle.is_none() {
-            self.control.connection.request_shutdown();
+            self.control.request_shutdown();
             for partition in &self.partitions {
-                partition.connection.request_shutdown();
+                partition.request_shutdown();
             }
         }
     }

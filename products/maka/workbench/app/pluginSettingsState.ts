@@ -33,6 +33,8 @@ import type {
   ManagementResultForDeploymentRef,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { SettingsOperations } from './settingsOperations';
+import { createRootUiSettings } from './rootUiSettingsState';
+import { pluginContext } from './plugins/context';
 
 type Path = InstanceSettingsRead['path'];
 type Inventory = { source: DeploymentRef; instances: ManagedInstance[] };
@@ -75,6 +77,8 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
   // while the loaded fields and separately owned editor remain usable.
   let paging: 'ready' | 'loading' | 'failed' = 'ready';
   const visible = () => alive && enabled && active();
+  const runtime = pluginContext()!;
+  const rootUi = createRootUiSettings(runtime, runtime.context, visible);
   const action = (): PluginAction => ({
     view: view(),
     revision: fields()?.source.revision ?? inventory()?.source.revision ?? null,
@@ -218,6 +222,7 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
     cancelRead();
   });
   return {
+    rootUi,
     inventory,
     selected,
     fields,
@@ -241,6 +246,7 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
     activate() {
       if (!alive || enabled) return;
       enabled = true;
+      rootUi.activate();
       cancelRead();
       if (!editor()) void load();
     },

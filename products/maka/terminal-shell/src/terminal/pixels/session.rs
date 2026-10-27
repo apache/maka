@@ -138,7 +138,10 @@ fn run(
             let mut admitted = false;
             let mut disposition = None;
             if let Some(inbox) = &mut state.pixels {
-                if inbox.capabilities.protocol == Some(super::probe::Protocol::Sixel) {
+                if matches!(
+                    inbox.capabilities.protocol,
+                    Some(super::probe::Protocol::Sixel | super::probe::Protocol::Kitty)
+                ) {
                     disposition = if failed {
                         Some("error")
                     } else if stopping {
@@ -208,9 +211,6 @@ fn run(
     platform
         .set_viewport(viewport, scale_factor)
         .map_err(|error| error.to_string())?;
-    config
-        .assets
-        .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
     let mut reloading = config
         .context
         .get::<maka_workbench::reload::UiReload>()
@@ -320,12 +320,16 @@ fn run(
                 // readback or an old output transaction is still finishing.
                 let mut state = presentation.state.lock().unwrap();
                 let inbox = state.pixels.as_ref().unwrap();
-                let disposition = if caps.protocol == Some(super::probe::Protocol::Sixel)
-                    && state.error.is_some()
+                let disposition = if matches!(
+                    caps.protocol,
+                    Some(super::probe::Protocol::Sixel | super::probe::Protocol::Kitty)
+                ) && state.error.is_some()
                 {
                     Some("error")
-                } else if caps.protocol == Some(super::probe::Protocol::Sixel)
-                    && (state.quit || presentation.stop.load(Ordering::Acquire))
+                } else if matches!(
+                    caps.protocol,
+                    Some(super::probe::Protocol::Sixel | super::probe::Protocol::Kitty)
+                ) && (state.quit || presentation.stop.load(Ordering::Acquire))
                 {
                     Some("cancel")
                 } else if resize.is_some()
@@ -353,8 +357,10 @@ fn run(
                     if disposition.is_none() {
                         let at = Instant::now();
                         trace.record(&offer.token, offer.geometry, "published", at, at);
-                    } else if caps.protocol == Some(super::probe::Protocol::Sixel)
-                        && let Some(outcome) = disposition
+                    } else if matches!(
+                        caps.protocol,
+                        Some(super::probe::Protocol::Sixel | super::probe::Protocol::Kitty)
+                    ) && let Some(outcome) = disposition
                     {
                         trace.discard(&offer.token, offer.geometry, outcome);
                     }
@@ -667,19 +673,12 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
         if state.quit || state.error.is_some() {
             return false;
         }
-        let slots = state.pixel_probe.slots;
         let tracing = state.trace.is_some();
         let inbox = state.pixels.as_mut().unwrap();
         let Some(candidate) = inbox.take_candidate() else {
             return false;
         };
-        let previous = inbox.last_fully_written_image;
         let same_viewport_flushed = inbox.last_fully_written_geometry == Some(candidate.geometry);
-        let image = if previous == Some(slots.first) {
-            slots.second
-        } else {
-            slots.first
-        };
         let capabilities = inbox.capabilities;
         if let Some(trace) = &mut state.trace {
             let at = Instant::now();
@@ -691,19 +690,12 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
                 at,
             );
         }
-        (
-            candidate,
-            image,
-            previous,
-            same_viewport_flushed,
-            capabilities,
-            tracing,
-        )
+        (candidate, same_viewport_flushed, capabilities, tracing)
     };
     let presentation = presentation.clone();
     background
         .spawn(async move {
-            let (candidate, image, previous, same_viewport_flushed, caps, tracing) = work;
+            let (candidate, same_viewport_flushed, caps, tracing) = work;
             let token = candidate.frame.token();
             let geometry = candidate.geometry;
             let size = caps.size;
@@ -760,7 +752,7 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
                     started = tracing.then(Instant::now);
                     let result = match caps.protocol.expect("negotiated pixel transport") {
                         Protocol::Kitty => nsh_gpui_terminal::kitty::KittyFrame::encode(
-                            &frame, image, previous, size.cols, size.rows,
+                            &frame, size.cols, size.rows,
                         )
                         .map(WireFrame::Kitty),
                         protocol @ (Protocol::Sixel | Protocol::Iterm2) => InlineFrame::encode(
@@ -786,7 +778,7 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
             let bytes = if tracing {
                 result.as_ref().and_then(|result| result.as_ref().ok()).map(
                     |encoded| match &encoded.frame {
-                        WireFrame::Kitty(frame) => frame.wire().len(),
+                        WireFrame::Kitty(frame) => frame.payload_len(),
                         WireFrame::Inline(frame) => frame.bytes().len(),
                     },
                 )
@@ -803,7 +795,7 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
                 Some(Ok(encoded)) if !discarded => Some(encoded),
                 Some(Err(error))
                     if !discarded
-                        || (caps.protocol == Some(Protocol::Sixel)
+                        || (matches!(caps.protocol, Some(Protocol::Sixel | Protocol::Kitty))
                             && !state.quit
                             && !presentation.stop.load(Ordering::Acquire)) =>
                 {
@@ -827,7 +819,6 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
             if let (Some(start), Some(end), Some(trace)) = (started, ended, &mut state.trace) {
                 let sample = trace.record(&token, geometry, "codec", start, end);
                 sample.bytes = bytes;
-                sample.image = (caps.protocol == Some(Protocol::Kitty)).then_some(image);
                 sample.outcome = if failed {
                     "error"
                 } else if discarded {
@@ -848,7 +839,7 @@ fn encode_pending(presentation: &Presentation, background: &gpui::BackgroundExec
                     sample.pending_frame = Some(replacement.sequence());
                 }
                 if let Some(outcome) = disposition
-                    && caps.protocol == Some(Protocol::Sixel)
+                    && matches!(caps.protocol, Some(Protocol::Sixel | Protocol::Kitty))
                 {
                     trace.discard(&token, geometry, outcome);
                 }

@@ -129,6 +129,7 @@ fn packages(source: &Path) -> (Input, Vec<Package>) {
         overrides: vec![],
     };
     let input = Input {
+        ui: None,
         instances: BTreeMap::from([
             (
                 "outcomes".into(),

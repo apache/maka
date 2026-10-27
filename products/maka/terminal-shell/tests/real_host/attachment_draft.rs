@@ -18,10 +18,9 @@
  */
 
 use super::*;
+use maka_packages::Package;
 use maka_ui_support::{budget::NativeBudget, file::read_selected};
-use maka_workbench::bindings::Bindings;
-use nsh_engine::Bundle;
-use nsh_platform_tui::AppOptions;
+use std::collections::BTreeMap;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_late_original_upload_read_cannot_restore_a_removed_draft_attachment() {
@@ -56,26 +55,44 @@ async fn a_late_original_upload_read_cannot_restore_a_removed_draft_attachment()
                 _ => None,
             })
             .unwrap();
-        let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
-        let sets = vec![
-            nsh_base::registry(),
-            bindings.registry(Some(fixture.session.clone())),
-        ];
         // The payload is an actual recorded Host operation. Only delivery of its
         // already-started read is held, so this exercises the observer race
         // without inventing an upload result or a second persistence authority.
-        let source = format!(
-            "const attachmentDraftFixture = {};\n{}",
-            json!({"original": original, "reserved": reserved, "attachment": attachment}),
-            include_str!(concat!(env!("OUT_DIR"), "/attachment-draft-fixture.js")),
-        );
-        let mut view = AppView::new(AppOptions {
-            size: (100, 24),
-            data_dir: Some(fixture.directory.path().join("draft-nsh")),
-            ui_sets: Some(sets),
-            ..Default::default()
-        });
-        view.load(Bundle::source(source).into()).unwrap();
+        let package = Package::new(BTreeMap::from([
+            (
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion":1,
+                    "id":"test.nsh.attachment-draft",
+                    "application":{"ui":{
+                        "module":"ui.js",
+                        "configuration":{
+                            "type":"object",
+                            "properties":{"original":{},"reserved":{},"attachment":{}},
+                            "required":["original","reserved","attachment"],
+                            "additionalProperties":false
+                        },
+                        "imports":{},
+                        "contributions":{"root":{"kind":"root"}}
+                    }}
+                }))
+                .unwrap(),
+            ),
+            (
+                "ui.js".into(),
+                include_bytes!(concat!(env!("OUT_DIR"), "/attachment-draft-fixture.js")).to_vec(),
+            ),
+        ]))
+        .unwrap();
+        fixture
+            .install_ui_root(
+                package,
+                json!({"original": original, "reserved": reserved, "attachment": attachment}),
+            )
+            .await;
+        let (mut view, bindings) =
+            fixture.view(fixture.client().await, Some(fixture.session.clone()));
+        view.resize(100, 24);
         wait_view(&mut view, |screen| {
             screen.contains("files:0") && screen.contains("Uploading attachments")
         })

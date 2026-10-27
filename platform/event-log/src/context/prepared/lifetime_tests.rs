@@ -23,9 +23,10 @@ async fn drain(log: &EventLog) {
     for _ in 0..10_000 {
         let registry = log.prepared.clone();
         let more = log
-            .connection
-            .run(move |connection| {
-                Box::pin(async move { gc::maintain(connection, &registry).await })
+            .prepared_store()
+            .unwrap()
+            .run(move |connection, in_flight| {
+                Box::pin(async move { gc::maintain(connection, &registry, in_flight).await })
             })
             .await
             .unwrap();
@@ -36,7 +37,8 @@ async fn drain(log: &EventLog) {
     panic!("prepared collector did not quiesce");
 }
 async fn counts(log: &EventLog) -> (i64, i64, i64, i64) {
-    log.connection
+    log.prepared_store()
+        .unwrap()
         .read_interruptible(|connection| {
             Box::pin(async move {
                 Ok(sqlx::query_as(
@@ -64,7 +66,7 @@ async fn idle_previous_wire_survives_collection_until_incremental_successor_fini
     for sequence in 1..=32 {
         seed(&log, sequence, sequence, false).await;
         let build = log
-            .prepare_model_view(selection(sequence), "stable")
+            .prepare_model_view(selection(sequence), "stable", None)
             .await
             .unwrap();
         assert_eq!(render(&log, &build, &values).await, 1);
@@ -105,7 +107,7 @@ async fn codec_churn_over_identical_bytes_keeps_only_cached_and_live_roots() {
         .unwrap();
     seed(&log, 1, 1, false).await;
     let build = log
-        .prepare_model_view(selection(1), "stable")
+        .prepare_model_view(selection(1), "stable", None)
         .await
         .unwrap();
     render(&log, &build, &BTreeMap::new()).await;
@@ -115,7 +117,7 @@ async fn codec_churn_over_identical_bytes_keeps_only_cached_and_live_roots() {
     for variant in 0..128 {
         let codec = format!("codec-{variant}");
         let build = log
-            .prepare_wire_view(&view, WireFormat::Responses, &codec)
+            .prepare_wire_view(&view, WireFormat::Responses, &codec, None)
             .await
             .unwrap();
         let mut wire = encoded_wire(&[Message::user("1")], WireFormat::Responses, "ordinary");
@@ -151,7 +153,8 @@ async fn cancelled_accepted_build_releases_its_unpublished_roots() {
     seed(&log, 1, 1, false).await;
     let (entered, entry) = tokio::sync::oneshot::channel();
     let (release, gate) = tokio::sync::oneshot::channel();
-    let mut block = Box::pin(log.connection.run(move |_| {
+    let prepared = log.prepared_store().unwrap();
+    let mut block = Box::pin(prepared.run(move |_, _in_flight| {
         Box::pin(async move {
             entered.send(()).unwrap();
             gate.await.unwrap();
@@ -160,15 +163,16 @@ async fn cancelled_accepted_build_releases_its_unpublished_roots() {
     }));
     assert!(futures_util::poll!(&mut block).is_pending());
     entry.await.unwrap();
-    let mut cancelled = Box::pin(log.prepare_model_view(selection(1), "cancelled"));
+    let mut cancelled = Box::pin(log.prepare_model_view(selection(1), "cancelled", None));
     assert!(futures_util::poll!(&mut cancelled).is_pending());
     drop(cancelled);
     release.send(()).unwrap();
     block.await.unwrap();
     // This serialized job follows the accepted cancelled request. Its result's
     // Drop has run even though no observer ever acquired the PreparedBuild.
-    log.connection
-        .run(|_| Box::pin(async { Ok(()) }))
+    log.prepared_store()
+        .unwrap()
+        .run(|_, _in_flight| Box::pin(async { Ok(()) }))
         .await
         .unwrap();
     drain(&log).await;
@@ -182,8 +186,9 @@ async fn private_cache_files_follow_real_close_and_canonical_durability_is_uncha
     let path = directory.path().join("events.sqlite");
     let log = EventLog::open(&path).await.unwrap();
     let (main_sync, cache_sync, vacuum, cache_path): (i64, i64, i64, String) = log
-        .connection
-        .run(|connection| {
+        .prepared_store()
+        .unwrap()
+        .run(|connection, _in_flight| {
             Box::pin(async move {
                 let main = sqlx::query_scalar("PRAGMA main.synchronous")
                     .fetch_one(&mut *connection)
@@ -262,7 +267,7 @@ async fn empty_groups_and_large_manifests_have_nonzero_cache_weight() {
 }
 
 #[tokio::test]
-async fn cancelled_partial_assembly_releases_disk_frontier_and_staging() {
+async fn cancelled_partial_assembly_releases_execution_frontier_and_staging() {
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("events.sqlite"))
         .await
@@ -271,7 +276,7 @@ async fn cancelled_partial_assembly_releases_disk_frontier_and_staging() {
         seed(&log, sequence, sequence, false).await;
     }
     let build = log
-        .prepare_model_view(selection(130), "cancel-frontier")
+        .prepare_model_view(selection(130), "cancel-frontier", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &BTreeMap::new()).await, 130);
@@ -280,19 +285,22 @@ async fn cancelled_partial_assembly_releases_disk_frontier_and_staging() {
         let id = build.id.clone();
         let lease = build.lease.clone();
         let (ready, frames, nodes): (bool, i64, i64) = log
-            .connection
-            .run(move |db| {
+            .prepared_store()
+            .unwrap()
+            .run(move |db, in_flight| {
                 Box::pin(async move {
                     let _lease = lease;
-                    let mut tx = db.begin().await?;
-                    let ready = assembly::advance(&mut tx, assembly::Kind::Logical, &id).await?;
-                    let frames = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_frames")
-                        .fetch_one(&mut *tx)
-                        .await?;
+                    let ready =
+                        assembly::advance(db, in_flight, assembly::Kind::Logical, &id).await?;
+                    let frames = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM context_prepared_generation_nodes",
+                    )
+                    .fetch_one(&mut *db)
+                    .await?;
                     let nodes = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_nodes")
-                        .fetch_one(&mut *tx)
+                        .fetch_one(&mut *db)
                         .await?;
-                    tx.commit().await?;
+                    gc::collect_unreachable(db).await?;
                     Ok((ready, frames, nodes))
                 })
             })
@@ -307,10 +315,17 @@ async fn cancelled_partial_assembly_releases_disk_frontier_and_staging() {
     assert!(saw_frontier);
     drop(build);
     drain(&log).await;
-    let remaining:(i64,i64,i64,i64,i64)=log.connection.run(|db|Box::pin(async move {
-        Ok(sqlx::query_as("SELECT (SELECT COUNT(*) FROM context_prepared_frames),(SELECT COUNT(*) FROM context_prepared_assembly),(SELECT COUNT(*) FROM context_prepared_dirty),(SELECT COUNT(*) FROM context_prepared_nodes),(SELECT COUNT(*) FROM context_prepared_groups)").fetch_one(db).await?)
-    })).await.unwrap();
-    assert_eq!(remaining, (0, 0, 0, 0, 0));
+    let (remaining, execution_states): ((i64, i64, i64, i64), usize) = log
+        .prepared_store().unwrap()
+        .run(|db, in_flight| Box::pin(async move {
+            let remaining = sqlx::query_as("SELECT (SELECT COUNT(*) FROM context_prepared_generation_nodes),(SELECT COUNT(*) FROM context_prepared_dirty),(SELECT COUNT(*) FROM context_prepared_nodes),(SELECT COUNT(*) FROM context_prepared_groups)").fetch_one(db).await?;
+            Ok((remaining, in_flight.generations.len()))
+        })).await.unwrap();
+    assert_eq!(remaining, (0, 0, 0, 0));
+    assert_eq!(
+        execution_states, 0,
+        "cancelled generations must release their execution state"
+    );
     log.close().await.unwrap();
 }
 
@@ -323,7 +338,12 @@ async fn startup_releases_schema_programs_and_preserves_wire_after_reopen() {
     let values = BTreeMap::from([("1".into(), vec![message])]);
     for reopened in [false, true] {
         let log = EventLog::open(&path).await.unwrap();
-        let cold = log.sqlite_resource_stats().await.unwrap();
+        let cold = log
+            .prepared_store()
+            .unwrap()
+            .resource_stats()
+            .await
+            .unwrap();
         assert!(
             cold.readers.iter().all(Option::is_none),
             "cold observations must not start readers"
@@ -352,7 +372,7 @@ async fn startup_releases_schema_programs_and_preserves_wire_after_reopen() {
             seed(&log, 1, 1, false).await;
         }
         let build = log
-            .prepare_model_view(selection(1), "startup")
+            .prepare_model_view(selection(1), "startup", None)
             .await
             .unwrap();
         assert_eq!(render(&log, &build, &values).await, 1);
@@ -360,7 +380,12 @@ async fn startup_releases_schema_programs_and_preserves_wire_after_reopen() {
         let (wire, encoded) = encode(&log, &view, WireFormat::Responses, &values).await;
         assert_eq!(encoded, 1);
         assert_eq!(bytes(&log, &wire).await, expected);
-        let used = log.sqlite_resource_stats().await.unwrap();
+        let used = log
+            .prepared_store()
+            .unwrap()
+            .resource_stats()
+            .await
+            .unwrap();
         assert_eq!(
             used.writer.connection_id, cold.writer.connection_id,
             "clearing setup statements keeps the original physical owner"

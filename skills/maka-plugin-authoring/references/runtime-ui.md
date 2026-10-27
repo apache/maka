@@ -19,7 +19,7 @@
 
 # Change the connected workbench
 
-The connected Host owns one deployment source containing Host, UI and composition instances. Both shells discover the enabled UI instances from that source. Installing immutable package bytes only makes the package available; inserting and enabling a UI instance publishes its contributions.
+The connected Host owns one deployment source containing Host, UI and composition instances. Both shells discover enabled UI instances and mount the root selected by `source.input.ui`. Installing immutable package bytes only makes the package available; inserting and enabling a UI instance publishes its contributions.
 
 Use current tool metadata and generated input types. The default product provides direct management tools:
 
@@ -32,7 +32,9 @@ Use current tool metadata and generated input types. The default product provide
 
 Read the current source first, retain its `expectedRevision`, and preserve unrelated instance UUIDs. `usePackage` explicitly selects `host`, `ui` or `composition`. A UI entry can declare service `imports`, and the UI instance's `bindings` select Host providers in this same source. Pure UI plugins need no imports or placeholder Host service. Package and instance configuration still follow their declared schema.
 
-For authored UI, compile TSX with `maka application build-ui --entry ENTRY --output DIRECTORY`, stage its module and assets in the package, and install those exact bytes. Return to the source after installation before inserting an instance, because installation changes its revision. The workbench observes committed source changes and loads the enabled contribution when needed. A successful commit establishes desired state; verify the actual command, panel, settings page or tool output afterward.
+For authored UI, compile TSX with `maka application build-ui --entry ENTRY --output DIRECTORY`, stage its module and assets in the package, and install those exact bytes. Return to the source after installation before inserting an instance, because installation changes its revision. The workbench observes committed source changes and loads the enabled contribution when needed. A successful commit establishes desired state; verify the actual root application, command, panel, settings page or tool output afterward.
+
+To replace the entire application, include a `root` contribution in the UI entry and set the source's `ui` to `{ path: ["instance-alias"], id: "root-id" }` using the current typed source. This is the authoritative entrypoint for both shells. The selected module supplies the complete interface; keep the existing root only when the requested change is an addition to that application.
 
 These tools operate on the same source as the client. A mutation's original receipt is the evidence for its result. After a disconnect recover that receipt instead of issuing the mutation again.
 

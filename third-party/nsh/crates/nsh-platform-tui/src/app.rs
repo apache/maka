@@ -1621,6 +1621,43 @@ mod tests {
 
     use super::*;
 
+    fn wait_focus_probe(
+        view: &mut AppView,
+        editor: &str,
+        loaded: Instant,
+        ready: impl Fn(&AppView) -> bool,
+        stage: &str,
+    ) {
+        let diagnostic = |view: &AppView| {
+            format!(
+                "{editor}: {stage}, {:?} since load; focused={:?}, error={:?}\n{}",
+                loaded.elapsed(),
+                view.surface().focused(),
+                view.last_error(),
+                view.snapshot()
+            )
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            view.poll()
+                .unwrap_or_else(|error| panic!("{error}: {}", diagnostic(view)));
+            let (tx, rx) = mpsc::channel();
+            view.control()
+                .unwrap()
+                .advance_clock(Duration::ZERO, move || {
+                    let _ = tx.send(());
+                });
+            rx.recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|error| panic!("engine barrier {error:?}: {}", diagnostic(view)));
+            view.poll()
+                .unwrap_or_else(|error| panic!("{error}: {}", diagnostic(view)));
+            if ready(view) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{}", diagnostic(view));
+        }
+    }
+
     #[component]
     fn PlainInputFocusProbe() -> impl IntoElement {
         let value = signal(String::new());
@@ -1650,6 +1687,7 @@ mod tests {
                 nsh_base::editor::editor()
                     .accessibility_label("Focus probe input")
                     .auto_focus(true)
+                    .font_family(Some(SharedString::from("Pacifico")))
                     .w(px(400.0))
                     .h(px(160.0))
                     .on_focus(move || focused.set(true))
@@ -1665,38 +1703,23 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use nsh_core::ViewKind;
 
-        fn settle(view: &mut AppView) {
-            view.poll().unwrap();
-            let (tx, rx) = mpsc::channel();
-            view.control()
-                .unwrap()
-                .advance_clock(Duration::ZERO, move || tx.send(()).unwrap());
-            rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            view.poll().unwrap();
-        }
-        fn wait(view: &mut AppView, ready: impl Fn(&AppView) -> bool, stage: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                settle(view);
-                if ready(view) {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "{stage}: {:?}\n{}",
-                    view.last_error(),
-                    view.snapshot()
-                );
-            }
-        }
         for editor in [false, true] {
             let app: App = if editor {
-                Root::of::<CodeEditorFocusProbe>().into()
+                Root::of::<CodeEditorFocusProbe>()
+                    .font(
+                        include_bytes!(
+                            "../../../tests/compat/cases/layout/fonts/Pacifico-Regular.ttf"
+                        )
+                        .as_slice(),
+                    )
+                    .into()
             } else {
                 Root::of::<PlainInputFocusProbe>().into()
             };
             let mut view = AppView::new(AppOptions::default());
+            let loaded = Instant::now();
             view.load(app).unwrap();
+            let editor_name = if editor { "CodeEditor" } else { "Input" };
             let sink = |view: &AppView| {
                 view.accessibility_snapshot()
                     .into_iter()
@@ -1711,14 +1734,18 @@ mod tests {
             };
             // Readiness comes from the real mounted Input and rendered callback state,
             // not a guessed frame count, direct Surface focus assignment or a click.
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| sink(view).is_some() && view.snapshot().contains("Probe focused:"),
                 "probe did not mount",
             );
             let id = sink(&view).unwrap();
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| {
                     view.surface().focused() == Some(id)
                         && view.snapshot().contains("Probe focused:true")
@@ -1733,8 +1760,10 @@ mod tests {
                 KeyCode::Char('x'),
                 KeyModifiers::NONE,
             )));
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| view.snapshot().contains("Probe focused:true value:x"),
                 if editor {
                     "code Editor did not receive native typing"
@@ -1795,31 +1824,6 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use nsh_core::ViewKind;
 
-        fn settle(view: &mut AppView) {
-            view.poll().unwrap();
-            let (tx, rx) = mpsc::channel();
-            view.control()
-                .unwrap()
-                .advance_clock(Duration::ZERO, move || tx.send(()).unwrap());
-            rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            view.poll().unwrap();
-        }
-        fn wait(view: &mut AppView, ready: impl Fn(&AppView) -> bool, stage: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                settle(view);
-                if ready(view) {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "{stage}: focused={:?}, error={:?}\n{}",
-                    view.surface().focused(),
-                    view.last_error(),
-                    view.snapshot()
-                );
-            }
-        }
         for editor in [false, true] {
             let app: App = if editor {
                 Root::of::<RichEditorFocusProbe>().into()
@@ -1827,7 +1831,9 @@ mod tests {
                 Root::of::<PlainInputFocusProbe>().into()
             };
             let mut view = AppView::new(AppOptions::default());
+            let loaded = Instant::now();
             view.load(app).unwrap();
+            let editor_name = if editor { "RichEditor" } else { "Input" };
             let sink = |view: &AppView| {
                 view.accessibility_snapshot()
                     .into_iter()
@@ -1842,14 +1848,18 @@ mod tests {
             };
             // Readiness comes from the real mounted Input and rendered callback state,
             // not a guessed frame count, direct Surface focus assignment or a click.
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| sink(view).is_some() && view.snapshot().contains("Probe focused:"),
                 "probe did not mount",
             );
             let id = sink(&view).unwrap();
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| {
                     view.surface().focused() == Some(id)
                         && view.snapshot().contains("Probe focused:true")
@@ -1864,8 +1874,10 @@ mod tests {
                 KeyCode::Char('x'),
                 KeyModifiers::NONE,
             )));
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| view.snapshot().contains("Probe focused:true value:x"),
                 if editor {
                     "RichEditor did not receive native typing"

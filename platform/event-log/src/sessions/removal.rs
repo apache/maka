@@ -224,7 +224,7 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         let commits = self.commits.session(&session);
-        let prepared = self.prepared.clone();
+        let prepared = self.prepared_store()?.cleanup();
         let observations = self.connection.observations();
         self.connection
             .run(move |connection| {
@@ -236,6 +236,7 @@ impl EventLog {
                     if !state.pending() {
                         tx.rollback().await?;
                         if state == SessionRetirement::Removed {
+                            prepared.retire_owner(session.clone()).await?;
                             observations.purge_session(session).await?;
                         }
                         return Ok(state);
@@ -261,7 +262,7 @@ impl EventLog {
                     // The caller's physical-drain contract above releases this
                     // owner's lazy prepared views. Other owners' copied metadata
                     // and immutable shared payloads remain independently pinned.
-                    crate::context::prepared::gc::retire_owner(&mut tx, &session).await?;
+                    prepared.retire_owner(session.clone()).await?;
                     crate::context::semantic::gc::retire_owner(&mut tx, &session).await?;
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
@@ -288,7 +289,6 @@ impl EventLog {
                         .await?;
                     advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    prepared.wake();
                     commits.metadata();
                     observations.purge_session(session).await?;
                     Ok(SessionRetirement::Removed)

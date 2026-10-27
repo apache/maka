@@ -18,10 +18,10 @@
  */
 
 //! Discovery owns an explicit initialization gate. Concurrent prepare calls help
-//! advance the same durable cursor; rendering/finish cannot observe partial work.
+//! advance the same owner cursor; rendering/finish cannot observe partial work.
 use super::*;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone)]
 pub(super) struct Logical {
     previous: Option<SemanticSelection>,
     phase: u8,
@@ -31,7 +31,7 @@ pub(super) struct Logical {
     branch: u8,
     expansion: Option<Expansion>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone)]
 struct Expansion {
     current: u64,
     leader: Option<u64>,
@@ -78,21 +78,16 @@ async fn edges(
     }
     Ok(first.zip(last))
 }
-pub(super) async fn logical(
+pub(super) async fn logical_batch(
     db: &mut SqliteConnection,
     build: &PreparedBuild,
+    state: &mut Logical,
 ) -> Result<bool, StoreError> {
-    let row = sqlx::query(
-        "SELECT discovery_json,root FROM context_prepared_builds WHERE id=? AND retiring=0",
-    )
-    .bind(&build.id)
-    .fetch_one(&mut *db)
-    .await?;
-    let Some(json) = row.try_get::<Option<String>, _>("discovery_json")? else {
-        return Ok(true);
-    };
-    let root: Option<String> = row.try_get("root")?;
-    let mut state: Logical = serde_json::from_str(&json)?;
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root FROM context_prepared_builds WHERE id=? AND retiring=0")
+            .bind(&build.id)
+            .fetch_one(&mut *db)
+            .await?;
     let mut ready = false;
     for _ in 0..16 {
         match state.phase {
@@ -227,15 +222,16 @@ pub(super) async fn logical(
             _ => unreachable!(),
         }
     }
-    sqlx::query("UPDATE context_prepared_builds SET discovery_json=? WHERE id=?")
-        .bind(if ready { None } else { Some(encoded(&state)?) })
-        .bind(&build.id)
-        .execute(db)
-        .await?;
+    if ready {
+        sqlx::query("UPDATE context_prepared_builds SET discovered=1 WHERE id=?")
+            .bind(&build.id)
+            .execute(db)
+            .await?;
+    }
     Ok(ready)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone)]
 pub(super) struct Wire {
     warm: bool,
     old_logical: Option<String>,
@@ -254,20 +250,11 @@ impl Wire {
         }
     }
 }
-pub(super) async fn wire(
+pub(super) async fn wire_batch(
     db: &mut SqliteConnection,
     build: &PreparedWireBuild,
+    state: &mut Wire,
 ) -> Result<bool, StoreError> {
-    let json: Option<String> = sqlx::query_scalar(
-        "SELECT discovery_json FROM context_prepared_wire_views WHERE id=? AND retiring=0",
-    )
-    .bind(&build.id)
-    .fetch_one(&mut *db)
-    .await?;
-    let Some(json) = json else {
-        return Ok(true);
-    };
-    let mut state: Wire = serde_json::from_str(&json)?;
     let mut ready = false;
     for _ in 0..16 {
         match state.phase {
@@ -339,6 +326,7 @@ pub(super) async fn wire(
                     let content = tree::save_group(db, &group).await?;
                     assembly::stage(
                         db,
+                        &runtime::InFlight::default(),
                         assembly::Kind::Wire,
                         &build.id,
                         sequence as u64,
@@ -351,10 +339,81 @@ pub(super) async fn wire(
             _ => unreachable!(),
         }
     }
-    sqlx::query("UPDATE context_prepared_wire_views SET discovery_json=?1,discovery_root=CASE WHEN ?1 IS NULL THEN NULL ELSE discovery_root END WHERE id=?2")
-        .bind(if ready { None } else { Some(encoded(&state)?) })
+    if ready {
+        sqlx::query(
+            "UPDATE context_prepared_wire_views SET discovered=1,discovery_root=NULL WHERE id=?",
+        )
         .bind(&build.id)
         .execute(db)
         .await?;
+    }
     Ok(ready)
+}
+
+/// Publish small next-state only after the same batch has committed.
+pub(super) async fn logical(
+    db: &mut SqliteConnection,
+    in_flight: &mut runtime::InFlight,
+    build: &PreparedBuild,
+) -> Result<bool, StoreError> {
+    let key = runtime::InFlight::key(assembly::Kind::Logical, &build.id);
+    let Some(runtime::Generation::Logical(state)) = in_flight.generations.get(&key) else {
+        return Ok(true);
+    };
+    let mut next = state.clone();
+    let mut tx = db.begin().await?;
+    match logical_batch(&mut tx, build, &mut next).await {
+        Ok(ready) => {
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            in_flight.generations.insert(
+                key,
+                if ready {
+                    runtime::Generation::Rendering
+                } else {
+                    runtime::Generation::Logical(next)
+                },
+            );
+            Ok(ready)
+        }
+        Err(cause) => match tx.rollback().await {
+            Ok(()) => Err(cause),
+            Err(cleanup) => Err(StoreError::PreparedRollbackFailed {
+                cause: Box::new(cause),
+                cleanup,
+            }),
+        },
+    }
+}
+pub(super) async fn wire(
+    db: &mut SqliteConnection,
+    in_flight: &mut runtime::InFlight,
+    build: &PreparedWireBuild,
+) -> Result<bool, StoreError> {
+    let key = runtime::InFlight::key(assembly::Kind::Wire, &build.id);
+    let Some(runtime::Generation::Wire(state)) = in_flight.generations.get(&key) else {
+        return Ok(true);
+    };
+    let mut next = state.clone();
+    let mut tx = db.begin().await?;
+    match wire_batch(&mut tx, build, &mut next).await {
+        Ok(ready) => {
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            in_flight.generations.insert(
+                key,
+                if ready {
+                    runtime::Generation::Rendering
+                } else {
+                    runtime::Generation::Wire(next)
+                },
+            );
+            Ok(ready)
+        }
+        Err(cause) => match tx.rollback().await {
+            Ok(()) => Err(cause),
+            Err(cleanup) => Err(StoreError::PreparedRollbackFailed {
+                cause: Box::new(cause),
+                cleanup,
+            }),
+        },
+    }
 }
