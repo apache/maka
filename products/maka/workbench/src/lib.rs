@@ -60,7 +60,7 @@ impl nsh_engine::Assets for ApplicationAssets {
 pub fn application_bundle() -> Bundle {
     let capabilities = nsh_core::access::Capabilities::from_json(&serde_json::json!({
         "clipboard": true,
-        "host": ["terminal.exit"],
+        "host": ["terminal.exit", "notification.show"],
         "network": {"http": [{"host":"*","methods":["GET"],"schemes":["http","https"]}]}
     }))
     .expect("static workbench application capabilities");

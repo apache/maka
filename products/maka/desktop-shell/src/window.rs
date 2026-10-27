@@ -36,16 +36,17 @@ use crate::{
     placement::Placement,
 };
 use maka_workbench::bindings::Bindings;
-use nsh_engine::{EngineConfig, Limits};
+use nsh_engine::{EngineConfig, HostChannel, JsonValue, Limits};
 use nsh_platform_gpui::{
     AppOptions, AppView,
-    gpui::{self, App, AppContext as _, Focusable as _, WindowHandle},
+    gpui::{self, App, AppContext as _, Focusable as _, SystemNotification, WindowHandle},
     titlebar_options,
 };
 use std::{
     cell::RefCell,
     path::PathBuf,
     rc::Rc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{runtime::Handle, sync::watch};
@@ -78,7 +79,13 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
     let (exit, mut exits) = tokio::sync::mpsc::unbounded_channel();
-    let shell = Shell { foreground, exit };
+    let (notify, mut notices) = tokio::sync::mpsc::unbounded_channel::<SystemNotification>();
+    let shell = Shell {
+        foreground,
+        exit,
+        notify,
+        events: Arc::default(),
+    };
     let mut start = Some((config, Placement::new(&directory), endpoint, epoch, root));
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
     // apps as their last window closes, giving the detach no more than its
@@ -118,6 +125,28 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             }
         })
         .detach();
+        // The workbench's notifications (a conversation finished or waits
+        // while the window is in the background) go to the system's
+        // notification center; choosing one brings the window back and
+        // tells the workbench which conversation to show.
+        cx.spawn(async move |cx| {
+            while let Some(notice) = notices.recv().await {
+                let _ = cx.update(|cx| cx.show_system_notification(notice));
+            }
+        })
+        .detach();
+        let events = shell.events.clone();
+        cx.on_system_notification_response(move |response, cx| {
+            cx.activate(true);
+            let _ = window.update(cx, |_, window, _| window.activate_window());
+            let host = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(host) = host {
+                let _ = host.send(
+                    "notification.open",
+                    serde_json::json!({ "tag": response.tag.to_string() }),
+                );
+            }
+        });
         // Quitting from elsewhere (the Dock, logging out) gets the time GPUI
         // gives quit handlers; a window still open records its place first.
         let quitting = detach.clone();
@@ -290,6 +319,10 @@ struct Shell {
     foreground: watch::Receiver<bool>,
     /// Closes the window.
     exit: tokio::sync::mpsc::UnboundedSender<()>,
+    /// Posts a system notification.
+    notify: tokio::sync::mpsc::UnboundedSender<SystemNotification>,
+    /// The loaded workbench's host channel, which hears the notification chosen.
+    events: Arc<Mutex<Option<HostChannel>>>,
 }
 
 impl Shell {
@@ -303,6 +336,23 @@ impl Shell {
         config.host.handle("terminal.exit", move |_| {
             let _ = exit.send(());
         });
+        let notify = self.notify.clone();
+        config.host.handle("notification.show", move |call| {
+            let text = |key: &str| call.data()[key].as_str().map(str::to_owned);
+            match (text("tag"), text("title"), text("body")) {
+                (Some(tag), Some(title), Some(body)) => {
+                    let _ = notify.send(SystemNotification {
+                        tag: tag.into(),
+                        title: title.into(),
+                        body: body.into(),
+                        actions: Vec::new(),
+                    });
+                    call.resolve(JsonValue::Null);
+                }
+                _ => call.reject("expected a tag, a title and a body"),
+            }
+        });
+        *self.events.lock().unwrap_or_else(|e| e.into_inner()) = Some(config.host.clone());
         config
     }
 }
