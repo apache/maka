@@ -777,7 +777,7 @@
     "third-party/nsh/crates/nsh-base/src/text_view/mod.rs": "cdddc46c2d5995c45e17597c00bd5f2dea5f4feeb57f27468912095b61649e64",
     "third-party/nsh/crates/nsh-base/src/text_view/parse.rs": "732a02c276a6158ecc69062f0e6e1b6c514296c376a456f022b18c2a1d55b3db",
     "third-party/nsh/crates/nsh-base/src/text_view/parts.rs": "bed1f05b11f8048282f13befc66cd4f8f381fb24f48acc3f252dfcd69d54d740",
-    "third-party/nsh/crates/nsh-base/src/text_view/view.rs": "1e89f9847d019193773104b6697f53019f4b6f166a0bc97f2d21b83fac4e3451",
+    "third-party/nsh/crates/nsh-base/src/text_view/view.rs": "990a4d6350780afc7d6cae0fcc8793a86de8a1e8438ad5cde560edb3ac4bc14e",
     "third-party/nsh/crates/nsh-base/src/theme.rs": "32b847135f4b4d9e74d25e803718f8fed4d44c2bded8d3706b29174faf870aec",
     "third-party/nsh/crates/nsh-base/src/toast/js.rs": "752efcec9c5ba32102ef18c9d8b6edca1f71e14e32cef83d4c99b2c831d4c1bf",
     "third-party/nsh/crates/nsh-base/src/toast/manager.rs": "5f5b5a03a7a25856b8b98d7304bf4b0efa3fad702240170fbb2b89be72ec2351",
