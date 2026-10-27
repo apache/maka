@@ -17,107 +17,93 @@
  * under the License.
  */
 
-// Authoring utility: writes a new example directory and asks the real CLI to check it.
+// Authoring utility: writes a new example and checks its exact package with Maka.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, copyFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { activate as host } from './host.mjs';
-import { activate as ui } from './tui.mjs';
+
 const { values } = parseArgs({
   options: {
     maka: { type: 'string', default: 'maka' },
     output: { type: 'string' },
-    target: { type: 'string', default: 'tui' },
+    target: { type: 'string', default: 'ui' },
   },
 });
-if (!values.output || !['host', 'tui'].includes(values.target))
+if (!values.output || !['host', 'ui'].includes(values.target))
   throw Error(
-    'Usage: node create.mjs --output NEW_DIRECTORY [--target host|tui] [--maka EXECUTABLE]',
+    'Usage: node create.mjs --output NEW_DIRECTORY [--target host|ui] [--maka EXECUTABLE]',
   );
-const target = values.target;
-const run = (args) =>
-  JSON.parse(
-    execFileSync(values.maka, ['application', ...args], {
-      encoding: 'utf8',
-      maxBuffer: 8 * 1024 * 1024,
-    }),
-  );
-const schema = run(['schema']);
+const invoke = (args) =>
+  execFileSync(values.maka, ['application', ...args], {
+    encoding: 'utf8',
+    maxBuffer: Infinity,
+  });
+const run = (args) => JSON.parse(invoke(args));
 const output = resolve(values.output);
-mkdirSync(output); // Never overwrite an existing project.
+mkdirSync(output);
 const packageDirectory = join(output, 'plugin');
 mkdirSync(packageDirectory);
 const source = dirname(fileURLToPath(import.meta.url));
 const write = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n');
-const required = (contract) => ({ contract, availability: 'required' });
 const configuration = { type: 'object', additionalProperties: false };
-const entry = (module, exports, extra = {}) => ({
-  implementation: { kind: 'javascript', module, realm: 'dedicated' },
-  configuration,
-  imports: {},
-  exports,
-  ...extra,
-});
-const surface = schema.contracts.terminalSurface;
-const entries = {
-  host: entry('host.mjs', { Echo: required(host().Echo.contract) }),
-  tui: entry(
-    'tui.mjs',
-    { Counter: required(ui().Counter.contract) },
-    {
-      scene: { name: 'maka.tui.scene', version: 1 },
-      imports: { surface: { contract: surface, cardinality: { kind: 'one' } } },
+let application;
+if (values.target === 'host') {
+  copyFileSync(join(source, 'host.mjs'), join(packageDirectory, 'host.mjs'));
+  application = {
+    host: {
+      implementation: { kind: 'javascript', module: 'host.mjs', realm: 'dedicated' },
+      configuration,
+      imports: {},
+      exports: { Echo: { contract: host().Echo.contract, availability: 'required' } },
     },
-  ),
-};
-for (const file of ['host.mjs', 'tui.mjs'])
-  copyFileSync(join(source, file), join(packageDirectory, file));
+  };
+} else {
+  const entry = join(output, 'ui.tsx');
+  copyFileSync(join(source, 'ui.tsx'), entry);
+  const build = join(output, 'ui-build');
+  invoke(['build-ui', '--entry', entry, '--output', build]);
+  const result = JSON.parse(readFileSync(join(build, 'manifest.json'), 'utf8'));
+  copyFileSync(result.module, join(packageDirectory, 'ui.js'));
+  for (const asset of result.assets) {
+    const target = join(packageDirectory, asset.path);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(asset.file, target);
+  }
+  application = {
+    ui: {
+      module: 'ui.js',
+      configuration,
+      contributions: {
+        counter: { kind: 'panel', title: { fallback: 'Counter' } },
+        openCounter: { kind: 'command', title: { fallback: 'Open counter' } },
+      },
+    },
+  };
+}
 write(join(packageDirectory, 'maka.extension.json'), {
   schemaVersion: 1,
   id: 'example.plugin',
-  application: { entries },
+  displayName: values.target === 'host' ? 'Echo service' : 'Counter',
+  description: values.target === 'host' ? 'Echo a string.' : 'An NSH counter panel and command.',
+  application,
 });
-const node = (path) => ({
-  key: randomUUID(),
-  package: { source: 'pinned', package: run(['inspect-package', '--package', path]) },
-  usePackage: 'entry',
-});
-const input = {
-  environment: {
-    location: target === 'host' ? 'host' : 'ui',
-    ...(target === 'host' ? {} : { presentation: target }),
-  },
-  instances: { example: node(packageDirectory) },
-};
-const packages = [packageDirectory];
-if (target !== 'host') {
-  const path = join(output, 'surface');
-  mkdirSync(path);
-  write(join(path, 'maka.extension.json'), {
-    schemaVersion: 1,
-    id: 'example.surface',
-    application: {
-      entries: {
-        [target]: {
-          implementation: { kind: 'native', implementation: `maka.ui.surface.${target}` },
-          configuration,
-          imports: {},
-          exports: { Surface: required(surface) },
-        },
-      },
-    },
-  });
-  packages.push(path);
-  input.instances.surface = node(path);
-  input.instances.example.bindings = {
-    surface: [{ kind: 'instance', path: ['surface'], export: 'Surface' }],
-  };
-  input.launch = { kind: 'instance', path: ['example'], export: 'Counter' };
-}
 const composition = join(output, 'composition.json');
-write(composition, input);
-run(['check', '--input', composition, ...packages.flatMap((path) => ['--package', path])]);
+write(composition, {
+  instances: {
+    example: {
+      key: randomUUID(),
+      package: {
+        source: 'pinned',
+        package: run(['inspect-package', '--package', packageDirectory]),
+      },
+      usePackage: values.target,
+    },
+  },
+});
+const packages = [packageDirectory];
+run(['check', '--input', composition, '--package', packageDirectory]);
 console.log(JSON.stringify({ input: composition, packages }));

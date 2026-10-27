@@ -27,8 +27,8 @@
 | --- | --- |
 | 声明与包内容 | [plugin-core](plugin-core/README.zh-CN.md)、[packages](packages/README.zh-CN.md) |
 | 资源权限与持久化 | [capabilities](capabilities/README.zh-CN.md)、[event-log](event-log/README.zh-CN.md) |
-| 服务与组件所有者 | [host-runtime](host-runtime/README.zh-CN.md)、[ui-runtime](ui-runtime/README.zh-CN.md) |
-| JavaScript 执行 | [js-runtime](js-runtime/README.zh-CN.md)、[host-js](host-js/README.zh-CN.md)、[ui-js](ui-js/README.zh-CN.md) |
+| 服务与组件所有者 | [host-runtime](host-runtime/README.zh-CN.md)、[ui-support](ui-support/README.zh-CN.md) |
+| JavaScript 执行 | [js-runtime](js-runtime/README.zh-CN.md)、[host-js](host-js/README.zh-CN.md) |
 | 原生呈现 | [presentation](presentation/README.zh-CN.md) |
 | I/O 与隔离 | [network](network/README.zh-CN.md)、[process](process/README.zh-CN.md)、[sandbox](sandbox/README.zh-CN.md)、[computer-use](computer-use/README.zh-CN.md) |
 | 连接与健康状态 | [transport](transport/README.zh-CN.md)、[background-health](background-health/README.zh-CN.md) |

@@ -27,9 +27,10 @@ import { conversationMessages } from './locale-conversation';
 import { settingsMessages } from './locale-settings';
 import { workspaceMessages } from './locale-workspace';
 import { recallMessages } from './locale-recall';
+import { pluginMessages } from './locale-plugins';
 
 const nativeLocale = nativeHost.systemLocale;
-const currentLocale = signal(resolveLocale('auto', nativeLocale));
+export const currentLocale = signal(resolveLocale('auto', nativeLocale));
 let observedRevision = -1;
 const copy = createCopy({
   ...commonMessages,
@@ -38,6 +39,7 @@ const copy = createCopy({
   ...settingsMessages,
   ...workspaceMessages,
   ...recallMessages,
+  ...pluginMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 

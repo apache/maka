@@ -21,29 +21,31 @@
 
 ## In this repository
 
-Choose the owning family under `plugins/`. Each plugin's `package.ts` exports a `PackageDeclaration`; JavaScript entries point to local modules built from matching `.ts` files. Native entries use `sdk.nativeImplementations` so identifiers, contracts and configuration schemas come from the Rust definition.
+Choose the owning family under `plugins/`. Each plugin's `package.ts` exports a manifest whose `application` can contain a `host`, a `ui`, a `composition`, or a combination of them. Native Host entries use `sdk.nativeImplementations`; JavaScript Host entries declare their local module, configuration, imports and exports.
 
-From the repository root, build an existing leaf as a reference:
+Build an existing leaf from the repository root:
 
 ```sh
-node scripts/plugins/build.mjs   --plugin plugins/workspace/workspace-web --output /tmp/maka-web-bundle
-maka application inspect-package --package /tmp/maka-web-bundle/packages/workspace-web
+node scripts/plugins/build.mjs --plugin plugins/workspace/workspace-web --output ./maka-web-bundle
+maka application inspect-package --package ./maka-web-bundle/packages/workspace-web
 ```
 
-The builder replaces the output directory. It builds the selected package, without assembling the product or recompiling Rust.
-
-For a product feature, add the plugin to `products/maka/bundle/package-inputs.json` and bind its instances in `src/composition.ts`. Use `just product` to rebuild the development bundle, or `just run` to build and launch. Existing installations keep their saved source; commit an explicit source update to change one.
+The builder replaces its output directory. For a product feature, add the package to `products/maka/bundle/package-inputs.json` and its instances to `src/composition.ts`. Installed plugins can be added or updated through the connected Host's management service without rebuilding the client.
 
 ## Standalone starter
 
-Copy the three files from this skill's `assets/starter/` directory together: `create.mjs`, `host.mjs` and `tui.mjs`. Then run:
+Copy `create.mjs`, `host.mjs` and `ui.tsx` from `assets/starter/` together. Then run:
 
 ```sh
-node create.mjs --output /tmp/my-plugin --target tui --maka /path/to/maka
+node create.mjs --output ./my-plugin --target ui --maka /path/to/maka
 ```
 
-The output directory must be new. `--target host` creates an Echo service graph; `--target tui` creates a native terminal counter graph. The helper reads the executable's schemas, computes exact package references and checks the composition. It does not initialize a Root or start execution. Use the emitted input and package paths for later commands.
+The output directory must be new. `--target ui` builds an NSH counter panel and an Open counter command; `--target host` creates an Echo service. The helper writes a checked package and a small composition containing its instance. It does not replace or start an installed business Host.
 
-The generated `maka.extension.json` uses `schemaVersion: 1` and `application.entries`. A JavaScript entry declares its bundled module and realm; component entries also declare the target's scene language. The composition selects pinned package references, instance UUIDs, entry names and bindings.
+For UI, the helper calls `maka application build-ui --entry ui.tsx --output DIRECTORY`. That command writes a self-contained module, staged assets and `manifest.json`. Copy its `module` to the package's declared UI module and each asset's `file` to its relative `path` beside that module before computing the package reference.
 
-Keep the composition outside the package so its digest cannot refer to itself. Recompute references after changing package bytes, and retain instance identities when updating saved data. See [Testing and shipping](testing-and-shipping.md) to check and install the result.
+The generated manifest uses `schemaVersion: 1`, `application.host` or `application.ui`. The composition contains `instances`; each node selects `usePackage: "host"`, `"ui"` or `"composition"`. A package may provide both Host and UI entries, selected by separate instances in the same source. Declare UI service imports in `application.ui.imports` and bind them to the chosen Host exports through the UI instance's `bindings`; `context.services` calls those providers with the UI consumer's identity and original mutation receipts. The full trusted `context.host` remains available. A pure UI package needs no dummy Host service.
+
+Install the package into the connected Host, then insert and enable its UI instance. Use the generated composition as a checked example rather than replacing unrelated business instances. [Runtime UI authoring](runtime-ui.md) describes the management tools.
+
+Keep the composition outside the package so the package digest cannot refer to itself. Recompute references after package bytes change and preserve instance UUIDs when updating saved data.

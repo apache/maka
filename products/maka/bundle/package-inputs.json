@@ -20,7 +20,5 @@
   "questions": "plugins/interactions/questions",
   "skill-outcomes": "plugins/skills/skill-outcomes",
   "receipts": "plugins/application/receipts",
-  "gateway": "plugins/application/gateway",
-  "ui-authoring": "plugins/application/authoring",
-  "ui-authoring-gateway": "plugins/application/authoring-gateway"
+  "gateway": "plugins/application/gateway"
 }

@@ -177,8 +177,15 @@ impl Fixture {
             )]);
         }
         let rewrite = |old: Package| {
-            let mut entry =
-                old.manifest().application.as_ref().unwrap().entries[&EntryTarget::Host].clone();
+            let mut entry = old
+                .manifest()
+                .application
+                .as_ref()
+                .unwrap()
+                .host
+                .as_ref()
+                .unwrap()
+                .clone();
             for value in entry.exports.values_mut() {
                 value.contract = declared.clone();
             }
@@ -203,7 +210,7 @@ impl Fixture {
             )
             .await
             .unwrap();
-        let source = ui_caller_source(
+        let source = commit_caller_source(
             &caller_store,
             Uuid::new_v4(),
             0,

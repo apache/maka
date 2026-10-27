@@ -414,6 +414,7 @@ runners remain console applications.
 | `AppSource::{Rust(Root), Bundle(Box<Bundle>), DevServer(String)}` | Standalone source (`DevServer` requires `dev`) |
 | `AppView::new(AppOptions) -> Self` | Independent embeddable engine and surface |
 | `AppView::load(App) -> io::Result<()>`; `connect(String)` (`dev`) | Load trusted code or start a development session |
+| `AppView::load_with_config(EngineConfig) -> io::Result<()>` | Load a shared application configuration with its registries, assets, module loader, context and runtime; use the terminal's actual viewport and environment |
 | `AppView::poll()`, `tick(f64) -> io::Result<bool>` | Process engine commits and advance native frames |
 | `AppView::handle_event(Event) -> bool`; `resize(u16, u16)` | Route local terminal input and region dimensions |
 | `AppView::render(Rect, &mut Buffer)`; `snapshot() -> String` | Render the assigned area or get UTF-8 characters |

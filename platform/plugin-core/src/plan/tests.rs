@@ -19,8 +19,8 @@
 
 use super::*;
 use crate::{
-    composition::{Environment, ExecutionLocation, Parameter, PresentationTarget, Template},
-    contract::{Cardinality, Contract},
+    composition::{Parameter, Template},
+    contract::{Cardinality, Contract, Interface},
     package::{Declaration, Implementation, Realm},
 };
 use serde_json::json;
@@ -38,20 +38,14 @@ fn contract() -> Contract {
         name: "example.Content".into(),
         version: 1,
         transport: Transport::Local,
-        interface: Interface::Component {
-            props: json!({"type":"object"}).into(),
-            events: BTreeMap::new(),
-            captures: BTreeMap::new(),
+        interface: Interface::Value {
+            schema: json!({"type":"object"}).into(),
         },
     }
 }
 
 fn entry() -> EntryDeclaration {
     EntryDeclaration {
-        scene: Some(crate::package::SceneLanguage {
-            name: "test.scene".into(),
-            version: 1,
-        }),
         implementation: Implementation::JavaScript {
             module: "index.mjs".into(),
             realm: Realm::Dedicated,
@@ -89,7 +83,7 @@ fn local(path: &[&str], export: &str) -> Target {
 }
 
 fn template(default: &str) -> Template {
-    let mut content = node(10, package("content", 1), PackageUse::Entry);
+    let mut content = node(10, package("content", 1), PackageUse::Host);
     content
         .configuration
         .parameters
@@ -114,7 +108,8 @@ fn fixture() -> (Input, Packages) {
         .insert(
             package("content", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, entry())]),
+                host: Some(entry()),
+                ui: None,
                 composition: None,
             },
         )
@@ -123,16 +118,13 @@ fn fixture() -> (Input, Packages) {
         .insert(
             package("product", 1),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(template("default")),
             },
         )
         .unwrap();
     let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Ui,
-            presentation: Some(PresentationTarget::Tui),
-        },
         instances: BTreeMap::from([
             (
                 "a".into(),
@@ -143,8 +135,6 @@ fn fixture() -> (Input, Packages) {
                 node(2, package("product", 1), PackageUse::Composition),
             ),
         ]),
-        recovery: None,
-        launch: Some(local(&["a"], "App")),
     };
     (input, packages)
 }
@@ -173,7 +163,8 @@ fn package_replacements_validate_nested_providers_and_consumers_atomically() {
         .insert(
             package("content", 2),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, next_content)]),
+                host: Some(next_content),
+                ui: None,
                 composition: None,
             },
         )
@@ -195,13 +186,14 @@ fn package_replacements_validate_nested_providers_and_consumers_atomically() {
             .insert(
                 package("consumer", revision),
                 Declaration {
-                    entries: BTreeMap::from([(EntryTarget::Tui, consumer)]),
+                    host: Some(consumer),
+                    ui: None,
                     composition: None,
                 },
             )
             .unwrap();
     }
-    let mut consumer = node(3, package("consumer", 1), PackageUse::Entry);
+    let mut consumer = node(3, package("consumer", 1), PackageUse::Host);
     consumer
         .configuration
         .values
@@ -280,7 +272,8 @@ fn template_instances_keep_overrides_and_identity_through_upgrade_and_alias_chan
         .insert(
             package("product", 2),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(template("new default")),
             },
         )
@@ -301,7 +294,6 @@ fn template_instances_keep_overrides_and_identity_through_upgrade_and_alias_chan
     input.instances.remove("b");
     let a = input.instances.remove("a").unwrap();
     input.instances.insert("renamed".into(), a);
-    input.launch = Some(local(&["renamed"], "App"));
     let renamed = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
     assert_eq!(
         instance(&renamed, &["renamed", "content"]).identity,
@@ -318,7 +310,7 @@ fn template_instances_keep_overrides_and_identity_through_upgrade_and_alias_chan
 #[test]
 fn removed_source_or_template_child_cannot_silently_discard_other_intent() {
     let (mut input, mut packages) = fixture();
-    let mut consumer = node(3, package("consumer", 1), PackageUse::Entry);
+    let mut consumer = node(3, package("consumer", 1), PackageUse::Host);
     consumer
         .configuration
         .values
@@ -338,7 +330,8 @@ fn removed_source_or_template_child_cannot_silently_discard_other_intent() {
         .insert(
             package("consumer", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, consumer_entry)]),
+                host: Some(consumer_entry),
+                ui: None,
                 composition: None,
             },
         )
@@ -388,7 +381,8 @@ fn structural_imports_forward_exact_capabilities_and_detect_dependency_cycles() 
         .insert(
             package("dependent", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, content)]),
+                host: Some(content),
+                ui: None,
                 composition: None,
             },
         )
@@ -413,7 +407,8 @@ fn structural_imports_forward_exact_capabilities_and_detect_dependency_cycles() 
         .insert(
             package("wrapper", 1),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(wrapper),
             },
         )
@@ -457,13 +452,13 @@ fn actual_export_checks_use_the_full_public_contract() {
     );
     let mut actual = BTreeMap::from([("Content".into(), contract())]);
     entry.check_exports(&actual, |contract| contract).unwrap();
-    let Interface::Component { props, .. } = &mut actual.get_mut("Content").unwrap().interface
-    else {
+    let Interface::Value { schema } = &mut actual.get_mut("Content").unwrap().interface else {
         unreachable!()
     };
-    *props = json!({"type":"string"}).into();
+    *schema = json!({"type":"string"}).into();
     assert!(entry.check_exports(&actual, |contract| contract).is_err());
-    actual.get_mut("Content").unwrap().interface = Interface::Value {
+    actual.get_mut("Content").unwrap().interface = Interface::Resource {
+        resource: "text".into(),
         schema: json!({"type":"object"}).into(),
     };
     assert!(entry.check_exports(&actual, |contract| contract).is_err());
@@ -473,80 +468,78 @@ fn actual_export_checks_use_the_full_public_contract() {
 }
 
 #[test]
-fn scene_declarations_are_required_only_for_javascript_component_entries() {
-    let valid = entry();
-    valid.validate().unwrap();
-    let mut optional = valid.clone();
-    optional.exports.get_mut("Content").unwrap().availability = Availability::Optional;
-    optional.validate().unwrap();
-    optional.scene = None;
-    assert!(
-        optional
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("require a scene language")
-    );
-    for language in [
-        crate::package::SceneLanguage {
-            name: String::new(),
-            version: 1,
-        },
-        crate::package::SceneLanguage {
-            name: "bad/name".into(),
-            version: 1,
-        },
-        crate::package::SceneLanguage {
-            name: "valid.scene".into(),
-            version: 0,
-        },
-    ] {
-        let mut invalid = valid.clone();
-        invalid.scene = Some(language);
-        assert!(invalid.validate().is_err());
-    }
-    let mut complete = valid.clone();
-    complete.scene.as_mut().unwrap().name = "x".repeat(129);
-    complete.validate().unwrap();
+fn mixed_templates_keep_ui_instances_in_the_same_source_without_host_activations() {
+    use crate::package::{UiContribution, UiEntry, UiText};
+
+    let (mut input, mut packages) = fixture();
+    let ui_package = package("ui", 1);
+    packages
+        .insert(
+            ui_package.clone(),
+            Declaration {
+                host: None,
+                ui: Some(UiEntry {
+                    module: "ui.js".into(),
+                    configuration: entry().configuration,
+                    imports: BTreeMap::new(),
+                    contributions: BTreeMap::from([(
+                        "main".into(),
+                        UiContribution::Panel {
+                            title: UiText {
+                                fallback: "Details".into(),
+                                translations: BTreeMap::new(),
+                            },
+                        },
+                    )]),
+                }),
+                composition: None,
+            },
+        )
+        .unwrap();
+    let mut ui = node(11, ui_package.clone(), PackageUse::Ui);
+    ui.configuration
+        .parameters
+        .insert("title".into(), "title".into());
+    let mut mixed = template("shared configuration");
+    mixed.children.insert("details".into(), ui);
+    packages
+        .insert(
+            package("mixed", 1),
+            Declaration {
+                host: None,
+                ui: None,
+                composition: Some(mixed),
+            },
+        )
+        .unwrap();
+    input.instances.get_mut("a").unwrap().package = package("mixed", 1).into();
+    let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    let ui = instance(&plan, &["a", "details"]);
     assert_eq!(
-        serde_json::to_value(&complete).unwrap()["scene"]["name"],
-        json!("x".repeat(129))
+        ui.identity,
+        InstanceId(vec![Uuid::from_u128(1), Uuid::from_u128(11)])
     );
-    let host = Declaration {
-        entries: BTreeMap::from([(EntryTarget::Host, valid.clone())]),
-        composition: None,
-    };
-    assert!(
-        host.validate()
-            .unwrap_err()
-            .to_string()
-            .contains("Host entry")
-    );
-    let mut native = valid.clone();
-    native.implementation = Implementation::Native {
-        implementation: "compiled.component".into(),
-    };
-    assert!(native.validate().is_err());
-    native.scene = None;
-    native.validate().unwrap();
-    let mut value = valid.clone();
-    value.exports.get_mut("Content").unwrap().contract.interface = Interface::Value {
-        schema: json!(true).into(),
-    };
-    assert!(value.validate().is_err());
-    value.scene = None;
-    value.validate().unwrap();
-    let mut empty = valid;
-    empty.exports.clear();
-    assert!(empty.validate().is_err());
-    empty.scene = None;
-    empty.validate().unwrap();
+    assert_eq!(ui.package, ui_package);
+    assert_eq!(ui.configuration, json!({"title":"shared configuration"}));
+    assert_eq!(ui.ui_entry().unwrap().module, "ui.js");
+    assert!(instance(&plan, &["a", "content"]).host_entry().is_some());
+    let ui_id = ui.identity.clone();
+    let mut runtime = crate::runtime::Runtime::<()>::new(plan);
+    assert!(matches!(
+        runtime.begin(&ui_id),
+        Err(Error::Lifecycle("UI instances execute in the client"))
+    ));
+
+    input.instances.get_mut("a").unwrap().disabled = true;
+    let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    assert!(instance(&plan, &["a", "details"]).disabled);
+    assert!(!instance(&plan, &["b", "content"]).disabled);
 }
 
 #[test]
 fn incompatible_binding_missing_variant_and_optional_provider_fail_before_activation() {
     let (mut input, mut packages) = fixture();
-    let mut consumer = node(3, package("consumer", 1), PackageUse::Entry);
+    let mut consumer = node(3, package("consumer", 1), PackageUse::Host);
     consumer
         .configuration
         .values
@@ -568,7 +561,8 @@ fn incompatible_binding_missing_variant_and_optional_provider_fail_before_activa
         .insert(
             package("consumer", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, entry.clone())]),
+                host: Some(entry.clone()),
+                ui: None,
                 composition: None,
             },
         )
@@ -583,7 +577,8 @@ fn incompatible_binding_missing_variant_and_optional_provider_fail_before_activa
         .insert(
             package("consumer", 2),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, entry)]),
+                host: Some(entry),
+                ui: None,
                 composition: None,
             },
         )
@@ -596,7 +591,8 @@ fn incompatible_binding_missing_variant_and_optional_provider_fail_before_activa
         .insert(
             package("content", 2),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, provider)]),
+                host: Some(provider),
+                ui: None,
                 composition: None,
             },
         )
@@ -607,13 +603,13 @@ fn incompatible_binding_missing_variant_and_optional_provider_fail_before_activa
         .insert(
             package("product", 2),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(updated),
             },
         )
         .unwrap();
     input.instances.get_mut("a").unwrap().package = package("product", 2).into();
-    input.launch = Some(local(&["b"], "App"));
     assert!(matches!(
         Plan::prepare(&input, &packages, &RemoteExports::new()),
         Err(Error::Contract(_))
@@ -628,7 +624,7 @@ fn remote_binding_requires_a_remotable_observed_contract() {
         instance: InstanceId(vec![Uuid::from_u128(20)]),
         export: "Content".into(),
     };
-    let mut consumer = node(3, package("consumer", 1), PackageUse::Entry);
+    let mut consumer = node(3, package("consumer", 1), PackageUse::Host);
     consumer
         .configuration
         .values
@@ -655,7 +651,8 @@ fn remote_binding_requires_a_remotable_observed_contract() {
         .insert(
             package("consumer", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, entry)]),
+                host: Some(entry),
+                ui: None,
                 composition: None,
             },
         )
@@ -700,7 +697,8 @@ fn nested_override_precedence_preserves_unrelated_template_defaults() {
         .insert(
             package("outer", 1),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(Template {
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::new(),
@@ -713,7 +711,6 @@ fn nested_override_precedence_preserves_unrelated_template_defaults() {
     let root = input.instances.get_mut("a").unwrap();
     root.package = package("outer", 1).into();
     let mut replacement = self::entry();
-    replacement.scene = None;
     replacement.implementation = Implementation::Native {
         implementation: "replacement.Content".into(),
     };
@@ -721,7 +718,8 @@ fn nested_override_precedence_preserves_unrelated_template_defaults() {
         .insert(
             package("replacement", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, replacement)]),
+                host: Some(replacement),
+                ui: None,
                 composition: None,
             },
         )
@@ -759,7 +757,8 @@ fn recursive_template_expansion_rejects_cycles_and_duplicate_source_keys() {
         .insert(
             package("recursive", 1),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(Template {
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::new(),
@@ -773,7 +772,6 @@ fn recursive_template_expansion_rejects_cycles_and_duplicate_source_keys() {
         )
         .unwrap();
     input.instances.get_mut("a").unwrap().package = package("recursive", 1).into();
-    input.launch = None;
     assert!(
         Plan::prepare(&input, &packages, &RemoteExports::new())
             .unwrap_err()
@@ -792,7 +790,8 @@ fn template_can_use_its_own_package_without_a_self_referential_revision() {
         .insert(
             reference.clone(),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, entry())]),
+                host: Some(entry()),
+                ui: None,
                 composition: Some(own),
             },
         )
@@ -827,7 +826,8 @@ fn explicit_null_parameter_default_survives_package_metadata_roundtrip() {
         .insert(
             package("nullable", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, nullable)]),
+                host: Some(nullable),
+                ui: None,
                 composition: None,
             },
         )
@@ -836,7 +836,8 @@ fn explicit_null_parameter_default_survives_package_metadata_roundtrip() {
         .insert(
             package("nullable-product", 1),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(recovered),
             },
         )
@@ -878,7 +879,8 @@ fn k64_finite_current_compositions_keep_shortening_overrides_and_sibling_identit
         .insert(
             reference.clone(),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, executable)]),
+                host: Some(executable),
+                ui: None,
                 composition: Some(Template {
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::from([(
@@ -898,7 +900,7 @@ fn k64_finite_current_compositions_keep_shortening_overrides_and_sibling_identit
         root.package = reference.clone().into();
         root.overrides = vec![Override {
             path: vec!["next".into(); 140],
-            use_package: Some(PackageUse::Entry),
+            use_package: Some(PackageUse::Host),
             ..Override::default()
         }];
     }
@@ -934,15 +936,6 @@ fn k64_finite_current_compositions_keep_shortening_overrides_and_sibling_identit
             assert_eq!(terminal.bindings["base"].len(), 0);
         }
     }
-    let mut selected = vec![Uuid::from_u128(1)];
-    selected.extend(std::iter::repeat_n(Uuid::from_u128(10), 140));
-    assert_eq!(
-        plan.launch().unwrap().provider,
-        Provider::Local {
-            instance: InstanceId(selected),
-            export: "App".into(),
-        }
-    );
     input.instances.get_mut("a").unwrap().overrides.clear();
     assert!(
         Plan::prepare(&input, &packages, &RemoteExports::new())
@@ -971,7 +964,8 @@ fn k64_large_declared_bindings_expand_from_overrides_without_platform_cardinalit
         .insert(
             package("collector", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, consumer.clone())]),
+                host: Some(consumer.clone()),
+                ui: None,
                 composition: None,
             },
         )
@@ -984,21 +978,22 @@ fn k64_large_declared_bindings_expand_from_overrides_without_platform_cardinalit
         .insert(
             package("provider", 1),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Tui, consumer)]),
+                host: Some(consumer),
+                ui: None,
                 composition: None,
             },
         )
         .unwrap();
     let mut children = BTreeMap::from([(
         "collector".into(),
-        node(1, package("collector", 1), PackageUse::Entry),
+        node(1, package("collector", 1), PackageUse::Host),
     )]);
     let mut targets = Vec::new();
     for index in 0..4097 {
         let alias = format!("provider-{index:04}");
         children.insert(
             alias.clone(),
-            node(index + 2, package("provider", 1), PackageUse::Entry),
+            node(index + 2, package("provider", 1), PackageUse::Host),
         );
         targets.push(Target::Instance { path: vec![alias], export: "Content_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_catalogue_".into() });
     }
@@ -1006,7 +1001,8 @@ fn k64_large_declared_bindings_expand_from_overrides_without_platform_cardinalit
         .insert(
             package("large-composition", 1),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(Template {
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::new(),
@@ -1023,7 +1019,6 @@ fn k64_large_declared_bindings_expand_from_overrides_without_platform_cardinalit
         ..Override::default()
     });
     input.instances = BTreeMap::from([("root".into(), root)]);
-    input.launch = None;
     let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
     assert_eq!(plan.instances().len(), 4099);
     let bindings = &instance(&plan, &["root", "collector"]).bindings["all"];
@@ -1141,7 +1136,8 @@ fn forwarding_rejects_a_real_import_export_cycle() {
         .insert(
             package("forwarding-cycle", 1),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(Template {
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::from([(

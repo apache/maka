@@ -99,7 +99,10 @@ pub fn compile_chunk_bytecode(
                 let mut code = table.chunks.borrow_mut();
                 let others = chunks.iter().filter(|(other, _)| *other != id);
                 for (other, source) in std::iter::once(&(BUNDLE_NAME, entry)).chain(others) {
-                    let source = crate::modules::ChunkCode::Source((*source).to_owned());
+                    let source = crate::modules::ChunkModule {
+                        code: crate::modules::ChunkCode::Source((*source).to_owned()),
+                        asset_base: None,
+                    };
                     code.code.insert((*other).to_owned(), source);
                 }
             }
@@ -219,7 +222,7 @@ mod tests {
             let host = crate::Host::new().unwrap();
             // SAFETY: compiled by the linked engine immediately above.
             unsafe {
-                host.add_chunk_bytecode("shared.js", compiled[1].clone());
+                host.add_chunk_bytecode("shared.js", compiled[1].clone(), None);
             }
             host.eval_bytecode(&compiled[0]).unwrap();
             assert!(
@@ -255,7 +258,7 @@ mod tests {
                 .unwrap();
             // SAFETY: these bytes were compiled above with this linked engine.
             unsafe {
-                host.add_chunk_bytecode("lazy.js", chunks.remove(0));
+                host.add_chunk_bytecode("lazy.js", chunks.remove(0), None);
             }
             host.eval_source("await __nsh_import('lazy.js'); loadBuffer();")
                 .unwrap();

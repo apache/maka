@@ -24,12 +24,13 @@ use std::sync::Arc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{
     Error,
     composition::{self, Configuration, Input, InstanceId, Node, Override, PackageUse, Target},
-    contract::{Availability, Export, Import, Interface, Transport},
-    package::{EntryDeclaration, EntryTarget, PackageRef, PackageSelection, Packages},
+    contract::{Availability, Export, Import, Transport},
+    package::{EntryDeclaration, PackageRef, PackageSelection, Packages, UiEntry},
 };
 
 /// Remote declarations are observations supplied by the execution adapter.
@@ -71,9 +72,83 @@ pub struct Instance {
     pub package: PackageRef,
     pub disabled: bool,
     pub configuration: Value,
-    pub entry: Option<Arc<EntryDeclaration>>,
+    pub entry: Option<InstanceEntry>,
     pub bindings: BTreeMap<String, Vec<Binding>>,
     pub exports: BTreeMap<String, Binding>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "declaration", rename_all = "snake_case")]
+pub enum InstanceEntry {
+    Host(Arc<EntryDeclaration>),
+    Ui(Arc<UiEntry>),
+}
+
+impl InstanceEntry {
+    pub fn imports(&self) -> &BTreeMap<String, Import> {
+        match self {
+            Self::Host(entry) => &entry.imports,
+            Self::Ui(entry) => &entry.imports,
+        }
+    }
+}
+
+#[derive(PartialEq, Serialize)]
+pub(crate) struct ActivationBasis<'a> {
+    identity: &'a InstanceId,
+    parent: Option<&'a InstanceId>,
+    package: Option<&'a PackageRef>,
+    disabled: bool,
+    configuration: &'a Value,
+    entry: Option<&'a InstanceEntry>,
+    bindings: &'a BTreeMap<String, Vec<Binding>>,
+    exports: &'a BTreeMap<String, Binding>,
+}
+
+pub(crate) enum Dependency<'a> {
+    Local(&'a InstanceId),
+    Remote(&'a RemoteCapability),
+}
+
+impl Instance {
+    pub(crate) fn activation_basis(&self) -> ActivationBasis<'_> {
+        ActivationBasis {
+            identity: &self.identity,
+            parent: self.parent.as_ref(),
+            package: self.entry.as_ref().map(|_| &self.package),
+            disabled: self.disabled,
+            configuration: &self.configuration,
+            entry: self.entry.as_ref(),
+            bindings: &self.bindings,
+            exports: &self.exports,
+        }
+    }
+
+    pub(crate) fn dependencies(&self) -> impl Iterator<Item = Dependency<'_>> {
+        self.parent.iter().map(Dependency::Local).chain(
+            self.entry
+                .iter()
+                .flat_map(|_| self.bindings.values().flatten())
+                .map(|binding| match &binding.provider {
+                    Provider::Local { instance, .. } => Dependency::Local(instance),
+                    Provider::Remote { capability } => Dependency::Remote(capability),
+                }),
+        )
+    }
+
+    pub fn host_entry(&self) -> Option<&EntryDeclaration> {
+        match self.entry.as_ref()? {
+            InstanceEntry::Host(entry) => Some(entry),
+            InstanceEntry::Ui(_) => None,
+        }
+    }
+
+    pub fn ui_entry(&self) -> Option<&UiEntry> {
+        match self.entry.as_ref()? {
+            InstanceEntry::Host(_) => None,
+            InstanceEntry::Ui(entry) => Some(entry),
+        }
+    }
 }
 
 /// A checked projection; callers retain Input as the sole editable authority.
@@ -81,8 +156,6 @@ pub struct Instance {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     instances: BTreeMap<InstanceId, Instance>,
-    launch: Option<Binding>,
-    recovery: Option<Binding>,
 }
 
 #[derive(Debug)]
@@ -110,14 +183,9 @@ impl Plan {
         remote: &RemoteExports,
         replace: impl Fn(&PackageRef) -> Option<PackageRef>,
     ) -> Result<(Self, Vec<PackageChange>), Error> {
-        let target = input.environment.entry_target()?;
         composition::validate_nodes(&input.instances)?;
-        for root in [&input.launch, &input.recovery].into_iter().flatten() {
-            root.validate()?;
-        }
         let mut builder = Builder {
             packages,
-            target,
             nodes: BTreeMap::new(),
             aliases: BTreeMap::new(),
             replace: &replace,
@@ -167,52 +235,41 @@ impl Plan {
             instance.exports = exports;
             instances.insert(id.clone(), instance);
         }
-        let resolve_root = |target: &composition::Target| {
-            let bindings = resolver.target(target, &[], None)?;
-            let [binding] = bindings.as_slice() else {
-                return Err(Error::Composition("root must select one component".into()));
-            };
-            if !matches!(
-                binding.declaration.contract.interface,
-                Interface::Component { .. }
-            ) || binding.declaration.availability != Availability::Required
-            {
-                return Err(Error::Contract(
-                    "root requires an available component declaration".into(),
-                ));
-            }
-            Ok(binding.clone())
-        };
-        let launch = input.launch.as_ref().map(resolve_root).transpose()?;
-        let recovery = input.recovery.as_ref().map(resolve_root).transpose()?;
         validate_dependencies(&instances)?;
-        Ok((
-            Self {
-                instances,
-                launch,
-                recovery,
-            },
-            builder.package_changes,
-        ))
+        Ok((Self { instances }, builder.package_changes))
     }
 
     pub fn instances(&self) -> &BTreeMap<InstanceId, Instance> {
         &self.instances
     }
 
-    pub fn launch(&self) -> Option<&Binding> {
-        self.launch.as_ref()
-    }
-
-    pub fn recovery(&self) -> Option<&Binding> {
-        self.recovery.as_ref()
-    }
-
-    pub fn root(&self, kind: composition::RootKind) -> Option<&Binding> {
-        match kind {
-            composition::RootKind::Launch => self.launch(),
-            composition::RootKind::Recovery => self.recovery(),
+    /// Source-driven lifetime of one consumer and its transitive effective providers.
+    pub fn binding_basis(&self, instance: &InstanceId) -> Result<String, Error> {
+        if !self.instances.contains_key(instance) {
+            return Err(Error::Composition(
+                "binding basis instance is missing".into(),
+            ));
         }
+        let mut members = BTreeSet::new();
+        let mut pending = vec![instance];
+        while let Some(id) = pending.pop() {
+            if !members.insert(id) {
+                continue;
+            }
+            for dependency in self.instances[id].dependencies() {
+                if let Dependency::Local(id) = dependency {
+                    pending.push(id);
+                }
+            }
+        }
+        let projection: Vec<_> = members
+            .into_iter()
+            .map(|id| self.instances[id].activation_basis())
+            .collect();
+        let mut value = serde_json::to_value(projection).expect("activation basis is JSON");
+        value.sort_all_objects();
+        let encoded = serde_json::to_vec(&value).expect("activation basis is JSON");
+        Ok(format!("sha256-{}", hex::encode(Sha256::digest(encoded))))
     }
 }
 
@@ -230,7 +287,6 @@ struct Pending<'a> {
 
 struct Builder<'a> {
     packages: &'a Packages,
-    target: EntryTarget,
     nodes: BTreeMap<InstanceId, Pending<'a>>,
     aliases: BTreeMap<Vec<String>, InstanceId>,
     replace: &'a dyn Fn(&PackageRef) -> Option<PackageRef>,
@@ -421,18 +477,15 @@ impl<'a> Builder<'a> {
             );
             let disabled = ancestor_disabled || node.disabled;
             let (entry, imports, exports) = match node.use_package {
-                PackageUse::Entry => {
+                PackageUse::Host => {
                     if !child_overrides.is_empty() || node.parameters != Configuration::default() {
                         return Err(Error::Composition(
                             "executable instance cannot own template parameters or child overrides"
                                 .into(),
                         ));
                     }
-                    let entry = declaration.entries.get(&self.target).ok_or_else(|| {
-                        Error::Composition(format!(
-                            "package {} has no {:?} entry",
-                            package.id, self.target
-                        ))
+                    let entry = declaration.host.as_ref().ok_or_else(|| {
+                        Error::Composition(format!("package {} has no Host entry", package.id))
                     })?;
                     crate::validate_value(&entry.configuration, &configuration)?;
                     let exports = entry
@@ -445,7 +498,27 @@ impl<'a> Builder<'a> {
                             )
                         })
                         .collect();
-                    (Some(Arc::new(entry.clone())), &entry.imports, exports)
+                    (
+                        Some(InstanceEntry::Host(Arc::new(entry.clone()))),
+                        &entry.imports,
+                        exports,
+                    )
+                }
+                PackageUse::Ui => {
+                    if !child_overrides.is_empty() || node.parameters != Configuration::default() {
+                        return Err(Error::Composition(
+                            "UI instance cannot own template parameters or child overrides".into(),
+                        ));
+                    }
+                    let entry = declaration.ui.as_ref().ok_or_else(|| {
+                        Error::Composition(format!("package {} has no UI entry", package.id))
+                    })?;
+                    crate::validate_value(&entry.configuration, &configuration)?;
+                    (
+                        Some(InstanceEntry::Ui(Arc::new(entry.clone()))),
+                        &entry.imports,
+                        BTreeMap::new(),
+                    )
                 }
                 PackageUse::Composition => {
                     if configuration != serde_json::json!({}) {
@@ -730,19 +803,6 @@ impl Resolver<'_> {
             provider: Provider::Remote { capability },
             declaration: declaration.clone(),
         }])
-    }
-
-    fn target(
-        &self,
-        target: &Target,
-        namespace: &[String],
-        import_owner: Option<&InstanceId>,
-    ) -> Result<Vec<Binding>, Error> {
-        if let Some(key) = self.target_key(target, namespace, import_owner)? {
-            self.resolve(key)
-        } else {
-            self.target_result(target, namespace, import_owner, &BTreeMap::new())
-        }
     }
 }
 

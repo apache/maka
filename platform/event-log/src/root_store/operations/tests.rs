@@ -43,13 +43,7 @@ async fn request(store: &EventLog) -> OperationRequest {
                 Uuid::new_v4(),
                 0,
                 maka_plugin_core::composition::Input {
-                    environment: maka_plugin_core::composition::Environment {
-                        location: maka_plugin_core::composition::ExecutionLocation::Host,
-                        presentation: None,
-                    },
                     instances: BTreeMap::new(),
-                    recovery: None,
-                    launch: None,
                 },
                 vec![],
                 vec![],

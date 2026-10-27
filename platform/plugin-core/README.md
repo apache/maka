@@ -21,7 +21,9 @@
 
 [简体中文](README.zh-CN.md)
 
-Defines package declarations, contracts, compositions and the shared plugin lifecycle. `plan` checks selected entries and bindings; `runtime` manages registrations and retirement. Host and UI use this same kernel with different execution backends.
+Defines package declarations, contracts and a single deployment source containing Host, UI and composition instances. `plan` validates the entire graph and stable identities; `runtime` owns Host registrations, UI consumer bindings, admitted work and retirement. Enabled UI instances are projected from that same source and run in the client’s shared NSH workbench.
+
+Packages declare `host`, `ui` and/or `composition`. Each source node selects one through `usePackage`; installing a package alone does not enable it. UI entries name an NSH module, service imports and command, panel, settings or tool-renderer contributions. UI consumer registration resolves those imports without executing UI code on the Host.
 
 The kernel has no Agent policy or native layout vocabulary. A binding selects an export that satisfies an import; the receiving Host still checks permission when a call arrives.
 

@@ -119,7 +119,6 @@ jobs:
       - name: Verify Computer Use bridge build
         run: |
           node scripts/rust/check-cua-build.mjs
-          just product
           cargo build --locked -p maka-cli --no-default-features
           target/debug/maka --version
           cargo test --locked -p maka-computer-use --no-default-features --lib --test native --test repl_contract

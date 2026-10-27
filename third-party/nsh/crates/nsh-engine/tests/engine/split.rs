@@ -96,6 +96,7 @@ fn config(bundle: Bundle) -> EngineConfig {
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment: Default::default(),
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),
@@ -282,4 +283,108 @@ fn an_import_fails_when_the_host_cannot_load_its_chunk() {
     let texts = screen.texts();
     assert_eq!(texts.len(), 3, "{texts:?}");
     assert!(texts[2].starts_with("could not load chunk"), "{texts:?}");
+}
+
+#[test]
+fn configured_loader_wakes_local_engine_and_ends_with_it() {
+    use std::sync::Arc;
+
+    use nsh_engine::{ChunkLoad, ChunkLoader, ChunkSource, LocalEngine};
+    use tokio::sync::oneshot;
+
+    struct Loading(String, Sender<String>);
+    impl Drop for Loading {
+        fn drop(&mut self) {
+            let _ = self.1.send(self.0.clone());
+        }
+    }
+    struct Loader {
+        requests: Sender<(String, oneshot::Sender<String>)>,
+        finished: Sender<String>,
+    }
+    impl ChunkLoader for Loader {
+        fn load(&self, id: &str) -> ChunkLoad {
+            let id = id.to_owned();
+            let requests = self.requests.clone();
+            let finished = self.finished.clone();
+            Box::pin(async move {
+                let _loading = Loading(id.clone(), finished);
+                let (answer, source) = oneshot::channel();
+                requests.send((id, answer)).map_err(|e| e.to_string())?;
+                source
+                    .await
+                    .map(ChunkSource::new)
+                    .map_err(|e| e.to_string())
+            })
+        }
+    }
+
+    let (requests, requested) = crossbeam_channel::unbounded();
+    let (finished, ended) = crossbeam_channel::unbounded();
+    let mut config = config(Bundle::source(
+        r#"
+        import { importModule, mount, signal, Text } from "nsh";
+        const label = signal("waiting");
+        const load = () => importModule("pending.js");
+        Promise.all([importModule("plugin.js"), importModule("plugin.js")])
+          .then(([a, b]) => label.set(a === b ? a.label : "evaluated twice"));
+        mount(() => Text({ get children() { return label(); }, onPress: load }));
+        "#
+        .into(),
+    ));
+    config.chunk_loader = Some(Arc::new(Loader { requests, finished }));
+    let (batches, frames) = crossbeam_channel::unbounded();
+    let (chunks, platform_requests) = crossbeam_channel::unbounded();
+    let mut engine = LocalEngine::start(
+        config,
+        ApproxTextEngine,
+        Sink {
+            batches,
+            chunks,
+            loads: false,
+        },
+    )
+    .unwrap();
+    let (wake, awake) = crossbeam_channel::unbounded();
+    engine.set_wake(Arc::new(move || {
+        let _ = wake.send(());
+    }));
+    let mut screen = Screen::default();
+    screen.drain(&frames);
+    assert_eq!(screen.texts(), ["waiting"]);
+    let (id, source) = requested.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(id, "plugin.js");
+    source
+        .send("export const label = 'loaded once';".into())
+        .unwrap();
+    while screen.texts() != ["loaded once"] {
+        awake.recv_timeout(Duration::from_secs(5)).unwrap();
+        engine.pump();
+        screen.drain(&frames);
+    }
+    assert_eq!(
+        ended.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "plugin.js"
+    );
+    assert!(requested.try_recv().is_err());
+    assert!(platform_requests.try_recv().is_err());
+
+    engine.control().dispatch_event(
+        screen.find("loaded once"),
+        EventKind::Press,
+        EventPayload::None,
+    );
+    engine.pump();
+    let (id, source) = requested.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(id, "pending.js");
+    drop(engine);
+    assert_eq!(
+        ended.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "pending.js"
+    );
+    assert!(
+        source
+            .send("export const label = 'retired';".into())
+            .is_err()
+    );
 }

@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_ui_runtime::{budget::NativeBudget, file::read_selected};
+use maka_ui_support::{budget::NativeBudget, file::read_selected};
 use maka_workbench::bindings::Bindings;
 use nsh_engine::Bundle;
 use nsh_platform_tui::AppOptions;

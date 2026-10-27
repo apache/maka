@@ -24,7 +24,7 @@ use nsh_core::prelude::*;
 use serde_json::json;
 use std::sync::Arc;
 
-/// One original Settings attempt, including its transient progress and cleanup.
+/// One original operation, including its transient progress and cleanup.
 #[class]
 pub struct OriginalMutation {
     owner: Arc<Owner>,
@@ -42,9 +42,8 @@ impl OriginalMutation {
 
 impl Drop for OriginalMutation {
     fn drop(&mut self) {
-        self.mutation.request_cancel();
         let mutation = self.mutation.clone();
-        let _ = self.owner.spawn(async move { mutation.close().await });
+        let _ = self.owner.spawn(async move { mutation.detach().await });
         // Once task admission closes, Client.close owns final session cleanup.
     }
 }

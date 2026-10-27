@@ -195,6 +195,16 @@ const NSH: &[Item] = &[
         ),
     ),
     (
+        "importModule",
+        Export::Function(crate::chunks::import_module, 2),
+        Ts::function(
+            "Imports a module supplied by the host into this app's VM. The id and optional\ndependencies are chunk file names, such as `plugin.js`. Imports of the same id\nshare one evaluation; use a new id when its code changes.",
+            &[
+                "<T = Record<string, unknown>>(id: string, dependencies?: readonly string[]): Promise<T>",
+            ],
+        ),
+    ),
+    (
         "mount",
         Export::Function(dom::mount, 2),
         Ts::function(
@@ -562,12 +572,17 @@ pub(crate) enum ChunkCode {
     Bytecode(Vec<u8>),
 }
 
+pub(crate) struct ChunkModule {
+    pub(crate) code: ChunkCode,
+    pub(crate) asset_base: Option<String>,
+}
+
 /// The chunks of a split bundle a VM knows of, by id (module name).
 #[derive(Default)]
 pub(crate) struct ChunkCodes {
     /// Given, not imported yet: the loader compiles them (and drops the
     /// code).
-    pub(crate) code: HashMap<String, ChunkCode>,
+    pub(crate) code: HashMap<String, ChunkModule>,
     /// Compiled (QuickJS has the modules).
     pub(crate) loaded: HashSet<String>,
 }
@@ -1076,8 +1091,9 @@ unsafe extern "C" fn load(
 unsafe fn compile_chunk(
     cx: *mut JsContext,
     name: *const c_char,
-    code: ChunkCode,
+    chunk: ChunkModule,
 ) -> *mut qjs::JSModuleDef {
+    let ChunkModule { code, asset_base } = chunk;
     // SAFETY: per the contract; QuickJS reads source up to the NUL it
     // requires after it.
     let module = unsafe {
@@ -1112,6 +1128,20 @@ unsafe fn compile_chunk(
             return std::ptr::null_mut();
         }
         let m = qjs::JS_VALUE_GET_PTR(module) as *mut qjs::JSModuleDef;
+        if let Some(base) = asset_base {
+            let meta = qjs::JS_GetImportMeta(cx, m);
+            if qjs::JS_IsException(meta) {
+                qjs::JS_FreeValue(cx, module);
+                return std::ptr::null_mut();
+            }
+            let result = crate::web::js::string(cx, &base)
+                .and_then(|base| crate::web::js::define(cx, meta, "assetBase", base, true));
+            qjs::JS_FreeValue(cx, meta);
+            if result.is_err() {
+                qjs::JS_FreeValue(cx, module);
+                return std::ptr::null_mut();
+            }
+        }
         // The context keeps the module: the value is one more reference.
         qjs::JS_FreeValue(cx, module);
         m

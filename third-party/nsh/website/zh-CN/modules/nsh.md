@@ -203,6 +203,27 @@ function App() {
 mount(App);
 ```
 
+## importModule
+
+```ts
+function importModule<T = Record<string, unknown>>(
+  id: string,
+  dependencies?: readonly string[],
+): Promise<T>;
+```
+
+加载嵌入宿主在运行时提供的模块。模块 id 和它静态依赖的 id 都是 `plugin.js` 这样的平面 chunk 文件名。
+Promise 兑现为模块的导出。同一个 id 的重复导入共享求值结果和状态；更新代码时使用新 id。
+
+模块运行在应用的 VM 中，使用应用已注册的原生模块和能力。将它导出的组件渲染在应用树中，组件和订阅随其响应式
+owner 清理；已求值的模块会在该 VM 的生命周期内保留缓存。源码读取失败会拒绝 Promise，之后再次导入会重新读取。
+
+原生嵌入宿主通过 `EngineConfig::chunk_loader` 异步提供源码，Web 宿主使用其拆分 bundle 加载器。
+通过 `Bundle::with_chunks` 提供的模块可以直接导入。
+
+源码加载器可以通过 `ChunkSource::with_asset_base` 为模块指定自己的资源目录。导入的图片和字体会自动在其中解析，
+也支持像素密度变体。宿主在源码之外保存这个目录，因此内容寻址的包可以在资源 URL 中使用自己的身份。
+
 ## mount
 
 ```ts

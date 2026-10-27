@@ -37,7 +37,6 @@ fn sources_for(implementation: &str) -> (Input, Vec<Package>) {
     let provider = package(
         "management",
         EntryDeclaration {
-            scene: None,
             implementation: Implementation::Native {
                 implementation: implementation.into(),
             },
@@ -56,7 +55,6 @@ fn sources_for(implementation: &str) -> (Input, Vec<Package>) {
     let consumer = package(
         "manager.client",
         EntryDeclaration {
-            scene: None,
             implementation: Implementation::JavaScript {
                 module: "host.mjs".into(),
                 realm: Realm::Dedicated,
@@ -83,16 +81,10 @@ fn sources_for(implementation: &str) -> (Input, Vec<Package>) {
     )]);
     (
         Input {
-            environment: Environment {
-                location: ExecutionLocation::Host,
-                presentation: None,
-            },
             instances: BTreeMap::from([
                 ("provider".into(), node(&provider, 1, true)),
                 ("a".into(), consumer_node),
             ]),
-            recovery: None,
-            launch: None,
         },
         vec![provider, consumer],
     )
@@ -110,11 +102,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
-        Self::create(None).await
+        Self::create(false).await
     }
-    async fn create(
-        presentation: Option<maka_plugin_core::composition::PresentationTarget>,
-    ) -> Self {
+    async fn create(separate_target: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("root");
         let namespaces = RootNamespaces {
@@ -127,19 +117,13 @@ impl Fixture {
                 .unwrap(),
         );
         let mut native = NativeRegistry::default();
-        let ui = if let Some(presentation) = presentation {
-            let ui = store
+        let managed_source = if separate_target {
+            let target_source = store
                 .commit_application(
                     Uuid::new_v4(),
                     0,
                     Input {
-                        environment: Environment {
-                            location: ExecutionLocation::Ui,
-                            presentation: Some(presentation),
-                        },
                         instances: BTreeMap::new(),
-                        recovery: None,
-                        launch: None,
                     },
                     vec![],
                     vec![],
@@ -148,22 +132,22 @@ impl Fixture {
                 .unwrap();
             let target = maka_host_runtime::application::management::ManagementTarget::from_source(
                 store.clone(),
-                ui.clone(),
+                target_source.clone(),
             )
             .await
             .unwrap();
             maka_host_runtime::application::management::provide_target(
                 &mut native,
-                "test.ui.management".into(),
+                "test.target.management".into(),
                 target,
             )
             .unwrap();
-            Some(ui)
+            Some(target_source)
         } else {
             None
         };
-        let (input, packages) = sources_for(if ui.is_some() {
-            "test.ui.management"
+        let (input, packages) = sources_for(if managed_source.is_some() {
+            "test.target.management"
         } else {
             DEPLOYMENT_MANAGER
         });
@@ -196,7 +180,7 @@ impl Fixture {
             store,
             app,
             issuer,
-            managed: ui.unwrap_or_else(|| source.clone()),
+            managed: managed_source.unwrap_or_else(|| source.clone()),
             source,
             binding,
         }
@@ -656,28 +640,6 @@ async fn rejected_bundle_cas_role_and_unknown_revision_leave_original_plan_healt
         json!({"status":"rejected","reason":"invalid_bundle"})
     );
     assert_eq!(f.read().await.source.reference, f.source);
-    let current = f.read().await;
-    let mut input = current.source.input;
-    input.environment = Environment {
-        location: ExecutionLocation::Ui,
-        presentation: Some(maka_plugin_core::composition::PresentationTarget::Tui),
-    };
-    let refused = f
-        .mutate(
-            "replace",
-            json!({"expectedRevision":1}),
-            document_resource(DeploymentDocument {
-                input,
-                remote_exports: vec![],
-                packages: current.packages,
-            }),
-        )
-        .await;
-    assert_eq!(
-        returned(&refused),
-        json!({"status":"rejected","reason":"execution_environment"})
-    );
-    assert_eq!(f.read().await.source.reference, f.source);
     let installed = f
         .mutate(
             "install",
@@ -801,10 +763,8 @@ async fn concurrent_installation_commits_once_and_records_the_other_cas_as_confl
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ui_target_uses_original_root_but_keeps_host_journal_and_fixed_presentation() {
-    use maka_plugin_core::composition::PresentationTarget;
-    let presentation = PresentationTarget::Tui;
-    let f = Fixture::create(Some(presentation)).await;
+async fn separate_target_keeps_its_original_host_journal_and_deployment() {
+    let f = Fixture::create(true).await;
     let current = f.read().await;
     assert_eq!(current.source.reference, f.managed);
     assert_ne!(f.managed.deployment, f.source.deployment);
@@ -837,27 +797,6 @@ async fn ui_target_uses_original_root_but_keeps_host_journal_and_fixed_presentat
     assert_eq!(
         f.app.client().snapshot().effective.as_ref(),
         Some(&f.source)
-    );
-    let mut current = f.read().await;
-    assert_eq!(current.source.input.instances.len(), 0);
-    current.source.input.environment = Environment {
-        location: ExecutionLocation::Host,
-        presentation: None,
-    };
-    let refused = f
-        .mutate(
-            "replace",
-            json!({"expectedRevision":2}),
-            document_resource(DeploymentDocument {
-                input: current.source.input,
-                remote_exports: vec![],
-                packages: current.packages,
-            }),
-        )
-        .await;
-    assert_eq!(
-        returned(&refused),
-        json!({"status":"rejected","reason":"execution_environment"})
     );
     let current = f.read().await;
     let replaced = f
@@ -921,8 +860,7 @@ async fn ui_target_uses_original_root_but_keeps_host_journal_and_fixed_presentat
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fixed_target_factory_rejects_another_original_root_owner() {
     use maka_host_runtime::application::management::{ManagementTarget, provide_target};
-    let original =
-        Fixture::create(Some(maka_plugin_core::composition::PresentationTarget::Tui)).await;
+    let original = Fixture::create(true).await;
     let target = ManagementTarget::from_source(original.store.clone(), original.managed.clone())
         .await
         .unwrap();
@@ -963,14 +901,13 @@ async fn fixed_target_factory_rejects_another_original_root_owner() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn instance_pages_freeze_source_and_nested_enabled_intents_preserve_original_overrides() {
-    use maka_plugin_core::composition::{Override, Parameter, PresentationTarget, Template};
-    let f = Fixture::create(Some(PresentationTarget::Tui)).await;
+    use maka_plugin_core::composition::{Override, Parameter, Template};
+    let f = Fixture::create(true).await;
     let leaf = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
         "schemaVersion":1,"id":"nested.leaf","application":Declaration {
-            entries: BTreeMap::from([(EntryTarget::Tui, EntryDeclaration {
-                scene: None, implementation: Implementation::Native { implementation:"unused.ui.availability".into() },
+            host: Some(EntryDeclaration { implementation: Implementation::Native { implementation:"unused.native.availability".into() },
                 configuration: json!({"type":"object"}).into(), imports: BTreeMap::new(), exports: BTreeMap::new(),
-            })]), composition: None,
+            }), ui: None, composition: None,
         }
     })).unwrap())])).unwrap();
     let children = (0..10)
@@ -985,7 +922,7 @@ async fn instance_pages_freeze_source_and_nested_enabled_intents_preserve_origin
         .collect();
     let product = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
         "schemaVersion":1,"id":"nested.product","application":Declaration {
-            entries:BTreeMap::new(), composition:Some(Template {
+            host: None, ui: None, composition:Some(Template {
                 parameters:BTreeMap::from([("label".into(), Parameter { schema:json!({"type":"string"}).into(), default:None })]),
                 imports:BTreeMap::new(), exports:BTreeMap::new(), children,
             }),
@@ -1008,13 +945,7 @@ async fn instance_pages_freeze_source_and_nested_enabled_intents_preserve_origin
             f.managed.deployment,
             1,
             Input {
-                environment: Environment {
-                    location: ExecutionLocation::Ui,
-                    presentation: Some(PresentationTarget::Tui),
-                },
                 instances: BTreeMap::from([("product".into(), root)]),
-                recovery: None,
-                launch: None,
             },
             vec![],
             vec![leaf, product],
@@ -1191,18 +1122,11 @@ async fn instance_pages_freeze_source_and_nested_enabled_intents_preserve_origin
 
 #[tokio::test]
 async fn execution_basis_includes_cohost_manager_target_but_not_source_revision() {
-    use maka_plugin_core::composition::PresentationTarget;
-    let f = Fixture::create(Some(PresentationTarget::Tui)).await;
+    let f = Fixture::create(true).await;
     let original = f.binding.execution_basis().to_owned();
     f.app.shutdown().await.unwrap();
     let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Ui,
-            presentation: Some(PresentationTarget::Tui),
-        },
         instances: BTreeMap::new(),
-        recovery: None,
-        launch: None,
     };
     let same = f
         .store
@@ -1230,7 +1154,7 @@ async fn execution_basis_includes_cohost_manager_target_but_not_source_revision(
         .unwrap();
         maka_host_runtime::application::management::provide_target(
             &mut native,
-            "test.ui.management".into(),
+            "test.target.management".into(),
             management,
         )
         .unwrap();
@@ -1275,8 +1199,8 @@ async fn execution_basis_includes_cohost_manager_target_but_not_source_revision(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas() {
-    use maka_plugin_core::composition::{Parameter, PresentationTarget, Template};
-    let f = Fixture::create(Some(PresentationTarget::Tui)).await;
+    use maka_plugin_core::composition::{Parameter, Template};
+    let f = Fixture::create(true).await;
     let schema = json!({"type":"object","additionalProperties":false,
         "properties":{
             "label":{"type":"string","title":"Display name"},
@@ -1292,10 +1216,9 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
     });
     let leaf = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
         "schemaVersion":1,"id":"form.leaf","application":Declaration {
-            entries:BTreeMap::from([(EntryTarget::Tui, EntryDeclaration {
-                scene:None, implementation:Implementation::Native { implementation:"unused.form.availability".into() },
+            host: Some(EntryDeclaration { implementation:Implementation::Native { implementation:"unused.form.availability".into() },
                 configuration:schema.into(), imports:BTreeMap::new(), exports:BTreeMap::new(),
-            })]),composition:None,
+            }), ui: None,composition:None,
         }
     })).unwrap())])).unwrap();
     let values: BTreeMap<String, Value> = serde_json::from_value(json!({
@@ -1315,7 +1238,7 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
         .insert("label".into(), "name".into());
     let template = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
         "schemaVersion":1,"id":"form.product","application":Declaration {
-            entries:BTreeMap::new(),composition:Some(Template {
+            host: None, ui: None,composition:Some(Template {
                 parameters:BTreeMap::from([("name".into(),Parameter { schema:json!({"type":"string"}).into(),default:None })]),
                 imports:BTreeMap::new(),exports:BTreeMap::new(),children:BTreeMap::from([("child".into(),child)]),
             }),
@@ -1334,16 +1257,10 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
             f.managed.deployment,
             1,
             Input {
-                environment: Environment {
-                    location: ExecutionLocation::Ui,
-                    presentation: Some(PresentationTarget::Tui),
-                },
                 instances: BTreeMap::from([
                     ("settings".into(), root.clone()),
                     ("product".into(), product),
                 ]),
-                recovery: None,
-                launch: None,
             },
             vec![],
             vec![leaf, template],
@@ -1480,16 +1397,14 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_original_receipts() {
-    use maka_plugin_core::composition::PresentationTarget;
-    let f = Fixture::create(Some(PresentationTarget::Tui)).await;
+    let f = Fixture::create(true).await;
     let contract = deployment_manager_contract();
     let make = |name: &str, configuration: Value, imports, exports| {
         Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
             "schemaVersion":1,"id":name,"application":Declaration {
-                entries:BTreeMap::from([(EntryTarget::Tui, EntryDeclaration {
-                    scene:None, implementation:Implementation::Native { implementation:"test.form".into() },
+                host: Some(EntryDeclaration { implementation:Implementation::Native { implementation:"test.form".into() },
                     configuration: configuration.into(), imports, exports,
-                })]),composition:None,
+                }), ui: None,composition:None,
             }
         })).unwrap())])).unwrap()
     };
@@ -1548,16 +1463,10 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_origi
             f.managed.deployment,
             1,
             Input {
-                environment: Environment {
-                    location: ExecutionLocation::Ui,
-                    presentation: Some(PresentationTarget::Tui),
-                },
                 instances: BTreeMap::from([
                     ("apps".into(), catalog_node),
                     ("provider".into(), node(&provider, 81, true)),
                 ]),
-                recovery: None,
-                launch: None,
             },
             vec![],
             vec![catalog, leaf.clone(), provider],
@@ -1583,7 +1492,7 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_origi
             .iter()
             .any(|c| matches!(c,BindingCandidate::Bound {target,..} if target == &provider_target))
     );
-    let fields: PackageSettingsPage = serde_json::from_value(f.query("packageSettings",json!({"source":source,"package":leaf.application_ref(),"path":[],"after":null,"changes":[]})).await.unwrap()).unwrap();
+    let fields: PackageSettingsPage = serde_json::from_value(f.query("packageSettings",json!({"source":source,"package":leaf.application_ref(),"usePackage":"host","path":[],"after":null,"changes":[]})).await.unwrap()).unwrap();
     assert_eq!(fields.imports.len(), 1);
     assert_eq!(
         fields
@@ -1597,7 +1506,7 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_origi
         })
     );
     let edit = json!({"expectedRevision":source.revision,"edits":[
-        {"kind":"insert","name":"custom","package":leaf.application_ref(),"settings":[{"path":["label"],"value":{"kind":"text","text":"My app"}},{"path":["preferences","path"],"value":{"kind":"text","text":"notes/local"}}],"bindings":{"provider":[provider_target]}},
+        {"kind":"insert","usePackage":"host","name":"custom","package":leaf.application_ref(),"settings":[{"path":["label"],"value":{"kind":"text","text":"My app"}},{"path":["preferences","path"],"value":{"kind":"text","text":"notes/local"}}],"bindings":{"provider":[provider_target]}},
         {"kind":"update","name":"apps","configuration":{"entries":[{"id":"custom","label":"My app"}]},"bindings":{"pages":[{"kind":"instance","path":["custom"],"export":"Page"}]}}
     ]});
     let mut invalid = edit.clone();

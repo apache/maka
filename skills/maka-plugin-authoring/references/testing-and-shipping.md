@@ -19,50 +19,28 @@
 
 # Validate the actual artifact
 
-Use `maka application inspect-package --package PATH` after changing package bytes.
-Use the returned immutable reference in the composition, then check every selected
-package and presentation:
+Compile UI source before inspecting the package:
 
 ```sh
-maka application check --input composition.json --package plugin --package surface
+maka application build-ui --entry ui.tsx --output ui-build
+```
+
+Stage the resulting module and assets according to `ui-build/manifest.json`, then compute and check the exact package reference:
+
+```sh
+maka application inspect-package --package plugin
+maka application check --input composition.json --package plugin
 maka application export-package --package plugin --output plugin.maka-plugin
 ```
 
-Export creates a new file. A checked package can still have wrong handler behavior:
-exercise service validation and actual calls, Component lifecycle/action replies,
-and native rendering/input for the intended presenter. Include unknown mutation and
-cleanup behavior when the feature owns effects. Test receipt recovery against the
-original reference, rather than asserting that retrying succeeds.
+Export creates a new file. A package check validates declarations and bindings, not handler or UI behavior. Exercise actual service calls and the contribution in the running workbench. For UI, check its command or view, configuration, update, disable and cleanup behavior. If it owns mutations, retain and recover the original receipt rather than replaying an unknown operation.
 
-On macOS/Linux, copy `assets/starter/verify-host.py` beside `create.mjs`, `host.mjs` and `tui.mjs`
-and run `python3 verify-host.py --maka /path/to/maka`. It generates a fresh Host
-package and an explicit consumer, creates a temporary Root, commits the graph,
-launches the real Host with only the Echo query grant, verifies ASCII/Unicode and
-invalid inputs, then closes the Host and removes the temporary directory. This is
-a launcher test fixture: plugin business code uses bound capabilities, not the raw
-IPC framing shown in the fixture.
+On macOS/Linux, copy `assets/starter/verify-host.py` beside `create.mjs` and `host.mjs`, then run `python3 verify-host.py --maka /path/to/maka`. The fixture generates an Echo package and an explicit consumer in a temporary Root, starts the real Host, verifies strings and invalid input, then closes and removes it. Its raw IPC code belongs to the launcher fixture, not plugin business code.
 
-The starter generator checks Host or TUI graphs using the actual CLI. Its
-Echo service is a query, and its counter is local UI state. It does not demonstrate
-durable effects, cross-process grants or model execution; add those through their
-own explicit contracts when the requested feature needs them.
+The starter's counter demonstrates local NSH state; Echo demonstrates a Host query. They do not need a model connection. Add durable effects through the service that owns the data when the feature needs them.
 
-Installation uses existing owned Roots. For a new isolated test Root, initialize it
-with `maka host init --root PATH`, then commit a deployment using
-`maka application commit --root PATH --deployment UUID --expected-revision 0
---input composition.json --package plugin --package surface`. Read back the source
-with `maka application read`. Updates use the observed revision and preserve instance
-identities. Commit stores desired input and bytes; it is distinct from successful
-activation and cleanup.
+For an isolated Host test, initialize a Root with `maka host init --root PATH`, then commit its checked source using `maka application commit --root PATH --deployment UUID --expected-revision 0 --input composition.json --package plugin`. Updates use the observed revision and preserve instance identities. To exercise a UI plugin, install it into the existing business Host and insert its UI instance; do not replace unrelated business instances with the starter's one-node graph. Run `maka --root HOST_ROOT` to open the terminal client.
 
-Verify native rendering and input with the intended presenter's existing component
-fixtures. To exercise an installed business Host through Maka's terminal workbench,
-run `maka --root HOST_ROOT`; the Host's selected deployment and explicit grants
-remain authoritative.
+In a checkout, use focused behavior tests and SDK/product type checks. Rendering and input belong in the actual backend checks. Measure streaming input and scrolling with the release artifact and consistent feature flags. A separately built product artifact needs its own output directory; concurrent writers must not share `dist`.
 
-In a checkout, run the relevant crate tests and SDK/product type checks. Product
-tests build once before running. To build another product artifact concurrently,
-use `node products/maka/bundle/scripts/build.mjs --output PATH` with a separate
-directory; two writers must not share `dist`.
-
-For an Agent changing its connected foreground, use [Runtime UI authoring](runtime-ui.md). Its text package and document commands reuse the deployment manager’s validation and revision checks; the original operation receipt remains the evidence for the edit.
+[Runtime UI authoring](runtime-ui.md) lists the Agent tools for changing the connected source.

@@ -28,29 +28,27 @@ export default {
     'zh-CN': { displayName: '主机连接', description: '将应用连接到主机上运行的助手。' },
   },
   application: {
-    entries: {
-      host: {
-        ...native(sdk.nativeImplementations.gateway),
-        imports: {
-          agent: one(sdk.contracts.agent),
-          hostLogs: { contract: sdk.contracts.hostLogs, cardinality: { kind: 'optional' } },
-          coordinator: { contract: sdk.contracts.agent, cardinality: { kind: 'optional' } },
-          workhub: {
-            contract: sdk.contracts.workhubCoordinator,
-            cardinality: { kind: 'optional' },
-          },
-          coordinatorTerminal: {
-            contract: sdk.contracts.terminal,
-            cardinality: { kind: 'optional' },
-          },
-          terminal: { contract: sdk.contracts.terminal, cardinality: { kind: 'optional' } },
-          jev: { contract: sdk.contracts.workspaceJev, cardinality: { kind: 'optional' } },
-          web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
-          skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
-          settings: one(sdk.contracts.settings),
-          authentication: one(sdk.contracts.settingsAuthentication),
-          setup: one(sdk.contracts.settingsSetup),
+    host: {
+      ...native(sdk.nativeImplementations.gateway),
+      imports: {
+        agent: one(sdk.contracts.agent),
+        hostLogs: { contract: sdk.contracts.hostLogs, cardinality: { kind: 'optional' } },
+        coordinator: { contract: sdk.contracts.agent, cardinality: { kind: 'optional' } },
+        workhub: {
+          contract: sdk.contracts.workhubCoordinator,
+          cardinality: { kind: 'optional' },
         },
+        coordinatorTerminal: {
+          contract: sdk.contracts.terminal,
+          cardinality: { kind: 'optional' },
+        },
+        terminal: { contract: sdk.contracts.terminal, cardinality: { kind: 'optional' } },
+        jev: { contract: sdk.contracts.workspaceJev, cardinality: { kind: 'optional' } },
+        web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
+        skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
+        settings: one(sdk.contracts.settings),
+        authentication: one(sdk.contracts.settingsAuthentication),
+        setup: one(sdk.contracts.settingsSetup),
       },
     },
   },

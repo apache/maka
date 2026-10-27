@@ -18,7 +18,7 @@
  */
 
 import { textTooltip } from './ui';
-import { cleanup, inputAction, signal, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { windowSize } from 'nsh';
 import { createSettingsOperations } from './settingsOperations';
@@ -42,21 +42,40 @@ import {
 } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import type { ModelSelection } from '../../../../packages/plugin-sdk/src/generated/runtime';
+import { contributionTitle, pluginContext, type Contribution } from './plugins/registry';
+import { sameValue } from '../../../../plugins/shared/value';
+import { PluginView } from './plugins/PluginView';
+import type {
+  InstanceId,
+  ModelSelection,
+} from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { dialogTop } from './chrome';
 
-type Section = 'general' | 'connections' | 'network' | 'plugins';
+type BuiltinSection = 'general' | 'connections' | 'network' | 'plugins';
+type Section = BuiltinSection | `ui:${string}`;
+export type SettingsRoute =
+  | { kind: 'builtin'; section: BuiltinSection }
+  | { kind: 'plugin'; instance: InstanceId; id: string };
+const pluginSection = (item: Contribution): Section =>
+  `ui:${JSON.stringify([item.entry.instance.instance, item.id])}`;
 type BackAction = { section: Section; identity: string };
 const sections = [
   { id: 'general', label: 'General' },
   { id: 'connections', label: 'Connections & models' },
   { id: 'network', label: 'Network' },
   { id: 'plugins', label: 'Plugins' },
-] as const satisfies readonly { id: Section; label: string }[];
+] as const satisfies readonly { id: BuiltinSection; label: string }[];
 
 // One native Dialog owns focus restoration. Forms keep their own canonical
 // snapshot and unsaved edits; all writes share the original native journal.
-export function ModelSettings(props: { close(): void; changed(): void; model?: ModelSelection }) {
+export function ModelSettings(props: {
+  close(): void;
+  changed(): void;
+  model?: ModelSelection;
+  initial?: SettingsRoute | null;
+  routeChanged?(route: SettingsRoute): void;
+}) {
+  const uiPlugins = pluginContext()!;
   const section = signal<Section>('connections');
   const rail = () => windowSize().width >= 880 && !compact();
   const operations = createSettingsOperations();
@@ -70,6 +89,19 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
   const network = createNetworkSettings(operations, () => section() === 'network');
   const plugins = createPluginSettings(operations, () => section() === 'plugins');
   const pages = { connections, general, network, plugins };
+  const builtin = (value: Section): BuiltinSection | null =>
+    value.startsWith('ui:') ? null : (value as BuiltinSection);
+  const page = (value = section()) => {
+    const id = builtin(value);
+    return id === null ? null : pages[id];
+  };
+  const contributed = () => uiPlugins.settings().find((item) => pluginSection(item) === section());
+  effect(() => {
+    if (builtin(section()) === null && !contributed()) {
+      section.set('plugins');
+      plugins.activate();
+    }
+  });
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -77,27 +109,63 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
   const choose = (request: { from: Section; to: Section }) => {
     if (!alive || operations.busy() || section() !== request.from || request.from === request.to)
       return;
-    pages[request.from].deactivate();
+    if (
+      builtin(request.to) === null &&
+      !uiPlugins.settings().some((item) => pluginSection(item) === request.to)
+    )
+      return;
+    page(request.from)?.deactivate();
     if (!operations.pending().length) {
       operations.error.set('');
       operations.notice.set('');
     }
     section.set(request.to);
-    pages[request.to].activate();
+    page(request.to)?.activate();
   };
+  let restoring = props.initial;
+  effect(() => {
+    if (!restoring) return;
+    const route = restoring;
+    if (route.kind === 'builtin') {
+      restoring = null;
+      choose({ from: section(), to: route.section });
+    } else if (uiPlugins.ready()) {
+      restoring = null;
+      const item = uiPlugins
+        .settings()
+        .find(
+          (item) => item.id === route.id && sameValue(item.entry.instance.instance, route.instance),
+        );
+      choose({ from: section(), to: item ? pluginSection(item) : 'plugins' });
+    }
+  });
+  effect(() => {
+    if (restoring) return;
+    const current = builtin(section());
+    if (current) props.routeChanged?.({ kind: 'builtin', section: current });
+    else {
+      const item = contributed();
+      if (item)
+        props.routeChanged?.({
+          kind: 'plugin',
+          instance: item.entry.instance.instance,
+          id: item.id,
+        });
+    }
+  });
   const backAction = (): BackAction => ({
     section: section(),
-    identity: pages[section()].navigation(),
+    identity: page()?.navigation() ?? section(),
   });
   const back = (request: BackAction) => {
     if (
       !alive ||
       operations.busy() ||
       section() !== request.section ||
-      pages[request.section].navigation() !== request.identity
+      (page(request.section)?.navigation() ?? request.section) !== request.identity
     )
       return;
-    if (pages[request.section].back()) props.close();
+    if (page(request.section)?.back() ?? true) props.close();
   };
   const close = () => {
     if (alive && !operations.busy()) props.close();
@@ -126,7 +194,11 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
           models: tr('Connection models'),
           model: tr('Model settings'),
         }[connections.page()]
-      : pages[current].title();
+      : (page(current)?.title() ??
+          (() => {
+            const item = contributed();
+            return item ? contributionTitle(item) : '';
+          })());
   };
   const nested = () =>
     section() === 'connections'
@@ -249,6 +321,33 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
                 </Button>
               )}
             </Each>
+            <Each of={uiPlugins.settings()} key={(item) => item.key}>
+              {(item) => (
+                <Button
+                  accessibilityLabel={contributionTitle(item())}
+                  disabled={operations.busy()}
+                  selected={section() === pluginSection(item())}
+                  onPress={inputAction(choose, {
+                    from: section(),
+                    to: pluginSection(item()),
+                  })}
+                  style={{ ...controlStyle, minHeight: rail() ? 40 : 32 }}
+                  selectedStyle={{ backgroundColor: C.raised }}
+                  hoverStyle={controlHoverStyle}
+                  focusStyle={controlFocusStyle}
+                  disabledStyle={controlDisabledStyle}
+                >
+                  <Text
+                    style={{
+                      ...captionTextStyle,
+                      color: section() === pluginSection(item()) ? C.text : C.muted,
+                    }}
+                  >
+                    {contributionTitle(item())}
+                  </Text>
+                </Button>
+              )}
+            </Each>
           </View>
           <View
             style={{ flex: 1, minWidth: 0, minHeight: 0, padding: compact() ? 8 : 16, gap: 16 }}
@@ -316,6 +415,9 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
             <If when={section() === 'plugins'}>
               <PluginSettings owner={plugins} />
             </If>
+            <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
+              {(item) => <PluginView contribution={item()} sessionId={uiPlugins.sessionId} />}
+            </Each>
           </View>
         </View>
       </View>

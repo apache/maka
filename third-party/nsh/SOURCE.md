@@ -265,3 +265,18 @@ other queued engine messages. The existing terminal lifecycle, retained-row
 host-identity checks and focus regressions remain in place. Native platform
 runtime and gallery appearance checks require their supported environments;
 Linux core tests are not evidence of those visual checks.
+
+Trusted Workbench modules use the existing chunk runtime through the public
+`importModule` API and an optional `EngineConfig.chunk_loader`. `ChunkSource`
+carries the module's asset directory; imported images and fonts resolve against
+`import.meta.assetBase`. Engines own asynchronous loads and cancel them when
+they close. Terminal `AppView::load_with_config` retains the caller's services,
+assets and module loader while using the actual terminal geometry.
+
+Bundled resources now expose their logical package path and physical source
+separately. Content-based resource families include every bitmap density
+variant, preserving sibling filenames without depending on the checkout path.
+Packaging, development serving, file watching and lazy font assignment use this
+mapping, including imports outside the entry directory. GPUI and terminal input
+fences let a Workbench replacement drain admitted edits before saving its draft;
+they reuse the existing input scopes and engine message ordering.

@@ -207,6 +207,31 @@ function App() {
 mount(App);
 ```
 
+## importModule
+
+```ts
+function importModule<T = Record<string, unknown>>(
+  id: string,
+  dependencies?: readonly string[],
+): Promise<T>;
+```
+
+Loads a module supplied by the embedding host at runtime. The id and its static dependencies are flat chunk
+file names, such as `plugin.js`. The promise resolves to the module's exports. Repeated imports of one id share
+its evaluation and state; updated code uses a new id.
+
+The module runs in the app's VM and uses its registered native modules and capabilities. Render an exported
+component in the app's tree. Its components and subscriptions follow their reactive owners; the evaluated
+module remains cached for that VM's lifetime. A failed source read rejects the promise, and a later import
+retries the read.
+
+Native embedding hosts supply sources asynchronously with `EngineConfig::chunk_loader`; web hosts use their
+split-bundle loader. Modules already supplied in `Bundle::with_chunks` are available immediately.
+
+The source loader can give a module its own asset directory with `ChunkSource::with_asset_base`. Imported
+images and fonts resolve there automatically, including pixel-density variants. The host keeps that directory
+outside the source, so a content-addressed package can use its own identity in its asset URLs.
+
 ## mount
 
 ```ts

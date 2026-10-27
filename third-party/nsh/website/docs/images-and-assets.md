@@ -44,7 +44,7 @@ fn native(registry: &mut Registry) {
 ```tsx tabs
 import logo from "./assets/logo@2x.png";
 
-logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
+logo; // { url: "asset:/imports/<digest>/logo@2x.png", size: { width: 64, height: 64 } }
 ```
 
 Supported files: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.heic`, and `.svg` ([SVG images](#svg-images)).
@@ -53,7 +53,7 @@ Supported files: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.heic`, and `.svg` (
 
 **Natural size.** An image from an asset lays out at its natural size when its style leaves the width or height open, so `image(LOGO)` and `<Image src={logo} />` need no style. Set one dimension and the aspect ratio, or both, to size it differently.
 
-In Rust, a missing or broken file fails the build, and a changed one builds the crate again. In TSX, assets are resolved relative to the importing module, and their `url` is relative to the app's root (the entry's directory). `nsh build` copies them to `out/assets/`, `nsh package` puts them in the app, and during development the dev server serves them.
+In Rust, a missing or broken file fails the build, and a changed one builds the crate again. In TSX, assets are resolved relative to the importing module, including files outside the entry directory. Their compiled `url` uses `asset:/imports/<digest>/<filename>`, where the digest covers the filenames and contents of the entire resource family. Pixel-density variants keep their sibling names, and moving the checkout does not change these logical paths. `nsh build` copies them to `out/assets/`, `nsh package` puts them in the app, and during development the dev server serves them.
 
 > [!TIP]
 > In TSX, `src` also accepts `asset:/path` strings, and imported files are the ones guaranteed to ship. A path that is never imported works with the dev server, which serves the whole app directory, and is missing from packaged apps. Import every image you use. A Rust crate ships its whole `assets/` directory through `assets!()`.
@@ -78,7 +78,7 @@ const LOGO: ImageAsset = asset!("logo.png");
 ```tsx tabs
 import logo from "./assets/logo.png";
 
-logo; // { url: "asset:/assets/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
+logo; // { url: "asset:/imports/<digest>/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
 ```
 
 - `asset!` and the bundler look for `@1.5x`, `@2x`, `@3x` and `@4x` siblings of an image named without a suffix. `scales` lists them, with 1 for the named file; an image without siblings has no scales (in TSX it imports as `{ url, size }`). The bundler ships the siblings it finds, and `assets!()` ships the whole directory.
@@ -100,7 +100,7 @@ Import an `.svg` file like any image. Its size in points is its `width` and `hei
 import logo from "./assets/logo.svg"; // <svg width="120" height="40" …>
 import star from "./assets/star.svg"; // <svg viewBox="0 0 24 24" …>
 
-logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
+logo; // { url: "asset:/imports/<digest>/logo.svg", size: { width: 120, height: 40 } }
 
 <Image src={logo} />
 <Image src={star} style={{ width: 36, height: 36, tintColor: "#0969da" }} />

@@ -31,4 +31,4 @@ A handler uses the original `Context.scope()` and actual attachments. Retain cal
 
 `NativeServices` forwards through captured imports with private native-origin evidence. Public identity fields are observations, not grants. Declare an `execution_basis` only when immutable facts fully establish equivalent execution semantics; otherwise retain activation-specific identity.
 
-Native UI factories use the UI registry and presenter lifecycle. Keep entities, input bindings and subscriptions in the native resource owner, outside immutable view recipes. See `platform/ui-runtime` and the relevant renderer.
+NSH Rust components are registered through `nsh_core::element::Registry` and supplied in the workbench's `EngineConfig.ui_sets`. Keep native entities and resource lifetime with the actual backend owner. Shared NSH components work across supported backends; a platform-native leaf needs that backend's implementation. A dynamically installed UI module uses the already registered components; adding a new Rust implementation requires rebuilding the executable.

@@ -35,17 +35,13 @@ fn main() {
     .expect("bundle workbench application");
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
     std::fs::write(output.join("app.js"), module.code).expect("write workbench application");
-    let app = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("package directory"),
-    )
-    .join("app");
     let mut assets = String::from("&[\n");
-    for path in module.assets {
-        let source = app.join(&path);
+    for asset in module.assets {
+        let source = asset.source;
         println!("cargo:rerun-if-changed={}", source.display());
         assets.push_str(&format!(
             "({:?}, include_bytes!({:?}).as_slice()),\n",
-            format!("asset:/{}", path.to_string_lossy().replace('\\', "/")),
+            format!("asset:/{}", asset.path),
             source,
         ));
     }

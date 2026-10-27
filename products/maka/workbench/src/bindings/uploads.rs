@@ -21,7 +21,7 @@
 
 use super::{EDITOR, Scope, ScopedHost, execute};
 use maka_capabilities::call::ReadResource;
-use maka_ui_runtime::{
+use maka_ui_support::{
     budget::Kind,
     file::{FileSnapshot, read_selected},
 };

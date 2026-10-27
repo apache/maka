@@ -44,7 +44,7 @@ fn native(registry: &mut Registry) {
 ```tsx tabs
 import logo from "./assets/logo@2x.png";
 
-logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
+logo; // { url: "asset:/imports/<digest>/logo@2x.png", size: { width: 64, height: 64 } }
 ```
 
 支持的文件：`.png`、`.jpg`、`.jpeg`、`.gif`、`.webp`、`.heic`，以及 `.svg`（[SVG 图片](#svg-图片)）。
@@ -53,7 +53,7 @@ logo; // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
 
 **自然尺寸。** 当样式没有指定宽度或高度时，来自资源的图片按自然尺寸布局，所以 `image(LOGO)` 和 `<Image src={logo} />` 不需要任何样式。若要改变大小，设置其中一边加宽高比，或同时设置两边。
 
-在 Rust 中，缺失或损坏的文件会让构建失败，文件改动后 crate 会重新构建。在 TSX 中，资源路径相对于导入它的模块解析，其 `url` 相对于应用根目录（入口文件所在目录）。`nsh build` 会把它们复制到 `out/assets/`，`nsh package` 会把它们放进应用，开发时则由开发服务器提供。
+在 Rust 中，缺失或损坏的文件会让构建失败，文件改动后 crate 会重新构建。在 TSX 中，资源路径相对于导入它的模块解析，即使资源在入口目录以外也会打包。编译后的 `url` 使用 `asset:/imports/<digest>/<文件名>`；摘要包含整个资源族的文件名和内容，像素密度变体保留同目录的文件名关系，不受 checkout 位置影响。`nsh build` 会把它们复制到 `out/assets/`，`nsh package` 会把它们放进应用，开发时则由开发服务器提供。
 
 > [!TIP]
 > 在 TSX 中，`src` 也接受 `asset:/path` 字符串，被导入的文件才保证会被发布。从未导入的路径在开发服务器下可以使用（它提供整个应用目录），在打包后的应用中却会缺失。请导入你用到的每一张图片。Rust crate 通过 `assets!()` 发布整个 `assets/` 目录。
@@ -78,7 +78,7 @@ const LOGO: ImageAsset = asset!("logo.png");
 ```tsx tabs
 import logo from "./assets/logo.png";
 
-logo; // { url: "asset:/assets/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
+logo; // { url: "asset:/imports/<digest>/logo.png", size: { width: 64, height: 64 }, scales: [1, 2, 3] }
 ```
 
 - 对不带后缀的图片，`asset!` 和打包器会查找它的 `@1.5x`、`@2x`、`@3x` 和 `@4x` 同名文件。`scales` 列出它们，其中 1 表示指定的文件本身；没有同名文件的图片没有 scales（在 TSX 中导入为 `{ url, size }`）。打包器发布找到的同名文件，`assets!()` 发布整个目录。
@@ -100,7 +100,7 @@ logo; // { url: "asset:/assets/logo.png", size: { width: 64, height: 64 }, scale
 import logo from "./assets/logo.svg"; // <svg width="120" height="40" …>
 import star from "./assets/star.svg"; // <svg viewBox="0 0 24 24" …>
 
-logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
+logo; // { url: "asset:/imports/<digest>/logo.svg", size: { width: 120, height: 40 } }
 
 <Image src={logo} />
 <Image src={star} style={{ width: 36, height: 36, tintColor: "#0969da" }} />

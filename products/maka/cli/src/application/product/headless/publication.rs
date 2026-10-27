@@ -171,7 +171,7 @@ fn invalid_helper(input: &Input) -> Result<bool, HostError> {
             continue;
         };
         if package.id != "maka.agent.workspace-processes"
-            || node.use_package != PackageUse::Entry
+            || node.use_package != PackageUse::Host
             || !node.configuration.parameters.is_empty()
         {
             continue;

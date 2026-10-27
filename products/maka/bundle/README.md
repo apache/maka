@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-This directory selects the business Host packages shipped with Maka and binds them into one Agent/WorkHub source. Plugin declarations and implementations live under [plugins](../../../plugins/README.md).
+This directory selects the Host and UI plugin packages shipped with Maka and binds them into one Agent/WorkHub source. Plugin declarations and implementations live under [plugins](../../../plugins/README.md).
 
 - [package-inputs.json](package-inputs.json) selects authored packages.
 - [src/composition.ts](src/composition.ts) builds instances, bindings and installation identities.
@@ -38,13 +38,25 @@ just run --root /path/to/business-host
 
 `just run` opens the [NSH terminal workbench](../terminal-shell/README.md), using `~/.maka/application/host` by default. It connects to an existing Host or starts one automatically. Authoring commands below generate and manage plugin compositions independently of this terminal interface.
 
-The terminal and desktop shells run the same workbench against this business Host; the bundle does not install a presenter or a separate management Host. [Selected-package updates](../cli/README.md#product-updates-recovery-and-url-installation) preserve the existing Host source and native grants.
+The terminal and desktop shells run the same NSH workbench. One deployment source manages Host services, UI plugins and composition nodes. Enabled UI plugins contribute commands, panels, settings pages and tool result components. Installation implies user trust: plugins use the workbench VM and existing client capabilities directly. [Selected-package updates](../cli/README.md#product-updates-recovery-and-url-installation) preserve the existing Host source and native grants.
 
-Every CLI build embeds the current TypeScript bundle, including debug builds. Rebuild the CLI after changing plugin sources. `just product` produces a separate bundle for inspection and export; it does not replace resources inside an existing binary. The build generates `product-version.txt` from exact authoring and named package bytes. Installation and updates validate real package bytes against this identifier. Treat the bundle output as a generated artifact: rebuild after source changes instead of editing output files. Missing, malformed or mismatched identifiers require a rebuild. Use a separate output directory when building an artifact alongside a running development build:
+UI instances can bind declared service imports to Host providers in this source. Their `UiContext.services` and `operations` use the UI consumer's captured session and original receipts, while the full trusted `UiContext.host` remains available. A package can ship its backend and UI together without publishing a separate client endpoint for each private service.
+
+Every CLI build embeds the current TypeScript bundle, including debug builds. Rebuild the CLI after changing plugin sources. `just product` first builds the checkout’s CLI compiler, then exports a separate bundle for inspection. Editing that exported bundle does not change the embedded resources. The build generates `product-version.txt` from exact authoring and named package bytes. Installation and updates validate real package bytes against this identifier. Treat the bundle output as a generated artifact: rebuild after source changes instead of editing output files. Missing, malformed or mismatched identifiers require a rebuild. Use a separate output directory when building an artifact alongside a running development build:
 
 ```sh
-node products/maka/bundle/scripts/build.mjs --output ~/.cache/maka/product-export
+just product --output ~/.cache/maka/product-export
 ```
+
+UI entries are compiled with the NSH compiler into self-contained ES modules, with their assets in the same immutable package. Cargo discovers the declared UI sources and invokes the compiler directly; it does not start a nested Cargo build. `just product` and the workspace npm build/test commands pass the exact compiler executable reported by Cargo. The standalone Node plugin package builder uses `maka` from PATH, or the Maka executable selected by `MAKA_UI_BUNDLER`.
+
+To compile one NSH UI module directly:
+
+```sh
+maka application build-ui --entry ui/index.tsx --output ui-build
+```
+
+The emitted `manifest.json` describes `bundle.js`, assets and source dependencies. The package builder copies them to `application.ui.module` and the corresponding package-relative asset paths.
 
 ## Author an installation
 
@@ -69,7 +81,6 @@ Committing stores desired source and bytes; it does not activate or select that 
 ```sh
 npm --workspace @maka-agent/product run typecheck
 npm --workspace @maka-agent/product test
-MAKA_PRODUCT_CLI_CHECK=1 npm --workspace @maka-agent/product test
 ```
 
-Tests build once, then check Host package declarations, business composition and the shared SDK scene schemas. Setting `MAKA_PRODUCT_CLI_CHECK` also checks packages and compositions against the actual CLI. Native rendering, focus and input changes belong to their shell tests.
+Tests build once, then use that exact CLI to check complete Host/UI packages, business composition and tool presentation declarations. Native rendering, focus and input changes belong to their shell tests.

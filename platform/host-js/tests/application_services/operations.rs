@@ -595,13 +595,7 @@ async fn original_receipt_survives_restart_and_new_composition_without_provider(
         let mut replacement_node = node(&replacement, 2, true);
         replacement_node.bindings.clear();
         let replacement_input = Input {
-            environment: Environment {
-                location: ExecutionLocation::Host,
-                presentation: None,
-            },
             instances: BTreeMap::from([("recovery-client".into(), replacement_node)]),
-            recovery: None,
-            launch: None,
         };
         // Acceptance precedes committed withdrawal; new admission is revoked
         // when the live owner adopts the new source automatically.
@@ -1773,8 +1767,8 @@ fn remote_mutation_packages() -> (Package, Package, Contract) {
         .unwrap()
         .declaration()
         .clone();
-    p.entries
-        .get_mut(&EntryTarget::Host)
+    p.host
+        .as_mut()
         .unwrap()
         .exports
         .get_mut("echo")
@@ -1787,22 +1781,18 @@ fn remote_mutation_packages() -> (Package, Package, Contract) {
         .unwrap()
         .declaration()
         .clone();
-    c.entries
-        .get_mut(&EntryTarget::Host)
+    c.host
+        .as_mut()
         .unwrap()
         .imports
         .get_mut("echo")
         .unwrap()
         .contract = declared.clone();
     (
-        package(
-            "native",
-            p.entries.remove(&EntryTarget::Host).unwrap(),
-            None,
-        ),
+        package("native", p.host.take().unwrap(), None),
         package(
             "consumer",
-            c.entries.remove(&EntryTarget::Host).unwrap(),
+            c.host.take().unwrap(),
             Some("export function activate(){return {}; }".into()),
         ),
         declared,
@@ -1915,7 +1905,7 @@ async fn internal_caller_commit_precedes_final_admission_and_failed_record_never
         }).await.unwrap();
     }
 }
-async fn ui_caller_source(
+async fn commit_caller_source(
     store: &RootStore,
     deployment: Uuid,
     expected: u64,
@@ -1923,30 +1913,29 @@ async fn ui_caller_source(
     role: &str,
 ) -> maka_plugin_core::deployment::DeploymentRef {
     let declaration = Declaration {
-        entries: BTreeMap::from([(
-            EntryTarget::Tui,
-            EntryDeclaration {
-                scene: None,
-                implementation: Implementation::Native {
-                    implementation: "test.caller".into(),
-                },
-                configuration: json!({"type":"object"}).into(),
-                imports: BTreeMap::from([(
-                    "echo".into(),
-                    Import {
-                        contract: declared.clone(),
-                        cardinality: Cardinality::One,
-                    },
-                )]),
-                exports: BTreeMap::new(),
+        host: Some(EntryDeclaration {
+            implementation: Implementation::Native {
+                implementation: "test.caller".into(),
             },
-        )]),
+            configuration: json!({"type":"object"}).into(),
+            imports: BTreeMap::from([(
+                "echo".into(),
+                Import {
+                    contract: declared.clone(),
+                    cardinality: Cardinality::One,
+                },
+            )]),
+            exports: BTreeMap::new(),
+        }),
+        ui: None,
         composition: None,
     };
     let caller = Package::new(BTreeMap::from([(
         MANIFEST_FILE.into(),
-        serde_json::to_vec(&json!({"schemaVersion":1,"id":"ui.caller","application":declaration}))
-            .unwrap(),
+        serde_json::to_vec(
+            &json!({"schemaVersion":1,"id":"remote.caller","application":declaration}),
+        )
+        .unwrap(),
     )]))
     .unwrap();
     let mut node = node(&caller, 41, false);
@@ -1959,13 +1948,7 @@ async fn ui_caller_source(
         }],
     );
     let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Ui,
-            presentation: Some(maka_plugin_core::composition::PresentationTarget::Tui),
-        },
         instances: BTreeMap::from([("caller".into(), node)]),
-        recovery: None,
-        launch: None,
     };
     let observed = maka_plugin_core::deployment::RemoteObservation {
         capability: maka_plugin_core::plan::RemoteCapability {
@@ -1994,7 +1977,7 @@ async fn separate_caller_root_stays_owned_through_effect_cleanup_and_keeps_origi
             let host_deployment=Uuid::new_v4();
             host_store.commit_application(host_deployment,0,input(&provider,&consumer),vec![],vec![provider,consumer]).await.unwrap();
             let caller_deployment=Uuid::new_v4();
-            let caller_source=ui_caller_source(&caller_store,caller_deployment,0,declared.clone(),"original-host").await;
+            let caller_source=commit_caller_source(&caller_store,caller_deployment,0,declared.clone(),"original-host").await;
             let started=Arc::new(tokio::sync::Semaphore::new(0));let release=Arc::new(tokio::sync::Semaphore::new(0));let issuer=Issuer::default();
             let host=Application::start_from_store(host_store.clone(),host_deployment,registry_contract(Arc::new(CallerCheckedMutation {caller_database:caller_dir.path().join("root"),started:started.clone(),release:release.clone(),fail_cleanup}),declared.clone()),issuer.clone(),Arc::new(RecoveryGrant {issuer:issuer.clone(),recovery:Arc::new(AtomicBool::new(true))}),Some(maka_host_js::factory(Limits::default()))).await.unwrap();
             host.ready().await.unwrap();let client=host.client();
@@ -2003,7 +1986,7 @@ async fn separate_caller_root_stays_owned_through_effect_cleanup_and_keeps_origi
             let reference=prepared.reference().clone();
             assert!(host_store.operation(&reference).unwrap().operation_observation().await.unwrap().is_none());
             let recorded=caller_store.record_application_intent(caller_source.clone(),id(41),reference.clone(), serde_json::Value::Null).await.unwrap();
-            let next=ui_caller_source(&caller_store,caller_deployment,1,declared,"replacement-host").await;
+            let next=commit_caller_source(&caller_store,caller_deployment,1,declared,"replacement-host").await;
             assert_ne!(next,caller_source);
             let accepted=client.mutate(prepared,recorded).await.unwrap();
             started.acquire().await.unwrap().forget();

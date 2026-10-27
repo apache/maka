@@ -76,18 +76,13 @@ async fn activate_worker_mode(
                 manifest.application.as_ref().unwrap().declaration().clone();
             manifest.id = "worker".into();
             if external {
-                manifest_application
-                    .entries
-                    .get_mut(&EntryTarget::Host)
-                    .unwrap()
-                    .imports
-                    .insert(
-                        "executor".into(),
-                        Import {
-                            contract: maka_agent_api::executor::contract(),
-                            cardinality: Cardinality::One,
-                        },
-                    );
+                manifest_application.host.as_mut().unwrap().imports.insert(
+                    "executor".into(),
+                    Import {
+                        contract: maka_agent_api::executor::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                );
             }
             if !matches!(
                 behavior,
@@ -95,13 +90,10 @@ async fn activate_worker_mode(
                     | WorkerBehavior::DeniedQuery(_)
                     | WorkerBehavior::External
             ) {
-                manifest_application
-                    .entries
-                    .get_mut(&EntryTarget::Host)
-                    .unwrap()
-                    .implementation = Implementation::Native {
-                    implementation: "fixture.lost-agent".into(),
-                };
+                manifest_application.host.as_mut().unwrap().implementation =
+                    Implementation::Native {
+                        implementation: "fixture.lost-agent".into(),
+                    };
             }
             Some(
                 Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
@@ -140,10 +132,7 @@ async fn activate_worker_mode(
             let mut manifest = package.manifest().clone();
             let mut manifest_application =
                 manifest.application.as_ref().unwrap().declaration().clone();
-            let entry = manifest_application
-                .entries
-                .get_mut(&EntryTarget::Host)
-                .unwrap();
+            let entry = manifest_application.host.as_mut().unwrap();
             if manifest.id == "agent" {
                 entry.configuration = hub::configuration_schema().into();
                 entry.implementation = Implementation::Native {
@@ -235,10 +224,10 @@ async fn activate_worker_mode(
         }
         if external {
             let package=Package::new(BTreeMap::from([
-                (MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"entries":{"host":{
+                (MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"host":{
                     "implementation":{"kind":"javascript","module":"executor.mjs","realm":"shared"},"configuration":{"type":"object","additionalProperties":false},"imports":{},
                     "exports":{"executor":{"contract":maka_agent_api::executor::contract(),"availability":"required"}}
-                }}}})).unwrap()),
+                }}})).unwrap()),
                 ("executor.mjs".into(),format!(r#"export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input,observation,context){{
                     let suffix='';
                     if(input.message.includes('original upload')) {{
@@ -273,7 +262,7 @@ async fn activate_worker_mode(
                 Node {
                     key: Uuid::from_u128(22),
                     package: package.application_ref().into(),
-                    use_package: PackageUse::Entry,
+                    use_package: PackageUse::Host,
                     configuration: Default::default(),
                     parameters: Default::default(),
                     disabled: false,

@@ -24,16 +24,16 @@ default:
 setup:
     npm ci --no-audit --no-fund
 
-# Build the authored plugin selection without rebuilding Rust.
-product:
-    npm --workspace @maka-agent/product run build
+# Export the product using the checkout's current UI compiler.
+product *args:
+    npm --workspace @maka-agent/product run build -- "$@"
 
 # Run the native CLI or TUI.
-run *args: product
+run *args:
     node scripts/rust/run-cli.mjs "$@"
 
 # Build the native CLI and desktop shell (--release / --target).
-build *args: product
+build *args:
     node scripts/rust/build-cli.mjs "$@"
 
 # Check all maintained code and behavior.

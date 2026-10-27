@@ -102,13 +102,6 @@ pub(super) fn scoped_runtime(health: &Arc<Health>, limits: &Limits) -> Result<Js
     Ok(runtime)
 }
 
-pub(super) fn foreground_runtime(health: &Arc<Health>, limits: &Limits) -> Result<JsRuntime> {
-    let mut runtime = runtime_base(health, limits, super::Realm::Pure)?;
-    runtime.execute_script("maka-foreground-globals", "delete globalThis.Deno; delete globalThis.__bootstrap; delete globalThis.console; delete globalThis.queueMicrotask;")
-        .map_err(failed)?;
-    Ok(runtime)
-}
-
 pub(super) fn load(runtime: &mut JsRuntime, name: &str, source: &str) -> Result<Module> {
     deno_core::scope!(scope, runtime);
     v8::tc_scope!(scope, scope);
@@ -236,18 +229,6 @@ fn invoke(
     Ok(value)
 }
 
-/// No promise polling or I/O. Serialize under the same script budget: getters
-/// and toJSON can execute user code.
-pub(super) fn call_synchronous(
-    runtime: &mut JsRuntime,
-    module: &Module,
-    path: &[String],
-    args: &[Value],
-) -> Result<Value> {
-    let result = invoke(runtime, module, path, args)?;
-    value(runtime, result)
-}
-
 /// Capture an actual receiver and all required functions before publishing a
 /// registration. Property getters/proxies execute here under the caller's budget;
 /// later mutation of the namespace never redirects an existing registration.
@@ -283,16 +264,6 @@ pub(super) fn capture_callbacks(
         receiver: v8::Global::new(scope, receiver),
         functions,
     })
-}
-
-pub(super) fn call_bound_synchronous(
-    runtime: &mut JsRuntime,
-    callbacks: &Callbacks,
-    method: &str,
-    args: &[&Value],
-) -> Result<Value> {
-    let result = invoke_bound(runtime, callbacks, method, args.iter().copied(), None)?;
-    value(runtime, result)
 }
 
 pub(super) fn call_bound(
@@ -365,17 +336,7 @@ pub(super) fn value(runtime: &mut JsRuntime, value: v8::Global<v8::Value>) -> Re
     v8::tc_scope!(scope, scope);
     let value = v8::Local::new(scope, value);
     if value.is_promise() {
-        return Err(failed("foreground callbacks must return synchronously"));
+        return Err(failed("plugin result is an unresolved promise"));
     }
     super::json::decode(scope, value).map_err(failed)
-}
-
-/// Drain ready native V8 tasks and local JavaScript jobs, without waiting on
-/// promises, timers or operations. Foreground domains expose no system ops.
-pub(super) fn poll_ready_jobs(runtime: &mut JsRuntime) -> Result<()> {
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    match runtime.poll_event_loop(&mut context, Default::default()) {
-        std::task::Poll::Ready(Err(error)) => Err(failed(error)),
-        _ => Ok(()),
-    }
 }
