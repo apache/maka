@@ -20,12 +20,10 @@
 //! A VM multiplexes modules and promises; module handles own code retention.
 mod captured;
 mod engine;
-mod foreground;
 mod request;
 mod worker;
 
 pub use captured::Captured;
-pub use foreground::{Foreground, ForegroundCallbacks, ForegroundModule};
 pub use request::RequestBridge;
 
 use crate::json;

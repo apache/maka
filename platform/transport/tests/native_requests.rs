@@ -33,7 +33,7 @@ use maka_host_runtime::application::{
 use maka_plugin_core::{
     composition::InstanceId,
     operation::{OperationOutcome, Receipt},
-    package::{EntryTarget, Implementation},
+    package::Implementation,
     runtime::Published,
 };
 use maka_transport::{
@@ -453,11 +453,7 @@ async fn native_owner_close_waits_for_actual_child_cleanup_after_observer_drop()
             .unwrap()
             .declaration()
             .clone();
-        declaration
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap()
-            .implementation = Implementation::Native {
+        declaration.host.as_mut().unwrap().implementation = Implementation::Native {
             implementation: "native.blocking".into(),
         };
         *provider = support::counter::package("local.business", declaration, None);
@@ -581,7 +577,7 @@ async fn native_origin_survives_forwarding_but_never_grants_an_unlisted_downstre
             .unwrap()
             .declaration()
             .clone();
-        let entry = declaration.entries.get_mut(&EntryTarget::Host).unwrap();
+        let entry = declaration.host.as_mut().unwrap();
         entry.implementation = Implementation::Native {
             implementation: "native.forward".into(),
         };
@@ -717,11 +713,7 @@ async fn native_requests_preserve_unknown_receipts_and_independent_failed_cleanu
             .unwrap()
             .declaration()
             .clone();
-        declaration
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap()
-            .implementation = Implementation::Native {
+        declaration.host.as_mut().unwrap().implementation = Implementation::Native {
             implementation: "native.failure".into(),
         };
         *provider = support::counter::package("local.business", declaration, None);

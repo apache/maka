@@ -225,6 +225,7 @@ impl EventLog {
         let session = session.to_owned();
         let commits = self.commits.session(&session);
         let prepared = self.prepared.clone();
+        let observations = self.connection.observations();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -233,6 +234,10 @@ impl EventLog {
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
                     if !state.pending() {
+                        tx.rollback().await?;
+                        if state == SessionRetirement::Removed {
+                            observations.purge_session(session).await?;
+                        }
                         return Ok(state);
                     }
                     if !settled(&mut tx, &session).await? {
@@ -261,8 +266,6 @@ impl EventLog {
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_revision_sources WHERE session_id=?",
-                        "DELETE FROM transcript_cache.rows WHERE session_id=?",
-                        "DELETE FROM transcript_cache.text WHERE session_id=?",
                         "DELETE FROM transcript_directory WHERE session_id=?",
                         "DELETE FROM transcript_failures WHERE session_id=?",
                         "DELETE FROM catalog_messages WHERE session_id=?",
@@ -287,6 +290,7 @@ impl EventLog {
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     prepared.wake();
                     commits.metadata();
+                    observations.purge_session(session).await?;
                     Ok(SessionRetirement::Removed)
                 })
             })

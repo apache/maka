@@ -5,9 +5,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node ../../../scripts/rust/product.mjs build",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node scripts/build.mjs && node --test --test-concurrency=1 tests/*.test.mjs"
+    "test": "node ../../../scripts/rust/product.mjs test"
   },
   "devDependencies": {
     "ajv": "8.20.0",

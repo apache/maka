@@ -84,17 +84,11 @@ fn reader_source(configuration: Value) -> (Input, Vec<Package>) {
     };
     (
         Input {
-            environment: Environment {
-                location: ExecutionLocation::Host,
-                presentation: None,
-            },
             instances: BTreeMap::from([
                 ("receipts".into(), provider),
                 ("forwarder".into(), forwarder),
                 ("observer".into(), observer_node),
             ]),
-            recovery: None,
-            launch: None,
         },
         vec![reader, forwarding, observer],
     )

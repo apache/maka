@@ -27,13 +27,11 @@ use maka_agent_facts::event::{CommitError, EventWrite, Fact, InvocationInput, Ru
 use maka_capabilities::call::Identity;
 use maka_packages::{MANIFEST_FILE, Package};
 use maka_plugin_core::{
-    composition::{
-        Configuration, Environment, ExecutionLocation, Input, InstanceId, Node, PackageUse,
-    },
+    composition::{Configuration, Input, InstanceId, Node, PackageUse},
     contract::{Contract, Interface, Method, MethodMode, Transport},
     deployment::DeploymentRef,
     operation::{OperationCleanup, OperationOutcome},
-    package::{Declaration, EntryDeclaration, EntryTarget, Implementation},
+    package::{Declaration, EntryDeclaration, Implementation},
 };
 use serde_json::json;
 use std::{
@@ -93,22 +91,18 @@ fn counts(log: &EventLog) -> (i64, i64, i64, i64) {
     db.query_row("SELECT (SELECT count(*) FROM application_intents), (SELECT count(*) FROM application_operations), (SELECT count(*) FROM message_admissions), (SELECT count(*) FROM event_log)", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap()
 }
 async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> DeploymentRef {
-    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"caller","application":Declaration {entries:BTreeMap::from([(EntryTarget::Host,EntryDeclaration {scene:None,implementation:Implementation::Native {implementation:"test.caller".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::new()})]),composition:None}})).unwrap())])).unwrap();
+    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"caller","application":Declaration {host: Some(EntryDeclaration { implementation:Implementation::Native {implementation:"test.caller".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::new()}), ui: None,composition:None}})).unwrap())])).unwrap();
     store
         .commit_application(
             deployment,
             expected,
             Input {
-                environment: Environment {
-                    location: ExecutionLocation::Host,
-                    presentation: None,
-                },
                 instances: BTreeMap::from([(
                     "caller".into(),
                     Node {
                         key: Uuid::from_u128(42),
                         package: package.application_ref().into(),
-                        use_package: PackageUse::Entry,
+                        use_package: PackageUse::Host,
                         configuration: Configuration::default(),
                         parameters: Configuration::default(),
                         bindings: BTreeMap::new(),
@@ -116,8 +110,6 @@ async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> Deployment
                         overrides: vec![],
                     },
                 )]),
-                recovery: None,
-                launch: None,
             },
             vec![],
             vec![package],
@@ -135,13 +127,7 @@ async fn request(store: &EventLog) -> OperationRequest {
                 Uuid::new_v4(),
                 0,
                 maka_plugin_core::composition::Input {
-                    environment: Environment {
-                        location: ExecutionLocation::Host,
-                        presentation: None,
-                    },
                     instances: BTreeMap::new(),
-                    recovery: None,
-                    launch: None,
                 },
                 vec![],
                 vec![],

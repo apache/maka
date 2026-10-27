@@ -171,7 +171,9 @@ out/<Name>/
 
 ## 嵌入 Ratatui 应用
 
-`nsh-platform-tui` 提供具有独立引擎、保留界面和输入状态的 `AppView`。宿主管理终端、事件循环及其他 Ratatui
+`nsh-platform-tui` 提供具有独立引擎、保留界面和输入状态的 `AppView`。
+使用 `view.load_with_config(config)` 可以运行共享的 `nsh_engine::EngineConfig`，保留它的 UI 注册表、资源读取器、
+模块加载器、运行时和宿主上下文；视图提供当前终端的实际视口和环境。宿主管理终端、事件循环及其他 Ratatui
 控件。加载包后，轮询提交、推进动画、转发事件，并绘制到分配给界面的区域：
 
 ```rust

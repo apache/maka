@@ -21,7 +21,6 @@ use super::*;
 use maka_capabilities::call::{Identity, ReadResource, ResourceEncoding};
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use maka_plugin_core::{
-    composition::Environment,
     contract::{ResourceType, text_resource_type},
     runtime::Runtime,
 };
@@ -50,13 +49,7 @@ impl Fixture {
         );
         let store = Arc::new(RootStore::open(owner).await.unwrap());
         let input = Input {
-            environment: Environment {
-                location: ExecutionLocation::Host,
-                presentation: None,
-            },
             instances: BTreeMap::new(),
-            recovery: None,
-            launch: None,
         };
         let source = store
             .commit_application(Uuid::new_v4(), 0, input.clone(), vec![], vec![])
@@ -82,10 +75,10 @@ fn package(bytes: Vec<u8>) -> Package {
             "maka.extension.json".into(),
             serde_json::to_vec(&json!({
                 "schemaVersion":1,"id":"example.payload",
-                "application":{"entries":{"host":{
+                "application":{"host":{
                     "implementation":{"kind":"native","implementation":"example.payload"},
                     "configuration":{"type":"object"},"imports":{},"exports":{}
-                }}}
+                }}
             }))
             .unwrap(),
         ),
@@ -96,10 +89,9 @@ fn package(bytes: Vec<u8>) -> Package {
 
 fn input(package: &Package) -> Input {
     serde_json::from_value(json!({
-        "environment":{"location":"host"},
         "instances":{"payload":{
             "key":Uuid::from_u128(1),
-            "package":{"source":"pinned","package":package.application_ref()},"usePackage":"entry"
+            "package":{"source":"pinned","package":package.application_ref()},"usePackage":"host"
         }}
     }))
     .unwrap()
@@ -209,6 +201,15 @@ fn context(attachments: Attachments) -> Context {
 }
 
 fn export(manager: Manager, source: DeploymentRef, package: PackageRef) -> (Subscription, Scope) {
+    subscribe(
+        manager,
+        "exportPackage",
+        json!({"source":source,"package":package}),
+    )
+}
+
+fn subscribe(manager: Manager, method: &str, input: Value) -> (Subscription, Scope) {
+    let method = method.to_owned();
     let mut context = context(Attachments::new());
     let scope = context.scope.clone();
     let (sender, receiver) = oneshot::channel();
@@ -216,7 +217,7 @@ fn export(manager: Manager, source: DeploymentRef, package: PackageRef) -> (Subs
     let Interface::Service { methods } = contract.interface else {
         unreachable!()
     };
-    let validator = Arc::new(jsonschema::validator_for(&methods["exportPackage"].output).unwrap());
+    let validator = Arc::new(jsonschema::validator_for(&methods[&method].output).unwrap());
     let (stream, emitter) = subscriptions::channel(
         Accepted {
             id: Uuid::new_v4(),
@@ -229,12 +230,14 @@ fn export(manager: Manager, source: DeploymentRef, package: PackageRef) -> (Subs
     let finishing = scope.clone();
     tokio::spawn(async move {
         let result = manager
-            .export_package(json!({"source":source,"package":package}), context)
+            .call(method, input, context)
             .await
             .and_then(|value| {
-                validator
-                    .validate(&value)
-                    .map_err(|error| error.to_string())?;
+                if !value.is_null() {
+                    validator
+                        .validate(&value)
+                        .map_err(|error| error.to_string())?;
+                }
                 Ok(value)
             });
         emitter.close();
@@ -242,6 +245,99 @@ fn export(manager: Manager, source: DeploymentRef, package: PackageRef) -> (Subs
         let _ = sender.send(QueryCompletion { result, cleanup });
     });
     (stream, scope)
+}
+
+#[tokio::test]
+async fn ui_catalog_tracks_enabled_instances_at_the_original_revision() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let fixture = Fixture::new().await;
+        let installed = fixture
+            .manager
+            .install_source(json!({
+                "expectedRevision": 1,
+                "files": {
+                    "maka.extension.json": json!({
+                        "schemaVersion": 1, "id": "example.panel",
+                        "application": {"ui": {
+                            "module": "panel.js",
+                            "configuration": {"type":"object", "properties": {
+                                "greeting": {"type":"string", "default":"Hello"}
+                            }},
+                            "contributions": {"panel": {"kind":"panel", "title":{"fallback":"Example panel","translations":{}}}}
+                        }}
+                    }).to_string(),
+                    "panel.js": "throw new Error('UI modules must not execute in the Host');"
+                }
+            }))
+            .await
+            .unwrap();
+        let package = installed["value"]["package"].clone();
+        let source = installed["value"]["source"].clone();
+        assert_eq!(
+            fixture.manager.read_ui(json!({})).await.unwrap(),
+            json!({
+                "source": source, "instances": []
+            })
+        );
+        let (mut changes, scope) =
+            subscribe(fixture.manager.clone(), "watch", json!({"source":source}));
+        let inserted = fixture
+            .manager
+            .edit_composition(json!({
+                "expectedRevision": 2,
+                "edits": [{"kind":"insert", "name":"example", "package":package,
+                    "usePackage":"ui", "settings":[], "bindings":{}}]
+            }))
+            .await
+            .unwrap();
+        assert_eq!(inserted["status"], "committed", "{inserted}");
+        let enabled = inserted["value"].clone();
+        assert_eq!(changes.recv().await.unwrap(), enabled);
+        let catalog = fixture
+            .manager
+            .read_ui(json!({"source":enabled}))
+            .await
+            .unwrap();
+        let instance = catalog["instances"][0]["instance"].clone();
+        let basis = catalog["instances"][0]["bindingBasis"].clone();
+        assert_eq!(
+            catalog,
+            json!({"source": enabled, "instances": [{
+                "instance": instance, "bindingBasis":basis, "path":["example"], "package":package,
+                "configuration":{"greeting":"Hello"}, "module":"panel.js", "imports":{},
+                "contributions":{"panel":{"kind":"panel", "title":{"fallback":"Example panel","translations":{}}}}
+            }]})
+        );
+        let disabled = fixture
+            .manager
+            .set_enabled(json!({
+                "expectedRevision": 3, "instance":instance, "enabled":false
+            }))
+            .await
+            .unwrap();
+        assert_eq!(disabled["status"], "committed", "{disabled}");
+        assert_eq!(changes.recv().await.unwrap(), disabled["value"]);
+        assert_eq!(
+            fixture.manager.read_ui(json!({})).await.unwrap(),
+            json!({
+                "source": disabled["value"], "instances": []
+            })
+        );
+        assert_eq!(
+            fixture
+                .manager
+                .read_ui(json!({"source":enabled}))
+                .await
+                .unwrap(),
+            catalog
+        );
+        changes.cancel();
+        let completion = changes.completion().await;
+        completion.cleanup.unwrap();
+        assert!(scope.resources.is_idle());
+    })
+    .await
+    .expect("UI source subscription did not complete");
 }
 
 #[tokio::test]
@@ -255,7 +351,7 @@ async fn text_authoring_uses_original_source_revision_and_package_validation() {
         ..
     } = &fixture;
     let files = json!({
-        "maka.extension.json":json!({"schemaVersion":1,"id":"example.footer","application":{"entries":{"host":{"implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},"configuration":{"type":"object"},"imports":{},"exports":{}}}}}).to_string(),
+        "maka.extension.json":json!({"schemaVersion":1,"id":"example.footer","application":{"host":{"implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},"configuration":{"type":"object"},"imports":{},"exports":{}}}}).to_string(),
         "host.mjs":"export function activate() { return {}; } // 界面"
     });
     let installed = manager
@@ -804,7 +900,7 @@ async fn k64_settings_keep_large_singleton_all_options_deep_paths_and_atomic_edi
     properties.insert("nested".into(), nested_schema);
     let mut files = package(vec![]).files().clone();
     let mut manifest: Value = serde_json::from_slice(&files["maka.extension.json"]).unwrap();
-    manifest["application"]["entries"]["host"]["configuration"] =
+    manifest["application"]["host"]["configuration"] =
         json!({"type":"object","properties":properties,"additionalProperties":false});
     files.insert(
         "maka.extension.json".into(),

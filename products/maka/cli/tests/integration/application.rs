@@ -20,7 +20,7 @@
 mod inspection;
 
 use maka_event_log::root::{RootNamespaces, RootOwner};
-use maka_plugin_core::composition::{Environment, ExecutionLocation, Input};
+use maka_plugin_core::composition::Input;
 use serde_json::Value;
 use std::{collections::BTreeMap, process::Command};
 
@@ -32,13 +32,7 @@ fn durable_application_commands_commit_read_cas_and_never_claim_readiness() {
     let owner = RootOwner::create(&root, &namespaces).unwrap();
     drop(owner);
     let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
         instances: BTreeMap::new(),
-        recovery: None,
-        launch: None,
     };
     let path = dir.path().join("input.json");
     std::fs::write(&path, serde_json::to_vec(&input).unwrap()).unwrap();
@@ -137,13 +131,7 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
     let deployment = uuid::Uuid::new_v4();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
         instances: BTreeMap::new(),
-        recovery: None,
-        launch: None,
     };
     runtime.block_on(async {
         let store = maka_event_log::root_store::RootStore::open(Arc::new(owner))
@@ -156,7 +144,7 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
         store.shutdown().await.unwrap();
     });
     let package = maka_packages::Package::new(BTreeMap::from([
-        ("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"example.url-cli","application":{"entries":{"host":{"implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},"configuration":{"type":"object"},"imports":{},"exports":{}}}}}"#.to_vec()),
+        ("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"example.url-cli","application":{"host":{"implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},"configuration":{"type":"object"},"imports":{},"exports":{}}}}"#.to_vec()),
         ("host.mjs".into(), b"export function activate() { return {}; }".to_vec()),
     ])).unwrap();
     let bytes = package.to_bundle();
@@ -287,19 +275,19 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
     let previous = Package::new(files).unwrap();
     assert_ne!(previous.application_ref(), current.application_ref());
     let manifest: Value = serde_json::from_slice(&current.files()["maka.extension.json"]).unwrap();
-    let contract = &manifest["application"]["entries"]["host"]["exports"]["files"]["contract"];
+    let contract = &manifest["application"]["host"]["exports"]["files"]["contract"];
     let consumer = Package::new(BTreeMap::from([
         (
             "maka.extension.json".into(),
             serde_json::to_vec(&json!({
                 "schemaVersion":1,"id":"example.standalone-custom",
-                "application":{"entries":{"host":{
+                "application":{"host":{
                     "implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},
                     "configuration":{"type":"object","properties":{"label":{"type":"string"}},
                         "required":["label"],"additionalProperties":false},
                     "imports":{"files":{"contract":contract,"cardinality":{"kind":"one"}}},
                     "exports":{}
-                }}}
+                }}
             }))
             .unwrap(),
         ),
@@ -321,12 +309,11 @@ fn standalone_host_package_update_preserves_saved_configuration_and_data() {
     );
     let inventory = Package::new(inventory_files).unwrap();
     let input: Input = serde_json::from_value(json!({
-        "environment":{"location":"host"},
         "instances":{
             "files":{"key":files_key,"package":{"source":"pinned","package":previous.application_ref()},
-                "usePackage":"entry"},
+                "usePackage":"host"},
             "custom":{"key":consumer_key,"package":{"source":"pinned","package":consumer.application_ref()},
-                "usePackage":"entry","configuration":{"values":{"label":"Keep my configuration"}},
+                "usePackage":"host","configuration":{"values":{"label":"Keep my configuration"}},
                 "bindings":{"files":[{"kind":"instance","path":["files"],"export":"files"}]}}
         }
     })).unwrap();

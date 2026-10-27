@@ -20,11 +20,7 @@
 //! Checked historical caller origin, held by its original executor.
 use super::{StoreError, invalid};
 use crate::{EventLog, root::RootOwner};
-use maka_plugin_core::{
-    composition::{ExecutionLocation, InstanceId},
-    deployment::DeploymentRef,
-    plan::Plan,
-};
+use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef, plan::Plan};
 use std::{
     collections::BTreeSet,
     sync::{Arc, Weak},
@@ -38,20 +34,13 @@ pub struct SourceSnapshot(Arc<Original>);
 struct Original {
     root: Weak<RootOwner>,
     reference: DeploymentRef,
-    location: ExecutionLocation,
     executable: BTreeSet<InstanceId>,
 }
 impl SourceSnapshot {
-    pub(super) fn new(
-        root: Weak<RootOwner>,
-        reference: DeploymentRef,
-        location: ExecutionLocation,
-        plan: &Plan,
-    ) -> Self {
+    pub(super) fn new(root: Weak<RootOwner>, reference: DeploymentRef, plan: &Plan) -> Self {
         Self(Arc::new(Original {
             root,
             reference,
-            location,
             executable: plan
                 .instances()
                 .iter()
@@ -62,9 +51,6 @@ impl SourceSnapshot {
     }
     pub fn reference(&self) -> &DeploymentRef {
         &self.0.reference
-    }
-    pub(super) fn location(&self) -> ExecutionLocation {
-        self.0.location
     }
     pub(super) fn check(&self, store: &EventLog, consumer: &InstanceId) -> Result<(), StoreError> {
         self.check_root(store)?;

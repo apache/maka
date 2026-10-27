@@ -335,16 +335,21 @@ pub(crate) fn composition(p: &EventPayload) -> Option<Cow<'_, Composition>> {
 }
 
 pub(crate) fn size(p: &EventPayload) -> Option<Cow<'_, Size<Points>>> {
-    match *p {
-        EventPayload::Image(size) => Some(Cow::Owned(crate::geometry::size_pt(
-            size.width.0 as f32,
-            size.height.0 as f32,
-        ))),
-        _ => Some(Cow::Owned(crate::geometry::size_pt(
-            number(p, "width"),
-            number(p, "height"),
-        ))),
-    }
+    Some(Cow::Owned(crate::geometry::size_pt(
+        number(p, "width"),
+        number(p, "height"),
+    )))
+}
+
+/// An image's own size, in pixels.
+pub(crate) fn pixel_size(p: &EventPayload) -> Option<Cow<'_, Size<DevicePixels>>> {
+    Some(Cow::Owned(match *p {
+        EventPayload::Image(size) => size,
+        _ => Size::new(
+            DevicePixels(number(p, "width").round() as i32),
+            DevicePixels(number(p, "height").round() as i32),
+        ),
+    }))
 }
 
 pub(crate) fn scroll(p: &EventPayload) -> Option<Cow<'_, ScrollEvent>> {

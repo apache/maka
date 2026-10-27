@@ -29,6 +29,7 @@ use maka_host_runtime::application::{
     transport::{Description, wire::Reply},
 };
 use maka_plugin_core::{
+    composition::InstanceId,
     contract::text_resource_type,
     deployment::DeploymentRef,
     operation::{OperationReply, RecoveryContract, receipt_reader_contract},
@@ -37,11 +38,11 @@ use serde_json::Value;
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -145,11 +146,17 @@ struct Scope {
     journal: Journal,
     requests: Mutex<BTreeMap<Uuid, Arc<Request>>>,
     closing: AtomicBool,
+    binding_retired: AtomicBool,
     upload_updates: tokio::sync::watch::Sender<()>,
+    parent: Option<(Weak<Scope>, Uuid)>,
+    children: Mutex<BTreeMap<Uuid, Client>>,
+    requests_changed: Notify,
+    shutdown: CancellationToken,
 }
 struct Request {
     id: Uuid,
     operation: Option<Uuid>,
+    observation_ended: AtomicBool,
     stop: CancellationToken,
     state: Mutex<State>,
 }
@@ -191,9 +198,62 @@ impl Client {
             receipts,
             requests: Mutex::new(BTreeMap::new()),
             closing: AtomicBool::new(false),
+            binding_retired: AtomicBool::new(false),
             upload_updates: tokio::sync::watch::channel(()).0,
+            parent: None,
+            children: Mutex::new(BTreeMap::new()),
+            requests_changed: Notify::new(),
+            shutdown: CancellationToken::new(),
         })))
     }
+    /// Capture a UI consumer's declared bindings in an owned child session. Its
+    /// calls share this journal and recover through the original receipt reader.
+    pub async fn bind_ui(
+        &self,
+        source: DeploymentRef,
+        instance: InstanceId,
+    ) -> Result<(Self, BTreeMap<String, Vec<String>>)> {
+        let capture = {
+            let host = self.0.host.lock().await;
+            if self.0.closing.load(Ordering::Acquire) {
+                return Err("client scope is closing".into());
+            }
+            host.bind_ui(source, instance)
+        };
+        let host = capture.await?;
+        let imports = host.ui_imports().ok_or("Host omitted UI bindings")?.clone();
+        let id = Uuid::new_v4();
+        let child = Self(Arc::new(Scope {
+            source: host.source().clone(),
+            host: Mutex::new(host),
+            receipts: self.0.receipts.clone(),
+            journal: self.0.journal.clone(),
+            requests: Mutex::new(BTreeMap::new()),
+            closing: AtomicBool::new(false),
+            binding_retired: AtomicBool::new(false),
+            upload_updates: self.0.upload_updates.clone(),
+            parent: Some((Arc::downgrade(&self.0), id)),
+            children: Mutex::new(BTreeMap::new()),
+            requests_changed: Notify::new(),
+            shutdown: self.0.shutdown.child_token(),
+        }));
+        let owner = self.0.host.lock().await;
+        self.0.children.lock().await.insert(id, child.clone());
+        let closing = self.0.closing.load(Ordering::Acquire);
+        drop(owner);
+        if closing {
+            child.close().await?;
+            return Err("client scope is closing".into());
+        }
+        Ok((child, imports))
+    }
+
+    /// A typed admission refusal retired this captured service generation.
+    /// It does not authorize replaying any request made through this scope.
+    pub fn binding_retired(&self) -> bool {
+        self.0.binding_retired.load(Ordering::Acquire)
+    }
+
     pub fn source(&self) -> &DeploymentRef {
         &self.0.source
     }
@@ -238,6 +298,7 @@ impl Client {
         let request = Arc::new(Request {
             id: Uuid::new_v4(),
             operation,
+            observation_ended: AtomicBool::new(false),
             stop: CancellationToken::new(),
             state: Mutex::new(State {
                 call,
@@ -252,6 +313,15 @@ impl Client {
         Ok((request, description))
     }
     async fn release_if_clean(&self, request: &Request, state: &State) {
+        if state.call.binding_retired() {
+            self.0.binding_retired.store(true, Ordering::Release);
+        }
+        if matches!(state.phase, Phase::Complete | Phase::Interrupted)
+            || state.call.cleanup_confirmed()
+        {
+            request.observation_ended.store(true, Ordering::Release);
+            self.0.requests_changed.notify_waiters();
+        }
         if state.call.cleanup_confirmed() {
             self.0.requests.lock().await.remove(&request.id);
         }
@@ -318,7 +388,7 @@ impl Client {
                 state.call.start().await?;
                 match state.call.receive().await? {
                     Reply::Finished { result, cleanup } => { cleanup?; result }
-                    Reply::Aborted { reason, cleanup } => { cleanup?; Err(reason) }
+                    Reply::Aborted { reason, cleanup } | Reply::BindingRetired { reason, cleanup } => { cleanup?; Err(reason) }
                     _ => Err("Host method is not a query".into()),
                 }
             } => result,
@@ -729,6 +799,23 @@ impl Client {
     pub async fn pending_settings(&self) -> Result<Vec<Operation>> {
         self.0.journal.pending_settings(&self.0.source).await
     }
+    /// Pending plugin operations belong to a stable UI instance, across package
+    /// and binding updates. Endpoint aliases are never recovery identities.
+    pub async fn pending_ui(&self, instance: &InstanceId) -> Result<Vec<Operation>> {
+        self.0.journal.pending_ui(&self.0.source, instance).await
+    }
+
+    pub async fn operation_for_ui(&self, instance: &InstanceId, id: Uuid) -> Result<Operation> {
+        let operation = self.operation(id).await?;
+        if operation.correlation.get("kind").and_then(Value::as_str) != Some("ui")
+            || operation.correlation.get("instance")
+                != Some(&serde_json::to_value(instance).map_err(error)?)
+        {
+            return Err("original client operation belongs to another UI instance".into());
+        }
+        Ok(operation)
+    }
+
     /// Check the immutable product owner independently of a mutable pending list.
     /// A settled or abandoned original still belongs to the same draft editor.
     pub async fn operation_for_draft(
@@ -754,17 +841,21 @@ impl Client {
             self.notify_uploads();
         }
         if operation.abandoned {
-            let requests: Vec<_> = self
-                .0
-                .requests
-                .lock()
-                .await
-                .values()
-                .filter(|request| request.operation == Some(id))
-                .cloned()
-                .collect();
-            for request in requests {
-                request.stop.cancel();
+            let mut owners = vec![self.clone()];
+            owners.extend(self.0.children.lock().await.values().cloned());
+            for owner in owners {
+                let requests: Vec<_> = owner
+                    .0
+                    .requests
+                    .lock()
+                    .await
+                    .values()
+                    .filter(|request| request.operation == Some(id))
+                    .cloned()
+                    .collect();
+                for request in requests {
+                    request.stop.cancel();
+                }
             }
         }
         Ok(operation)
@@ -788,9 +879,13 @@ impl Client {
             .reference
             .as_ref()
             .ok_or("client attempt has no confirmed preparation; it cannot be replayed")?;
-        let value = self
+        let reader = match &self.0.parent {
+            Some((owner, _)) => Self(owner.upgrade().ok_or("original receipt reader is closed")?),
+            None => self.clone(),
+        };
+        let value = reader
             .query(
-                &self.0.receipts,
+                &reader.0.receipts,
                 "read",
                 serde_json::to_value(original).map_err(error)?,
             )
@@ -822,7 +917,7 @@ impl Client {
                 state.call.start().await?;
                 match state.call.receive().await? {
                     Reply::Subscribed => { state.phase = Phase::Streaming; Ok(()) },
-                    Reply::Aborted { reason, cleanup } => { cleanup?; Err(reason) }
+                    Reply::Aborted { reason, cleanup } | Reply::BindingRetired { reason, cleanup } => { cleanup?; Err(reason) }
                     _ => Err("Host method is not a subscription".into()),
                 }
             } => result,
@@ -841,12 +936,56 @@ impl Client {
     pub async fn pending_requests(&self) -> usize {
         self.0.requests.lock().await.len()
     }
+    /// Retire captured bindings without cancelling accepted mutations. Read calls
+    /// stop immediately; original mutations retain this session until they settle.
+    pub async fn retire(&self) -> Result<()> {
+        self.0.closing.store(true, Ordering::Release);
+        let reads: Vec<_> = {
+            let _host = self.0.host.lock().await;
+            self.0
+                .requests
+                .lock()
+                .await
+                .values()
+                .filter(|request| request.operation.is_none())
+                .cloned()
+                .collect()
+        };
+        for request in &reads {
+            request.stop.cancel();
+        }
+        for request in reads {
+            let mut state = request.state.lock().await;
+            let _ = self.drain_request(&request, &mut state).await;
+            self.release_if_clean(&request, &state).await;
+        }
+        loop {
+            let changed = self.0.requests_changed.notified();
+            let pending = self.0.requests.lock().await.values().any(|request| {
+                request.operation.is_some() && !request.observation_ended.load(Ordering::Acquire)
+            });
+            if !pending {
+                break;
+            }
+            tokio::select! {
+                () = changed => {},
+                () = self.0.shutdown.cancelled() => break,
+            }
+        }
+        self.close().await
+    }
+
     /// Request cancellation and drain this exact session. A recovered business
     /// result does not prove physical cleanup; only this session's own close ack
     /// can release disconnected requests. Retain the scope if this returns an error.
     pub async fn close(&self) -> Result<()> {
         self.0.closing.store(true, Ordering::Release);
+        self.0.shutdown.cancel();
         let mut host = self.0.host.lock().await;
+        let children: Vec<_> = self.0.children.lock().await.values().cloned().collect();
+        for child in &children {
+            let _ = Box::pin(child.close()).await;
+        }
         let requests: Vec<_> = self.0.requests.lock().await.values().cloned().collect();
         for request in &requests {
             request.stop.cancel();
@@ -860,6 +999,17 @@ impl Client {
         }
         host.close().await?;
         self.0.requests.lock().await.clear();
+        self.0.requests_changed.notify_waiters();
+        for child in children {
+            child.0.requests.lock().await.clear();
+            child.0.requests_changed.notify_waiters();
+        }
+        self.0.children.lock().await.clear();
+        if let Some((owner, id)) = &self.0.parent
+            && let Some(owner) = owner.upgrade()
+        {
+            owner.children.lock().await.remove(id);
+        }
         Ok(())
     }
 }
@@ -899,7 +1049,7 @@ impl Mutation {
                 state.call.start().await?;
                 let reference = match state.call.receive().await? {
                     Reply::Prepared { reference } => reference,
-                    Reply::Aborted { reason, cleanup } => { cleanup?; return Err(reason); }
+                    Reply::Aborted { reason, cleanup } | Reply::BindingRetired { reason, cleanup } => { cleanup?; return Err(reason); }
                     _ => return Err("Host method is not a mutation".into()),
                 };
                 let contract = RecoveryContract::for_method(&self.description.contract, &self.operation.method).map_err(error)?;
@@ -994,9 +1144,10 @@ impl Mutation {
                 received => {
                     let failure = match received {
                         Some(Err(error)) => Some(error),
-                        Some(Ok(Reply::Aborted { reason, cleanup })) => {
-                            Some(cleanup.err().unwrap_or(reason))
-                        }
+                        Some(Ok(
+                            Reply::Aborted { reason, cleanup }
+                            | Reply::BindingRetired { reason, cleanup },
+                        )) => Some(cleanup.err().unwrap_or(reason)),
                         Some(Ok(_)) => {
                             Some("Host mutation did not return its original receipt".into())
                         }
@@ -1020,11 +1171,66 @@ impl Mutation {
         self.client.release_if_clean(&self.request, &state).await;
         result
     }
+    /// Release a presentation observer without submitting an unconfirmed call
+    /// or cancelling work whose confirmation has already begun.
+    pub async fn detach(&self) -> Result<()> {
+        let mut state = self.request.state.lock().await;
+        let result = if matches!(state.phase, Phase::New | Phase::Prepared) {
+            self.client
+                .drain_request(&self.request, &mut state)
+                .await
+                .and_then(|drained| match drained {
+                    Drained::Finished { cleanup, .. } | Drained::Closed { cleanup } => cleanup,
+                    Drained::NotDispatched => Ok(()),
+                })
+        } else {
+            loop {
+                if state.phase == Phase::Complete {
+                    break Ok(());
+                }
+                let received = tokio::select! {
+                    biased;
+                    () = self.request.stop.cancelled() => {
+                        break self.client.drain_request(&self.request, &mut state).await.and_then(|drained| match drained {
+                            Drained::Finished { cleanup, .. } | Drained::Closed { cleanup } => cleanup,
+                            Drained::NotDispatched => Ok(()),
+                        });
+                    }
+                    result = state.call.receive() => result,
+                };
+                match received {
+                    Ok(Reply::Progress { .. }) => state.phase = Phase::Confirming,
+                    Ok(Reply::Mutation { reply, cleanup }) => {
+                        let recorded = self.client.observe_mutation(&self.request, &reply).await;
+                        state.phase = Phase::Complete;
+                        break recorded.and(cleanup);
+                    }
+                    Ok(
+                        Reply::Aborted { reason, cleanup }
+                        | Reply::BindingRetired { reason, cleanup },
+                    ) => {
+                        state.phase = Phase::Complete;
+                        break Err(cleanup.err().unwrap_or(reason));
+                    }
+                    Ok(_) => break Err("Host mutation did not return its original receipt".into()),
+                    Err(error) => break Err(error),
+                }
+            }
+        };
+        self.request
+            .observation_ended
+            .store(true, Ordering::Release);
+        self.client.0.requests_changed.notify_waiters();
+        self.client.release_if_clean(&self.request, &state).await;
+        result
+    }
+
     /// Lose only the physical observer. The shell still owns the original request.
     pub async fn disconnect(&self) {
         let mut state = self.request.state.lock().await;
         state.call.disconnect();
         state.phase = Phase::Interrupted;
+        self.client.release_if_clean(&self.request, &state).await;
     }
     pub async fn close(&self) -> Result<()> {
         self.request_cancel();
@@ -1069,7 +1275,7 @@ impl Subscription {
                 match state.call.pull().await? {
                     Reply::Item { value } => Ok(Some(SubscriptionEvent::Item(value))),
                     Reply::Finished { result, cleanup } => { cleanup?; Ok(Some(SubscriptionEvent::Finished(result?))) }
-                    Reply::Aborted { reason, cleanup } => { cleanup?; Err(reason) }
+                    Reply::Aborted { reason, cleanup } | Reply::BindingRetired { reason, cleanup } => { cleanup?; Err(reason) }
                     _ => Err("Host subscription returned an unexpected response".into()),
                 }
             } => result,

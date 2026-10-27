@@ -23,7 +23,7 @@ use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use maka_event_log::applications::operations::{Dispatch as OperationDispatch, OperationRequest};
 use maka_plugin_core::{
     package::Realm,
-    plan::{Instance, Provider},
+    plan::{Instance, InstanceEntry, Provider},
     runtime::{Execution, Phase, Resource, Runtime},
 };
 use std::panic::AssertUnwindSafe;
@@ -405,7 +405,7 @@ impl Owner {
             return Err("remote Host executor is unavailable".into());
         }
         let input = deployment.input;
-        let (plan, sources) = prepare_plan(&input, packages, &self.native, true, plan)?;
+        let (plan, sources) = prepare_plan(packages, &self.native, true, plan)?;
         let instances = plan
             .instances()
             .values()
@@ -747,17 +747,18 @@ impl Owner {
         }
     }
     fn initialize(&mut self, instance: Instance) -> Result<()> {
-        let activation = self
-            .runtime
-            .begin(&instance.identity)
-            .map_err(|e| e.to_string())?;
+        let activation = match instance.entry.as_ref() {
+            Some(InstanceEntry::Ui(_)) => self.runtime.begin_ui_consumer(&instance.identity),
+            _ => self.runtime.begin(&instance.identity),
+        }
+        .map_err(|e| e.to_string())?;
         self.activations
             .insert(instance.identity.clone(), activation.clone());
         if let Some((source, _)) = &self.persisted {
             self.origins
                 .insert(instance.identity.clone(), source.clone());
         }
-        let Some(entry) = instance.entry else {
+        let Some(InstanceEntry::Host(entry)) = instance.entry else {
             return self
                 .runtime
                 .publish(&activation, BTreeMap::new())
@@ -1050,7 +1051,49 @@ impl Owner {
                     contract,
                     digest.into(),
                     Arc::new(instance.package.clone()),
+                    Arc::new(AtomicBool::new(false)),
                 ))
+            })
+            .collect()
+    }
+    fn capture_ui(
+        &self,
+        source: &DeploymentRef,
+        consumer: &InstanceId,
+    ) -> Result<BTreeMap<String, Vec<Binding>>> {
+        if self.closing {
+            return Err("Host deployment is closing".into());
+        }
+        let (current, _) = self
+            .persisted
+            .as_ref()
+            .ok_or("persisted deployment required")?;
+        if current.reference() != source {
+            return Err("UI deployment source changed before binding".into());
+        }
+        let instance = self
+            .runtime
+            .desired()
+            .instances()
+            .get(consumer)
+            .filter(|instance| !instance.disabled)
+            .ok_or("UI consumer is not declared and enabled")?;
+        let entry = instance.ui_entry().ok_or("UI consumer required")?;
+        let activation = self
+            .activations
+            .get(consumer)
+            .filter(|activation| {
+                self.runtime
+                    .status(activation)
+                    .is_ok_and(|status| status.phase == Phase::Active)
+            })
+            .ok_or("UI consumer is not active")?;
+        entry
+            .imports
+            .keys()
+            .map(|name| {
+                self.capture_bindings(activation, name)
+                    .map(|bindings| (name.clone(), bindings))
             })
             .collect()
     }
@@ -1068,7 +1111,7 @@ impl Owner {
         if !instance
             .entry
             .as_ref()
-            .is_some_and(|entry| entry.imports.contains_key(import))
+            .is_some_and(|entry| entry.imports().contains_key(import))
         {
             return Err("Host consumer import is not declared".into());
         }
@@ -1123,6 +1166,13 @@ impl Owner {
             } => {
                 let _ = reply.send(self.capture_import(&consumer, &import));
             }
+            Command::CaptureUi {
+                source,
+                consumer,
+                reply,
+            } => {
+                let _ = reply.send(self.capture_ui(&source, &consumer));
+            }
             Command::Bind {
                 consumer,
                 import,
@@ -1162,12 +1212,14 @@ impl Owner {
                         return Err("foreign or closed Host invocation".into());
                     }
                     self.check_native_origin(&scope)?;
-                    self.check_vm(binding.0.consumer())?;
-                    self.check_vm(binding.provider())?;
-                    let service = self
-                        .runtime
-                        .inspect(&binding.0)
-                        .map_err(|e| e.to_string())?;
+                    self.check_vm(binding.0.consumer())
+                        .inspect_err(|_| binding.mark_retired())?;
+                    self.check_vm(binding.provider())
+                        .inspect_err(|_| binding.mark_retired())?;
+                    let service = self.runtime.inspect(&binding.0).map_err(|error| {
+                        binding.observe_lifetime(&error);
+                        error.to_string()
+                    })?;
                     service
                         .methods
                         .get(&method)
@@ -1313,7 +1365,10 @@ impl Owner {
                     }
                     let progress = service.methods[&method].progress.clone();
                     let child = scope.child().map_err(|e| e.to_string())?;
-                    let execution = self.runtime.admit(&binding.0).map_err(|e| e.to_string())?;
+                    let execution = self.runtime.admit(&binding.0).map_err(|error| {
+                        binding.observe_lifetime(&error);
+                        error.to_string()
+                    })?;
                     Ok((
                         Some(execution),
                         Some(child),

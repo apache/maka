@@ -151,8 +151,7 @@ pub struct ClipboardImage {
     pub size: Size<DevicePixels>,
 }
 
-/// An image's size in pixels (`Image.getSize`); TS: `ImageSize`, an alias of
-/// `Size`.
+/// An image's size in pixels (`Image.getSize`); TS: `PixelSize`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ImageSize {
     /// Width.
@@ -174,13 +173,10 @@ impl From<ImageSize> for Size<DevicePixels> {
     }
 }
 
-/// TS: `type ImageSize = Size` (`{ width, height }`, in pixels here).
+/// TS: `PixelSize` (`{ width, height }`).
 impl super::JsValue for ImageSize {
     fn ts_type(types: &mut super::TsTypes) -> String {
-        types.declare("ImageSize", |_| {
-            "/** An image's size in pixels (`Image.getSize`). */\nexport type ImageSize = Size;"
-                .into()
-        })
+        <Size<DevicePixels> as super::JsValue>::ts_type(types)
     }
 
     fn from_js(value: super::JsIn<'_>) -> Result<Self, super::PropError> {

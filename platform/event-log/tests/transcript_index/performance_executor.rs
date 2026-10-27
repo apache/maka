@@ -138,7 +138,7 @@ async fn executor_invocation_transcript() {
                 .unwrap();
             let body_materialize_ms = started.elapsed().as_secs_f64() * 1000.0;
             let db = Connection::open(&path).unwrap();
-            let rows: Vec<Value> = crate::test_store::inspect(&log, move |db| { db.prepare("SELECT CAST(payload AS TEXT) FROM transcript_cache.rows WHERE session_id='a' ORDER BY source_sequence, item_index").unwrap()
+            let rows: Vec<Value> = crate::test_store::inspect_cache(&log, move |db| { db.prepare("SELECT CAST(payload AS TEXT) FROM temp.transcript_rows WHERE session_id='a' ORDER BY source_sequence, item_index").unwrap()
                 .query_map([], |row| row.get::<_, String>(0)).unwrap()
                 .map(|row| serde_json::from_str(&row.unwrap()).unwrap()).collect() }).await;
             assert_eq!(rows, expected);

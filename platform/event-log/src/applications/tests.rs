@@ -19,18 +19,12 @@
 
 use super::*;
 use crate::root::{RootNamespaces, RootOwner};
-use maka_plugin_core::composition::{Environment, ExecutionLocation, InstanceId};
+use maka_plugin_core::composition::InstanceId;
 use std::sync::Arc;
 
 pub(super) fn input() -> Input {
     Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
         instances: BTreeMap::new(),
-        recovery: None,
-        launch: None,
     }
 }
 pub(super) async fn store() -> (tempfile::TempDir, EventLog) {
@@ -53,7 +47,7 @@ async fn malformed_typed_source_is_rejected_when_loading() {
         .await
         .unwrap();
     store.connection.run(move |conn| Box::pin(async move {
-        sqlx::query("UPDATE application_sources SET input_json = json_object('environment', 'invalid') WHERE deployment = ?")
+        sqlx::query("UPDATE application_sources SET input_json = json_object('instances', 'invalid') WHERE deployment = ?")
             .bind(id.to_string()).execute(conn).await?;
         Ok(())
     })).await.unwrap();
@@ -98,23 +92,18 @@ async fn requires_real_state_root_and_non_nil_identity() {
 }
 
 fn package(marker: &str) -> Package {
-    use maka_plugin_core::package::{
-        Declaration, EntryDeclaration, EntryTarget, Implementation, Realm,
-    };
+    use maka_plugin_core::package::{Declaration, EntryDeclaration, Implementation, Realm};
     let declaration = Declaration {
-        entries: BTreeMap::from([(
-            EntryTarget::Host,
-            EntryDeclaration {
-                scene: None,
-                implementation: Implementation::JavaScript {
-                    module: "host.mjs".into(),
-                    realm: Realm::Shared,
-                },
-                configuration: serde_json::json!({"type":"object"}).into(),
-                imports: BTreeMap::new(),
-                exports: BTreeMap::new(),
+        host: Some(EntryDeclaration {
+            implementation: Implementation::JavaScript {
+                module: "host.mjs".into(),
+                realm: Realm::Shared,
             },
-        )]),
+            configuration: serde_json::json!({"type":"object"}).into(),
+            imports: BTreeMap::new(),
+            exports: BTreeMap::new(),
+        }),
+        ui: None,
         composition: None,
     };
     Package::new(BTreeMap::from([
@@ -137,7 +126,7 @@ fn selected(package: &Package) -> Input {
         Node {
             key: Uuid::from_u128(1),
             package: package.application_ref().into(),
-            use_package: PackageUse::Entry,
+            use_package: PackageUse::Host,
             configuration: Configuration::default(),
             parameters: Configuration::default(),
             bindings: BTreeMap::new(),

@@ -207,6 +207,31 @@ function App() {
 mount(App);
 ```
 
+## importModule
+
+```ts
+function importModule<T = Record<string, unknown>>(
+  id: string,
+  dependencies?: readonly string[],
+): Promise<T>;
+```
+
+Loads a module supplied by the embedding host at runtime. The id and its static dependencies are flat chunk
+file names, such as `plugin.js`. The promise resolves to the module's exports. Repeated imports of one id share
+its evaluation and state; updated code uses a new id.
+
+The module runs in the app's VM and uses its registered native modules and capabilities. Render an exported
+component in the app's tree. Its components and subscriptions follow their reactive owners; the evaluated
+module remains cached for that VM's lifetime. A failed source read rejects the promise, and a later import
+retries the read.
+
+Native embedding hosts supply sources asynchronously with `EngineConfig::chunk_loader`; web hosts use their
+split-bundle loader. Modules already supplied in `Bundle::with_chunks` are available immediately.
+
+The source loader can give a module its own asset directory with `ChunkSource::with_asset_base`. Imported
+images and fonts resolve there automatically, including pixel-density variants. The host keeps that directory
+outside the source, so a content-addressed package can use its own identity in its asset URLs.
+
 ## mount
 
 ```ts
@@ -1115,8 +1140,8 @@ view().direction(LayoutDirection::Rtl).flex_row().gap_2().child(text("First")).c
 
 ### Related
 
-- Safe area insets (Rust `safe_area()`; TSX `safeArea()`, `safeAreaInsets()`) and the software keyboard (Rust `keyboard_height()`; TSX `keyboardFrame()`) are part of [`nsh/base`](./nsh-base.md#safearea-and-safeareainsets).
-- Screen reader and reduced motion settings are in [`nsh`](./nsh-accessibility.md).
+- Safe area insets (Rust `safe_area()`; TSX `safeArea()`, `safeAreaInsets()`) and the software keyboard (Rust `keyboard_height()`; TSX `keyboardFrame()`) are exported by `nsh`; see [Safe area and keyboard](#safe-area-and-keyboard).
+- Screen reader and reduced motion settings are in [`nsh`'s Accessibility API](#accessibility).
 
 ## PanResponder
 
@@ -1170,7 +1195,7 @@ pub fn App() -> impl IntoElement {
                 pos.set((x + e.gesture.delta.x.0, y + e.gesture.delta.y.0));
             })
             .on_responder_release(move |e: &ResponderEvent| {
-                log::info!("released at {:.2} pt/ms", e.gesture.vx);
+                log::info!("released at {:.0} pt/s", e.gesture.vx);
             }),
     )
 }
@@ -1187,7 +1212,7 @@ function App() {
     onStartShouldSetPanResponder: () => true,
     onPanResponderGrant: () => (start = pos()),
     onPanResponderMove: (_, g) => pos.set({ x: start.x + g.dx, y: start.y + g.dy }),
-    onPanResponderRelease: (_, g) => console.log(`released at ${g.vx.toFixed(2)} pt/ms`),
+    onPanResponderRelease: (_, g) => console.log(`released at ${g.vx.toFixed(0)} pt/s`),
   });
   return (
     <View style={{ flex: 1 }}>
@@ -1243,7 +1268,7 @@ interface PanResponderGestureState {
   y0: number;
   dx: number;                  // distance moved since the grant
   dy: number;
-  vx: number;                  // velocity, points per millisecond
+  vx: number;                  // velocity, points per second
   vy: number;
   numberActiveTouches: number;
 }
@@ -1257,7 +1282,7 @@ Rust: `PanGesture`, with points as `Point<Points>`.
 | `moveX`, `moveY` | `position` | Latest position of the touches' centroid, in surface points. |
 | `x0`, `y0` | `origin` | Where the centroid was when the responder was granted. |
 | `dx`, `dy` | `delta` | Distance moved since the grant. |
-| `vx`, `vy` | `vx`, `vy` | Velocity in points per millisecond. |
+| `vx`, `vy` | `vx`, `vy` | Velocity in points per second. |
 | `numberActiveTouches` | `active_touches` | Fingers down. |
 
 ### Inside scroll views
@@ -1316,7 +1341,7 @@ const Clipboard: {
 
 interface ClipboardImage {
   url: string; // data:image/png;base64,…
-  size: { width: number; height: number }; // pixels
+  size: PixelSize;
 }
 ```
 
@@ -1595,7 +1620,7 @@ interface PickImagesOptions {
 
 interface PickedImage {
   file: File; // name, type, size in bytes and the bytes
-  size: { width: number; height: number }; // pixels, upright
+  size: PixelSize; // upright
 }
 ```
 
@@ -2603,6 +2628,7 @@ function Saved() {
 | `ColorValue`, `DimensionValue`, `LengthValue`, `TransformStep` | Values inside styles |
 | `GestureResponderEvent`, `HoverEvent`, `ContextMenuEvent`, `ScrollEvent`, `PanEvent`, `TouchPoint` | Event payloads |
 | `Point`, `Size`, `Bounds`, `Edges`, `Modifiers` | The shapes payloads and props are made of, with GPUI's fields (`nsh_core::geometry`) |
+| `PixelSize` | An image's or a video's own size in pixels (`onLoad`, `Image.getSize`, the clipboard's and the picker's images), where `Size` is points |
 | `ImageAsset` | What importing an image file gives (`{ url, size: Size, scales? }`; `scales` lists its [pixel-density variants](../docs/images-and-assets.md#pixel-densities)) |
 | `OS` | `"ios" \| "android" \| "macos" \| "windows" \| "linux" \| "web"` |
 | `AccessibilityRole`, `AccessibilityState` | Accessibility props |

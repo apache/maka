@@ -99,7 +99,7 @@ impl EventLog {
         let invocation_id = invocation_id.to_owned();
         let expected_session = self.expected_session.clone();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
                         "SELECT json_extract(event_json, '$.invocation'),
@@ -138,7 +138,7 @@ impl EventLog {
         let session = session_id.to_owned();
         let invocation = invocation_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let opening: Option<String> = sqlx::query_scalar(
@@ -178,7 +178,7 @@ impl EventLog {
         sessions::validate_id(session_id)?;
         let session = session_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     read(&mut tx, &session, None).await
@@ -194,7 +194,7 @@ impl EventLog {
     ) -> Result<Option<maka_agent_facts::execution::InvocationConfiguration>, StoreError> {
         self.validate_root()?;
         let invocation = invocation.clone();
-        self.connection.run(move |connection| Box::pin(async move {
+        self.connection.read(move |connection| Box::pin(async move {
             let configuration: Option<String> = sqlx::query_scalar(
                 "SELECT json_extract(event_json, '$.fact.configuration') FROM runtime_events
                  WHERE invocation_id = ?1 AND kind = 'invocation_opened'
@@ -218,7 +218,7 @@ impl EventLog {
         sessions::validate_id(run_id)?;
         let (session_id, run_id) = (session_id.to_owned(), run_id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let Some(invocation) = run_invocation(&mut tx, &session_id, &run_id).await? else {
@@ -248,7 +248,7 @@ impl EventLog {
         let session_id = session_id.to_owned();
         let turn_id = turn_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut transaction = connection.begin().await?;
                     let result = read(&mut transaction, &session_id, Some(&turn_id)).await?;
@@ -363,4 +363,191 @@ pub(crate) async fn project(
         input,
         state,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::event::EventWrite;
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn control_reads_bypass_writer_and_preserve_committed_terminal_and_count() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            EventLog::open(&directory.path().join("runtime.sqlite"))
+                .await
+                .unwrap(),
+        );
+        let invocation = Invocation {
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            run_id: "run".into(),
+            invocation_id: "invocation".into(),
+        };
+        let content: maka_agent_facts::input::MessageInput = "question".into();
+        let source = maka_agent_facts::message::RootSourceMessage {
+            unprepared_content: content.clone(),
+            message: maka_agent_facts::input::DeliveredMessage {
+                origin: None,
+                message_id: "message".into(),
+                submitted_content_digest: content.content_digest().unwrap(),
+                content: content.clone(),
+            },
+            submitted_placement: maka_agent_facts::message::Placement::NextTurn,
+            disposition: maka_agent_facts::message::MessageDisposition::TurnStarted,
+            submitted_intent: None,
+        };
+        let opening = RuntimeEvent::new(
+            invocation.clone(),
+            Fact::InvocationOpened {
+                configuration: None,
+                input: InvocationInput::Message {
+                    source_messages: vec![source],
+                    content,
+                    request_fingerprint: None,
+                },
+            },
+        );
+        store
+            .append(&EventWrite::plain(opening.clone()).unwrap())
+            .await
+            .unwrap();
+        let terminal = RuntimeEvent::new(
+            invocation.clone(),
+            Fact::InvocationEnded {
+                outcome: InvocationOutcome::Completed,
+            },
+        );
+        let pending_terminal = terminal.clone();
+        let (entered, reached) = oneshot::channel();
+        let (release, gate) = oneshot::channel();
+        let writer = store.clone();
+        let blocked = tokio::spawn(async move {
+            writer.connection.run(move |connection| Box::pin(async move {
+                let mut tx = connection.begin().await?;
+                // Hold an uncommitted terminal on the actual writer while readers
+                // must still see the previously committed opening and event count.
+                sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,event_json) VALUES(?,?,'invocation_ended',?)")
+                    .bind(&pending_terminal.id)
+                    .bind(&pending_terminal.invocation.invocation_id)
+                    .bind(serde_json::to_string(&pending_terminal)?)
+                    .execute(&mut *tx).await?;
+                entered.send(()).unwrap();
+                gate.await.unwrap();
+                tx.commit().await?;
+                Ok(())
+            })).await
+        });
+        reached.await.unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(5), async {
+            let (boundary, count) = store
+                .invocation_boundary("session", "invocation")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(boundary.invocation, invocation);
+            assert_eq!(boundary.opening_event_id, opening.id);
+            assert!(matches!(boundary.state, InvocationState::Admitted));
+            assert_eq!(count, 1);
+            for boundary in [
+                store
+                    .latest_turn_boundary("session")
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                store.run_boundary("session", "run").await.unwrap().unwrap(),
+                store
+                    .turn_boundary("session", "turn")
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            ] {
+                assert_eq!(boundary.invocation, invocation);
+                assert!(matches!(boundary.state, InvocationState::Admitted));
+            }
+            assert!(
+                store
+                    .invocation_configuration(&invocation)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                store
+                    .continuation_receipt("missing")
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            for origin in [
+                crate::observation::WorkOrigin::Message("message".into()),
+                crate::observation::WorkOrigin::Invocation("invocation".into()),
+            ] {
+                let observed = store
+                    .work_observation("session", origin, 0, None)
+                    .await
+                    .unwrap();
+                let crate::message_resolution::MessageExecution::Owned(boundary) =
+                    observed.execution
+                else {
+                    panic!("committed source must resolve to its exclusive invocation");
+                };
+                assert_eq!(boundary.invocation, invocation);
+                assert!(matches!(boundary.state, InvocationState::Admitted));
+                assert_eq!(observed.high_water, 1);
+                assert!(observed.answer.is_none());
+            }
+            let crate::message_resolution::MessageExecution::Owned(boundary) =
+                store.message_execution("session", "message").await.unwrap()
+            else {
+                panic!("committed source must resolve while writer is blocked");
+            };
+            assert_eq!(boundary.invocation, invocation);
+            assert!(matches!(boundary.state, InvocationState::Admitted));
+        })
+        .await;
+        release.send(()).unwrap();
+        blocked.await.unwrap().unwrap();
+        observed.expect("boundary reads must complete while the writer is blocked");
+        let (boundary, count) = store
+            .invocation_boundary("session", "invocation")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 2);
+        let InvocationState::Ended { event_id, outcome } = boundary.state else {
+            panic!("committed terminal must be visible");
+        };
+        assert_eq!(event_id, terminal.id);
+        assert_eq!(outcome, InvocationOutcome::Completed);
+        for origin in [
+            crate::observation::WorkOrigin::Message("message".into()),
+            crate::observation::WorkOrigin::Invocation("invocation".into()),
+        ] {
+            let observed = store
+                .work_observation("session", origin, 0, None)
+                .await
+                .unwrap();
+            assert_eq!(observed.high_water, 2);
+            let crate::message_resolution::MessageExecution::Owned(boundary) = observed.execution
+            else {
+                panic!("committed source must retain its exclusive invocation");
+            };
+            assert_eq!(boundary.invocation, invocation);
+            assert!(
+                matches!(boundary.state, InvocationState::Ended { ref event_id, outcome: InvocationOutcome::Completed } if event_id == &terminal.id)
+            );
+        }
+        let crate::message_resolution::MessageExecution::Owned(boundary) =
+            store.message_execution("session", "message").await.unwrap()
+        else {
+            panic!("message execution must retain its committed owner");
+        };
+        assert!(
+            matches!(boundary.state, InvocationState::Ended { ref event_id, outcome: InvocationOutcome::Completed } if event_id == &terminal.id)
+        );
+        Arc::try_unwrap(store).ok().unwrap().close().await.unwrap();
+    }
 }

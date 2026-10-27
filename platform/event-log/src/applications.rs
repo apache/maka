@@ -21,7 +21,6 @@
 mod changes;
 mod source;
 pub use source::SourceSnapshot;
-pub mod checkpoints;
 pub mod intents;
 pub mod launch;
 pub mod operations;
@@ -277,7 +276,7 @@ impl EventLog {
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
             commits.metadata();
             let reference = DeploymentRef { state_domain: domain, deployment, revision };
-            let snapshot = SourceSnapshot::new(owner, reference.clone(), input.environment.location, &plan);
+            let snapshot = SourceSnapshot::new(owner, reference.clone(), &plan);
             Ok(LoadedDeployment {
                 source: Deployment { reference, input, remote_exports: observations },
                 packages: bytes, plan, snapshot,
@@ -378,12 +377,8 @@ impl EventLog {
                         &packages,
                     )?;
                     tx.commit().await?;
-                    let snapshot = SourceSnapshot::new(
-                        owner,
-                        metadata.source.reference.clone(),
-                        metadata.source.input.environment.location,
-                        &plan,
-                    );
+                    let snapshot =
+                        SourceSnapshot::new(owner, metadata.source.reference.clone(), &plan);
                     Ok(Some(LoadedDeployment {
                         snapshot,
                         source: metadata.source,

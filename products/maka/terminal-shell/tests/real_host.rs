@@ -55,6 +55,8 @@ mod support;
 mod terminal_workbench;
 #[path = "real_host/tool_cards.rs"]
 mod tool_cards;
+#[path = "real_host/ui_plugins.rs"]
+mod ui_plugins;
 #[path = "real_host/workspace_locations.rs"]
 mod workspace_locations;
 
@@ -3110,7 +3112,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
     use image::{ExtendedColorType, ImageEncoder, codecs::png};
     use nsh_platform_tui::ServiceOutput;
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::open().await;
+        let mut fixture = Fixture::workspace_ui().await;
         let client = fixture.client().await;
         let workspace = fixture.directory.path().join("workspace");
         let text_path = workspace.join("000-preview.txt");
@@ -3263,7 +3265,10 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         assert_ne!(first_version, next_version);
         assert!(view.accessibility_snapshot().iter().any(|node| node.id == copy && !node.state.disabled));
         assert!(!view.snapshot().contains("File copied"), "copy feedback must belong to its captured version");
-        support::click_label(&mut view, "Browse current changes");
+        shortcut(&mut view, 'p');
+        wait_focused_input(&mut view, "Search commands").await;
+        view.handle_event(Event::Paste("Changes".into()));
+        support::click_button(&mut view, "Changes").await;
         wait_view(&mut view, |screen| screen.contains("Current changes") && screen.contains("000-preview.txt") && !screen.contains("Reading current changes…")).await;
         support::click_label(&mut view, "Open Worktree diff: 000-preview.txt");
         let diff = wait_view(&mut view, |screen| screen.contains("Current worktree diff") && screen.contains("-BEFORE_CURRENT_EDIT") && screen.contains("+REFRESHED_CURRENT_EDIT")).await;
@@ -3273,7 +3278,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         view.resize(80, 24);
         // The dock has the same text and close button. Wait until the native
         // Dialog input scope hides the still-resident composer before Escape.
-        let narrow = wait_view_state(&mut view, |view, screen| screen.contains("Current worktree diff") && screen.contains("+REFRESHED_CURRENT_EDIT") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close workspace preview" && !node.state.disabled) && !view.accessibility_snapshot().iter().any(|node| node.id == composer)).await;
+        let narrow = wait_view_state(&mut view, |view, screen| screen.contains("Current worktree diff") && screen.contains("+REFRESHED_CURRENT_EDIT") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close panel" && !node.state.disabled) && !view.accessibility_snapshot().iter().any(|node| node.id == composer)).await;
         evidence("workspace-current-diff-dialog", &narrow);
         support::evidence_cells("workspace-current-diff-dialog", &view);
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -3338,6 +3343,13 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         support::evidence_cells("workspace-files-automatic-pagination-and-watch", &view);
         support::click_button(&mut view, "Close workspace preview").await;
         wait_view_state(&mut view, |view, screen| !screen.contains("page-139v2.txt") && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close workspace preview")).await;
+        shortcut(&mut view, 'p');
+        wait_focused_input(&mut view, "Search commands").await;
+        view.handle_event(Event::Paste("Changes".into()));
+        support::click_button(&mut view, "Changes").await;
+        wait_view(&mut view, |screen| screen.contains("Current changes") && screen.contains("000-preview.txt") && !screen.contains("Reading current changes…")).await;
+        support::click_label(&mut view, "Open Worktree diff: 000-preview.txt");
+        wait_view(&mut view, |screen| screen.contains("Current worktree diff") && screen.contains("+REFRESHED_CURRENT_EDIT")).await;
         let roots = client.query("agent", "directories", json!({"kind":"roots"})).await.unwrap();
         let other = support::mutate(&client, "create", json!({"title":"Other preview owner","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
         shortcut(&mut view, 'o');
@@ -3346,6 +3358,10 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
             let nodes = view.accessibility_snapshot();
             screen.contains("Other preview owner")
                 && !screen.contains("UNSENT_PREVIEW_DRAFT")
+                && screen.contains("Current changes")
+                && !screen.contains("Current diff")
+                && !screen.contains("Current worktree diff")
+                && nodes.iter().any(|node| node.label == "Changes")
                 && !nodes.iter().any(|node| node.label == "Search conversation history")
                 && nodes.iter().any(|node| node.label == "Message composer" && node.id != composer)
         }).await;
@@ -3497,7 +3513,7 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         terminal.resize(120, 40);
         terminal.wait_for("Open image · 192 × 128").await;
         terminal.wait_for("192 × 128 · Original image").await;
-        terminal.click_text_in_row("×", "Changes");
+        terminal.click_text_in_row("×", "Original image");
         terminal.wait_for_absent("Image preview").await;
         terminal.wait_for("Open image · 192 × 128").await;
         request.delta("IMAGE_RUN_CONTINUES_AFTER_ESCAPE").await;
@@ -3949,7 +3965,11 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
             assert!(awaiting.elapsed() < Duration::from_secs(20), "real first history did not reach its gate");
         }
         drop(held);
-        let loading = terminal.wait_for("Loading session history").await;
+        // The history list has its own loading caption; wait for the
+        // composer's blocked-send status before typing into that frame.
+        let loading = terminal
+            .wait_for("Loading session history… Your draft is kept.")
+            .await;
         assert!(loading.contains("Loading session history… Your draft is kept."));
         terminal.paste("Production PTY user message");
         terminal.wait_for("Production PTY user message").await;

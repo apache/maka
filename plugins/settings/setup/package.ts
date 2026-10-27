@@ -28,6 +28,6 @@ export default {
     'zh-CN': { displayName: '连接设置', description: '发现并配置模型服务商连接。' },
   },
   application: {
-    entries: { host: native(sdk.nativeImplementations.settingsSetup) },
+    host: native(sdk.nativeImplementations.settingsSetup),
   },
 };

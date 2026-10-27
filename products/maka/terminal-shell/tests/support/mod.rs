@@ -118,6 +118,7 @@ enum InitialCatalog {
 
 enum AdditionalServices {
     None,
+    WorkspaceUi,
     #[cfg(unix)]
     Terminals,
     ObservedGateway(gateway::Publications),
@@ -192,12 +193,24 @@ impl Fixture {
         )
         .await
     }
+    pub async fn workspace_ui() -> Self {
+        Self::open_with_services(
+            false,
+            false,
+            InitialCatalog::Configured { reasoning: false },
+            true,
+            None,
+            None,
+            AdditionalServices::WorkspaceUi,
+        )
+        .await
+    }
     pub async fn files(method: &str) -> Self {
         Self::open_with_services(
             false,
             false,
             InitialCatalog::Configured { reasoning: false },
-            false,
+            true,
             None,
             Some(json!({
                 "name":"WorkspaceDocument", "description":"Use the actual workspace Files service.",
@@ -242,8 +255,11 @@ impl Fixture {
         file_tool: Option<Value>,
         services: AdditionalServices,
     ) -> Self {
+        let workspace_ui =
+            file_tool.is_some() || matches!(&services, AdditionalServices::WorkspaceUi);
         let (terminals, gateway_publications) = match services {
             AdditionalServices::None => (false, None),
+            AdditionalServices::WorkspaceUi => (false, None),
             #[cfg(unix)]
             AdditionalServices::Terminals => (true, None),
             AdditionalServices::ObservedGateway(published) => (false, Some(published)),
@@ -280,10 +296,10 @@ impl Fixture {
             Package::new(BTreeMap::from([(
                 "maka.extension.json".into(),
                 serde_json::to_vec(&json!({
-                    "schemaVersion":1,"id":id,"application":{"entries":{"host":{
+                    "schemaVersion":1,"id":id,"application":{"host":{
                         "implementation":{"kind":"native","implementation":implementation},
                         "configuration":configuration,"imports":imports,"exports":exports
-                    }}}
+                    }}
                 }))
                 .unwrap(),
             )]))
@@ -396,7 +412,7 @@ impl Fixture {
         let node = |package: &Package, key: u128, configuration: Value, bindings: Value| {
             json!({
                 "key":Uuid::from_u128(key),"package":{"source":"pinned","package":package.application_ref()},
-                "usePackage":"entry","configuration":{"values":configuration},"bindings":bindings
+                "usePackage":"host","configuration":{"values":configuration},"bindings":bindings
             })
         };
         let deployment = Uuid::new_v4();
@@ -427,7 +443,7 @@ impl Fixture {
         } else {
             json!({"access":"read_only","requestPermissions":true})
         };
-        let mut plan = json!({"environment":{"location":"host"},"instances":{
+        let mut plan = json!({"instances":{
             "agent":node(&agent, 1, json!({"locale":"en","workspaceRoots":[{"label":"Workspace","path":workspace}],"tools":tools,"todo":true,"permissions":permissions}), if has_files { json!({"files":[{"kind":"instance","path":["files"],"export":"files"}]}) } else { json!({}) }),
             "settings":node(&settings, 2, json!({"workspaceLocations":{"agent":"agent","skills":null,"processes":if terminals { Some("processes") } else { None }}}), json!({})),
             "authentication":node(&authentication, 6, json!({}), json!({})),
@@ -478,6 +494,24 @@ impl Fixture {
         if has_files {
             plan["instances"]["files"] = node(&files, 5, json!({}), json!({}));
             packages.push(files);
+        }
+        if workspace_ui {
+            let ui = tokio::task::spawn_blocking(|| {
+                Package::read_from(
+                    &PathBuf::from(env!("OUT_DIR")).join("product/packages/workspace-files"),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            plan["instances"]["workspace-files-ui"] = json!({
+                "key": Uuid::from_u128(13),
+                "package":{"source":"pinned","package":ui.application_ref()},
+                "usePackage":"ui",
+                "configuration":{"values":{}},
+                "bindings":{}
+            });
+            packages.push(ui);
         }
         if terminals {
             plan["instances"]["processes"] = node(
@@ -664,7 +698,19 @@ impl Fixture {
                         "management".into(),
                         endpoint(
                             "management",
-                            &["instances", "readSettings", "setEnabled", "configure"],
+                            &[
+                                "instances",
+                                "readSettings",
+                                "setEnabled",
+                                "configure",
+                                "readUi",
+                                "watch",
+                                "exportPackage",
+                                "installSource",
+                                "editComposition",
+                                "read",
+                                "readPackage",
+                            ],
                             false,
                         ),
                     )
@@ -857,11 +903,15 @@ impl Fixture {
         let mut view = AppView::new(AppOptions {
             size: evidence_size(),
             data_dir: Some(self.directory.path().join("nsh")),
-            ui_sets: Some(vec![nsh_base::registry(), registry]),
+            ui_sets: Some(vec![nsh_base::registry(), registry.clone()]),
             ..Default::default()
         });
-        load_application(&mut view);
-        view.surface_mut().set_assets(Some(bindings.assets()));
+        let mut config = maka_workbench::configuration(registry, tokio::runtime::Handle::current());
+        config.assets = Some(bindings.assets());
+        config.chunk_loader = Some(bindings.chunk_loader());
+        config.context = config.context.with(bindings.reload());
+        view.load_with_config(config).unwrap();
+        view.surface_mut().tick(frame_time());
         (view, bindings)
     }
     pub async fn finish(self) {

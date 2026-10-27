@@ -8,11 +8,11 @@ use super::*;
 
 /// [`start`] for documents that may hold bold text already.
 fn start_any(doc: Value) -> Headless {
-    let session = session(doc);
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
+        // Made in the engine, as `start`'s.
         ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
-            session: Some(session.clone()),
+            session: Some(session(doc.clone())),
         }))
     };
     config.environment.os = Os::Linux;

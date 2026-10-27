@@ -28,6 +28,6 @@ export default {
     'zh-CN': { displayName: '设置存储', description: '保存模型连接、凭据和偏好设置。' },
   },
   application: {
-    entries: { host: native(sdk.nativeImplementations.settings) },
+    host: native(sdk.nativeImplementations.settings),
   },
 };

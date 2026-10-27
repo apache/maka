@@ -63,9 +63,9 @@ async fn ten_mib_raw_fragments_rebuild_after_restart_from_durable_facts() {
     materialize_all(&log, through).await;
     assert!(log.prefix(100, 16 * 1024 * 1024).await.is_ok());
     let cache_id = id.clone();
-    let original: Vec<u8> = crate::test_store::inspect(&log, move |db| {
+    let original: Vec<u8> = crate::test_store::inspect_cache(&log, move |db| {
         db.query_row(
-            "SELECT payload FROM transcript_cache.rows WHERE message_id = ?",
+            "SELECT payload FROM temp.transcript_rows WHERE message_id = ?",
             [&cache_id],
             |row| row.get(0),
         )
@@ -94,12 +94,12 @@ async fn ten_mib_raw_fragments_rebuild_after_restart_from_durable_facts() {
         serde_json::from_slice::<Value>(&assembled).unwrap()["content"]["value"],
         raw
     );
-    crate::test_store::inspect(&log, move |db| {
-        db.execute("DELETE FROM transcript_cache.rows", []).unwrap()
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute("DELETE FROM temp.transcript_rows", []).unwrap()
     })
     .await;
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -113,9 +113,9 @@ async fn ten_mib_raw_fragments_rebuild_after_restart_from_durable_facts() {
         raw
     );
     materialize_all(&log, through).await;
-    let rebuilt: Vec<u8> = crate::test_store::inspect(&log, move |db| {
+    let rebuilt: Vec<u8> = crate::test_store::inspect_cache(&log, move |db| {
         db.query_row(
-            "SELECT payload FROM transcript_cache.rows WHERE message_id = ?",
+            "SELECT payload FROM temp.transcript_rows WHERE message_id = ?",
             [&id],
             |row| row.get(0),
         )
@@ -150,9 +150,9 @@ async fn selected_boundary_does_not_hydrate_an_earlier_sibling_payload() {
             .await
             .is_err()
     );
-    let value: Vec<u8> = crate::test_store::inspect(&log, move |db| {
+    let value: Vec<u8> = crate::test_store::inspect_cache(&log, move |db| {
         db.query_row(
-            "SELECT payload FROM transcript_cache.rows WHERE message_id = ?",
+            "SELECT payload FROM temp.transcript_rows WHERE message_id = ?",
             [&target.event().id],
             |row| row.get(0),
         )
@@ -177,9 +177,9 @@ async fn escaped_raw_and_complete_ui_row_survive_reopen_and_require_original_bod
     let through = log.append(&write).await.unwrap();
     materialize_all(&log, through).await;
     let cache_id = write.event().id.clone();
-    let projected: Vec<u8> = crate::test_store::inspect(&log, move |db| {
+    let projected: Vec<u8> = crate::test_store::inspect_cache(&log, move |db| {
         db.query_row(
-            "SELECT payload FROM transcript_cache.rows WHERE message_id = ?",
+            "SELECT payload FROM temp.transcript_rows WHERE message_id = ?",
             [&cache_id],
             |row| row.get(0),
         )
@@ -191,8 +191,8 @@ async fn escaped_raw_and_complete_ui_row_survive_reopen_and_require_original_bod
         row["content"]["value"] == raw,
         "escaped raw must be projected completely"
     );
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -208,11 +208,11 @@ async fn escaped_raw_and_complete_ui_row_survive_reopen_and_require_original_bod
     );
     assert!(log.prefix(100, 32 * 1024 * 1024).await.is_ok());
     materialize_all(&log, through).await;
-    let rebuilt: Vec<u8> = crate::test_store::inspect(&log, {
+    let rebuilt: Vec<u8> = crate::test_store::inspect_cache(&log, {
         let cache_id = write.event().id.clone();
         move |db| {
             db.query_row(
-                "SELECT payload FROM transcript_cache.rows WHERE message_id = ?",
+                "SELECT payload FROM temp.transcript_rows WHERE message_id = ?",
                 [&cache_id],
                 |row| row.get(0),
             )
@@ -231,8 +231,8 @@ async fn escaped_raw_and_complete_ui_row_survive_reopen_and_require_original_bod
         [&write.event().id],
     )
     .unwrap();
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -276,8 +276,8 @@ async fn multiple_large_results_keep_conversation_metadata_readable() {
         ids.push(result.event().id.clone());
     }
     assert_eq!(
-        crate::test_store::inspect(&log, move |db| {
-            db.query_row("SELECT count(*) FROM transcript_cache.rows", [], |row| {
+        crate::test_store::inspect_cache(&log, move |db| {
+            db.query_row("SELECT count(*) FROM temp.transcript_rows", [], |row| {
                 row.get::<_, i64>(0)
             })
             .unwrap()
@@ -318,6 +318,6 @@ async fn multiple_large_results_keep_conversation_metadata_readable() {
             .iter()
             .all(|chunk| chunk.tool.as_ref().unwrap().result.is_some() && chunk.text.is_empty())
     );
-    assert_eq!(crate::test_store::inspect(&log, move |db| { db.query_row("SELECT count(*) FROM transcript_cache.rows body JOIN transcript_directory row USING(session_id,source_sequence,item_index) WHERE row.role IN ('tool_call','tool_result')",[],|row|row.get::<_,i64>(0)).unwrap() }).await,0,"conversation metadata must not hydrate large tool bodies");
+    assert_eq!(crate::test_store::inspect_cache(&log, move |db| { db.query_row("SELECT count(*) FROM temp.transcript_rows body JOIN transcript_directory row USING(session_id,source_sequence,item_index) WHERE row.role IN ('tool_call','tool_result')",[],|row|row.get::<_,i64>(0)).unwrap() }).await,0,"conversation metadata must not hydrate large tool bodies");
     log.close().await.unwrap();
 }

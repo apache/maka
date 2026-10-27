@@ -22,175 +22,6 @@ import { contracts } from './contracts.js';
 import { configurations } from './configurations.js';
 
 export const nativeImplementations = /* @__PURE__ */ ((): {
-  label: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Label: typeof contracts.label };
-  };
-  locale: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Locale: typeof contracts.locale };
-  };
-  textReader: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Reader: typeof contracts.textReader };
-  };
-  textarea: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Textarea: typeof contracts.textarea };
-  };
-  markdown: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Markdown: typeof contracts.markdown };
-  };
-  markdownText: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { MarkdownText: typeof contracts.markdownText };
-  };
-  diff: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Diff: typeof contracts.diff };
-  };
-  sourceText: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { SourceText: typeof contracts.sourceText };
-  };
-  filePicker: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { FilePicker: typeof contracts.filePicker };
-  };
-  terminalView: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { TerminalView: typeof contracts.terminalView };
-  };
-  readingArea: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { ReadingArea: typeof contracts.readingArea };
-  };
-  rows: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Rows: typeof contracts.rows };
-  };
-  valueCheckpoint: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Checkpoint: typeof contracts.valueCheckpoint };
-  };
-  textFile: {
-    implementation: string;
-    configuration: {
-      type: 'object';
-      additionalProperties: false;
-      properties: { path: { type: ['string', 'null']; minLength: 1 } };
-      title: 'TextFileConfiguration';
-      $schema: 'https://json-schema.org/draft/2020-12/schema';
-    };
-    exports: { TextFile: typeof contracts.textFile };
-  };
-  morphMark: {
-    implementation: string;
-    configuration: {
-      type: 'object';
-      additionalProperties: false;
-      properties: {
-        shapes: { type: 'array'; items: { $ref: '#/$defs/MorphShape' }; minItems: 2; maxItems: 2 };
-        color: { $ref: '#/$defs/TerminalColor' };
-        period: { type: 'integer'; format: 'uint32'; minimum: 1000; maximum: 60000 };
-      };
-      required: ['shapes', 'color', 'period'];
-      title: 'MorphMarkConfiguration';
-      $schema: 'https://json-schema.org/draft/2020-12/schema';
-      $defs: {
-        MorphShape: {
-          type: 'object';
-          additionalProperties: false;
-          properties: {
-            paths: {
-              type: 'array';
-              items: {
-                type: 'array';
-                items: {
-                  type: 'array';
-                  items: { type: 'number'; format: 'float' };
-                  minItems: 2;
-                  maxItems: 2;
-                };
-              };
-              minItems: 1;
-            };
-            radius: { type: 'number'; format: 'float'; minimum: 0.01; maximum: 0.2 };
-            miters: { type: 'array'; items: { type: 'integer'; format: 'uint'; minimum: 0 } };
-            columns: { type: 'integer'; format: 'uint'; minimum: 32; maximum: 256 };
-          };
-          required: ['paths', 'radius', 'miters', 'columns'];
-        };
-        TerminalColor: {
-          anyOf: [
-            { type: 'integer'; format: 'uint32'; minimum: 0; maximum: 16777215 },
-            { $ref: '#/$defs/TerminalNamedColor' },
-          ];
-          description: "Terminal colors retain the user's ANSI palette and default background.\nNumeric values are RGB; named values are emitted as terminal attributes.";
-        };
-        TerminalNamedColor: {
-          type: 'string';
-          enum: [
-            'reset',
-            'black',
-            'red',
-            'green',
-            'yellow',
-            'blue',
-            'magenta',
-            'cyan',
-            'gray',
-            'dark_gray',
-            'light_red',
-            'light_green',
-            'light_yellow',
-            'light_blue',
-            'light_magenta',
-            'light_cyan',
-            'white',
-          ];
-        };
-      };
-    };
-    exports: { MorphMark: typeof contracts.morphMark };
-  };
-  selectionMenu: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { SelectionMenu: typeof contracts.selectionMenu };
-  };
-  input: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { SecretInput: typeof contracts.secretInput; TextInput: typeof contracts.textInput };
-  };
-  terminalSurface: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Surface: typeof contracts.terminalSurface };
-  };
-  callerHistory: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: {
-      DeploymentHistory: typeof contracts.callerHistory;
-      History: typeof contracts.callerHistory;
-    };
-  };
   receiptReader: {
     implementation: string;
     configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
@@ -205,11 +36,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     implementation: string;
     configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
     exports: {};
-  };
-  uiDeploymentManager: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Management: typeof contracts.deploymentManager };
   };
   agent: {
     implementation: string;
@@ -341,11 +167,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     configuration: typeof configurations.workspaceProcesses;
     exports: { protocol: typeof contracts.protocolProcesses };
   };
-  uiAuthoring: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Authoring: typeof contracts.uiAuthoring };
-  };
   workspaceWeb: {
     implementation: string;
     configuration: typeof configurations.workspaceWeb;
@@ -469,173 +290,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     exports: { Setup: typeof contracts.settingsSetup };
   };
 } => ({
-  label: {
-    implementation: 'maka.ui.label',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Label: contracts.label },
-  },
-  locale: {
-    implementation: 'maka.ui.locale',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Locale: contracts.locale },
-  },
-  textReader: {
-    implementation: 'maka.text.reader',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Reader: contracts.textReader },
-  },
-  textarea: {
-    implementation: 'maka.ui.textarea',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Textarea: contracts.textarea },
-  },
-  markdown: {
-    implementation: 'maka.ui.markdown',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Markdown: contracts.markdown },
-  },
-  markdownText: {
-    implementation: 'maka.text.markdown.tui',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { MarkdownText: contracts.markdownText },
-  },
-  diff: {
-    implementation: 'maka.ui.diff',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Diff: contracts.diff },
-  },
-  sourceText: {
-    implementation: 'maka.ui.source',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { SourceText: contracts.sourceText },
-  },
-  filePicker: {
-    implementation: 'maka.ui.file',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { FilePicker: contracts.filePicker },
-  },
-  terminalView: {
-    implementation: 'maka.ui.terminal',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { TerminalView: contracts.terminalView },
-  },
-  readingArea: {
-    implementation: 'maka.ui.reading',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { ReadingArea: contracts.readingArea },
-  },
-  rows: {
-    implementation: 'maka.ui.rows',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Rows: contracts.rows },
-  },
-  valueCheckpoint: {
-    implementation: 'maka.ui.checkpoint',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Checkpoint: contracts.valueCheckpoint },
-  },
-  textFile: {
-    implementation: 'maka.ui.text-file',
-    configuration: {
-      type: 'object',
-      additionalProperties: false,
-      properties: { path: { type: ['string', 'null'], minLength: 1 } },
-      title: 'TextFileConfiguration',
-      $schema: 'https://json-schema.org/draft/2020-12/schema',
-    },
-    exports: { TextFile: contracts.textFile },
-  },
-  morphMark: {
-    implementation: 'maka.ui.morph-mark',
-    configuration: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        shapes: { type: 'array', items: { $ref: '#/$defs/MorphShape' }, minItems: 2, maxItems: 2 },
-        color: { $ref: '#/$defs/TerminalColor' },
-        period: { type: 'integer', format: 'uint32', minimum: 1000, maximum: 60000 },
-      },
-      required: ['shapes', 'color', 'period'],
-      title: 'MorphMarkConfiguration',
-      $schema: 'https://json-schema.org/draft/2020-12/schema',
-      $defs: {
-        MorphShape: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            paths: {
-              type: 'array',
-              items: {
-                type: 'array',
-                items: {
-                  type: 'array',
-                  items: { type: 'number', format: 'float' },
-                  minItems: 2,
-                  maxItems: 2,
-                },
-              },
-              minItems: 1,
-            },
-            radius: { type: 'number', format: 'float', minimum: 0.01, maximum: 0.2 },
-            miters: { type: 'array', items: { type: 'integer', format: 'uint', minimum: 0 } },
-            columns: { type: 'integer', format: 'uint', minimum: 32, maximum: 256 },
-          },
-          required: ['paths', 'radius', 'miters', 'columns'],
-        },
-        TerminalColor: {
-          anyOf: [
-            { type: 'integer', format: 'uint32', minimum: 0, maximum: 16777215 },
-            { $ref: '#/$defs/TerminalNamedColor' },
-          ],
-          description:
-            "Terminal colors retain the user's ANSI palette and default background.\nNumeric values are RGB; named values are emitted as terminal attributes.",
-        },
-        TerminalNamedColor: {
-          type: 'string',
-          enum: [
-            'reset',
-            'black',
-            'red',
-            'green',
-            'yellow',
-            'blue',
-            'magenta',
-            'cyan',
-            'gray',
-            'dark_gray',
-            'light_red',
-            'light_green',
-            'light_yellow',
-            'light_blue',
-            'light_magenta',
-            'light_cyan',
-            'white',
-          ],
-        },
-      },
-    },
-    exports: { MorphMark: contracts.morphMark },
-  },
-  selectionMenu: {
-    implementation: 'maka.ui.selection-menu',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { SelectionMenu: contracts.selectionMenu },
-  },
-  input: {
-    implementation: 'maka.ui.input',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { SecretInput: contracts.secretInput, TextInput: contracts.textInput },
-  },
-  terminalSurface: {
-    implementation: 'maka.ui.surface.tui',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Surface: contracts.terminalSurface },
-  },
-  callerHistory: {
-    implementation: 'maka.operations.history',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { DeploymentHistory: contracts.callerHistory, History: contracts.callerHistory },
-  },
   receiptReader: {
     implementation: 'maka.operations.receipts',
     configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
@@ -650,11 +304,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     implementation: 'maka.application.gateway',
     configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
     exports: {},
-  },
-  uiDeploymentManager: {
-    implementation: 'maka.application.ui-management',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Management: contracts.deploymentManager },
   },
   agent: {
     implementation: 'maka.agent.api',
@@ -786,11 +435,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     implementation: 'maka.workspace.protocol-processes',
     configuration: configurations.workspaceProcesses,
     exports: { protocol: contracts.protocolProcesses },
-  },
-  uiAuthoring: {
-    implementation: 'maka.application.authoring',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Authoring: contracts.uiAuthoring },
   },
   workspaceWeb: {
     implementation: 'maka.workspace.web',

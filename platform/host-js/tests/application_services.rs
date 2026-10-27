@@ -66,14 +66,12 @@ use maka_js_runtime::plugin::Limits;
 use maka_packages::MANIFEST_FILE;
 use maka_packages::Package;
 use maka_plugin_core::{
-    composition::{
-        Configuration, Environment, ExecutionLocation, Input, InstanceId, Node, PackageUse, Target,
-    },
+    composition::{Configuration, Input, InstanceId, Node, PackageUse, Target},
     contract::{
         Availability, Cardinality, Contract, Export, Import, Interface, Method, MethodMode,
         ResourceType, Transport,
     },
-    package::{Declaration, EntryDeclaration, EntryTarget, Implementation, Realm},
+    package::{Declaration, EntryDeclaration, Implementation, Realm},
     runtime::{Phase, Published},
 };
 use serde_json::{Value, json};
@@ -129,7 +127,6 @@ fn contract(mode: MethodMode) -> Contract {
 }
 fn entry(provider: bool, implementation: Implementation, mode: MethodMode) -> EntryDeclaration {
     EntryDeclaration {
-        scene: None,
         implementation,
         configuration: json!({"type":"object"}).into(),
         imports: if provider {
@@ -161,7 +158,7 @@ fn package(id: &str, entry: EntryDeclaration, source: Option<String>) -> Package
         MANIFEST_FILE.into(),
         serde_json::to_vec(&json!({
             "schemaVersion":1,"id":id,"application":Declaration {
-                entries: BTreeMap::from([(EntryTarget::Host, entry)]), composition: None,
+                host: Some(entry), ui: None, composition: None,
             }
         }))
         .unwrap(),
@@ -175,7 +172,7 @@ fn node(package: &Package, key: u128, provider: bool) -> Node {
     Node {
         key: Uuid::from_u128(key),
         package: package.application_ref().into(),
-        use_package: PackageUse::Entry,
+        use_package: PackageUse::Host,
         configuration: Configuration::default(),
         parameters: Configuration::default(),
         bindings: if provider {
@@ -195,17 +192,11 @@ fn node(package: &Package, key: u128, provider: bool) -> Node {
 }
 fn input(provider: &Package, consumer: &Package) -> Input {
     Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
         instances: BTreeMap::from([
             ("provider".into(), node(provider, 1, true)),
             ("a".into(), node(consumer, 2, false)),
             ("b".into(), node(consumer, 3, false)),
         ]),
-        recovery: None,
-        launch: None,
     }
 }
 fn id(key: u128) -> InstanceId {

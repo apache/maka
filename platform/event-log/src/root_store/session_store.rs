@@ -208,6 +208,11 @@ impl SessionStore {
         self.scoped().await?.session_projection(session_id).await
     }
 
+    /// Read the canonical partition-wide sequence under this Session's custody.
+    pub async fn committed_sequence(&self) -> Result<u64, StoreError> {
+        self.scoped().await?.committed_sequence().await
+    }
+
     pub async fn observe_session<T: DeserializeOwned + Send + 'static>(
         &self,
         session_id: &str,

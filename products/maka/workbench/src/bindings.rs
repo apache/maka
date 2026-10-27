@@ -23,9 +23,11 @@ mod assets;
 mod files;
 mod links;
 mod mutation;
+mod plugins;
 mod settings;
 mod terminal;
 mod terminal_grid;
+mod ui_services;
 mod uploads;
 
 pub use mutation::OriginalMutation;
@@ -53,7 +55,9 @@ struct Owner {
     client: Client,
     runtime: Handle,
     tasks: StdMutex<Option<TaskTracker>>,
-    budget: maka_ui_runtime::budget::NativeBudget,
+    budget: maka_ui_support::budget::NativeBudget,
+    plugins: plugins::Packages,
+    reload: crate::reload::UiReload,
 }
 struct Scope {
     owner: Arc<Owner>,
@@ -81,6 +85,8 @@ impl Bindings {
                 runtime,
                 tasks: StdMutex::new(Some(TaskTracker::new())),
                 budget: Default::default(),
+                plugins: Default::default(),
+                reload: Default::default(),
             }),
         }
     }
@@ -88,6 +94,14 @@ impl Bindings {
     /// Bundled assets and immutable tool images read through this original Host.
     pub fn assets(&self) -> Arc<dyn nsh_engine::Assets> {
         Arc::new(assets::HostAssets(self.owner.clone()))
+    }
+
+    pub fn chunk_loader(&self) -> Arc<dyn nsh_engine::ChunkLoader> {
+        Arc::new(plugins::Loader(self.owner.clone()))
+    }
+
+    pub fn reload(&self) -> crate::reload::UiReload {
+        self.owner.reload.clone()
     }
 
     /// Native objects own subscriptions; the launcher owns calls and durable recovery.
@@ -126,6 +140,7 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
     registry.register::<uploads::AttachmentPicker>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
+    registry.class::<ui_services::UiScope>();
     registry.value("host", make_host);
     registry
 }
@@ -209,6 +224,27 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    #[getter]
+    pub fn restored(&self) -> JsonValue {
+        self.owner.reload.restored()
+    }
+
+    pub async fn begin_ui_reload(this: Instance<Self>) -> Result<(), String> {
+        let reload = this.with(|host| host.owner.reload.clone());
+        drop(this);
+        reload.pause().await
+    }
+
+    pub fn cancel_ui_reload(&self) -> Result<(), String> {
+        self.owner.reload.resume()
+    }
+
+    pub fn reload_ui(&self, state: JsonValue, cx: CallCx<'_>) {
+        let reload = self.owner.reload.clone();
+        // Queue after this JS call, so replacing its engine cannot interrupt it.
+        cx.start(async move { reload.request(state) });
+    }
+
     /// Resolve the original Markdown target once. Workspace bytes remain with
     /// the Host; HTTP(S) images use NSH's native loader and bundle permissions.
     pub fn markdown_image_source(
@@ -283,7 +319,7 @@ impl ApplicationHost {
     /// The native startup language, using the same resolver as the desktop.
     #[getter]
     pub fn system_locale(&self) -> String {
-        maka_ui_runtime::locale::system()
+        maka_ui_support::locale::system()
     }
 
     /// The optional session initially requested by the launcher.
@@ -311,6 +347,90 @@ impl ApplicationHost {
         execute(owner.clone(), async move { owner.client.refresh().await }).await
     }
 
+    /// Whether this Host published the service in its captured catalogue.
+    pub async fn has_service(this: Instance<Self>, endpoint: String) -> bool {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        owner.client.describe(&endpoint).await.is_ok()
+    }
+
+    /// Bind declared UI services locally; the first service call captures its
+    /// child Host session from the latest observed deployment source.
+    pub fn bind_ui(
+        &self,
+        source: JsonValue,
+        instance: JsonValue,
+        binding_basis: String,
+    ) -> Result<Instance<ui_services::UiScope>, String> {
+        let source = serde_json::from_value(source).map_err(|error| error.to_string())?;
+        let instance = serde_json::from_value(instance).map_err(|error| error.to_string())?;
+        Ok(Instance::new(ui_services::UiScope::new(
+            self.owner.clone(),
+            source,
+            instance,
+            binding_basis,
+        )?))
+    }
+
+    /// Confirm one generic service operation, retaining its original receipt.
+    pub async fn mutation(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+    ) -> Result<JsonValue, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner.clone(), async move {
+            let id = Uuid::new_v4();
+            let mutation = owner
+                .client
+                .mutation(
+                    id,
+                    &endpoint,
+                    &method,
+                    input,
+                    Default::default(),
+                    None,
+                    JsonValue::Null,
+                )
+                .await?;
+            mutation.prepare().await?;
+            let reply = mutation.confirm().await?;
+            Ok(serde_json::json!({"operationId": id, "reply": reply}))
+        })
+        .await
+    }
+
+    /// Observe progress and cancellation of the original generic service call.
+    pub async fn begin_mutation(
+        this: Instance<Self>,
+        endpoint: String,
+        method: String,
+        input: JsonValue,
+    ) -> Result<Instance<OriginalMutation>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        let original = execute(owner.clone(), async move {
+            let mutation = owner
+                .client
+                .mutation(
+                    Uuid::new_v4(),
+                    &endpoint,
+                    &method,
+                    input,
+                    Default::default(),
+                    None,
+                    JsonValue::Null,
+                )
+                .await?;
+            mutation.prepare().await?;
+            Ok(OriginalMutation::new(owner, mutation))
+        })
+        .await?;
+        Ok(Instance::new(original))
+    }
+
     /// Query a service exposed by the original Host catalogue.
     pub async fn query(
         this: Instance<Self>,
@@ -326,7 +446,13 @@ impl ApplicationHost {
                 &method,
                 &owner.client.describe(&endpoint).await?.contract,
             )?;
-            owner.client.query(&endpoint, &method, input).await
+            let value = owner.client.query(&endpoint, &method, input).await?;
+            if endpoint == "management" && method == "readUi" {
+                owner.plugins.observe(
+                    serde_json::from_value(value.clone()).map_err(|error| error.to_string())?,
+                );
+            }
+            Ok(value)
         })
         .await
     }

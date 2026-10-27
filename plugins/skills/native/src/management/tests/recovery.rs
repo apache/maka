@@ -29,8 +29,7 @@ use maka_packages::MANIFEST_FILE;
 use maka_packages::Package;
 use maka_plugin_core::{
     composition::{
-        Configuration as NodeConfiguration, Environment, ExecutionLocation, Input, InstanceId,
-        Node, PackageUse, Target,
+        Configuration as NodeConfiguration, Input, InstanceId, Node, PackageUse, Target,
     },
     operation::{OperationCleanup, OperationOutcome, Receipt, RecoveryRef},
 };
@@ -68,11 +67,11 @@ fn packages(source: &Path) -> (Input, Vec<Package>) {
     let provider = Package::new(BTreeMap::from([(
         MANIFEST_FILE.into(),
         serde_json::to_vec(&json!({
-            "schemaVersion":1,"id":"skills","application":{"entries":{"host":{
+            "schemaVersion":1,"id":"skills","application":{"host":{
                 "implementation":{"kind":"native","implementation":IMPLEMENTATION},
                 "configuration":configuration_schema(),"imports":{},
                 "exports":{EXPORT:{"contract":contract(),"availability":"required"}}
-            }}}
+            }}
         }))
         .unwrap(),
     )]))
@@ -81,11 +80,11 @@ fn packages(source: &Path) -> (Input, Vec<Package>) {
         (
             MANIFEST_FILE.into(),
             serde_json::to_vec(&json!({
-                "schemaVersion":1,"id":"consumer","application":{"entries":{"host":{
+                "schemaVersion":1,"id":"consumer","application":{"host":{
                     "implementation":{"kind":"javascript","module":"main.mjs","realm":"shared"},
                     "configuration":{"type":"object","additionalProperties":false},
                     "imports":{EXPORT:{"contract":contract(),"cardinality":maka_plugin_core::contract::Cardinality::One}},"exports":{}
-                }}}
+                }}
             }))
             .unwrap(),
         ),
@@ -96,21 +95,17 @@ fn packages(source: &Path) -> (Input, Vec<Package>) {
     ]))
     .unwrap();
     let reader = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
-        "schemaVersion":1,"id":"outcomes","application":{"entries":{"host":{
+        "schemaVersion":1,"id":"outcomes","application":{"host":{
             "implementation":{"kind":"native","implementation":maka_skills_api::outcomes::IMPLEMENTATION},
             "configuration":{"type":"object","additionalProperties":false},"imports":{},
             "exports":{maka_skills_api::outcomes::EXPORT:{"contract":maka_skills_api::outcomes::contract(),"availability":"required"}}
-        }}}
+        }}
     })).unwrap())])).unwrap();
     let mut files = consumer.files().clone();
     let mut manifest = consumer.manifest().clone();
     let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
     manifest.id = "recovery-consumer".into();
-    manifest_application
-        .entries
-        .get_mut(&maka_plugin_core::package::EntryTarget::Host)
-        .unwrap()
-        .imports = BTreeMap::from([(
+    manifest_application.host.as_mut().unwrap().imports = BTreeMap::from([(
         "outcomes".into(),
         maka_plugin_core::contract::Import {
             contract: maka_skills_api::outcomes::contract(),
@@ -126,7 +121,7 @@ fn packages(source: &Path) -> (Input, Vec<Package>) {
     let node = |key, package: &Package, configuration, bindings| Node {
         key: Uuid::from_u128(key),
         package: package.application_ref().into(),
-        use_package: PackageUse::Entry,
+        use_package: PackageUse::Host,
         configuration,
         bindings,
         parameters: Default::default(),
@@ -134,10 +129,6 @@ fn packages(source: &Path) -> (Input, Vec<Package>) {
         overrides: vec![],
     };
     let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
         instances: BTreeMap::from([
             (
                 "outcomes".into(),
@@ -192,8 +183,6 @@ fn packages(source: &Path) -> (Input, Vec<Package>) {
                 ),
             ),
         ]),
-        recovery: None,
-        launch: None,
     };
     (input, vec![provider, consumer, reader, recovery_consumer])
 }
@@ -806,9 +795,9 @@ async fn imported_source_operations_recover_through_the_original_host_after_libr
     let (input, mut resources, _) = super::imported("review", bytes);
     resources.insert(
         "file".into(),
-        maka_ui_runtime::file::read_selected(
+        maka_ui_support::file::read_selected(
             &file,
-            &maka_ui_runtime::budget::NativeBudget::default(),
+            &maka_ui_support::budget::NativeBudget::default(),
         )
         .unwrap(),
     );

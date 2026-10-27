@@ -25,6 +25,7 @@ mod attachment_paths;
 pub mod bindings;
 mod clipboard;
 pub mod host;
+pub mod reload;
 
 use nsh_engine::{Bundle, EngineConfig, Limits, Policy};
 use tokio::sync::watch;

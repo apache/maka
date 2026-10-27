@@ -361,8 +361,17 @@ async fn app_consent_ui_shows_trusted_identity_and_commits_only_offered_choices(
             wait_request(&mut view, "Application access request", "Trusted consent fixture").await;
             wait_enabled_node(&mut view, "Always allow").await;
             support::click_button(&mut view, button).await;
+            let canonical = loop {
+                view.poll().unwrap();
+                support::tick(&mut view);
+                assert!(view.last_error().is_none(), "{:?}", view.last_error());
+                let current = fixture.store.session(&fixture.session).await.unwrap().interaction(&record.request_id).await.unwrap().unwrap();
+                if current.outcome.is_some() {
+                    break current;
+                }
+                tokio::task::yield_now().await;
+            };
             wait_view(&mut view, |screen| screen.contains(if expected == "cancel" { "Request closed" } else { "Application access allowed" })).await;
-            let canonical = fixture.store.session(&fixture.session).await.unwrap().interaction(&record.request_id).await.unwrap().unwrap();
             let outcome = serde_json::to_value(canonical.outcome.unwrap()).unwrap();
             if expected == "cancel" {
                 assert_eq!(outcome["kind"], "closure");

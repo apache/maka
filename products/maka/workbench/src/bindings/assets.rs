@@ -32,6 +32,9 @@ pub(super) struct HostAssets(pub(super) Arc<Owner>);
 
 impl Assets for HostAssets {
     fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
+        if let Some(encoded) = uri.strip_prefix("asset:/plugin/") {
+            return super::plugins::asset(&self.0, encoded);
+        }
         if let Some(encoded) = uri.strip_prefix(super::files::PREFIX) {
             let source: maka_agent_api::contract::FileRead = serde_json::from_slice(
                 &URL_SAFE_NO_PAD

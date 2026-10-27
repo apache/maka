@@ -80,7 +80,6 @@ pub struct RootStore {
     control: Arc<EventLog>,
     partitions: Vec<Arc<EventLog>>,
     closed: Arc<AtomicBool>,
-    creation_gates: [tokio::sync::Mutex<()>; PARTITION_COUNT],
     gates: Arc<gates::Gates>,
     lifecycle: Option<lifecycle::Lifecycle>,
     project_mutations: Arc<tokio::sync::Mutex<()>>,
@@ -185,7 +184,6 @@ impl RootStore {
             control,
             partitions: Vec::with_capacity(PARTITION_COUNT),
             closed: Arc::new(AtomicBool::new(false)),
-            creation_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
             gates: gates::Gates::new(),
             lifecycle: None,
             project_mutations: Arc::new(tokio::sync::Mutex::new(())),
@@ -347,10 +345,6 @@ pub(crate) async fn initialize_control(
             (
                 "application_intents",
                 "SELECT EXISTS(SELECT 1 FROM application_intents)",
-            ),
-            (
-                "application_ui_checkpoints",
-                "SELECT EXISTS(SELECT 1 FROM application_ui_checkpoints)",
             ),
         ] {
             let exists: bool = sqlx::query_scalar(

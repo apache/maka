@@ -184,6 +184,7 @@ export const host = {
         };
   },
   query,
+  hasService: (endpoint: string) => nativeHost.hasService(endpoint),
   refresh: () => nativeHost.refresh(),
   subscribe,
   get initialSession() {

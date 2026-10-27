@@ -143,14 +143,14 @@ impl recap::History for Backend {
                 return Err(failed("Recap session mismatch"));
             }
             self.owner.check_recap(&scope, &self.session).await?;
-            let high_water = *self
+            let high_water = self
                 .owner
                 .scoped_store(&scope, &self.session)
                 .await
                 .map_err(failed)?
-                .subscribe_commits()
-                .map_err(persistence)?
-                .borrow();
+                .committed_sequence()
+                .await
+                .map_err(persistence)?;
             let through = input.through.unwrap_or(high_water);
             if through > high_water {
                 return Err(failed("Recap history fence invalid"));

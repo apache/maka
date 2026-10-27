@@ -350,18 +350,6 @@ CREATE TABLE session_bundle_members (
     CHECK(parent_session_id IS NULL OR parent_session_id!=session_id)
 );
 
-CREATE TABLE application_ui_checkpoints (
-    deployment TEXT NOT NULL,
-    instance TEXT NOT NULL CHECK(json_valid(instance)),
-    key TEXT NOT NULL,
-    revision INTEGER NOT NULL CHECK(revision > 0),
-    format TEXT NOT NULL,
-    data_source_json TEXT NOT NULL CHECK(json_valid(data_source_json)),
-    metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json)),
-    content BLOB NOT NULL,
-    PRIMARY KEY(deployment, instance, key)
-) WITHOUT ROWID;
-
 CREATE TABLE application_launch (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     deployment TEXT NOT NULL,

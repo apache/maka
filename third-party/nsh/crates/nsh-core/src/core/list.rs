@@ -2069,16 +2069,16 @@ impl ListState {
                 return true;
             }
             let pixels = (end.min(bottom) - start.max(top)).max(0.0);
-            let (percent, threshold) = match (
-                self.viewability.view_area_percent,
-                self.viewability.item_visible_percent,
+            let (share, threshold) = match (
+                self.viewability.view_area_coverage_threshold,
+                self.viewability.item_visible_threshold,
             ) {
-                (Some(t), _) => (100.0 * pixels / self.viewport, t),
-                (None, Some(t)) => (100.0 * pixels / size.max(f32::EPSILON), t),
+                (Some(t), _) => (pixels / self.viewport, t.0),
+                (None, Some(t)) => (pixels / size.max(f32::EPSILON), t.0),
                 (None, None) => return pixels > 0.0,
             };
             if threshold > 0.0 {
-                percent >= threshold
+                share >= threshold
             } else {
                 pixels > 0.0
             }
@@ -2105,7 +2105,10 @@ impl ListState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{geometry::px, props::EdgeInsets};
+    use crate::{
+        geometry::{Percentage, px},
+        props::EdgeInsets,
+    };
 
     fn list(count: u32, estimated: f32, viewport: f32) -> ListState {
         let mut l = ListState::new(Rc::default());
@@ -2609,10 +2612,25 @@ mod tests {
         l.offset = 50.0;
         // Any visible pixel: items 0..=4.
         assert_eq!(l.viewable_items(), Some((0, 4)));
-        l.viewability.item_visible_percent = Some(60.0);
+        l.viewability.item_visible_threshold = Some(Percentage(0.6));
         assert_eq!(l.viewable_items(), Some((1, 3)));
-        l.viewability.item_visible_percent = Some(50.0);
+        l.viewability.item_visible_threshold = Some(Percentage(0.5));
         assert_eq!(l.viewable_items(), Some((0, 4)));
+    }
+
+    #[test]
+    fn viewability_fraction_boundaries_and_viewport_precedence() {
+        let mut l = list(100, 100.0, 400.0);
+        l.offset = 50.0;
+        l.viewability.item_visible_threshold = Some(Percentage(1.0));
+        assert_eq!(l.viewable_items(), Some((1, 3)));
+        l.viewability.view_area_coverage_threshold = Some(Percentage(0.125));
+        assert_eq!(l.viewable_items(), Some((0, 4)));
+        l.viewability.view_area_coverage_threshold = Some(Percentage(0.126));
+        assert_eq!(l.viewable_items(), Some((1, 3)));
+        l.viewability.view_area_coverage_threshold = Some(Percentage(0.0));
+        l.offset = 100.0;
+        assert_eq!(l.viewable_items(), Some((1, 4)));
     }
 
     #[test]

@@ -25,10 +25,9 @@ NSH lives in [`third-party/nsh`](../../../third-party/nsh/SOURCE.md). Cargo buil
 
 ## Start
 
-From the workspace root, build the product bundle and start the terminal interface in the Maka CLI:
+From the workspace root, start the terminal interface in the Maka CLI. Cargo builds and embeds its plugins and workbench:
 
 ```sh
-npm run build --workspace @maka-agent/product
 cargo run -p maka-cli
 ```
 

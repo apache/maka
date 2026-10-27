@@ -209,6 +209,7 @@ pub struct Surface {
     pub(crate) drag_input: Option<NodeId>,
     pub(crate) area_selection: Option<crate::selectable_view::SelectableView>,
     pub(crate) pointer: Option<crate::input::Pointer>,
+    pub(crate) input_paused: bool,
     pub(crate) focus_history: Vec<NodeId>,
     pub(crate) focus_returns: Vec<crate::input::FocusReturn>,
     pub(crate) toast: Option<(String, f64)>,
@@ -273,6 +274,7 @@ impl Surface {
             drag_input: None,
             area_selection: None,
             pointer: None,
+            input_paused: false,
             focus_history: Vec::new(),
             focus_returns: Vec::new(),
             toast: None,
@@ -306,6 +308,14 @@ impl Surface {
     /// The virtual dimensions of one terminal cell.
     pub fn metrics(&self) -> CellMetrics {
         self.metrics
+    }
+
+    /// Pauses physical input while queued engine edits remain applicable.
+    pub fn set_input_paused(&mut self, paused: bool) {
+        self.input_paused = paused;
+        if paused {
+            self.pointer_left();
+        }
     }
 
     /// Enables a terminal image protocol using the host's detected pixel

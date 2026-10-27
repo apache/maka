@@ -20,9 +20,9 @@
 use super::*;
 use maka_capabilities::call::Identity;
 use maka_plugin_core::{
-    composition::{Configuration, Environment, Node, PackageUse, Target},
+    composition::{Configuration, Node, PackageUse, Target},
     contract::{Availability, Cardinality, Export, Import, Method, Transport},
-    package::{Declaration, EntryDeclaration, EntryTarget},
+    package::{Declaration, EntryDeclaration},
 };
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -93,45 +93,42 @@ fn service_plan(contract: &Contract) -> (Input, Plan) {
                 package.clone(),
                 Declaration {
                     composition: None,
-                    entries: BTreeMap::from([(
-                        EntryTarget::Host,
-                        EntryDeclaration {
-                            scene: None,
-                            implementation: if provider {
-                                Implementation::Native {
-                                    implementation: "native".into(),
-                                }
-                            } else {
-                                Implementation::JavaScript {
-                                    module: "consumer.mjs".into(),
-                                    realm: Realm::Shared,
-                                }
-                            },
-                            configuration: json!({}).into(),
-                            imports: if provider {
-                                BTreeMap::new()
-                            } else {
-                                BTreeMap::from([(
-                                    "echo".into(),
-                                    Import {
-                                        contract: contract.clone(),
-                                        cardinality: Cardinality::One,
-                                    },
-                                )])
-                            },
-                            exports: if provider {
-                                BTreeMap::from([(
-                                    "echo".into(),
-                                    Export {
-                                        contract: contract.clone(),
-                                        availability: Availability::Required,
-                                    },
-                                )])
-                            } else {
-                                BTreeMap::new()
-                            },
+                    ui: None,
+                    host: Some(EntryDeclaration {
+                        implementation: if provider {
+                            Implementation::Native {
+                                implementation: "native".into(),
+                            }
+                        } else {
+                            Implementation::JavaScript {
+                                module: "consumer.mjs".into(),
+                                realm: Realm::Shared,
+                            }
                         },
-                    )]),
+                        configuration: json!({}).into(),
+                        imports: if provider {
+                            BTreeMap::new()
+                        } else {
+                            BTreeMap::from([(
+                                "echo".into(),
+                                Import {
+                                    contract: contract.clone(),
+                                    cardinality: Cardinality::One,
+                                },
+                            )])
+                        },
+                        exports: if provider {
+                            BTreeMap::from([(
+                                "echo".into(),
+                                Export {
+                                    contract: contract.clone(),
+                                    availability: Availability::Required,
+                                },
+                            )])
+                        } else {
+                            BTreeMap::new()
+                        },
+                    }),
                 },
             )
             .unwrap();
@@ -140,7 +137,7 @@ fn service_plan(contract: &Contract) -> (Input, Plan) {
             Node {
                 key: Uuid::from_u128(key),
                 package: package.into(),
-                use_package: PackageUse::Entry,
+                use_package: PackageUse::Host,
                 configuration: Configuration::default(),
                 parameters: Configuration::default(),
                 bindings: if provider {
@@ -159,15 +156,7 @@ fn service_plan(contract: &Contract) -> (Input, Plan) {
             },
         );
     }
-    let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
-        instances: nodes,
-        recovery: None,
-        launch: None,
-    };
+    let input = Input { instances: nodes };
     let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
     (input, plan)
 }
@@ -425,7 +414,6 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
 #[tokio::test]
 async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness() {
     use maka_event_log::root::{RootNamespaces, RootOwner};
-    use maka_plugin_core::composition::{Environment, ExecutionLocation};
     let dir = tempfile::tempdir().unwrap();
     let ns = RootNamespaces {
         ownership: dir.path().join("owners"),
@@ -438,34 +426,62 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         .await
         .unwrap(),
     );
+    let ui = Package::new(BTreeMap::from([
+        (
+            "maka.extension.json".into(),
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "id": "example.ui",
+                "application": {
+                    "ui": {
+                        "module": "ui.js",
+                        "configuration": {"type": "object"},
+                        "contributions": {"panel": {"kind": "panel", "title": {"fallback": "UI"}}}
+                    }
+                }
+            }))
+            .unwrap(),
+        ),
+        (
+            "ui.js".into(),
+            b"throw new Error('UI code must not execute in the Host');".to_vec(),
+        ),
+    ]))
+    .unwrap();
     let input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
-        instances: BTreeMap::new(),
-        recovery: None,
-        launch: None,
+        instances: BTreeMap::from([(
+            "ui".into(),
+            Node {
+                key: Uuid::new_v4(),
+                package: ui.application_ref().into(),
+                use_package: PackageUse::Ui,
+                configuration: Configuration::default(),
+                parameters: Configuration::default(),
+                bindings: BTreeMap::new(),
+                disabled: false,
+                overrides: Vec::new(),
+            },
+        )]),
     };
     let id = Uuid::new_v4();
     let first = store
-        .commit_application(id, 0, input.clone(), vec![], vec![])
+        .commit_application(id, 0, input.clone(), vec![], vec![ui.clone()])
         .await
         .unwrap();
     let cursor = store.subscribe_application(first.clone()).unwrap();
     let second = store
-        .commit_application(id, 1, input.clone(), vec![], vec![])
+        .commit_application(id, 1, input.clone(), vec![], vec![ui.clone()])
         .await
         .unwrap();
     // This is a real completed SQL head read retained across another owner turn.
     let (cursor, observed) = next_change(cursor).await;
     assert_eq!(observed.as_ref().unwrap(), &second);
     let third = store
-        .commit_application(id, 2, input.clone(), vec![], vec![])
+        .commit_application(id, 2, input.clone(), vec![], vec![ui.clone()])
         .await
         .unwrap();
     let native = NativeRegistry::default();
-    let (plan, sources) = prepare(&input, vec![], &native, true).unwrap();
+    let (plan, sources) = prepare(&input, vec![ui], &native, true).unwrap();
     let (updates, _) = watch::channel(Snapshot::default());
     let mut owner = Owner::new(
         plan,

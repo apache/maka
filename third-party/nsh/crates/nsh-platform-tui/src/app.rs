@@ -201,6 +201,7 @@ impl AppView {
         surface.set_components(options.components.clone());
         surface.set_reduce_motion(options.reduce_motion);
         let assets = Arc::new(AssetsProvider(RwLock::new(options.asset_base.clone())));
+        surface.set_assets(Some(assets.clone()));
         Self {
             surface,
             environment,
@@ -233,31 +234,7 @@ impl AppView {
 
     /// Runs `app`, replacing the current engine and retained views.
     pub fn load(&mut self, app: App) -> io::Result<()> {
-        self.stop_engine();
-        let mut surface = Surface::new(
-            self.options.size.0,
-            self.options.size.1,
-            self.options.metrics,
-        );
-        surface.inherit_image_protocol(&mut self.surface);
-        self.surface = surface;
-        self.focus_path.clear();
-        self.surface
-            .set_dark(self.environment.color_scheme == ColorScheme::Dark);
-        self.surface.set_components(self.options.components.clone());
-        self.surface.set_reduce_motion(self.options.reduce_motion);
-        self.surface.set_image_protocol(self.image_protocol);
-        let access = match &app {
-            App::Js(bundle) => bundle.policy.access(),
-            App::Rust(_) => nsh_engine::Policy::default().access(),
-        };
         let assets: Arc<dyn nsh_engine::Assets> = self.assets.clone();
-        self.surface.set_assets(Some(assets.clone()));
-        self.surface.set_access(access);
-        self.surface.services.enabled = self.services.is_some();
-        if let Some(services) = &self.services {
-            services.reset(self.surface.access.clone());
-        }
         let config = EngineConfig {
             viewport: self.surface.viewport(),
             trace: self.options.trace,
@@ -274,6 +251,41 @@ impl AppView {
             host: self.host.clone(),
             ..EngineConfig::new(app)
         };
+        self.load_with_config(config)
+    }
+
+    /// Runs a host-supplied engine configuration with this view's viewport and
+    /// terminal environment. Registries, assets, module loader, runtime and
+    /// engine context stay with the supplied configuration.
+    pub fn load_with_config(&mut self, mut config: EngineConfig) -> io::Result<()> {
+        self.stop_engine();
+        let mut surface = Surface::new(
+            self.options.size.0,
+            self.options.size.1,
+            self.options.metrics,
+        );
+        surface.inherit_image_protocol(&mut self.surface);
+        self.surface = surface;
+        self.focus_path.clear();
+        self.surface
+            .set_dark(self.environment.color_scheme == ColorScheme::Dark);
+        self.surface.set_components(self.options.components.clone());
+        self.surface.set_reduce_motion(self.options.reduce_motion);
+        self.surface.set_image_protocol(self.image_protocol);
+        let access = match &config.app {
+            App::Js(bundle) => bundle.policy.access(),
+            App::Rust(_) => nsh_engine::Policy::default().access(),
+        };
+        self.surface.set_assets(config.assets.clone());
+        self.surface.set_access(access);
+        self.surface.services.enabled = self.services.is_some();
+        if let Some(services) = &self.services {
+            services.reset(self.surface.access.clone());
+        }
+        config.viewport = self.surface.viewport();
+        config.environment = self.environment;
+        config.header_heights = nsh_core::NO_NATIVE_HEADER;
+        self.host = config.host.clone();
         let (tx, rx) = mpsc::channel();
         let metrics = self.options.metrics;
         let fonts = self.surface.fonts.clone();
@@ -502,12 +514,12 @@ impl AppView {
         self.last_error.as_deref()
     }
 
-    /// Sets where subsequently loaded app resources resolve. Images and
-    /// engine resources in a running app use the new source too.
+    /// Sets where resources of apps started with [`Self::load`] resolve.
+    /// Their running readers follow the new base. An app started with
+    /// [`Self::load_with_config`] keeps its supplied reader.
     pub fn set_asset_base(&mut self, base: Option<AssetBase>) {
         self.options.asset_base = base;
         *self.assets.0.write().unwrap_or_else(|e| e.into_inner()) = self.options.asset_base.clone();
-        self.surface.set_assets(Some(self.assets.clone()));
     }
 
     /// Sets the host appearance. An app's explicit appearance still wins.

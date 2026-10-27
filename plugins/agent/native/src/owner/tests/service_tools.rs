@@ -616,24 +616,15 @@ impl Setup {
             input.instances["provider"].configuration.values["workspaceRoots"].clone();
         let mut manifest = packages[0].manifest().clone();
         let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-        manifest_application
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap()
-            .imports
-            .insert(
-                "service".into(),
-                Import {
-                    contract: self.contract(),
-                    cardinality: Cardinality::One,
-                },
-            );
+        manifest_application.host.as_mut().unwrap().imports.insert(
+            "service".into(),
+            Import {
+                contract: self.contract(),
+                cardinality: Cardinality::One,
+            },
+        );
         if self.capture.is_some() {
-            let imports = &mut manifest_application
-                .entries
-                .get_mut(&EntryTarget::Host)
-                .unwrap()
-                .imports;
+            let imports = &mut manifest_application.host.as_mut().unwrap().imports;
             imports.insert("other_service".into(), imports["service"].clone());
         }
         let provider = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
@@ -686,13 +677,13 @@ impl Setup {
         } else {
             json!({"kind":"javascript","module":"counter.mjs","realm":"shared"})
         };
-        let mut files = BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture.counter","application":{"entries":{"host":{
+        let mut files = BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture.counter","application":{"host":{
             "implementation":implementation,"configuration":if self.computer { maka_workspace_api::computer::configuration_schema() } else if self.jev { maka_workspace_api::jev::configuration_schema() } else if self.web { maka_web_api::configuration_schema() } else if self.skills.is_some() { maka_skills_api::configuration_schema() } else if self.processes || self.protocol { maka_workspace_api::processes::configuration_schema() } else { json!({"type":"object","additionalProperties":false}) },"imports":{},
             "exports":if self.processes {
                 json!({(self.export()):{"contract":self.contract(),"availability":"required"},
                     "terminal":{"contract":maka_workspace_api::terminal::contract(),"availability":"required"}})
             } else { json!({(self.export()):{"contract":self.contract(),"availability":"required"}}) }
-        }}}})).unwrap())]);
+        }}})).unwrap())]);
         if let Some(source) = &self.images {
             if let Some(code) = source.javascript() {
                 files.insert("images.mjs".into(), code.into_bytes());
@@ -721,7 +712,7 @@ impl Setup {
             Node {
                 key: Uuid::from_u128(21),
                 package: package.application_ref().into(),
-                use_package: PackageUse::Entry,
+                use_package: PackageUse::Host,
                 configuration: if self.computer { NodeConfiguration { values: serde_json::from_value(json!({"desktop":"local"})).unwrap(), parameters: BTreeMap::new() } } else if self.web || self.jev { NodeConfiguration { values: serde_json::from_value(json!({"network":"allowed"})).unwrap(), parameters: BTreeMap::new() } } else if let Some(path) = &self.skills {
                     NodeConfiguration { values: serde_json::from_value(json!({
                         "bundled":self.bundled_skills,
@@ -750,27 +741,22 @@ impl Setup {
             let mut manifest = consumer.manifest().clone();
             let mut manifest_application =
                 manifest.application.as_ref().unwrap().declaration().clone();
-            manifest_application
-                .entries
-                .get_mut(&EntryTarget::Host)
-                .unwrap()
-                .imports
-                .insert(
-                    if self.protocol {
-                        "protocol"
+            manifest_application.host.as_mut().unwrap().imports.insert(
+                if self.protocol {
+                    "protocol"
+                } else {
+                    "terminal"
+                }
+                .into(),
+                Import {
+                    contract: if self.protocol {
+                        maka_workspace_api::protocol::contract()
                     } else {
-                        "terminal"
-                    }
-                    .into(),
-                    Import {
-                        contract: if self.protocol {
-                            maka_workspace_api::protocol::contract()
-                        } else {
-                            maka_workspace_api::terminal::contract()
-                        },
-                        cardinality: Cardinality::One,
+                        maka_workspace_api::terminal::contract()
                     },
-                );
+                    cardinality: Cardinality::One,
+                },
+            );
             files.insert(MANIFEST_FILE.into(), {
                 manifest.application = Some(
                     maka_plugin_core::package::CheckedDeclaration::new(manifest_application)
