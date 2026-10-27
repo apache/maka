@@ -41,7 +41,7 @@ export function EffectsInspector() {
       </View>
       <View><Label strong color={p.ink}>Image treatment</Label><Label color={p.faint}>{blur() ? "Soft focus / 3pt" : "Original / sharp"}</Label></View>
       <View style={{ height: 64, flexDirection: "row", gap: 16 }}>
-        <Image src={runtimeImage} placeholder={runtimeImage} resizeMode="contain" blurRadius={blur() ? 3 : 0} fadeDuration={300} style={{ width: 80, height: 64, backgroundColor: p.page }} />
+        <Image src={runtimeImage} placeholder={runtimeImage} blurRadius={blur() ? 3 : 0} fadeDuration={300} style={{ objectFit: "contain", width: 80, height: 64, backgroundColor: p.page }} />
         <View style={{ flex: 1, justifyContent: "center", gap: 16 }}>
           <Label color={p.muted}>NSH runtime</Label>
           <Action testID="effects-blur" label={blur() ? "Sharpen" : "Soften"} active={blur()} onPress={() => blur.set(!blur())} />

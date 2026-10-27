@@ -82,6 +82,11 @@ Consumers must regenerate declarations and rebuild old JS bundles with the
 matching compiler/runtime; old prop or style aliases are not restored.
 Maka's content-sized composer uses CSS `flex: initial`, and its conversation
 wrapper explicitly keeps column layout when setting `display: flex`.
+Retained terminal examples and selection/overlay documentation use the same
+canonical primitive styles. A compiled-engine regression checks their mounted
+values and reactive updates. A separate bundler smoke test compiles the retained
+terminal workbench entry and its real import/asset graph. Neither test replaces
+application TypeScript checks or mounted example UI coverage.
 
 Independent local corrections retain RichEditor geometry on its owning thread,
 retire its session subscription before dropping the geometry payload, and keep
