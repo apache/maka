@@ -252,6 +252,7 @@ impl Wire {
 }
 pub(super) async fn wire_batch(
     db: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
     build: &PreparedWireBuild,
     state: &mut Wire,
 ) -> Result<bool, StoreError> {
@@ -323,9 +324,10 @@ pub(super) async fn wire_batch(
                 if group.messages.is_empty() {
                     group.wire_id = Some(hash(b""));
                     group.wire_bytes = 0;
-                    let content = tree::save_group(db, &group).await?;
+                    let content = tree::save_group(db, refs, &group).await?;
                     assembly::stage(
                         db,
+                        refs,
                         &runtime::InFlight::default(),
                         assembly::Kind::Wire,
                         &build.id,
@@ -340,6 +342,14 @@ pub(super) async fn wire_batch(
         }
     }
     if ready {
+        let old: Option<String> =
+            sqlx::query_scalar("SELECT discovery_root FROM context_prepared_wire_views WHERE id=?")
+                .bind(&build.id)
+                .fetch_one(&mut *db)
+                .await?;
+        if let Some(old) = old {
+            refs.change(db, refs::Kind::Node, &old, -1).await?;
+        }
         sqlx::query(
             "UPDATE context_prepared_wire_views SET discovered=1,discovery_root=NULL WHERE id=?",
         )
@@ -395,7 +405,14 @@ pub(super) async fn wire(
     };
     let mut next = state.clone();
     let mut tx = db.begin().await?;
-    match wire_batch(&mut tx, build, &mut next).await {
+    let mut refs = refs::RefBatch::default();
+    let result = async {
+        let ready = wire_batch(&mut tx, &mut refs, build, &mut next).await?;
+        refs.flush(&mut tx).await?;
+        Ok(ready)
+    }
+    .await;
+    match result {
         Ok(ready) => {
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
             in_flight.generations.insert(

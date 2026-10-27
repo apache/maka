@@ -154,6 +154,7 @@ async fn duplicate_wire_and_failed_encoding_preserve_pages_metadata_and_identity
         .await
         .unwrap();
     assert_eq!(counts, (1, 0));
+    assert_log_refs(&log).await;
     log.close().await.unwrap();
 }
 
@@ -166,7 +167,9 @@ async fn same_digest_reappears_while_old_storage_is_partially_collected() {
     log.prepared_store().unwrap().run(|connection, _in_flight| Box::pin(async move {
         let mut tx = connection.begin().await?;
         sqlx::query("INSERT INTO context_prepared_payloads VALUES('a-old','same-content')").execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO context_prepared_refs VALUES('wire','same-content',0)").execute(&mut *tx).await?;
+        let mut refs=refs::RefBatch::default();
+        refs.create(&mut tx,refs::Kind::Wire,"same-content").await?;
+        refs.flush(&mut tx).await?;
         for index in 0..260i64 {
             sqlx::query("INSERT INTO context_prepared_chunks VALUES('a-old',?,0,0,0,NULL,?)").bind(index).bind(vec![index as u8; 16]).execute(&mut *tx).await?;
         }
@@ -180,7 +183,13 @@ async fn same_digest_reappears_while_old_storage_is_partially_collected() {
             sqlx::query("INSERT INTO context_prepared_chunks VALUES('b-new',?,0,0,0,NULL,?)").bind(index).bind(vec![index as u8; 16]).execute(&mut *tx).await?;
         }
         wire::publish_payload(&mut tx, "b-new", "same-content").await?;
-        sqlx::query("INSERT INTO context_prepared_refs VALUES('wire','same-content',1)").execute(&mut *tx).await?;
+        let mut refs=refs::RefBatch::default();
+        let group=Group { wire_id:Some("same-content".into()),wire_bytes:4160,index_bytes:0,dependencies:vec![],members:vec![1],messages:vec![],manifest:Default::default(),breakdown:Default::default() };
+        let content=tree::save_group(&mut tx,&mut refs,&group).await?;
+        sqlx::query("INSERT INTO context_prepared_builds(id,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,identity,discovered) VALUES('owner','fixture','{}',0,0,1,0,'owner',1)").execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO context_prepared_dirty(build_id,group_sequence) VALUES('owner',1)").execute(&mut *tx).await?;
+        assembly::stage(&mut tx,&mut refs,&runtime::InFlight::default(),assembly::Kind::Logical,"owner",1,&content).await?;
+        refs.flush(&mut tx).await?;
         gc::collect_unreachable(&mut tx).await?;
         let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_chunks WHERE storage_id='a-old'").fetch_one(&mut *tx).await?;
         assert_eq!(remaining, 4);
@@ -191,6 +200,7 @@ async fn same_digest_reappears_while_old_storage_is_partially_collected() {
         assert_eq!(storage, "b-new");
         let pieces: Vec<Vec<u8>> = sqlx::query_scalar("SELECT bytes FROM context_prepared_chunks WHERE storage_id=? ORDER BY piece_index").bind(storage).fetch_all(&mut *tx).await?;
         assert_eq!(pieces, (0..260).map(|index|vec![index as u8;16]).collect::<Vec<_>>());
+        assert_refs(&mut tx).await?;
         tx.rollback().await?;
         Ok(())
     })).await.unwrap();

@@ -203,6 +203,7 @@ async fn finalize(
 }
 async fn deliver(
     db: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
     kind: Kind,
     id: &str,
     state: &mut State,
@@ -222,6 +223,19 @@ async fn deliver(
         }
         state.replace_frame(parent, undo);
     } else {
+        let read = format!("SELECT root FROM {} WHERE id=?", kind.owner());
+        let old: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(read))
+            .bind(id)
+            .fetch_one(&mut *db)
+            .await?;
+        if old != result {
+            if let Some(root) = &result {
+                refs.change(db, refs::Kind::Node, root, 1).await?;
+            }
+            if let Some(root) = &old {
+                refs.change(db, refs::Kind::Node, root, -1).await?;
+            }
+        }
         let q = format!("UPDATE {} SET root=? WHERE id=?", kind.owner());
         sqlx::query(sqlx::AssertSqlSafe(q))
             .bind(result)
@@ -283,7 +297,14 @@ pub(super) async fn advance(
     };
     let progress = state.progress.clone();
     let mut undo = Vec::new();
-    match advance_batch(&mut tx, kind, id, state, &mut undo).await {
+    let mut refs = refs::RefBatch::default();
+    let result = async {
+        let ready = advance_batch(&mut tx, &mut refs, kind, id, state, &mut undo).await?;
+        refs.flush(&mut tx).await?;
+        Ok(ready)
+    }
+    .await;
+    match result {
         Ok(ready) => {
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
             Ok(ready)
@@ -305,6 +326,7 @@ pub(super) async fn advance(
 }
 async fn advance_batch(
     db: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
     kind: Kind,
     id: &str,
     state: &mut State,
@@ -370,10 +392,13 @@ async fn advance_batch(
         let (left, right) = (f.left.clone(), f.right.clone());
         if f.phase == 4 {
             let n = tree::compose(db, f.sequence as u64, f.content, left, right).await?;
-            let result = tree::save(db, &n).await?;
-            sqlx::query("INSERT INTO context_prepared_generation_nodes(kind,owner_id,node_id) VALUES(?,?,?) ON CONFLICT(kind,owner_id,node_id) DO NOTHING")
-                .bind(kind.name()).bind(id).bind(&result).execute(&mut *db).await?;
-            deliver(db, kind, id, state, undo, Some(result)).await?;
+            let result = tree::save(db, refs, &n).await?;
+            let pinned=sqlx::query("INSERT INTO context_prepared_generation_nodes(kind,owner_id,node_id) VALUES(?,?,?) ON CONFLICT(kind,owner_id,node_id) DO NOTHING")
+                .bind(kind.name()).bind(id).bind(&result).execute(&mut *db).await?.rows_affected()==1;
+            if pinned {
+                refs.change(db, refs::Kind::Node, &result, 1).await?;
+            }
+            deliver(db, refs, kind, id, state, undo, Some(result)).await?;
             continue;
         }
         let base = if let Some(root) = &f.base.root {
@@ -414,7 +439,7 @@ async fn advance_batch(
             if f.dirty.is_none()
                 && (f.base.root.is_none() || (f.low <= f.base.low && f.high >= f.base.high))
             {
-                deliver(db, kind, id, state, undo, f.base.root).await?;
+                deliver(db, refs, kind, id, state, undo, f.base.root).await?;
                 continue;
             }
             let chosen_dirty = match (&base, f.dirty) {
@@ -467,6 +492,7 @@ async fn advance_batch(
 /// Staging is write-once, including retries before finish starts.
 pub(super) async fn stage(
     db: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
     in_flight: &InFlight,
     kind: Kind,
     id: &str,
@@ -497,12 +523,17 @@ pub(super) async fn stage(
         kind.dirty(),
         kind.key()
     );
-    sqlx::query(sqlx::AssertSqlSafe(q))
+    let changed = sqlx::query(sqlx::AssertSqlSafe(q))
         .bind(content)
         .bind(id)
         .bind(sequence as i64)
-        .execute(db)
-        .await?;
+        .execute(&mut *db)
+        .await?
+        .rows_affected();
+    if changed != 1 {
+        return Err(invalid("prepared staging row is missing"));
+    }
+    refs.change(db, refs::Kind::Group, content, 1).await?;
     Ok(())
 }
 

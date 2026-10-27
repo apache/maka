@@ -744,40 +744,9 @@ async fn owner_retirement_keeps_copied_fragments_until_source_collection() {
 async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_jobs() {
     let mut db = database().await;
     let registry = crate::context::prepared::lifetime::PreparedRegistry::new();
-    for (id, session) in [("parent", "session"), ("child", "child")] {
-        sqlx::query("INSERT INTO context_prepared_builds(id,identity,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,complete) VALUES(?1,?1,?1,?2,1,1,2,0,'node',1)")
-            .bind(id).bind(serde_json::json!({"session":session}).to_string()).execute(&mut db).await.unwrap();
-        sqlx::query(
-            "INSERT INTO context_prepared_heads(session_id,build_id,touched) VALUES(?,?,0)",
-        )
-        .bind(session)
-        .bind(id)
-        .execute(&mut db)
+    crate::context::prepared::tests::seed_shared_wire_gc_fixture(&mut db)
         .await
         .unwrap();
-    }
-    sqlx::query("INSERT INTO context_prepared_nodes VALUES('node',?)")
-        .bind(serde_json::json!({"left":null,"right":null,"content":"group"}).to_string())
-        .execute(&mut db)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO context_prepared_groups VALUES('group',?)")
-        .bind(serde_json::json!({"wire_id":"wire"}).to_string())
-        .execute(&mut db)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO context_prepared_payloads VALUES('wire','wire')")
-        .execute(&mut db)
-        .await
-        .unwrap();
-    for index in 0..260 {
-        sqlx::query("INSERT INTO context_prepared_chunks VALUES('wire',?,0,0,1,NULL,?)")
-            .bind(index)
-            .bind(vec![42u8])
-            .execute(&mut db)
-            .await
-            .unwrap();
-    }
     crate::context::prepared::gc::retire_owner(&mut db, "session")
         .await
         .unwrap();
@@ -795,6 +764,9 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert_eq!(retained, 260);
+    crate::context::prepared::tests::assert_refs(&mut db)
+        .await
+        .unwrap();
     crate::context::prepared::gc::retire_owner(&mut db, "child")
         .await
         .unwrap();
@@ -812,6 +784,9 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert_eq!(remaining, 132);
+    crate::context::prepared::tests::assert_refs(&mut db)
+        .await
+        .unwrap();
     while crate::context::prepared::gc::maintain(
         &mut db,
         &registry,
@@ -825,6 +800,9 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert!(!exists);
+    crate::context::prepared::tests::assert_refs(&mut db)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

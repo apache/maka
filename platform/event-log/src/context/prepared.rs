@@ -24,6 +24,7 @@ mod dependencies;
 mod discovery;
 pub(crate) mod gc;
 pub(crate) mod lifetime;
+mod refs;
 pub(crate) mod runtime;
 mod stats;
 pub(crate) mod store;
@@ -188,6 +189,9 @@ impl EventLog {
                 .bind(&id).bind(identity).bind(&key).bind(encoded(&selection)?).bind(selection.through as i64)
                 .bind(selection.captured_through as i64).bind(selection.before.min(i64::MAX as u64) as i64)
                 .bind(previous as i64).bind(&root).bind(parent_id).execute(&mut *tx).await?;
+            let mut refs=refs::RefBatch::default();
+            if let Some(root)=&root { refs.change(&mut tx,refs::Kind::Node,root,1).await?; }
+            refs.flush(&mut tx).await?;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
             in_flight.insert(assembly::Kind::Logical,&id,runtime::Generation::Logical(discovery::Logical::new(previous_selection)));
             registry.wake();
@@ -496,7 +500,7 @@ fn joins(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "prepared/assembly_tests.rs"]

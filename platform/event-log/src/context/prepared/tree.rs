@@ -76,15 +76,25 @@ pub(super) async fn group(
 }
 pub(super) async fn save_group(
     connection: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
     group: &Group,
 ) -> Result<String, StoreError> {
     let json = encoded(group)?;
     let id = hash(json.as_bytes());
-    sqlx::query("INSERT OR IGNORE INTO context_prepared_groups(id,group_json) VALUES(?,?)")
-        .bind(&id)
-        .bind(json)
-        .execute(connection)
-        .await?;
+    let inserted =
+        sqlx::query("INSERT OR IGNORE INTO context_prepared_groups(id,group_json) VALUES(?,?)")
+            .bind(&id)
+            .bind(json)
+            .execute(&mut *connection)
+            .await?
+            .rows_affected()
+            == 1;
+    if inserted {
+        refs.create(connection, refs::Kind::Group, &id).await?;
+        if let Some(wire) = &group.wire_id {
+            refs.change(connection, refs::Kind::Wire, wire, 1).await?;
+        }
+    }
     Ok(id)
 }
 pub(super) async fn totals(
@@ -187,20 +197,33 @@ pub(super) async fn compose(
 }
 pub(super) async fn save(
     connection: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
     n: &Node,
 ) -> Result<String, StoreError> {
     let json = encoded(n)?;
     let id = hash(json.as_bytes());
-    sqlx::query("INSERT OR IGNORE INTO context_prepared_nodes(id,node_json) VALUES(?,?)")
-        .bind(&id)
-        .bind(json)
-        .execute(connection)
-        .await?;
+    let inserted =
+        sqlx::query("INSERT OR IGNORE INTO context_prepared_nodes(id,node_json) VALUES(?,?)")
+            .bind(&id)
+            .bind(json)
+            .execute(&mut *connection)
+            .await?
+            .rows_affected()
+            == 1;
+    if inserted {
+        refs.create(connection, refs::Kind::Node, &id).await?;
+        for child in [&n.left, &n.right].into_iter().flatten() {
+            refs.change(connection, refs::Kind::Node, child, 1).await?;
+        }
+        refs.change(connection, refs::Kind::Group, &n.content, 1)
+            .await?;
+    }
     Ok(id)
 }
 #[cfg(test)]
 fn replace<'a>(
     connection: &'a mut SqliteConnection,
+    refs: &'a mut refs::RefBatch,
     root: Option<String>,
     sequence: u64,
     content: String,
@@ -208,18 +231,18 @@ fn replace<'a>(
     Box::pin(async move {
         let Some(root) = root else {
             let n = compose(connection, sequence, content, None, None).await?;
-            return save(connection, &n).await;
+            return save(connection, refs, &n).await;
         };
         let mut n = node(connection, &root).await?;
         if sequence == n.sequence {
             n.content = content;
         } else if sequence < n.sequence {
-            n.left = Some(replace(connection, n.left, sequence, content).await?);
+            n.left = Some(replace(connection, refs, n.left, sequence, content).await?);
             let mut child = node(connection, n.left.as_deref().expect("inserted child")).await?;
             if (priority(child.sequence), child.sequence) < (priority(n.sequence), n.sequence) {
                 n.left = child.right.take();
                 n = compose(connection, n.sequence, n.content, n.left, n.right).await?;
-                child.right = Some(save(connection, &n).await?);
+                child.right = Some(save(connection, refs, &n).await?);
                 let child = compose(
                     connection,
                     child.sequence,
@@ -228,15 +251,15 @@ fn replace<'a>(
                     child.right,
                 )
                 .await?;
-                return save(connection, &child).await;
+                return save(connection, refs, &child).await;
             }
         } else {
-            n.right = Some(replace(connection, n.right, sequence, content).await?);
+            n.right = Some(replace(connection, refs, n.right, sequence, content).await?);
             let mut child = node(connection, n.right.as_deref().expect("inserted child")).await?;
             if (priority(child.sequence), child.sequence) < (priority(n.sequence), n.sequence) {
                 n.right = child.left.take();
                 n = compose(connection, n.sequence, n.content, n.left, n.right).await?;
-                child.left = Some(save(connection, &n).await?);
+                child.left = Some(save(connection, refs, &n).await?);
                 let child = compose(
                     connection,
                     child.sequence,
@@ -245,11 +268,11 @@ fn replace<'a>(
                     child.right,
                 )
                 .await?;
-                return save(connection, &child).await;
+                return save(connection, refs, &child).await;
             }
         }
         let n = compose(connection, n.sequence, n.content, n.left, n.right).await?;
-        save(connection, &n).await
+        save(connection, refs, &n).await
     })
 }
 // Sequential insertion exists only as an independent test oracle. Production
@@ -264,7 +287,10 @@ pub(super) async fn insert(
 ) -> Result<Option<String>, StoreError> {
     // Empty groups are retained as zero-width tombstones: old roots remain
     // valid and pagination/counts skip them without payload work.
-    Ok(Some(replace(connection, root, sequence, content).await?))
+    let mut refs = refs::RefBatch::default();
+    let root = replace(connection, &mut refs, root, sequence, content).await?;
+    refs.flush(connection).await?;
+    Ok(Some(root))
 }
 // Return the canonical treap identity of the exact prefix. A partial node is
 // hashed in memory; full subtrees reuse their persisted identities unchanged.
