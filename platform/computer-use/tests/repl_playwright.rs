@@ -21,6 +21,10 @@
 
 #[path = "repl_playwright/mutations.rs"]
 mod mutations;
+#[path = "repl_playwright/neutral_focus.rs"]
+mod neutral_focus;
+#[path = "repl_playwright/prefix_scroll.rs"]
+mod prefix_scroll;
 #[path = "repl_playwright/text_events.rs"]
 mod text_events;
 
@@ -152,7 +156,9 @@ impl Browser {
                             break;
                         }
                     }
-                    let body = if let Some(case) = path.strip_prefix("/case?case=") {
+                    let body = if let Some(body) = neutral_focus::fixture_html(&path) {
+                        body.to_owned()
+                    } else if let Some(case) = path.strip_prefix("/case?case=") {
                         text_events::fixture_html(case)
                     } else {
                         match path.as_str() {

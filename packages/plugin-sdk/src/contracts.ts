@@ -18604,7 +18604,14 @@ export const contracts = {
                 $ref: '#/$defs/AgentSession',
               },
               compacting: {
-                type: 'boolean',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentCompactionProgress',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               rememberedBackend: {
                 anyOf: [
@@ -18657,7 +18664,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['session', 'through', 'parts', 'toolSeeds'],
+            required: ['session', 'compacting', 'through', 'parts', 'toolSeeds'],
             $defs: {
               AgentSession: {
                 type: 'object',
@@ -19010,6 +19017,22 @@ export const contracts = {
               AgentSessionActivity: {
                 type: 'string',
                 enum: ['idle', 'working', 'waiting'],
+              },
+              AgentCompactionProgress: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  startedAt: {
+                    description: 'Original compaction start in milliseconds since the Unix epoch.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'startedAt'],
               },
               AgentSessionMetrics: {
                 description: 'Display-only readings from the latest completed main-model request.',

@@ -769,7 +769,12 @@ async fn linux_product_timeout_retires_vm_but_run_waits_for_exact_native_t2() {
     )
     .await;
     assert_eq!(window.observe(&run, "after_actual_t2").await, 100);
-    for pair in window.events.chunks_exact(2) {
+    let (pairs, incomplete_pair) = window.events.as_chunks::<2>();
+    assert!(
+        incomplete_pair.is_empty(),
+        "native wheel events must contain complete press/release pairs"
+    );
+    for pair in pairs {
         assert_eq!(
             (pair[0]["press"].as_bool(), pair[1]["press"].as_bool()),
             (Some(true), Some(false))

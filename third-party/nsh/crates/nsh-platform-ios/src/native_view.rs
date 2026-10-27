@@ -7,8 +7,8 @@ use std::cell::RefCell;
 
 use block2::RcBlock;
 use nsh_core::{
-    AccessibilityRole, Checked, EventKind, EventPayload, NodeId, PayloadValue, PointerEvents,
-    ViewProps,
+    Accessibility, AccessibilityRole, Checked, EventKind, EventPayload, NodeId, PayloadValue,
+    PointerEvents, ViewProps,
 };
 use nsh_engine::EngineControl;
 use objc2::{
@@ -37,6 +37,9 @@ pub(crate) struct NshViewIvars {
     /// The area descendants cover outside the bounds (`MountItem::Overflow`):
     /// touches there are looked for in the subviews.
     overflow: std::cell::Cell<Option<CGRect>>,
+    /// An `increment` / `decrement` reported whose value has not arrived
+    /// yet, and the value VoiceOver read since (`Some` once it asked).
+    step: RefCell<Option<Option<String>>>,
 }
 
 define_class!(
@@ -88,7 +91,11 @@ define_class!(
 
         #[unsafe(method_id(accessibilityValue))]
         fn accessibility_value(&self) -> Option<Retained<NSString>> {
-            accessibility_value(&self.ivars().props.borrow()).map(|v| NSString::from_str(&v))
+            let value = accessibility_value(&self.ivars().props.borrow());
+            if let Some(read) = self.ivars().step.borrow_mut().as_mut() {
+                *read = Some(value.clone().unwrap_or_default());
+            }
+            value.map(|v| NSString::from_str(&v))
         }
 
         #[unsafe(method(accessibilityTraits))]
@@ -295,8 +302,32 @@ impl NshView {
 
     /// Sets the touch, accessibility and test properties.
     pub(crate) fn set_props(&self, props: ViewProps, control: &EngineControl) {
+        let late = self.late_step_value(&props);
         *self.ivars().props.borrow_mut() = props;
         *self.ivars().control.borrow_mut() = Some(control.clone());
+        if let Some(value) = late {
+            crate::system::announce(&value);
+        }
+    }
+
+    /// The value an `increment` / `decrement` led to, when it arrives after
+    /// VoiceOver read the element's value (the action is answered on the
+    /// engine thread, so it usually does): VoiceOver reads the value right
+    /// after `accessibilityIncrement` returns and never again, so the new
+    /// one is announced. A value that arrives before VoiceOver asks is the
+    /// one it reads, and is not announced twice.
+    fn late_step_value(&self, props: &ViewProps) -> Option<String> {
+        if self.ivars().step.borrow().is_none() {
+            return None;
+        }
+        let value = accessibility_value(props).unwrap_or_default();
+        if accessibility_value(&self.ivars().props.borrow()).unwrap_or_default() == value {
+            return None;
+        }
+        let read = self.ivars().step.take().flatten()?;
+        // SAFETY: `UIAccessibilityFocus`'s informal protocol on NSObject.
+        let focused: bool = unsafe { msg_send![self, accessibilityElementIsFocused] };
+        (focused && !value.is_empty() && read != value).then_some(value)
     }
 
     /// The view is a selectable view (`ViewProps::selectable_view`).
@@ -337,6 +368,9 @@ impl NshView {
         if self.has_action(name)
             && let Some(control) = self.ivars().control.borrow().as_ref()
         {
+            if matches!(name, "increment" | "decrement") {
+                *self.ivars().step.borrow_mut() = Some(None);
+            }
             action(control, self.tag() as NodeId, name);
         }
     }
@@ -359,7 +393,16 @@ fn is_standard_action(name: &str) -> bool {
     )
 }
 
-/// The traits of `props`' role and state.
+/// The element steps its value (`increment` / `decrement` among its
+/// actions): VoiceOver performs those (swipe up / down) only on adjustable
+/// elements, whatever their role.
+fn steps(a: &Accessibility) -> bool {
+    a.actions
+        .iter()
+        .any(|x| matches!(&*x.name, "increment" | "decrement"))
+}
+
+/// The traits of `props`' role, state and actions.
 fn traits(props: &ViewProps) -> UIAccessibilityTraits {
     let a = &props.accessibility;
     // SAFETY: immutable UIKit constants.
@@ -371,7 +414,10 @@ fn traits(props: &ViewProps) -> UIAccessibilityTraits {
             | AccessibilityRole::Radio
             | AccessibilityRole::Switch
             | AccessibilityRole::Tab
-            | AccessibilityRole::Menuitem => UIAccessibilityTraitButton,
+            | AccessibilityRole::Menuitem
+            // UIKit has no option trait: an option is chosen by activating
+            // it, and the selected one carries the Selected trait below.
+            | AccessibilityRole::Option => UIAccessibilityTraitButton,
             AccessibilityRole::Link => UIAccessibilityTraitLink,
             AccessibilityRole::Search => UIAccessibilityTraitSearchField,
             AccessibilityRole::Image => UIAccessibilityTraitImage,
@@ -391,6 +437,9 @@ fn traits(props: &ViewProps) -> UIAccessibilityTraits {
         };
         if a.role == AccessibilityRole::ImageButton {
             t |= UIAccessibilityTraitImage;
+        }
+        if steps(a) {
+            t |= UIAccessibilityTraitAdjustable;
         }
         if a.state.disabled {
             t |= UIAccessibilityTraitNotEnabled;
@@ -460,5 +509,61 @@ fn collect_text(view: &UIView, out: &mut String) {
         } else {
             collect_text(&child, out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nsh_core::AccessibilityActionDef;
+
+    use super::*;
+
+    fn props(role: AccessibilityRole, actions: &[&str]) -> ViewProps {
+        let mut props = ViewProps::default();
+        props.accessibility.role = role;
+        props.accessibility.actions = actions
+            .iter()
+            .map(|name| AccessibilityActionDef {
+                name: Arc::from(*name),
+                label: None,
+            })
+            .collect();
+        props
+    }
+
+    /// `increment` / `decrement` add the adjustable trait to the role's.
+    #[test]
+    fn stepping_actions_make_the_element_adjustable() {
+        // SAFETY: immutable UIKit constants.
+        let (image, adjustable, button) = unsafe {
+            (
+                UIAccessibilityTraitImage,
+                UIAccessibilityTraitAdjustable,
+                UIAccessibilityTraitButton,
+            )
+        };
+        let traits_of = |role, actions: &[&str]| traits(&props(role, actions));
+        assert_eq!(
+            traits_of(AccessibilityRole::Image, &["increment", "decrement"]),
+            image | adjustable
+        );
+        assert_eq!(
+            traits_of(AccessibilityRole::Image, &["decrement"]),
+            image | adjustable
+        );
+        assert_eq!(
+            traits_of(AccessibilityRole::None, &["increment"]),
+            adjustable
+        );
+        assert_eq!(traits_of(AccessibilityRole::Adjustable, &[]), adjustable);
+        // Without them every role keeps its traits.
+        assert_eq!(traits_of(AccessibilityRole::Image, &[]), image);
+        assert_eq!(
+            traits_of(AccessibilityRole::Button, &["activate", "archive"]),
+            button
+        );
+        assert_eq!(traits_of(AccessibilityRole::None, &["magicTap"]), 0);
     }
 }

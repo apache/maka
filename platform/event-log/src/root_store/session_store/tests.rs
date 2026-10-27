@@ -385,6 +385,10 @@ async fn prepared_handles_and_wire_views_are_session_bound() {
     assert!(a.finish_prepared(&build).await.is_err());
     let view = b.finish_prepared(&build).await.unwrap();
     assert!(a.prepared_semantic_group(&view, 0).await.is_err());
+    assert!(matches!(
+        a.prepared_view_group(&view, &PreparedGroup { id: "1".into() }).await,
+        Err(StoreError::InvalidTransition(reason)) if reason == "foreign Session resource"
+    ));
     assert!(
         a.prepare_wire_view(&view, WireFormat::Responses, "codec")
             .await

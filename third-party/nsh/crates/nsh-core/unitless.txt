@@ -2,7 +2,6 @@
 # docs/dev/geometry.md): one item path per line, then the reason.
 
 animation::animator::AnimValues.opacity                          # an opacity factor
-animation::animator::AnimValues.shadow_opacity                   # an opacity factor
 animation::animator::AnimValues.transform                        # transform operands (any of their kinds' units)
 animation::animator::Animator::pan_values ->                     # a generic animated value (any prop: opacity, a color channel, a length)
 animation::animator::Animator::tick(now)                         # time
@@ -192,10 +191,20 @@ scroll::wheel_end(vx)                                            # a velocity, p
 scroll::wheel_end(vy)                                            # a velocity, points per second
 shape::SMOOTHING                                                 # a corner smoothing factor
 style::Color::to_f64 ->                                          # color components
-style::PatchValue::Number.0                                      # a generic number (a JS value, a recorded slot)
-style::Shadow.opacity                                            # an opacity, 0..1
-style::Style::push_transform(value)                              # a transform operand (any of its kinds' units)
+style::LineHeight::Em.0                                          # a multiple of the element's font size
+style::LineHeight::Multiple.0                                    # a multiple of the font size
+style::PropertyValue::Easing.0                                   # easing curve coordinates (unit square)
+style::PropertyValue::Flex.0                                     # a flex grow factor
+style::PropertyValue::Flex.1                                     # a flex shrink factor
+style::PropertyValue::LetterSpacing.1                            # ems of the font size
+style::PropertyValue::Ms.0                                       # time
+style::PropertyValue::Number.0                                   # a unitless style number (a flex factor, an opacity, a z-index)
+style::PropertyValue::OptNumber.0                                # an aspect ratio
+style::PropertyValue::Transform.0                                # transform operands (any of their kinds' units)
+style::StyleKey::number_value(n)                                 # a style number as TSX writes it (points or a factor, by property)
 style::StyleDecl::Transform.1                                    # a transform operand (any of its kinds' units)
+style::StyleDecl::SetTransform.1                                 # transform operands (any of their kinds' units)
+style::Style::set_transform(steps)                               # transform operands (any of their kinds' units)
 style::StyleValue::Number.0                                      # a generic number (a JS value, a recorded slot)
 style::TextStyle.letter_spacing_em                               # a multiple of the font size (em)
 style::TextStyle.line_height_multiple                            # a multiple of the font's line height
@@ -350,7 +359,6 @@ element::style::Styled::scale(scale)                                  # a scale 
 element::style::Styled::scale_x(scale)                                # a scale factor
 element::style::Styled::scale_y(scale)                                # a scale factor
 element::style::Styled::sepia(amount)                                 # a filter amount (1 leaves the image as it is)
-element::style::Styled::shadow_opacity(opacity)                       # an opacity, 0..1
 element::style::Styled::transform_step(amount)                        # a transform operand (any of its kinds' units)
 element::tokens::Tokens::number ->                                    # a design token: a generic number (a radius, a size, a ratio)
 element::tokens::Tokens::numbers ->                                   # a design token: a generic number (a radius, a size, a ratio)

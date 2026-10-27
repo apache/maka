@@ -132,6 +132,29 @@ function App() {
         <View testID="basis-grow-a" style={{ flexBasis: 100, flexGrow: 1, height: 20 }} />
         <View testID="basis-grow-b" style={{ flexBasis: 0, flexGrow: 1, height: 20 }} />
       </Frame>
+      {/* flex: CSS's shorthand. A number n is n 1 0, the keywords, grow
+          shrink basis written out; `0` shrinks to the minimum, 0 unless set */}
+      <Frame id="flex-number" style={{ flexDirection: "row" }}>
+        <View testID="flex-number-a" style={{ flex: 1, height: 20 }} />
+        <View testID="flex-number-b" style={{ flex: 2, height: 20 }} />
+      </Frame>
+      <Frame id="flex-auto" style={{ flexDirection: "row" }}>
+        <View testID="flex-auto-a" style={{ flex: "auto", width: 100, height: 20 }} />
+        <View testID="flex-auto-b" style={{ width: 50, height: 20 }} />
+      </Frame>
+      <Frame id="flex-none" style={{ flexDirection: "row" }}>
+        <View testID="flex-none-a" style={{ flex: "none", width: 200, height: 20 }} />
+        <View testID="flex-none-b" style={{ width: 200, flexShrink: 1, height: 20 }} />
+      </Frame>
+      <Frame id="flex-written" style={{ flexDirection: "row" }}>
+        <View testID="flex-written-a" style={{ flex: "1 0 100px", height: 20 }} />
+        <View testID="flex-written-b" style={{ flex: 1, height: 20 }} />
+      </Frame>
+      <Frame id="flex-zero" style={{ flexDirection: "row" }}>
+        <View testID="flex-zero-a" style={{ flex: 0, height: 20 }}>
+          <View style={{ width: 80, height: 20 }} />
+        </View>
+      </Frame>
       {/* flexWrap: three 50-point boxes in 120 points */}
       <Frame id="wrap" style={{ width: 120, flexDirection: "row", flexWrap: "wrap" }}>
         <Box id="wrap-a" />

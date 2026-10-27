@@ -666,15 +666,12 @@ impl SessionStore {
             .await
     }
 
-    pub async fn prepared_view_group_rows(
+    pub async fn prepared_view_group(
         &self,
         view: &PreparedView,
         group: &PreparedGroup,
-    ) -> Result<Vec<ResolvedRow>, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_view_group_rows(view, group)
-            .await
+    ) -> Result<PreparedSemanticGroup, StoreError> {
+        self.scoped().await?.prepared_view_group(view, group).await
     }
 
     pub async fn context_report(
@@ -1020,17 +1017,6 @@ impl SessionStore {
         self.scoped()
             .await?
             .put_prepared_group(build, group, messages, breakdown, manifest)
-            .await
-    }
-
-    pub async fn prepared_group_snapshot(
-        &self,
-        view: &PreparedView,
-        group: &PreparedGroup,
-    ) -> Result<MediaManifest, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_group_snapshot(view, group)
             .await
     }
 

@@ -38,6 +38,12 @@ mod driver;
 mod identity;
 mod invocation;
 pub mod language;
+#[cfg(all(
+    feature = "native-desktop",
+    target_os = "linux",
+    not(target_env = "musl")
+))]
+mod linux_ax;
 #[cfg(all(feature = "native-desktop", target_os = "linux"))]
 mod linux_image;
 #[cfg(all(feature = "native-desktop", target_os = "linux"))]

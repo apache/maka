@@ -203,7 +203,7 @@ struct ModalNav {
     /// the app's removal only forgets it.
     closed: bool,
     reported: Reported,
-    /// The input or pressable view that had the keyboard focus when it was
+    /// The input or Tab stop that had the keyboard focus when it was
     /// presented (a popover's trigger, a field; held weakly, as the app
     /// may remove it meanwhile): it gets the focus back when the modal
     /// closes, as on the other desktops.
@@ -346,7 +346,7 @@ fn drop_focus(surface: &Surface, view: &NSView) {
     }
 }
 
-/// The input or pressable view that has the keyboard focus in `surface`'s
+/// The input or Tab stop that has the keyboard focus in `surface`'s
 /// window (not the root, which holds it when nothing else does). A field
 /// edits in the window's shared field editor, a subview of the field only
 /// while it edits, and a text view sits in a scroll view: the input is the
@@ -360,7 +360,7 @@ fn focused(surface: &Surface) -> Option<objc2::rc::Weak<ViewObj>> {
     }
     while &*at != root {
         if let Some(view) = NshView::from_ns(&at)
-            && (view.kind() == ViewKind::Input || crate::input::is_key_control(&view))
+            && (view.kind() == ViewKind::Input || crate::input::is_key_stop(&view))
         {
             let obj: &ViewObj = &view;
             return Some(objc2::rc::Weak::from(obj));
@@ -398,7 +398,7 @@ fn restore_focus(surface: &Surface, scope: &NSView, view: Option<objc2::rc::Weak
         if view.can_target() && !view.ns().isHiddenOrHasHiddenAncestor() {
             crate::text_input::focus(&view);
         }
-    } else if crate::input::is_key_control(&view) {
+    } else if crate::input::is_key_stop(&view) {
         window.makeFirstResponder(Some(view.ns()));
     }
 }
@@ -436,7 +436,7 @@ fn set_fade(view: &NshView, fade: f32) {
 /// How far below the window `view` must go to be out of sight with its
 /// shadow.
 fn shadow_room(view: &NshView) -> f32 {
-    if view.state().style.shadow.is_visible() {
+    if crate::visual::draws_outside(&view.state().style) {
         SHADOW_ROOM
     } else {
         0.0

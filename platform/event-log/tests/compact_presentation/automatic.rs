@@ -90,7 +90,7 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
             InvocationState::Running
         ));
         assert!(during.active_streams.is_empty());
-        assert!(during.compacting);
+        assert!(during.compacting.is_none());
         assert!(
             log.active_transcript(&inv, summary_fence)
                 .await
@@ -99,6 +99,47 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
         );
         assert_eq!(during.session.last_message, read.last_message);
         assert_eq!(during.session.read_state, read.read_state);
+        let requested = log
+            .prefix(32, 128 * 1024)
+            .await
+            .unwrap()
+            .events
+            .into_iter()
+            .find(|event| {
+                matches!(
+                    &event.event.fact,
+                    Fact::ModelRequested {
+                        purpose: ModelPurpose::Summary,
+                        ..
+                    }
+                )
+            })
+            .unwrap()
+            .event;
+        let waiting = append(&log, &inv, Fact::ContextCompactionWaiting).await;
+        assert!(view.push(&waiting).unwrap().is_empty());
+        let progress = log
+            .observe_session::<Value>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .compacting
+            .unwrap();
+        assert_eq!(progress.id, requested.id);
+        assert_eq!(
+            progress.started_at,
+            requested
+                .recorded_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        );
+        let change = log
+            .session_stream_events("session", summary_fence, waiting.sequence, 32, 8192)
+            .await
+            .unwrap();
+        assert_eq!(change.events.len(), 1);
+        assert!(matches!(change.events[0].fact, StreamFact::ContextChanged));
         // Subscribers receive the main closer and a status invalidation,
         // while private summary content remains hidden.
         let mut cursor = main_fence;
@@ -166,7 +207,22 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
                 .unwrap()
                 .unwrap();
             assert_eq!(active.active_streams.len(), 1);
-            assert!(!active.compacting);
+            assert!(active.compacting.is_none());
+            let main = log.session_events("session", waiting.sequence, later, 32, 128 * 1024)
+                .await.unwrap().events.into_iter().find(|event| matches!(&event.event.fact,
+                    Fact::ModelRequested { step_id, purpose: ModelPurpose::Main, .. } if step_id == "main-b"))
+                .unwrap();
+            let changes = log
+                .session_stream_events("session", waiting.sequence, later, 32, 128 * 1024)
+                .await
+                .unwrap();
+            assert!(
+                changes
+                    .events
+                    .iter()
+                    .any(|change| change.id == main.event.id
+                        && matches!(change.fact, StreamFact::ContextChanged))
+            );
             assert_eq!(active.active_streams[0].message_id, later_id);
             assert_eq!(
                 log.active_transcript(&inv, later).await.unwrap()[0].id,
@@ -190,11 +246,12 @@ async fn automatic_summary_is_hidden_without_interrupting_main_delivery_or_read_
         .await;
         expected.extend(view.push(&end).unwrap());
         assert!(
-            !log.observe_session::<Value>("session")
+            log.observe_session::<Value>("session")
                 .await
                 .unwrap()
                 .unwrap()
                 .compacting
+                .is_none()
         );
         assert!(
             log.get_session::<Value>("session")

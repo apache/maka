@@ -165,7 +165,7 @@ impl ToolExecutor for Fixture {
                     "typeText" => {
                         json!({"effect":"partial","requested_chars":5,"delivered_chars":2,"guidance":"Fixture effect is uncertain; read getAXState(); do not replay input."})
                     }
-                    "scroll" | "linuxScroll" | "drag" | "linuxDrag" => Value::Null,
+                    "scroll" | "linuxScroll" | "drag" | "linuxDrag" | "secondary" => Value::Null,
                     other => panic!("unexpected fixture action {other}"),
                 },
                 other => panic!("unexpected fixture command {other}"),
@@ -231,33 +231,75 @@ async fn native_aliases_normalize_at_the_app_boundary_for_each_platform() {
             matches!(result, CellResult::Success { .. }),
             "{platform}: {result:?}"
         );
-        let commands = recorded.lock().unwrap();
-        for (actual, expected) in commands[..3].iter().zip(["left", "right", "middle"]) {
-            let button = if platform == "linux" {
-                &actual["action"]["input"]["mouse_button"]
-            } else {
-                &actual["action"]["options"]["mouseButton"]
-            };
-            assert_eq!(button, expected);
-        }
-        for (actual, expected) in commands[3..7].iter().zip(["up", "down", "left", "right"]) {
-            let direction = if platform == "linux" {
-                &actual["action"]["input"]["direction"]
-            } else {
-                &actual["action"]["direction"]
-            };
-            assert_eq!(direction, expected);
-        }
-        if platform == "mac" {
-            for (actual, expected) in commands[7..11]
-                .iter()
-                .zip(["left", "right", "middle", "left"])
-            {
-                assert_eq!(actual["action"]["options"]["mouseButton"], expected);
+        {
+            let commands = recorded.lock().unwrap();
+            for (actual, expected) in commands[..3].iter().zip(["left", "right", "middle"]) {
+                let button = if platform == "linux" {
+                    &actual["action"]["input"]["mouse_button"]
+                } else {
+                    &actual["action"]["options"]["mouseButton"]
+                };
+                assert_eq!(button, expected);
             }
-            assert_eq!(commands[11]["action"]["direction"], "up");
+            for (actual, expected) in commands[3..7].iter().zip(["up", "down", "left", "right"]) {
+                let direction = if platform == "linux" {
+                    &actual["action"]["input"]["direction"]
+                } else {
+                    &actual["action"]["direction"]
+                };
+                assert_eq!(direction, expected);
+            }
+            if platform == "mac" {
+                for (actual, expected) in commands[7..11]
+                    .iter()
+                    .zip(["left", "right", "middle", "left"])
+                {
+                    assert_eq!(actual["action"]["options"]["mouseButton"], expected);
+                }
+                assert_eq!(commands[11]["action"]["direction"], "up");
+            }
         }
-        drop(commands);
+        repl.close().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn secondary_action_name_reaches_the_existing_host_dispatch_on_each_platform() {
+    for platform in ["linux", "mac", "windows"] {
+        let repl = Repl::new(
+            maka_computer_use::facade_for(platform, false),
+            CellLimits::default(),
+        )
+        .unwrap();
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let context =
+            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+        let result = repl
+            .evaluate(
+                "var app = await cua.getApp('fixture');
+                 if (await app.performSecondaryAction(7, 'Show Menu') !== undefined)
+                   throw new Error('secondary action must preserve its void return');"
+                    .into(),
+                Arc::new(NativeCommands(recorded.clone())),
+                CancellationToken::new(),
+                context,
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, CellResult::Success { .. }),
+            "{platform}: {result:?}"
+        );
+        {
+            let commands = recorded.lock().unwrap();
+            assert_eq!(commands.len(), 1, "{platform}: {commands:?}");
+            assert_eq!(commands[0]["handle"], json!({"kind":"app","id":"fixture"}));
+            assert_eq!(
+                commands[0]["action"],
+                json!({"kind":"secondary","index":7,"action":"Show Menu"})
+            );
+        }
         repl.close().await.unwrap();
     }
 }
@@ -352,28 +394,29 @@ await app.click([37],{clickCount:undefined});
         .await
         .unwrap();
     assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
-    let commands = recorded.lock().unwrap();
-    assert!(
-        commands
+    {
+        let commands = recorded.lock().unwrap();
+        assert!(
+            commands
+                .iter()
+                .all(|command| command["action"]["kind"] == "linuxClick")
+        );
+        let inputs = commands
             .iter()
-            .all(|command| command["action"]["kind"] == "linuxClick")
-    );
-    let inputs = commands
-        .iter()
-        .map(|command| command["action"]["input"].clone())
-        .collect();
-    // Native parsing and completeness belong to the host, after this boundary.
-    assert_eq!(
-        Value::Array(inputs),
-        json!([
-            {"x":37,"y":41,"click_count":0},
-            {"x":37,"y":41,"click_count":4},
-            {"x":null,"y":41,"click_count":null},
-            {"x":null,"y":null,"click_count":null},
-            {"x":37}
-        ])
-    );
-    drop(commands);
+            .map(|command| command["action"]["input"].clone())
+            .collect();
+        // Native parsing and completeness belong to the host, after this boundary.
+        assert_eq!(
+            Value::Array(inputs),
+            json!([
+                {"x":37,"y":41,"click_count":0},
+                {"x":37,"y":41,"click_count":4},
+                {"x":null,"y":41,"click_count":null},
+                {"x":null,"y":null,"click_count":null},
+                {"x":37}
+            ])
+        );
+    }
     repl.close().await.unwrap();
 }
 

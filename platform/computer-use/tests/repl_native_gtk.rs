@@ -29,14 +29,14 @@ use maka_agent_facts::{
 use maka_capabilities::computer::Desktop;
 use maka_code_runtime::{CellContext, CellLimits, CellOutput, CellResult, CellStore};
 use maka_computer_use::{
-    Driver, InvocationContext, Session, facade,
+    Driver, InvocationContext, Session, SessionOwner, facade,
     protocol::{Action, Command},
 };
 use maka_js_runtime::repl::Repl;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     io::{self, Read},
     os::unix::process::ExitStatusExt,
@@ -52,10 +52,15 @@ type Recorded<T> = Result<T, Box<dyn Error + Send + Sync>>;
 const MARKER: &str = "__maka_gtk_candidate__";
 const SESSION_ID: &str = "native-gtk-observation-fixture";
 
+#[path = "support/native_gtk_focus_scroll.rs"]
+mod held_focus_scroll;
+
 struct Bridge {
     session: Arc<Mutex<Session>>,
     calls: Arc<Mutex<Vec<Value>>>,
     allow_clicks: bool,
+    allow_scroll: bool,
+    record_typed_errors: bool,
 }
 
 impl ToolExecutor for Bridge {
@@ -67,6 +72,8 @@ impl ToolExecutor for Bridge {
         let session = self.session.clone();
         let calls = self.calls.clone();
         let allow_clicks = self.allow_clicks;
+        let allow_scroll = self.allow_scroll;
+        let record_typed_errors = self.record_typed_errors;
         Box::pin(async move {
             let result = async {
                 let command: Command = serde_json::from_value(input.clone())
@@ -88,9 +95,11 @@ impl ToolExecutor for Bridge {
                             ..
                         }
                     );
-                if !observation && !click {
+                let scroll = allow_scroll
+                    && matches!(&command, Command::Action { action: Action::LinuxScroll { .. }, .. });
+                if !observation && !click && !scroll {
                     return Err(ToolError::Failed(
-                        "GTK recorder accepts observations and explicitly enabled click probes only".into(),
+                        "GTK recorder accepts observations and explicitly enabled click/scroll probes only".into(),
                     ));
                 }
                 session
@@ -107,6 +116,9 @@ impl ToolExecutor for Bridge {
             .await;
             let outcome = match &result {
                 Ok(value) => json!({"ok":true,"value":value}),
+                Err(error) if record_typed_errors => {
+                    json!({"ok":false,"error":error.to_string(),"typed_error":held_focus_scroll::tool_error(error)})
+                }
                 Err(error) => json!({"ok":false,"error":error.to_string()}),
             };
             calls
@@ -220,8 +232,10 @@ impl GtkFixture {
         }
         let stdout = std::fs::File::create(output.with_extension("stdout.log"))?;
         let stderr = std::fs::File::create(output.with_extension("stderr.log"))?;
-        let child = tokio::process::Command::new("/usr/bin/python3.12")
-            .arg(source)
+        let mut command = tokio::process::Command::new("/usr/bin/python3.12");
+        command.arg(source);
+        held_focus_scroll::configure_fixture(&mut command)?;
+        let child = command
             .env("MAKA_ATSPI_FIXTURE_OUTPUT", output)
             .env("NO_AT_BRIDGE", "0")
             .stdin(Stdio::null())
@@ -304,59 +318,223 @@ impl GtkFixture {
     }
 }
 
-fn button_row_matches(row: &str, labelled_role: &str) -> bool {
-    row.trim_start()
-        .strip_prefix("- ")
-        .and_then(|body| match body.strip_prefix('[') {
-            Some(indexed) => indexed.split_once(']').map(|(_, body)| body.trim_start()),
-            None => Some(body),
+async fn native_ax_receipt(
+    bridge: &Bridge,
+    since: usize,
+    state: &str,
+    pid: u64,
+    xid: u64,
+) -> Recorded<Value> {
+    let calls = bridge.calls.lock().await;
+    let mut reads = calls[since..].iter().filter(|call| {
+        call["input"]["method"] == "observe"
+            && call["input"]["kind"] == "ax"
+            && call["result"]["ok"] == true
+            && call["result"]["value"]["state"] == state
+    });
+    let read = reads
+        .next()
+        .ok_or_else(|| refuse("same-call AX observation receipt missing"))?;
+    if reads.next().is_some() {
+        return Err(refuse("same-cell AX observation receipt is ambiguous"));
+    }
+    let handle = &read["input"]["handle"];
+    if handle["kind"] != "app" || handle["id"].as_str().is_none_or(str::is_empty) {
+        return Err(refuse("AX receipt did not use an application handle"));
+    }
+    let binding = calls
+        .iter()
+        .rev()
+        .find(|call| {
+            call["input"]["method"] == "getApp"
+                && call["result"]["ok"] == true
+                && call["result"]["value"]["handle"] == *handle
         })
-        .and_then(|body| body.strip_prefix(labelled_role))
-        .is_some_and(|suffix| suffix.chars().next().is_none_or(char::is_whitespace))
+        .ok_or_else(|| refuse("AX receipt handle has no successful binding receipt"))?;
+    if binding["result"]["value"]["binding"]["pid"] != pid
+        || binding["result"]["value"]["binding"]["windowId"] != xid
+    {
+        return Err(refuse(
+            "AX receipt handle does not identify the known fixture PID/XID",
+        ));
+    }
+    let metadata = read["result"]["value"]["nativeAX"].clone();
+    native_rows(&metadata)?;
+    Ok(metadata)
 }
 
-fn observed_button(state: &str, label: &str) -> Recorded<(u64, String)> {
-    let labelled_role = format!("push button {}", serde_json::to_string(label)?);
-    let mut rows = state
-        .lines()
-        .filter(|line| button_row_matches(line, &labelled_role));
-    let row = rows
-        .next()
-        .ok_or_else(|| refuse(format!("public AX button row missing: {label}")))?;
-    if rows.next().is_some() {
+fn native_rows(metadata: &Value) -> Recorded<&[Value]> {
+    if metadata["source"] != "at_spi" {
+        return Err(refuse("own GTK observation did not use AT-SPI"));
+    }
+    let observation = &metadata["observation"];
+    if observation["elements_complete"] != true
+        || observation["truncated"] == true
+        || observation["native_profile"]["trusted"] != true
+    {
         return Err(refuse(format!(
-            "public AX button row is ambiguous: {label}"
+            "own GTK native AX observation is not complete and trusted: {observation}"
         )));
     }
-    let (id, _) = row
-        .trim_start()
-        .strip_prefix("- [")
-        .and_then(|line| line.split_once(']'))
-        .ok_or_else(|| refuse(format!("public AX button row has no observed index: {row}")))?;
-    let index = id.parse::<u64>()?;
-    if id != index.to_string() {
-        return Err(refuse(format!("public AX index is not canonical: {row}")));
+    metadata["rows"]
+        .as_array()
+        .filter(|rows| !rows.is_empty())
+        .map(Vec::as_slice)
+        .ok_or_else(|| refuse("same-observation native AX rows are missing"))
+}
+
+fn native_aliases(metadata: &Value) -> Recorded<BTreeMap<String, String>> {
+    let rows = native_rows(metadata)?;
+    let mut aliases = BTreeMap::new();
+    let mut public_ids = BTreeSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        let native = row["native_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| refuse("native row ID missing"))?;
+        let public = row["id"]
+            .as_str()
+            .ok_or_else(|| refuse("native row public alias missing"))?;
+        let id = public.parse::<u64>()?;
+        if id.to_string() != public
+            || !public_ids.insert(id)
+            || aliases.insert(native.into(), public.into()).is_some()
+        {
+            return Err(refuse(
+                "own GTK native/public identity rows are repeated or noncanonical",
+            ));
+        }
+        let depth = row["depth"]
+            .as_u64()
+            .ok_or_else(|| refuse("native row depth missing"))?;
+        match row["parent"].as_u64() {
+            Some(parent)
+                if parent < index as u64
+                    && rows[parent as usize]["depth"]
+                        .as_u64()
+                        .is_some_and(|parent_depth| depth == parent_depth + 1) => {}
+            None if row["parent"].is_null() && index == 0 && depth == 0 => {}
+            _ => return Err(refuse("own GTK raw parent/depth relation is invalid")),
+        }
     }
-    Ok((index, row.to_owned()))
+    Ok(aliases)
+}
+
+fn public_row(row: &str) -> Recorded<(u64, &str)> {
+    let (id, body) = row
+        .trim_start_matches('\t')
+        .split_once(' ')
+        .ok_or_else(|| refuse(format!("public AX row has no numeric ID: {row}")))?;
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(refuse(format!("public AX row ID is not decimal: {row}")));
+    }
+    let index = id.parse::<u64>()?;
+    if index.to_string() != id {
+        return Err(refuse(format!("public AX row ID is noncanonical: {row}")));
+    }
+    Ok((index, body))
+}
+
+fn button_row_matches(row: &str, label: &str) -> bool {
+    public_row(row)
+        .ok()
+        .and_then(|(_, body)| body.strip_prefix("push button "))
+        .and_then(|body| {
+            if body.starts_with('(') {
+                body.split_once(") ").map(|(_, body)| body)
+            } else {
+                Some(body)
+            }
+        })
+        .and_then(|body| body.strip_prefix(label))
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with(", "))
+}
+
+fn native_clickable(row: &Value) -> bool {
+    row["actions"].as_array().is_some_and(|actions| {
+        actions
+            .iter()
+            .any(|action| action.as_str() == Some("click"))
+    }) && ["enabled", "sensitive", "showing"].iter().all(|state| {
+        row["states"]
+            .as_array()
+            .is_some_and(|states| states.iter().any(|value| value.as_str() == Some(*state)))
+    })
+}
+
+struct ObservedButton {
+    id: u64,
+    row: String,
+    native_id: String,
+    raw_preorder: usize,
+}
+
+fn observed_button(state: &str, metadata: &Value, label: &str) -> Recorded<ObservedButton> {
+    if state.lines().next() != Some("Accessibility source: at_spi") {
+        return Err(refuse("public GTK AX source header is invalid"));
+    }
+    let mut matching = native_rows(metadata)?
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row["name"] == label && row["role"] == "push button");
+    let (raw_preorder, native) = matching
+        .next()
+        .ok_or_else(|| refuse(format!("native button missing: {label}")))?;
+    if matching.next().is_some() {
+        return Err(refuse(format!("native button is ambiguous: {label}")));
+    }
+    if !native_clickable(native) {
+        return Err(refuse(format!(
+            "native button is not enabled, sensitive, showing and clickable: {label}"
+        )));
+    }
+    let id = native["id"]
+        .as_str()
+        .ok_or_else(|| refuse("native row public alias missing"))?;
+    let index = id.parse::<u64>()?;
+    if index.to_string() != id {
+        return Err(refuse("native row public alias is not canonical"));
+    }
+    let native_id = native["native_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| refuse("native button ID is missing"))?;
+    let mut rows = state.lines().skip(1).filter(|row| {
+        public_row(row).is_ok_and(|(id, _)| id == index) && button_row_matches(row, label)
+    });
+    let row = rows
+        .next()
+        .ok_or_else(|| refuse(format!("correlated public AX button missing: {label}")))?;
+    if rows.next().is_some() {
+        return Err(refuse(format!(
+            "correlated public AX button is ambiguous: {label}"
+        )));
+    }
+    Ok(ObservedButton {
+        id: index,
+        row: row.into(),
+        native_id: native_id.into(),
+        raw_preorder,
+    })
 }
 
 struct ObservedGridButton {
     id: u64,
     name: String,
     row: String,
+    native_id: String,
+    raw_preorder: usize,
+    native_grid_ordinal: usize,
 }
 
 fn public_indices(state: &str) -> Recorded<BTreeSet<u64>> {
+    if state.lines().next() != Some("Accessibility source: at_spi") {
+        return Err(refuse("public GTK AX source header is invalid"));
+    }
     let mut indices = BTreeSet::new();
-    for row in state.lines() {
-        let Some(indexed) = row.trim_start().strip_prefix("- [") else {
-            continue;
-        };
-        let (id, _) = indexed
-            .split_once(']')
-            .ok_or_else(|| refuse(format!("public AX row has no closing index: {row}")))?;
-        let index = id.parse::<u64>()?;
-        if id != index.to_string() || !indices.insert(index) {
+    for row in state.lines().skip(1) {
+        let (index, _) = public_row(row)?;
+        if !indices.insert(index) {
             return Err(refuse(format!(
                 "public AX index is noncanonical or repeated: {row}"
             )));
@@ -365,7 +543,11 @@ fn public_indices(state: &str) -> Recorded<BTreeSet<u64>> {
     Ok(indices)
 }
 
-fn large_ax_buttons(ready: &Value, public_ax: &Value) -> Recorded<Option<Vec<ObservedGridButton>>> {
+fn large_ax_buttons(
+    ready: &Value,
+    public_ax: &Value,
+    native_ax: &Value,
+) -> Recorded<Option<Vec<ObservedGridButton>>> {
     let Some(large) = ready.get("large_ax") else {
         return Ok(None);
     };
@@ -465,36 +647,48 @@ fn large_ax_buttons(ready: &Value, public_ax: &Value) -> Recorded<Option<Vec<Obs
             }
         }
     }
+    let target_rows = native_rows(&native_ax["target"])?;
+    let native_grid_order: BTreeMap<_, _> = target_rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            row["role"] == "push button"
+                && row["name"]
+                    .as_str()
+                    .is_some_and(|name| names.contains(name))
+                && native_clickable(row)
+        })
+        .enumerate()
+        .map(|(ordinal, (preorder, row))| (row["name"].as_str().unwrap(), (preorder, ordinal)))
+        .collect();
+    if native_grid_order.len() != BUTTON_COUNT {
+        return Err(refuse(
+            "native AX does not expose 1200 uniquely named enabled/showing/clickable grid buttons",
+        ));
+    }
     let mut buttons = Vec::with_capacity(BUTTON_COUNT);
     let mut missing = Vec::new();
     for name in names {
-        let labelled_role = format!("push button {}", serde_json::to_string(name)?);
-        if other.contains(&labelled_role) {
+        if other.lines().any(|row| button_row_matches(row, name)) {
             return Err(refuse(format!(
                 "large GTK sibling public AX contains target control: {name}"
             )));
         }
-        if !target
-            .lines()
-            .any(|row| button_row_matches(row, &labelled_role))
-        {
+        if !target.lines().any(|row| button_row_matches(row, name)) {
             missing.push(name);
             continue;
         }
-        let (id, row) = observed_button(target, name)?;
-        let clickable = row
-            .split_once("[actions=[")
-            .and_then(|(_, actions)| actions.split_once("]]"))
-            .is_some_and(|(actions, _)| actions.split(',').any(|action| action.trim() == "click"));
-        if !clickable {
-            return Err(refuse(format!(
-                "large GTK public AX button cannot click: {row}"
-            )));
-        }
+        let button = observed_button(target, &native_ax["target"], name)?;
+        let &(raw_preorder, native_grid_ordinal) = native_grid_order
+            .get(name)
+            .ok_or_else(|| refuse("native grid ordinal missing"))?;
         buttons.push(ObservedGridButton {
-            id,
+            id: button.id,
             name: name.to_owned(),
-            row,
+            row: button.row,
+            native_id: button.native_id,
+            raw_preorder,
+            native_grid_ordinal,
         });
     }
     if !missing.is_empty() {
@@ -561,7 +755,6 @@ struct ClickProbe {
     expected_refusal: Option<String>,
     expected_target_delta: i64,
     positive_control: bool,
-    unverified: Option<&'static str>,
     expected_control: Option<String>,
 }
 
@@ -581,37 +774,93 @@ async fn record_actions(
         let state = capture["public_ax"][role]
             .as_str()
             .ok_or_else(|| refuse(format!("{role} public AX missing")))?;
-        let (id, row) = observed_button(state, label)?;
-        capture["observed_save_ids"][role] =
-            json!({"public_id":id.to_string(),"public_line":row,"native_id":null});
-        buttons.push(id);
+        let button = observed_button(state, &capture["native_ax"][role], label)?;
+        capture["observed_save_ids"][role] = json!({"public_id":button.id.to_string(),"public_line":button.row,"native_id":button.native_id,"raw_preorder":button.raw_preorder});
+        buttons.push(button);
     }
-    let target = buttons[0];
-    let other = buttons[1];
+    let target = buttons[0].id;
+    let other = buttons[1].id;
+    if target == other
+        || capture["large_ax_validation"]["id_scope"]["status"] == "target_sibling_overlap"
+    {
+        return Err(refuse(
+            "target and sibling public IDs overlap; foreign-window action cannot be issued safely",
+        ));
+    }
     let tree_refusal = "element is not in this window's AT-SPI tree; refresh get_window_state()";
     let unknown_id =
         |id| format!("Unknown element ID {id} for this window; refresh get_window_state()");
-    let unavailable = "Candidate public AX does not expose native_id; no private snapshot or reference-process ID was substituted";
+    let save_control = capture["initial_fixture"].get("large_ax").and_then(|_| {
+        capture["initial_fixture"]["windows"]["target"]["button_name"]
+            .as_str()
+            .map(str::to_owned)
+    });
     let mut probes = vec![
-        ClickProbe { id: "target-public-number", argument: Some(json!(target)), expected_refusal: None, expected_target_delta: 1, positive_control: true, unverified: None, expected_control: None },
-        ClickProbe { id: "target-public-string", argument: Some(json!(target.to_string())), expected_refusal: None, expected_target_delta: 1, positive_control: true, unverified: None, expected_control: None },
-        ClickProbe { id: "target-public-leading-zero", argument: Some(json!(format!("0{target}"))), expected_refusal: Some(unknown_id(format!("0{target}"))), expected_target_delta: 0, positive_control: false, unverified: None, expected_control: None },
-        ClickProbe { id: "target-null", argument: Some(Value::Null), expected_refusal: Some(tree_refusal.into()), expected_target_delta: 0, positive_control: false, unverified: None, expected_control: None },
-        ClickProbe { id: "target-invalid-string", argument: Some(json!("not-an-element")), expected_refusal: Some(tree_refusal.into()), expected_target_delta: 0, positive_control: false, unverified: None, expected_control: None },
-        ClickProbe { id: "target-native-id", argument: None, expected_refusal: None, expected_target_delta: 1, positive_control: false, unverified: Some(unavailable), expected_control: None },
-        ClickProbe { id: "other-public-number-on-target", argument: (other != target).then(|| json!(other)), expected_refusal: Some(unknown_id(other.to_string())), expected_target_delta: 0, positive_control: false, unverified: (other == target).then_some("Observed sibling and target IDs collide; this value cannot establish foreign-window rejection"), expected_control: None },
-        ClickProbe { id: "other-native-id-on-target", argument: None, expected_refusal: Some(tree_refusal.into()), expected_target_delta: 0, positive_control: false, unverified: Some(unavailable), expected_control: None },
+        ClickProbe {
+            id: "target-public-number",
+            argument: Some(json!(target)),
+            expected_refusal: None,
+            expected_target_delta: 1,
+            positive_control: true,
+            expected_control: save_control.clone(),
+        },
+        ClickProbe {
+            id: "target-public-string",
+            argument: Some(json!(target.to_string())),
+            expected_refusal: None,
+            expected_target_delta: 1,
+            positive_control: true,
+            expected_control: save_control.clone(),
+        },
+        ClickProbe {
+            id: "target-public-leading-zero",
+            argument: Some(json!(format!("0{target}"))),
+            expected_refusal: Some(unknown_id(format!("0{target}"))),
+            expected_target_delta: 0,
+            positive_control: false,
+            expected_control: None,
+        },
+        ClickProbe {
+            id: "target-null",
+            argument: Some(Value::Null),
+            expected_refusal: Some(tree_refusal.into()),
+            expected_target_delta: 0,
+            positive_control: false,
+            expected_control: None,
+        },
+        ClickProbe {
+            id: "target-invalid-string",
+            argument: Some(json!("not-an-element")),
+            expected_refusal: Some(tree_refusal.into()),
+            expected_target_delta: 0,
+            positive_control: false,
+            expected_control: None,
+        },
+        ClickProbe {
+            id: "target-native-id",
+            argument: Some(json!(buttons[0].native_id)),
+            expected_refusal: None,
+            expected_target_delta: 1,
+            positive_control: true,
+            expected_control: save_control,
+        },
+        ClickProbe {
+            id: "other-public-number-on-target",
+            argument: Some(json!(other)),
+            expected_refusal: Some(unknown_id(other.to_string())),
+            expected_target_delta: 0,
+            positive_control: false,
+            expected_control: None,
+        },
+        ClickProbe {
+            id: "other-native-id-on-target",
+            argument: Some(json!(buttons[1].native_id)),
+            expected_refusal: Some(tree_refusal.into()),
+            expected_target_delta: 0,
+            positive_control: false,
+            expected_control: None,
+        },
     ];
-    if capture["large_ax_validation"]["id_scope"]["status"] == "target_sibling_overlap" {
-        let probe = probes
-            .iter_mut()
-            .find(|probe| probe.id == "other-public-number-on-target")
-            .ok_or_else(|| refuse("sibling public-ID probe is missing"))?;
-        probe.argument = None;
-        probe.unverified = Some(
-            "Large fixture public IDs overlap across windows; no sibling selector was issued against the target because it may identify an own target control",
-        );
-    }
     if let Some(button) = late_button {
         probes.push(ClickProbe {
             id: "target-late-public-number",
@@ -619,7 +868,6 @@ async fn record_actions(
             expected_refusal: None,
             expected_target_delta: 1,
             positive_control: true,
-            unverified: None,
             expected_control: Some(button.name.clone()),
         });
     }
@@ -741,21 +989,9 @@ async fn record_actions(
                 .and_then(|rows| rows.last_mut())
                 .ok_or_else(|| refuse("issued action row missing"))? = row;
         } else {
-            row["status"] = json!("unverified");
-            row["reason"] = json!(
-                probe
-                    .unverified
-                    .ok_or_else(|| refuse("unverified probe reason missing"))?
-            );
-            row["call"] = Value::Null;
-            write_json(
-                &transcript,
-                &json!({"source":null,"invoked":false,"reason":row["reason"]}),
-            )?;
-            capture["actions"]
-                .as_array_mut()
-                .ok_or_else(|| refuse("action rows missing"))?
-                .push(row);
+            return Err(refuse(
+                "every enabled click probe requires its own observed argument",
+            ));
         }
         let rows = capture["actions"]
             .as_array_mut()
@@ -818,6 +1054,180 @@ async fn record_actions(
     Ok(())
 }
 
+async fn bind_observation(
+    repl: &Repl,
+    bridge: Arc<Bridge>,
+    role: &str,
+    pid: u64,
+    xid: u64,
+    path: &Path,
+) -> Recorded<Value> {
+    let variable = if role == "target" {
+        "gtkAppTarget"
+    } else {
+        "gtkAppOther"
+    };
+    let source = format!(
+        "try {{ globalThis.{variable}=await cua.getApp({{windowId:{xid}}}); const state=await {variable}.getAXState({{emit:false}}); nodeRepl.write(JSON.stringify({{{MARKER}:{{ok:true,state}}}})); }} catch(error) {{ nodeRepl.write(JSON.stringify({{{MARKER}:{{ok:false,error:String(error)}}}})); }}"
+    );
+    let since = bridge.calls.lock().await.len();
+    let value = cell(repl, bridge.clone(), source, path).await?;
+    let state = value["state"]
+        .as_str()
+        .filter(|_| value["ok"] == true)
+        .ok_or_else(|| refuse(format!("epoch observation failed for {role}: {value}")))?;
+    let metadata = native_ax_receipt(&bridge, since, state, pid, xid).await?;
+    native_aliases(&metadata)?;
+    let receipt = json!({"window_id":xid,"state":state,"nativeAX":metadata});
+    write_json(&path.with_extension("native-ax.json"), &receipt)?;
+    Ok(receipt)
+}
+
+async fn record_epoch_lifetime(
+    repl: &mut Option<Repl>,
+    owner: &SessionOwner,
+    bridge: Arc<Bridge>,
+    fixture: &GtkFixture,
+    capture: &mut Value,
+    output: &Path,
+) -> Recorded<()> {
+    let before = fixture.oracles()?;
+    let actions_before = bridge
+        .calls
+        .lock()
+        .await
+        .iter()
+        .filter(|call| call["input"]["method"] == "action")
+        .count();
+    let capture_path = output.join("capture.json");
+    let pid = capture["initial_fixture"]["pid"]
+        .as_u64()
+        .ok_or_else(|| refuse("epoch fixture PID missing"))?;
+    capture["epoch_lifetime"] = json!({
+        "kind":"candidate_epoch_recreation","official_js_reset_executed":false,
+        "api":"Repl::close/new and SessionOwner::new_epoch after close_native; same logical owner and fixture",
+        "input_actions_before":actions_before,"before":before,"completed":false,
+    });
+    for role in ["target", "other"] {
+        let xid = capture["initial_fixture"]["windows"][role]["window_id"]
+            .as_u64()
+            .ok_or_else(|| refuse("epoch fixture XID missing"))?;
+        let path = output
+            .join("transcripts")
+            .join(format!("{role}-rebind.json"));
+        let observed = bind_observation(
+            repl.as_ref().ok_or_else(|| refuse("REPL missing"))?,
+            bridge.clone(),
+            role,
+            pid,
+            xid,
+            &path,
+        )
+        .await?;
+        if native_aliases(&observed["nativeAX"])? != native_aliases(&capture["native_ax"][role])? {
+            return Err(refuse(format!(
+                "same-epoch rebind changed retained native aliases for {role}"
+            )));
+        }
+        capture["epoch_lifetime"]["rebind"][role] = observed;
+        write_json(&capture_path, capture)?;
+    }
+    if fixture.oracles()? != before {
+        return Err(refuse(
+            "same-epoch observation/rebind changed independent fixture state",
+        ));
+    }
+    let old_repl = repl.take().ok_or_else(|| refuse("old REPL missing"))?;
+    tokio::time::timeout(Duration::from_secs(15), old_repl.close()).await??;
+    {
+        let mut session = bridge.session.lock().await;
+        let old = session.native_epoch();
+        tokio::time::timeout(Duration::from_secs(15), session.close_native()).await??;
+        let mut next = owner.new_epoch()?;
+        next.configure(Desktop::Local, vec![], Language::En)?;
+        let new_epoch = next.native_epoch();
+        if old == new_epoch {
+            return Err(refuse("epoch recreation reused its native epoch identity"));
+        }
+        capture["epoch_lifetime"]["old_native_epoch"] = json!(old.to_string());
+        capture["epoch_lifetime"]["new_native_epoch"] = json!(new_epoch.to_string());
+        *session = next;
+    }
+    *repl = Some(Repl::new(facade(), CellLimits::default())?);
+    let cleared = cell(
+        repl.as_ref().ok_or_else(|| refuse("new REPL missing"))?, bridge.clone(),
+        format!("nodeRepl.write(JSON.stringify({{{MARKER}:{{cleared:typeof gtkAppTarget==='undefined'&&typeof gtkAppOther==='undefined'}}}}));"),
+        &output.join("transcripts").join("epoch-globals-cleared.json"),
+    ).await?;
+    if cleared["cleared"] != true {
+        return Err(refuse("new REPL retained old app bindings"));
+    }
+    capture["epoch_lifetime"]["old_bindings_cleared"] = json!(true);
+    let mut all_ids = BTreeSet::new();
+    let mut expected_count = 0;
+    // Reverse observation order makes accidental map/counter retention visible.
+    for role in ["other", "target"] {
+        let xid = capture["initial_fixture"]["windows"][role]["window_id"]
+            .as_u64()
+            .ok_or_else(|| refuse("epoch fixture XID missing"))?;
+        let path = output
+            .join("transcripts")
+            .join(format!("{role}-new-epoch.json"));
+        let observed = bind_observation(
+            repl.as_ref().ok_or_else(|| refuse("new REPL missing"))?,
+            bridge.clone(),
+            role,
+            pid,
+            xid,
+            &path,
+        )
+        .await?;
+        let initial = native_aliases(&capture["native_ax"][role])?;
+        let current = native_aliases(&observed["nativeAX"])?;
+        if initial.keys().collect::<BTreeSet<_>>() != current.keys().collect::<BTreeSet<_>>() {
+            return Err(refuse(format!(
+                "epoch control did not retain the same own-fixture native IDs for {role}"
+            )));
+        }
+        if initial == current {
+            return Err(refuse(format!(
+                "reversed fresh epoch retained old aliases for {role}"
+            )));
+        }
+        expected_count += current.len();
+        for id in current.values() {
+            all_ids.insert(id.parse::<u64>()?);
+        }
+        capture["epoch_lifetime"]["new_epoch"][role] = observed;
+        write_json(&capture_path, capture)?;
+    }
+    if all_ids.first() != Some(&0) || all_ids.len() != expected_count {
+        return Err(refuse(
+            "new epoch aliases do not restart at zero with disjoint window IDs",
+        ));
+    }
+    let after = fixture.oracles()?;
+    let actions_after = bridge
+        .calls
+        .lock()
+        .await
+        .iter()
+        .filter(|call| call["input"]["method"] == "action")
+        .count();
+    if before != after || actions_before != actions_after {
+        return Err(refuse(
+            "epoch recreation issued input or changed independent fixture state",
+        ));
+    }
+    capture["epoch_lifetime"]["after"] = after;
+    capture["epoch_lifetime"]["input_actions_after"] = json!(actions_after);
+    capture["epoch_lifetime"]["same_native_ids_retained"] = json!(true);
+    capture["epoch_lifetime"]["aliases_reassigned_from_zero"] = json!(true);
+    capture["epoch_lifetime"]["completed"] = json!(true);
+    write_json(&capture_path, capture)?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 #[ignore = "requires Root's private task-owned Xvfb/DBus/WM GTK namespace and explicit fixture/output paths"]
 async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
@@ -830,6 +1240,21 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
             ));
         }
     };
+    let focus_scroll_mode = held_focus_scroll::Mode::from_env()?;
+    if focus_scroll_mode.is_some() && allow_clicks {
+        return Err(refuse(
+            "focus/scroll mode and legacy GTK actions are mutually exclusive",
+        ));
+    }
+    let allow_clicks = allow_clicks
+        || matches!(
+            focus_scroll_mode,
+            Some(held_focus_scroll::Mode::Focus | held_focus_scroll::Mode::Actions)
+        );
+    let allow_scroll = matches!(
+        focus_scroll_mode,
+        Some(held_focus_scroll::Mode::Scroll | held_focus_scroll::Mode::Actions)
+    );
     if std::env::var("MAKA_NATIVE_GTK_PRIVATE_DESKTOP").as_deref() != Ok("task-owned-xvfb-dbus") {
         return Err(refuse(
             "explicit private-desktop invocation marker is required",
@@ -859,28 +1284,35 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
         "mode":if allow_clicks { "actions" } else { "observe" },
         "completed":false, "runtime_pid":std::process::id(), "input_actions_performed":0,
         "input_actions_attempted":0,
-        "scope":if allow_clicks { "Public own-GTK element click probes using IDs derived from observed getAXState only" } else { "Public getApp/getAXState for exact task-owned GTK PID/XIDs; no element IDs used for input" },
+        "scope":if allow_clicks { "Public own-GTK element clicks using same-observation public/native IDs, followed by zero-input epoch checks" } else { "Public getApp/getAXState plus zero-input epoch checks for exact task-owned GTK PID/XIDs" },
         "input_actions_performed_semantics":"Input effects acknowledged by independent task-owned fixture counters and clicked events; attempts and unverified rows are separate",
         "input_identities":{"fixture_sha256":digest(&source)?,"binary_sha256":binary_hash,
             "compiled_facade_sha256":hex::encode(Sha256::digest(facade().as_bytes()))},
-        "native_source_limit":"The public Candidate AX API does not expose Original ax_tree_source or raw native_id; this recorder makes no claim from those unavailable fields.",
+        "native_metadata_origin":"nativeAX comes from the same successful Bridge Observe result as each public state string; native IDs are metadata, never independent action authority.",
         "isolation_marker_limit":"Explicit invocation guard; actual namespace ownership comes from Root's retained private-desktop receipt.",
         "observations":[]
     });
     let capture_path = output.join("capture.json");
     write_json(&capture_path, &capture)?;
     let driver = Arc::new(Mutex::new(Driver::default()));
-    let mut session = Session::new(driver.clone());
+    let owner = SessionOwner::new(driver.clone());
+    let mut session = owner.new_epoch()?;
     session.configure(Desktop::Local, vec![], Language::En)?;
     let bridge = Arc::new(Bridge {
         session: Arc::new(Mutex::new(session)),
         calls: Arc::new(Mutex::new(Vec::new())),
         allow_clicks,
+        allow_scroll,
+        record_typed_errors: focus_scroll_mode.is_some(),
     });
-    let repl = Repl::new(facade(), CellLimits::default())?;
+    let mut repl = Some(Repl::new(facade(), CellLimits::default())?);
     let mut fixture = GtkFixture::start(&source, &output.join("fixture"))?;
     let operation: Recorded<()> = async {
-        let ready = fixture.ready().await?;
+        let ready = if focus_scroll_mode.is_some() {
+            held_focus_scroll::ready(&mut fixture).await?
+        } else {
+            fixture.ready().await?
+        };
         capture["fixture_pid"] = ready["pid"].clone();
         capture["initial_fixture"] = ready.clone();
         write_json(&capture_path, &capture)?;
@@ -895,11 +1327,12 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
                     "try {{ globalThis.{variable}=await cua.getApp({{windowId:{xid}}}); nodeRepl.write(JSON.stringify({{{MARKER}:{{ok:true}}}})); }} catch(error) {{ nodeRepl.write(JSON.stringify({{{MARKER}:{{ok:false,error:String(error)}}}})); }}"
                 );
                 let path = transcripts.join(format!("{role}-bind-{attempt}.json"));
-                let value = cell(&repl, bridge.clone(), source, &path).await?;
+                let value = cell(repl.as_ref().ok_or_else(|| refuse("REPL missing"))?, bridge.clone(), source, &path).await?;
                 capture["observations"].as_array_mut().ok_or_else(|| refuse("capture observations missing"))?
                     .push(json!({"role":role,"kind":"bind","result":value,"path":format!("transcripts/{role}-bind-{attempt}.json"),"sha256":digest(&path)?}));
                 write_json(&capture_path, &capture)?;
                 if value["ok"] == true { break; }
+                if focus_scroll_mode.is_some() { return Err(refuse(format!("focus/scroll own GTK bind failed without retry: {role}"))); }
                 if tokio::time::Instant::now() >= deadline { return Err(refuse(format!("own GTK window could not bind: {role}"))); }
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 attempt += 1;
@@ -910,7 +1343,8 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
                     "try {{ const state=await {variable}.getAXState({{emit:false}}); nodeRepl.write(JSON.stringify({{{MARKER}:{{ok:true,state}}}})); }} catch(error) {{ nodeRepl.write(JSON.stringify({{{MARKER}:{{ok:false,error:String(error)}}}})); }}"
                 );
                 let path = transcripts.join(format!("{role}-public-ax-{attempt}.json"));
-                let value = cell(&repl, bridge.clone(), source, &path).await?;
+                let receipt_start = bridge.calls.lock().await.len();
+                let value = cell(repl.as_ref().ok_or_else(|| refuse("REPL missing"))?, bridge.clone(), source, &path).await?;
                 capture["observations"].as_array_mut().ok_or_else(|| refuse("capture observations missing"))?
                     .push(json!({"role":role,"kind":"public_ax","result":value,"path":format!("transcripts/{role}-public-ax-{attempt}.json"),"sha256":digest(&path)?}));
                 write_json(&capture_path, &capture)?;
@@ -921,10 +1355,14 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
                     && state.contains(window["button_name"].as_str().ok_or_else(|| refuse("button label missing"))?)
                     && !state.contains(ready["windows"][sibling]["title"].as_str().ok_or_else(|| refuse("sibling title missing"))?)
                 {
+                    let metadata = native_ax_receipt(&bridge, receipt_start, state, ready["pid"].as_u64().ok_or_else(|| refuse("fixture PID missing"))?, xid).await?;
+                    native_aliases(&metadata)?;
                     capture["public_ax"][role] = json!(state);
-                    write_json(&output.join(format!("{role}-public-ax.json")), &json!({"role":role,"window_id":xid,"state":state}))?;
+                    capture["native_ax"][role] = metadata.clone();
+                    write_json(&output.join(format!("{role}-public-ax.json")), &json!({"role":role,"window_id":xid,"state":state,"nativeAX":metadata}))?;
                     break;
                 }
+                if focus_scroll_mode.is_some() { return Err(refuse(format!("focus/scroll own GTK AX gate failed without retry: {role}"))); }
                 if tokio::time::Instant::now() >= deadline { return Err(refuse(format!("own GTK AX labels/scope unavailable: {role}"))); }
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 attempt += 1;
@@ -934,23 +1372,40 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
             capture["large_ax_positive_controls_verified"] = json!(false);
             write_json(&capture_path, &capture)?;
         }
-        let large_buttons = large_ax_buttons(&ready, &capture["public_ax"])?;
+        let target_aliases = native_aliases(&capture["native_ax"]["target"])?;
+        let other_aliases = native_aliases(&capture["native_ax"]["other"])?;
+        let target_raw_ids: BTreeSet<_> = target_aliases.values().collect();
+        let other_raw_ids: BTreeSet<_> = other_aliases.values().collect();
+        if !target_raw_ids.is_disjoint(&other_raw_ids) {
+            return Err(refuse("all-node aliases overlap between own target and sibling windows"));
+        }
+        if !target_aliases.keys().collect::<BTreeSet<_>>().is_disjoint(&other_aliases.keys().collect::<BTreeSet<_>>()) {
+            return Err(refuse("raw target and sibling trees share fixture native IDs"));
+        }
+        capture["raw_id_scope_verified"] = json!(true);
+        if let Some(mode) = focus_scroll_mode {
+            return held_focus_scroll::record(
+                mode, repl.as_ref().ok_or_else(|| refuse("REPL missing"))?, bridge.clone(),
+                &mut fixture, &ready, &mut capture, &output,
+            ).await;
+        }
+        let large_buttons = large_ax_buttons(&ready, &capture["public_ax"], &capture["native_ax"])?;
         let mut deferred_id_scope_error = None;
         let late_button = if let Some(buttons) = &large_buttons {
             let button = buttons
                 .iter()
-                .max_by_key(|button| button.id)
-                .filter(|button| button.id >= 1000)
-                .ok_or_else(|| refuse("large GTK public AX has no observed grid ID >= 1000"))?;
+                .max_by_key(|button| button.native_grid_ordinal)
+                .filter(|button| button.raw_preorder >= 1000 && button.native_grid_ordinal >= 1000)
+                .ok_or_else(|| refuse("large GTK has no correlated native grid button beyond raw preorder and eligible ordinal 1000"))?;
             capture["large_ax_validation"] = json!({
                 "verified_button_count":buttons.len(),
                 "each_label_exactly_once":true,
                 "each_button_clickable":true,
                 "complete_and_sibling_excluded":true,
                 "fixture_controls_visible_mapped_sensitive_and_inside_client":true,
-                "observed_buttons":buttons.iter().map(|button| json!({"name":button.name,"public_id":button.id})).collect::<Vec<_>>(),
-                "selected_late_button":{"name":button.name,"public_id":button.id,"public_line":button.row},
-                "selection":"Maximum public ID among grid buttons observed in this Candidate AX; fixture creation order is not used",
+                "observed_buttons":buttons.iter().map(|button| json!({"name":button.name,"public_id":button.id,"native_id":button.native_id,"raw_preorder":button.raw_preorder,"native_grid_ordinal":button.native_grid_ordinal})).collect::<Vec<_>>(),
+                "selected_late_button":{"name":button.name,"public_id":button.id,"public_line":button.row,"native_id":button.native_id,"raw_preorder":button.raw_preorder,"native_grid_ordinal":button.native_grid_ordinal},
+                "selection":"Highest eligible native grid ordinal correlated to this Candidate public row; raw preorder and eligible ordinal both >=1000; no reference IDs or fixture creation order",
                 "id_scope":{"verified":false,"status":"pending"}
             });
             write_json(&capture_path, &capture)?;
@@ -1016,7 +1471,7 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
         write_json(&capture_path, &capture)?;
         let action_result = if allow_clicks {
             record_actions(
-                &repl,
+                repl.as_ref().ok_or_else(|| refuse("REPL missing"))?,
                 bridge.clone(),
                 &fixture,
                 &mut capture,
@@ -1038,21 +1493,28 @@ async fn linux_native_gtk_observation_fixture() -> Recorded<()> {
             }));
         }
         action_result?;
+        record_epoch_lifetime(&mut repl, &owner, bridge.clone(), &fixture, &mut capture, &output).await?;
         Ok(())
     }.await;
     if let Err(error) = &operation {
         capture["error"] = json!(error.to_string());
     }
-    match fixture.oracles() {
-        Ok(oracles) => capture["final_fixture"] = oracles,
-        Err(error) => capture["fixture_oracle_error"] = json!(error.to_string()),
+    if focus_scroll_mode.is_some() {
+        held_focus_scroll::retain_final_events(&fixture, &mut capture);
+    } else {
+        match fixture.oracles() {
+            Ok(oracles) => capture["final_fixture"] = oracles,
+            Err(error) => capture["fixture_oracle_error"] = json!(error.to_string()),
+        }
     }
     capture["bridge_calls"] = json!(*bridge.calls.lock().await);
     let mut cleanup_errors = Vec::new();
-    match tokio::time::timeout(Duration::from_secs(15), repl.close()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => cleanup_errors.push(format!("repl: {error}")),
-        Err(error) => cleanup_errors.push(format!("repl timeout: {error}")),
+    if let Some(repl) = repl.take() {
+        match tokio::time::timeout(Duration::from_secs(15), repl.close()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => cleanup_errors.push(format!("repl: {error}")),
+            Err(error) => cleanup_errors.push(format!("repl timeout: {error}")),
+        }
     }
     match tokio::time::timeout(Duration::from_secs(15), async {
         bridge.session.lock().await.close().await

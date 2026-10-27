@@ -155,14 +155,10 @@ impl PreparedHistory {
                 break;
             }
             for group in groups {
-                let rows = self
-                    .log
-                    .prepared_view_group_rows(&self.view, &group)
-                    .await?;
-                let snapshot = self.log.prepared_group_snapshot(&self.view, &group).await?;
+                let semantic = self.log.prepared_view_group(&self.view, &group).await?;
                 let (messages, _) = super::render_semantic_group(
                     &self.log,
-                    &rows,
+                    &semantic.rows,
                     super::semantic::RenderContext {
                         session: &self.session,
                         vision: self.vision,
@@ -171,7 +167,7 @@ impl PreparedHistory {
                         replay: self.replay.as_ref(),
                     },
                     cancellation,
-                    Some(&snapshot),
+                    Some(&semantic.manifest),
                 )
                 .await?;
                 let needed = maka_model::wire_preparation_dependencies(&messages, &provider.kind);

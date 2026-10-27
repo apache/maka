@@ -125,6 +125,8 @@ enum Ax {
     TabList,
     Toolbar,
     List,
+    /// An option of a listbox.
+    Option,
     Grid,
     Search,
     Alert,
@@ -233,11 +235,11 @@ pub(crate) fn label(view: &NshView, label: &Option<Arc<str>>) {
     update(view);
 }
 
-/// Moves VoiceOver and, for an input or pressable view, keyboard focus to `view`.
+/// Moves VoiceOver and, for an input or a stop of Tab, keyboard focus to `view`.
 pub(crate) fn focus(view: &NshView) {
     if view.kind() == ViewKind::Input {
         crate::text_input::focus(view);
-    } else if crate::input::is_key_control(view)
+    } else if crate::input::is_key_stop(view)
         && let Some(window) = view.ns().window()
     {
         window.makeFirstResponder(Some(view.ns()));
@@ -481,6 +483,11 @@ fn ax_role(role: Ax) -> (Option<Retained<NSString>>, Option<Retained<NSString>>)
             Ax::TabList => (constant(NSAccessibilityTabGroupRole), None),
             Ax::Toolbar => (constant(NSAccessibilityToolbarRole), None),
             Ax::List => (constant(NSAccessibilityListRole), None),
+            // WebKit's and Chromium's role for ARIA's `option`: AppKit's
+            // rows are a table's or an outline's (they need the table's
+            // columns and row index), and its menu items a menu's; an option
+            // of a list is static text that reports `AXSelected`.
+            Ax::Option => (constant(NSAccessibilityStaticTextRole), None),
             Ax::Grid => (constant(NSAccessibilityGridRole), None),
             Ax::Search => (
                 constant(NSAccessibilityTextFieldRole),
@@ -539,7 +546,7 @@ fn spec_for(
             }),
         ),
         // VoiceOver reads static text's value, not its label.
-        (Ax::Text | Ax::Heading, _, _) => (
+        (Ax::Text | Ax::Heading | Ax::Option, _, _) => (
             None,
             label.map_or(Value::None, |l| match value_text {
                 Some(v) => Value::Text(format!("{l}, {v}")),
@@ -599,7 +606,9 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         Role::Tablist => Ax::TabList,
         Role::Timer => Ax::Timer,
         Role::Toolbar => Ax::Toolbar,
-        Role::List => Ax::List,
+        // A listbox is a list, as WebKit and Chromium map ARIA's `listbox`.
+        Role::List | Role::Listbox => Ax::List,
+        Role::Option => Ax::Option,
         Role::Grid | Role::Table => Ax::Grid,
         // Groups that read their children, a cell's text among them.
         Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup => Ax::Group,
@@ -678,6 +687,14 @@ mod tests {
             role_for(&with_role(Role::Switch), ViewKind::View, false),
             Ax::Switch
         );
+        assert_eq!(
+            role_for(&with_role(Role::Listbox), ViewKind::View, false),
+            Ax::List
+        );
+        assert_eq!(
+            role_for(&with_role(Role::Option), ViewKind::View, true),
+            Ax::Option
+        );
     }
 
     #[test]
@@ -733,6 +750,22 @@ mod tests {
         };
         let s = spec_for(&button, ViewKind::View, false, None, false);
         assert_eq!(s.value, Value::Text("3 of 10".into()));
+        // An option is static text: its label is read as its value, and it
+        // reports its selected state.
+        let option = Accessibility {
+            role: Role::Option,
+            label: Some("Apple".into()),
+            state: AccessibilityState {
+                selected: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = spec_for(&option, ViewKind::View, true, None, false);
+        assert_eq!(s.role, Ax::Option);
+        assert_eq!(s.label, None);
+        assert_eq!(s.value, Value::Text("Apple".into()));
+        assert!(s.selected);
     }
     /// The reviewer's case: `accessibilityValue={{ text: "1" }}` on a view
     /// that later becomes checked. The contents are `1` both times; what

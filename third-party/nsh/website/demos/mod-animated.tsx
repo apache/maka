@@ -86,7 +86,7 @@ function App() {
                     borderRadius: 8,
                     ...ui().accentFill,
                     borderWidth: 0,
-                    transform: [{ translateX: dots[i()] }],
+                    translate: [dots[i()], 0],
                   }}
                 />
               </View>
@@ -101,7 +101,7 @@ function App() {
             height: 64,
             borderRadius: 14,
             backgroundColor: spin.interpolate({ inputRange: [0, 0.5, 1], outputRange: [ui().up, ui().warn, ui().up] }),
-            transform: [{ rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }) }],
+            rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }),
           }}
         />
         <Text style={{ flex: 1, color: ui().muted, fontSize: 13 }}>

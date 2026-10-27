@@ -25,8 +25,9 @@ async function elementOperation(element, request) {
   };
   const inputTarget = () => {
     requireElement(element);
-    return requireElement(request.requireEditable === false
-      ? element : this.retarget(element, 'follow-label'));
+    return requireElement(
+      request.requireEditable === false ? element : this.retarget(element, 'follow-label'),
+    );
   };
   const stateFailure = (states) => {
     requireElement(element);
@@ -45,8 +46,8 @@ async function elementOperation(element, request) {
     const message = stateFailure(states);
     return message ? { status: 'retry', message } : { status: 'ready' };
   };
-  const textStates = request.requireEditable === false
-    ? ['visible', 'enabled'] : ['visible', 'enabled', 'editable'];
+  const textStates =
+    request.requireEditable === false ? ['visible', 'enabled'] : ['visible', 'enabled', 'editable'];
   const focused = (node) => {
     if (!node?.isConnected || !node.ownerDocument.hasFocus()) return false;
     let current = node;
@@ -104,8 +105,11 @@ async function elementOperation(element, request) {
         });
         requireElement(element);
         const next = element.getBoundingClientRect();
-        stableFrames = ['left', 'top', 'width', 'height'].every((field) => bounds[field] === next[field])
-          ? stableFrames + 1 : 0;
+        stableFrames = ['left', 'top', 'width', 'height'].every(
+          (field) => bounds[field] === next[field],
+        )
+          ? stableFrames + 1
+          : 0;
         bounds = next;
       }
       requireStates(states);
@@ -114,7 +118,10 @@ async function elementOperation(element, request) {
       const view = element.ownerDocument.defaultView;
       if (!view) throw new Error('Element viewport is not available');
       return {
-        point: { x: Math.max(0, bounds.left + bounds.width / 2), y: Math.max(0, bounds.top + bounds.height / 2) },
+        point: {
+          x: Math.max(0, bounds.left + bounds.width / 2),
+          y: Math.max(0, bounds.top + bounds.height / 2),
+        },
         width: bounds.width,
         height: bounds.height,
         viewportWidth: view.innerWidth,
@@ -129,7 +136,10 @@ async function elementOperation(element, request) {
     }
     case 'verify': {
       if (!element?.isConnected) return { connected: false, focused: false };
-      const target = request.exactTarget || request.requireEditable === false ? element : this.retarget(element, 'follow-label');
+      const target =
+        request.exactTarget || request.requireEditable === false
+          ? element
+          : this.retarget(element, 'follow-label');
       return { connected: !!target?.isConnected, focused: focused(target) };
     }
     case 'focus':
@@ -144,9 +154,28 @@ async function elementOperation(element, request) {
       return { status: 'needsinput' };
     }
     case 'fill': {
-      if (typeof request.value !== 'string') throw new Error('locator.fill requires a string value');
+      if (typeof request.value !== 'string')
+        throw new Error('locator.fill requires a string value');
       requireStates(['visible', 'enabled', 'editable']);
       scroll();
+      const target = inputTarget();
+      if (
+        target.isContentEditable &&
+        target.localName !== 'input' &&
+        target.localName !== 'textarea'
+      ) {
+        target.focus();
+        // Focus handlers may replace children or detach the held node. Select
+        // its current contents without looking up the selector again.
+        const contents = target.ownerDocument.createRange();
+        contents.selectNodeContents(target);
+        const selection = target.ownerDocument.defaultView?.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+          selection.addRange(contents);
+        }
+        return { status: 'needsinput' };
+      }
       const result = complete(this.fill(element, request.value));
       if (result !== 'done' && result !== 'needsinput') throw new Error(String(result));
       return { status: result };

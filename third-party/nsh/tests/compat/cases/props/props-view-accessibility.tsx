@@ -2,9 +2,10 @@
 // accessibility props of every element as the platform receives them on
 // iOS (the scripts' default platform): `accessible`, `accessibilityHint`,
 // `accessibilityState`, `accessibilityValue`, `accessibilityElementsHidden`,
-// `accessibilityActions`, and `importantForAccessibility`, which decides
-// `accessible` and hides the descendants for `"no-hide-descendants"`. Its
-// script checks each.
+// `accessibilityActions`, `importantForAccessibility`, which decides
+// `accessible` and hides the descendants for `"no-hide-descendants"`, and
+// the `"listbox"` and `"option"` roles of a select's popup, the chosen
+// option `selected`. Its script checks each.
 import { Text, View } from "nsh";
 
 function App() {
@@ -36,6 +37,19 @@ function App() {
         accessibilityActions={[{ name: "activate" }, { name: "magicTap", label: "Magic" }]}
         style={{ height: 20 }}
       />
+      <View testID="listbox" role="listbox" accessibilityLabel="Fruit">
+        <View
+          testID="option"
+          role="option"
+          accessibilityState={{ selected: true }}
+          style={{ height: 20 }}
+        >
+          <Text>Apple</Text>
+        </View>
+        <View testID="other-option" role="option" style={{ height: 20 }}>
+          <Text>Banana</Text>
+        </View>
+      </View>
       <View testID="plain" style={{ height: 20 }} />
     </View>
   );

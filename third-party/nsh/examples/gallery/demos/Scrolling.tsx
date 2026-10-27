@@ -35,8 +35,7 @@ const options = <T extends string>(values: readonly T[]) => values.map((value) =
 function Backdrop(props: { tone: Tone; seed: number }) {
   return (
     <Canvas
-      pointerEvents="none"
-      style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+      style={{ pointerEvents: "none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
       draw={(cx, { width, height }) => {
         const color = toneColor(props.tone);
         cx.fillStyle = colors.border;
@@ -113,7 +112,7 @@ function Pager() {
                       gap: 4,
                       // The text lags behind the page and fades at the edges.
                       opacity: x.interpolate({ inputRange: range(), outputRange: [0.1, 1, 0.1] }),
-                      transform: [{ translateX: x.interpolate({ inputRange: range(), outputRange: [-width() * 0.35, 0, width() * 0.35] }) }],
+                      translate: [x.interpolate({ inputRange: range(), outputRange: [-width() * 0.35, 0, width() * 0.35] }), 0],
                     }}
                   >
                     <Text style={{ fontSize: 13, color: colors.muted, fontVariant: ["tabular-nums"] }}>
@@ -138,7 +137,7 @@ function Pager() {
               height: 8,
               borderRadius: 4,
               backgroundColor: colors.accent,
-              transform: [{ translateX: x.interpolate({ inputRange: [0, (pages.length - 1) * width()], outputRange: [0, (pages.length - 1) * step] }) }],
+              translate: [x.interpolate({ inputRange: [0, (pages.length - 1) * width()], outputRange: [0, (pages.length - 1) * step] }), 0],
             }}
           />
         </View>
@@ -439,6 +438,7 @@ export function Scrolling() {
               placeholder={hint("Type here, then tap the button", "Type here, then click the button")}
               style={{
                 placeholderColor: colors.faint,
+                caretColor: colors.accent,
                 selectionColor: colors.accent,
                 height: 44,
                 fontSize: 15,

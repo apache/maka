@@ -30,4 +30,4 @@ This family owns Agent business behavior. Leaf `package.ts` files declare indepe
 - [assistant](assistant/README.md), [goal](goal/README.md), [graph](graph/README.md), [scheduler](scheduler/engine/README.md), [insights](insights/README.md), [session-import](session-import/README.md), [session-recap](session-recap/README.md) and [session-title](session-title/README.md) own their respective features.
 - [acp-executor](acp-executor/native/README.md) connects external ACP agents through explicit process and callback services.
 
-The [terminal shell](../../products/maka/terminal-shell/README.md) and [desktop shell](../../products/maka/desktop-shell/README.md) consume these public Host contracts. Product assembly belongs to [products/maka](../../products/maka/README.md); each shell owns its native draft editor and interaction lifecycle.
+The [workbench](../../products/maka/workbench/README.md), which the terminal and desktop shells run, consumes these public Host contracts. Product assembly belongs to [products/maka](../../products/maka/README.md); the workbench owns its draft editor and interaction lifecycle.

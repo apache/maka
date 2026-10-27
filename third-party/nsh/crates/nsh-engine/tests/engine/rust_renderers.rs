@@ -49,9 +49,47 @@ impl Component for Shelf {
     }
 }
 
+/// A popup's list: a scroll view as long as its rows (up to 300 pt), the
+/// rows in its viewport, each drawn by the app's function.
+#[derive(Default)]
+pub(crate) struct Picker;
+
+#[derive(Clone, PartialEq, Props)]
+pub(crate) struct PickerProps {
+    /// The items, `key:label`.
+    #[prop(default)]
+    items: nsh_core::element::Prop<Vec<String>>,
+    /// Renders an item's label.
+    render_item: nsh_core::element::Prop<Option<Renderer<String>>>,
+}
+
+impl Component for Picker {
+    type Props = PickerProps;
+    type Event = NoEvent;
+
+    fn view(props: PickerProps, _: Scope<NoEvent>) -> impl IntoElement {
+        let (items, render) = (props.items, props.render_item);
+        view().max_h(px(300.0)).child(
+            scroll().flex_shrink(1.0).min_h(px(0.0)).child(
+                virtual_list(
+                    move || items.with(Vec::len),
+                    move |at| {
+                        view().child(dynamic(move || -> Option<Rendered> {
+                            let (key, label) = items.with(|i| split(&i[at.index()]));
+                            render.get().map(|r| r.render(key, label))
+                        }))
+                    },
+                )
+                .viewport(ListViewport::Parent),
+            ),
+        )
+    }
+}
+
 fn registry() -> Registry {
     let mut r = Registry::ui_set("test/renders");
     r.register::<Shelf>();
+    r.register::<Picker>();
     r
 }
 
@@ -154,4 +192,57 @@ fn the_apps_function_renders_each_key_and_lets_it_go() {
         })
         .collect();
     assert_eq!(shown.len(), 1, "only the end is left: {live:?}");
+}
+
+const PICKER: &str = r#"import { mount, Text } from "nsh";
+import { Picker } from "test/renders";
+
+mount(() => (
+  <Picker items={["a:Apple", "b:Banana"]} renderItem={(label) => <Text>{`R ${label}`}</Text>} />
+));
+"#;
+
+#[test]
+fn a_lists_rows_drawn_by_the_app_show_in_a_view_sized_by_them() {
+    let (_engine, rx) = crate::rust_classes::start(PICKER, vec![registry()]);
+    let mut batches = until_text(&rx, "R Banana");
+    // And whatever the commits after it settle.
+    while let Ok(batch) = rx.recv_timeout(Duration::from_millis(300)) {
+        batches.push(batch);
+    }
+    let items = || batches.iter().flat_map(|b| &b.items);
+    let scroll = items()
+        .find_map(|i| match i {
+            MountItem::Create {
+                id,
+                kind: nsh_core::ViewKind::Scroll,
+            } => Some(*id),
+            _ => None,
+        })
+        .expect("the scroll view");
+    let height = |id: u32| {
+        items().fold(None, |last, i| match i {
+            MountItem::Frame { id: f, frame } if *f == id => Some(frame.size.height.0),
+            _ => last,
+        })
+    };
+    // The rows are laid out with what the app drew, and the scroll view
+    // around them is as long as they are.
+    let mut rows = 0.0;
+    for wanted in ["R Apple", "R Banana"] {
+        let text = items()
+            .find_map(|i| match i {
+                MountItem::Text { id, text, .. } if text.text == wanted => Some(*id),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{wanted} is shown"));
+        let h = height(text).unwrap_or_else(|| panic!("{wanted} is placed"));
+        assert!(h > 0.0, "{wanted}: {h}");
+        rows += h;
+    }
+    let scroll = height(scroll).expect("the scroll view is placed");
+    assert!(
+        scroll >= rows,
+        "the scroll view: {scroll}, the rows: {rows}"
+    );
 }

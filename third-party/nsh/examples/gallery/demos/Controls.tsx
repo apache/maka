@@ -1,9 +1,9 @@
-import { cleanup, computed, signal, Text, View } from "nsh";
-import { Checkbox, Collapsible, Progress, Radio, RadioGroup, Switch, Tab, Tabs } from "nsh/base";
+import { cleanup, computed, type JSX, signal, Text, View } from "nsh";
+import { Checkbox, Collapsible, Progress, Radio, RadioGroup, Slider, Switch, Tab, Tabs } from "nsh/base";
 import { reduceMotion } from "nsh";
 import { platform } from "nsh";
 import { Icon } from "../icons";
-import { Badge, Button, Caption, Card, colors, DemoPage, finish, focusRing, hovered, mono, switchLook, toneColor } from "../ui";
+import { Badge, Button, Caption, Card, colors, DemoPage, finish, focusRing, hovered, mono, sliderFill, sliderLook, sliderValueClass, sliderValueStyle, switchLook, toneColor } from "../ui";
 
 // `nsh/base`'s controls own presses, keys, the disabled state and what
 // screen readers say; every value is the app's, and so is the look: the
@@ -360,7 +360,7 @@ export function Controls() {
                 focusStyle={focusRing()}
                 disabledStyle={dimmed}
               >
-                <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: "500", color: section() === s().name ? colors.text : colors.muted }}>
+                <Text style={{ numberOfLines: 1, fontSize: 13, fontWeight: "500", color: section() === s().name ? colors.text : colors.muted }}>
                   {s().name}
                 </Text>
               </Tab>
@@ -407,7 +407,7 @@ export function Controls() {
           {/* A lane as wide as the chevron's stroke (half its icon box), so the chevron ends where the values below it end. */}
           <View
             class="transition-transform duration-150 motion-reduce:transition-none"
-            style={{ width: size.check / 2, alignItems: "center", transform: [{ rotate: props.open ? "90deg" : "0deg" }] }}
+            style={{ width: size.check / 2, alignItems: "center", rotate: props.open ? "90deg" : "0deg" }}
           >
             <Icon name="chevron" size={size.check} tint={colors.muted} />
           </View>
@@ -559,6 +559,77 @@ export function Controls() {
     );
   }
 
+  function Levels() {
+    const volume = signal(60);
+    const price = signal<[number, number]>([100, 400]);
+    const muted = signal(false);
+    // The shared slider look (`sliderLook` and `sliderFill`, BJORK UI's
+    // slider in the gallery's tones): an 8-point rail, a fill fading into a
+    // 16 × 8 pill thumb, the value in a column after the rail; muted, it
+    // fades to 35%. The spread holds only what never changes: a signal read
+    // in it would make the slider again as it changes, mid-drag.
+    /** A level: its label over the slider. */
+    function Level(props: { label: string; detail: string; value?: string; first?: boolean; children: JSX.Element }) {
+      return (
+        <View style={{ ...row(!!props.first), flexDirection: "column", alignItems: "stretch", gap: size.padding }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: size.gap }}>
+            <Label label={props.label} detail={props.detail} />
+            <If when={props.value}>
+              <Text style={{ fontSize: size.label, color: colors.muted, fontVariant: ["tabular-nums"], textAlign: "right" }}>{props.value}</Text>
+            </If>
+          </View>
+          {props.children}
+        </View>
+      );
+    }
+    return (
+      <Card icon="controls" title="Slider" subtitle="Levels and a range: the app owns the value">
+        <View>
+          <Level first label="Volume" detail={muted() ? "Muted" : "Media and alerts"}>
+            <Slider
+              value={volume()}
+              step={5}
+              accessibilityLabel="Volume"
+              onChange={(next) => volume.set(next as number)}
+              onChangeEnd={(next) => last.set(`Volume: ${next}`)}
+              disabled={muted()}
+              rangeStyle={sliderFill(0, volume() / 100)}
+              {...sliderLook({ value: true })}
+            >
+              <Text class={sliderValueClass} style={sliderValueStyle()}>{muted() ? "—" : `${volume()}%`}</Text>
+            </Slider>
+          </Level>
+          <Level label="Price" detail="Listings between the two" value={`$${price()[0]} – $${price()[1]}`}>
+            <Slider
+              value={price()}
+              min={0}
+              max={500}
+              step={10}
+              startAccessibilityLabel="Minimum price"
+              accessibilityLabel="Maximum price"
+              onChange={(next) => price.set(next as [number, number])}
+              onChangeEnd={(next) => last.set(`Price: ${(next as [number, number]).join(" to ")}`)}
+              rangeStyle={sliderFill(price()[0] / 500, price()[1] / 500)}
+              {...sliderLook()}
+            />
+          </Level>
+        </View>
+        <View style={{ flexDirection: "row", gap: size.gap, marginTop: size.padding, alignSelf: pointer ? "flex-start" : "stretch" }}>
+          <Button
+            label={muted() ? "Unmute" : "Mute"}
+            variant="secondary"
+            size={size.switch}
+            flex={pointer ? undefined : 1}
+            onPress={() => {
+              muted.set(!muted());
+              last.set(muted() ? "Volume: muted" : "Volume: unmuted");
+            }}
+          />
+        </View>
+      </Card>
+    );
+  }
+
   function Last() {
     return (
       <Card icon="system" title="Last event">
@@ -567,5 +638,5 @@ export function Controls() {
     );
   }
 
-  return <DemoPage cards={[Settings, Filter, Plans, Sections, Disclosure, Transfers, Last]} />;
+  return <DemoPage cards={[Settings, Filter, Plans, Sections, Disclosure, Transfers, Levels, Last]} />;
 }

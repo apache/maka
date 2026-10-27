@@ -53,9 +53,9 @@ colored with the theme's tokens; the app restyles each part over it.
 - **Each block is made with primitives** (`Cx::block`): a paragraph or heading is one `text` whose children are spans
   (`Inline` → nested texts, inline images, slots), lists are rows of a marker text and a column, code blocks a column
   with floating actions and a horizontal `scroll`, tables one grid in a horizontal `scroll` (below), disclosures a
-  pressable summary and an `If`. With `selectable`, every text carries `selectable` and the root is a selection area
-  (`Element::selectable`), so one selection runs across the mounted blocks, and inside a `View selectable` on into the
-  mounted texts around the view ("Selection areas" in `text.md`).
+  pressable summary and an `If`. With `selectable`, document texts carry `userSelect: "text"` (`.select_text()`), while decorative/control texts opt out with `userSelect: "none"` (`.select_none()`). The root is a selectable view
+  (`Element::selectable`), so one selection runs across the mounted blocks, and inside a selectable view on into the
+  mounted texts around the view ("Selectable views" in `text.md`).
 - **Tables** (`Cx::table`) lay out as gpui-kit's: columns fit their content when there is room, shrink (their cells
   wrapping) down to a floor per column when the view is narrower, and below the floors the table scrolls horizontally
   (`tableScroll`; `tableScrollbar` hides its indicator, as `codeBlockScrollbar` a code block's). The cells are one CSS grid, so columns line up across rows: each column is a `minmax(<floor>,

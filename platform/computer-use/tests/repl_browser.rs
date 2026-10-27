@@ -258,7 +258,7 @@ async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_fres
         assert!(ok, "{}", texts(&output));
         let events = fixture.events().await;
         assert_eq!(events.len(), 4, "two no-screenshot clicks: {events:?}");
-        for pair in events.chunks_exact(2) {
+        for pair in events.as_chunks::<2>().0 {
             assert!(pair[0].press && !pair[1].press);
             assert!(pair.iter().all(|event| event.event == fixture.id
                 && event.detail == expected
@@ -295,7 +295,7 @@ async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_fres
             detents * 2,
             "pixels={pixels:?} direction={direction}"
         );
-        for pair in events.chunks_exact(2) {
+        for pair in events.as_chunks::<2>().0 {
             assert!(pair[0].press && !pair[1].press);
             for event in pair {
                 assert_eq!(event.event, fixture.id);
@@ -306,7 +306,7 @@ async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_fres
             assert!(pair[1].time.wrapping_sub(pair[0].time) >= 36);
         }
         if detents >= 8 {
-            let pairs: Vec<_> = events.chunks_exact(2).collect();
+            let pairs = events.as_chunks::<2>().0;
             let mut gaps: Vec<_> = pairs
                 .windows(2)
                 .map(|pair| pair[1][0].time.wrapping_sub(pair[0][1].time))
@@ -326,7 +326,7 @@ async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_fres
         8,
         "the current screenshot survives multiple actions: {repeated:?}"
     );
-    for (pair, button) in repeated.chunks_exact(2).zip([5, 4, 6, 7]) {
+    for (pair, button) in repeated.as_chunks::<2>().0.iter().zip([5, 4, 6, 7]) {
         assert!(pair[0].press && !pair[1].press);
         assert!(pair.iter().all(|event| event.event == fixture.id
             && event.detail == button

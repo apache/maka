@@ -225,6 +225,7 @@ fn retained(event: &RuntimeEvent) -> Value {
         | Fact::ExecutorCompleted { .. }
         | Fact::MessageSteered { .. }
         | Fact::ContextCheckpointRecorded { .. }
+        | Fact::ContextCompactionWaiting
         | Fact::ToolResultArchived { .. }
         | Fact::ModelObserved { .. }
         | Fact::ToolOperationObserved { .. }

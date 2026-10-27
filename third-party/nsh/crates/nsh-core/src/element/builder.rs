@@ -199,13 +199,13 @@ pub struct Attrs {
     pub(crate) role: AccessibilityRole,
     pub(crate) state: AccessibilityState,
     pub(crate) value: Option<AccessibilityValue>,
+    /// The core's own (a tooltip's hint); apps' are the style's.
     pub(crate) pointer_events: PointerEvents,
-    pub(crate) number_of_lines: u32,
     pub(crate) src: Option<super::ImageSrc>,
     pub(crate) inset_padding: Option<EdgeInsets>,
     pub(crate) inset_margin: Option<EdgeInsets>,
     /// An inline style (a `Style` prop), over the styles.
-    pub(crate) inline: Option<Arc<crate::StylePatch>>,
+    pub(crate) inline: Option<std::rc::Rc<crate::StylePatch>>,
     /// The props of host elements (inputs, scroll views, ...), one per
     /// property ([`super::host`]).
     pub(crate) props: Vec<Prop>,
@@ -263,9 +263,6 @@ impl Attrs {
         }
         if self.pointer_events != old.pointer_events {
             out.push(Prop::PointerEvents(self.pointer_events));
-        }
-        if self.number_of_lines != old.number_of_lines {
-            out.push(Prop::NumberOfLines(self.number_of_lines));
         }
         if self.src != old.src {
             out.push(Prop::Source(self.src.as_ref().map(|src| ImageSource {
@@ -755,21 +752,6 @@ pub trait Element: IntoElement + Sized {
         self.bind(crate::animation::AnimationProp::Color, value)
     }
 
-    /// Binds the shadow's color to a node of colors (TS: `shadowColor`).
-    fn bind_shadow_color(self, value: &impl super::Animated) -> Self {
-        self.bind(crate::animation::AnimationProp::ShadowColor, value)
-    }
-
-    /// Binds the shadow's opacity, 0..1 (TS: `shadowOpacity`).
-    fn bind_shadow_opacity(self, value: &impl super::Animated) -> Self {
-        self.bind(crate::animation::AnimationProp::ShadowOpacity, value)
-    }
-
-    /// Binds the shadow's blur radius, in points (TS: `shadowRadius`).
-    fn bind_shadow_radius(self, value: &impl super::Animated) -> Self {
-        self.bind(crate::animation::AnimationProp::ShadowRadius, value)
-    }
-
     /// Binds `prop` (anything but a transform step or a canvas argument)
     /// to an animated value (nothing once the value's owner is gone).
     fn bind(mut self, prop: crate::animation::AnimationProp, value: &impl super::Animated) -> Self {
@@ -805,7 +787,7 @@ pub trait Element: IntoElement + Sized {
 
     /// Binds a motion's channels: its opacity, and its transform after the
     /// styles' transforms (translations, then rotations, then the scales,
-    /// `scale` folded into `scale_x` and `scale_y`: 7 steps of a view's 8).
+    /// `scale` folded into `scale_x` and `scale_y`).
     fn bind_motion(self, motion: &super::Motion) -> Self {
         use crate::animation::MotionChannel::*;
         let mut this = self.bind_opacity(&motion.value(Opacity));
@@ -911,7 +893,7 @@ pub trait Element: IntoElement + Sized {
 /// beyond that may hold ids of values JS has collected.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Style(
-    pub(crate) Option<Arc<crate::StylePatch>>,
+    pub(crate) Option<std::rc::Rc<crate::StylePatch>>,
     /// The typed styles it was made of (Rust's), applied as the element's
     /// own are.
     pub(crate) StyleRefinement,
@@ -935,12 +917,12 @@ impl Style {
                 log::warn!("invalid value for style `{}`", key.name());
             }
         }
-        Self(Some(Arc::new(patch)), StyleRefinement::default())
+        Self(Some(std::rc::Rc::new(patch)), StyleRefinement::default())
     }
 
     /// This style with property `key` set to `value` after the rest
-    /// (`Style::default().with(StyleKey::Flex, PatchValue::Number(1.0))`).
-    pub fn with(self, key: crate::StyleKey, value: crate::PatchValue) -> Self {
+    /// (`Style::default().with(StyleKey::Opacity, PropertyValue::Number(0.5.into()))`).
+    pub fn with(self, key: crate::StyleKey, value: crate::PropertyValue) -> Self {
         let decls = self.0.iter().flat_map(|p| p.decls().iter().cloned());
         let mut style = Self::from_decls(decls.chain([crate::StyleDecl::Set(key, value)]));
         style.1 = self.1;
@@ -961,7 +943,7 @@ impl Style {
         node: &mut ElNode,
         style: impl IntoReactive<Style>,
         variant: Variant,
-        attr: impl Fn(&mut Attrs, Option<Arc<crate::StylePatch>>) + 'static,
+        attr: impl Fn(&mut Attrs, Option<std::rc::Rc<crate::StylePatch>>) + 'static,
     ) {
         match style.into_reactive() {
             Reactive::Static(Style(patch, typed)) => {
@@ -987,7 +969,7 @@ impl Style {
 
 impl From<crate::StylePatch> for Style {
     fn from(patch: crate::StylePatch) -> Self {
-        Self(Some(Arc::new(patch)), StyleRefinement::default())
+        Self(Some(std::rc::Rc::new(patch)), StyleRefinement::default())
     }
 }
 
@@ -1139,6 +1121,21 @@ pub trait Accessible: Element {
     /// indeterminate progress bar keeps its range and leaves out `now`).
     fn accessibility_value(mut self, value: impl IntoReactive<Option<AccessibilityValue>>) -> Self {
         self.node().bind_attr(value, |a, value| a.value = value);
+        self
+    }
+
+    /// Hides it and everything inside it from assistive technologies
+    /// while `hidden` holds (TS: `accessibilityElementsHidden`): what a
+    /// control shows of a value that another element of it tells screen
+    /// readers already (a one-time-code input's cells, whose text field
+    /// says the code).
+    fn accessibility_elements_hidden(mut self, hidden: impl IntoReactive<bool>) -> Self {
+        self.node().bind_attr(hidden, |a, hidden| {
+            super::host::set_in(
+                &mut a.props,
+                Prop::Accessibility(AccessibilityProp::Hidden(hidden)),
+            )
+        });
         self
     }
 
@@ -1603,9 +1600,13 @@ pub trait Interactive: Element {
         self
     }
 
-    /// Whether a view that takes presses is a stop of the keyboard focus
-    /// (Tab; default true): false leaves it to the pointer, as a backdrop
-    /// that closes a popover is.
+    /// Whether the view is a stop of the keyboard focus (Tab): true makes
+    /// any view one, whether or not it takes presses (a component that
+    /// takes its keys while focused, through `on_focus` / `on_blur` and the
+    /// keymap, without taking the presses of a pressable around it); false
+    /// leaves a view that takes presses to the pointer, as a backdrop that
+    /// closes a popover is. Unset, the views that take presses are stops
+    /// ([`crate::ViewProps::focus_stop`]).
     fn focusable(mut self, focusable: impl IntoReactive<bool>) -> Self {
         super::host::bind_prop(self.node(), focusable, |focusable| {
             Prop::Focusable(Some(focusable))
@@ -1653,13 +1654,6 @@ pub trait Interactive: Element {
             a.disabled = disabled;
             a.state.disabled = disabled;
         });
-        self
-    }
-
-    /// Which touches it and its children take.
-    fn pointer_events(mut self, pointer_events: impl IntoReactive<PointerEvents>) -> Self {
-        self.node()
-            .bind_attr(pointer_events, |a, p| a.pointer_events = p);
         self
     }
 
@@ -1723,6 +1717,18 @@ pub trait Interactive: Element {
     fn project_disabled(mut self, disabled: impl IntoReactive<bool>) -> Self {
         self.node().bind_attr(disabled, |a, disabled| {
             project(a, crate::tailwind::state::DISABLED, disabled)
+        });
+        self
+    }
+
+    /// Styles it as focused while `focused` holds (its `focus:` classes
+    /// and focus styles), as the part the keyboard is on inside a control
+    /// that keeps the focus itself: the cell of a one-time-code input that
+    /// takes the next character, the highlighted option of a list (NSH
+    /// has no active descendant). The platform's focus stays where it is.
+    fn project_focused(mut self, focused: impl IntoReactive<bool>) -> Self {
+        self.node().bind_attr(focused, |a, focused| {
+            project(a, crate::tailwind::state::FOCUSED, focused)
         });
         self
     }
@@ -1837,25 +1843,6 @@ fn span(mut el: ElNode) -> ElNode {
 }
 
 impl Text {
-    /// At most `lines` lines (0: no limit), the last one truncated.
-    pub fn number_of_lines(mut self, lines: impl IntoReactive<u32>) -> Self {
-        self.0
-            .bind_attr(lines, |a, lines| a.number_of_lines = lines);
-        self
-    }
-
-    /// Where a truncated line is cut.
-    pub fn ellipsize_mode(mut self, mode: impl IntoReactive<crate::EllipsizeMode>) -> Self {
-        super::host::bind_prop(&mut self.0, mode, Prop::EllipsizeMode);
-        self
-    }
-
-    /// The user can select and copy it.
-    pub fn selectable(mut self, selectable: impl IntoReactive<bool>) -> Self {
-        super::host::bind_prop(&mut self.0, selectable, |s| Prop::Selectable(Some(s)));
-        self
-    }
-
     /// The original source of this text, with local UTF-16 ranges mapped to
     /// absolute UTF-8 byte offsets. `None` clears the source mapping.
     pub fn text_source(
@@ -1897,12 +1884,6 @@ impl Text {
 }
 
 impl Image {
-    /// How it fits its box (default: cover).
-    pub fn resize_mode(mut self, mode: impl IntoReactive<crate::ResizeMode>) -> Self {
-        super::host::bind_prop(&mut self.0, mode, Prop::ResizeMode);
-        self
-    }
-
     /// Shown until it loads (a URL, an `asset:/` URI or an
     /// [`super::ImageAsset`]).
     pub fn placeholder(mut self, src: impl IntoReactive<super::ImageSrc>) -> Self {

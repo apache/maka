@@ -228,7 +228,7 @@ fn valid_base64(input: &str) -> bool {
     if padding == 0 {
         symbols % 4 != 1
     } else {
-        padding <= 2 && symbols % 4 == 0
+        padding <= 2 && symbols.is_multiple_of(4)
     }
 }
 

@@ -26,7 +26,7 @@ the module docs of the code (`//!`, Javadoc), which are the reference for how a 
 
 ```
 crates/
-  nsh-core/            Platform-independent core: typed units and geometry (`geometry/`, as GPUI's), shadow tree, styles (RN semantics), Taffy layout (flex + grid + block, on the core's own layout tree: `core/layout_tree.rs`), text merging, list virtualization,
+  nsh-core/            Platform-independent core: typed units and geometry (`geometry/`, as GPUI's), shadow tree, styles (CSS semantics, React Native's defaults for what nothing sets), Taffy layout (flex + grid + block, on the core's own layout tree: `core/layout_tree.rs`), text merging, list virtualization,
                        mount items; CSS values (`css.rs`: colors, lengths, shadows, gradients, filters), effects (`effects.rs`), Tailwind (`tailwind/`);
                        CSS environment variables in padding and margin (`env(safe-area-inset-*)`, `env(keyboard-inset-height)`: `Core::sync_env`);
                        what iOS and Android share (`mobile.rs`: `nsh/mobile`'s `TabBar`, a native component the two backends register);
@@ -48,12 +48,14 @@ crates/
                        the standard modules among them (`runtime/fs.rs`: `fs/promises`, `runtime/process.rs`, `runtime/net.rs`,
                        `runtime/websocket.rs`, `runtime/os.rs`) on the `System` their calls get (capabilities, data directory, quotas, per-VM state)
   nsh-base/            `nsh/base`, NSH's `gpui-base`: unstyled base components (behavior, state, focus, accessibility; the look is the
-                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Collapsible`, `Progress`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`), `Input` (a native text input, made by `nsh-js`), the status
+                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Collapsible`, `Progress`, `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`), `Input` (a native text input, made by `nsh-js`), the status
                        bar, `TextView` (Markdown / HTML documents: `text_view/`, docs/dev/text-view.md), `ResizablePanelGroup` / `ResizablePanel` (`resizable/`), `DockArea` (a dockable workspace: splits, tab groups and edge docks whose layout is
                        data, `dock/`, docs/dev/dock.md), `Editor` (a code editor: highlighting, several carets, folds, search, diagnostics;
                        `editor/`, docs/dev/editor.md), `DiffView` (the changes between two texts or of a patch, split or unified: `diff/`,
                        docs/dev/diff.md), `DataTable` (a table that scrolls both ways over any number of rows and columns: selection, sorting, resizing,
-                       moving, fixed columns; `data_table/`, docs/dev/data-table.md),
+                       moving, fixed columns; `data_table/`, docs/dev/data-table.md), `RichEditor`'s headless kernel after ProseMirror
+                       (schema-defined documents, steps, transactions, states, commands, history, formats; `rich_editor/`,
+                       docs/dev/rich-editor.md),
                        the popups on the core's overlays (`Popover`, `Menu` / `ContextMenu` / `MenuItem` / `MenuSeparator` / `Submenu`,
                        `Tooltip`, `Sheet`; presented per device: docs/dev/components.md "Popups"), written in Rust (the navigation and `Dialog` in `nsh-js`); JS face and declarations made from their specs;
                        the theme (`theme.rs`: shadcn/ui's tokens and their defaults, `neutral`, read from shadcn's `cssVars` theme
@@ -214,6 +216,7 @@ are never linked into the CLI: it reads their UI sets as data (`nsh_core::elemen
 | `Editor`: the code editor's model, display rows, input, keys, highlighting, search, diagnostics and parts | `docs/dev/editor.md` |
 | `DiffView`: the line diff, pairing and inline changes, rows and separators, patches, parts | `docs/dev/diff.md` |
 | `DataTable`: columns, the virtual rows and columns, huge extents, selection, the layers | `docs/dev/data-table.md` |
+| `RichEditor`: the schema, steps and transactions, positions, states, plugins, node views, formats | `docs/dev/rich-editor.md` |
 | Rust classes TS uses (`#[class]`), module functions' kinds, callbacks, how calls and Rust components' props cross (typed) | `docs/dev/rust-classes.md`, `docs/dev/components.md` |
 
 Keep them current: a change that alters documented behavior updates its page (or the module doc) in the same commit,
@@ -378,11 +381,19 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   `active:`), no built-in strings (every label comes from the app); system UI keeps the platform's look (iOS / Android
   headers; `AlertDialog`, drawn in the platform's dialog style where the system has no dialog to show). React Native and
   UIKit are references for which capabilities exist, not APIs to be compatible with.
-- **CSS and Tailwind as in a browser.** CSS values (colors, lengths, gradients, filters, shadows, transforms,
-  alignment keywords, ...) and Tailwind utilities and variants mean exactly what they mean in a browser and in
-  Tailwind CSS (v4); Tailwind's generated CSS is the reference for each utility. What NSH cannot support is
-  unsupported (an unknown class, a rejected value with a warning), never given a different meaning: nothing
-  NSH-specific, so there are no traps (`docs/dev/styles.md`).
+- **Styles: native first, in the forms people write.** One set of properties written three ways (Rust `Styled`,
+  `style` keys, Tailwind classes) means the same in each; the names are CSS's but for a few common forms. Each key takes the form most used and
+  easiest to write, CSS's by default: where common use and CSS differ, the common form wins (a `lineHeight` number is
+  points) and `docs/dev/styles.md` lists it. React Native is a reference for what is common, not an API to match: no
+  names or aliases for its sake. Tailwind (v4) utilities mean what Tailwind's generated CSS does. What NSH cannot
+  support is unsupported (an unknown class, a rejected value with a warning), never given another meaning. Past
+  that the design serves the native platforms and performance, not compatibility with the web: lengths are points,
+  unset properties take React Native's / Yoga's defaults, values that change take numbers and structured forms (JS
+  builds no strings), and what the platforms do that CSS cannot say is a registered extension key or class, named
+  apart from CSS's. Below TSX, values are typed: Rust's `Styled` and Tailwind classes lower to typed values (a core
+  type of their own where one is needed, as `LineHeight`), never to strings the core parses again; only a TSX
+  `style`'s values are parsed from strings. Frozen with the first recorded release as `docs/dev/styles.md` writes it ("Principles",
+  "Extensions").
 - **Components are Rust.** Rust components live in `crates/nsh-base` or in an app's own crate (its UI set,
   `#[native_module("…")]`), run in the core and render primitives with typed styles (GPUI-style `Styled` methods,
   never class strings); props and events are derived types, their JS face is made from the specs (`nsh-js`

@@ -188,16 +188,6 @@ impl ViewState {
         self.anim.opacity.unwrap_or(self.style.opacity) * self.fade * live * filters
     }
 
-    /// Its shadow, with animated color, opacity and radius.
-    pub(crate) fn shadow(&self) -> nsh_core::Shadow {
-        let mut s = self.style.shadow;
-        let a = &self.anim;
-        s.color = a.shadow_color.unwrap_or(s.color);
-        s.opacity = a.shadow_opacity.unwrap_or(s.opacity);
-        s.radius = a.shadow_radius.unwrap_or(s.radius);
-        s
-    }
-
     /// Its borders, with an animated color.
     pub(crate) fn borders(&self) -> nsh_core::Borders {
         let mut b = self.style.borders;
@@ -533,7 +523,7 @@ define_class!(
             // A click outside a field that edits leaves the focus in it, as
             // desktop apps do (`blur()` and Escape still hand it over).
             let view = NshView(self.retain());
-            (view.id() == ROOT_ID || crate::input::is_key_control(&view))
+            (view.id() == ROOT_ID || crate::input::is_key_stop(&view))
                 && self.keyboard_surface().is_some_and(|s| {
                     !(crate::text_input::editing(&s) && clicking(self.mtm()))
                 })
@@ -546,7 +536,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, true);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
                 }
@@ -561,7 +551,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, false);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
                 }
@@ -768,7 +758,7 @@ define_class!(
 );
 
 impl ViewObj {
-    // Only the root stores a surface. A focused pressable child uses its
+    // Only the root stores a surface. A focused child (a Tab stop) uses its
     // ancestors for keyboard handling; drawing and pointer hooks stay root-only.
     fn keyboard_surface(&self) -> Option<std::rc::Rc<Surface>> {
         if let Some(surface) = self.surface() {

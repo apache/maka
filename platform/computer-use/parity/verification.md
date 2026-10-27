@@ -214,8 +214,34 @@ The public Stop result's audio bytes also match the independently retained WAV.
 These tests use generated output on an isolated null sink; physical audio,
 Host transport and permission UI remain separate verification scopes.
 
-The WSL helper retains its earlier serial reset and remote browser cleanup
-behavior. macOS and Windows native desktop reset verification remains pending.
+### Windows worker lifecycle: implementation and evidence limits
+
+The WSL transport now keeps one logical owner for browser and cursor resources,
+with separate native epochs and request identities. An old epoch's operation or
+cleanup does not hold the parent Driver lock while awaiting its original reply.
+Each epoch retains FIFO ordering, and closing it retains the original cleanup
+result. The existing native operation cancellation token can cancel that exact
+request; dropping a response observer, a REPL timeout, or epoch retirement alone
+does not send a cancellation. A lost acknowledgement remains unknown or cleanup
+unconfirmed and is never replayed.
+
+Audio startup binds an observation to the exact capture before acknowledging
+Start. Later captures cannot replace that observation, and capture/output
+completion remains separate from native stop/join and temporary-file cleanup.
+The completion event is sent after the successful Start reply. An epoch's turn
+cleanup and the logical owner's shared browser cleanup have separate replies.
+
+Static Windows evidence from REA
+`ev_6fd85691ee36ba091fe8ef6b8b27296346bce5a06feb982802d3c4bc1966ff04`
+and native subject SHA-256
+`9493af2cebd3c11e2e38ce692f6ccd8e00f4320bdbbcf14f242d036a9736635f`
+shows that the selected original helper stops and joins active audio at
+`end_turn` and consumes its cleanup errors. Maka reuses its existing owned
+audio-discard path on Windows and retains unconfirmed cleanup errors. This is
+an explicit adapter difference. The new transport and cancellation behavior
+requires its own actual Windows desktop validation; structural inspection and
+hermetic transport tests cannot establish original Windows reset triggers or
+native parity. macOS native reset verification also remains pending.
 
 ## Capture records
 

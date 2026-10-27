@@ -1013,7 +1013,7 @@ impl Prepared {
     }
 
     /// `line` (starting at `start`) cut to `width` with an ellipsis, as
-    /// `ellipsizeMode` says, standing for the rest of the text.
+    /// `textOverflow` says, standing for the rest of the text.
     fn truncate(&self, start: CFIndex, width: f64) -> Option<CFRetained<CTLine>> {
         let kind = match self.ellipsize {
             EllipsizeMode::Tail => CTLineTruncationType::End,

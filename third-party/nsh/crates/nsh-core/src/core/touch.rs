@@ -195,6 +195,7 @@ impl<M: TextEngine> Core<M> {
     fn touch_host(&self, id: NodeId) -> Option<NodeId> {
         self.host_of(id)
             .or_else(|| self.components.slot_hosts.get(&id).copied())
+            .or_else(|| self.adopted_host(id))
     }
 
     /// Whether a component's node `id` has a touch handler or takes part in

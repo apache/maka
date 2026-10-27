@@ -28,12 +28,6 @@ pub struct AnimValues {
     pub border_color: Option<Color>,
     /// Animated text color (a text view's runs, an input's text).
     pub color: Option<Color>,
-    /// Animated shadow color.
-    pub shadow_color: Option<Color>,
-    /// Animated shadow opacity.
-    pub shadow_opacity: Option<f32>,
-    /// Animated shadow blur radius.
-    pub shadow_radius: Option<Points>,
 }
 
 #[derive(Default)]
@@ -290,11 +284,6 @@ impl Animator {
                     AnimationProp::BackgroundColor => values.background = Some(color(value)),
                     AnimationProp::BorderColor => values.border_color = Some(color(value)),
                     AnimationProp::Color => values.color = Some(color(value)),
-                    AnimationProp::ShadowColor => values.shadow_color = Some(color(value)),
-                    AnimationProp::ShadowOpacity => values.shadow_opacity = Some(value.number()),
-                    AnimationProp::ShadowRadius => {
-                        values.shadow_radius = Some(Points(value.number()))
-                    }
                     AnimationProp::Transform(i) => {
                         if let Some(t) = values.transform.get_mut(i as usize) {
                             *t = Some(value.number());

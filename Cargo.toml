@@ -32,8 +32,6 @@ members = [
     "plugins/workspace/workspace-processes/native",
     "plugins/workspace/workspace-files/native",
     "plugins/workspace/support",
-    "third-party/gpui-kit/crates/base",
-    "third-party/gpui-kit/crates/shell",
     "products/maka/acp",
     "plugins/agent/engine",
     "plugins/agent/native",
@@ -46,6 +44,7 @@ members = [
     "products/maka/desktop-shell",
     "products/maka/client",
     "products/maka/terminal-shell",
+    "products/maka/workbench",
     "platform/computer-use",
     "platform/event-log",
     "plugins/agent/acp-executor/engine",
@@ -101,6 +100,7 @@ maka-ui-authoring = { path = "plugins/application/authoring/native" }
 maka-app-client = { path = "products/maka/client" }
 nsh-core = { path = "third-party/nsh/crates/nsh-core" }
 nsh-engine = { path = "third-party/nsh/crates/nsh-engine" }
+nsh-js = { path = "third-party/nsh/crates/nsh-js" }
 nsh-platform-tui = { path = "third-party/nsh/crates/nsh-platform-tui" }
 nsh-platform-gpui = { path = "third-party/nsh/crates/gpui/nsh-platform-gpui", default-features = false, features = ["js"] }
 nsh-gpui-terminal = { path = "third-party/nsh/crates/gpui/nsh-gpui-terminal" }
@@ -126,10 +126,9 @@ maka-workspace-api = { path = "plugins/workspace/api" }
 maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
-gpui-shell = { path = "third-party/gpui-kit/crates/shell", default-features = false, features = ["gpui-fast", "quickjs"] }
 maka-transport = { path = "platform/transport" }
-cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "a27e9367343cd08667a4ea8fa98534a9d6050d3b" }
-cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "a27e9367343cd08667a4ea8fa98534a9d6050d3b" }
+cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980" }
+cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980" }
 agent-client-protocol = { version = "3.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
@@ -186,6 +185,7 @@ maka-terminal-shell = { path = "products/maka/terminal-shell" }
 maka-ui-runtime = { path = "platform/ui-runtime" }
 maka-ui-js = { path = "platform/ui-js" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
+maka-workbench = { path = "products/maka/workbench" }
 maka-workhub = { path = "plugins/workhub/core" }
 pulldown-cmark = { version = "0.13.5", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
@@ -254,7 +254,7 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
-nom = { git = "https://github.com/maka-agent/cua", rev = "a27e9367343cd08667a4ea8fa98534a9d6050d3b" }
+nom = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980" }
 reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }
 gix-discover = { path = "third-party/gix-discover" }
@@ -270,6 +270,3 @@ gpui-fast-linux = { path = "third-party/gpui-fast/crates/gpui_linux" }
 gpui-fast-wgpu = { path = "third-party/nsh/third-party/gpui-wgpu" }
 icy_sixel = { path = "third-party/nsh/third-party/icy_sixel" }
 gpui-pre-scheduler = { path = "third-party/gpui-fast/crates/scheduler" }
-
-[patch."https://github.com/longbridge/gpui-kit"]
-gpui-base = { path = "third-party/gpui-kit/crates/base" }

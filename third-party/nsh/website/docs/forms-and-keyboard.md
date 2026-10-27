@@ -200,15 +200,15 @@ Events:
 | `onSubmit` | `{ text }` | The return key was pressed in an input that submits (single line, or `submitBehavior` `"submit"` / `"blurAndSubmit"`). |
 | `onFocus` / `onBlur` | | The input gained / lost focus. |
 | `onSelectionChange` | `{ start, end }` | The caret or selection moved (UTF-16 units). |
-| `onPaste` | `{ text, files, uris }` | The user pasted: text, images as `File`s, local files' URLs ([pasting](#pasting-images-and-files)). |
+| `onPaste` | `{ text, html, files, uris }` | The user pasted: text, its HTML (Linux, web), images as `File`s, local files' URLs ([pasting](#pasting-images-and-files)). |
 | `onCaretMove` | `{ bounds, pageBounds }` | The caret moved: where it is in the input and in the window ([the caret](#the-caret)). |
 | `onKeyPress` | `{ key }` | Before the text changes: `key` is the typed text, `"Backspace"` or `"Enter"`. |
 | `onContentSizeChange` | `{ width, height }` | The text's size changed (at the input's width when multiline), as it is typed; an empty input reports one empty line, whatever its placeholder. |
 | `onCompositionChange` | `{ composing, text }` | An input method's composition started, changed or ended (see [Input methods](#input-methods)). |
 
 An input is styled like text: `fontSize`, `color`, `fontFamily`, `textAlign`, `letterSpacing` and the rest of [text styles](./text.md), plus borders, padding and backgrounds. The focus style (`.focus(|s| ..)` in Rust, the `focus:` Tailwind variant or `focusStyle` in TSX) applies while the input has focus. The placeholder's color is `.placeholder_color(..)` (the
-`placeholderColor` style key, `placeholder:text-*`), and the caret and selection's color is `.selection_color(..)` (`selectionColor`,
-`selection:text-*`):
+`placeholderColor` style key, `placeholder:text-*`), the caret's is `.caret_color(..)` (`caretColor`, `caret-*`), and the selection highlight's is `.selection_color(..)`
+(`selectionColor`, `selection:text-*`); UIKit tints the caret and the selection with one color, the caret's when set:
 
 ```rust tabs
 input()
@@ -363,6 +363,8 @@ An input's ref has:
 | `blur()` | `blur()` | Unfocuses it. |
 | `set_selection(start, end)` | `setSelection(start, end?)` | Selects `start..end` (UTF-16 units); a caret when they are equal (TSX: without `end`). |
 
+On macOS and the web, `focus()` and `blur()` on the ref of a view that takes presses move the keyboard focus as Tab does ([keyboard focus](../elements/index.md#keyboard-focus)).
+
 `dismiss_keyboard()` in Rust and `Keyboard.dismiss()` from `nsh` in TSX unfocus whichever input has focus:
 
 ```rust tabs
@@ -508,7 +510,8 @@ sends no event, so close the suggestions when it scrolls, or anchor them to the 
 ## Pasting images and files
 
 The paste event (`.on_paste(..)`, TSX `onPaste`) tells what the user pasted, from the keyboard's shortcut, a menu's
-Paste or a keyboard's image: `text`, `files` and `uris`. `files` are what the clipboard held as data, such as a
+Paste or a keyboard's image: `text`, `html`, `files` and `uris`. `html` is the same content with its formatting, as a
+browser, an office suite or a rich text editor copied it (on Linux and the web). `files` are what the clipboard held as data, such as a
 screenshot or an image copied from a page or another app: `File`s whose bytes the app can upload or show, named
 `image.png` (or the type it is). `uris` are the `file:` URLs of files copied in a file manager, as a file drop's.
 The platform reads the clipboard as the user pastes, and only then.

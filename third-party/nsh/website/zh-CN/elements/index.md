@@ -95,7 +95,8 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `<Switch>` | `nsh_base::switch()` | 带轨道和滑块的开 / 关控件 | [Switch](./switch.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | 内容可展开和收起的区域 | [Collapsible](./collapsible.md) |
 | `<Progress>` | `nsh_base::progress()` | 进度条：任务完成了多少，或正在进行 | [Progress](./progress.md) |
-| `<Plot>`、`<Line>`、`<Area>`、`<Grid>`（`nsh/base/plot`） | `nsh_base::plot::{plot, line, area, grid}` | 图表的框架与图形，根据应用的数据行原生绘制 | [Plot](./plot.md) |
+| `<Slider>` | `nsh_base::slider()` | 沿轨道选取一个值或两个值组成的范围 | [Slider](./slider.md) |
+| `<Plot>`、`<Line>`、`<Area>`、`<Bar>`、`<Grid>`、`<Pie>`、`<Arc>`（`nsh/base/plot`） | `nsh_base::plot::{plot, line, area, bar, grid, pie, arc}` | 图表的框架与图形，根据应用的数据行原生绘制 | [Plot](./plot.md) |
 | `<Dialog>` | `nsh_base::dialog()` | 把子元素呈现在其他一切之上 | [Dialog](./dialog.md) |
 | `<NavStack>`、`<NavPage>` | `nsh_base::nav_stack()`、`nsh_base::nav_page()` | 原生导航：带有平台标题栏和返回手势的页面栈 | [NavStack](./nav-stack.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | 系统的提示框和操作表 | [AlertDialog](./alert-dialog.md) |
@@ -140,7 +141,8 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `onPressUp` | `.on_press_up(..)` | `() => void` | | 手指抬起或移出。 |
 | `delayLongPress` | `.long_press_delay(ms)` | `number` | `500` | 按压变为长按前的毫秒数。 |
 | `hitSlop` | `.hit_slop(EdgeInsets::all(px(8.0)))` | `number \| Partial<Edges>` | | 把触摸区域扩展到边界之外，单位为点。 |
-| `pointerEvents` | `.pointer_events(PointerEvents::BoxNone)` | `"auto" \| "none" \| "box-none" \| "box-only"` | `"auto"` | 视图及其子元素接收哪些触摸：`"none"` 都不接收，`"box-none"` 只有子元素接收，`"box-only"` 只有视图本身接收。 |
+
+样式键 `pointerEvents`（Rust 中为 `.pointer_events(PointerEvents::BoxNone)`，类为 `pointer-events-*`）决定视图及其中的视图接收哪些触摸：`"none"` 都不接收（其中设置了 `"auto"` 的视图会重新接收），`"box-none"` 只有其中的视图接收，`"box-only"` 只有视图本身接收（[触摸与手势](../docs/touch-and-gestures.md#pointerevents)）。
 
 按压反馈由应用决定：视图被按下时，`activeStyle`（或 `active:` 类，Rust 中为 `.active(..)`）在原生侧生效，无需经过应用代码（见下文）。
 
@@ -148,7 +150,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 
 ### 状态样式
 
-视图处于某种状态时，在其自身样式之上、由原生侧应用的样式。每一个都是某个 Tailwind 变体的对象形式。后面的状态优先（selected、checked 与 indeterminate，然后是 hover、focus、active）；`disabledStyle` 优先于所有状态，视图被禁用时其他状态样式不生效。
+视图处于某种状态时，在其自身样式之上、由原生侧应用的样式。每一个都是某个 Tailwind 变体的对象形式。后面的状态优先（selected、checked 与 indeterminate，然后是 hover、focus、active）；`disabledStyle` 优先于所有状态，视图被禁用时其他状态样式不生效。每个状态样式的类型与元素自身的样式相同：`<Text>` 上是 `TextStyle`，`<Input>` 上是 `InputStyle`，`<Image>` 上是 `ImageStyle`，其他元素上是 `ViewStyle`。
 
 | 属性 | Rust | 类变体 | 生效时机 |
 |---|---|---|---|
@@ -158,7 +160,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `disabledStyle` | `.disabled_style(\|s\| ..)` | `disabled:` | `disabled` 时。 |
 | `checkedStyle` | `.checked(\|s\| ..)`、`.checked_style(style)` | `checked:` | `accessibilityState.checked` 为 `true` 时（复选框、开关、单选框；`"mixed"` 不算勾选）。 |
 | `indeterminateStyle` | `.indeterminate(\|s\| ..)`、`.indeterminate_style(style)` | `indeterminate:` | `accessibilityState.checked` 为 `"mixed"` 时（既非勾选也非未勾选的复选框）。 |
-| | `.selected(\|s\| ..)` | `selected:` | `accessibilityState.selected` 为 `true` 时（选中的 `Button`、标签页）。 |
+| `selectedStyle` | `.selected(\|s\| ..)` | `selected:` | `accessibilityState.selected` 为 `true` 时（选中的 `Button`、标签页）。 |
 
 ```rust tabs
 view()
@@ -288,11 +290,15 @@ import { Menu } from "nsh/desktop";
 
 ### 键盘焦点
 
-在 macOS 和 Web 上，Tab 在可按压的视图（以及输入框）之间移动键盘焦点，按 Return 或空格会按下获得焦点的视图，焦点样式（`focus:`、`.focus(..)`）为它设置样式。点击会按下视图但不让它获得焦点，所以焦点样式只在键盘聚焦时生效。
+在 macOS 和 Web 上，Tab 按视图树的顺序在停靠点之间移动键盘焦点：输入框、可按压的视图，以及所有设置了 `focusable` 的视图。焦点样式（`focus:`、`.focus(..)`）为获得焦点的视图设置样式；它可按压时，按 Return 或空格会按下它。点击会按下视图但不让它获得焦点，所以焦点样式只在键盘聚焦时生效。
+
+焦点和按压相互独立。在获得焦点时接收按键的视图（图表、滑块、用方向键移动选中项的列表）设置 `focusable`，并在获得焦点期间绑定自己的按键（`onFocus` / `onBlur` 配合 [`keymap`](../modules/nsh.md#keymap)）；点击它时，按压照样交给外层可按压的视图，比如一张点开详情页的卡片。
+
+ref 的 `focus()` 像 Tab 一样把键盘焦点移到停靠点上（显示它的焦点样式并触发 `onFocus`），比如在弹层关闭后把焦点还给它的触发器；`blur()` 让焦点离开它。
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `focusable` | `.focusable(..)` | `boolean` | `true` | 可按压的视图是否是 Tab 的停靠点；`false` 把它留给指针（关闭浮层的背景层、用方向键切换的列表行）。 |
+| `focusable` | `.focusable(..)` | `boolean` | 可按压的视图为 `true` | 视图是否是 Tab 的停靠点。`true` 让任何视图成为停靠点，无论它自己接收按压，还是把按压留给外层视图；`false` 把可按压的视图留给指针（关闭浮层的背景层、用方向键切换的列表行）。 |
 | `onFocus` | `.on_focus(..)` | `() => void` | | Tab（或 `focus()`）让视图获得了键盘焦点。 |
 | `onBlur` | `.on_blur(..)` | `() => void` | | 键盘焦点离开了视图。 |
 
@@ -306,6 +312,16 @@ view()
 
 // 浮层的背景层：点击关闭浮层，Tab 直接越过它进入内容。
 view().absolute().inset_0().focusable(false).on_press(close)
+
+// 卡片里的图表：Tab 停在图表上，点击打开卡片的详情页。
+view().on_press(open_page).child(
+    view()
+        .h(px(160.0))
+        .focusable(true)
+        .focus(|s| s.bg(rgb(0xe0f2fe)))
+        .on_focus(move || focused.set(true))
+        .on_blur(move || focused.set(false)),
+)
 ```
 
 ```tsx tabs
@@ -315,6 +331,16 @@ view().absolute().inset_0().focusable(false).on_press(close)
 
 {/* 浮层的背景层：点击关闭浮层，Tab 直接越过它进入内容。 */}
 <View class="absolute inset-0" focusable={false} onPress={close} />
+
+{/* 卡片里的图表：Tab 停在图表上，点击打开卡片的详情页。 */}
+<View onPress={openPage}>
+  <View
+    class="h-40 focus:bg-sky-100"
+    focusable
+    onFocus={() => focused.set(true)}
+    onBlur={() => focused.set(false)}
+  />
+</View>
 ```
 
 ### 布局与标识
@@ -453,4 +479,4 @@ let input!: YNode;
 
 ## 为什么处理函数不会阻塞 UI
 
-主线程从不等待应用代码。当系统需要立即得到答复时（这段文本能否修改、返回键能否返回上一页、这个 sheet 能否关闭），NSH 会根据事先设置好的属性（`maxLength`、`popOnBack`、`closeOnSwipe`、`pointerEvents` 等）在原生侧作答，事件随后才送达应用。正因如此，这类行为都是属性，而不是处理函数的返回值。
+主线程从不等待应用代码。当系统需要立即得到答复时（这段文本能否修改、返回键能否返回上一页、这个 sheet 能否关闭），NSH 会根据事先设置好的属性（`maxLength`、`popOnBack`、`closeOnSwipe` 等）在原生侧作答，事件随后才送达应用。正因如此，这类行为都是属性，而不是处理函数的返回值。

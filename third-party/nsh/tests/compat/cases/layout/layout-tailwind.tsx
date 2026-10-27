@@ -3,10 +3,10 @@
 // insets, in any order; `fixed` lays a view out in its root view's box;
 // `inline-block` is a block (no gap between its children); `space-x-*` puts
 // a margin after each child but the last (negative ones too); right to
-// left, `ml-*` / `mr-*` stay on their side while the `marginRight` key
-// keeps React Native's meaning (the end); `max-*` breakpoints sort widest
-// first, so the narrowest wins. Arbitrary values, as this
-// domain's theme has a spacing of its own. The script checks each frame.
+// left, `ml-*` / `mr-*` stay on their side, and so does the `marginRight`
+// key, as in CSS; `max-*` breakpoints sort widest first, so the narrowest
+// wins. Arbitrary values, as this domain's theme has a spacing of its own.
+// The script checks each frame.
 import { Text, View } from "nsh";
 
 function App() {

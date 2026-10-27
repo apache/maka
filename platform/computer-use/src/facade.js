@@ -167,8 +167,12 @@ const playwrightFor = (handle, identity) => {
       result.button = options.button;
     }
     if (options.modifiers !== undefined) {
-      if (!Array.isArray(options.modifiers)
-          || options.modifiers.some((value) => !['Alt', 'Control', 'ControlOrMeta', 'Meta', 'Shift'].includes(value)))
+      if (
+        !Array.isArray(options.modifiers) ||
+        options.modifiers.some(
+          (value) => !['Alt', 'Control', 'ControlOrMeta', 'Meta', 'Shift'].includes(value),
+        )
+      )
         throw new ErrorClass('Unsupported keyboard modifier');
       result.modifiers = options.modifiers;
     }
@@ -184,7 +188,8 @@ const playwrightFor = (handle, identity) => {
       const result = {};
       for (const property of ['value', 'label']) {
         if (value[property] !== undefined) {
-          if (typeof value[property] !== 'string') throw new ErrorClass(property + ' must be a string');
+          if (typeof value[property] !== 'string')
+            throw new ErrorClass(property + ' must be a string');
           result[property] = value[property];
         }
       }
@@ -263,7 +268,11 @@ const playwrightFor = (handle, identity) => {
     };
     const setChecked = (checked, options = {}) => {
       if (typeof checked !== 'boolean') throw new ErrorClass('checked must be a boolean');
-      return mutate({ kind: 'setChecked', checked, options: pointerOptions(options, 'setChecked', true) });
+      return mutate({
+        kind: 'setChecked',
+        checked,
+        options: pointerOptions(options, 'setChecked', true),
+      });
     };
     const cachedRow = async (options) => {
       if (!collection) return null;
@@ -346,12 +355,18 @@ const playwrightFor = (handle, identity) => {
       isEnabled: () => request(selector, { kind: 'isEnabled' }),
       isVisible: () => request(selector, { kind: 'isVisible' }),
       click: (options = {}) => mutate({ kind: 'click', options: pointerOptions(options, 'click') }),
-      dblclick: (options = {}) => mutate({ kind: 'doubleClick', options: pointerOptions(options, 'dblclick') }),
+      dblclick: (options = {}) =>
+        mutate({ kind: 'doubleClick', options: pointerOptions(options, 'dblclick') }),
       fill: (value, options) => textMutation('fill', value, options),
       type: (value, options) => textMutation('type', value, options),
       press: (value, options) => textMutation('press', value, options),
       pressSequentially: (value, options) => textMutation('pressSequentially', value, options),
-      selectOption: (value, options = {}) => mutate({ kind: 'selectOption', values: selectValues(value), options: mutationOptions(options, 'selectOption') }),
+      selectOption: (value, options = {}) =>
+        mutate({
+          kind: 'selectOption',
+          values: selectValues(value),
+          options: mutationOptions(options, 'selectOption'),
+        }),
       setChecked,
       check: (options) => setChecked(true, options),
       uncheck: (options) => setChecked(false, options),
@@ -464,8 +479,7 @@ const bind = async (method, args) => {
       const message = error?.message;
       if (typeof message === 'string') {
         for (const prefix of ['tool failed: ', 'tool effect outcome unknown: ']) {
-          if (message.startsWith(prefix))
-            throw new ErrorClass(message.slice(prefix.length));
+          if (message.startsWith(prefix)) throw new ErrorClass(message.slice(prefix.length));
         }
       }
       throw error;
@@ -493,7 +507,8 @@ const bind = async (method, args) => {
     scroll: (target, direction, distance) => action('scroll', { target, direction, distance }),
     setValue: (index, value) => action('setValue', { index, value }),
     selectText: (index, text, options = {}) => action('selectText', { index, text, options }),
-    performSecondaryAction: (index, action) => action('secondary', { index, action }),
+    performSecondaryAction: (index, actionName) =>
+      action('secondary', { index, action: actionName }),
   };
   if (result.kind === 'tab') {
     Object.assign(target, {
@@ -568,7 +583,12 @@ const bind = async (method, args) => {
           return action('linuxClick', { input: parse(stringify(input)) });
         },
         drag: (from, to) => {
-          const input = { path: [{ x: from[0], y: from[1] }, { x: to[0], y: to[1] }] };
+          const input = {
+            path: [
+              { x: from[0], y: from[1] },
+              { x: to[0], y: to[1] },
+            ],
+          };
           return action('linuxDrag', { input: parse(stringify(input)) });
         },
         scroll: (position, direction, distance) => {

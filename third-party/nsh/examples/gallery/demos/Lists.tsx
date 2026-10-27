@@ -196,7 +196,7 @@ function Contacts() {
                   <Text style={{ fontSize: 15, color: colors.text }}>
                     {person().first} <Text style={{ fontWeight: "600" }}>{person().last}</Text>
                   </Text>
-                  <Text numberOfLines={1} style={{ fontSize: 13, color: colors.muted }}>
+                  <Text style={{ numberOfLines: 1, fontSize: 13, color: colors.muted }}>
                     {person().note}
                   </Text>
                 </View>
@@ -322,6 +322,7 @@ function Chat() {
           returnKeyType="send"
           style={{
             placeholderColor: colors.faint,
+            caretColor: colors.accent,
             selectionColor: colors.accent,
             flex: 1,
             height: 44,
@@ -371,8 +372,7 @@ function CustomIndicator(props: { pull: AnimatedNode; refreshing: boolean }) {
   const pull = props.pull;
   return (
     <View
-      pointerEvents="none"
-      style={{ position: "absolute", top: 0, left: 0, right: 0, height: INDICATOR, alignItems: "center", justifyContent: "center" }}
+      style={{ pointerEvents: "none", position: "absolute", top: 0, left: 0, right: 0, height: INDICATOR, alignItems: "center", justifyContent: "center" }}
     >
       <View
         style={{
@@ -752,7 +752,7 @@ function Page() {
           backgroundColor: colors.background,
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
-          transform: [{ translateY: hidden.mul(-1) }],
+          translate: [0, hidden.mul(-1)],
         }}
       >
         <Text style={{ flex: 1, fontSize: 15, fontWeight: "600", color: colors.text }}>Recent and archived</Text>

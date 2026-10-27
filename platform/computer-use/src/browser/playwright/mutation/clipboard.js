@@ -26,18 +26,58 @@ async function clipboardOperation(element, request, prepared) {
       throw new Error('Clipboard target is not connected');
     return node;
   };
+  const activePasteTarget = () => {
+    const localName = Object.getOwnPropertyDescriptor(window.Element.prototype, 'localName')?.get;
+    const namespace = Object.getOwnPropertyDescriptor(
+      window.Element.prototype,
+      'namespaceURI',
+    )?.get;
+    if (!localName || !namespace) throw new Error('Virtual clipboard requires native DOM getters');
+    const elementNode = (node) => {
+      if (node == null) return null;
+      try {
+        localName.call(node);
+      } catch {
+        return null;
+      }
+      return node.ownerDocument.defaultView ? node : null;
+    };
+    const descend = (root) => {
+      const node = elementNode(root.activeElement);
+      if (!node) return null;
+      if (namespace.call(node) === htmlNamespace) {
+        if (node.shadowRoot) return descend(node.shadowRoot) ?? node;
+        if (['iframe', 'frame'].includes(localName.call(node))) {
+          try {
+            const document = node.contentDocument ?? node.contentWindow?.document;
+            if (document) return descend(document) ?? node;
+          } catch {
+            return node;
+          }
+        }
+      }
+      return node;
+    };
+    return descend(document) ?? document.body;
+  };
   const protectedInput = (node) => {
     if (node?.tagName?.toLowerCase() !== 'input') return false;
     if ((node.getAttribute('type') ?? '').toLowerCase() === 'hidden') return true;
     const attributes = ['type', 'autocomplete', 'id', 'name', 'placeholder', 'aria-label', 'title'];
-    const value = attributes.map((attribute) => node.getAttribute(attribute) ?? '').join(' ').toLowerCase();
+    const value = attributes
+      .map((attribute) => node.getAttribute(attribute) ?? '')
+      .join(' ')
+      .toLowerCase();
     const words = ['password', 'passcode', 'passwd', 'phone', 'mobile'];
     for (const separator of ['', '-', '_', ' ']) {
       words.push('user' + separator + 'name', 'e' + separator + 'mail');
-      for (const next of ['', '-', '_', ' ']) words.push('one' + separator + 'time' + next + 'code');
+      for (const next of ['', '-', '_', ' '])
+        words.push('one' + separator + 'time' + next + 'code');
     }
-    return words.some((word) => value.includes(word))
-      || value.split(/\W+/).some((word) => ['otp', '2fa', 'mfa', 'tel'].includes(word));
+    return (
+      words.some((word) => value.includes(word)) ||
+      value.split(/\W+/).some((word) => ['otp', '2fa', 'mfa', 'tel'].includes(word))
+    );
   };
   const sanitize = (root) => {
     let changed = false;
@@ -64,7 +104,9 @@ async function clipboardOperation(element, request, prepared) {
     }
     const selected = node.ownerDocument.defaultView.getSelection();
     if (!selected || selected.isCollapsed || !selected.rangeCount) return null;
-    const ranges = Array.from({ length: selected.rangeCount }, (_, index) => selected.getRangeAt(index).cloneRange());
+    const ranges = Array.from({ length: selected.rangeCount }, (_, index) =>
+      selected.getRangeAt(index).cloneRange(),
+    );
     const container = node.ownerDocument.createElement('div');
     for (const range of ranges) container.append(range.cloneContents());
     sanitize(container);
@@ -99,7 +141,8 @@ async function clipboardOperation(element, request, prepared) {
       entries.push({ mimeType: type, text });
     }
     for (const file of Array.from(transfer.files))
-      if (file.type) entries.push({ mimeType: file.type, base64: encode(await file.arrayBuffer()) });
+      if (file.type)
+        entries.push({ mimeType: file.type, base64: encode(await file.arrayBuffer()) });
     return entries.length ? [{ entries, presentationStyle: 'unspecified' }] : [];
   };
   const populateTransfer = (transfer, items, view) => {
@@ -109,16 +152,24 @@ async function clipboardOperation(element, request, prepared) {
         if (typeof entry.text === 'string') transfer.setData(entry.mimeType, entry.text);
         else {
           const extension = entry.mimeType.split('/')[1] ?? 'bin';
-          transfer.items.add(new view.File([decode(entry.base64 ?? '', view)], 'clipboard.' + extension, { type: entry.mimeType }));
+          transfer.items.add(
+            new view.File([decode(entry.base64 ?? '', view)], 'clipboard.' + extension, {
+              type: entry.mimeType,
+            }),
+          );
         }
       }
     }
   };
-  const plain = (items, type) => items.flatMap((item) => item.entries)
-    .find((entry) => entry.mimeType === type)?.text ?? '';
-  const deleteEvent = (view, kind) => new view.InputEvent(kind, {
-    bubbles: true, cancelable: kind === 'beforeinput', composed: true, inputType: 'deleteByCut',
-  });
+  const plain = (items, type) =>
+    items.flatMap((item) => item.entries).find((entry) => entry.mimeType === type)?.text ?? '';
+  const deleteEvent = (view, kind) =>
+    new view.InputEvent(kind, {
+      bubbles: true,
+      cancelable: kind === 'beforeinput',
+      composed: true,
+      inputType: 'deleteByCut',
+    });
   const commitCut = () => {
     const cut = prepared?.cut;
     if (!cut) throw new Error('Browser Use virtual cut is no longer pending');
@@ -127,13 +178,18 @@ async function clipboardOperation(element, request, prepared) {
     const node = requireElement(cut.node);
     const view = node.ownerDocument.defaultView;
     if (cut.ranges) {
-      if (!cut.editable?.isConnected || !cut.editable.isContentEditable
-        || !cut.ranges.every((range) => cut.editable.contains(range.commonAncestorContainer))
-        || cut.ranges.map((range) => range.toString()).join('') !== cut.text) return {};
+      if (
+        !cut.editable?.isConnected ||
+        !cut.editable.isContentEditable ||
+        !cut.ranges.every((range) => cut.editable.contains(range.commonAncestorContainer)) ||
+        cut.ranges.map((range) => range.toString()).join('') !== cut.text
+      )
+        return {};
       if (!node.dispatchEvent(deleteEvent(view, 'beforeinput'))) return {};
       for (const range of cut.ranges.slice().reverse()) range.deleteContents();
     } else {
-      if (node.disabled || node.readOnly || node.value.slice(cut.start, cut.end) !== cut.text) return {};
+      if (node.disabled || node.readOnly || node.value.slice(cut.start, cut.end) !== cut.text)
+        return {};
       if (!node.dispatchEvent(deleteEvent(view, 'beforeinput'))) return {};
       node.setRangeText('', cut.start, cut.end, 'end');
     }
@@ -155,13 +211,20 @@ async function clipboardOperation(element, request, prepared) {
       };
       if (node.selectionStart === null || node.selectionEnd === null) setValue();
       else {
-        try { node.setRangeText(text, node.selectionStart, node.selectionEnd, 'end'); }
-        catch { setValue(); }
+        try {
+          node.setRangeText(text, node.selectionStart, node.selectionEnd, 'end');
+        } catch {
+          setValue();
+        }
       }
       node.dispatchEvent(new view.InputEvent('input', { bubbles: true }));
       return;
     }
-    if (node.namespaceURI !== htmlNamespace || (!node.isContentEditable && !node.closest('[contenteditable=true]'))) return;
+    if (
+      node.namespaceURI !== htmlNamespace ||
+      (!node.isContentEditable && !node.closest('[contenteditable=true]'))
+    )
+      return;
     node.focus();
     // These insertions edit this document; clipboard acquisition stays in Rust.
     if (markup) node.ownerDocument.execCommand('insertHTML', false, markup);
@@ -169,29 +232,47 @@ async function clipboardOperation(element, request, prepared) {
   };
 
   if (request.kind === 'commitCut') return commitCut();
-  const node = requireElement(element);
+  const node = request.currentActiveElement ? activePasteTarget() : requireElement(element);
+  if (!node) throw new Error('Active clipboard target is unavailable');
   const view = node.ownerDocument.defaultView;
   if (request.kind === 'paste') {
-    const items = (request.items ?? []).map((item) => ({ ...item,
-      entries: item.entries.filter((entry) => !request.plainTextOnly || entry.mimeType === 'text/plain'),
-    })).filter((item) => item.entries.length);
+    const items = (request.items ?? [])
+      .map((item) => ({
+        ...item,
+        entries: item.entries.filter(
+          (entry) => !request.plainTextOnly || entry.mimeType === 'text/plain',
+        ),
+      }))
+      .filter((item) => item.entries.length);
     if (!items.length) throw new Error('Browser Use virtual clipboard has no data to paste');
-    const markup = request.richTextFallback && !request.plainTextOnly ? plain(items, 'text/html') : '';
+    const markup =
+      request.richTextFallback && !request.plainTextOnly ? plain(items, 'text/html') : '';
     if (typeof view.DataTransfer !== 'function' || typeof view.ClipboardEvent !== 'function') {
       defaultPaste(node, items, markup);
       return {};
     }
     const transfer = new view.DataTransfer();
     populateTransfer(transfer, items, view);
-    const event = new view.ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, composed: true, cancelable: true });
+    const event = new view.ClipboardEvent('paste', {
+      clipboardData: transfer,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    });
     if (node.dispatchEvent(event)) defaultPaste(node, items, markup);
     return {};
   }
-  if (request.kind !== 'copy' && request.kind !== 'cut') throw new Error('Unsupported virtual clipboard operation');
+  if (request.kind !== 'copy' && request.kind !== 'cut')
+    throw new Error('Unsupported virtual clipboard operation');
   if (protectedInput(node)) return {};
   const selected = selection(node);
   const transfer = new view.DataTransfer();
-  const event = new view.ClipboardEvent(request.kind, { clipboardData: transfer, bubbles: true, composed: true, cancelable: true });
+  const event = new view.ClipboardEvent(request.kind, {
+    clipboardData: transfer,
+    bubbles: true,
+    composed: true,
+    cancelable: true,
+  });
   if (!node.dispatchEvent(event)) {
     const items = await transferItems(transfer, node.ownerDocument);
     return items.length ? { items } : {};

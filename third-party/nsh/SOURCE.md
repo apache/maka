@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`76fa8a7fed47ea51aea01fa85bb40960be15d984`. The first upstream synchronization
+`1849776f68ee41d73c08970fe530cf952451af13`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -51,6 +51,47 @@ focus-return and root-retirement safety, native keymap support, input editing,
 and all fork-only resources remain part of the mixed-source tree. Deleted
 selection, device, keymap and native-service pages move their local contracts
 into the corresponding canonical documentation pages.
+
+The subsequent bounded synchronization adds live slot bindings and sole-child
+slot adoption, explicit nonpressable keyboard stops, listbox/option accessibility
+roles, native navigation fixes, and Pie/Arc marks. Slot adoption does not replace
+Maka's explicit Button trigger actions: Rust component hosts remain excluded.
+The terminal and GPUI view-stop adaptations retain native component focus
+capability, input exclusions, popup scopes and retirement ownership. Android
+accessibility role indices 34/35 are separate from the preserved mount opcodes
+34 (retire), 35 (project) and 36 (component slots). Cartesian stationary-hover
+geometry refresh remains separate from selection notifications, while radial
+placement follows the pointer without requiring a finite Cartesian x value.
+
+The bounded RichEditor and typed-style synchronization through that revision
+uses canonical typed styles for pointer events, text selection, line limits,
+image fitting and box shadows. Direct Maka callers migrate with these APIs;
+local selectable roots, source-backed TextView selection, Android mount opcodes
+and terminal shadow rendering remain intact. Existing `ordered-float` 5.5.0 is
+retained with the required core dependency edge rather than an unrelated upgrade.
+
+This is a breaking source and bundle migration, not a compatibility alias layer.
+Primitive `pointerEvents` moves into typed `style`; Text `numberOfLines`,
+`ellipsizeMode` and `selectable` become style `numberOfLines`, `textOverflow` and
+`userSelect`, and Image `resizeMode` becomes `objectFit`. Selectable View roots
+and component-owned selection props remain distinct. Text, Image and Input
+state styles use their respective typed style domains; canonical `line-clamp-*`,
+`truncate`, `select-*`, `pointer-events-*` and `object-*` classes resolve through
+those same style rules. Legacy single-shadow fields become `boxShadow` layers.
+Consumers must regenerate declarations and rebuild old JS bundles with the
+matching compiler/runtime; old prop or style aliases are not restored.
+Maka's content-sized composer uses CSS `flex: initial`, and its conversation
+wrapper explicitly keeps column layout when setting `display: flex`.
+
+Independent local corrections retain RichEditor geometry on its owning thread,
+retire its session subscription before dropping the geometry payload, and keep
+host-specific keyboard conventions and explicit event policy. Plot stationary
+geometry refresh also supports horizontal Bar bands without duplicate hover
+notifications. Headless view focus commands follow mount-item order so later
+blur and retirement decisions observe the current owner. The RichEditor terminal
+sink uses the same leaf `BoxNone` and native post-mount `autoFocus` approach as
+the code Editor; graphical backends and existing focus admission checks are not
+weakened. These are local quality adaptations, not upstream import bytes.
 
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while
@@ -122,6 +163,13 @@ OSC 777 `nsh-text-input` extension; a matching terminal-side IME producer must
 supply the composition snapshots. These local adaptations do not establish
 stock-terminal support or end-to-end OS IME validation.
 
+The code `Editor`'s terminal input sink uses `BoxNone` to leave pointer hits
+with the underlying content while remaining a keyboard focus target. Its native
+`autoFocus` prop handles initial focus after mounting; an early controller focus
+request can precede attachment. Other renderers retain their existing sink
+behavior, and terminal scope, disabled, ancestor and retirement checks remain
+unchanged. This is a local integration correction, not an upstream sync.
+
 The GPUI and terminal backends also implement node-scoped `Input.replaceRange`
 for completion edits. The command checks the observed native edit count,
 original text and UTF-16 selection before replacing a range in one undoable
@@ -167,10 +215,19 @@ engine, JS, headless (with `agent`), terminal, bundler and development-tooling
 (client/server) tests, followed by Web's portable `text` integration test.
 This separate runner starts after Maka's test job, even if that job fails;
 root workspace tests alone do not select these suites. A final, capacity-guarded
-step selects the three animated-prop queue tests in the owning GPUI workspace,
-verifies their discovery and runs them without opening a native window. That
-workspace uses its own lock and patches, not Maka's root dependency graph;
-sharing a target directory does not imply equivalent cached artifacts.
+step selects the three animated-prop queue tests and the explicit-focus ownership
+test in the owning GPUI workspace, verifies the three queue names and the exact
+focus-test name, and runs them serially without opening a native window. The
+focus test uses the production mounter, stop collection and activation helpers;
+it does not validate OS-window focus dispatch. That workspace uses its own lock
+and patches, not Maka's complete root dependency
+graph; sharing a target directory does not imply equivalent cached artifacts.
+Both vendored GPUI owning workspaces (`crates/gpui` and `examples/embed-gpui`)
+explicitly reuse Maka's existing GPUI core, native platform, scheduler and
+`async-io` path patches. The preserved input-target admission and cancellation
+wake contracts depend on those adaptations; registry GPUI alone does not expose
+them. These workspaces therefore require the containing Maka checkout, without
+changing the root shipped dependency graph or disabling the local IME support.
 The portable Web test does not validate browser rendering, and these selected
 tests do not validate native platform runtimes or the `bundle`-gated testing
 suite. A storage guard or timeout leaves the GPUI coverage incomplete.

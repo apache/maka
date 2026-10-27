@@ -186,12 +186,12 @@ Mind the drawing order: a dropdown is drawn over the siblings of its field only 
 
 ## pointerEvents
 
-Pointer events (`.pointer_events(..)`, `pointerEvents`) decide which views of a subtree can be the target of a touch. They are evaluated natively during hit testing, so they cost nothing per touch.
+The style key `pointerEvents` (`.pointer_events(..)` in Rust) decides which views of a subtree can be the target of a touch. It is evaluated natively during hit testing, so it costs nothing per touch.
 
 | Rust | TSX | The view | Its children |
 |---|---|---|---|
 | `PointerEvents::Auto` (default) | `"auto"` | Takes touches | Take touches |
-| `PointerEvents::None` | `"none"` | Never the target | Never the target: touches pass through to what is behind |
+| `PointerEvents::None` | `"none"` | Never the target | Never the target unless one sets `"auto"`: touches pass through to what is behind |
 | `PointerEvents::BoxNone` | `"box-none"` | Never the target | Take touches |
 | `PointerEvents::BoxOnly` | `"box-only"` | Takes touches | Never the target |
 
@@ -222,7 +222,7 @@ view().flex_1().child(map()).child(
 <View style={{ flex: 1 }}>
   <Map />
   {/* A floating toolbar: the empty area passes touches to the map. */}
-  <View pointerEvents="box-none" style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", padding: 16 }}>
+  <View style={{ pointerEvents: "box-none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", padding: 16 }}>
     <View onPress={locate} style={{ alignSelf: "flex-end", padding: 12, borderRadius: 24, backgroundColor: "#ffffff" }}>
       <Text>Locate</Text>
     </View>
@@ -230,7 +230,7 @@ view().flex_1().child(map()).child(
 </View>
 ```
 
-The Tailwind classes `pointer-events-none` and `pointer-events-auto` set the same thing; an explicit prop wins over the class.
+`"none"` is inherited as CSS's `pointer-events`: a view inside it that sets `"auto"` takes touches again. `"box-none"` and `"box-only"` apply to the view that sets them. The Tailwind classes `pointer-events-none` and `pointer-events-auto` set `"none"` and `"auto"`, and as a style key `pointerEvents` also takes state styles (`activeStyle`, ...) and variants.
 
 ## Native gestures: pan, pinch and rotation
 
@@ -277,7 +277,7 @@ function App() {
           x.spring(0, { velocity: e.velocityX });
           y.spring(0, { velocity: e.velocityY });
         }}
-        style={{ width: 120, height: 120, borderRadius: 24, backgroundColor: "#8250df", transform: [{ translateX: x }, { translateY: y }] }}
+        style={{ width: 120, height: 120, borderRadius: 24, backgroundColor: "#8250df", translate: [x, y] }}
       />
     </View>
   );
@@ -324,7 +324,7 @@ view()
     const projected = (e.valueX ?? 0) + e.velocityX * 0.2;
     x.spring(projected > 0 ? 140 : -140, { velocity: e.velocityX });
   }}
-  style={{ transform: [{ translateX: x }] }}
+  style={{ translate: [x, 0] }}
 />
 ```
 
@@ -571,7 +571,7 @@ function Ball() {
   return (
     <View
       {...responder.panHandlers}
-      style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "#0969da", transform: [{ translateX: pos().x }, { translateY: pos().y }] }}
+      style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "#0969da", translate: [pos().x, pos().y] }}
     />
   );
 }

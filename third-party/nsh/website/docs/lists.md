@@ -303,7 +303,7 @@ const shown = hidden.mul(-1).add(56);
 
 <View style={{ flex: 1, overflow: "hidden" }}>
   <List each={rows} scrollValue={scroll} stickyHeaderIndices={headers} stickyHeaderOffset={shown}>…</List>
-  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, transform: [{ translateY: hidden.mul(-1) }] }}>…</View>
+  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, translate: [0, hidden.mul(-1)] }}>…</View>
 </View>
 ```
 

@@ -216,7 +216,7 @@ function Dialogs() {
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 11, paddingTop: 12, paddingBottom: 11, minHeight: 44 }}>
         <Text style={{ flex: 1, fontSize: 13, color: colors.muted }}>Answer</Text>
         <If when={answer()} else={<Text style={{ fontSize: 13, color: colors.faint }}>None yet</Text>}>
-          <View style={{ transform: [{ scale: pop }] }}>
+          <View style={{ scale: pop }}>
             <Badge label={answer()!.text} tone={answer()!.tone} />
           </View>
         </If>
@@ -282,7 +282,7 @@ function FramesAndTimers() {
                 borderRadius: 3.5,
                 backgroundColor: colors.accent,
                 opacity: beat.interpolate({ inputRange: [0, 1], outputRange: [0.25, 1] }),
-                transform: [{ scale: beat.interpolate({ inputRange: [0, 1], outputRange: [1, 1.6] }) }],
+                scale: beat.interpolate({ inputRange: [0, 1], outputRange: [1, 1.6] }),
               }}
             />
           </View>
@@ -396,7 +396,7 @@ function Network() {
               <Appear index={i()}>
                 <Row first={i() === 0}>
                   <Text style={{ width: 28, fontSize: 13, color: colors.accent, fontVariant: ["tabular-nums"] }}>{`#${post().id}`}</Text>
-                  <Text numberOfLines={1} style={{ flex: 1, fontSize: 15, color: colors.text }}>
+                  <Text style={{ numberOfLines: 1, flex: 1, fontSize: 15, color: colors.text }}>
                     {post().title}
                   </Text>
                 </Row>
@@ -408,7 +408,7 @@ function Network() {
       <If when={status()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: toneColor(status()!.tone) }} />
-          <Text numberOfLines={2} style={{ flex: 1, fontSize: 13, color: toneColor(status()!.tone), fontVariant: ["tabular-nums"] }}>
+          <Text style={{ numberOfLines: 2, flex: 1, fontSize: 13, color: toneColor(status()!.tone), fontVariant: ["tabular-nums"] }}>
             {status()!.text}
           </Text>
         </View>

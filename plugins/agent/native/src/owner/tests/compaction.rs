@@ -43,12 +43,15 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         let sent = request(&mut socket).await;
         assert!(sent.to_string().contains("ONE SHOT COMPACTION"), "{sent}");
         assert!(!sent.to_string().contains("GLOBAL COMPACTION"));
-        assert_eq!(f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"],true);
+        let compacting = f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].clone();
+        let boundary = f.session(&session).await.latest_turn_boundary(&session).await.unwrap().unwrap();
+        assert_eq!(compacting["id"], boundary.opening_event_id);
+        assert_eq!(f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"], compacting);
         let busy = f.mutation(2,"compact",input.clone(),Uuid::new_v4()).await.unwrap();
         assert_eq!(busy, json!({"kind":"rejected","reason":"busy"}));
         response_with_text(&mut socket, "A deliberately short summary without the original unique token.").await;
         f.drained().await;
-        assert!(!f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].as_bool().unwrap_or(false));
+        assert!(f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].is_null());
         let facts = service_tools::facts(&f,&session).await;
         assert!(facts.iter().any(|f| matches!(f, Fact::ContextCheckpointRecorded { .. })), "{facts:?}");
         assert_eq!(f.mutation(2,"compact",input.clone(),operation).await.unwrap(), started);
@@ -68,7 +71,7 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         f.drained().await;
         let execution = f.query("execution",json!({"sessionId":session,"invocationId":stopped["execution"]["invocationId"]})).await.unwrap();
         assert_eq!(execution["execution"]["state"],"cancelled");
-        assert!(!f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].as_bool().unwrap_or(false));
+        assert!(f.query("observe",json!({"sessionId":session})).await.unwrap()["compacting"].is_null());
         let failed = f.mutation(2,"compact",input,Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap(); request(&mut socket).await;
         let delta = json!({"id":"truncated-summary","choices":[{"index":0,"delta":{"content":"cut off"},"finish_reason":null}]});

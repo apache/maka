@@ -48,10 +48,9 @@ fn terminal_fixture() {
     .join("../terminal-shell");
     let fixture = source.join("tests/fixtures/attachment-draft.tsx");
     println!("cargo:rerun-if-changed={}", fixture.display());
-    println!("cargo:rerun-if-changed={}", source.join("app").display());
     println!(
         "cargo:rerun-if-changed={}",
-        source.join("../desktop-shell/app/patch.js").display()
+        source.join("../workbench/app").display()
     );
     let mut host = nsh_core::element::Registry::ui_set("maka/host");
     host.native_values(&["host", "AttachmentPicker", "TerminalGrid"]);

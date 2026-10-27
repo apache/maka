@@ -100,7 +100,7 @@ function App() {
             fontWeight: "700",
             color: ui().text,
             transformOrigin: "left center",
-            transform: [{ scale: offset.interpolate({ inputRange: [0, 80], outputRange: [1, 0.8] }) }],
+            scale: offset.interpolate({ inputRange: [0, 80], outputRange: [1, 0.8] }),
           }}
         >
           Scrolling

@@ -8,7 +8,7 @@ demo: el-text-selection
 
 # 文字选择
 
-设置了 `selectable` 的 [`View`](./view.md) 让其中的文字一起选择，就像网页一样：一个选区可以从一段文字中的某处延伸到另一段文字中的某处，按阅读顺序跨越视图、[`Text`](./text.md) 元素和 [`TextView`](./text-view.md)。让聊天记录可选择后，选区可以从一条消息开始、在下一条结束；复制会把选中的文字放到剪贴板，并排的文字用制表符连接，其他用换行连接。它和 `Text` 的 `selectable` 是同一个属性：Rust 用 `view().selectable(true)` 设置，TSX 用 `<View selectable>`。
+设置了 `selectable` 的 [`View`](./view.md) 让其中的文字一起选择，就像网页一样：一个选区可以从一段文字中的某处延伸到另一段文字中的某处，按阅读顺序跨越视图、[`Text`](./text.md) 元素和 [`TextView`](./text-view.md)。让聊天记录可选择后，选区可以从一条消息开始、在下一条结束；复制会把选中的文字放到剪贴板，并排的文字用制表符连接，其他用换行连接。Rust 用 `view().selectable(true)` 设置，TSX 用 `<View selectable>`；单段文字能否被选择由它的 `userSelect` 样式决定。
 
 ```rust tabs
 use nsh_base::text_view;
@@ -25,7 +25,7 @@ fn release_notes(notes: &'static str) -> impl IntoElement {
             view()
                 .flex_row()
                 .gap_2()
-                .child(text("Updated").selectable(false).text_color(rgb(0x737373)))
+                .child(text("Updated").select_none().text_color(rgb(0x737373)))
                 .child(text("October 21")),
         )
 }
@@ -41,7 +41,7 @@ function ReleaseNotes(props: { notes: string }) {
       <Text class="font-semibold">Release notes</Text>
       <TextView markdown={props.notes} />
       <View class="flex-row gap-2">
-        <Text selectable={false} class="text-neutral-500">Updated</Text>
+        <Text style={{ userSelect: "none" }} class="text-neutral-500">Updated</Text>
         <Text>October 21</Text>
       </View>
     </View>
@@ -96,15 +96,15 @@ import { TextView } from "nsh/base";
 
 ## 选择的范围
 
-- **不参与的文字**：设置了 `selectable={false}`（Rust 中为 `.selectable(false)`；标签、按钮的文字）的文字会被选区及其手势跳过。
+- **不参与的文字**：设置了 `userSelect: "none"`（Rust 中为 `.select_none()`，类 `select-none`；标签、按钮的文字）的文字会被选区及其手势跳过。
 - **嵌套的视图**：一个可选择视图放在另一个之中时，属于外层视图，一个选区覆盖两者。
 - **TextView**：设置了 `selectable` 的 [`TextView`](./text-view.md) 自己作为一体选择：它的段落、列表项、单元格和代码块一起选择。放在可选择视图中时，它加入外层的选区。
-- **单独的文字**：不在任何可选择视图中的 `selectable` 文字单独选择，见 [Text](./text.md#属性)。
+- **单独的文字**：不在任何可选择视图中、设置了 `userSelect: "text"` 的文字单独选择，见 [Text](./text.md#属性)。
 - **外观**是平台的高亮，颜色为每段文字的 `selectionColor`（`selection:text-*`）。
 - **列表**：在虚拟化的 [List](./list.md) 中，选区覆盖已挂载的行；回收到视野之外的行会离开选区。
 
 ## 相关内容
 
 - [View](./view.md)：`selectable` 属性。
-- [Text](./text.md)：`selectable`、`selectionColor` 以及单段文字的选择。
+- [Text](./text.md)：`userSelect`、`selectionColor` 以及单段文字的选择。
 - [TextView](./text-view.md)：各个块作为一体选择的文档。

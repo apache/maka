@@ -1,17 +1,11 @@
 //! View decoration: shadows, backgrounds, gradients, borders, outlines and
 //! filters, appended to the view's GSK snapshot on every draw.
 //!
-//! Order, bottom to top (CSS painting order): outer shadows (React
-//! Native's `shadow*`, then `boxShadow` layers, last first), the background
-//! color, gradients (last first), inset shadows (inside the padding box),
+//! Order, bottom to top (CSS painting order): outer shadows (`boxShadow`
+//! layers, last first), the background color, gradients (last first), inset shadows (inside the padding box),
 //! the children, the border and the outline. The border is drawn over the
 //! children, as UIKit draws layer borders: the core places content inside
 //! the border, so only overflowing children reach under it. Filters ([`push_filters`]) wrap all of it.
-//!
-//! React Native's shadow takes the rounded box's shape when the view has a
-//! fill (background color or gradient), else the content's (a GSK shadow
-//! node over everything the view draws), like iOS. Its radius is taken as
-//! half the CSS blur, as Core Animation's `shadowRadius` is.
 //!
 //! Not drawn: `mixBlendMode` and `backdropFilter` need what lies behind the
 //! view, which a widget's snapshot does not have (GTK 4.22's copy / paste
@@ -46,24 +40,6 @@ pub(crate) fn rgba(c: Color) -> gdk::RGBA {
     )
 }
 
-/// `c` with its alpha multiplied by `a`.
-fn faded(c: Color, a: f32) -> gdk::RGBA {
-    let mut out = rgba(c);
-    out.set_alpha(out.alpha() * a.clamp(0.0, 1.0));
-    out
-}
-
-/// True if the view paints its box: its shadow then takes the box's shape.
-fn has_fill(state: &ViewState) -> bool {
-    !state.background().is_transparent()
-        || state.anim.background.is_some()
-        || state
-            .style
-            .effects
-            .as_ref()
-            .is_some_and(|e| !e.background_images.is_empty())
-}
-
 /// True if `backfaceVisibility: "hidden"` hides the view: its own
 /// rotations turn it away (its ancestors' are not considered, as on
 /// Android).
@@ -83,12 +59,11 @@ pub(crate) fn backface_away(state: &ViewState) -> bool {
 /// renders blur nodes through the transform. Other renderers, and views
 /// only moved or scaled, keep GSK's outset shadows (cached, no offscreen).
 pub(crate) fn soft_shadows(widget: &gtk::Widget, state: &ViewState) -> bool {
-    let shadowed = (state.shadow().is_visible() && has_fill(state))
-        || state
-            .style
-            .effects
-            .as_ref()
-            .is_some_and(|e| e.box_shadows.iter().any(|b| !b.inset && b.is_visible()));
+    let shadowed = state
+        .style
+        .effects
+        .as_ref()
+        .is_some_and(|e| e.box_shadows.iter().any(|b| !b.inset && b.is_visible()));
     if !shadowed
         || !widget
             .native()
@@ -163,19 +138,6 @@ pub(crate) fn draw_background(snapshot: &gtk::Snapshot, state: &ViewState, soft:
     let outline = rounded(rect, radii);
     let effects = state.style.effects.as_deref();
 
-    let s = state.shadow();
-    if s.is_visible() && has_fill(state) {
-        outset_shadow(
-            snapshot,
-            &outline,
-            &faded(s.color, s.opacity),
-            s.offset_x.0,
-            s.offset_y.0,
-            0.0,
-            s.radius.0 * 2.0,
-            soft,
-        );
-    }
     if let Some(e) = effects {
         // CSS lists the top layer first.
         for b in e.box_shadows.iter().rev() {
@@ -381,20 +343,10 @@ fn stroke(
     snapshot.append_stroke(&p.to_path(), &s, color);
 }
 
-/// Pushes the view's filters (and React Native's shadow when it follows
-/// the content) around everything it draws; returns how many pushes to pop.
+/// Pushes the view's filters around everything it draws; returns how many
+/// pushes to pop.
 pub(crate) fn push_filters(snapshot: &gtk::Snapshot, state: &ViewState) -> usize {
     let mut pushes = 0;
-    let s = state.shadow();
-    if s.is_visible() && !has_fill(state) {
-        snapshot.push_shadow(&[gsk::Shadow::new(
-            faded(s.color, s.opacity),
-            s.offset_x.0,
-            s.offset_y.0,
-            s.radius.0 * 2.0,
-        )]);
-        pushes += 1;
-    }
     let Some(effects) = &state.style.effects else {
         return pushes;
     };

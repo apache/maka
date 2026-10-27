@@ -94,32 +94,24 @@ impl Target {
         }
     }
 
-    /// The directory whose complete file tree the receipt records.
-    pub fn desktop_tree(self) -> &'static str {
+    /// The bundle whose complete file tree the receipt records: macOS reads
+    /// more of a bundle than the members it requires.
+    pub fn desktop_bundle(self) -> Option<&'static str> {
         match self {
-            Self::DarwinArm64 | Self::DarwinX64 => "bin/Maka.app",
-            _ => "bin/app",
+            Self::DarwinArm64 | Self::DarwinX64 => Some("bin/Maka.app"),
+            _ => None,
         }
     }
 
-    /// The authored app the shell finds from its own location.
-    pub fn desktop_app(self) -> &'static str {
-        match self {
-            Self::DarwinArm64 | Self::DarwinX64 => "bin/Maka.app/Contents/Resources/app",
-            _ => "bin/app",
-        }
-    }
-
-    /// Files the desktop needs besides its executable.
+    /// Files the desktop needs besides its executable; the workbench is
+    /// compiled into the executable.
     pub fn desktop_members(self) -> &'static [&'static str] {
         match self {
             Self::DarwinArm64 | Self::DarwinX64 => &[
                 "bin/Maka.app/Contents/Info.plist",
                 "bin/Maka.app/Contents/Resources/Maka.icns",
-                "bin/Maka.app/Contents/Resources/app/gpui-shell.json",
-                "bin/Maka.app/Contents/Resources/app/main.js",
             ],
-            _ => &["bin/app/gpui-shell.json", "bin/app/main.js"],
+            _ => &[],
         }
     }
 

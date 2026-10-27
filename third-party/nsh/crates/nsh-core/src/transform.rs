@@ -446,6 +446,154 @@ pub struct Decomposed {
     pub perspective: Option<Points>,
 }
 
+/// CSS's `transform` (`"translateX(10px) rotate(45deg) scale(1.5)"`,
+/// `"none"`) as entries, in order: `translate()` / `translateX()` /
+/// `translateY()` (lengths, or percentages of the view's size), `scale()`
+/// / `scaleX()` / `scaleY()`, `rotate()` / `rotateZ()` / `rotateX()` /
+/// `rotateY()`, `skew()` / `skewX()` / `skewY()` (angles) and
+/// `perspective()`. `None` for anything else.
+pub(crate) fn parse_css(s: &str) -> Option<Vec<TransformOp>> {
+    let mut out = Vec::new();
+    let mut rest = s.trim();
+    if rest == "none" {
+        return Some(out);
+    }
+    while !rest.is_empty() {
+        let open = rest.find('(')?;
+        let close = open + rest[open..].find(')')?;
+        let args: Vec<&str> = rest[open + 1..close].split(',').map(str::trim).collect();
+        function(rest[..open].trim(), &args, &mut out)?;
+        rest = rest[close + 1..].trim_start();
+    }
+    Some(out)
+}
+
+/// One function of [`parse_css`], pushed onto `out`.
+fn function(name: &str, args: &[&str], out: &mut Vec<TransformOp>) -> Option<()> {
+    use TransformKind::*;
+    let op = |kind, value| TransformOp { kind, value };
+    match name {
+        "translate" if matches!(args.len(), 1 | 2) => {
+            out.push(translation(false, args[0])?);
+            if let Some(y) = args.get(1) {
+                out.push(translation(true, y)?);
+            }
+        }
+        "translateX" | "translateY" if args.len() == 1 => {
+            out.push(translation(name == "translateY", args[0])?)
+        }
+        "scale" if args.len() == 1 => out.push(op(Scale, crate::css::amount(args[0])?)),
+        "scale" if args.len() == 2 => {
+            out.push(op(ScaleX, crate::css::amount(args[0])?));
+            out.push(op(ScaleY, crate::css::amount(args[1])?));
+        }
+        "scaleX" | "scaleY" | "rotate" | "rotateZ" | "rotateX" | "rotateY" | "skewX" | "skewY"
+        | "perspective"
+            if args.len() == 1 =>
+        {
+            let kind = match name {
+                "rotateZ" => Rotate,
+                other => TransformKind::parse(other)?,
+            };
+            let value = match kind {
+                Perspective => crate::css::length(args[0])?,
+                k if k.is_angle() => crate::css::angle(args[0])?,
+                _ => crate::css::amount(args[0])?,
+            };
+            out.push(op(kind, value));
+        }
+        "skew" if matches!(args.len(), 1 | 2) => {
+            out.push(op(SkewX, crate::css::angle(args[0])?));
+            if let Some(y) = args.get(1) {
+                out.push(op(SkewY, crate::css::angle(y)?));
+            }
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// A translation along x (or y when `vertical`) as CSS writes one: a
+/// length (`"10px"`, `"2rem"`, `"0"`), or a percentage of the view's size.
+pub fn translation(vertical: bool, s: &str) -> Option<TransformOp> {
+    use TransformKind::*;
+    let (kind, value) = match s.trim().strip_suffix('%') {
+        Some(p) => (
+            if vertical {
+                TranslateYFraction
+            } else {
+                TranslateXFraction
+            },
+            crate::css::number(p)? / 100.0,
+        ),
+        None => (
+            if vertical { TranslateY } else { TranslateX },
+            crate::css::length(s)?,
+        ),
+    };
+    Some(TransformOp { kind, value })
+}
+
+/// CSS's `translate` property (`"10px"`, `"10px 50%"`, `"none"`): x, then
+/// y when given.
+pub(crate) fn parse_translate(s: &str) -> Option<Vec<TransformOp>> {
+    let s = s.trim();
+    if s == "none" {
+        return Some(Vec::new());
+    }
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    match parts[..] {
+        [x] => Some(vec![translation(false, x)?]),
+        [x, y] => Some(vec![translation(false, x)?, translation(true, y)?]),
+        _ => None,
+    }
+}
+
+/// CSS's `rotate` property (`"45deg"`, `"x 90deg"`, `"none"`): a turn
+/// about the z axis, or the x, y or z axis it names.
+pub(crate) fn parse_rotate(s: &str) -> Option<Vec<TransformOp>> {
+    let s = s.trim();
+    if s == "none" {
+        return Some(Vec::new());
+    }
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    let (kind, angle) = match parts[..] {
+        [a] => (TransformKind::Rotate, a),
+        ["x", a] => (TransformKind::RotateX, a),
+        ["y", a] => (TransformKind::RotateY, a),
+        ["z", a] => (TransformKind::Rotate, a),
+        _ => return None,
+    };
+    Some(vec![TransformOp {
+        kind,
+        value: crate::css::angle(angle)?,
+    }])
+}
+
+/// CSS's `scale` property (`"1.5"`, `"150%"`, `"1 2"`, `"none"`): one
+/// factor for both axes, or x and y.
+pub(crate) fn parse_scale(s: &str) -> Option<Vec<TransformOp>> {
+    let s = s.trim();
+    if s == "none" {
+        return Some(Vec::new());
+    }
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    let op = |kind, s: &str| {
+        Some(TransformOp {
+            kind,
+            value: crate::css::amount(s)?,
+        })
+    };
+    match parts[..] {
+        [k] => Some(vec![op(TransformKind::Scale, k)?]),
+        [x, y] => Some(vec![
+            op(TransformKind::ScaleX, x)?,
+            op(TransformKind::ScaleY, y)?,
+        ]),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +605,48 @@ mod tests {
     /// Equal up to `f32`'s precision.
     fn near(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn css_transforms_parse_as_a_browser_reads_them() {
+        use TransformKind::*;
+        let ops = |s: &str| {
+            parse_css(s).map(|ops| ops.iter().map(|o| (o.kind, o.value)).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            ops("translateX(10px) rotate(45deg) scale(1.5)"),
+            Some(vec![(TranslateX, 10.0), (Rotate, 45.0), (Scale, 1.5)])
+        );
+        assert_eq!(
+            ops("translate(50%, 2rem) skew(10deg) perspective(800px) rotateY(0.25turn)"),
+            Some(vec![
+                (TranslateXFraction, 0.5),
+                (TranslateY, 32.0),
+                (SkewX, 10.0),
+                (Perspective, 800.0),
+                (RotateY, 90.0)
+            ])
+        );
+        assert_eq!(ops("scale(1, 2)"), Some(vec![(ScaleX, 1.0), (ScaleY, 2.0)]));
+        assert_eq!(ops("none"), Some(vec![]));
+        // What NSH does not do is rejected, never read another way.
+        assert_eq!(ops("matrix(1, 0, 0, 1, 0, 0)"), None);
+        assert_eq!(ops("rotate(45)"), None);
+        assert_eq!(ops("translateX(10px"), None);
+        let one = |r: Option<Vec<TransformOp>>| {
+            r.map(|ops| ops.iter().map(|o| (o.kind, o.value)).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            one(parse_translate("10px 50%")),
+            Some(vec![(TranslateX, 10.0), (TranslateYFraction, 0.5)])
+        );
+        assert_eq!(one(parse_rotate("x 90deg")), Some(vec![(RotateX, 90.0)]));
+        assert_eq!(one(parse_rotate("45deg")), Some(vec![(Rotate, 45.0)]));
+        assert_eq!(one(parse_scale("150%")), Some(vec![(Scale, 1.5)]));
+        assert_eq!(
+            one(parse_scale("1 2")),
+            Some(vec![(ScaleX, 1.0), (ScaleY, 2.0)])
+        );
     }
 
     fn list(ops: &[(TransformKind, f32)]) -> Transform {

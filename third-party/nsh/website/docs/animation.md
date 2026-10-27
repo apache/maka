@@ -63,14 +63,14 @@ mount(App);
 
 A motion has an animated value per channel: `opacity` (0..1), `translateX` and `translateY` (points), `rotate`, `rotateX` and `rotateY` (degrees), `scale`, `scaleX` and `scaleY`. They start at rest (opacity and scales 1, the rest 0) and apply in that order: translations, then rotations, then scales, about the view's transform origin. A motion has no look of its own: it moves what you styled.
 
-A motion moves opacity and transform only. Spreading `m.style` sets the view's `opacity`; to keep an opacity of your own, bind only the transform (`transform: m.transform`). Colors move with an animated value and [`interpolate`](#interpolation).
+A motion moves opacity and transform only. Spreading `m.style` sets the view's `opacity` and `transform`; to keep an opacity of your own, bind only the steps (`transform: m.transform`). Colors move with an animated value and [`interpolate`](#interpolation).
 
 | TSX | Rust | Description |
 |---|---|---|
 | `createMotion(options?)` | `motion()` | A motion with every channel at rest. |
 | `createMotion({ initial: { opacity: 0 } })` | `m.value(MotionChannel::Opacity).set(0.0)` | Where channels start; the others start at rest. |
 | `createMotion({ enter, delay, duration, ... })` | `motion().entering(spec)` | Starts where `enter` starts and plays it at once; the other options change its timing. `enter` sets the channels it moves, over `initial`. |
-| `style={m.style}`, `m.transform` | `.bind_motion(&m)` | Binds the channels: `m.style` is `{ opacity, transform }`; spread `m.transform` into a transform with a step of your own. A motion takes 7 of a view's 8 transform steps (`scale` is folded into `scaleX` and `scaleY`), which leaves one for yours, such as `[{ perspective: 600 }, ...m.transform]` for 3D flips. In Rust the motion's transform applies after the view's own. |
+| `style={m.style}`, `m.transform` | `.bind_motion(&m)` | Binds the channels: `m.style` is `{ opacity, transform }`, its `transform` a list of seven steps (`scale` is folded into `scaleX` and `scaleY`). They apply after the view's `translate`, `rotate` and `scale`; a perspective before them gives a 3D flip its depth: `transform: [{ perspective: 800 }, ...m.transform]`. In Rust the motion's transform applies after the view's own. |
 | `m.opacity`, `m.translateX`, ... | `m.value(MotionChannel::Opacity)`, ... | One channel's animated value, to interpolate or drive by hand. |
 | `m.play(motion, options?)` | `m.play(spec)` | Plays a preset or a motion of your own; a new one interrupts the one playing. Resolves with `true` when it finished (`AnimationEnd` in Rust). |
 | `m.animation(motion, options?)` | `m.animation(spec)` | The same motion as a [composite animation](#composite-animations), not started, to sequence, stagger or loop with others. |
@@ -290,7 +290,8 @@ function App() {
           height: 100,
           borderRadius: on() ? 50 : 16,
           backgroundColor: on() ? "#8250df" : "#0969da",
-          transform: [{ rotate: on() ? "45deg" : "0deg" }, { scale: on() ? 1.2 : 1 }],
+          rotate: on() ? "45deg" : "0deg",
+          scale: on() ? 1.2 : 1,
           transitionProperty: "all",
           transitionDuration: 400,
           transitionTimingFunction: "ease-in-out",
@@ -408,7 +409,7 @@ function App() {
   const opacity = createAnimatedValue(1);
   return (
     <View style={{ flex: 1, justifyContent: "center", padding: 24, gap: 24 }}>
-      <View style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: "#0969da", opacity, transform: [{ translateX: x }] }} />
+      <View style={{ width: 60, height: 60, borderRadius: 12, backgroundColor: "#0969da", opacity, translate: [x, 0] }} />
       <View
         onPress={async () => {
           await x.timing(240, { duration: 600, easing: Easing.out(Easing.cubic) });
@@ -426,7 +427,7 @@ function App() {
 mount(App);
 ```
 
-**What can be bound:** opacity (`.bind_opacity(..)`); the background color, border color (every side) and a text's color (the whole text), through an interpolation to colors (`.bind_background(..)`, `.bind_border_color(..)`, `.bind_color(..)`); the shadow's color, opacity and radius (`.bind_shadow_color(..)`, ...); and the transform steps `translateX`, `translateY`, `scale`, `scaleX`, `scaleY`, `rotate`, `rotateX`, `rotateY` and `rotateZ` (`.bind_translate_x(..)`, `.bind_translate_y(..)`, `.bind_scale(..)`, `.bind_rotate(..)` in degrees, `.bind_transform(kind, ..)`). A focus ring or a price that flashes green is a color interpolation bound to the border or text color:
+**What can be bound:** `opacity` (`.bind_opacity(..)`); `backgroundColor`, `borderColor` (every side) and a text's `color` (the whole text), through an interpolation to colors (`.bind_background(..)`, `.bind_border_color(..)`, `.bind_color(..)`); `translate` (`[x, y]`, a value per axis), `rotate` (degrees) and `scale` (`[x, y]` per axis, or one value for both); and the steps of a `transform` list: `translateX`, `translateY`, `scale`, `scaleX`, `scaleY`, `rotate`, `rotateX`, `rotateY` and `rotateZ` (`.bind_translate_x(..)`, `.bind_translate_y(..)`, `.bind_scale(..)`, `.bind_rotate(..)` in degrees, `.bind_transform(kind, ..)` in Rust). Shadows change with [transitions](#transitions). A focus ring or a price that flashes green is a color interpolation bound to the border or text color:
 
 ```rust tabs
 let flash = animated_value(0.0);
@@ -569,10 +570,8 @@ const t = createAnimatedValue(0);
   style={{
     backgroundColor: t.interpolate({ inputRange: [0, 1, 2], outputRange: ["#54aeff", "#8250df", "#cf222e"] }),
     opacity: t.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }),
-    transform: [
-      { rotate: t.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] }) },
-      { scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1.2], easing: Easing.out(Easing.back()) }) },
-    ],
+    rotate: t.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] }),
+    scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1.2], easing: Easing.out(Easing.back()) }),
   }}
 />
 ```
@@ -607,7 +606,7 @@ const scroll = createAnimatedValue(0);
 const header = scroll.diffClamp(0, 56);
 
 <Scroll style={{ flex: 1 }} scrollValue={scroll}>…</Scroll>
-<View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, transform: [{ translateY: header.mul(-1) }] }}>…</View>
+<View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, translate: [0, header.mul(-1)] }}>…</View>
 ```
 
 With `{ snap: true }` (`diff_clamp_with(min, max, DiffClamp::snapping())`), a header left partly shown when the scrolling stops finishes the move: it settles fully shown or fully hidden, whichever is nearer, in 200 ms on the UI thread. It hides only once the page has scrolled at least its height, so a page scrolled less than that shows the whole header. Scrolling again during the move takes over from where the header is.

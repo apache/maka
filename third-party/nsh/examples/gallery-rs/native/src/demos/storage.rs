@@ -96,6 +96,7 @@ fn note_card(
                         .on_change(move |text: &str| write(text))
                         .placeholder("Write something, then come back to it")
                         .placeholder_color(|| color(colors::FAINT))
+                        .caret_color(|| color(colors::ACCENT))
                         .selection_color(|| color(colors::ACCENT))
                         .label("Note")
                         .h(px(120.0))

@@ -22,13 +22,23 @@ import childProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
-import { buildCli, rustTarget, stageDesktopApp, stageDesktopBundle } from './build-cli.mjs';
+import { buildCli, rustTarget, stageDesktopBundle, workspaceVersion } from './build-cli.mjs';
 
-const manifest =
-  '{"id":"org.example.maka","name":"Maka & Co","version":"1.2.3-beta.1","entry":"main.js"}';
+const manifest = [
+  '[workspace]',
+  'members = ["products/maka/cli"]',
+  '',
+  '[workspace.package]',
+  'edition = "2024"',
+  'version = "1.2.3-beta.1"',
+  '',
+  '[workspace.dependencies]',
+  'version = "9.9.9"',
+  '',
+].join('\n');
 
 // A PNG signature and IHDR are all the icon staging reads.
 function logo(size = 1024) {
@@ -42,11 +52,8 @@ function logo(size = 1024) {
 }
 
 async function repository(root) {
-  const app = join(root, 'products/maka/desktop-shell/app');
-  await mkdir(join(app, 'icons'), { recursive: true });
-  await writeFile(join(app, 'gpui-shell.json'), manifest);
-  await writeFile(join(app, 'main.js'), 'authored application');
-  await writeFile(join(app, 'icons/logo.svg'), '<svg/>');
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, 'Cargo.toml'), manifest);
   await mkdir(join(root, 'assets'), { recursive: true });
   await writeFile(join(root, 'assets/logo.png'), logo());
 }
@@ -85,19 +92,11 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     const directory = join(root, process.env.CARGO_TARGET_DIR);
     const binaryDirectory = join(directory, ...(linux || target ? [triple] : []), 'release');
     const macos = triple.includes('-apple-darwin');
-    const app = macos ? 'Maka.app/Contents/Resources/app' : 'app';
-    for (const directory of new Set([app, 'app'])) {
-      await mkdir(join(binaryDirectory, directory), { recursive: true });
-      await writeFile(join(binaryDirectory, directory, 'obsolete.js'), 'removed module');
-    }
+    await mkdir(binaryDirectory, { recursive: true });
     await writeFile(join(binaryDirectory, 'maka-desktop-shell'), 'shell bytes');
     const output = await buildCli({ release: true, target, repositoryRoot: root });
-    await assert.rejects(lstat(join(dirname(output), app, 'obsolete.js')), { code: 'ENOENT' });
-    assert.equal(
-      await readFile(join(dirname(output), app, 'main.js'), 'utf8'),
-      'authored application',
-    );
-    assert.equal(await readFile(join(dirname(output), app, 'icons/logo.svg'), 'utf8'), '<svg/>');
+    // The workbench is compiled into the shell: nothing is staged beside it.
+    await assert.rejects(lstat(join(dirname(output), 'app')), { code: 'ENOENT' });
     if (macos) {
       const contents = join(dirname(output), 'Maka.app/Contents');
       assert.equal(
@@ -108,11 +107,11 @@ test('CLI builds use the requested target and artifact path', async (t) => {
         assert.equal((await lstat(join(contents, 'MacOS/maka-desktop-shell'))).mode & 0o777, 0o755);
       const plist = await readFile(join(contents, 'Info.plist'), 'utf8');
       for (const [key, value] of [
-        ['CFBundleDisplayName', 'Maka &amp; Co'],
+        ['CFBundleDisplayName', 'Maka'],
         ['CFBundleExecutable', 'maka-desktop-shell'],
         ['CFBundleIconFile', 'Maka'],
-        ['CFBundleIdentifier', 'org.example.maka'],
-        ['CFBundleName', 'Maka &amp; Co'],
+        ['CFBundleIdentifier', 'org.apache.maka.desktop'],
+        ['CFBundleName', 'Maka'],
         ['CFBundleShortVersionString', '1.2.3-beta.1'],
         ['CFBundleVersion', '1.2.3'],
       ])
@@ -125,7 +124,7 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       assert.equal(icon.toString('latin1', 8, 12), 'ic10');
       assert.equal(icon.readUInt32BE(12), icon.length - 8);
       assert.deepEqual(icon.subarray(16), logo());
-      await assert.rejects(lstat(join(dirname(output), 'app')), { code: 'ENOENT' });
+      assert.deepEqual(await readdir(join(contents, 'Resources')), ['Maka.icns']);
     }
     assert.equal(invocation.command, 'cargo');
     assert.equal(invocation.options.cwd, root);
@@ -192,25 +191,6 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   await assert.rejects(buildCli({ release: true, repositoryRoot: root }), /Maka build failed: 1/u);
 });
 
-test('desktop app staging rejects symlinks without replacing the accepted sidecar', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-app-staging-'));
-  try {
-    const source = join(root, 'products/maka/desktop-shell/app');
-    const destination = join(root, 'bin/app');
-    await mkdir(source, { recursive: true });
-    await writeFile(join(source, 'gpui-shell.json'), '{"entry":"main.js"}');
-    await writeFile(join(source, 'main.js'), 'original app');
-    await stageDesktopApp(root, destination);
-    await writeFile(join(root, 'outside.js'), 'not authored app content');
-    await symlink(root, join(source, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
-    await assert.rejects(stageDesktopApp(root, destination), /non-regular file/);
-    assert.equal(await readFile(join(destination, 'main.js'), 'utf8'), 'original app');
-    await assert.rejects(lstat(join(destination, 'linked')), { code: 'ENOENT' });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('a failed bundle staging keeps the previous Maka.app', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-bundle-staging-'));
   try {
@@ -221,15 +201,11 @@ test('a failed bundle staging keeps the previous Maka.app', async () => {
     await mkdir(dirname(destination));
     await stageDesktopBundle(root, shell, destination);
     await writeFile(shell, 'replacement shell');
-    const app = join(root, 'products/maka/desktop-shell/app');
-    await symlink(root, join(app, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
-    await assert.rejects(stageDesktopBundle(root, shell, destination), /non-regular file/);
-    await rm(join(app, 'linked'));
     await writeFile(join(root, 'assets/logo.png'), logo(512));
     await assert.rejects(stageDesktopBundle(root, shell, destination), /1024x1024 PNG/);
     await writeFile(join(root, 'assets/logo.png'), logo());
-    await writeFile(join(app, 'gpui-shell.json'), '{"entry":"main.js"}');
-    await assert.rejects(stageDesktopBundle(root, shell, destination), /has no id/);
+    await writeFile(join(root, 'Cargo.toml'), '[workspace]\nversion = "1.0.0"\n');
+    await assert.rejects(stageDesktopBundle(root, shell, destination), /no \[workspace.package\]/);
     assert.equal(
       await readFile(join(destination, 'Contents/MacOS/maka-desktop-shell'), 'utf8'),
       'original shell',
@@ -238,4 +214,10 @@ test('a failed bundle staging keeps the previous Maka.app', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('the bundle version is the workspace package version', () => {
+  assert.equal(workspaceVersion(manifest), '1.2.3-beta.1');
+  assert.equal(workspaceVersion('[workspace.package]\nversion = "0.2.0"'), '0.2.0');
+  assert.throws(() => workspaceVersion('[package]\nversion = "0.2.0"\n'), /no \[workspace/);
 });

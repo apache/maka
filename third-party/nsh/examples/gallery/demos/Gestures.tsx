@@ -8,8 +8,7 @@ import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, hint, Ic
 function Dots() {
   return (
     <Canvas
-      pointerEvents="none"
-      style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}
+      style={{ pointerEvents: "none", position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}
       draw={(cx, { width, height }) => {
         cx.fillStyle = colors.line;
         for (let x = 8; x < width; x += 14) for (let y = 8; y < height; y += 14) cx.fillRect(x, y, 1.5, 1.5);
@@ -62,8 +61,7 @@ function Transformable() {
       <View style={{ ...stage(), height: 260, alignItems: "center", justifyContent: "center" }}>
         <Dots />
         <View
-          pointerEvents="none"
-          style={{ position: "absolute", width: 200, height: 150, borderRadius: 18, borderWidth: 1, borderColor: colors.faint, borderStyle: "dashed" }}
+          style={{ pointerEvents: "none", position: "absolute", width: 200, height: 150, borderRadius: 18, borderWidth: 1, borderColor: colors.faint, borderStyle: "dashed" }}
         />
         <View
           testID="photo"
@@ -144,7 +142,8 @@ function Ball() {
             justifyContent: "center",
             backgroundColor: grab.interpolate({ inputRange: [0, 1], outputRange: [colors.info, colors.accentFill] }),
             ...knob(),
-            transform: [{ translateX: pos().x }, { translateY: pos().y }, { scale: grab.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] }) }],
+            translate: [pos().x, pos().y],
+            scale: grab.interpolate({ inputRange: [0, 1], outputRange: [1, 1.15] }),
           }}
         >
           <View style={{ width: 18, height: 18, borderRadius: 9, backgroundColor: "rgba(19,22,12,0.35)" }} />
@@ -188,8 +187,8 @@ function TouchPad() {
         <Each of={fingers()} key={(f) => f.id}>
           {(f) => (
             <View
-              pointerEvents="none"
               style={{
+                pointerEvents: "none",
                 position: "absolute",
                 left: f().x - 26,
                 top: f().y - 26,
@@ -210,7 +209,7 @@ function TouchPad() {
             {(entry, i) => (
               <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
                 <Text style={{ width: 52, fontSize: 12, fontFamily: mono, color: i() === 0 ? colors.accent : colors.faint }}>{entry().name}</Text>
-                <Text numberOfLines={1} style={{ flex: 1, fontSize: 13, color: i() === 0 ? colors.text : colors.faint, fontVariant: ["tabular-nums"] }}>
+                <Text style={{ numberOfLines: 1, flex: 1, fontSize: 13, color: i() === 0 ? colors.text : colors.faint, fontVariant: ["tabular-nums"] }}>
                   {entry().text}
                 </Text>
               </View>
@@ -279,7 +278,7 @@ function PressEvents() {
           )}
         </Each>
       </View>
-      <Text numberOfLines={1} style={{ fontSize: 12, fontFamily: mono, color: colors.faint }}>
+      <Text style={{ numberOfLines: 1, fontSize: 12, fontFamily: mono, color: colors.faint }}>
         {log().join(" · ") || "No events yet"}
       </Text>
       <View style={{ flexDirection: "row", gap: 10 }}>
@@ -341,8 +340,8 @@ function HitSlop() {
       <View style={{ ...stage(), height: 140, alignItems: "center", justifyContent: "center" }}>
         <Dots />
         <View
-          pointerEvents="none"
           style={{
+            pointerEvents: "none",
             position: "absolute",
             width: 72,
             height: 72,
@@ -352,7 +351,7 @@ function HitSlop() {
             borderColor: colors.danger,
             backgroundColor: tints.danger,
             opacity: ring.interpolate({ inputRange: [0, 1], outputRange: [0.45, 1] }),
-            transform: [{ scale: ring.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1.04] }) }],
+            scale: ring.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1.04] }),
           }}
         />
         <Press hitSlop={30} scale={0.8} onPress={() => taps.set(taps() + 1)} accessibilityLabel="Tiny dot">
@@ -387,8 +386,7 @@ function PointerEvents() {
           </View>
         </Press>
         <Canvas
-          pointerEvents="none"
-          style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}
+          style={{ pointerEvents: "none", position: "absolute", left: 0, top: 0, right: 0, bottom: 0 }}
           draw={(cx, { width, height }) => {
             // A hatched band across the middle, framed with dashes.
             cx.save();
@@ -412,7 +410,7 @@ function PointerEvents() {
           }}
         />
       </View>
-      <Api label={hint("Taps on the hatched band reach the button", "Clicks on the hatched band reach the button")} api={'pointerEvents="none"'} />
+      <Api label={hint("Taps on the hatched band reach the button", "Clicks on the hatched band reach the button")} api={'pointerEvents: "none"'} />
     </Card>
   );
 }

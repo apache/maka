@@ -129,7 +129,7 @@ impl ToolExecutor for ClipboardBridge {
         })
     }
 }
-async fn observe(browser: &Browser, session: Option<&str>, expression: &str) -> Value {
+pub(super) async fn observe(browser: &Browser, session: Option<&str>, expression: &str) -> Value {
     let reply = browser
         .observer
         .call(
@@ -145,7 +145,7 @@ async fn observe(browser: &Browser, session: Option<&str>, expression: &str) -> 
     reply["result"]["value"].clone()
 }
 
-async fn attach_fixture_frame(browser: &Browser, suffix: &str) -> String {
+pub(super) async fn attach_fixture_frame(browser: &Browser, suffix: &str) -> String {
     let targets = browser
         .observer
         .call(None, "Target.getTargets", json!({}))
@@ -181,7 +181,7 @@ async fn attach_fixture_frame(browser: &Browser, suffix: &str) -> String {
     reply["sessionId"].as_str().unwrap().to_owned()
 }
 
-const FIXTURE: &str = r#"(() => {
+pub(super) const FIXTURE: &str = r#"(() => {
     const section=document.createElement('section');section.id='mutation-fixture';
     section.innerHTML=`<button id="m-click">Activate</button>
       <button id="m-hidden" style="display:none">Unique mutate</button><button id="m-visible">Unique mutate</button>

@@ -351,11 +351,14 @@ impl EventLog {
             })
             .await
     }
-    pub async fn prepared_view_group_rows(
+    /// Resolve a complete group by its sequence, including zero-width groups,
+    /// with its frozen media snapshot in one original read transaction.
+    /// The returned group starts at its beginning, so `skip` is always zero.
+    pub async fn prepared_view_group(
         &self,
         view: &PreparedView,
         group: &PreparedGroup,
-    ) -> Result<Vec<ResolvedRow>, StoreError> {
+    ) -> Result<PreparedSemanticGroup, StoreError> {
         self.validate_root()?;
         let expected_session = self.expected_session.clone();
         let scope_id = view.build_id.clone();
@@ -372,11 +375,15 @@ impl EventLog {
                         .await?;
                     let _lease = view.lease;
                     let group = tree::find(connection, view.root.as_deref(), sequence).await?;
-                    let mut all = Vec::new();
+                    let mut rows = Vec::new();
                     for member in group.members {
-                        all.extend(group_metadata(connection, &view.selection, member).await?);
+                        rows.extend(group_metadata(connection, &view.selection, member).await?);
                     }
-                    semantic::resolve(connection, all).await
+                    Ok(PreparedSemanticGroup {
+                        rows: semantic::resolve(connection, rows).await?,
+                        manifest: group.manifest,
+                        skip: 0,
+                    })
                 })
             })
             .await

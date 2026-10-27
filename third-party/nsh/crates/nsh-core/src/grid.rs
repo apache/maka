@@ -232,15 +232,45 @@ pub(crate) fn line(s: &str) -> Option<Line<GridPlacement<String>>> {
             start: placement(a)?,
             end: placement(b)?,
         }),
-        None => {
-            let start = placement(s)?;
-            let end = match &start {
-                GridPlacement::NamedLine(name, 0) => GridPlacement::NamedLine(name.clone(), 0),
-                _ => GridPlacement::Auto,
-            };
-            Some(Line { start, end })
-        }
+        None => Some(line_from(placement(s)?)),
     }
+}
+
+/// A placement given only its start (`grid-column: 3`): it ends where
+/// CSS ends it, at the same name for a named line, else `auto`.
+pub(crate) fn line_from(start: GridPlacement<String>) -> Line<GridPlacement<String>> {
+    let end = match &start {
+        GridPlacement::NamedLine(name, 0) => GridPlacement::NamedLine(name.clone(), 0),
+        _ => GridPlacement::Auto,
+    };
+    Line { start, end }
+}
+
+/// Line `n` (1 is the first, -1 the last).
+pub(crate) fn line_number(n: i16) -> GridPlacement<String> {
+    GridPlacement::from_line_index(n)
+}
+
+/// `span n / span n`.
+pub(crate) fn span(n: u16) -> Line<GridPlacement<String>> {
+    Line {
+        start: GridPlacement::from_span(n),
+        end: GridPlacement::from_span(n),
+    }
+}
+
+/// `repeat(n, minmax(0, 1fr))`: `n` equal tracks.
+pub(crate) fn equal_tracks(n: u16) -> Template {
+    let track = TrackSizingFunction {
+        min: Min::length(0.0),
+        max: Max::fr(1.0),
+    };
+    let repeat = GridTemplateRepetition {
+        count: RepetitionCount::Count(n),
+        tracks: vec![track],
+        line_names: Vec::new(),
+    };
+    (vec![GridTemplateComponent::Repeat(repeat)], Vec::new())
 }
 
 /// `grid-auto-flow`.
@@ -262,6 +292,17 @@ pub(crate) fn auto_flow(s: &str) -> Option<GridAutoFlow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_values_are_their_css() {
+        assert_eq!(
+            equal_tracks(3),
+            template("repeat(3, minmax(0, 1fr))").unwrap()
+        );
+        assert_eq!(span(2), line("span 2 / span 2").unwrap());
+        assert_eq!(line_from(placement("3").unwrap()), line("3").unwrap());
+        assert_eq!(line_from(placement("a").unwrap()), line("a").unwrap());
+    }
 
     #[test]
     fn templates() {

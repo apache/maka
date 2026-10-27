@@ -23,14 +23,14 @@ import {
   updateToolActivity,
   latestToolActivity,
   toolActivitySummary,
-} from '../../products/maka/terminal-shell/app/toolActivity.ts';
+} from '../../products/maka/workbench/app/toolActivity.ts';
 
 import {
   mergeChunks,
   replayStartCursor,
   updateHistoryMetadata,
-} from '../../products/maka/terminal-shell/app/history.ts';
-import { thinkingSummary } from '../../products/maka/terminal-shell/app/thinkingSummary.ts';
+} from '../../products/maka/workbench/app/history.ts';
+import { thinkingSummary } from '../../products/maka/workbench/app/thinkingSummary.ts';
 
 test('tool summaries use UI-rendered labels while retaining the tool source details', () => {
   const tool = {

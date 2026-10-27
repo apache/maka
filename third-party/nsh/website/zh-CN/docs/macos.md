@@ -48,9 +48,9 @@ nsh build my-app --release -o build
 dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1200x800   # 源码仓库中：target/debug/nsh-macos-host
 ```
 
-`--window-size` 是窗口的初始尺寸（TSX 应用）；窗口可以调整大小。
+`--window-size` 是窗口的初始尺寸（TSX 应用）；窗口可以调整大小。`--display <n>`（`nsh run` / `nsh test --target macos --display <n>`）让窗口在第 `n` 个显示器上居中打开：`1` 是主显示器，即带菜单栏的那个。
 
-`nsh test --target macos` 在 macOS 窗口中运行 TSX 应用的测试：测试打开的每个应用都有自己的窗口，步骤用系统的输入在选择器指向的视图上点击、输入和滚动（[测试](./testing-and-trace.md#在真实平台上运行)）。
+`nsh test --target macos` 在 macOS 窗口中运行 TSX 应用的测试，有副显示器时窗口开在副显示器上（主屏留给你用；`--display <n>` 可以另选）：测试打开的每个应用都有自己的窗口，尺寸就是测试要求的尺寸，显示器比窗口矮时也一样；步骤用系统的输入在选择器指向的视图上点击、输入和滚动（[测试](./testing-and-trace.md#在真实平台上运行)）。
 
 ### 性能监视器
 
@@ -156,7 +156,7 @@ view.load(Bundle::source(code).into());
 运行环境是桌面环境：安全区和键盘高度为 0，`idiom()` 是桌面（`platform.idiom` 为 `"desktop"`），`os_version()`（`platform.version`）为 macOS 的版本号，
 深色模式实时跟随系统外观。见[设备与环境](./device-and-environment.md)。
 
-输入是桌面输入：鼠标、触控板（带惯性的滚动、捏合和旋转）和键盘。`selectable` 文本通过拖动、双击和三击选择，用 Cmd+C 复制。
+输入是桌面输入：鼠标、触控板（带惯性的滚动、捏合和旋转）和键盘。可选择的文本通过拖动、双击和三击选择，用 Cmd+C 复制。
 Escape、Option+Left、Cmd+[ 和鼠标的后退键会关闭最新的对话框或在栈中返回（焦点在输入框或网页中时，Escape 只会离开它；
 网页先收到这些按键，它自己用掉的不会触发返回）；`Dialog` 是覆盖整个窗口的一层，显示应用的弹出层和背景。页面在顶部显示它的 `header`。
 点击 `Input` 的任意位置（包括内边距）都会把光标放到最近的位置。
@@ -173,7 +173,7 @@ Return 的默认操作）；更多操作以及操作表的操作按顺序竖排�
 | Escape | 离开有焦点的输入框；否则清除文本选区，再关闭最新的对话框或返回 |
 | Option+Left、Cmd+[、鼠标后退键 | 返回（输入框有焦点时不会：此时 Option+Left 移动光标） |
 | Option / Cmd + 方向键（可加 Shift）；Option+Delete、Cmd+Delete；Ctrl+A / E / K | 在输入框中按词和按行移动、选择和删除，与所有 Mac 应用一致 |
-| Cmd+Z、Shift+Cmd+Z、Cmd+X / C / V / A | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Cmd+A / Cmd+C 选择并复制 `selectable` 文本 |
+| Cmd+Z、Shift+Cmd+Z、Cmd+X / C / V / A | 撤销、重做、剪切、复制、粘贴、全选（`masked` 输入框拒绝剪切和复制）；Cmd+A / Cmd+C 选择并复制 可选择的文本 |
 | 方向键；Page Up / Down、Space、Shift+Space、Option+Up / Down；Home / End、Cmd+Up / Down | 滚动有焦点的视图所在或鼠标下方的滚动视图：一行、一页、到开头 / 结尾（输入框有焦点时不滚动） |
 | Cmd+W、Cmd+M、Ctrl+Cmd+F、Cmd+H、Option+Cmd+H、Cmd+Q | 关闭、最小化、全屏、隐藏、隐藏其他、退出（`nsh package` 和 `nsh run` 应用的菜单） |
 | Cmd+R | 重新加载最新的构建（`nsh run`） |

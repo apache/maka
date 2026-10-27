@@ -315,6 +315,7 @@ fn DraftCard() -> impl IntoElement {
                 .value(move || draft.with(|d| d.0.clone()))
                 .placeholder("A draft")
                 .placeholder_color(|| color(colors::FAINT))
+                .caret_color(|| color(colors::ACCENT))
                 .selection_color(|| color(colors::ACCENT))
                 .h(px(48.0))
                 .px(px(14.0))

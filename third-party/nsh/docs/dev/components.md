@@ -10,13 +10,13 @@ the styled layer, GPUI Kit's `gpui-component`, is never part of NSH. The look of
 come from two places:
 
 - **`nsh/base`**: unstyled base components of `gpui-base`'s scope, the crate `nsh-base` (`crates/nsh-base`,
-  `nsh_base::registry()`): `Button`, `Checkbox`, `Radio`, `RadioGroup`, `Switch`, `Tab`, `Tabs`, `Collapsible`, `Progress`, `Table` with `TableHeader`, `TableBody`, `TableFooter`, `TableRow`, `TableHead`, `TableCell` and `TableCaption` (a table's accessibility roles around the app's rows), `TextView` (`text-view.md`), `ResizablePanelGroup` and `ResizablePanel`, `DockArea`
+  `nsh_base::registry()`): `Button`, `Checkbox`, `Radio`, `RadioGroup`, `Switch`, `Tab`, `Tabs`, `Collapsible`, `Progress`, `Slider`, `Table` with `TableHeader`, `TableBody`, `TableFooter`, `TableRow`, `TableHead`, `TableCell` and `TableCaption` (a table's accessibility roles around the app's rows), `TextView` (`text-view.md`), `ResizablePanelGroup` and `ResizablePanel`, `DockArea`
   (`dock.md`), `Editor` (a code editor, `editor.md`), `DiffView` (the changes between two texts, `diff.md`), `DataTable` (a table over any number of rows and columns, `data-table.md`), the popups on the core's overlays (`Popover`,
   `Menu` with `MenuItem`, `MenuSeparator` and `Submenu`, `ContextMenu`, `Tooltip`, `Sheet`: "Popups" below), toasts
   (`Toast`, `ToastStack` and the class `ToastManager`: "Toasts" below) and the
   module `AlertDialog`, beside the navigation `nsh-js` makes for it (`NavStack`, `NavPage`, `Dialog`, `createNavStack`); controls
   (toggles, sliders, selects, popovers, sheets, ...) join as their behavior is written. It is a UI set
-  (`Registry::ui_set("nsh/base")`), with the charts' parts `Plot`, `Line`, `Area` and `Grid` in its submodule `nsh/base/plot` (`Registry::submodule`, `js-modules.md`), every host serves by default (`set_ui_sets`' default; embedders with a list of their
+  (`Registry::ui_set("nsh/base")`), with the charts' parts `Plot`, `Line`, `Area`, `Bar`, `Grid`, `Pie` and `Arc` in its submodule `nsh/base/plot` (`Registry::submodule`, `js-modules.md`), every host serves by default (`set_ui_sets`' default; embedders with a list of their
   own add `nsh_base::registry()` to it); Rust apps use `nsh_base::{button, …}`, make navigation and
   dialogs with `nsh_base::{nav_stack, nav_page, dialog}` (on the core's `Stack`, `Screen` and `Modal` host
   elements, whose builders are hidden building blocks of these), and show system alerts with
@@ -48,7 +48,7 @@ Visual rules are changed in the shared layer; `nsh-base` supplies the components
 | `crates/nsh-core/src/element/` | The API (`nsh_core::element`, `prelude`): `Component`, `Module`, `Class` (`class.rs`, `callback.rs`; direct JS values: `js.rs`), elements, `Styled`, `Theme`, `Registry`, the status bar's layers (`status_bar.rs`), the declarations generator `typescript` |
 | `crates/nsh-macros` | `#[component]`, `#[derive(Props)]`, `#[derive(PropEnum)]`, `#[derive(Event)]`, `#[derive(JsObject)]`; `#[methods]`, `#[module]`, `#[class]`; `#[native_module("…")]` (an app crate's set: `docs/dev/tooling.md`); `style_helpers!` (the spacing methods of `Styled`) |
 | `crates/nsh-core/src/core/components.rs` | The core side: instances, children and slots, events; `core/views.rs`: views, their bindings' patches and regions |
-| `crates/nsh-base/` | `nsh/base`'s components and modules, one file each (`alert_dialog.rs`, `button.rs`, `checkbox.rs`, `radio.rs`, `switch.rs`, `tabs.rs`; `TextView`, `ResizablePanelGroup`, `DockArea`, `Editor` and `DiffView` directories, `text_view/`, `resizable/`, `dock/`, `editor/`, `diff/`; `syntax.rs`, the syntax highlighting `TextView` and `Editor` share), one `Registry` (`lib.rs`) |
+| `crates/nsh-base/` | `nsh/base`'s components and modules, one file each (`alert_dialog.rs`, `button.rs`, `checkbox.rs`, `radio.rs`, `slider.rs`, `switch.rs`, `tabs.rs`; `numeric.rs`, the rules of a number in a range with a step that `Slider` follows; `keys.rs`, the keys a focused control binds; `TextView`, `ResizablePanelGroup`, `DockArea`, `Editor` and `DiffView` directories, `text_view/`, `resizable/`, `dock/`, `editor/`, `diff/`; `rich_editor/`, `RichEditor`'s headless kernel, `docs/dev/rich-editor.md`; `syntax.rs`, the syntax highlighting `TextView` and `Editor` share), one `Registry` (`lib.rs`) |
 | `crates/nsh-core/src/runtime/` | The runtime's Rust modules (`nsh`'s `Keyboard` and `Image` functions, with its environment, accessibility, clipboard, picker, storage and host modules, `nsh/mobile`, `nsh/desktop`), one `Registry` per JS module (`mod.rs`) |
 | `crates/nsh-js/src/components.rs` | The JS face of components and modules, made from their specs when a bundle imports the module; `classes.rs`: classes' (on the web classes' machinery), synchronous functions', callbacks |
 | `crates/nsh-js/src/declarations.rs` | `nsh/base.d.ts`, `app/native.d.ts`, ...: the declarations generated from each registry (`nsh_core::element::declarations`) with the re-exports and the navigation |
@@ -181,7 +181,9 @@ reasons: `reactive-components.md`.
 - **The app's content is props too, placed by closures**: the component never creates or touches the app's elements,
   it only lays them out.
   - `header: Prop<Option<Slot>>` is `Some` while the app passes non-empty JSX for it: `props.header.place(|h|
-    h.px_4())` places it (a region; the closure styles the slot's own node).
+    h.px_4())` places it (a region; the closure styles the slot's own node and may give it props, listeners and a
+    ref: `|t| t.accessibility_state(move || ..).on_press(..)`; bindings there are live, as on the view's own nodes;
+    in a TSX app they go to the app's element in the slot, "Children, slots and rows" below).
   - `children: Prop<Children>`: `.child(props.children)` puts them all at one place among the view's own children;
     `.children_each(props.children, |child, at| view().py_3().child(child))` wraps each one (an `Each` keyed by
     the child's node: a child that stays keeps its wrapper; `at` is a `Position`: `index()`, `count()`,
@@ -199,9 +201,13 @@ reasons: `reactive-components.md`.
     the app's function in a root of its own under the component's owner (so context reaches it), inserts what it
     returns into a holder view (`componentRender`: the prop, U+001F, the key) and the holder into the host, replacing
     the key's previous one; the core places the holder as the only child of the key's placeholder (the last one placed
-    when a view places a key twice; none placed: it waits out of the tree for the `Unrender`). The roots go with their
-    holder or with the component (`core/renders.rs`; `nsh-js` `components.rs`). The decoded prop names its host, so a
-    view may pass it on to a nested component's prop. Keys are unique among a component's renders of one prop.
+    when a view places a key twice; none placed: it waits out of the tree for the `Unrender`). Until its holder
+    arrives a placeholder is empty, so a list cell holding one is not measured (`Core::cells_awaiting_renders`): its
+    row keeps its estimate (or its last size) and stays in the window, and is measured in the commit the holder
+    comes in; measured empty, a list in a view sized by its content would shrink that view's viewport to nothing
+    and render no row. The roots go with their holder or with the component (`core/renders.rs`; `nsh-js`
+    `components.rs`). The decoded prop names its host, so a view may pass it on to a nested component's prop. Keys
+    are unique among a component's renders of one prop.
   - `data: Prop<Rows>`: rows of data the component reads by key, `data: T[]` in TS with `#[props(generic)]` on the
     props (the props generic over `T = any`, as a component with rows is, the default for a component given no rows
     of its own). `Rows` reads each row's number fields once, when JS sets the prop, into a column per key
@@ -210,7 +216,10 @@ reasons: `reactive-components.md`.
     the rows' type (`Extract<keyof T, string>`), read natively, or the app's function `(d: T, index) => number`,
     which `RowAccessor::values` calls once per row in the next JS turn whenever the rows or the function change
     (`Rows` keeps the JS array for it, `JsHost::retain`; each call gets the app's own row object, `RowRef`), never
-    while the component draws; Rust passes `RowAccessor::key` or `RowAccessor::from_fn`.
+    while the component draws; Rust passes `RowAccessor::key` or `RowAccessor::from_fn`. A `RowText` prop reads a
+    text of each row the same way, for what the component shows as text (a value beside a bar): a field name, its
+    numbers written as JS's `String(n)` writes them, or the app's function `(d: T, index) => string` for text the app
+    formats (`RowText::texts`).
   - `items: Items`: virtualized rows. In JS the component takes `List`'s data props (`each`, the row renderer as
     children, `keyExtractor`, `onLoadMore`, `header`, ... : `ListItemsProps<T>`, so the component is
     generic over the row type). `.list(props.items, |l| l.flex_1().estimated_item_size(px(48.0)), |row, at|
@@ -307,7 +316,7 @@ reasons: `reactive-components.md`.
   | `safeAreaInsets()` | `cx.insets()`: the insets where the component is (the nearest screen's or modal's, else the surface's safe area) |
   | a signal or store at module level | `global::<G>()`: a `Signal<G>` of the surface, made with `Default` (shared by its components and modules) |
   | `context(default)` / `<Ctx.Provider value>` / `Ctx()` | `provide_context(value)` in the body; `use_context::<T>()` below it (through the app's elements too: a component JS made among another's JS children is under where that one places them); provide a signal to change what readers see |
-  | `createAnimatedValue`, `Animated.spring`, `interpolate` | `animated_value(0.0)` (`Copy`, kept by the current owner); `.bind_translate_y(&v)` / `.bind_opacity(..)` / `.bind_background(..)` / `.bind_border_color(..)` / `.bind_color(..)` / `.bind_shadow_color(..)` / `.bind_shadow_opacity(..)` / `.bind_shadow_radius(..)` / `.bind_scale(..)` / `.bind_rotate(..)`, `.pan_values(..)` (drags move it natively), `.pinch_value(&scale)` / `.rotation_value(&angle)` (TS `pinch={{ scale }}`, `rotation={{ angle }}`), `scroll().scroll_value(&v)`, canvas arguments (`Painter::new().fill_rect(0.0, 0.0, &v, 4.0)`); `v.spring(to, Spring::default())` / `.timing(to, ms, easing)` / `.timing_with(to, Timing { delay_ms, .. })` / `.decay(..)` / `.decay_within(.., (min, max), bounce)` return an `AnimationEnd` to await; `v.value()` (`getValue()`; after `v.stop()`, `stop()`'s promise) an `Answer<f32>`; `v.set_offset(..)` / `.flatten_offset()` / `.extract_offset()`; `element::sample_easing` / `sample_spring` / `sample_decay` (`Easing.sample`, `Animated.sampleSpring` / `sampleDecay`) the curves, to draw them; `v.interpolate(..)`, `.interpolate_with(.., Interpolation { extrapolate_left, extrapolate_right, easing })`, `.add(..)`, `.diff_clamp(..)` derive nodes |
+  | `createAnimatedValue`, `Animated.spring`, `interpolate` | `animated_value(0.0)` (`Copy`, kept by the current owner); `.bind_translate_y(&v)` / `.bind_opacity(..)` / `.bind_background(..)` / `.bind_border_color(..)` / `.bind_color(..)` / `.bind_scale(..)` / `.bind_rotate(..)`, `.pan_values(..)` (drags move it natively), `.pinch_value(&scale)` / `.rotation_value(&angle)` (TS `pinch={{ scale }}`, `rotation={{ angle }}`), `scroll().scroll_value(&v)`, canvas arguments (`Painter::new().fill_rect(0.0, 0.0, &v, 4.0)`); `v.spring(to, Spring::default())` / `.timing(to, ms, easing)` / `.timing_with(to, Timing { delay_ms, .. })` / `.decay(..)` / `.decay_within(.., (min, max), bounce)` return an `AnimationEnd` to await; `v.value()` (`getValue()`; after `v.stop()`, `stop()`'s promise) an `Answer<f32>`; `v.set_offset(..)` / `.flatten_offset()` / `.extract_offset()`; `element::sample_easing` / `sample_spring` / `sample_decay` (`Easing.sample`, `Animated.sampleSpring` / `sampleDecay`) the curves, to draw them; `v.interpolate(..)`, `.interpolate_with(.., Interpolation { extrapolate_left, extrapolate_right, easing })`, `.add(..)`, `.diff_clamp(..)` derive nodes |
   | `Animated.sequence / parallel / stagger / delay / loop`, `.start(cb)` / `.stop()` / `.reset()` | `Animation::sequence([Animation::timing(&v, to, Timing::new(ms, easing)), Animation::delay(ms), Animation::spring(..)])`, `::parallel(..)` (`.stop_together(false)`), `::stagger(ms, ..)`, `.looped(iterations)` (`.reset_before_iteration(false)`); `a.start()` returns an `AnimationEnd`, `a.stop()`, `a.reset()` |
   | `keymap.bind("mod+k", f, { when, repeat })`, `keymap.label("mod+k")` (`nsh`'s `keymap`) | `on_key("mod+k", \|keystroke\| ..)` / `on_key_with(k, KeyOptions { when, repeat }, f)`, bound while the current owner lives; `key_label("mod+k")` (`⌘K`, `Ctrl+K`). The core joins the views' bindings to JS's in the root's one table (a view's after JS's: it wins on the same keystroke) and runs a view's handler itself when the root's `KeyCommand` reports it; their ids start at 2^31, above JS's (`element/keys.rs`) |
   | `BackHandler.onBackPress(f)`, the function it returns | `on_back_press(\|\| -> bool)`: registered while the current owner lives (only while a signal holds: inside an `effect`). After modals and before stacks, the views' listeners run newest first, then JS's; when none returns true the core sends `Command::Back`: the top stack pops, else the app exits (`element/back.rs`) |
@@ -594,8 +603,8 @@ copies into packages next to the imported assets, and whose fonts the engine reg
 follow Tailwind's default scale, independent of the app's Tailwind theme. They cover what classes and styles do:
 per-side borders and colors (`.border_t(px(6.0)).border_t_color(..)`), `.border_dashed()`, per-corner and start / end
 radii (`.rounded_tl(..)`, `.rounded_ss(..)`), `.border_curve(BorderCurve::Continuous)`; shadows of their own
-(`.shadow([BoxShadow { .. }])`, React Native's `.shadow_opacity(..).shadow_radius(..).shadow_offset(..)`,
-`.shadow_color(..)` for both and the presets), `.inset_shadow_sm()`, rings, outlines, text shadows; 3D transforms and
+(`.shadow([BoxShadow { .. }])`, `.shadow_color(..)` for them and the presets), `.inset_shadow_sm()`, rings, outlines,
+text shadows (`.text_shadow([TextShadow { .. }])`, the presets, `.text_shadow_color(..)`); 3D transforms and
 skews, `.transform_origin(..)` / `.origin_top_left()`, `.backface_hidden()`; decorations (`.underline().line_through()`
 draw both, `.text_decoration_wavy()`, `.text_decoration_color(..)`), `.uppercase()`, `.tabular_nums()`,
 `.writing_direction(..)`; gradients (`.bg_linear_to_br().gradient_from(..).gradient_via(..).gradient_to(..)`,
@@ -631,6 +640,9 @@ it changes, and they are resolved again when the tokens change (`Components::app
   `.project_checked(props.checked)` / `.project_indeterminate(props.indeterminate)` / `.project_disabled(props.disabled)`
   (`gpui-base`'s `SwitchThumb::new(checked)`, `CheckboxIndicator::state(..)`): the app writes `checked:` /
   `indeterminate:` / `disabled:` in the part's class, and only the control's root is an accessibility element.
+  `.project_focused(..)` does the same for `focus:` on the part the keys act on while the control keeps the
+  platform's focus (a list's highlighted option, the cell of a code input that takes the next character): NSH has
+  no active descendant, and the platform's focus stays where it is.
 - What never changes is plain Rust, decided when the view is made: `.when(variant == Variant::Ghost, |v| ..)`.
 - The app's `class` / `classList` on a component (Tailwind) is merged after the root's rules; at equal rank it wins.
   The styles a view gives a nested component element merge the same way (bound ones too: `Patch::Nested`).
@@ -697,7 +709,9 @@ forgotten.
 A view JS made (`<Chip>` in TSX) is made when its host is first in the root's tree, so it is under the view that
 placed it: it adopts the owner of the nearest component above it (where that one places its JS children, else its
 own owner), and `use_context` and failures reach that far (`owner_above`, `adopt`). Until then it waits
-(`components.waiting`).
+(`components.waiting`). A component a Rust view passes as a nested component's content (`tabs().child(tab())`)
+joins that host as JS children do (`Instance::joined`) and waits the same way, so it reads the context of the view
+that places it, not only its maker's.
 
 JS allocates even node ids (from 2), the core odd ones (from 3), so both id spaces stay dense and never collide. JS
 never sees the made nodes; their events are the component's (below).
@@ -743,8 +757,22 @@ what changed.
   component goes, they leave its view and stay (JS's, or the content of the view above).
 - Named slots: the JS face creates one holder view per slot **the app passes** (`componentSlot`), filled with that
   prop's JSX. `Prop<Option<Slot>>` is `Some` while the holder has children (the core sets it when it fills or
-  empties); `place(..)` is a region of it, and the slot's element *is* the holder: its styles and handlers apply to
-  it, the core places it but never releases it (it is JS's).
+  empties); `place(..)` is a region of it, and the slot's element is the holder: the core places it but never
+  releases it (it is JS's). Its bound parts are bindings (`Patch`es), as on the view's own nodes. The element's styles
+  (and what shapes the holder's box) apply to the holder; everything else it gives (accessibility, `disabled`,
+  `focusable` and other host props, listeners, touch responder, element ref: `core/slots.rs` `split`) goes to the
+  slot's target: the app's element when the holder holds exactly one (not raw text, a component's host or a list),
+  else the holder. So the app's `active:` / `focus:` / `disabled:` classes and state styles on its own element follow
+  the presses, focus and `disabled` the component gives it, and a ref measures the app's element. The target follows
+  the holder's content (JS inserting or removing in it, `Core::retarget_slot`). On the app's element the two sides
+  combine (`slots::merged`): the component's values win, the app's fill in what it leaves unset (field by field in
+  `accessibilityState`); `disabled`, the state flags and projected states hold when either sets them; both sides'
+  listeners run, the component's first. JS's ops on it go through the core (`Core::js_slot_op`), which keeps JS's
+  own values and sends the combination, and puts them back when the component's part leaves the element (another
+  element joins the holder, the element leaves it, the slot or the component goes). JS's values from before are read
+  from the node (accessibility, `disabled`, `pointerEvents`, `focusable`, projected states); another host prop the
+  component sets too returns to its default when it drops it, unless JS set it since. A slot a Rust view fills keeps
+  a node of the nested view's own around its content when the place gives it anything (below).
 - A slot a Rust view fills (`.fill(name, el)`) has no holder: its content is
   nodes of that view (an element, or a region whose nodes come and go), which the nested component keeps as the
   slot's `Fill` and its view places where it places the slot, as JS children are placed (`Placement`). A place that
@@ -794,9 +822,9 @@ what changed.
   it does: regions change them when they are reconciled. A node a region makes again (kept, the same id) drops the
   handlers, responders and `on_event` listeners its last run gave it, so it hears the new run's only. A listener runs
   in the graph like any other Rust code of the view: the signals it writes run their bindings once it returns.
-- A slot's node (JS's holder, the app's list of an `Items` prop, or another component's content) gets the
-  handlers of the component it is a slot of, then its maker's: JS's (the app's `onLoadMore` on a component with rows)
-  or the view's that passed it.
+- A slot's node (JS's holder or the app's element in it, the app's list of an `Items` prop, or another
+  component's content) gets the handlers of the component it is a slot of, then its maker's: JS's (the app's
+  `onPress` on its trigger, `onLoadMore` on a component with rows) or the view's that passed it.
 - A component's own list reports its viewable rows to it in the core, waiting for `minimum_view_time` when set
   (a task of the list's owner).
 - `cx.emit(event)` is routed after the code that emitted it: to JS as the event itself (`JsEvent::Component`, its

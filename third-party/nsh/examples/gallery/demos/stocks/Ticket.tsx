@@ -28,8 +28,8 @@ export function createBanner() {
   };
   const view = (
     <View
-      pointerEvents="none"
       style={{
+        pointerEvents: "none",
         position: "absolute",
         top: 10,
         left: 16,
@@ -42,10 +42,8 @@ export function createBanner() {
         borderCurve: "continuous",
         backgroundColor: colors.light,
         opacity: t.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 1, 1] }),
-        transform: [
-          { translateY: t.interpolate({ inputRange: [0, 1], outputRange: [-90, 0] }) },
-          { scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) },
-        ],
+        translate: [0, t.interpolate({ inputRange: [0, 1], outputRange: [-90, 0] })],
+        scale: t.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }),
       }}
     >
       <View
@@ -62,7 +60,7 @@ export function createBanner() {
       </View>
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={{ fontSize: 15, fontWeight: "600", color: colors.onLight }}>{message().title}</Text>
-        <Text numberOfLines={1} style={{ fontSize: 13, color: isDark() ? "#4a4e55" : "#a4a8ae" }}>
+        <Text style={{ numberOfLines: 1, fontSize: 13, color: isDark() ? "#4a4e55" : "#a4a8ae" }}>
           {message().detail}
         </Text>
       </View>

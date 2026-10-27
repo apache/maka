@@ -64,8 +64,40 @@ pub(crate) struct Scroll {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum NativeScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
+    U,
+    D,
+    L,
+    R,
+}
+
+impl From<NativeScrollDirection> for crate::protocol::Direction {
+    fn from(direction: NativeScrollDirection) -> Self {
+        match direction {
+            NativeScrollDirection::Up | NativeScrollDirection::U => Self::Up,
+            NativeScrollDirection::Down | NativeScrollDirection::D => Self::Down,
+            NativeScrollDirection::Left | NativeScrollDirection::L => Self::Left,
+            NativeScrollDirection::Right | NativeScrollDirection::R => Self::Right,
+        }
+    }
+}
+
+/// Recognized Linux spellings can also retain the existing generic route.
+/// Unknown values stay with that route's original error boundary.
+pub(crate) fn canonical_scroll_direction(value: &Value) -> Option<&'static str> {
+    NativeScrollDirection::deserialize(value)
+        .ok()
+        .map(|direction| crate::protocol::Direction::from(direction).name())
+}
+
+#[derive(Deserialize)]
 struct ScrollInput {
-    direction: crate::protocol::Direction,
+    direction: NativeScrollDirection,
     element_id: Option<String>,
     pixels: Option<u16>,
     x: Option<i16>,
@@ -95,6 +127,7 @@ pub(crate) enum Error {
     Parse(serde_json::Error),
     IncompletePoint,
     IncompleteScrollPoint,
+    ConflictingScrollTarget,
     OutsideWindow,
     UnsupportedElementClickOptions,
     UnknownElementId(String),
@@ -159,10 +192,13 @@ impl Click {
 impl Scroll {
     pub(crate) fn parse(input: Value) -> Result<Self, Error> {
         let input: ScrollInput = parse_command(input)?;
+        if input.element_id.is_some() && (input.x.is_some() || input.y.is_some()) {
+            return Err(Error::ConflictingScrollTarget);
+        }
         Ok(Self {
             x: input.x,
             y: input.y,
-            direction: input.direction,
+            direction: input.direction.into(),
             pixels: input.pixels.unwrap_or(800),
             element_id: input.element_id,
         })
@@ -228,6 +264,9 @@ impl Display for Error {
             Self::Parse(error) => write!(formatter, "failed to parse command input: {error}"),
             Self::IncompletePoint => formatter.write_str("coordinate click requires both x and y"),
             Self::IncompleteScrollPoint => formatter.write_str("x and y must be provided together"),
+            Self::ConflictingScrollTarget => {
+                formatter.write_str("provide element_id or x/y, not both")
+            }
             Self::OutsideWindow => {
                 formatter.write_str("background pointer position is outside the target window")
             }
@@ -251,6 +290,7 @@ impl std::error::Error for Error {
             Self::Parse(error) => Some(error),
             Self::IncompletePoint
             | Self::IncompleteScrollPoint
+            | Self::ConflictingScrollTarget
             | Self::OutsideWindow
             | Self::UnsupportedElementClickOptions
             | Self::UnknownElementId(_)
@@ -261,6 +301,34 @@ impl std::error::Error for Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_scroll_direction_aliases_keep_canonical_distance_and_parse_failures() {
+        for (short, long) in [("u", "up"), ("d", "down"), ("l", "left"), ("r", "right")] {
+            for spelling in [short, long] {
+                let scroll = super::Scroll::parse(serde_json::json!({
+                    "direction":spelling, "x":37, "y":41,
+                }))
+                .expect("Original accepts either direction spelling");
+                assert_eq!(scroll.direction.name(), long);
+                assert_eq!(
+                    (scroll.x, scroll.y, scroll.pixels),
+                    (Some(37), Some(41), 800)
+                );
+                assert_eq!(
+                    super::Scroll::parse(serde_json::json!({"direction":spelling,"pixels":37.9}))
+                        .expect_err("a direction alias does not relax the native u16 boundary")
+                        .to_string(),
+                    "failed to parse command input: invalid type: floating point `37.9`, expected u16",
+                );
+            }
+        }
+        assert_eq!(
+            super::Scroll::parse(serde_json::json!({"direction":"north","pixels":37.9}))
+                .expect_err("direction is visited before pixels")
+                .to_string(),
+            "failed to parse command input: unknown variant `north`, expected one of `up`, `down`, `left`, `right`, `u`, `d`, `l`, `r`",
+        );
+    }
     use super::*;
     use serde_json::json;
 
@@ -453,14 +521,14 @@ mod tests {
             (Some(json!(0)), 0),
             (Some(json!(65535)), 65535),
         ] {
-            let mut input = json!({"direction":"down","element_id":"01","x":37.0,"y":41.0});
+            let mut input = json!({"direction":"down","x":37.0,"y":41.0});
             if let Some(pixels) = pixels {
                 input["pixels"] = pixels;
             }
             let scroll = Scroll::parse(input).expect("native u16 scroll");
             assert_eq!(scroll.pixels, expected);
             assert_eq!((scroll.x, scroll.y), (Some(37), Some(41)));
-            assert_eq!(scroll.element_id.as_deref(), Some("01"));
+            assert!(scroll.element_id.is_none());
             assert!(matches!(scroll.direction, crate::protocol::Direction::Down));
         }
         for (input, expected) in [
@@ -494,6 +562,47 @@ mod tests {
                 format!("failed to parse command input: {expected}")
             );
         }
+    }
+
+    #[test]
+    fn native_scroll_conflicting_targets_refuse_after_all_field_types_are_parsed() {
+        for input in [
+            json!({"direction":"down","element_id":":1.0:/own","x":37,"y":41}),
+            json!({"direction":"down","element_id":":1.0:/own","x":37}),
+            json!({"direction":"down","element_id":":1.0:/own","y":41}),
+        ] {
+            assert_eq!(
+                Scroll::parse(input).unwrap_err().to_string(),
+                "provide element_id or x/y, not both",
+            );
+        }
+        for (input, expected) in [
+            (
+                json!({"direction":"down","element_id":":1.0:/own","x":37,"y":41.5}),
+                "invalid type: floating point `41.5`, expected i16",
+            ),
+            (
+                json!({"direction":"down","element_id":":1.0:/own","pixels":100.5,"x":37}),
+                "invalid type: floating point `100.5`, expected u16",
+            ),
+        ] {
+            assert_eq!(
+                Scroll::parse(input).unwrap_err().to_string(),
+                format!("failed to parse command input: {expected}"),
+            );
+        }
+        let element = Scroll::parse(json!({
+            "direction":"down","element_id":":1.0:/own","x":null,"y":null,
+        }))
+        .expect("absent optional coordinates keep the element route");
+        assert_eq!(element.element_id.as_deref(), Some(":1.0:/own"));
+        assert_eq!((element.x, element.y, element.pixels), (None, None, 800));
+        let coordinate = Scroll::parse(json!({
+            "direction":"down","element_id":null,"x":37,"y":41,
+        }))
+        .expect("absent optional element selector keeps the coordinate route");
+        assert!(coordinate.element_id.is_none());
+        assert_eq!((coordinate.x, coordinate.y), (Some(37), Some(41)));
     }
 
     #[test]

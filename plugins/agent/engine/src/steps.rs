@@ -153,7 +153,7 @@ pub(super) async fn run(
                 && pending
                     .take()
                     .expect("finished candidate")
-                    .adopt(inner, cancellation)
+                    .adopt(inner, &input.invocation, cancellation)
                     .await?
             {
                 compaction = CompactionBudget::Reshaped;
@@ -173,27 +173,36 @@ pub(super) async fn run(
             let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
             if tools.code_idle()
                 && effects.is_idle()
-                && compaction == CompactionBudget::Available
-                && pending.is_none()
                 && !prior_unknown
-                && (needs_compaction || auto_context::due(input, &context))
+                && ((needs_compaction && pending.is_some())
+                    || (compaction == CompactionBudget::Available
+                        && pending.is_none()
+                        && (needs_compaction || auto_context::due(input, &context))))
             {
                 drop(prompt);
                 drop(context);
                 compaction = CompactionBudget::Failed;
-                if let Some(candidate) = auto_context::start(
-                    inner,
-                    input,
-                    opening_id,
-                    main_progress,
-                    cancellation,
-                    continuation_base,
-                )
-                .await?
-                {
+                let candidate = match pending.take() {
+                    Some(candidate) => Some(candidate),
+                    None => {
+                        auto_context::start(
+                            inner,
+                            input,
+                            opening_id,
+                            main_progress,
+                            cancellation,
+                            continuation_base,
+                        )
+                        .await?
+                    }
+                };
+                if let Some(candidate) = candidate {
                     if !needs_compaction {
                         pending = Some(candidate);
-                    } else if candidate.adopt(inner, cancellation).await? {
+                    } else if candidate
+                        .adopt(inner, &input.invocation, cancellation)
+                        .await?
+                    {
                         compaction = CompactionBudget::Reshaped;
                     }
                 }
@@ -290,7 +299,9 @@ pub(super) async fn run(
                         }
                     };
                     if let Some(candidate) = candidate
-                        && candidate.adopt(inner, cancellation).await?
+                        && candidate
+                            .adopt(inner, &input.invocation, cancellation)
+                            .await?
                     {
                         compaction = CompactionBudget::Reshaped;
                         continue;

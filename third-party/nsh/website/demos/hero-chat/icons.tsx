@@ -211,8 +211,7 @@ export function Icon(props: { name: IconName; size?: number; tint: string }) {
   const size = props.size ?? 20;
   return (
     <Canvas
-      pointerEvents="none"
-      style={{ width: size, height: size }}
+      style={{ pointerEvents: "none", width: size, height: size }}
       draw={(cx, { width }) => {
         cx.scale(width / 20, width / 20);
         cx.strokeStyle = props.tint;

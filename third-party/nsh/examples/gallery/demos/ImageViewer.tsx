@@ -127,20 +127,19 @@ export function ImageViewer(props: { image: TextViewImage | null; onClose: () =>
             width: box().width,
             height: box().height,
             opacity: enter,
-            transform: [{ translateX: x }, { translateY: y }, { scale: scale.mul(enter.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] })) }],
+            translate: [x, y],
+            scale: scale.mul(enter.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] })),
           }}
         >
           <Image
             src={shown()?.src ?? ""}
-            resizeMode="contain"
             onLoad={(e) => natural.set({ width: e.width, height: e.height })}
-            style={{ width: "100%", height: "100%" }}
+            style={{ width: "100%", height: "100%", objectFit: "contain" }}
           />
         </View>
         {shown()?.alt ? (
           <View
-            pointerEvents="none"
-            style={{ position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 24, paddingTop: 32, paddingBottom: safeArea().bottom + 20 }}
+            style={{ pointerEvents: "none", position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 24, paddingTop: 32, paddingBottom: safeArea().bottom + 20 }}
           >
             <Text style={{ fontSize: 14, lineHeight: 20, textAlign: "center", color: "rgba(255,255,255,0.85)" }}>{shown()?.alt}</Text>
           </View>
@@ -148,8 +147,8 @@ export function ImageViewer(props: { image: TextViewImage | null; onClose: () =>
         <View style={{ position: "absolute", top: safeArea().top + 12, right: safeArea().right + 12 }}>
           <Press onPress={props.onClose} accessibilityLabel="Close" scale={0.9} hitSlop={8}>
             <View style={{ width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(255,255,255,0.16)" }}>
-              <View style={{ position: "absolute", width: 16, height: 2, borderRadius: 1, backgroundColor: "#ffffff", transform: [{ rotate: "45deg" }] }} />
-              <View style={{ position: "absolute", width: 16, height: 2, borderRadius: 1, backgroundColor: "#ffffff", transform: [{ rotate: "-45deg" }] }} />
+              <View style={{ position: "absolute", width: 16, height: 2, borderRadius: 1, backgroundColor: "#ffffff", transform: "rotate(45deg)" }} />
+              <View style={{ position: "absolute", width: 16, height: 2, borderRadius: 1, backgroundColor: "#ffffff", transform: "rotate(-45deg)" }} />
             </View>
           </Press>
         </View>

@@ -390,16 +390,16 @@ impl Driver {
         })
     }
 
-    pub(crate) fn wait_audio_finished(
+    pub(crate) fn audio_completion(
         &self,
         epoch: NativeEpochId,
-    ) -> BoxFuture<'static, Result<(), ToolError>> {
+    ) -> BoxFuture<'static, Result<cua_driver_sdk::AudioCompletion, ToolError>> {
         let bound = self.sessions.get(&epoch).map(|bound| bound.session.clone());
         Box::pin(async move {
             let bound = bound
                 .ok_or_else(|| ToolError::Failed("Computer audio epoch is unavailable".into()))?;
             bound
-                .wait_audio_finished()
+                .audio_completion()
                 .await
                 .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))
         })
@@ -506,6 +506,68 @@ impl Driver {
             .await
             .map_err(|error| native_error(error, language))?;
         native_input_result(result, language)
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    pub(crate) async fn click_native_element_window(
+        driver: &Arc<Mutex<Self>>,
+        request: platform_linux::input::native_element::NativeElementClickRequest,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<CallResult, ToolError> {
+        if !Self::linux_x11_selected() {
+            return Err(ToolError::Failed("native_profile_requires_x11".into()));
+        }
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use cancelled before native element dispatch".into(),
+            ));
+        }
+        let bound = driver.lock().await.bind_epoch(epoch, language)?;
+        let session = bound.ready(language).await?;
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use cancelled before native element dispatch".into(),
+            ));
+        }
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ToolError::OutcomeUnknown("Computer Use native element invocation cancelled; input outcome unknown".into())),
+            result = session.click_native_element_window(request) => result,
+        }.map_err(|error| native_error(error, language))?;
+        native_element_result(result, language)
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    pub(crate) async fn scroll_native_element_window(
+        driver: &Arc<Mutex<Self>>,
+        request: platform_linux::input::native_element::NativeElementScrollRequest,
+        epoch: NativeEpochId,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<CallResult, ToolError> {
+        if !Self::linux_x11_selected() {
+            return Err(ToolError::Failed("native_profile_requires_x11".into()));
+        }
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use cancelled before native element dispatch".into(),
+            ));
+        }
+        let bound = driver.lock().await.bind_epoch(epoch, language)?;
+        let session = bound.ready(language).await?;
+        if cancellation.is_cancelled() {
+            return Err(ToolError::Failed(
+                "Computer Use cancelled before native element dispatch".into(),
+            ));
+        }
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(ToolError::OutcomeUnknown("Computer Use native element invocation cancelled; input outcome unknown".into())),
+            result = session.scroll_native_element_window(request) => result,
+        }.map_err(|error| native_error(error, language))?;
+        native_element_result(result, language)
     }
 
     #[cfg(target_os = "macos")]
@@ -658,32 +720,28 @@ impl Driver {
         let State::Active(driver) = &self.state else {
             return Err(ToolError::Failed("Computer Use Session is closed".into()));
         };
-        if !self.sessions.contains_key(&epoch) {
-            let session = driver
-                .create_trusted_session(TrustedSessionOptions {
-                    // SDK lifecycle tombstones belong to their original transport.
-                    // A reset owns a fresh episode, never revives an old lease's ID.
-                    public_session: format!("maka-{}", uuid::Uuid::new_v4()),
-                    mode: SessionPermissionMode::Standard,
-                    ttl_seconds: 86400,
-                    idle_ttl_seconds: 86400,
-                    capability_manifest_path: None,
-                    bounded_manifest_path: None,
-                })
-                .map_err(|error| native_error(error, language))?;
-            self.sessions.insert(
-                epoch,
-                Arc::new(BoundSession {
+        let session = match self.sessions.entry(epoch) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let session = driver
+                    .create_trusted_session(TrustedSessionOptions {
+                        // SDK lifecycle tombstones belong to their original transport.
+                        // A reset owns a fresh episode, never revives an old lease's ID.
+                        public_session: format!("maka-{}", uuid::Uuid::new_v4()),
+                        mode: SessionPermissionMode::Standard,
+                        ttl_seconds: 86400,
+                        idle_ttl_seconds: 86400,
+                        capability_manifest_path: None,
+                        bounded_manifest_path: None,
+                    })
+                    .map_err(|error| native_error(error, language))?;
+                entry.insert(Arc::new(BoundSession {
                     session,
                     started: OnceCell::new(),
-                }),
-            );
-        }
-        Ok(self
-            .sessions
-            .get(&epoch)
-            .expect("bound session created")
-            .clone())
+                }))
+            }
+        };
+        Ok(Arc::clone(session))
     }
 
     /// Host calls this after all Session resources retire.
@@ -794,6 +852,76 @@ fn native_input_result(
     }
     serde_json::from_str(&result.raw_json)
         .map_err(|error| ToolError::OutcomeUnknown(format!("invalid native result: {error}")))
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+fn native_element_result(
+    result: cua_driver_sdk::ToolResult,
+    language: Language,
+) -> Result<CallResult, ToolError> {
+    if result.is_error
+        && matches!(
+            result.error_code.as_deref(),
+            Some("input_preparation_failed" | "input_outcome_unknown")
+        )
+    {
+        #[derive(serde::Deserialize)]
+        struct NativeEffect {
+            effect: cua_driver_contract::ActionEffect,
+        }
+        let refused = result.error_code.as_deref() == Some("input_preparation_failed")
+            && result
+                .structured_json
+                .as_deref()
+                .and_then(|value| serde_json::from_str::<NativeEffect>(value).ok())
+                .is_some_and(|value| value.effect == cua_driver_contract::ActionEffect::Refused);
+        return Err(if refused {
+            ToolError::Failed(result.text)
+        } else {
+            ToolError::OutcomeUnknown(result.text)
+        });
+    }
+    native_input_result(result, language)
+}
+
+#[cfg(all(test, target_os = "linux", not(target_env = "musl")))]
+mod linux_element_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn native_element_refusals_keep_original_text_and_uncertain_dispatch_stays_uncertain() {
+        let message = "element is not in this window's AT-SPI tree; refresh get_window_state()";
+        for (code, effect, uncertain) in [
+            ("input_preparation_failed", Some("refused"), false),
+            ("input_preparation_failed", Some("unverifiable"), true),
+            ("input_preparation_failed", None, true),
+            ("input_outcome_unknown", Some("unverifiable"), true),
+        ] {
+            let result = cua_driver_sdk::ToolResult {
+                text: message.into(),
+                images: Vec::new(),
+                structured_json: effect
+                    .map(|effect| serde_json::json!({"code":code,"effect":effect}).to_string()),
+                is_error: true,
+                error_code: Some(code.into()),
+                action: None,
+                verification: None,
+                degraded: false,
+                raw_json: "{}".into(),
+            };
+            match native_element_result(result, Language::En).unwrap_err() {
+                ToolError::Failed(actual) => {
+                    assert!(!uncertain);
+                    assert_eq!(actual, message);
+                }
+                ToolError::OutcomeUnknown(actual) => {
+                    assert!(uncertain);
+                    assert_eq!(actual, message);
+                }
+                other => panic!("unexpected native element error: {other}"),
+            }
+        }
+    }
 }
 
 fn refusal(code: &str, reason: &str, language: Language) -> String {
@@ -1047,7 +1175,7 @@ mod tests {
     #[tokio::test]
     async fn observing_absent_audio_epoch_does_not_initialize_a_runtime() {
         let driver = Driver::default();
-        let result = driver.wait_audio_finished(NativeEpochId::new()).await;
+        let result = driver.audio_completion(NativeEpochId::new()).await;
         assert!(matches!(result,
             Err(ToolError::Failed(message)) if message == "Computer audio epoch is unavailable"));
         assert!(matches!(driver.state, State::Idle));

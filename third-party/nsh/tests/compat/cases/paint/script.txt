@@ -61,10 +61,11 @@ style id:rtl borderTopRightRadius 1
 style id:rtl borderTopLeftRadius 2
 style id:rtl borderBottomLeftRadius 3
 style id:rtl borderBottomRightRadius 4
-style id:rtl-sides borderRightWidth 1
-style id:rtl-sides borderLeftWidth 2
-style id:rtl-sides borderRightColor #112233ff
-style id:rtl-sides borderTopRightRadius 6
+# Right to left, left and right stay where they say.
+style id:rtl-sides borderLeftWidth 1
+style id:rtl-sides borderRightWidth 2
+style id:rtl-sides borderLeftColor #112233ff
+style id:rtl-sides borderTopLeftRadius 6
 covers [styles] borderWidth
 covers [styles] borderTopWidth
 covers [styles] borderRightWidth
@@ -89,6 +90,17 @@ covers [styles] borderTopStartRadius
 covers [styles] borderTopEndRadius
 covers [styles] borderBottomEndRadius
 covers [styles] borderBottomStartRadius
+# paint-current-color
+tap id:case-paint-current-color
+expect Current color
+style id:current borderColor #00ff00ff
+style id:current backgroundColor #00ff00ff
+style id:current-mix backgroundColor #008080ff
+style id:current-gradient backgroundImage linear-gradient(180deg, #00ff00ff, #0000ffff)
+style id:current-drop filter drop-shadow(0 1 2 #00ff00ff)
+style id:current-class backgroundColor #00ff00ff
+style id:current-class borderColor #00ff0080
+style id:current-class-mix backgroundColor #008080ff
 # paint-effects
 tap id:case-paint-effects
 expect Effects
@@ -290,16 +302,11 @@ covers [styles] animationIterationCount
 # paint-shadows
 tap id:case-paint-shadows
 expect Shadows
-style id:shadow shadowColor #000000ff
-style id:shadow shadowOffset width=2 height=4
-style id:shadow shadowOpacity 0.3
-style id:shadow shadowRadius 6
-style id:shadow-red shadowColor #ff000080
-style id:shadow-red shadowOffset width=-1 height=0
-style id:shadow-red shadowOpacity 1
-style id:shadow-red shadowRadius 0
+style id:shadow boxShadow 2 4 6 0 #0000004d
+style id:shadow-red boxShadow -1 0 0 0 #ff000080
 style id:box boxShadow 2 4 6 1 #00000080
 style id:box-two boxShadow 0 1 2 0 #00000033, inset 0 0 0 1 #ff0000ff
+style id:box-layers boxShadow 0 1 2 0 #00000033, inset 0 0 0 1 #ff0000ff
 style id:box-offsets boxShadow 3 3 0 0 #0000ffff
 style id:box-first boxShadow -2 -3 5 0 #ff0000ff
 style id:box-inset boxShadow inset 1 2 3 4 #00ff0088
@@ -307,17 +314,19 @@ nostyle id:box-none boxShadow
 style id:text-shadow textShadowColor #336699ff
 style id:text-shadow textShadowOffset width=1 height=2
 style id:text-shadow textShadowRadius 3
+style id:text-shadow-layers-numbers textShadowColor #336699ff
+style id:text-shadow-layers-numbers textShadowOffset width=1 height=2
+style id:text-shadow-layers-numbers textShadowRadius 3
 style id:text-shadow-alpha textShadowColor #00000080
 style id:text-shadow-alpha textShadowOffset width=-2 height=0
 style id:text-shadow-alpha textShadowRadius 0
-covers [styles] shadowColor
-covers [styles] shadowOffset
-covers [styles] shadowOpacity
-covers [styles] shadowRadius
+# Of several layers, the widest.
+style id:text-shadow-layers textShadowColor #0000ffff
+style id:text-shadow-layers textShadowOffset width=3 height=4
+style id:text-shadow-layers textShadowRadius 5
+nostyle id:text-shadow-none textShadowColor
 covers [styles] boxShadow
-covers [styles] textShadowColor
-covers [styles] textShadowOffset
-covers [styles] textShadowRadius
+covers [styles] textShadow
 # paint-text
 tap id:case-paint-text
 expect Plain
@@ -363,6 +372,9 @@ style id:align-left textAlign left
 style id:align-center textAlign center
 style id:align-right textAlign right
 style id:align-justify textAlign justify
+# Left to right, the start is the left and the end the right.
+style id:align-start textAlign left
+style id:align-end textAlign right
 style id:dir-auto writingDirection auto
 style id:dir-ltr writingDirection ltr
 style id:dir-rtl writingDirection rtl
@@ -425,6 +437,12 @@ style id:active backgroundColor #3366ffff
 style id:active opacity 1
 tap id:active
 expect Presses: 1
+# A text's state style is a text style.
+style id:link color #3366ffff
+state id:link pressed
+style id:link color #ff0000ff
+state id:link none
+style id:link color #3366ffff
 # Hovered: hoverStyle while the pointer is over the view.
 style id:hover backgroundColor #ffffffff
 style id:hover borderWidth 0
@@ -582,6 +600,11 @@ expect Tailwind paint
 style id:transform-none transform translateX(8) rotate(12deg) scale(0.9)
 style id:property-none transform rotateX(45deg)
 style id:rotate-z transform rotate(12deg) rotateX(45deg) rotate(30deg)
+# A style's scale replaces the classes' scale and keeps their rotate; its
+# transform replaces their transform functions (rotate-x-*) and composes
+# after their translate.
+style id:style-scale transform rotate(12deg) scale(2)
+style id:style-transform transform translateX(8) rotate(5deg)
 style id:border-none borderWidth 0
 style id:border-none borderStyle solid
 style id:border-hidden borderTopWidth 0
@@ -592,6 +615,7 @@ style id:outline-none outlineWidth 0
 style id:outline-medium outlineStyle dotted
 style id:outline-medium outlineWidth 3
 style id:current borderColor #ff0000ff
+style id:style-current borderColor #ff0000ff
 style id:drop-shadow filter drop-shadow(0 1 2 #0000001a) drop-shadow(0 1 1 #0000000f)
 style id:perspective-child transform translateX(50) translateY(50) perspective(400) translateX(-50) translateY(-50) rotateY(45deg)
 style id:selection selectionColor #ff6600ff

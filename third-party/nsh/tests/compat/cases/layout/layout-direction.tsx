@@ -1,8 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): layout
 // direction. Right to left, rows run from the right, the start of a column's
-// cross axis is the right edge, `start` / `end` keys (insets, margins,
-// paddings) take the side their direction gives them and `left` / `right`
-// keys mean start and end (as in React Native); `direction` is inherited
+// cross axis is the right edge, the inline start / end keys (insets,
+// margins, paddings) take the side their direction gives them and `left` /
+// `right` keys keep their sides (as in CSS); `direction` is inherited
 // unless a view sets its own. Every test lays its boxes out in a frame of
 // its own, and the script checks each box's frame relative to it.
 import { Text, View } from "nsh";
@@ -61,7 +61,7 @@ function App() {
           <Box id="inherit-explicit-a" />
         </View>
       </Frame>
-      {/* start and end insets */}
+      {/* inline start and end insets */}
       <Frame id="ltr-inset" style={{ direction: "ltr" }}>
         <Box id="ltr-inset-start" style={{ position: "absolute", start: 10 }} />
         <Box id="ltr-inset-end" style={{ position: "absolute", end: 10, top: 30 }} />
@@ -75,7 +75,7 @@ function App() {
       <Frame id="rtl-inset-percent" style={{ direction: "rtl" }}>
         <Box id="rtl-inset-percent-a" style={{ position: "absolute", start: "10%" }} />
       </Frame>
-      {/* left and right right to left, and start over left */}
+      {/* left and right right to left, and the inline start over left */}
       <Frame id="rtl-sides" style={{ direction: "rtl" }}>
         <Box id="rtl-sides-left" style={{ position: "absolute", left: 10 }} />
         <Box id="rtl-sides-right" style={{ position: "absolute", right: 10, top: 30 }} />

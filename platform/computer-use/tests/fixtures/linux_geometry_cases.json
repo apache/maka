@@ -19,10 +19,7 @@
       "width": 320,
       "height": 240
     },
-    "input_point": [
-      37,
-      41
-    ],
+    "input_point": [37, 41],
     "required_observer_fields": [
       "window_role",
       "raw_xid",
@@ -38,10 +35,7 @@
     {
       "id": "without_capture",
       "before": [],
-      "calls": [
-        "await app.click([37,41]);",
-        "await app.scroll([37,41],'down',{pixels:100});"
-      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
       "rebind_public_app": true
     },
     {
@@ -79,10 +73,7 @@
           "height": 1200
         }
       ],
-      "calls": [
-        "await app.click([37,41]);",
-        "await app.scroll([37,41],'down',{pixels:100});"
-      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
       "rebind_public_app": true
     },
     {
@@ -102,10 +93,7 @@
           "height": 1300
         }
       ],
-      "calls": [
-        "await app.click([37,41]);",
-        "await app.scroll([37,41],'down',{pixels:100});"
-      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
       "rebind_public_app": true
     },
     {
@@ -125,10 +113,7 @@
           }
         }
       ],
-      "calls": [
-        "await app.click([37,41]);",
-        "await app.scroll([37,41],'down',{pixels:100});"
-      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
       "rebind_public_app": true
     },
     {
@@ -154,10 +139,7 @@
           }
         }
       ],
-      "calls": [
-        "await app.click([37,41]);",
-        "await app.scroll([37,41],'down',{pixels:100});"
-      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
       "rebind_public_app": true
     }
   ],

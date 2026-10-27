@@ -1121,11 +1121,10 @@ impl Browsers {
                     .clipboard
                     .as_ref()
                     .is_some_and(|bridge| bridge.turn() == turn)
+                    && let Err(error) = tab.cleanup_clipboard().await
                 {
-                    if let Err(error) = tab.cleanup_clipboard().await {
-                        failures.push(error.to_string());
-                        unsettled.insert(handle.clone());
-                    }
+                    failures.push(error.to_string());
+                    unsettled.insert(handle.clone());
                 }
                 continue;
             }
@@ -2324,14 +2323,15 @@ mod tests {
         assert!(
             matches!(result,Err(ToolError::Failed(message)) if message == "document changed during browser authorization; retry the operation")
         );
-        let accesses = accesses.lock().unwrap();
-        assert_eq!(accesses.len(), 1);
-        assert_eq!(accesses[0].document().url, "https://source.example/");
-        assert_eq!(
-            accesses[0].origin().unwrap().as_deref(),
-            Some("https://destination.example")
-        );
-        drop(accesses);
+        {
+            let accesses = accesses.lock().unwrap();
+            assert_eq!(accesses.len(), 1);
+            assert_eq!(accesses[0].document().url, "https://source.example/");
+            assert_eq!(
+                accesses[0].origin().unwrap().as_deref(),
+                Some("https://destination.example")
+            );
+        }
         assert_eq!(server.await.unwrap().len(), 6);
     }
 
@@ -2675,6 +2675,23 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_during_browser_connect_does_not_create_a_target() {
+        use tokio_tungstenite::tungstenite::handshake::server::{
+            Callback, ErrorResponse, Request, Response,
+        };
+
+        struct CancelAtHandshake(CancellationToken);
+
+        impl Callback for CancelAtHandshake {
+            fn on_request(
+                self,
+                _: &Request,
+                response: Response,
+            ) -> std::result::Result<Response, ErrorResponse> {
+                self.0.cancel();
+                Ok(response)
+            }
+        }
+
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let cancellation = CancellationToken::new();
@@ -2682,16 +2699,10 @@ mod tests {
         let server = tokio::spawn(async move {
             let paths = serve_inventory(&listener, &[]).await;
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_hdr_async(
-                stream,
-                move |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                      response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-                    cancelled.cancel();
-                    Ok(response)
-                },
-            )
-            .await
-            .unwrap();
+            let mut socket =
+                tokio_tungstenite::accept_hdr_async(stream, CancelAtHandshake(cancelled))
+                    .await
+                    .unwrap();
             let mut bytes = [0; 1024];
             let count = socket.get_mut().read(&mut bytes).await.unwrap();
             assert_eq!(count, 0, "a cancelled caller dispatched a CDP request");

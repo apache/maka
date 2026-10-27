@@ -319,13 +319,13 @@ CSS 的环境变量让内容避开系统界面，可用于任何视图的内边�
 
 ### safeArea 与 safeAreaInsets
 
-`safeArea()` 是界面的安全区（Rust 中为 `safe_area()`）；`safeAreaInsets()` 是组件渲染位置的边距（Rust 中为 `cx.insets()`），即 `safe-area-inset-*` 变量的值。两者都是响应式的 `Edges`（`{ top, right, bottom, left }`，单位为点）。见 [safeArea 与 safeAreaInsets](../elements/safe-area.md#safearea-and-safeareainsets)。
+`safeArea()` 是界面的安全区（Rust 中为 `safe_area()`）；`safeAreaInsets()` 是组件渲染位置的边距（Rust 中为 `cx.insets()`），即 `safe-area-inset-*` 变量的值。两者都是响应式的 `Edges`（`{ top, right, bottom, left }`，单位为点）。见 [safeArea 与 safeAreaInsets](../elements/safe-area.md#safearea-与-safeareainsets)。
 
 <a id="keyboard-and-keyboardframe"></a>
 
 ### Keyboard 与 keyboardFrame
 
-`Keyboard.dismiss()` 隐藏软键盘（Rust 中为 `dismiss_keyboard()`），`keyboardFrame()` 告诉你它覆盖了屏幕的多少（Rust 中为 `keyboard_height()` 和 `keyboard_duration()`）。见[隐藏键盘](../elements/keyboard.md#hiding-the-keyboard)和[键盘高度](../elements/keyboard.md#the-keyboards-height)。
+`Keyboard.dismiss()` 隐藏软键盘（Rust 中为 `dismiss_keyboard()`），`keyboardFrame()` 告诉你它覆盖了屏幕的多少（Rust 中为 `keyboard_height()` 和 `keyboard_duration()`）。见[隐藏键盘](../elements/keyboard.md#隐藏键盘)和[键盘高度](../elements/keyboard.md#键盘高度)。
 
 <a id="selectable-views"></a>
 
@@ -354,7 +354,6 @@ import { Animated, createAnimatedValue, createMotion, motions, Easing, LayoutAni
 | `opacity` | `.bind_opacity(&value)` | `style={{ opacity: value }}` |
 | `backgroundColor` | `.bind_background(&value.interpolate_colors(&[0.0, 1.0], &[white(), black()]))` | `style={{ backgroundColor: value.interpolate({ inputRange: [0, 1], outputRange: ["#fff", "#000"] }) }}` |
 | `borderColor`、`color` | `.bind_border_color(&node)`、`.bind_color(&node)` | 同上：一个颜色节点。`borderColor` 为所有边着色；`Text` 的 `color` 为整段文本着色 |
-| `shadowColor`、`shadowOpacity`、`shadowRadius` | `.bind_shadow_color(&node)`、`.bind_shadow_opacity(&value)`、`.bind_shadow_radius(&value)` | `style={{ shadowOpacity: value }}`（`shadowColor` 用颜色节点） |
 | `transform` | `.bind_translate_x(&value)`、`.bind_translate_y`、`.bind_scale`、`.bind_rotate`（角度） | `translateX`、`translateY`、`scale`、`scaleX`、`scaleY`、`rotate`、`rotateX`、`rotateY`、`rotateZ`：`transform: [{ translateX: value }]` |
 | 滚动位置 | 滚动视图或列表上的 `.scroll_value(&value)` | `<Scroll scrollValue={value}>` 和 `<List scrollValue={value}>` 每帧把滚动偏移写入该值 |
 | 手势 | `.pan_values(Some(&x), Some(&y))`、`.pinch_value(&scale)`、`.rotation_value(&angle)` | 任意元素上的 `pan={{ x, y }}`、`pinch={{ scale }}`、`rotation={{ angle }}`：手势直接写入这些值（见[触摸与手势](../docs/touch-and-gestures.md)） |
@@ -1007,7 +1006,12 @@ use nsh_core::platform::Os;
 
 let card = view().p_4();
 let card = match os() {
-    Os::Ios => card.shadow_color(black()).shadow_opacity(0.15).shadow_radius(px(8.0)),
+    Os::Ios => card.shadow([BoxShadow {
+        offset_y: px(2.0),
+        blur: px(8.0),
+        color: rgba(0x00000026).into(),
+        ..BoxShadow::default()
+    }]),
     Os::Android => card.elevation(px(4.0)),
     _ => card,
 };
@@ -1015,7 +1019,7 @@ let card = match os() {
 
 ```tsx tabs
 const shadow = platform.select({
-  ios: { shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 8 },
+  ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.15)" },
   android: { elevation: 4 },
 });
 ```
@@ -2562,7 +2566,7 @@ function Saved() {
 | `JSX` | JSX 命名空间（`JSX.Element`） |
 | `YNode` | `ref` 拿到的对象：聚焦、滚动等命令。见[元素](../elements/index.md) |
 | `ViewProps`、`TextProps`、`ImageProps`、`ScrollProps`、`CommonProps`、`TouchProps` | 宿主元素的属性 |
-| `ViewStyle`、`TextStyle`、`ImageStyle`、`LayoutStyle`、`StyleProp<T>` | 样式对象；见[样式参考](./style-reference.md) |
+| `ViewStyle`、`TextStyle`、`InputStyle`、`ImageStyle`、`LayoutStyle`、`StyleProp<T>` | 样式对象；见[样式参考](./style-reference.md) |
 | `ColorValue`、`DimensionValue`、`LengthValue`、`TransformStep` | 样式中的值 |
 | `GestureResponderEvent`、`HoverEvent`、`ContextMenuEvent`、`ScrollEvent`、`PanEvent`、`TouchPoint` | 事件数据 |
 | `Point`、`Size`、`Bounds`、`Edges`、`Modifiers` | 事件数据和属性所用的形状，字段与 GPUI 相同（`nsh_core::geometry`） |

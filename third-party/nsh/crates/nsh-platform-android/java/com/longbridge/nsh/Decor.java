@@ -30,10 +30,6 @@ final class Decor extends Drawable {
     final int[] borderColors = new int[4];
     /** 0 solid, 1 dashed, 2 dotted. */
     int borderStyle;
-    int shadowColor;
-    float shadowDx;
-    float shadowDy;
-    float shadowRadius;
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
@@ -42,8 +38,12 @@ final class Decor extends Drawable {
     private final RectF rect = new RectF();
     private final float[] corners = new float[8];
 
-    boolean hasShadow() {
-        return Color.alpha(shadowColor) > 0 && Color.alpha(fill) > 0;
+    /** True if an outer box shadow draws outside the box. */
+    boolean hasOuterShadows() {
+        for (int n = 0; n < boxShadowColors.length; n++) {
+            if (boxShadows[n * 5 + 4] == 0 && Color.alpha(boxShadowColors[n]) > 0) return true;
+        }
+        return false;
     }
 
     /** One circular radius: the outline is a plain round rect. */
@@ -273,10 +273,7 @@ final class Decor extends Drawable {
         if (Color.alpha(fill) > 0) {
             paint.setStyle(Paint.Style.FILL);
             paint.setColor(fill);
-            if (hasShadow()) paint.setShadowLayer(shadowRadius, shadowDx, shadowDy, shadowColor);
-            else paint.clearShadowLayer();
             canvas.drawPath(shape(b, 0, path), paint);
-            paint.clearShadowLayer();
         }
         drawGradients(canvas, b);
         drawInsetShadows(canvas, b);
@@ -292,9 +289,7 @@ final class Decor extends Drawable {
 
     /** Outer box shadows: only outside the box, as CSS draws them. */
     private void drawOuterShadows(Canvas canvas, Rect b) {
-        boolean any = false;
-        for (int n = 0; n < boxShadowColors.length; n++) any |= boxShadows[n * 5 + 4] == 0 && Color.alpha(boxShadowColors[n]) > 0;
-        if (!any) return;
+        if (!hasOuterShadows()) return;
         canvas.save();
         if (android.os.Build.VERSION.SDK_INT >= 26) canvas.clipOutPath(shape(b, 0, path));
         paint.setStyle(Paint.Style.FILL);

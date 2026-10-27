@@ -7,8 +7,8 @@ Every tag is a component in scope (`native-pipeline.md`): the primitives `View`,
 | JSX | Native (Apple) | Notes |
 |---|---|---|
 | `<View>` | `NshView` (UIView) | `onPress` / `onLongPress` / `onPressDown` / `onPressUp`, `activeStyle` / `hoverStyle` / `focusStyle` / `disabledStyle`, `pan={{x, y}}` + `onPanStart` / `onPanEnd`, `pinch` / `rotation`; `desktop={{ windowDrag }}` (any element: pressing it drags the window; the platforms decide on the main thread from `ViewProps::window_drag`, the nearest view that sets it decides, inputs and views with press / touch handlers nearer than it stay clickable; `nsh/desktop`) |
-| `<Text>` | `TextView` (CTFrame) | nested `<Text>` is a span, other elements are inline attachments ([text.md](text.md)); `numberOfLines`, `ellipsizeMode`, `allowFontScaling`, `maxFontSizeMultiplier`, `adjustsFontSizeToFit` + `minimumFontScale`, `selectable` (range selection) + the `selectionColor` style key (`selection:text-*`), `onTextLayout` |
-| `<Image src>` | UIView + image CALayer | `src` is a URL or `import img from "./a.png"` (an asset descriptor with its size); `resizeMode`; `placeholder` (a URL or an asset, shown until the image loads), `blurRadius`, `fadeDuration`; `onLoadStart` / `onProgress` (`loaded` / `total` bytes) / `onLoad` (the source's pixel size) / `onError` / `onLoadEnd`; `tintColor`; animated GIF / WebP / APNG; `Image.getSize(src)` / `Image.prefetch(src)` |
+| `<Text>` | `TextView` (CTFrame) | nested `<Text>` is a span, other elements are inline attachments ([text.md](text.md)); the style keys `numberOfLines` and `textOverflow`, `allowFontScaling`, `maxFontSizeMultiplier`, `adjustsFontSizeToFit` + `minimumFontScale`, the style key `userSelect` (range selection) + `selectionColor` (`selection:text-*`), `onTextLayout` |
+| `<Image src>` | UIView + image CALayer | `src` is a URL or `import img from "./a.png"` (an asset descriptor with its size); the `objectFit` style (`object-*`); `placeholder` (a URL or an asset, shown until the image loads), `blurRadius`, `fadeDuration`; `onLoadStart` / `onProgress` (`loaded` / `total` bytes) / `onLoad` (the source's pixel size) / `onError` / `onLoadEnd`; `tintColor`; animated GIF / WebP / APNG; `Image.getSize(src)` / `Image.prefetch(src)` |
 | `<Scroll>` | UIScrollView | `horizontal`, `contentStyle` / `contentClass`, `refreshing` + `onRefresh` (with `refreshIndicator` + `pullValue` for an indicator of the app's own), `scrollValue`, `onScrollEnd`, `keyboardDismissMode`, zooming, see [scrolling-and-lists.md](scrolling-and-lists.md) |
 | `<Canvas draw>` | `CanvasView` (drawRect replay) | see [canvas.md](canvas.md) |
 | `<List each>` | UIScrollView + recycled cells | see [scrolling-and-lists.md](scrolling-and-lists.md) |
@@ -19,7 +19,7 @@ Every tag is a component in scope (`native-pipeline.md`): the primitives `View`,
 | `<InputAccessoryView>` | a NshView set as `inputAccessoryView` | `nativeID`; inputs name it with `ios={{ inputAccessoryViewID }}`. A layout root as wide as the window and as tall as its content; the core resolves the id (`InputConfig::accessory`). Renders nothing on Android |
 | `<WebView>` | WKWebView (WebKit loaded on first use) | `src` (a URL) or `html` (inline HTML, shown instead of `src`) + `baseUrl`, `injectedJavaScript(BeforeContentLoaded)`, `onMessage` (pages call `window.nsh.postMessage`), `onLoad*`, `onNavigationStateChange`; ref: `reload()`, `goBack()`, `goForward()`, `postMessage(data)`, `injectJavaScript(js)` |
 | `nativeComponent` (`nsh`'s `nativeComponent`) | a `NshView` box filled by the registered component's view; own props may be bound to animated values | see [embedding.md](embedding.md) |
-| `<Video>` | AVPlayerLayer / AVPlayerViewController (AVFoundation loaded on first use) | `src` (a URL), `paused`, `muted`, `volume`, `rate`, `repeat`, `resizeMode`, `controls`, `onLoad` / `onProgress` / `onEnd` / `onBuffer` / `onError`; ref: `seek(seconds)` |
+| `<Video>` | AVPlayerLayer / AVPlayerViewController (AVFoundation loaded on first use) | `src` (a URL), `paused`, `muted`, `volume`, `rate`, `repeat`, the `objectFit` style (`object-*`), `controls`, `onLoad` / `onProgress` / `onEnd` / `onBuffer` / `onError`; ref: `seek(seconds)` |
 
 On Android the same elements map to `Box` (ViewGroup), `TextBox`, `ImageBox`, `ScrollBox` (ScrollView), `InputBox` (EditText),
 `StackBox` (pages with a Toolbar, predictive back), `ModalHost` (a Dialog), `WebBox` (android.webkit.WebView) and `VideoBox`
@@ -67,7 +67,7 @@ answered natively from props mounted beforehand, never by asking JS (blocking th
 and reorders fast input). Events tell JS afterwards. Existing answers: input `maxLength` (`shouldChangeCharactersIn`,
 `InputFilter`), `submitBehavior` (`textFieldShouldReturn`, `textView:shouldChangeTextInRange:`, Android's `OnEditorActionListener` and input connection, AppKit's `doCommandBySelector:`), `popOnSwipe` / `popOnBack` (`gestureRecognizerShouldBegin`,
 `navigationBar:shouldPopItem:`, Android `wantsBack()`: the `OnBackInvokedCallback` registration, or, where the window dispatches the back key instead (below 13, `enableOnBackInvokedCallback` off), taking the key in `NshView`'s unhandled key listener, before the activity's `onBackPressed`), `closeOnEscape` / `closeOnBackdropPress` / `closeOnSwipe`
-(`presentationControllerShouldDismiss`, the dialog's back), `pan` / `pinch` / `hitSlop` / `pointerEvents` /
+(`presentationControllerShouldDismiss`, the dialog's back), `pan` / `pinch` / `hitSlop` / the `pointerEvents` style /
 `keyboardShouldPersistTaps` / `panActivation` (recognizers), capabilities (`decidePolicyForNavigationAction`, `shouldOverrideUrlLoading`),
 `AlertDialog`'s `closeOnEscape` / `closeOnBackdropPress`. A new capability with such a callback gets a prop (a menu's items, a rule, a flag); what a prop cannot
 express is let through and corrected in the event afterwards (a controlled `value` in `onChange`). `BackHandler` is
@@ -135,19 +135,38 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   JS cannot cancel the system's menu after the fact (the main thread never waits for JS), so the rule is what is
   mounted. iOS: a `UITapGestureRecognizer` for the secondary button per listening view (iPad pointers, Mac
   Catalyst's mouse). On touchscreens a menu belongs on `onLongPress`; Android raises `onContextMenu` for no input yet.
-- **Keyboard focus**: on macOS and the web, views that take presses are stops of Tab (the keyboard focus) and Return /
-  Space press the focused one; a click presses without focusing, so a pressable's `FOCUSED` state (`focus:` classes,
-  `.focus(..)`) is keyboard focus, and `focus-visible:` is the same variant. `focusable={false}` (`Prop::Focusable`,
-  `ViewProps::focusable`; Rust `.focusable(false)`) keeps a pressable out of the stops: a backdrop that closes a
-  popover, rows a list moves between with the arrow keys. A pressable hears `onFocus` / `onBlur` (`EventKind::Focus` /
-  `Blur`, as inputs do) when the keyboard focus reaches and leaves it: AppKit's first responder, the browser's
-  `:focus-visible`; the headless driver's Tab moves it the same way there. Inputs are stops by default; terminal and
-  GPUI also honor `focusable={false}` on inputs. `true` makes nothing focusable that is not already interactive.
-  Windows, Linux and GPUI move the focus between fields and
-  native components only so far.
+- **Keyboard focus**: on macOS and the web, Tab (the keyboard focus) moves between stops, in tree order; a click
+  presses without focusing, so a stop's `FOCUSED` state (`focus:` classes, `.focus(..)`) is keyboard focus, and
+  `focus-visible:` is the same variant. Focus and presses are separate: `ViewProps::focus_stop` decides, from
+  `focusable` (`Prop::Focusable`, `ViewProps::focusable`; Rust `.focusable(..)`) and whether the view takes presses,
+  as used by macOS `input::is_key_stop`, the web's `updateFocusable` and the headless driver's
+  `Screen::tab_stops`. The terminal and GPUI backends honor the same explicit view opt-in while retaining their
+  native controls, selectable text, scroll stops and popup scope rules. Native components still need their
+  own focus capability; an explicit view opt-in does not invent a native focus handle. Unset, views that take
+  presses are stops.
+  `focusable={true}` makes any view one, whether or not it takes presses: a component that takes keys while focused (a
+  chart, a slider, a list that moves its selection) sets it on a view that takes no presses, so a pressable around it
+  (a card that opens a page) keeps its presses; it must not listen to `onPress` just to be focusable, which would
+  swallow them. `focusable={false}` keeps a pressable out: a backdrop that closes a popover, rows a list moves between
+  with the arrow keys. A disabled view is never a stop. Inputs are stops by default; terminal and GPUI also honor
+  `focusable={false}` on inputs. A stop hears `onFocus` /
+  `onBlur` (`EventKind::Focus` / `Blur`, as inputs do) when the keyboard focus reaches and leaves it: AppKit's first
+  responder, the browser's `:focus-visible`; the headless driver's Tab moves it the same way there. Return and Space
+  press the focused stop only when it takes presses; a stop that takes none hears its keys through the keymap (`on_key`
+  / `on_key_with`, bound while it is focused, as `DataTable`'s controller does), Return and Space included.
+  (`focusable={true}` on a view that takes no presses made nothing focusable before 2026-10-26; with no release
+  recorded, it now means what React Native's `focusable` and the web's `tabIndex={0}` mean.) Windows and Linux
+  move the focus between fields and native components only so far; iOS and Android move it between inputs.
+  A ref's `focus()` on a stop moves the keyboard focus to it as Tab does (`focus:`, `onFocus`; a popup gives it back to
+  its trigger), and `blur()` takes it off: `Command::Focus` / `Blur` reach the platforms for any view, and AppKit makes
+  the view first responder (`input::focus_control`, past a field that edits), the browser focuses the element with
+  `focusVisible` and treats it as keyboard focus whatever its heuristics say after a click (`focusPressable`), the
+  headless driver moves its focus (`focus_calls`); on a view that is not a stop it does nothing. Windows, Linux and
+  GPUI leave `focus()` on views to them; iOS and Android focus inputs only.
 - **`onPanEnd` / `onPanStart`** carry `valueX` / `valueY`: the bound pan values at that moment (a drag may grab a value mid
   animation), for snapping.
-- **Imperative calls**: nodes have `focus()`, `blur()` and `scrollTo({ x, y, animated })` (use `ref`); lists also
+- **Imperative calls**: nodes have `focus()`, `blur()` (inputs, and views that take presses where they are stops of
+  the keyboard focus: "Keyboard focus" above) and `scrollTo({ x, y, animated })` (use `ref`); lists also
   `scrollToIndex({ index, viewPosition, viewOffset, animated })`, `scrollToEnd()`, `scrollToOffset()`; `Keyboard.dismiss()` (`nsh`).
   Commands run after the commit's other mount items; list scrolls are resolved by the core with the current item sizes.
 - **`measure()`** (on any node's ref) resolves, once the turn's changes are laid out, to `{ bounds, pagePosition }`
@@ -162,7 +181,8 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   right-to-left horizontal lists (scaleX −1). The answer settles the promise from the core's events
   (`JsEvent::Reply`), like a module call's (`nsh-js` `components.rs`). There is no `measureInWindow`: the root view is the window for a full-screen surface, and
   an embedding app knows where it put the surface.
-- **Touch** (React Native semantics): `pointerEvents`, `hitSlop`, `delayLongPress`, `android={{ ripple }}`
+- **Touch** (React Native semantics): the `pointerEvents` style key (`none` inherited as CSS's, `box-none` / `box-only`
+  React Native's, for the view alone), `hitSlop`, `delayLongPress`, `android={{ ripple }}`
   (`{ color, borderless, radius, foreground }`, Android only); press-in waits ~130ms inside scroll views; only the innermost
   pressable view responds. Children placed outside their parent (`position: "absolute"`, `overflow` visible: a
   dropdown under its field) can be touched where they are drawn: UIKit and Android only look for a touch's target
@@ -208,7 +228,10 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   `onAccessibilityAction`, `accessibilityElementsHidden`, `importantForAccessibility`, `accessibilityLiveRegion`, `testID`
   (Android: resource id). Views without a label read their texts. The props go as one `MountItem::ViewProps`, except
   a label changing alone on mounted props (one that follows app state: a count, a price), which goes as
-  `MountItem::AccessibilityLabel`.
+  `MountItem::AccessibilityLabel`. The `increment` / `decrement` actions make an element adjustable whatever its
+  role: iOS adds the adjustable trait to the traits of its role (`native_view.rs` `traits`), so VoiceOver's swipe up /
+  down performs them (an `image`, `Plot`'s role, stays an image), Android offers scroll forward / backward, Windows
+  makes its range value writable.
 - **Frames**: `requestAnimationFrame` / `cancelAnimationFrame` follow the display (CADisplayLink / Choreographer).
 - **Back button** (`nsh/mobile`): `BackHandler.onBackPress(listener)` (returns the function that removes it; a
   listener added while a component renders goes with it, as `keymap.bind`'s bindings do), after modals, the top
@@ -239,13 +262,12 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   root's `Dialog` event, which the core resolves. Embedding apps forward their controller's status bar to `nsh_status_bar_style()` / `_hidden()` / `_animation()`.
 - **Right to left**: the user's language sets the root's direction (again at once when it changes);
   `direction` (`inherit` / `ltr` / `rtl`) overrides it per view. The core resolves each node's direction (inherited, also for
-  subtrees built detached), sets taffy's `direction` (rows run from the right) and, right to left, swaps the left and right
-  properties (margins, paddings, insets, borders, corners — always: React Native's rule for style keys; Tailwind's
-  physical classes are resolved for the other side right to left, `tailwind::utilities::directed`, so they come out
-  where they say, as in a browser) and places the
-  start / end ones (`marginStart`, `start`, `borderTopEndRadius`, ...). A direction change swaps the current taffy style in place
-  (an involution), so authored styles need not be kept. Text: `auto` alignment is the right side right to left, left / right
-  swap, `writingDirection` sets the base direction (else the content's). Native widgets mirror (`MountItem::LayoutDirection`:
+  subtrees built detached), sets taffy's `direction` (rows run from the right), keeps the left and right properties
+  where they say (margins, paddings, insets, borders, corners, in classes and style keys alike, as in a browser) and
+  places the logical ones (`marginStart`, `start`, `borderTopEndRadius`, `ms-*`, `start-*`, ...). A
+  direction change sets the direction in place and restyles the nodes with logical properties or `rtl:` classes. Text:
+  `auto`, `start` and `end` alignment follow the direction, `left` / `right` keep their side, `writingDirection` sets
+  the base direction (else the content's). Native widgets mirror (`MountItem::LayoutDirection`:
   `semanticContentAttribute`, `View.setLayoutDirection`; Android apps need `android:supportsRtl`). Horizontal scroll views
   are laid out left to right and their children mirrored in the content by the core (a right-to-left row would overflow to
   negative offsets), starting at the right end and keeping their distance from it; horizontal lists are flipped natively
@@ -294,7 +316,8 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   could not place it (no layout yet). Rust: `on_caret_move` with a `CaretEvent`, and
   `overlay().anchor_bounds(...)`.
 
-- **Paste**: `onPaste` reports what the user pasted (`EventPayload::Paste`, `PasteEvent`): `text`, `files` (data on
+- **Paste**: `onPaste` reports what the user pasted (`EventPayload::Paste`, `PasteEvent`): `text`, `html` (the clipboard's `text/html`, read on Linux, UTF-8 or UTF-16 as Firefox
+  writes it, and on the web; `RichEditor` parses it into its schema), `files` (data on
   the clipboard, images: `PastedFile`s whose bytes become JS `File`s in `nsh-js` `payload_object`, never a JS string
   or base64) and `uris` (local files' `file:` URLs, as `onFileDrop`'s). The platform reads the clipboard in the
   paste's own handler, on the user's paste only, and only when the app listens. Whether the input inserts the text is
@@ -310,7 +333,7 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   editors' paste (the clipboard's PNG or bitmap, `CF_HDROP`; GPUI's `ClipboardEntry::Image` / `ExternalPaths`);
   Linux: the `paste-clipboard` signal (stopped for `"report"`); web: the field's `paste` event (`preventDefault` for
   `"report"`; `clipboardData.files`' bytes handed to `nsh_paste` with a JSON header). `nsh test`'s
-  `app.paste(selector, { text, files, uris })` pastes as the user does (files are paths whose bytes are read):
+  `app.paste(selector, { text, html, files, uris })` pastes as the user does (files are paths whose bytes are read):
   headless, and on macOS and iOS through a pasteboard of the test's own (`TestStep::Paste`), the machine's
   clipboard untouched. `onPaste` is kind 64: `EventMask` has two words.
 

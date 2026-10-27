@@ -109,7 +109,8 @@ and take their look from the app.
 | `<Switch>` | `nsh_base::switch()` | An on / off control with a track and a thumb | [Switch](./switch.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | A region whose content expands and collapses | [Collapsible](./collapsible.md) |
 | `<Progress>` | `nsh_base::progress()` | A progress bar: how far a task is, or that it is under way | [Progress](./progress.md) |
-| `<Plot>`, `<Line>`, `<Area>`, `<Grid>` (`nsh/base/plot`) | `nsh_base::plot::{plot, line, area, grid}` | A chart's frame and its marks, drawn natively from the app's rows | [Plot](./plot.md) |
+| `<Slider>` | `nsh_base::slider()` | A value, or a range of two, picked along a track | [Slider](./slider.md) |
+| `<Plot>`, `<Line>`, `<Area>`, `<Bar>`, `<Grid>`, `<Pie>`, `<Arc>` (`nsh/base/plot`) | `nsh_base::plot::{plot, line, area, bar, grid, pie, arc}` | A chart's frame and its marks, drawn natively from the app's rows | [Plot](./plot.md) |
 | `<Dialog>` | `nsh_base::dialog()` | Presents its children over everything else | [Dialog](./dialog.md) |
 | `<NavStack>`, `<NavPage>` | `nsh_base::nav_stack()`, `nsh_base::nav_page()` | Native navigation: a stack of pages with the platform's header and back gestures | [NavStack](./nav-stack.md) |
 | `AlertDialog` | `nsh_base::alert_dialog()` | The system's alert and action sheet | [AlertDialog](./alert-dialog.md) |
@@ -158,7 +159,11 @@ only hears about it afterwards. Only the innermost pressable view responds; insi
 | `onPressUp` | `.on_press_up(..)` | `() => void` | | The finger lifted or left. |
 | `delayLongPress` | `.long_press_delay(ms)` | `number` | `500` | Milliseconds before a press becomes a long press. |
 | `hitSlop` | `.hit_slop(EdgeInsets::all(px(8.0)))` | `number \| Partial<Edges>` | | Extends the touch area beyond the bounds, in points. |
-| `pointerEvents` | `.pointer_events(PointerEvents::BoxNone)` | `"auto" \| "none" \| "box-none" \| "box-only"` | `"auto"` | Which touches the view and its children receive: `"none"` neither, `"box-none"` only the children, `"box-only"` only the view itself. |
+
+The style key `pointerEvents` (`.pointer_events(PointerEvents::BoxNone)` in Rust, the classes `pointer-events-*`)
+decides which touches the view and the views in it receive: `"none"` neither (a view inside that sets `"auto"` takes
+them again), `"box-none"` only the views in it, `"box-only"` only the view itself
+([touch and gestures](../docs/touch-and-gestures.md#pointerevents)).
 
 The press feedback is the app's: `activeStyle` (or `active:` classes, `.active(..)` in Rust) applies while the view is
 pressed, natively, with no round trip to the app's code (below).
@@ -167,7 +172,8 @@ pressed, natively, with no round trip to the app's code (below).
 
 Styles that apply while the view is in a state, over its own styles, natively. Each is the object form of a Tailwind
 variant. Later states win (selected, checked and indeterminate, then hover, focus, active); `disabledStyle` wins over all, and the others do not
-apply while the view is disabled.
+apply while the view is disabled. Each takes the element's own style: a `TextStyle` on a `<Text>`, an `InputStyle` on
+an `<Input>`, an `ImageStyle` on an `<Image>`, a `ViewStyle` elsewhere.
 
 | Prop | Rust | Class variant | Applies |
 |---|---|---|---|
@@ -177,7 +183,7 @@ apply while the view is disabled.
 | `disabledStyle` | `.disabled_style(\|s\| ..)` | `disabled:` | While `disabled`. |
 | `checkedStyle` | `.checked(\|s\| ..)`, `.checked_style(style)` | `checked:` | While `accessibilityState.checked` is `true` (a checkbox, a switch, a radio; `"mixed"` is not checked). |
 | `indeterminateStyle` | `.indeterminate(\|s\| ..)`, `.indeterminate_style(style)` | `indeterminate:` | While `accessibilityState.checked` is `"mixed"` (a checkbox that is neither checked nor unchecked). |
-| | `.selected(\|s\| ..)` | `selected:` | While `accessibilityState.selected` is `true` (a selected `Button`, a tab). |
+| `selectedStyle` | `.selected(\|s\| ..)` | `selected:` | While `accessibilityState.selected` is `true` (a selected `Button`, a tab). |
 
 ```rust tabs
 view()
@@ -325,13 +331,22 @@ touchscreens, a long press opens menus: handle `onLongPress` with the same funct
 
 ### Keyboard focus
 
-On macOS and the web, Tab moves the keyboard focus between the views that take presses (and the inputs), Return or
-Space presses the focused view, and focus styles (`focus:`, `.focus(..)`) style it. A click presses a view without
-focusing it, so focus styles show for keyboard focus only.
+On macOS and the web, Tab moves the keyboard focus between its stops in tree order: the inputs, the views that take
+presses, and every `focusable` view. Focus styles (`focus:`, `.focus(..)`) style the focused view, and Return or Space
+presses it when it takes presses. A click presses a view without focusing it, so focus styles show for keyboard focus
+only.
+
+Focus and presses are separate. A view that takes keys while it has the focus (a chart, a slider, a list that moves
+its selection with the arrow keys) sets `focusable` and binds its keys while focused (`onFocus` / `onBlur` with
+[`keymap`](../modules/nsh.md#keymap)); a press on it still reaches a pressable around it, such as a card that
+opens a page.
+
+A ref's `focus()` moves the keyboard focus to a stop as Tab does (its focus styles show and `onFocus` fires), say to
+give it back to the trigger of a popup that closed, and `blur()` takes it off.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `focusable` | `.focusable(..)` | `boolean` | `true` | Whether a view that takes presses is a stop of Tab; `false` leaves it to the pointer (a backdrop that closes a popover, rows the arrow keys move between). |
+| `focusable` | `.focusable(..)` | `boolean` | `true` for views that take presses | Whether the view is a stop of Tab. `true` makes any view one, whether it takes presses or leaves them to the views around it; `false` leaves a pressable to the pointer (a backdrop that closes a popover, rows the arrow keys move between). |
 | `onFocus` | `.on_focus(..)` | `() => void` | | Tab (or `focus()`) gave the view the keyboard focus. |
 | `onBlur` | `.on_blur(..)` | `() => void` | | The keyboard focus left the view. |
 
@@ -345,6 +360,16 @@ view()
 
 // An overlay's backdrop: a click closes it, Tab goes past it to the content.
 view().absolute().inset_0().focusable(false).on_press(close)
+
+// A chart in a card: Tab stops at the chart, a click opens the card's page.
+view().on_press(open_page).child(
+    view()
+        .h(px(160.0))
+        .focusable(true)
+        .focus(|s| s.bg(rgb(0xe0f2fe)))
+        .on_focus(move || focused.set(true))
+        .on_blur(move || focused.set(false)),
+)
 ```
 
 ```tsx tabs
@@ -354,6 +379,16 @@ view().absolute().inset_0().focusable(false).on_press(close)
 
 {/* An overlay's backdrop: a click closes it, Tab goes past it to the content. */}
 <View class="absolute inset-0" focusable={false} onPress={close} />
+
+{/* A chart in a card: Tab stops at the chart, a click opens the card's page. */}
+<View onPress={openPage}>
+  <View
+    class="h-40 focus:bg-sky-100"
+    focusable
+    onFocus={() => focused.set(true)}
+    onBlur={() => focused.set(false)}
+  />
+</View>
 ```
 
 ### Layout and identity
@@ -504,5 +539,5 @@ let input!: YNode;
 
 The main thread never waits for the app's code. When the system needs an answer on the spot (may this text change, may
 the back button pop, may this sheet close), NSH answers it natively from props set beforehand (`maxLength`,
-`popOnBack`, `closeOnSwipe`, `pointerEvents`, …), and the event reaches the app afterwards. This is why such behavior
+`popOnBack`, `closeOnSwipe`, …), and the event reaches the app afterwards. This is why such behavior
 is a prop, not a return value of a handler.

@@ -38,7 +38,7 @@ just run --root /path/to/business-host
 
 `just run` opens the [NSH terminal workbench](../terminal-shell/README.md), using `~/.maka/application/host` by default. It connects to an existing Host or starts one automatically. Authoring commands below generate and manage plugin compositions independently of this terminal interface.
 
-The terminal and desktop shells connect to this same business Host. They author their own interfaces; the bundle does not install a presenter or a separate management Host. [Selected-package updates](../cli/README.md#product-updates-recovery-and-url-installation) preserve the existing Host source and native grants.
+The terminal and desktop shells run the same workbench against this business Host; the bundle does not install a presenter or a separate management Host. [Selected-package updates](../cli/README.md#product-updates-recovery-and-url-installation) preserve the existing Host source and native grants.
 
 Every CLI build embeds the current TypeScript bundle, including debug builds. Rebuild the CLI after changing plugin sources. `just product` produces a separate bundle for inspection and export; it does not replace resources inside an existing binary. The build generates `product-version.txt` from exact authoring and named package bytes. Installation and updates validate real package bytes against this identifier. Treat the bundle output as a generated artifact: rebuild after source changes instead of editing output files. Missing, malformed or mismatched identifiers require a rebuild. Use a separate output directory when building an artifact alongside a running development build:
 

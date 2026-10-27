@@ -641,12 +641,7 @@ impl Surface {
                     continue;
                 };
                 let style = self.animated_style(child);
-                let mut spread = if style.shadow.is_visible() {
-                    style.shadow.radius.max(Points::ZERO) * 3.0
-                        + style.shadow.offset_x.abs().max(style.shadow.offset_y.abs())
-                } else {
-                    Points::ZERO
-                };
+                let mut spread = Points::ZERO;
                 if style.outline.is_visible() {
                     spread =
                         spread.max((style.outline.offset + style.outline.width).max(Points::ZERO));
@@ -1263,22 +1258,6 @@ impl Surface {
             {
                 return false;
             }
-            if style.shadow.is_visible() {
-                let spread = style.shadow.radius * 2.0;
-                let shadow = Bounds::new(
-                    Point::new(
-                        frame.origin.x + style.shadow.offset_x - spread,
-                        frame.origin.y + style.shadow.offset_y - spread,
-                    ),
-                    Size::new(
-                        frame.size.width + spread * 2.0,
-                        frame.size.height + spread * 2.0,
-                    ),
-                );
-                if hits(cells(shadow, self.metrics, area)) {
-                    return false;
-                }
-            }
             if let Some(effects) = &style.effects {
                 for shadow in effects.box_shadows.iter().filter(|s| s.is_visible()) {
                     let spread = shadow.spread.max(Points::ZERO) + shadow.blur.max(Points::ZERO);
@@ -1409,21 +1388,6 @@ impl Surface {
             .as_ref()
             .and_then(|effects| nsh_core::compose_color_matrices(&effects.filters));
         let filtered = |c| filter_color(c, matrix.as_ref());
-        if style.shadow.is_visible() {
-            paint_shadow(
-                frame,
-                clip,
-                style.shadow.offset_x,
-                style.shadow.offset_y,
-                style.shadow.radius * 2.0,
-                Points::ZERO,
-                style.shadow.color,
-                opacity * style.shadow.opacity,
-                self.metrics,
-                area,
-                buffer,
-            );
-        }
         if let Some(effects) = &style.effects {
             for shadow in effects
                 .box_shadows
@@ -3940,13 +3904,17 @@ mod tests {
                 };
                 (21.0, [0, 0, 255, 255])
             } else {
-                style.shadow = nsh_core::Shadow {
-                    color: Color::BLACK,
-                    offset_x: px(8.0),
-                    offset_y: px(0.0),
-                    radius: px(0.0),
-                    opacity: 1.0,
-                };
+                style.effects = Some(std::sync::Arc::new(nsh_core::Effects {
+                    box_shadows: vec![nsh_core::BoxShadow {
+                        color: Color::BLACK,
+                        offset_x: px(8.0),
+                        offset_y: px(0.0),
+                        blur: px(0.0),
+                        spread: Points::ZERO,
+                        inset: false,
+                    }],
+                    ..nsh_core::Effects::default()
+                }));
                 (45.0, [0, 0, 0, 255])
             };
             items.push(MountItem::ViewStyle {

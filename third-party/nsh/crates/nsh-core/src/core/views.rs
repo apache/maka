@@ -562,7 +562,13 @@ impl<M: TextEngine> Core<M> {
                     }
                     None => (attrs, old),
                 };
-                self.apply_attrs_over(id, &attrs, &old, app.as_ref());
+                if self.components.slot_hosts.get(&id) == Some(&host) {
+                    // An app's slot: what is not a style goes to its
+                    // target (`super::slots`).
+                    self.apply_slot_attrs(id, host, &attrs, &old, None);
+                } else {
+                    self.apply_attrs_over(id, &attrs, &old, app.as_ref());
+                }
                 if let Some((style, classes, class)) = restyle {
                     let outer = cx.and_then(|cx| cx.user);
                     let classes =
@@ -720,11 +726,13 @@ impl<M: TextEngine> Core<M> {
     /// handlers, responders and bindings.
     fn forget_released(&self, host: NodeId, inst: &mut Instance) {
         // The app's slot nodes are JS's, not the view's: they keep what the
-        // view gave them while they are its slots.
+        // view gave them while they are its slots (and so do the app's
+        // elements in them that take the slots' props).
         let live = |id: &NodeId| {
             *id == host
                 || self.components.owners.contains_key(id)
                 || self.components.slot_hosts.get(id) == Some(&host)
+                || self.adopted_host(*id) == Some(host)
         };
         inst.handlers.retain(|(id, _, _)| live(id));
         inst.event_handlers.retain(|(id, _)| live(id));

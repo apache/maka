@@ -18,7 +18,7 @@ use std::{rc::Rc, sync::Arc};
 
 use rustc_hash::FxHashMap;
 
-use super::{Core, NO_KEY};
+use super::{Core, Key, NO_KEY};
 use crate::{
     NodeId, Op, TextEngine,
     element::{
@@ -186,6 +186,39 @@ impl<M: TextEngine> Core<M> {
         if !released {
             self.detach_id(holder);
         }
+    }
+
+    /// The list cells whose content waits for JS: they (or a cell inside
+    /// them) hold the placeholder of a render whose holder has not arrived
+    /// yet, into `out`, sorted. Their size is the size of empty
+    /// placeholders until it does, so their lists do not measure them.
+    pub(super) fn cells_awaiting_renders(&self, out: &mut Vec<Key>) {
+        out.clear();
+        let renders = &self.components.renders;
+        if self.lists.is_empty() || renders.places.is_empty() {
+            return;
+        }
+        for slot in renders.slots.values() {
+            if slot.holder.is_some() {
+                continue;
+            }
+            let Some(mut k) = slot.places.last().and_then(|&p| self.key(p).ok()) else {
+                continue;
+            };
+            loop {
+                let parent = self.nodes[k as usize].parent;
+                if parent == NO_KEY {
+                    break;
+                }
+                // A list's children are its cells.
+                if self.nodes[parent as usize].list.is_some() {
+                    out.push(k);
+                }
+                k = parent;
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
     }
 
     /// After a commit's views: asks JS to render what is placed with a

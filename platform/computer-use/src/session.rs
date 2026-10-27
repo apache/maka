@@ -35,11 +35,14 @@ use tokio_util::sync::CancellationToken;
 pub struct Session {
     native: std::sync::Arc<tokio::sync::Mutex<Driver>>,
     epoch: crate::desktop::NativeEpochId,
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    linux_ids: crate::linux_ax::ElementIds,
     targets: HashMap<String, Target>,
     id: Option<String>,
     state: EpochState,
     browsers: crate::browser::Browsers,
     owner: crate::desktop::SessionOwner,
+    audio: Option<cua_driver_sdk::AudioCompletion>,
 }
 
 enum EpochState {
@@ -59,11 +62,6 @@ struct Target {
     previous: Option<String>,
 }
 impl Session {
-    pub fn new(native: std::sync::Arc<tokio::sync::Mutex<Driver>>) -> Self {
-        let owner = crate::desktop::SessionOwner::new(native.clone());
-        Self::with_owner(native, crate::desktop::NativeEpochId::new(), owner)
-    }
-
     pub(crate) fn with_owner(
         native: std::sync::Arc<tokio::sync::Mutex<Driver>>,
         epoch: crate::desktop::NativeEpochId,
@@ -72,6 +70,8 @@ impl Session {
         Self {
             native: native.clone(),
             epoch,
+            #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+            linux_ids: crate::linux_ax::ElementIds::default(),
             targets: HashMap::new(),
             id: None,
             state: EpochState::Open,
@@ -82,6 +82,7 @@ impl Session {
                 owner.cursor_handle(),
             ),
             owner,
+            audio: None,
         }
     }
 
@@ -228,19 +229,38 @@ impl Session {
         let cursor = self.owner.cursor();
         let mut result = match command {
             Command::Documentation => Ok(json!(crate::language::documentation(language))),
-            Command::StartAudioRecording { options } => self
-                .invoke_native(
-                    "start_audio_recording",
-                    serde_json::to_value(options).map_err(failed)?,
-                    cancellation,
-                    language,
-                )
-                .await
-                .map(|result| result.structured_content.unwrap_or(Value::Null)),
-            Command::StopAudioRecording => self
-                .invoke_native("stop_audio_recording", json!({}), cancellation, language)
-                .await
-                .map(|result| result.structured_content.unwrap_or(Value::Null)),
+            Command::StartAudioRecording { options } => {
+                let started = self
+                    .invoke_native(
+                        "start_audio_recording",
+                        serde_json::to_value(options).map_err(failed)?,
+                        cancellation,
+                        language,
+                    )
+                    .await?;
+                let snapshot = self.native.lock().await.audio_completion(self.epoch);
+                match snapshot.await {
+                    Ok(completion) => self.audio = Some(completion),
+                    Err(snapshot) => {
+                        return match self.discard_audio().await {
+                            Ok(()) => Err(failed(format!(
+                                "Computer audio startup was stopped because its completion could not be bound: {snapshot}"
+                            ))),
+                            Err(cleanup) => Err(ToolError::CleanupUnconfirmed(format!(
+                                "Computer audio completion could not be bound: {snapshot}; startup cleanup: {cleanup}"
+                            ))),
+                        };
+                    }
+                }
+                Ok(started.structured_content.unwrap_or(Value::Null))
+            }
+            Command::StopAudioRecording => {
+                let stopped = self
+                    .invoke_native("stop_audio_recording", json!({}), cancellation, language)
+                    .await?;
+                self.audio = None;
+                Ok(stopped.structured_content.unwrap_or(Value::Null))
+            }
             Command::ConfigureCursor { options } => {
                 let cursor = self.owner.configure_cursor(options)?;
                 let browsers = self.browsers.configure_cursor(&cursor).await;
@@ -491,7 +511,7 @@ impl Session {
                         previous: None,
                     },
                 );
-                let state = match self
+                let mut state = match self
                     .observe(
                         &handle,
                         ObservationKind::Ax,
@@ -511,9 +531,14 @@ impl Session {
                     .targets
                     .get(&handle)
                     .expect("observed target remains bound");
-                Ok(
-                    json!({"handle":Handle::App(handle.clone()),"kind":"app","state":state["state"],"binding":{"pid":bound.window.pid,"windowId":bound.window.window_id,"processGeneration":bound.process}}),
-                )
+                let mut result = json!({"handle":Handle::App(handle.clone()),"kind":"app","state":state["state"],"binding":{"pid":bound.window.pid,"windowId":bound.window.window_id,"processGeneration":bound.process}});
+                if let Some(native_ax) = state
+                    .as_object_mut()
+                    .and_then(|state| state.remove("nativeAX"))
+                {
+                    result["nativeAX"] = native_ax;
+                }
+                Ok(result)
             }
             Command::Observe {
                 handle: Handle::App(handle),
@@ -580,17 +605,20 @@ impl Session {
             let cleanup = self.native.lock().await.discard_audio(self.epoch);
             cleanup.await?;
         }
+        self.audio = None;
         Ok(())
     }
 
     pub fn wait_audio_finished(
         &self,
     ) -> futures_util::future::BoxFuture<'static, Result<(), ToolError>> {
-        let native = self.native.clone();
-        let epoch = self.epoch;
+        let completion = self.audio.clone();
         Box::pin(async move {
-            let finished = native.lock().await.wait_audio_finished(epoch);
-            finished.await
+            completion
+                .ok_or_else(|| failed("Computer audio recording is not active"))?
+                .wait()
+                .await
+                .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))
         })
     }
 
@@ -849,7 +877,7 @@ impl Session {
         #[cfg(not(target_os = "macos"))]
         let frozen_result: Option<CallResult> = None;
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        let linux_observation = if ax && !own_ax && Driver::linux_x11_selected() {
+        let linux_observation = if Driver::linux_x11_selected() {
             Some(
                 Driver::observe_native_window(
                     &self.native,
@@ -873,6 +901,7 @@ impl Session {
         };
         #[cfg(not(all(target_os = "linux", not(target_env = "musl"))))]
         let linux_observation: Option<CallResult> = None;
+        let native_linux_ax = linux_observation.is_some();
         let result = if let Some(result) = frozen_result {
             result
         } else if let Some(result) = linux_observation {
@@ -892,6 +921,8 @@ impl Session {
                 structured_content: Some(json!({"pid":window.pid,"window_id":window.window_id})),
             }
         };
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        let mut result = result;
         let capture = result
             .structured_content
             .as_ref()
@@ -903,6 +934,33 @@ impl Session {
             .find(|block| matches!(block, ContentBlock::Image { .. }))
             .cloned();
         let capture = image.as_ref().and(capture);
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        let native_ax = if native_linux_ax {
+            let raw = result
+                .structured_content
+                .as_mut()
+                .and_then(Value::as_object_mut)
+                .and_then(|output| output.remove("native_ax"))
+                .ok_or_else(|| failed("native accessibility rows unavailable"))?;
+            let raw: platform_linux::atspi::native_ax::NativeAxSnapshot =
+                serde_json::from_value(raw).map_err(failed)?;
+            crate::linux_ax::validate_snapshot(&raw).map_err(failed)?;
+            Some(raw)
+        } else {
+            None
+        };
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        let native_ax_diagnostics = native_linux_ax.then(|| {
+            let native = result.structured_content.as_ref();
+            json!({
+                "elements_complete":native.and_then(|value| value.get("elements_complete")),
+                "truncated":native.and_then(|value| value.get("truncated")),
+                "truncation_reason":native.and_then(|value| value.get("truncation_reason")),
+                "degraded":native.and_then(|value| value.get("degraded")),
+                "degraded_reason":native.and_then(|value| value.get("degraded_reason")),
+                "native_profile":native.and_then(|value| value.get("native_observation")),
+            })
+        });
         let mut snapshot: WindowStateOutput = decode(result)?;
         if snapshot.pid != window.pid.unwrap() || snapshot.window_id != window.window_id {
             return Err(failed("observation target changed"));
@@ -931,6 +989,7 @@ impl Session {
             }));
         }
         if !ax
+            && !native_linux_ax
             && !cfg!(target_os = "macos")
             && let Some(previous) = previous_snapshot
             && snapshot.snapshot_id.is_some()
@@ -954,8 +1013,24 @@ impl Session {
         };
         let target = self.targets.get_mut(handle).unwrap();
         let mut output = serde_json::Map::new();
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        let native_full = if let Some(raw) = native_ax.as_ref() {
+            let public = self.linux_ids.assign(
+                window.window_id,
+                raw,
+                crate::linux_ax::ReadCoverage::for_query(None),
+            );
+            let mut metadata = public.metadata().map_err(failed)?;
+            metadata["observation"] = native_ax_diagnostics.unwrap_or(Value::Null);
+            output.insert("nativeAX".into(), metadata);
+            ax.then(|| public.render())
+        } else {
+            None
+        };
         if ax {
             let full = snapshot.tree_markdown.clone().unwrap_or_default();
+            #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+            let full = native_full.unwrap_or(full);
             #[cfg(target_os = "macos")]
             let full = if let Some(macos) = target.macos.clone() {
                 macos.observe().await?
@@ -974,11 +1049,17 @@ impl Session {
                 Language::ZhCn => ("窗口", "应用"),
                 Language::ZhTw => ("視窗", "應用程式"),
             };
-            let mut state = format!(
-                "{window_label}: {:?}, {app_label}: {:?}.\n{body}",
-                window.title, window.app_name
-            );
-            if snapshot.truncated == Some(true) || snapshot.degraded == Some(true) {
+            let mut state = if native_linux_ax {
+                body
+            } else {
+                format!(
+                    "{window_label}: {:?}, {app_label}: {:?}.\n{body}",
+                    window.title, window.app_name
+                )
+            };
+            if !native_linux_ax
+                && (snapshot.truncated == Some(true) || snapshot.degraded == Some(true))
+            {
                 let (label, fallback) = match language {
                     Language::En => ("Observation incomplete", "partial accessibility tree"),
                     Language::ZhCn => ("观察不完整", "部分无障碍树"),
@@ -1031,8 +1112,8 @@ impl Session {
             .linux_alias_window(handle, &input, session, cancellation, language)
             .await?;
         let click = crate::linux_input::Click::parse(input).map_err(failed)?;
-        let (window, index) = match alias {
-            Some((window, index)) => (window, Some(index)),
+        let (window, native_id) = match alias {
+            Some((window, native_id)) => (window, Some(native_id)),
             None => (
                 self.verify(handle, session, cancellation, language).await?,
                 None,
@@ -1041,24 +1122,27 @@ impl Session {
         let point = match click.target {
             ClickTarget::Coordinates(point) => point,
             ClickTarget::Element(id) => {
-                if !id
-                    .as_deref()
-                    .is_some_and(crate::linux_input::public_element_id)
-                {
-                    return Err(failed(crate::linux_input::Error::ElementNotInWindow));
-                }
-                let index =
-                    index.ok_or_else(|| failed(crate::linux_input::Error::ElementNotInWindow))?;
-                let target = self.targets.get(handle).unwrap();
-                let args = json!({
-                    "target":{"kind":"window","pid":window.pid,"window_id":window.window_id},
-                    "element_token":target.element(index, language)?.element_token,
-                    "button":click.button.name(),"count":click.count,"delivery_mode":"background",
-                });
-                return self
-                    .invoke_native("click", args, cancellation, language)
-                    .await
-                    .map(|result| result.structured_content.unwrap_or(Value::Null));
+                let request = platform_linux::input::native_element::NativeElementClickRequest {
+                    pid: window.pid.ok_or_else(|| failed("window has no process"))?,
+                    window_id: u32::try_from(window.window_id).map_err(failed)?,
+                    element_id: native_id.or(id),
+                    button: match click.button {
+                        MouseButton::Left => NativeClickButton::Left,
+                        MouseButton::Right => NativeClickButton::Right,
+                        MouseButton::Middle => NativeClickButton::Middle,
+                    },
+                    count: click.count,
+                    deadline: None,
+                };
+                Driver::click_native_element_window(
+                    &self.native,
+                    request,
+                    self.epoch,
+                    cancellation,
+                    language,
+                )
+                .await?;
+                return Ok(Value::Null);
             }
         };
         let cue = if click.count == 0 {
@@ -1094,7 +1178,7 @@ impl Session {
         session: &str,
         cancellation: &CancellationToken,
         language: Language,
-    ) -> Result<Option<(WindowInfo, u64)>, ToolError> {
+    ) -> Result<Option<(WindowInfo, String)>, ToolError> {
         let Some(id) = input
             .get("element_id")
             .and_then(Value::as_str)
@@ -1103,8 +1187,13 @@ impl Session {
             return Ok(None);
         };
         let window = self.verify(handle, session, cancellation, language).await?;
-        let index = self.targets.get(handle).unwrap().linux_element_index(id)?;
-        Ok(Some((window, index)))
+        let native_id = self
+            .linux_ids
+            .resolve(window.window_id, Some(id))
+            .map_err(failed)?
+            .expect("a present public selector resolves to a present native selector")
+            .to_owned();
+        Ok(Some((window, native_id)))
     }
 
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -1157,26 +1246,36 @@ impl Session {
             .linux_alias_window(handle, &input, session, cancellation, language)
             .await?;
         let scroll = crate::linux_input::Scroll::parse(input).map_err(failed)?;
-        let (window, index) = match alias {
-            Some((window, index)) => (window, Some(index)),
+        let (window, native_id) = match alias {
+            Some((window, native_id)) => (window, Some(native_id)),
             None => (
                 self.verify(handle, session, cancellation, language).await?,
                 None,
             ),
         };
-        if scroll.element_id.is_some() {
-            let index =
-                index.ok_or_else(|| failed(crate::linux_input::Error::ElementNotInWindow))?;
-            let target = self.targets.get(handle).unwrap();
-            let args = json!({
-                "pid":window.pid,"window_id":window.window_id,
-                "element_token":target.element(index, language)?.element_token,
-                "direction":scroll.direction.name(),"pixels":scroll.pixels,"delivery_mode":"background",
-            });
-            return self
-                .invoke_native("scroll", args, cancellation, language)
-                .await
-                .map(|result| result.structured_content.unwrap_or(Value::Null));
+        if let Some(id) = scroll.element_id {
+            let request = platform_linux::input::native_element::NativeElementScrollRequest {
+                pid: window.pid.ok_or_else(|| failed("window has no process"))?,
+                window_id: u32::try_from(window.window_id).map_err(failed)?,
+                element_id: native_id.unwrap_or(id),
+                direction: match scroll.direction {
+                    Direction::Up => NativeScrollDirection::Up,
+                    Direction::Down => NativeScrollDirection::Down,
+                    Direction::Left => NativeScrollDirection::Left,
+                    Direction::Right => NativeScrollDirection::Right,
+                },
+                pixels: scroll.pixels,
+                deadline: None,
+            };
+            Driver::scroll_native_element_window(
+                &self.native,
+                request,
+                self.epoch,
+                cancellation,
+                language,
+            )
+            .await?;
+            return Ok(Value::Null);
         }
         if let (Some(x), Some(y)) = (scroll.x, scroll.y) {
             self.linux_cue(
@@ -1647,21 +1746,15 @@ impl Session {
             return Err(ToolError::CleanupUnconfirmed(failures.join("; ")));
         }
         self.id = None;
+        self.audio = None;
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        {
+            self.linux_ids = crate::linux_ax::ElementIds::default();
+        }
         self.state = EpochState::Closed;
         Ok(())
     }
 
-    pub async fn close(&mut self) -> Result<(), ToolError> {
-        let native = self.close_native().await;
-        let shared = self.owner.close().await;
-        match (native, shared) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(native), Err(shared)) => Err(ToolError::CleanupUnconfirmed(format!(
-                "{native}; shared desktop cleanup: {shared}"
-            ))),
-        }
-    }
     async fn cursor_point(
         &self,
         handle: &str,
@@ -1775,7 +1868,7 @@ fn linux_generic_pointer_action(tool: LinuxPointerTool, input: Value) -> Result<
             "options":{"mouseButton":input.get("mouse_button"),"clickCount":input.get("click_count")},
         }),
         LinuxPointerTool::Scroll => json!({
-            "kind":"scroll", "target":target,"direction":input.get("direction"),
+            "kind":"scroll", "target":target,"direction":input.get("direction").and_then(crate::linux_input::canonical_scroll_direction).map(Value::from).or_else(|| input.get("direction").cloned()),
         }),
     };
     if matches!(tool, LinuxPointerTool::Scroll)
@@ -1787,26 +1880,6 @@ fn linux_generic_pointer_action(tool: LinuxPointerTool, input: Value) -> Result<
 }
 
 impl Target {
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    fn linux_element_index(&self, id: &str) -> Result<u64, ToolError> {
-        let index = id
-            .parse::<u64>()
-            .ok()
-            .filter(|index| index.to_string() == id);
-        index
-            .filter(|index| {
-                self.snapshot
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.elements.as_ref())
-                    .is_some_and(|elements| {
-                        elements.iter().any(|element| {
-                            element.element_index == *index && element.element_token.is_some()
-                        })
-                    })
-            })
-            .ok_or_else(|| failed(crate::linux_input::Error::UnknownElementId(id.into())))
-    }
-
     fn invalidate_observation(&mut self) {
         self.snapshot = None;
         self.capture = None;
@@ -2110,39 +2183,6 @@ fn launch_args(app: &str, inventory: &[AppInfo], language: Language) -> Result<V
 mod tests {
     use super::*;
 
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    #[test]
-    fn linux_public_ids_match_current_window_rows_without_normalizing_or_reviving_them() {
-        let mut target = Target {
-            window: serde_json::from_value(json!({
-                "window_id":1,"pid":1,"app_name":"fixture","title":"fixture",
-                "bounds":{"x":0.0,"y":0.0,"width":100.0,"height":80.0},
-                "is_on_screen":true,"z_index":null
-            }))
-            .unwrap(),
-            process: "fixture".into(),
-            snapshot: Some(
-                serde_json::from_value(json!({
-                    "pid":1,"window_id":1,"elements":[
-                        {"element_index":1,"role":"button","depth":1,"element_token":"s00000001:1"},
-                        {"element_index":2,"role":"button","depth":1}
-                    ]
-                }))
-                .unwrap(),
-            ),
-            capture: None,
-            previous: None,
-        };
-        assert_eq!(target.linux_element_index("1").unwrap(), 1);
-        for id in ["01", "2", "8", "18446744073709551616"] {
-            assert!(
-                matches!(target.linux_element_index(id), Err(ToolError::Failed(message)) if message == format!("Unknown element ID {id} for this window; refresh get_window_state()"))
-            );
-        }
-        target.invalidate_observation();
-        assert!(target.linux_element_index("1").is_err());
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn native_geometry_survives_observation_invalidation() {
@@ -2270,7 +2310,8 @@ mod tests {
     #[tokio::test]
     async fn linux_unavailable_actions_refuse_before_target_resolution_or_native_dispatch() {
         let driver = std::sync::Arc::new(tokio::sync::Mutex::new(Driver::default()));
-        let mut session = Session::new(driver);
+        let owner = crate::desktop::SessionOwner::new(driver.clone());
+        let mut session = Session::with_owner(driver, crate::desktop::NativeEpochId::new(), owner);
         for (action, expected) in [
             (
                 Action::SetValue {
@@ -2425,17 +2466,35 @@ mod generic_linux_pointer_tests {
 
     #[test]
     fn generic_scroll_without_pixels_keeps_the_existing_default_distance() {
-        let action = linux_generic_pointer_action(
+        for direction in ["down", "d"] {
+            let action = linux_generic_pointer_action(
+                LinuxPointerTool::Scroll,
+                json!({"x":37.9,"y":41.25,"direction":direction}),
+            )
+            .unwrap();
+            let Action::Scroll {
+                target: Position::Point(point),
+                direction,
+                distance,
+            } = action
+            else {
+                panic!("missing pixels must retain the generic scroll action");
+            };
+            assert_eq!(point, [37.9, 41.25]);
+            assert_eq!(direction.name(), "down");
+            assert!(
+                distance.is_none(),
+                "the generic dispatcher owns its default distance"
+            );
+        }
+        let unknown = linux_generic_pointer_action(
             LinuxPointerTool::Scroll,
-            json!({"x":37.9,"y":41.25,"direction":"down"}),
+            json!({"x":37.9,"y":41.25,"direction":"north"}),
         )
-        .unwrap();
-        let Action::Scroll { distance, .. } = action else {
-            panic!("missing pixels must retain the generic scroll action");
-        };
+        .unwrap_err();
         assert!(
-            distance.is_none(),
-            "the generic dispatcher owns its default distance"
+            matches!(unknown, maka_agent_facts::tools::ToolError::Failed(message)
+            if message == "unknown variant `north`, expected one of `up`, `down`, `left`, `right`")
         );
     }
 

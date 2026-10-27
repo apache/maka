@@ -36,7 +36,7 @@
 
 修改已有插件时，从声明入手，沿所选实现查找代码。原生入口选择可执行文件提供的实现；JavaScript 入口指定打包后的本地模块。插件族目录和已链接 crate 都不会自动激活插件。
 
-默认产品选择业务 Host 服务。[终端 shell](../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../products/maka/desktop-shell/README.zh-CN.md) 各自编写界面，连接相同的公共 Host 能力。通用 SDK scene 契约仍可用于独立编写的运行环境；默认 bundle 不再含 scene 展示包。
+默认产品选择业务 Host 服务。[终端 shell](../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../products/maka/desktop-shell/README.zh-CN.md) 运行同一个[工作台](../products/maka/workbench/README.zh-CN.md)，由它连接这些公共 Host 能力。通用 SDK scene 契约仍可用于独立编写的运行环境；默认 bundle 不再含 scene 展示包。
 
 在仓库根目录构建单个包：
 

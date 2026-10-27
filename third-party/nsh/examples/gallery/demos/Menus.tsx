@@ -287,7 +287,7 @@ export function Menus() {
                 <ContextMenu margin={8} popupStyle={surface()} backdropStyle={backdrop} onOpenChange={changed(file().name)} trigger={
                   <Row first={i() === 0}>
                     <Icon name={file().starred ? "star" : "text"} size={16} tint={file().starred ? colors.accent : colors.muted} />
-                    <Text numberOfLines={1} style={{ flex: 1, fontSize: 14, color: colors.text }}>{file().name}</Text>
+                    <Text style={{ numberOfLines: 1, flex: 1, fontSize: 14, color: colors.text }}>{file().name}</Text>
                     <Menu align="end" offset={4} margin={8} popupStyle={surface()} backdropStyle={backdrop} trigger={
                       <View accessibilityLabel={`Actions for ${file().name}`} tooltip={<Tip label="More actions" />} hitSlop={8} activeStyle={{ opacity: 0.5 }} style={{ paddingHorizontal: 8, height: 28, justifyContent: "center" }}>
                         <Text style={{ fontSize: 18, color: colors.muted }}>⋯</Text>

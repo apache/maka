@@ -83,9 +83,6 @@ impl Computer {
             .as_ref()
             .is_some_and(|kernel| kernel.repl.as_ref().is_some_and(Repl::is_closed))
         {
-            if !interaction.supports_epoch_retirement() {
-                return Err(failed("Computer VM requires reset"));
-            }
             self.retire_kernel(&interaction, &mut kernels).await?;
         }
         if kernels.is_none() {
@@ -120,15 +117,10 @@ impl Computer {
         .map_err(|error| failed(error.message))?
         .with_image_deduplication();
         let admission = kernel.admission.clone();
-        let observed = interaction.supports_epoch_retirement();
         if kernel.repl.is_none() {
             let bootstrap = maka_computer_use::facade_for(platform, self.configuration.audio);
-            let runtime = if observed {
-                Repl::new_observed(bootstrap, limits, admission.clone())
-            } else {
-                Repl::new(bootstrap, limits)
-            }
-            .map_err(failed)?;
+            let runtime =
+                Repl::new_observed(bootstrap, limits, admission.clone()).map_err(failed)?;
             kernel.repl = Some(runtime);
         }
         let runtime = kernel.repl.as_ref().expect("REPL initialized");
@@ -174,8 +166,7 @@ impl Computer {
             }
         };
         let closed = runtime.is_closed();
-        let reset_required = closed && !observed;
-        if closed && observed {
+        if closed {
             // The old worker already confirmed durable admission before its
             // observer returned. Retain that exact worker in the task owner.
             self.retire_kernel(&interaction, &mut kernels).await?;
@@ -189,7 +180,7 @@ impl Computer {
                 }
                 _ => reason,
             };
-            return Err(partial(error, &context, reset_required, language));
+            return Err(partial(error, &context, language));
         }
         match result {
             Ok(CellResult::Failure { error, .. }) => {
@@ -200,15 +191,14 @@ impl Computer {
                         Language::ZhTw => format!("Cua JavaScript 錯誤：{}", error.message),
                     }),
                     &context,
-                    reset_required,
                     language,
                 ));
             }
             Err(maka_code_runtime::CellAbort::Tool(error)) => {
-                return Err(partial(error, &context, reset_required, language));
+                return Err(partial(error, &context, language));
             }
             Err(error) => {
-                return Err(partial(failed(error), &context, reset_required, language));
+                return Err(partial(failed(error), &context, language));
             }
             Ok(_) => {}
         }
@@ -216,9 +206,7 @@ impl Computer {
             &invocation,
             &call,
             context.take_output(),
-            if reset_required {
-                ReplState::ResetRequired
-            } else if closed {
+            if closed {
                 ReplState::Fresh
             } else {
                 ReplState::Ready
@@ -234,25 +222,12 @@ impl Computer {
         let Some(kernel) = current.take() else {
             return Ok(());
         };
-        if interaction.supports_epoch_retirement() {
-            let admission = kernel.admission.clone();
-            if let Err((error, kernel)) = interaction.retire_kernel(self, kernel) {
-                *current = Some(kernel);
-                return Err(error);
-            }
-            admission.seal().await
-        } else {
-            // The WSL helper still owns one serial native session. Confirm its
-            // cleanup before reusing that transport for an explicit reset.
-            let closing = match interaction.close_kernel(self, kernel) {
-                Ok(closing) => closing,
-                Err((error, kernel)) => {
-                    *current = Some(kernel);
-                    return Err(error);
-                }
-            };
-            closing.await
+        let admission = kernel.admission.clone();
+        if let Err((error, kernel)) = interaction.retire_kernel(self, kernel) {
+            *current = Some(kernel);
+            return Err(error);
         }
+        admission.seal().await
     }
     async fn output(
         &self,
@@ -670,7 +645,7 @@ impl ToolExecutor for Bridge {
         })
     }
 }
-fn partial(error: ToolError, context: &CellContext, reset: bool, language: Language) -> ToolError {
+fn partial(error: ToolError, context: &CellContext, language: Language) -> ToolError {
     let mut observations = String::new();
     for output in context.take_output() {
         if let CellOutput::Text { text } = output {
@@ -686,9 +661,6 @@ fn partial(error: ToolError, context: &CellContext, reset: bool, language: Langu
     if !observations.is_empty() {
         suffix += maka_computer_use::language::partial_observations(language);
         suffix += &observations;
-    }
-    if reset {
-        suffix += maka_computer_use::language::closed(language);
     }
     match error {
         ToolError::Failed(value) => ToolError::Failed(value + &suffix),

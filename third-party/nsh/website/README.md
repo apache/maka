@@ -145,7 +145,8 @@ base64url).
 
 `demos/<name>.tsx` are small runnable nsh apps (try one with
 `nsh run website/demos/<name>.tsx`). A page with `demo: <name>` shows the demo
-after its first paragraph: a frame with the app running in an iframe of
+after its first paragraph, and a section with a demo of its own shows it where
+its `<!-- demo: <name> -->` line is (on the English and the Chinese page alike): a frame with the app running in an iframe of
 `play/index.html?idiom=…#<name>`, beside its source (wide pages, Mobile) or
 behind a Preview / Source switch (narrow ones), and two icon buttons: edit in
 the playground, open in a new tab. The home page runs `demos/counter.tsx` the

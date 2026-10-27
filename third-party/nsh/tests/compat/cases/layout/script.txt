@@ -37,6 +37,10 @@ frame id:max-grow-a 0 0 100 20
 frame id:max-grow-b 100 0 200 20
 frame id:min-shrink-a 0 0 180 20
 frame id:min-shrink-b 180 0 120 20
+frame id:min-auto-a 0 0 200 100
+frame id:min-auto-b 200 0 200 20
+frame id:min-unset-a 0 0 100 100
+frame id:min-unset-b 100 0 200 20
 frame id:ratio-a 0 0 100 50
 frame id:ratio-b 0 50 90 60
 frame id:ratio-stretch-a 0 0 300 100
@@ -54,6 +58,9 @@ frame id:display-none 0 0 0 0
 frame id:display-a 0 0 50 20
 frame id:display-flex-a 0 0 50 20
 frame id:display-flex-b 50 0 50 20
+# `display: "flex"` alone lays its children out in a row, as CSS does.
+frame id:display-row-a 0 0 50 20
+frame id:display-row-b 50 0 50 20
 frame id:display-block-a 0 0 300 20
 frame id:display-block-b 0 20 50 20
 # Of siblings sharing a testID, `frame` finds the first in native order:
@@ -116,18 +123,19 @@ frame id:rtl-inset-start 240 0 50 20
 frame id:rtl-inset-end 10 30 50 20
 frame id:rtl-inset-both 40 60 240 20
 frame id:rtl-inset-percent-a 220 0 50 20
-frame id:rtl-sides-left 240 0 50 20
-frame id:rtl-sides-right 10 30 50 20
+# Right to left, left and right keep their sides.
+frame id:rtl-sides-left 10 0 50 20
+frame id:rtl-sides-right 240 30 50 20
 frame id:start-wins-a 20 0 50 20
 frame id:ltr-margin-a 10 0 50 20
 frame id:ltr-margin-b 75 0 50 20
 frame id:rtl-margin-a 240 0 50 20
 frame id:rtl-margin-b 175 0 50 20
-frame id:rtl-margin-right-a 250 0 50 20
+frame id:rtl-margin-right-a 235 0 50 20
 frame id:rtl-margin-right-b 185 0 50 20
 frame id:ltr-padding-a 12 0 258 20
 frame id:rtl-padding-a 30 0 258 20
-frame id:rtl-padding-sides-a 30 0 258 20
+frame id:rtl-padding-sides-a 12 0 258 20
 covers [styles] direction
 covers [styles] start
 covers [styles] end
@@ -184,6 +192,15 @@ frame id:basis-a 0 0 120 20
 frame id:basis-b 120 0 150 20
 frame id:basis-grow-a 0 0 200 20
 frame id:basis-grow-b 200 0 100 20
+frame id:flex-number-a 0 0 100 20
+frame id:flex-number-b 100 0 200 20
+frame id:flex-auto-a 0 0 250 20
+frame id:flex-auto-b 250 0 50 20
+frame id:flex-none-a 0 0 200 20
+frame id:flex-none-b 200 0 100 20
+frame id:flex-written-a 0 0 200 20
+frame id:flex-written-b 200 0 100 20
+frame id:flex-zero-a 0 0 0 20
 frame id:wrap-a 0 0 50 20
 frame id:wrap-b 50 0 50 20
 frame id:wrap-c 0 20 50 20
@@ -230,6 +247,7 @@ frame id:gaps-c 0 30 50 20
 frame id:gap-override-a 0 0 50 20
 frame id:gap-override-b 54 0 50 20
 covers [styles] flexDirection
+covers [styles] flex
 covers [styles] justifyContent
 covers [styles] alignItems
 covers [styles] alignSelf
@@ -340,7 +358,7 @@ frame id:important-space 50 0 30 20
 frame id:static-containing-block -20 -20 10 10
 frame id:rtl-ml 250 0 50 20
 frame id:rtl-mr 240 0 50 20
-frame id:rtl-key 250 0 50 20
+frame id:rtl-key 240 0 50 20
 frame id:variant-order 0 0 20 20
 covers [styles] position
 covers [styles] marginRight

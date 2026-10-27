@@ -353,11 +353,9 @@ impl Handler for Agent {
                         .await
                         .map_err(|_| "agent_observation_unavailable")?
                         .ok_or("agent_session_unavailable")?;
-                    let compacting = observed.root_turn.as_ref().is_some_and(|turn| {
-                        matches!(
-                            turn.input,
-                            maka_agent_facts::input::InvocationInput::ContextCompact { .. }
-                        ) && !matches!(turn.state, InvocationState::Ended { .. })
+                    let compacting = observed.compacting.map(|progress| CompactionProgress {
+                        id: progress.id,
+                        started_at: progress.started_at,
                     });
                     let run = observed.root_turn.and_then(|turn| {
                         let state = match turn.state {

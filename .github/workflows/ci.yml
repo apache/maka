@@ -228,7 +228,7 @@ jobs:
           cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
             -p nsh-platform-web --no-default-features --test text
       # This owning workspace has a distinct lock/patch graph; root build
-      # artifacts are not assumed reusable. Queue tests open no native window.
+      # artifacts are not assumed reusable. Selected tests open no native window.
       - name: Check GPUI test build reserve
         run: |
           available=$(df -B1 --output=avail "$RUNNER_TEMP" | tail -n 1 | tr -d ' ')
@@ -244,7 +244,7 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype6-dev libssl-dev \
             libvulkan1 mesa-vulkan-drivers libwayland-dev libx11-xcb-dev libxcb1-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
-      - name: Test GPUI animated prop ordering
+      - name: Test GPUI animated prop ordering and focus ownership
         shell: bash
         timeout-minutes: 30
         run: |
@@ -254,12 +254,19 @@ jobs:
           test "$inodes" -ge 100000 || { echo "GPUI queue tests require 100000 free inodes" >&2; exit 1; }
           args=(--locked --manifest-path third-party/nsh/crates/gpui/Cargo.toml
             -p nsh-platform-gpui --no-default-features --features nsh-platform-gpui/js
-            --lib native::tests::animated_props_)
-          cargo test "${args[@]}" -- --list | tee "$RUNNER_TEMP/nsh-gpui-queue-tests.txt"
+            --lib)
+          queue_filter=native::tests::animated_props_
+          cargo test "${args[@]}" "$queue_filter" -- --list | tee "$RUNNER_TEMP/nsh-gpui-queue-tests.txt"
           for name in animated_props_queue_their_latest_value animated_props_preserve_static_prop_barriers animated_props_preserve_command_observation_order; do
             grep -Fx "native::tests::$name: test" "$RUNNER_TEMP/nsh-gpui-queue-tests.txt"
           done
-          cargo test "${args[@]}" -- --test-threads=1
+          test "$(grep -c ': test$' "$RUNNER_TEMP/nsh-gpui-queue-tests.txt")" -eq 3
+          cargo test "${args[@]}" "$queue_filter" -- --test-threads=1
+          focus_test=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses
+          cargo test "${args[@]}" "$focus_test" -- --exact --list | tee "$RUNNER_TEMP/nsh-gpui-focus-tests.txt"
+          grep -Fx "$focus_test: test" "$RUNNER_TEMP/nsh-gpui-focus-tests.txt"
+          test "$(grep -c ': test$' "$RUNNER_TEMP/nsh-gpui-focus-tests.txt")" -eq 1
+          cargo test "${args[@]}" "$focus_test" -- --exact --test-threads=1
       - name: Report NSH storage
         if: ${{ always() }}
         run: |

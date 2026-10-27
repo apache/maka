@@ -777,7 +777,6 @@ fn paints_one_shape(view: &NshView, state: &ViewState) -> bool {
         && state.natives.is_empty()
         && state.style.effects.is_none()
         && state.style.blend_mode == BlendMode::Normal
-        && !state.shadow().is_visible()
         && !state.borders().is_visible()
         && !state.style.outline.is_visible()
         && view.with_children(<[NshView]>::is_empty)
@@ -1553,7 +1552,7 @@ pub(crate) fn snapshot(surface: &Rc<Surface>, scale: f32) -> windows::core::Resu
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::{Edges, NodeId, TransformKind};
+    use nsh_core::{BoxShadow, Edges, Effects, NodeId, TransformKind};
 
     use super::*;
     use crate::geom::rect;
@@ -1601,10 +1600,6 @@ mod tests {
         v.state_mut().style.borders.widths = Edges::all(Points(1.0));
         v.state_mut().style.borders.colors = [Color::BLACK; 4];
         // The border overlaps the background: only a layer fades both as one.
-        assert!(!one_shape(&v));
-
-        let v = dot(None, 4);
-        v.state_mut().style.shadow.opacity = 1.0;
         assert!(!one_shape(&v));
 
         let v = dot(None, 6);
@@ -1696,8 +1691,15 @@ mod tests {
         };
         let a = boxed(2, rect(10.0, 10.0, 50.0, 30.0), 0xcc2244ff);
         let b = boxed(4, rect(120.0, 20.0, 40.0, 40.0), 0x2244ccff);
-        b.state_mut().style.shadow.opacity = 0.5;
-        b.state_mut().style.shadow.radius = Points(6.0);
+        let effects = Effects {
+            box_shadows: vec![BoxShadow {
+                blur: Points(12.0),
+                color: Color(0x0000_0080),
+                ..BoxShadow::default()
+            }],
+            ..Effects::default()
+        };
+        b.state_mut().style.effects = Some(std::sync::Arc::new(effects));
         let c = boxed(6, rect(180.0, 90.0, 30.0, 30.0), 0x22cc44ff);
         boxed(8, rect(0.0, 100.0, 240.0, 40.0), 0x88888888);
         let back = target(&gfx, size);
@@ -1768,10 +1770,17 @@ mod tests {
         assert!(hidden(&row, 120.0));
         assert!(hidden(&row, -60.0));
         // Its shadow reaches in.
-        row.state_mut().style.shadow.opacity = 1.0;
-        row.state_mut().style.shadow.radius = Points(30.0);
+        let effects = Effects {
+            box_shadows: vec![BoxShadow {
+                blur: Points(60.0),
+                color: Color::BLACK,
+                ..BoxShadow::default()
+            }],
+            ..Effects::default()
+        };
+        row.state_mut().style.effects = Some(std::sync::Arc::new(effects));
         assert!(!hidden(&row, 120.0));
-        row.state_mut().style.shadow.opacity = 0.0;
+        row.state_mut().style.effects = None;
         // A child sticking out of it reaches in.
         view(Some(&row), 4, ViewKind::View, rect(0.0, -50.0, 10.0, 10.0));
         assert!(!hidden(&row, 120.0));
@@ -1790,8 +1799,18 @@ mod tests {
     fn a_layer_covers_the_bounds_and_the_shadow() {
         let v = dot(None, 2);
         assert_eq!(area(&v), (-1.0, -1.0, 17.0, 17.0));
-        // React Native's shadow: offset (0, -3), radius 3.
-        v.state_mut().style.shadow.opacity = 1.0;
+        // Offset (0, -3), blur 6: 1.5 blurs past the offset.
+        let shadow = BoxShadow {
+            offset_y: Points(-3.0),
+            blur: Points(6.0),
+            color: Color::BLACK,
+            ..BoxShadow::default()
+        };
+        let effects = Effects {
+            box_shadows: vec![shadow],
+            ..Effects::default()
+        };
+        v.state_mut().style.effects = Some(std::sync::Arc::new(effects));
         assert_eq!(area(&v), (-13.0, -13.0, 29.0, 29.0));
     }
 

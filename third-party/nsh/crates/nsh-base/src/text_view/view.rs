@@ -866,7 +866,7 @@ impl Cx {
                         .child(
                             self.part(
                                 text(move || if shown.get() { "▾ " } else { "▸ " })
-                                    .selectable(false)
+                                    .select_none()
                                     .text_color(move || theme().muted_foreground),
                                 Part::SummaryMarker,
                             ),
@@ -980,7 +980,7 @@ impl Cx {
                                 cx.caret_after(
                                     cx.source(
                                         text(node.text.clone())
-                                            .when(cx.selectable, |t| t.selectable(true)),
+                                            .when(cx.selectable, |t| t.select_text()),
                                         node.source.clone(),
                                     ),
                                     tail.get(),
@@ -1005,7 +1005,7 @@ impl Cx {
         let end = segments.iter().map(|s| s.source_end).max().unwrap_or(start);
         self.source(
             text("")
-                .when(self.selectable, |t| t.selectable(true))
+                .when(self.selectable, |t| t.select_text())
                 .child(el),
             vec![nsh_core::TextSourceSegment {
                 start: 0,
@@ -1039,7 +1039,7 @@ impl Cx {
                 cx.choices = cx.choices.for_footnote(note.get_untracked().label);
                 cx.part(view().flex_row().gap(px(6.0)), Part::Footnote)
                     .child(cx.part(
-                        text(move || format!("{}.", note.get().index)).selectable(false),
+                        text(move || format!("{}.", note.get().index)).select_none(),
                         Part::FootnoteLabel,
                     ))
                     .child(cx.with_line(SMALL_SIZE * 1.6, || {
@@ -1205,7 +1205,7 @@ impl Cx {
                         .border_color(move || theme().primary)
                         .child(
                             text("✓")
-                                .selectable(false)
+                                .select_none()
                                 .text_size(px(11.0))
                                 .line_height(px(13.0))
                                 .font_weight(FontWeight::BOLD)
@@ -1232,7 +1232,7 @@ impl Cx {
                 // it, as a browser places it: wider numbers reach
                 // further left and the content stays in line.
                 let marker = text(marker)
-                    .selectable(false)
+                    .select_none()
                     .absolute()
                     .top(px(0.0))
                     .right(relative(1.0))
@@ -1288,7 +1288,7 @@ impl Cx {
     /// A text of the block's inline content, selectable when asked.
     fn paragraph(&self, content: &[Inline], key: &str, tail: bool) -> Text {
         let el = text("")
-            .when(self.selectable, |t| t.selectable(true))
+            .when(self.selectable, |t| t.select_text())
             .children(self.inlines(content, key));
         self.caret_after(el, tail)
     }
@@ -1363,7 +1363,7 @@ impl Cx {
                                     .font_family(mono_font)
                                     .text_size(px(CODE_SIZE))
                                     .line_height(px(CODE_SIZE * CODE_LINE))
-                                    .when(self.selectable, |t| t.selectable(true)),
+                                    .when(self.selectable, |t| t.select_text()),
                             ),
                         Part::MathBlock,
                     )
@@ -1408,7 +1408,7 @@ impl Cx {
             .justify_center()
             .child(
                 text(glyph)
-                    .selectable(false)
+                    .select_none()
                     .text_size(px(10.0))
                     .line_height(px(12.0))
                     .font_weight(FontWeight::BOLD)
@@ -1490,7 +1490,7 @@ impl Cx {
                 .py(px(14.0))
                 .min_w(px(0.0))
                 .when(wrapped.get(), |t| t.w_full())
-                .when(cx.selectable, |t| t.selectable(true));
+                .when(cx.selectable, |t| t.select_text());
             let body = cx.caret_after(body, tail.get());
             let scope = cx.scope;
             cx.part(
@@ -1555,7 +1555,7 @@ impl Cx {
             dynamic(move || match render.get() {
                 Some(render) => render.render(key.clone(), action.get()).into_element(),
                 None => text(move || label.get())
-                    .selectable(false)
+                    .select_none()
                     .text_size(px(11.0))
                     .into_element(),
             })
@@ -1620,7 +1620,7 @@ impl Cx {
                         "".into()
                     }
                 })
-                .selectable(false),
+                .select_none(),
             )
             .into_element()
     }
@@ -1956,7 +1956,7 @@ impl Cx {
                 self.source(
                     text("")
                         .w_full()
-                        .when(self.selectable, |t| t.selectable(true))
+                        .when(self.selectable, |t| t.select_text())
                         .child(image),
                     source.unwrap_or_default().to_vec(),
                 )
@@ -2041,7 +2041,7 @@ impl Cx {
                 .map(|s| s.width / s.height)
         };
         let el = nsh_core::element::image(image.src.clone())
-            .resize_mode(ResizeMode::Contain)
+            .object_fit(ResizeMode::Contain)
             .label(SharedString::from(image.alt.clone()))
             .when_some(image.title.clone(), |el, title| el.hint(title));
         let el = match flow {

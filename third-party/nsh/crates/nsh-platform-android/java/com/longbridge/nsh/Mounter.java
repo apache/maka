@@ -91,10 +91,8 @@ final class Mounter {
     private static final class Dynamic {
         float opacity = 1, tx, ty, sx = 1, sy = 1, rotate, rotateX, rotateY, perspective;
         int background;
-        /** Border colors, shadow color (its opacity in the alpha) and radius (px). */
+        /** Border colors. */
         int[] borderColors = new int[4];
-        int shadowColor;
-        float shadowRadius = 0.01f;
     }
 
     /** One part of a layout animation (`encode.rs` `layout_transition`). */
@@ -1060,8 +1058,6 @@ final class Mounter {
         int borderStyle = b.getInt();
         float opacity = b.getFloat();
         boolean overflow = b.getInt() != 0;
-        int shadowColor = b.getInt();
-        float sdx = b.getFloat(), sdy = b.getFloat(), sOpacity = b.getFloat(), sRadius = b.getFloat();
         Dynamic d = new Dynamic();
         d.tx = b.getFloat();
         d.ty = b.getFloat();
@@ -1083,9 +1079,6 @@ final class Mounter {
         d.opacity = opacity;
         d.background = background;
         d.borderColors = borderColors;
-        int shadowAlpha = Math.round(((shadowColor >>> 24) & 0xff) * Math.max(0, Math.min(1, sOpacity)));
-        d.shadowColor = (shadowAlpha << 24) | (shadowColor & 0x00ffffff);
-        d.shadowRadius = Math.max(0.01f, sRadius * density);
         if (v == null) return;
         Dynamic old = statics.get(id);
         statics.put(id, d);
@@ -1100,10 +1093,6 @@ final class Mounter {
             }
             decor.borderStyle = borderStyle;
             decor.continuous = continuous;
-            decor.shadowColor = d.shadowColor;
-            decor.shadowDx = sdx * density;
-            decor.shadowDy = sdy * density;
-            decor.shadowRadius = d.shadowRadius;
             decor.originX = originXFraction ? originX : originX * density;
             decor.originXFraction = originXFraction;
             decor.originY = originYFraction ? originY : originY * density;
@@ -1130,10 +1119,6 @@ final class Mounter {
         v.setElevation(elevation * density);
         if (elevation > 0 && decor != null && !(v instanceof Box || v instanceof TextBox || v instanceof InputBox)) {
             decor.clip(v, false);
-        }
-        if (elevation > 0 && android.os.Build.VERSION.SDK_INT >= 28 && (shadowColor >>> 24) != 0) {
-            v.setOutlineAmbientShadowColor(shadowColor);
-            v.setOutlineSpotShadowColor(shadowColor);
         }
         if (v instanceof Box) {
             ((Box) v).clip = overflow;
@@ -1394,11 +1379,8 @@ final class Mounter {
         Decor backface = decor(v);
         if (backface != null) backface.applyBackface(v);
         Decor decor = decor(v);
-        if (decor != null && (decor.fill != d.background || decor.shadowColor != d.shadowColor
-                || decor.shadowRadius != d.shadowRadius || !java.util.Arrays.equals(decor.borderColors, d.borderColors))) {
+        if (decor != null && (decor.fill != d.background || !java.util.Arrays.equals(decor.borderColors, d.borderColors))) {
             decor.fill = d.background;
-            decor.shadowColor = d.shadowColor;
-            decor.shadowRadius = d.shadowRadius;
             System.arraycopy(d.borderColors, 0, decor.borderColors, 0, 4);
             v.invalidate();
         }
@@ -1684,24 +1666,6 @@ final class Mounter {
                 case 12:
                     if (v instanceof TextBox) ((TextBox) v).setColor(true, Float.floatToRawIntBits(value));
                     break;
-                case 13: {
-                    Decor decor = decor(v);
-                    int color = Float.floatToRawIntBits(value);
-                    if (decor != null && decor.shadowColor != color) {
-                        decor.shadowColor = color;
-                        v.invalidate();
-                    }
-                    break;
-                }
-                case 14: {
-                    Decor decor = decor(v);
-                    float radius = Math.max(0.01f, value * density);
-                    if (decor != null && decor.shadowRadius != radius) {
-                        decor.shadowRadius = radius;
-                        v.invalidate();
-                    }
-                    break;
-                }
                 case 15: {
                     // A sticky cell sticks further in: its scroll view pins it again.
                     int id = Float.floatToRawIntBits(out[i]);
@@ -2042,6 +2006,8 @@ final class Mounter {
         int maxLength = b.getInt();
         boolean editable = b.getInt() != 0, autoFocus = b.getInt() != 0, hasSelection = b.getInt() != 0;
         int selection = b.getInt();
+        boolean hasCaret = b.getInt() != 0;
+        int caret = b.getInt();
         int submit = b.getInt();
         String autofill = optString(b, objects);
         boolean inputRtl = b.getInt() != 0;
@@ -2055,7 +2021,7 @@ final class Mounter {
         String family = familyIndex >= 0 ? (String) objects[familyIndex] : null;
         ((InputBox) v).configure(size, weight, italic, color, family, spacing, align, placeholder,
                 hasPlaceholderColor, placeholderColor, secure, keyboard, returnKey, capitalize, autoCorrect,
-                multiline, maxLength, editable, autoFocus, hasSelection, selection, submit);
+                multiline, maxLength, editable, autoFocus, hasSelection, selection, hasCaret, caret, submit);
     }
 
     private void command(ByteBuffer b, Object[] objects) {

@@ -25,8 +25,11 @@ function frameGeometry(request) {
   const bounds = this.getBoundingClientRect();
   if (!(bounds.width > 0 && bounds.height > 0 && this.offsetWidth > 0 && this.offsetHeight > 0))
     throw new Error('Frame does not have a clickable bounding box');
-  if (request.requireVisible && (style.visibility !== 'visible'
-      || (typeof this.checkVisibility === 'function' && !this.checkVisibility())))
+  if (
+    request.requireVisible &&
+    (style.visibility !== 'visible' ||
+      (typeof this.checkVisibility === 'function' && !this.checkVisibility()))
+  )
     throw new Error('Ancestor frame is not visible');
   const scaleX = bounds.width / this.offsetWidth;
   const scaleY = bounds.height / this.offsetHeight;
@@ -39,6 +42,10 @@ function frameGeometry(request) {
     bounds.left + (inset[0] + request.point[0]) * scaleX,
     bounds.top + (inset[1] + request.point[1]) * scaleY,
   ];
-  return { point, viewport: [view.innerWidth, view.innerHeight],
-    size: [this.offsetWidth, this.offsetHeight], inset };
+  return {
+    point,
+    viewport: [view.innerWidth, view.innerHeight],
+    size: [this.offsetWidth, this.offsetHeight],
+    inset,
+  };
 }

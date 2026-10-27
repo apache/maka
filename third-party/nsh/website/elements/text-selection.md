@@ -12,8 +12,8 @@ A [`View`](./view.md) with `selectable` makes the texts inside it select togethe
 runs from a place in one text to a place in another, across views, [`Text`](./text.md) elements and
 [`TextView`](./text-view.md)s, in reading order. Make a chat transcript selectable and a selection can start in one
 message and end in the next; Copy puts the selected text on the clipboard, with texts side by side joined by a tab and
-the others by a line break. It is the same prop as `Text`'s `selectable`: Rust sets it with `view().selectable(true)`,
-TSX with `<View selectable>`.
+the others by a line break. Rust sets it with `view().selectable(true)`, TSX with `<View selectable>`; whether a single
+text can be selected is its `userSelect` style.
 
 ```rust tabs
 use nsh_base::text_view;
@@ -30,7 +30,7 @@ fn release_notes(notes: &'static str) -> impl IntoElement {
             view()
                 .flex_row()
                 .gap_2()
-                .child(text("Updated").selectable(false).text_color(rgb(0x737373)))
+                .child(text("Updated").select_none().text_color(rgb(0x737373)))
                 .child(text("October 21")),
         )
 }
@@ -46,7 +46,7 @@ function ReleaseNotes(props: { notes: string }) {
       <Text class="font-semibold">Release notes</Text>
       <TextView markdown={props.notes} />
       <View class="flex-row gap-2">
-        <Text selectable={false} class="text-neutral-500">Updated</Text>
+        <Text style={{ userSelect: "none" }} class="text-neutral-500">Updated</Text>
         <Text>October 21</Text>
       </View>
     </View>
@@ -103,13 +103,13 @@ same [host clipboard services and OSC 52 output](../docs/tui.md#keyboard-and-mou
 
 ## What it selects
 
-- **Texts that stay out**: a text with `selectable={false}` (`.selectable(false)` in Rust; a label, a button's
-  caption) is skipped by the selection and its gestures.
+- **Texts that stay out**: a text with `userSelect: "none"` (`.select_none()` in Rust, the class `select-none`; a
+  label, a button's caption) is skipped by the selection and its gestures.
 - **Nested views**: a selectable view inside another is part of the outer one, so one selection covers both.
 - **TextView**: a [`TextView`](./text-view.md) with `selectable` selects as one of its own: its paragraphs, list
   items, cells and code blocks select together. Inside a selectable view it joins the outer selection.
-- **Single texts**: a `selectable` text in no selectable view selects on its own, as [Text](./text.md#props)
-  describes.
+- **Single texts**: a text with `userSelect: "text"` in no selectable view selects on its own, as
+  [Text](./text.md#props) describes.
 - **The look** is the platform's highlight in each text's `selectionColor` (`selection:text-*`).
 - **Lists**: in a virtualized [List](./list.md), a selection covers the rows that are mounted; rows recycled out of
   view leave it.
@@ -117,5 +117,5 @@ same [host clipboard services and OSC 52 output](../docs/tui.md#keyboard-and-mou
 ## Related
 
 - [View](./view.md): the `selectable` prop.
-- [Text](./text.md): `selectable`, `selectionColor` and the selection of a single text.
+- [Text](./text.md): `userSelect`, `selectionColor` and the selection of a single text.
 - [TextView](./text-view.md): documents whose blocks select as one.

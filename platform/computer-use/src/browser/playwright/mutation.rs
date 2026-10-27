@@ -237,11 +237,10 @@ impl Tab {
         Ok(cdp_value(reply)?["value"].clone())
     }
 
-    async fn locator_current(
+    async fn locator_document_current(
         &mut self,
         selected: &Selected,
         context: &MutationContext<'_>,
-        focused: Option<bool>,
     ) -> Result<(), ToolError> {
         let MutationContext {
             document,
@@ -267,11 +266,21 @@ impl Tab {
         if self.document() != *document || !self.frame_scopes_current(&selected.used).await? {
             return Err(failed("document or frame changed before locator input"));
         }
+        check_input(cancellation)
+    }
+
+    async fn locator_current(
+        &mut self,
+        selected: &Selected,
+        context: &MutationContext<'_>,
+        focused: Option<bool>,
+    ) -> Result<(), ToolError> {
+        self.locator_document_current(selected, context).await?;
         let state = self
             .locator_element_script(
                 selected,
                 json!({"kind":"verify","requireEditable":focused.unwrap_or(false),"exactTarget":true}),
-                resources,
+                context.resources,
                 None,
             )
             .await?;
@@ -281,7 +290,7 @@ impl Tab {
         if focused.is_some() && state["focused"] != true {
             return Err(failed("Element is not focused"));
         }
-        check_input(cancellation)
+        check_input(context.cancellation)
     }
 
     async fn locator_prepare(
@@ -534,7 +543,7 @@ impl Tab {
                     )
                     .await?;
                 if prepared["status"] == "needsinput" {
-                    self.locator_current(selected, context, Some(true)).await?;
+                    self.locator_document_current(selected, context).await?;
                     self.locator_virtual_text(
                         selected,
                         value,

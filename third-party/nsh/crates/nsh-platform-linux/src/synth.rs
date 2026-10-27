@@ -81,7 +81,7 @@ pub(crate) fn shot(window: &gtk::Window) -> Result<Vec<u8>, String> {
 
 /// The focused text field of `window`: a line's `GtkText` or an area's
 /// `GtkTextView`.
-fn focused_text(window: &gtk::Window) -> Option<gtk::Widget> {
+pub(crate) fn focused_text(window: &gtk::Window) -> Option<gtk::Widget> {
     let mut focus = gtk::prelude::GtkWindowExt::focus(window)?;
     loop {
         if focus.is::<gtk::Text>() || focus.is::<gtk::TextView>() {

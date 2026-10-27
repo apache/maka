@@ -305,16 +305,27 @@ fn request_id(value: &Value) -> Option<i64> {
         .then_some(id as i64)
 }
 
-async fn answer(
-    shared: Arc<Shared>,
+struct RequestDocument {
     session: Option<String>,
     installation: Arc<Installation>,
     context_id: i64,
     context: Context,
     frame: FrameIdentity,
+}
+
+async fn answer(
+    shared: Arc<Shared>,
+    document: RequestDocument,
     capability: Capability,
     payload: Value,
 ) -> Result<(), ToolError> {
+    let RequestDocument {
+        session,
+        installation,
+        context_id,
+        context,
+        frame,
+    } = document;
     let Some(id) = request_id(&payload) else {
         return Ok(());
     };
@@ -555,10 +566,9 @@ fn observe(shared: &Arc<Shared>, event: CdpEvent) {
                             .parent
                             .as_ref()
                             .is_some_and(|parent| removed.contains(parent))
+                            && let Some(route) = route
                         {
-                            if let Some(route) = route {
-                                removed.insert(route.clone());
-                            }
+                            removed.insert(route.clone());
                         }
                     }
                     if before == removed.len() {
@@ -614,11 +624,13 @@ fn observe(shared: &Arc<Shared>, event: CdpEvent) {
             }
             let _ = capability.host.spawn(Box::pin(answer(
                 shared.clone(),
-                session,
-                installation,
-                context_id,
-                context,
-                frame,
+                RequestDocument {
+                    session,
+                    installation,
+                    context_id,
+                    context,
+                    frame,
+                },
                 capability.clone(),
                 payload,
             )));

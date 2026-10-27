@@ -52,7 +52,7 @@ view()
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | 范围类或文本类元素的值。 |
 | | `accessibilityActions` | `{ name, label? }[]` | 提供给辅助技术的操作。 |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | 执行了某个操作（Rust：操作名称）。 |
-| | `accessibilityElementsHidden` | `boolean` | 对辅助技术隐藏该视图及其子树。 |
+| `.accessibility_elements_hidden(..)` | `accessibilityElementsHidden` | `boolean` | 对辅助技术隐藏该视图及其子树。 |
 | | `importantForAccessibility` | `"auto" \| "yes" \| "no" \| "no-hide-descendants"` | 视图（及其子树）是否暴露。 |
 | | `android={{ accessibilityLiveRegion }}` | `"none" \| "polite" \| "assertive"` | Android：视图的变化如何播报给 TalkBack。 |
 | `.test_id(..)` | `testID` | `string` | UI 测试用的标识（iOS 上的 accessibility identifier，Android 上的 resource id）；不会被朗读。 |
@@ -61,14 +61,14 @@ view()
 
 ### 角色
 
-角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"` 和 `"cell"`（[`Table`](../elements/table.md) 各部件的角色）。
+角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如选择框弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出）。
 
 最常用的几个：
 
 - `"button"` 用于不是链接的可按压元素；`"link"` 用于跳转到内容。
 - `"header"` 用于分区标题：屏幕阅读器用户会在标题之间跳转来快速浏览页面。
 - `"switch"`、`"checkbox"`、`"radio"` 配合 `accessibilityState.checked`。
-- `"adjustable"` 用于滑块和步进器，配合 `accessibilityValue` 以及 `increment` / `decrement` 操作。
+- `"adjustable"` 用于滑块和步进器，配合 `accessibilityValue` 以及 `increment` / `decrement` 操作（[`Slider`](../elements/slider.md) 的每个滑块都是）。
 - `"image"` 用于有意义的图片，并加上标签；装饰性图片应当隐藏。
 
 ```rust tabs
@@ -163,11 +163,13 @@ function Quantity() {
 | 名称 | iOS（VoiceOver） | Android（TalkBack） |
 |---|---|---|
 | `activate` | 双击 | 双击（点击） |
-| `increment`、`decrement` | 在可调整元素上向上 / 向下轻扫 | 向前 / 向后滚动 |
+| `increment`、`decrement` | 向上 / 向下轻扫，随后 VoiceOver 读出新值 | 向前 / 向后滚动 |
 | `longpress` | | 双击并按住 |
 | `expand`、`collapse` | | 展开 / 收起 |
 | `magicTap` | 双指双击 | |
 | `escape` | 双指 Z 字形擦除 | |
+
+带有 `increment` 或 `decrement` 的元素，不论角色如何都是可调整的：图表保持 `"image"` 角色，同样能用 VoiceOver 的轻扫和 TalkBack 的滚动逐个切换数据点，每一步之后读出它的 `accessibilityValue`。
 
 其他名称都成为自定义操作，以 `label`（或名称）列在 VoiceOver 的操作转子和 TalkBack 的操作菜单中。自定义操作是滑动删除之类手势的无障碍替代：
 

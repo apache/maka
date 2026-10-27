@@ -25,16 +25,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { packNativeCli } from './pack-cli.mjs';
 
-test('native archives carry the CLI and authored desktop app without a terminal sidecar', async () => {
+test('native archives carry the CLI and desktop shell without a terminal sidecar', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-shell-package-'));
   const previous = process.cwd();
   try {
-    const app = join(root, 'products/maka/desktop-shell/app');
-    await mkdir(join(app, 'icons'), { recursive: true });
-    await writeFile(
-      join(app, 'gpui-shell.json'),
-      '{"id":"org.apache.maka.desktop","name":"Maka","version":"0.1.0","entry":"main.js"}',
-    );
+    await writeFile(join(root, 'Cargo.toml'), '[workspace.package]\nversion = "0.2.0"\n');
     const png = Buffer.alloc(33);
     Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').copy(png);
     png.write('IHDR', 12, 'latin1');
@@ -42,8 +37,6 @@ test('native archives carry the CLI and authored desktop app without a terminal 
     png.writeUInt32BE(1024, 20);
     await mkdir(join(root, 'assets'));
     await writeFile(join(root, 'assets/logo.png'), png);
-    await writeFile(join(app, 'main.js'), 'authored source application');
-    await writeFile(join(app, 'icons/logo.svg'), '<svg>source icon</svg>');
     await mkdir(join(root, 'packages/cli'), { recursive: true });
     for (const name of ['LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt'])
       await writeFile(join(root, name), 'reviewed ' + name);
@@ -51,7 +44,6 @@ test('native archives carry the CLI and authored desktop app without a terminal 
       await writeFile(join(root, 'packages/cli', name), 'package documentation');
     await mkdir(join(root, 'build/app'), { recursive: true });
     await writeFile(join(root, 'build/app/main.js'), 'stale generated application');
-    await writeFile(join(root, 'build/app/stale.js'), 'must not ship');
     for (const name of [
       'maka',
       'maka.exe',
@@ -79,21 +71,19 @@ test('native archives carry the CLI and authored desktop app without a terminal 
       assert.ok(!files.includes('package/bin/maka-terminal-shell.exe'));
       const macos = value('--target') === 'darwin-arm64';
       const bundle = 'package/bin/Maka.app/Contents/';
-      const app = macos ? bundle + 'Resources/app/' : 'package/bin/app/';
       const shell = macos ? bundle + 'MacOS/maka-desktop-shell' : 'package/bin/' + (windows ? 'maka-desktop-shell.exe' : 'maka-desktop-shell');
       assert.equal(execFileSync('tar', ['-xOf', archive, shell], {encoding:'utf8'}), shell.split('/').pop() + ' bytes');
       if (process.platform !== 'win32') assert.match(execFileSync('tar', ['-tvzf', archive, shell], {encoding:'utf8'}), /^-rwx/);
       assert.equal(files.includes('package/bin/maka-service.exe'), windows);
       assert.ok(files.includes('package/bin/' + (windows ? 'maka-python-worker.exe' : 'maka-python-worker')));
       assert.equal(files.some((file) => file.startsWith('package/bin/Maka.app/')), macos);
-      assert.equal(files.some((file) => file.startsWith('package/bin/app/')), !macos);
+      assert.ok(!files.some((file) => file.includes('/app/')));
       assert.equal(files.includes('package/bin/maka-desktop-shell'), !macos && !windows);
       assert.ok(!files.includes('package/bin/maka-desktop'));
-      assert.ok(!files.includes(app + 'stale.js'));
-      assert.equal(execFileSync('tar', ['-xOf', archive, app + 'main.js'], {encoding:'utf8'}), 'authored source application');
-      assert.equal(execFileSync('tar', ['-xOf', archive, app + 'icons/logo.svg'], {encoding:'utf8'}), '<svg>source icon</svg>');
       if (macos) {
-        assert.match(execFileSync('tar', ['-xOf', archive, bundle + 'Info.plist'], {encoding:'utf8'}), /<key>CFBundleIdentifier<\/key>\n  <string>org.apache.maka.desktop<\/string>/);
+        const plist = execFileSync('tar', ['-xOf', archive, bundle + 'Info.plist'], {encoding:'utf8'});
+        assert.match(plist, /<key>CFBundleIdentifier<\/key>\n  <string>org.apache.maka.desktop<\/string>/);
+        assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n  <string>0.2.0<\/string>/);
         assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Resources/Maka.icns']).subarray(0, 4).toString(), 'icns');
       }
       assert.equal(execFileSync('tar', ['-xOf', archive, 'package/THIRD_PARTY_NOTICES.txt'], {encoding:'utf8'}), 'reviewed THIRD_PARTY_NOTICES.txt');
@@ -112,14 +102,6 @@ test('native archives carry the CLI and authored desktop app without a terminal 
       });
       const receipt = JSON.parse(await readFile(join(root, 'output', target + '.json'), 'utf8'));
       assert.equal(receipt.integrity, result.integrity);
-      const main = execFileSync('tar', [
-        '-xOf',
-        result.archive,
-        target === 'darwin-arm64'
-          ? 'package/bin/Maka.app/Contents/Resources/app/main.js'
-          : 'package/bin/app/main.js',
-      ]);
-      assert.equal(main.toString(), 'authored source application');
     }
   } finally {
     process.chdir(previous);

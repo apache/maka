@@ -28,7 +28,7 @@ Third-party source and dependency patch attribution is recorded in [LICENSE](../
 ### Source archive non-text inventory
 
 - `assets/logo.png`: Product artwork reproduced by `scripts/generate-logo.py` from its vector geometry; Apache-2.0.
-- `products/maka/terminal-shell/app/assets/maka.png`: Byte-identical copy of `assets/logo.png`, bundled with the terminal application's composer; Apache-2.0.
+- `products/maka/workbench/app/assets/maka.png`: Byte-identical copy of `assets/logo.png`, bundled with the workbench application's composer; Apache-2.0.
 - `website/src/assets/incubator.png`: Unmodified Apache Incubator trademark artwork from https://www.apache.org/logos/res/incubator/default.png.
 - `website/src/assets/social.en.png`: English website preview rendered by `website/scripts/social-preview.mjs`; includes the product mark and self-hosted OFL-1.1 fonts.
 - `website/src/assets/social.zh-CN.png`: Chinese website preview rendered by the same source and toolchain.

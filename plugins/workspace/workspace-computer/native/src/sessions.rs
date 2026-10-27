@@ -129,7 +129,6 @@ impl Sessions {
             .and_then(|kernel| kernel.repl.as_ref())
         {
             Some(repl) if !repl.is_closed() => ReplState::Ready,
-            Some(_) if !interaction.supports_epoch_retirement() => ReplState::ResetRequired,
             _ => ReplState::Fresh,
         }
     }
@@ -419,10 +418,6 @@ fn cleanup_result(failures: Vec<String>) -> Result<(), ToolError> {
 }
 
 impl Interaction {
-    pub fn supports_epoch_retirement(&self) -> bool {
-        self.native_owner.supports_epoch_retirement()
-    }
-
     pub fn fresh_kernel(&self) -> Result<Kernel, ToolError> {
         let mut epochs = self.epochs.lock().unwrap();
         if self.retiring.is_cancelled() {
@@ -454,18 +449,6 @@ impl Interaction {
     ) -> Result<(), (ToolError, Kernel)> {
         self.spawn_kernel(owner, kernel, self.retiring.clone())
             .map(|_| ())
-    }
-
-    /// Serial desktop backends must confirm the old worker before replacement.
-    /// Start custody synchronously; losing this future only loses observation.
-    pub fn close_kernel(
-        self: &Arc<Self>,
-        owner: &Arc<Computer>,
-        kernel: Kernel,
-    ) -> Result<Retirement, (ToolError, Kernel)> {
-        let closing = CancellationToken::new();
-        closing.cancel();
-        self.spawn_kernel(owner, kernel, closing)
     }
 
     fn spawn_kernel(
@@ -1091,7 +1074,7 @@ mod tests {
         }
 
         tokio::time::timeout(Duration::from_secs(10), async {
-            for (already_retired, serial_close, late_failure) in [
+            for (already_retired, cancel_before_observation, late_failure) in [
                 (false, false, false),
                 (true, false, false),
                 (false, true, false),
@@ -1173,7 +1156,7 @@ mod tests {
                     .await
                     .unwrap();
                 assert!(started.is_cancelled(),
-                    "accepted start was not entered (retired={already_retired}, serial={serial_close}, late_failure={late_failure}): {result:?}");
+                    "accepted start was not entered (retired={already_retired}, cancel_before_observation={cancel_before_observation}, late_failure={late_failure}): {result:?}");
                 assert!(matches!(result, CellResult::Failure { .. }), "{result:?}");
                 assert!(epoch.audio.lock().unwrap().is_none());
                 if already_retired {
@@ -1183,13 +1166,15 @@ mod tests {
                     let current = entry.fresh_kernel().unwrap();
                     assert_ne!(epoch.id, current.epoch.id);
                     *entry.kernel.lock().await = Some(current);
-                } else if serial_close {
+                } else if cancel_before_observation {
+                    let cancellation = CancellationToken::new();
+                    cancellation.cancel();
                     let mut closing = entry
-                        .close_kernel(&owner, old)
+                        .spawn_kernel(&owner, old, cancellation)
                         .unwrap_or_else(|(error, _)| panic!("{error}"));
                     assert!(futures_util::poll!(&mut closing).is_pending());
                     drop(closing);
-                    // The serial helper already transferred the exact worker;
+                    // The original retirement already transferred the exact worker;
                     // even an unobserved result remains joinable by final close.
                     assert!(
                         entry

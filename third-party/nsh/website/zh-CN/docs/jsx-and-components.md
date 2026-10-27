@@ -34,7 +34,7 @@ use nsh_core::prelude::*;   // view, text, image, scroll, input, virtual_list, .
 import { Image, mount, Text, View } from "nsh";
 ```
 
-在 Rust 中，样式是与 Tailwind 工具类同名的带类型方法（`.px_4()`、`.rounded_lg()`、`.bg(..)`），监听器也是方法（`.on_press(..)`）；仅限某个平台的设置有各自的方法。在 TSX 中，props 保留 camelCase 命名（`onPress`、`numberOfLines`、`backgroundColor`）；每个元素都接受 `style`、`class` / `classList`（[Tailwind](./tailwind.md)）、`ref`、触摸处理函数、无障碍属性和 `testID`，仅限某个平台的 props 放在 `ios={{…}}` 和 `android={{…}}` 中，只有当前平台的对象会被发送：
+在 Rust 中，样式是与 Tailwind 工具类同名的带类型方法（`.px_4()`、`.rounded_lg()`、`.bg(..)`），监听器也是方法（`.on_press(..)`）；仅限某个平台的设置有各自的方法。在 TSX 中，props 保留 camelCase 命名（`onPress`、`allowFontScaling`、`backgroundColor`）；每个元素都接受 `style`、`class` / `classList`（[Tailwind](./tailwind.md)）、`ref`、触摸处理函数、无障碍属性和 `testID`，仅限某个平台的 props 放在 `ios={{…}}` 和 `android={{…}}` 中，只有当前平台的对象会被发送：
 
 ```rust tabs
 view()

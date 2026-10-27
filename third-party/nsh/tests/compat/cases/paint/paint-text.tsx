@@ -1,8 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the text
 // keys as the platform receives them, on a text and on the nested texts
 // (spans) inside one, and the layout the size keys make: font family,
-// size, style and variants, letter spacing, line height, alignment (across
-// and down), decorations, transforms and the writing direction.
+// size, style and variants, letter spacing, line height, alignment (across,
+// `start` and `end` following the direction, and down), decorations, transforms and the writing direction.
 import { Text, View } from "nsh";
 
 function App() {
@@ -41,7 +41,8 @@ function App() {
       <Text testID="variant-old" style={{ fontVariant: ["oldstyle-nums", "proportional-nums"] }}>
         Old figures
       </Text>
-      <Text testID="variant-lining" style={{ fontVariant: ["lining-nums"] }}>
+      {/* CSS's names in a string */}
+      <Text testID="variant-lining" style={{ fontVariant: "lining-nums" }}>
         Lining figures
       </Text>
       <Text testID="underline" style={{ textDecorationLine: "underline", textDecorationColor: "#ff3b30" }}>
@@ -102,6 +103,12 @@ function App() {
       </Text>
       <Text testID="align-justify" style={{ textAlign: "justify" }}>
         Justified
+      </Text>
+      <Text testID="align-start" style={{ textAlign: "start" }}>
+        Start aligned
+      </Text>
+      <Text testID="align-end" style={{ textAlign: "end" }}>
+        End aligned
       </Text>
       <Text testID="dir-auto" style={{ writingDirection: "auto" }}>
         Direction auto

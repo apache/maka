@@ -33,7 +33,7 @@ export function StandardActions() {
   function Action(props: { name: string; detail: string; action: () => Promise<string> }) {
     return <Card icon="system" title={props.name} subtitle={props.detail}>
       <Button label={`Run ${props.name}`} disabled={busy()[props.name] ?? false} onPress={() => { void run(props.name, props.action); }} />
-      <Text selectable style={{ color: colors.text, fontSize: 13, fontFamily: mono }}>{results()[props.name] ?? "Ready"}</Text>
+      <Text style={{ userSelect: "text", color: colors.text, fontSize: 13, fontFamily: mono }}>{results()[props.name] ?? "Ready"}</Text>
     </Card>;
   }
   const dataDirectory = () => {

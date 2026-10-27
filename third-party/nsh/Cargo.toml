@@ -58,6 +58,7 @@ rustybuzz = "0.20"
 signal-hook = "0.3"
 notify = "8.2"
 log = "0.4"
+ordered-float = { version = "5", default-features = false }
 env_logger = "0.11"
 libc = "0.2"
 imagesize = "0.15"
@@ -211,6 +212,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
   "NSObject",
   "NSOperation",
   "NSProcessInfo",
+  "NSPropertyList",
   "NSRange",
   "NSRunLoop",
   "NSSet",

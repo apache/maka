@@ -164,8 +164,10 @@ Things that were found the hard way. Read the section of the area you change bef
 - **`TextView` uses `UIViewContentMode::Redraw`**: list cells can get their text before their frame; without redrawing on
   resize the text stays drawn at zero size.
 - **UINavigationController breaks transitions started during another one**: stack changes that arrive while
-  `transitionCoordinator()` is set wait for `didShow` and are applied on the next main-queue turn (the coordinator outlives
-  the callback); only pages the controller actually had count as popped by the user.
+  `transitionCoordinator()` is set wait for the transition's end (`didShow`, or the coordinator's completion: a modal
+  presented or dismissed over the stack sets the coordinator too and never reaches `didShow`) and are applied on the next
+  main-queue turn (the coordinator outlives those callbacks); only pages the controller actually had count as popped by
+  the user.
 - **UIKit installs its own interactive-pop delegate while loading a navigation controller's view**: assigning NSH's
   delegate when the stack is created can be overwritten. Bind the current recognizer in `didShow`, after UIKit has
   configured the screen, so hidden headers use NSH's mounted `popOnSwipe` / `popOnBack` policy too. Verify the gesture
@@ -228,6 +230,12 @@ Things that were found the hard way. Read the section of the area you change bef
   recognizer requiring the secondary button recognized every tap, and as a tap recognizer it cancelled the presses inside
   (a `ContextMenu`'s trigger opened its menu instead of pressing). The `onContextMenu` recognizer allows only
   `UITouchTypeIndirectPointer` touches (`mount.rs`).
+- **iOS, VoiceOver's increment / decrement**: VoiceOver calls `accessibilityIncrement` / `accessibilityDecrement`
+  (swipe up / down) only on elements with `UIAccessibilityTraitAdjustable`, so an element with those actions gets the
+  trait on top of its role's (`native_view.rs` `traits`; an image with them is announced as an adjustable image). It
+  reads the element's value as soon as the call returns, while the new value comes from the engine thread in a later
+  batch: a step whose value arrives after VoiceOver read the old one announces the new one (`NshView::late_step_value`),
+  one that arrives before it asked is read by VoiceOver itself.
 
 ## Android
 

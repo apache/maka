@@ -1231,7 +1231,8 @@ impl Surface {
         }) {
             return false;
         }
-        node.props.focus_return_parent.is_some()
+        (node.kind != ViewKind::Native && node.props.focusable == Some(true))
+            || node.props.focus_return_parent.is_some()
             || node.kind == ViewKind::Input
             || node
                 .text
@@ -4451,6 +4452,142 @@ mod tests {
     }
 
     #[test]
+    fn nonpressable_focusable_views_keep_keyboard_and_pointer_actions_separate() {
+        use nsh_core::{
+            MountBatch, MountItem, ViewProps,
+            keymap::{KeyBinding, Keymap, When},
+        };
+
+        let mut surface = form();
+        let mut items = create(6, ViewKind::View, 4, 0.0);
+        items.extend([
+            MountItem::ViewProps {
+                id: 6,
+                props: Box::new(ViewProps {
+                    focusable: Some(true),
+                    ..Default::default()
+                }),
+            },
+            MountItem::Events {
+                id: 6,
+                events: mask(&[EventKind::Focus, EventKind::Blur]),
+            },
+        ]);
+        surface.apply(MountBatch { items });
+        key(&mut surface, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(surface.focused(), Some(4));
+        key(&mut surface, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(surface.focused(), Some(6));
+        assert!(!surface.pressable(6));
+        assert!(
+            surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(6, EventKind::Focus, _)))
+        );
+
+        surface.events.clear();
+        key(&mut surface, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut surface, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(
+            !surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(_, EventKind::Press, _)))
+        );
+        let mut binding = KeyBinding::new(
+            91,
+            Keystroke::parse_with("ctrl+k", false).unwrap(),
+            When::Always,
+            false,
+        );
+        binding.within = Some(6);
+        surface.keymap = std::sync::Arc::new(Keymap::new(vec![binding]));
+        key(&mut surface, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert!(surface.events.iter().any(|event| matches!(
+            event,
+            SurfaceEvent::Event(
+                ROOT_ID,
+                EventKind::KeyCommand,
+                EventPayload::Value(nsh_core::PayloadValue::Number(91.0))
+            )
+        )));
+        key(&mut surface, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(surface.focused(), Some(4));
+        assert!(
+            surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(6, EventKind::Blur, _)))
+        );
+
+        surface.events.clear();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            surface.handle_event(Event::Mouse(MouseEvent {
+                kind,
+                column: 1,
+                row: 3,
+                modifiers: KeyModifiers::NONE,
+            }));
+        }
+        assert_eq!(
+            surface
+                .events
+                .iter()
+                .filter(|event| matches!(event, SurfaceEvent::Event(4, EventKind::Press, _)))
+                .count(),
+            1
+        );
+        assert!(
+            !surface
+                .events
+                .iter()
+                .any(|event| matches!(event, SurfaceEvent::Event(6, EventKind::Press, _)))
+        );
+
+        surface
+            .node_mut(6)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = true;
+        assert!(!surface.keyboard_stop(6));
+        surface
+            .node_mut(6)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = false;
+        surface.node_mut(6).unwrap().props.focusable = Some(false);
+        assert!(!surface.keyboard_stop(6));
+        surface.node_mut(6).unwrap().props.focusable = Some(true);
+        surface.set_focus(Some(6));
+        let original = surface.focus_target(6).unwrap();
+        surface.apply(MountBatch {
+            items: vec![MountItem::Delete { id: 6 }],
+        });
+        assert_ne!(surface.focused(), Some(6));
+        surface.apply(MountBatch {
+            items: create(6, ViewKind::View, 4, 0.0),
+        });
+        assert!(surface.focus_target(6) != Some(original));
+        assert!(!surface.keyboard_stop(6));
+        surface.apply(MountBatch {
+            items: create(8, ViewKind::Native, 4, 0.0),
+        });
+        surface.node_mut(8).unwrap().props.focusable = Some(true);
+        assert!(
+            !surface.keyboard_stop(8),
+            "a native component must provide focus capability"
+        );
+    }
+
+    #[test]
     fn terminal_form_edits_and_activates_buttons_with_keyboard() {
         let mut surface = form();
         assert_eq!(surface.focused(), Some(2));
@@ -6040,6 +6177,42 @@ mod tests {
         key(&mut surface, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(surface.focused(), None);
         surface.reconcile_focus(false);
+        assert_eq!(surface.focused(), None);
+    }
+
+    #[test]
+    fn box_none_input_keeps_keyboard_focus_but_not_pointer_ownership() {
+        let mut surface = form();
+        surface.node_mut(2).unwrap().props.pointer_events = PointerEvents::BoxNone;
+        assert!(surface.keyboard_stop(2));
+        surface.set_focus(None);
+        key(&mut surface, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(surface.focused(), Some(2));
+        let frame = surface.global_frame(2).unwrap();
+        let x = frame.origin.x.0 + frame.size.width.0 / 2.0;
+        let y = frame.origin.y.0 + frame.size.height.0 / 2.0;
+        assert_ne!(surface.hit_test(x, y), Some(2));
+        surface
+            .node_mut(2)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = true;
+        assert!(!surface.keyboard_stop(2));
+        surface.reconcile_focus(false);
+        assert_eq!(surface.focused(), Some(4));
+        surface
+            .node_mut(2)
+            .unwrap()
+            .props
+            .accessibility
+            .state
+            .disabled = false;
+        surface.node_mut(ROOT_ID).unwrap().props.pointer_events = PointerEvents::None;
+        assert!(!surface.keyboard_stop(2));
+        surface.reconcile_focus(false);
+        surface.set_focus(Some(2));
         assert_eq!(surface.focused(), None);
     }
 

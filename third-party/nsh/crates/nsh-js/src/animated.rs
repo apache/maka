@@ -1515,8 +1515,8 @@ unsafe extern "C" fn motion_method(
 
 /// A motion's transform steps (owned) over its channels' `values`: the
 /// translations and rotations, then the scales with `scale` folded into
-/// `scaleX` and `scaleY` (multiplied natively), so a motion takes 7 of a
-/// view's 8 transform steps and leaves one for the app (a `perspective`).
+/// `scaleX` and `scaleY` (multiplied natively): a `transform` list, which
+/// an app's own steps (a `perspective` first) may join.
 fn motion_transform(cx: *mut JsContext, values: &[JsValue]) -> Vec<JsValue> {
     use MotionChannel::*;
     let at = |c: MotionChannel| values[c.index()];
@@ -2175,7 +2175,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "createAnimatedValue",
         Export::Function(animated_value, 1),
         Ts::function(
-            "Creates an animated value. Bind it (or nodes derived from it) to style\nproperties (`opacity`, `transform`, `backgroundColor`, `borderColor`, a\ntext's `color`, `shadowColor` / `shadowOpacity` / `shadowRadius`), to a\nscroll position (`scrollValue`) or to drags (`pan`).",
+            "Creates an animated value. Bind it (or nodes derived from it) to style\nproperties (`opacity`, `translate` / `rotate` / `scale`, a `transform` list,\n`backgroundColor`, `borderColor`, a text's `color`), to a scroll position (`scrollValue`) or to drags (`pan`).",
             &["(value?: number): AnimatedValue"],
         ),
     ),
@@ -2334,8 +2334,8 @@ export interface MotionOptions extends MotionPlayOptions {
 }
 
 /** A motion's transform: its channels in the order they apply, `scale`
- * folded into `scaleX` and `scaleY` (7 steps; a view takes 8, so one is left
- * for yours, such as a `perspective` before them for 3D flips). */
+ * folded into `scaleX` and `scaleY`; spread it into a list with steps of
+ * your own (`[{ perspective: 800 }, ...motion.transform]` for 3D flips). */
 export type MotionTransform = [
   { translateX: AnimatedValue },
   { translateY: AnimatedValue },
@@ -2362,7 +2362,7 @@ export interface Motion {
   /** `{ opacity, transform }`: bind it with `style={motion.style}`, or
    * spread it into a style. */
   readonly style: { opacity: AnimatedValue; transform: MotionTransform };
-  /** The transform alone, to spread into one with steps of your own. */
+  /** The transform alone, to spread into a list with steps of your own. */
   readonly transform: MotionTransform;
   /** Plays a preset or a motion of your own; a new one interrupts the one
    * playing. Resolves with whether it finished. */

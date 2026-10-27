@@ -4,12 +4,13 @@
 //! The app's shortcuts (`nsh/keymap`) take it first, as the platforms'
 //! keymaps do: the newest binding of the keystroke that fires where the
 //! focus is reports `onKeyCommand`. Else Tab moves the keyboard focus
-//! between the inputs and the views that take presses where the platform
+//! between the inputs and the views that are its stops (those that take
+//! presses, and `focusable` ones that take none) where the platform
 //! does (macOS, the web), Return and Space press the pressable it is on,
 //! the focused input takes the keys that edit it, and Escape goes back.
 
 use nsh_core::{
-    EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
+    Command, EventKind, EventPayload, MountItem, NodeId, PayloadValue, ROOT_ID,
     keymap::{Key, KeyMatch, Keystroke},
     platform::Os,
     tailwind::state::FOCUSED,
@@ -45,12 +46,15 @@ impl Headless {
         }
         let m = stroke.modifiers;
         let plain = !(m.ctrl || m.alt || m.cmd);
-        if stroke.key == Key::Tab && plain && self.tabs_to_pressables() {
+        if stroke.key == Key::Tab && plain && self.tabs_to_views() {
             self.tab(m.shift);
             return self.done();
         }
+        // A stop that takes no presses (a `focusable` chart) hears its keys
+        // through the keymap only, above.
         if let Some(view) = self.screen.key_focus()
             && self.screen.focused().is_none()
+            && self.screen.hears(view, EventKind::Press)
             && plain
             && !m.shift
             && matches!(stroke.key, Key::Enter | Key::Char(' '))
@@ -82,9 +86,9 @@ impl Headless {
         self.done()
     }
 
-    /// Whether Tab stops at views that take presses, as on macOS and the
+    /// Whether Tab stops at views (not only inputs), as on macOS and the
     /// web (the other platforms move it between fields only).
-    fn tabs_to_pressables(&self) -> bool {
+    fn tabs_to_views(&self) -> bool {
         matches!(self.environment.os, Os::MacOs | Os::Web)
     }
 
@@ -100,7 +104,7 @@ impl Headless {
         self.move_focus(Some(stops[next]));
     }
 
-    /// Moves the keyboard focus to `to` (an input or a pressable), telling
+    /// Moves the keyboard focus to `to` (an input or a view), telling
     /// the view it leaves and the one it reaches.
     pub(super) fn move_focus(&mut self, to: Option<NodeId>) {
         let from = self.screen.focused().or(self.screen.key_focus());
@@ -129,7 +133,52 @@ impl Headless {
         }
     }
 
-    /// The pressable's `focus:` state, which follows the keyboard focus.
+    /// Applies a non-input focus call after the screen applied this item,
+    /// before the next item can retire or remove its target. Inputs and
+    /// root blur are already handled by the screen.
+    pub(super) fn focus_call(&mut self, item: &MountItem) {
+        if !self.tabs_to_views() {
+            return;
+        }
+        let MountItem::Command { id, command } = item else {
+            return;
+        };
+        match command {
+            Command::Focus
+                if *id != ROOT_ID
+                    && self.screen.input(*id).is_none()
+                    && self.screen.tab_stops().contains(id) =>
+            {
+                self.screen.set_focused(None);
+                self.screen.set_key_focus(Some(*id));
+            }
+            Command::Blur if self.screen.key_focus() == Some(*id) => {
+                self.screen.set_key_focus(None);
+            }
+            _ => {}
+        }
+    }
+
+    /// Reports the batch's net focus change. An intermediate target may
+    /// already have been deleted or replaced, so it receives no late event.
+    pub(super) fn report_focus_change(&mut self, focused: Option<NodeId>) {
+        let now = self.screen.focused().or(self.screen.key_focus());
+        if now != focused {
+            self.engine
+                .control()
+                .set_focus_path(self.screen.focus_path());
+            if let Some(old) = focused {
+                self.set_focused_state(old, false);
+                self.send(old, EventKind::Blur, EventPayload::None);
+            }
+            if let Some(new) = now {
+                self.set_focused_state(new, true);
+                self.send(new, EventKind::Focus, EventPayload::None);
+            }
+        }
+    }
+
+    /// A view's `focus:` state, which follows the keyboard focus.
     pub(super) fn set_focused_state(&mut self, id: NodeId, on: bool) {
         if self.screen.input(id).is_none()
             && let Some(states) = self.screen.set_state(id, FOCUSED, on)

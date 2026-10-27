@@ -274,6 +274,21 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
         Err(StoreError::InvalidTransition(reason)) if reason == "invalid prepared semantic cursor"
     ));
 
+    for (sequence, rows) in [
+        (1, &expected[..3]),
+        (2, &expected[..0]),
+        (3, &expected[..0]),
+        (259, &expected[258..]),
+    ] {
+        let group = PreparedGroup {
+            id: sequence.to_string(),
+        };
+        let read = log.prepared_view_group(&view, &group).await.unwrap();
+        assert_eq!(read.rows, rows, "group sequence {sequence}");
+        assert_eq!(read.manifest, frozen_manifest("old", &group.id));
+        assert_eq!(read.skip, 0);
+    }
+
     // Compare actual SQLite statement runs with one standalone root seek on
     // this same frozen tree; two additional searches cannot hide in a page size.
     const NODE_SQL: &str = "SELECT node_json FROM context_prepared_nodes WHERE id=?";
@@ -352,6 +367,74 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     assert_eq!(original.rows, middle.rows);
     assert_eq!(original.manifest, middle.manifest);
     assert_eq!(original.skip, 1);
+    let retained = log
+        .prepared_view_group(&view, &PreparedGroup { id: "1".into() })
+        .await
+        .unwrap();
+    assert_eq!(retained.rows, middle.rows);
+    assert_eq!(retained.manifest, middle.manifest);
+    assert_eq!(retained.skip, 0);
+
+    store(&log, vec![row(1000, 1000)]).await;
+    let sparse = publish(&log, 1000, "sparse").await;
+    assert!(sparse.message_count < 1000);
+    let group = PreparedGroup { id: "1000".into() };
+    let sparse_read = log.prepared_view_group(&sparse, &group).await.unwrap();
+    assert_eq!(sparse_read.rows, vec![row(1000, 1000)]);
+    assert_eq!(sparse_read.manifest, frozen_manifest("sparse", "1000"));
+    assert_eq!(sparse_read.skip, 0);
+    for (id, reason) in [
+        ("999", "prepared group is outside its root"),
+        ("not-a-sequence", "invalid prepared group"),
+    ] {
+        assert!(matches!(
+            log.prepared_view_group(&sparse, &PreparedGroup { id: id.into() }).await,
+            Err(StoreError::InvalidTransition(actual)) if actual == reason
+        ));
+    }
+
+    let root = sparse.root.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                tree::find(connection, root.as_deref(), 1000).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let (first, second) = tokio::join!(
+        log.prepared_view_group(&sparse, &group),
+        log.prepared_view_group(&sparse, &group),
+    );
+    first.unwrap();
+    second.unwrap();
+    let before = log.sqlite_resource_stats().await.unwrap();
+    let root = sparse.root.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                tree::find(connection, root.as_deref(), 1000).await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let found = log.sqlite_resource_stats().await.unwrap();
+    let node_reads = run_delta(&before, &found, NODE_SQL);
+    assert!(node_reads > 0);
+    assert_eq!(run_delta(&before, &found, GROUP_SQL), 1);
+    let read = log.prepared_view_group(&sparse, &group).await.unwrap();
+    assert_eq!(read.rows, sparse_read.rows);
+    assert_eq!(read.manifest, sparse_read.manifest);
+    let after = log.sqlite_resource_stats().await.unwrap();
+    let actual_node_reads = run_delta(&found, &after, NODE_SQL);
+    let actual_group_reads = run_delta(&found, &after, GROUP_SQL);
+    assert!(actual_node_reads <= node_reads);
+    assert_eq!(actual_group_reads, 1);
+    eprintln!(
+        "sequence group node reads={actual_node_reads}, group reads={actual_group_reads}, one-find baseline={node_reads}"
+    );
     log.close().await.unwrap();
 }
 async fn render(
@@ -544,12 +627,6 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
             .unwrap()
     );
     assert_eq!(bytes(&log, &wire).await, old_bytes);
-    assert_eq!(
-        log.prepared_group_snapshot(&view, &PreparedGroup { id: "1".into() })
-            .await
-            .unwrap(),
-        manifest()
-    );
     let metadata = log
         .prepared_wire_metadata_page(&wire, PreparedWireCursor::default(), 1)
         .await
@@ -582,7 +659,12 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         .unwrap();
     assert!(maximum <= 32 * 1024);
     log.close().await.unwrap();
+    let group = PreparedGroup { id: "1".into() };
     let reopened = EventLog::open(&path).await.unwrap();
+    assert!(matches!(
+        reopened.prepared_view_group(&view, &group).await,
+        Err(StoreError::InvalidTransition(reason)) if reason == "prepared view belongs to another database owner"
+    ));
     assert!(
         reopened
             .prepared_wire_page(&wire, PreparedWireCursor::default(), 1)

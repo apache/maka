@@ -40,7 +40,7 @@ function LinkRow(props: { icon: IconName; title: string; note: string; first?: b
         <IconTile name={props.icon} size={34} />
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ fontSize: 15, fontWeight: "500", color: colors.text }}>{props.title}</Text>
-          <Text numberOfLines={1} style={{ fontSize: 12, color: colors.faint, fontFamily: mono }}>
+          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint, fontFamily: mono }}>
             {props.note}
           </Text>
         </View>
@@ -230,6 +230,7 @@ function Unsaved() {
             placeholder="A draft"
             style={{
               placeholderColor: colors.faint,
+              caretColor: colors.accent,
               selectionColor: colors.accent,
               height: 48,
               paddingHorizontal: 14,
@@ -511,7 +512,7 @@ export function Navigation() {
             style={{
               alignSelf: "stretch",
               opacity: pop,
-              transform: [{ scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }) }],
+              scale: pop.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] }),
             }}
           >
             <Card icon="bell" title="A dialog" subtitle='animation="fade"'>

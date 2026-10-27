@@ -31,14 +31,19 @@ const manifest = JSON.parse(await readFile(join(directory, 'upstream.json'), 'ut
 const names = ['LICENSE', 'NOTICE', 'ThirdPartyNotices.txt', 'injected.js', 'keyboard.json'];
 const hash = (bytes, algorithm = 'sha256', encoding = 'hex') =>
   createHash(algorithm).update(bytes).digest(encoding);
-if (manifest.repository !== 'https://github.com/microsoft/playwright'
-    || manifest.registry_package !== 'playwright-core'
-    || manifest.registry_version !== '1.58.2'
-    || manifest.archive.url !== 'https://registry.npmjs.org/playwright-core/-/playwright-core-1.58.2.tgz'
-    || manifest.extraction.source !== 'package/lib/generated/injectedScriptSource.js'
-    || manifest.keyboard?.source !== 'package/lib/server/usKeyboardLayout.js'
-    || Object.keys(manifest.files).sort().join() !== names.slice().sort().join()) {
-  throw new Error('Review the pinned upstream manifest and extraction recipe before changing the dependency.');
+if (
+  manifest.repository !== 'https://github.com/microsoft/playwright' ||
+  manifest.registry_package !== 'playwright-core' ||
+  manifest.registry_version !== '1.58.2' ||
+  manifest.archive.url !==
+    'https://registry.npmjs.org/playwright-core/-/playwright-core-1.58.2.tgz' ||
+  manifest.extraction.source !== 'package/lib/generated/injectedScriptSource.js' ||
+  manifest.keyboard?.source !== 'package/lib/server/usKeyboardLayout.js' ||
+  Object.keys(manifest.files).sort().join() !== names.slice().sort().join()
+) {
+  throw new Error(
+    'Review the pinned upstream manifest and extraction recipe before changing the dependency.',
+  );
 }
 
 // This parser accepts the pinned data grammar only: string-keyed objects,
@@ -50,7 +55,9 @@ function keyboardData(source) {
   if (start < 0 || source.indexOf(marker, start + marker.length) >= 0)
     throw new Error('Upstream keyboard assignment changed');
   let cursor = start + marker.length;
-  const reject = () => { throw new Error(`Unsupported keyboard data syntax at ${cursor}`); };
+  const reject = () => {
+    throw new Error(`Unsupported keyboard data syntax at ${cursor}`);
+  };
   const whitespace = () => {
     while (cursor < source.length) {
       if (/\s/u.test(source[cursor])) cursor++;
@@ -68,11 +75,28 @@ function keyboardData(source) {
       const char = source[cursor++];
       if (char === quote) return result;
       if (char === '\n' || char === '\r' || char.charCodeAt(0) < 32) return reject();
-      if (char !== '\\') { result += char; continue; }
+      if (char !== '\\') {
+        result += char;
+        continue;
+      }
       const escaped = source[cursor++];
-      const escapes = { '\\': '\\', "'": "'", '"': '"', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '0': '\0' };
-      if (!Object.hasOwn(escapes, escaped)
-          || (escaped === '0' && /[0-9]/u.test(source[cursor] ?? ''))) return reject();
+      const escapes = {
+        '\\': '\\',
+        "'": "'",
+        '"': '"',
+        b: '\b',
+        f: '\f',
+        n: '\n',
+        r: '\r',
+        t: '\t',
+        v: '\v',
+        0: '\0',
+      };
+      if (
+        !Object.hasOwn(escapes, escaped) ||
+        (escaped === '0' && /[0-9]/u.test(source[cursor] ?? ''))
+      )
+        return reject();
       result += escapes[escaped];
     }
     return reject();
@@ -109,13 +133,32 @@ function keyboardData(source) {
   const layout = value();
   whitespace();
   if (source[cursor++] !== ';' || !layout || typeof layout !== 'object') return reject();
-  const fields = new Set(['keyCode', 'keyCodeWithoutLocation', 'key', 'text', 'location', 'shiftKey', 'shiftKeyCode']);
+  const fields = new Set([
+    'keyCode',
+    'keyCodeWithoutLocation',
+    'key',
+    'text',
+    'location',
+    'shiftKey',
+    'shiftKeyCode',
+  ]);
   for (const [code, definition] of Object.entries(layout)) {
-    if (!/^[A-Za-z][A-Za-z0-9]*$/u.test(code) || !definition || typeof definition !== 'object'
-        || typeof definition.key !== 'string' || !Number.isInteger(definition.keyCode)) return reject();
+    if (
+      !/^[A-Za-z][A-Za-z0-9]*$/u.test(code) ||
+      !definition ||
+      typeof definition !== 'object' ||
+      typeof definition.key !== 'string' ||
+      !Number.isInteger(definition.keyCode)
+    )
+      return reject();
     for (const [field, entry] of Object.entries(definition)) {
-      if (!fields.has(field) || (['key', 'text', 'shiftKey'].includes(field)
-          ? typeof entry !== 'string' : !Number.isInteger(entry))) return reject();
+      if (
+        !fields.has(field) ||
+        (['key', 'text', 'shiftKey'].includes(field)
+          ? typeof entry !== 'string'
+          : !Number.isInteger(entry))
+      )
+        return reject();
     }
   }
   return Buffer.from(JSON.stringify(layout, null, 2) + '\n');
@@ -123,30 +166,38 @@ function keyboardData(source) {
 
 const action = process.argv[2] ?? '--check';
 if (!['--check', '--refresh'].includes(action) || process.argv.length > 3)
-  throw new Error('Usage: node scripts/computer-use-parity/update-playwright.mjs [--check|--refresh]');
+  throw new Error(
+    'Usage: node scripts/computer-use-parity/update-playwright.mjs [--check|--refresh]',
+  );
 if (action === '--refresh') {
   const response = await fetch(manifest.archive.url, { signal: AbortSignal.timeout(30000) });
   if (!response.ok) throw new Error(`Upstream package HTTP ${response.status}`);
   const archive = Buffer.from(await response.arrayBuffer());
-  if (hash(archive) !== manifest.archive.sha256
-      || `sha512-${hash(archive, 'sha512', 'base64')}` !== manifest.archive.integrity)
+  if (
+    hash(archive) !== manifest.archive.sha256 ||
+    `sha512-${hash(archive, 'sha512', 'base64')}` !== manifest.archive.integrity
+  )
     throw new Error('Upstream archive checksum mismatch');
   const temporary = await mkdtemp(join(tmpdir(), 'maka-playwright-vendor-'));
   try {
     const archivePath = join(temporary, 'package.tgz');
     await writeFile(archivePath, archive);
-    const extract = (member) => execFileSync('tar', ['-xOzf', archivePath, member], {maxBuffer: 16 * 1024 * 1024});
+    const extract = (member) =>
+      execFileSync('tar', ['-xOzf', archivePath, member], { maxBuffer: 16 * 1024 * 1024 });
     const module = extract(manifest.extraction.source);
     if (hash(module) !== manifest.extraction.source_sha256)
       throw new Error('Generated upstream module checksum mismatch');
     // Decode one validated JavaScript string literal. No package module,
     // install script, original application artifact, or browser is executed.
-    const line = module.toString('utf8').split('\n').find(line => line.startsWith('const source = '));
+    const line = module
+      .toString('utf8')
+      .split('\n')
+      .find((line) => line.startsWith('const source = '));
     if (!line?.endsWith(';')) throw new Error('Upstream source assignment changed');
     const literal = line.slice('const source = '.length, -1);
     if (!/^'(?:[^'\\\r\n]|\\[^\r\n])*'$/u.test(literal))
       throw new Error('Expected a single source string literal');
-    const source = runInNewContext(`(${literal})`, Object.create(null), {timeout:1000});
+    const source = runInNewContext(`(${literal})`, Object.create(null), { timeout: 1000 });
     if (typeof source !== 'string') throw new Error('Expected the upstream source string');
     const keyboardModule = extract(manifest.keyboard.source);
     if (hash(keyboardModule) !== manifest.keyboard.source_sha256)
@@ -154,14 +205,17 @@ if (action === '--refresh') {
     const outputs = new Map([
       ['keyboard.json', keyboardData(keyboardModule.toString('utf8'))],
       ['injected.js', Buffer.from(source)],
-      ...names.filter(name => name !== 'injected.js' && name !== 'keyboard.json').map(name => [name, extract(`package/${name}`)]),
+      ...names
+        .filter((name) => name !== 'injected.js' && name !== 'keyboard.json')
+        .map((name) => [name, extract(`package/${name}`)]),
     ]);
     for (const [name, bytes] of outputs) {
-      if (hash(bytes) !== manifest.files[name]) throw new Error(`Extracted ${name} checksum mismatch`);
+      if (hash(bytes) !== manifest.files[name])
+        throw new Error(`Extracted ${name} checksum mismatch`);
     }
     for (const [name, bytes] of outputs) await writeFile(join(directory, name), bytes);
   } finally {
-    await rm(temporary, {recursive:true, force:true});
+    await rm(temporary, { recursive: true, force: true });
   }
 }
 for (const name of names) {

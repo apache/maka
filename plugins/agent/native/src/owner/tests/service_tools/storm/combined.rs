@@ -1219,7 +1219,7 @@ async fn exercise(
         observed.session.activity,
         contract::SessionActivity::Idle
     ));
-    assert!(!observed.compacting);
+    assert!(observed.compacting.is_none());
     quiescent(owner).await;
     assert_eq!(snapshot(f, &session), stored);
     assert!(stored.tail as u64 <= through);

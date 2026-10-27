@@ -550,16 +550,6 @@ impl Context<'_> {
         let style = &layer.style;
         let rect = Bounds::new(Point::default(), layer.size);
         let mut shadows = Vec::new();
-        if style.shadow.is_visible() {
-            shadows.push(nsh_core::BoxShadow {
-                offset_x: style.shadow.offset_x,
-                offset_y: style.shadow.offset_y,
-                blur: style.shadow.radius * 2.0,
-                spread: Points::ZERO,
-                color: with_alpha(style.shadow.color, style.shadow.opacity),
-                inset: false,
-            });
-        }
         if let Some(effects) = &style.effects {
             shadows.extend(
                 effects
@@ -1527,13 +1517,17 @@ mod tests {
             .mul(&Matrix::of(TransformKind::TranslateY, 2.0));
         child.style.overflow_hidden = true;
         child.style.border_radius = Points(1.0);
-        child.style.shadow = nsh_core::Shadow {
-            color: Color::BLACK,
-            offset_x: Points(2.0),
-            offset_y: Points(0.0),
-            opacity: 1.0,
-            radius: Points(0.0),
-        };
+        child.style.effects = Some(Arc::new(Effects {
+            box_shadows: vec![nsh_core::BoxShadow {
+                color: Color::BLACK,
+                offset_x: Points(2.0),
+                offset_y: Points(0.0),
+                blur: Points(0.0),
+                spread: Points::ZERO,
+                inset: false,
+            }],
+            ..Effects::default()
+        }));
         root.children.push(child);
         let raster = rasterize(&scene(root), &FontCatalog::default()).unwrap();
         assert_eq!(rgba(&raster, 4, 4), [255, 0, 0, 255]);

@@ -67,16 +67,20 @@ impl OpenState {
             .unwrap_or_else(|| self.own.get_untracked())
     }
 
-    /// The user asks for it to be `open`: its own state follows when the
-    /// app does not control it; whether it is a change to report.
-    pub(crate) fn request(self, open: bool) -> bool {
+    /// The user asks for it to be `open`: when that is a change, `report`
+    /// runs (the popup emits `OpenChange`), then its own state follows when
+    /// the app does not control it. Reported first: the lifecycle
+    /// ([`lifecycle`]) emits `Open` / `Close` as the state changes, at once
+    /// where the popup has no motion (the desktops, reduced motion), and
+    /// the app hears `onOpenChange` before them.
+    pub(crate) fn request(self, open: bool, report: impl FnOnce()) {
         if self.get_untracked() == open {
-            return false;
+            return;
         }
+        report();
         if self.controlled.get_untracked().is_none() {
             self.own.set(open);
         }
-        true
     }
 }
 

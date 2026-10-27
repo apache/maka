@@ -127,8 +127,10 @@ One Oxc pass removes TypeScript and lowers JSX (`plugin.rs` `compile_native`):
 - Dynamic children are a render effect updating the nodes the insert shows (an array the insert's effects share),
   reconciled with Solid's `reconcileArrays` against the renderer's mirror of the tree; a node that comes again later
   is moved, never removed and inserted (the core would remake its view), and an insert that would not move a node is
-  skipped. An insert of a function (`insert_run`) calls it, and the functions it returns, tracked by its effect; when
-  that gives an array holding functions (a component's `children`: `[element, cond(…)]`), the array gets an effect of
+  skipped. An insert of a function (`insert_run`) calls it, tracked by its effect; a function it returns (a component whose
+  root is an `<If>` returns `cond(…)`) gets a render effect of its own under it, as Solid's `insertExpression` gives
+  one, so a change in that function's condition runs only it: tracked by the outer effect, it would call the
+  expression again and make the component again (its state lost). When that gives an array holding functions (a component's `children`: `[element, cond(…)]`), the array gets an effect of
   its own (`insert_items`, Solid's nested effect in `insertExpression`), made again only when the outer one runs: a
   change in an `<If>`, an `<Each>` or a ternary among the children runs that effect, never the getter, so the siblings
   it made stay (an input keeps its text and focus). Each function in such an array (also a run of dynamic children,

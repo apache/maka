@@ -397,6 +397,9 @@ pub enum TestStep {
         selector: String,
         /// The text (empty: none).
         text: String,
+        /// The same content as HTML (empty: none).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        html: String,
         /// Files with their bytes (images).
         files: Vec<TestFile>,
         /// Local files' `file:` URLs.

@@ -18,7 +18,7 @@ const frame = () => ({ borderRadius: radius.control, borderCurve: "continuous", 
 /** A quiet label under a tile (`code` for API values). */
 function Note(props: { children: string; code?: boolean }) {
   return (
-    <Text numberOfLines={1} style={{ fontSize: 13, color: colors.muted, fontFamily: props.code ? mono : undefined, fontVariant: ["tabular-nums"], textAlign: "center" }}>
+    <Text style={{ numberOfLines: 1, fontSize: 13, color: colors.muted, fontFamily: props.code ? mono : undefined, fontVariant: ["tabular-nums"], textAlign: "center" }}>
       {props.children}
     </Text>
   );
@@ -48,11 +48,11 @@ function Tile(props: { note: string; code?: boolean; height?: number; children: 
   );
 }
 
-/** A 2:1 image in squares, one per resize mode. */
+/** A 2:1 image in squares, one per `objectFit` value. */
 function ResizeModes() {
   const rows = [
     ["cover", "contain"],
-    ["stretch", "center"],
+    ["fill", "none"],
   ] as const;
   return (
     <Card icon="image" title="Resize modes" subtitle="A 2:1 image in square frames">
@@ -62,7 +62,7 @@ function ResizeModes() {
             <Each of={row()}>
               {(mode) => (
                 <View style={{ flex: 1, gap: 8 }}>
-                  <Image src={wide} resizeMode={mode()} style={{ ...frame(), height: 140 }} />
+                  <Image src={wide} style={{ ...frame(), height: 140, objectFit: mode() }} />
                   <Note code>{mode()}</Note>
                 </View>
               )}
@@ -121,7 +121,7 @@ function Assets() {
 }
 
 /** SVG images: a one-color star tinted at three sizes and as drawn, a
- * two-color logo in two resize modes, and an SVG from a URL. */
+ * two-color logo fitted two ways (`objectFit`), and an SVG from a URL. */
 function Svg() {
   const sizes = [18, 36, 72];
   const modes = ["contain", "cover"] as const;
@@ -143,13 +143,13 @@ function Svg() {
         <Each of={modes}>
           {(mode) => (
             <View style={{ flex: 1, gap: 8 }}>
-              <Image testID={`svg-mark-${mode()}`} src={mark} resizeMode={mode()} style={{ ...frame(), height: 96 }} />
+              <Image testID={`svg-mark-${mode()}`} src={mark} style={{ ...frame(), height: 96, objectFit: mode() }} />
               <Note code>{mode()}</Note>
             </View>
           )}
         </Each>
         <View style={{ flex: 1, gap: 8 }}>
-          <Image testID="svg-remote" src={remoteSvg} resizeMode="contain" style={{ ...frame(), height: 96 }} />
+          <Image testID="svg-remote" src={remoteSvg} style={{ ...frame(), height: 96, objectFit: "contain" }} />
           <Note>Remote</Note>
         </View>
       </View>
@@ -200,7 +200,6 @@ function Placeholders() {
                 src={photo(fade().id, 600 + seed(), 600 + seed())}
                 placeholder={logo}
                 fadeDuration={fade().ms}
-                resizeMode="cover"
                 style={{ ...frame(), height: 100 }}
               />
               <Note>{`${fade().ms} ms`}</Note>
@@ -324,7 +323,7 @@ function Events() {
         </View>
         <View style={{ flex: 1, gap: 4 }}>
           <Text style={{ fontSize: 15, color: colors.text }}>example.invalid</Text>
-          <Text numberOfLines={3} style={{ fontSize: 13, color: colors.danger }}>{failed()}</Text>
+          <Text style={{ numberOfLines: 3, fontSize: 13, color: colors.danger }}>{failed()}</Text>
         </View>
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" }}>

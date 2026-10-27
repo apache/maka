@@ -363,9 +363,22 @@ pub(crate) fn snippets(glue: &Path) -> anyhow::Result<Vec<(String, PathBuf)>> {
 /// The glue with its snippets imported from `dir` (`snippets.<digest>`,
 /// relative to the glue) instead of `snippets`: the snippets keep their
 /// paths under it, so their imports of one another resolve as they did.
+/// Only ES module specifiers move: import-table keys also occur as paths,
+/// but name imports in the unchanged Wasm binary.
 pub(crate) fn link_snippets(glue: &str, dir: &str) -> String {
-    glue.replace("\"./snippets/", &format!("\"./{dir}/"))
-        .replace("'./snippets/", &format!("'./{dir}/"))
+    let prefix = format!("./{dir}/");
+    let mut linked = String::with_capacity(glue.len());
+    for line in glue.split_inclusive('\n') {
+        if let Some(specifier) = import_specifier(line).filter(|s| s.starts_with("./snippets/")) {
+            let start = line.find(specifier).unwrap();
+            linked.push_str(&line[..start]);
+            linked.push_str(&prefix);
+            linked.push_str(&line[start + "./snippets/".len()..]);
+        } else {
+            linked.push_str(line);
+        }
+    }
+    linked
 }
 
 /// The glue wasm-bindgen `version` wrote (`--target web`), for `nsh.js`: an
@@ -434,7 +447,12 @@ fn import_specifier(line: &str) -> Option<&str> {
         side_effect if line.starts_with("import") && side_effect.starts_with(['"', '\'']) => {
             side_effect
         }
-        _ => rest[rest.rfind("from")? + "from".len()..].trim_start(),
+        _ => {
+            // Module paths can themselves contain `from`.
+            let first_quote = rest.find(['"', '\''])?;
+            let from = rest[..first_quote].rfind("from")?;
+            rest[from + "from".len()..].trim_start()
+        }
     };
     let quote = quoted.chars().next().filter(|c| matches!(c, '"' | '\''))?;
     let (specifier, _) = quoted[1..].split_once(quote)?;
@@ -619,7 +637,21 @@ mod tests {
     }
 
     #[test]
-    fn wasm_bindgen_snippets_are_found_beside_the_glue_and_linked_to_their_directory() {
+    fn snippet_paths_containing_from_are_relocated_without_changing_wasm_keys() {
+        let glue = "import { first } from './snippets/from-app-123/inline0.js';\n\
+                    import { shout } from \"./snippets/app-123/js/from.js\";\n\
+                    const imports = { './snippets/from-app-123/inline0.js': { first } };\n";
+        let linked = link_snippets(glue, "snippets.0123456789");
+        assert_eq!(
+            linked,
+            "import { first } from './snippets.0123456789/from-app-123/inline0.js';\n\
+             import { shout } from \"./snippets.0123456789/app-123/js/from.js\";\n\
+             const imports = { './snippets/from-app-123/inline0.js': { first } };\n"
+        );
+    }
+
+    #[test]
+    fn wasm_bindgen_snippets_are_found_beside_the_glue() {
         let out = std::env::temp_dir().join(format!("nsh-bindgen-snippets-{}", std::process::id()));
         let glue = out.join("nsh-bindgen.js");
         let inline = super::output_dir(&glue).join("snippets/app-ab472218d0dc7732/inline0.js");
@@ -643,20 +675,6 @@ mod tests {
         );
         // No snippets: none.
         assert!(snippets(&out.join("other-bindgen.js")).unwrap().is_empty());
-        let linked = link_snippets(GLUE_0_2_129, "snippets.0123456789");
-        assert!(
-            linked.contains(
-                "import { twice } from './snippets.0123456789/app-ab472218d0dc7732/inline0.js';"
-            ),
-            "{linked}"
-        );
-        assert!(
-            linked.contains(
-                "import { shout } from './snippets.0123456789/app-ab472218d0dc7732/js/shout.js';"
-            ),
-            "{linked}"
-        );
-        assert!(!linked.contains("./snippets/"), "{linked}");
         let _ = std::fs::remove_dir_all(&out);
     }
 
@@ -751,21 +769,19 @@ mod tests {
     /// `NSH_WASM_BINDGEN`): builds a crate that calls JS through
     /// wasm-bindgen of the CLI's version for `wasm32-unknown-unknown` and
     /// installs it as a web runtime. Needs the target and the crates
-    /// (network, or Cargo's cache):
+    /// (network, or Cargo's cache), plus Node.js to instantiate both the
+    /// development and published modules:
     /// `cargo test -p nsh-cli bindgen -- --ignored`.
     #[test]
-    #[ignore = "needs the wasm-bindgen CLI, the wasm32 target and crates.io"]
+    #[ignore = "needs the wasm-bindgen CLI, the wasm32 target, crates.io and Node.js"]
     fn wasm_bindgen_runs_on_a_real_module() {
-        let Some(printed) = std::process::Command::new(super::cli())
+        let printed = std::process::Command::new(super::cli())
             .arg("--version")
             .output()
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        else {
-            println!("skipped: no wasm-bindgen CLI");
-            return;
-        };
+            .expect("the wasm-bindgen CLI is installed");
         let version = super::cli_version(&printed).unwrap().to_owned();
         let root = std::env::temp_dir().join(format!("nsh-bindgen-e2e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -783,7 +799,7 @@ mod tests {
             ),
         );
         write(
-            "js/shout.js",
+            "js/from.js",
             "export function shout(text) { return text.toUpperCase(); }\n",
         );
         write(
@@ -795,12 +811,22 @@ extern "C" {
     fn now_ms() -> f64;
 }
 
-#[wasm_bindgen(inline_js = "import { shout } from './js/shout.js'; export function twice(s) { return shout(s + s); }")]
+#[wasm_bindgen(inline_js = "import { shout } from './js/from.js'; export function twice(s) { return shout(s + s); }")]
 extern "C" {
     fn twice(s: &str) -> String;
 }
 
-#[wasm_bindgen(module = "/js/shout.js")]
+#[wasm_bindgen(inline_js = "export function first(x) { return x + 3; }")]
+extern "C" {
+    fn first(x: f64) -> f64;
+}
+
+#[wasm_bindgen(inline_js = "export function second(x) { return x * 7; }")]
+extern "C" {
+    fn second(x: f64) -> f64;
+}
+
+#[wasm_bindgen(module = "/js/from.js")]
 extern "C" {
     fn shout(s: &str) -> String;
 }
@@ -812,8 +838,10 @@ extern "C" {
 }
 
 #[no_mangle]
-pub extern "C" fn probe() {
+pub extern "C" fn probe() -> f64 {
+    // SAFETY: The test host supplies the clock import.
     log(&twice(&shout(&unsafe { now_ms() }.to_string())));
+    second(first(3.0))
 }
 "#,
         );
@@ -833,11 +861,11 @@ pub extern "C" fn probe() {
         );
         let out = root.join("web-runtime");
         std::fs::create_dir_all(&out).unwrap();
+        // Snippets are ES modules, including on Node versions without
+        // automatic module-syntax detection for `.js` files.
+        std::fs::write(out.join("package.json"), r#"{"type":"module"}"#).unwrap();
         let glue = install(&built, &out, "nsh").unwrap().expect("a glue");
         assert_eq!(glue, out.join("nsh-bindgen.js"));
-        let text = std::fs::read_to_string(&glue).unwrap();
-        assert!(text.contains("const import1 = {};"), "{text}");
-        assert!(text.contains("__nsh_imports"), "{text}");
         // The module wasm-bindgen wrote: its imports are the glue's now.
         let wasm = std::fs::read(out.join("nsh.wasm")).unwrap();
         assert_eq!(needs(&wasm).unwrap(), None);
@@ -848,21 +876,66 @@ pub extern "C" fn probe() {
             .into_iter()
             .map(|(path, _)| path)
             .collect();
-        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found.len(), 4, "{found:?}");
         assert!(
             found.iter().any(|p| p.ends_with("/inline0.js")),
             "{found:?}"
         );
         assert!(
-            found.iter().any(|p| p.ends_with("/js/shout.js")),
+            found.iter().any(|p| p.ends_with("/js/from.js")),
             "{found:?}"
         );
-        for path in &found {
-            assert!(text.contains(&format!("'./{path}'")), "{path}: {text}");
+        // Run the actual glue and Wasm, including wasm-bindgen's direct
+        // numeric imports: their module names must match the Wasm binary
+        // even when publication relocates the JS files.
+        for directory in ["snippets", "snippets.0123456789"] {
+            for (name, file) in snippets(&glue).unwrap() {
+                let path = out
+                    .join(directory)
+                    .join(name.strip_prefix("snippets/").unwrap());
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::copy(file, path).unwrap();
+            }
+            if directory != "snippets" {
+                // Publication must work without the development paths.
+                std::fs::remove_dir_all(out.join("snippets")).unwrap();
+            }
+            let text = std::fs::read_to_string(&glue).unwrap();
+            let text = link_snippets(&text, directory);
+            let text = nsh_bundler::minify_module("nsh-bindgen.js", &text).unwrap();
+            let linked = out.join(format!("{directory}.mjs"));
+            std::fs::write(&linked, text).unwrap();
+            let result = std::process::Command::new("node")
+                .args([
+                    "--input-type=module",
+                    "-e",
+                    r#"
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+const glue = await import(pathToFileURL(process.argv[1]));
+const module = await WebAssembly.compile(await readFile(process.argv[2]));
+const imports = glue.__nsh_imports();
+imports.nsh = { now_ms: () => 12 };
+const instance = await WebAssembly.instantiate(module, imports);
+glue.__nsh_finalize(instance, module);
+assert.equal(instance.exports.probe(), 42);
+"#,
+                ])
+                .arg(linked)
+                .arg(out.join("nsh.wasm"))
+                .output()
+                .expect("Node.js runs the generated module");
+            assert!(
+                result.status.success(),
+                "{directory}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "1212");
         }
         // Built again, it replaces the output.
         assert_eq!(install(&built, &out, "nsh").unwrap(), Some(glue.clone()));
-        assert_eq!(snippets(&glue).unwrap().len(), 2);
+        assert_eq!(snippets(&glue).unwrap().len(), 4);
         // A CLI of another version leaves it as it was.
         let error = super::process(&built, "0.0.1", &out, "nsh").unwrap_err();
         assert!(error.to_string().contains("0.0.1"), "{error}");

@@ -119,6 +119,7 @@ impl std::fmt::Display for NativeEpochId {
 pub struct SessionOwner {
     driver: Arc<Mutex<Driver>>,
     state: Arc<std::sync::Mutex<OwnerState>>,
+    remote_id: NativeEpochId,
     #[cfg(feature = "native-desktop")]
     browser_owner: uuid::Uuid,
     #[cfg(feature = "native-desktop")]
@@ -127,18 +128,9 @@ pub struct SessionOwner {
 
 struct OwnerState {
     closed: bool,
-    backend: OwnerBackend,
-}
-
-enum OwnerBackend {
-    Unselected,
-    Local,
-    Windows { active: Option<RemoteEpoch> },
-}
-
-struct RemoteEpoch {
-    epoch: NativeEpochId,
-    session: Option<String>,
+    remote_epochs: std::collections::HashMap<NativeEpochId, Option<String>>,
+    remote_registered: bool,
+    cleanup: Option<NativeCleanup>,
 }
 
 impl SessionOwner {
@@ -147,8 +139,11 @@ impl SessionOwner {
             driver,
             state: Arc::new(std::sync::Mutex::new(OwnerState {
                 closed: false,
-                backend: OwnerBackend::Unselected,
+                remote_epochs: std::collections::HashMap::new(),
+                remote_registered: false,
+                cleanup: None,
             })),
+            remote_id: NativeEpochId::new(),
             #[cfg(feature = "native-desktop")]
             browser_owner: uuid::Uuid::new_v4(),
             #[cfg(feature = "native-desktop")]
@@ -159,29 +154,8 @@ impl SessionOwner {
     /// Create fresh interpreter-facing caches without borrowing an older epoch.
     pub fn new_epoch(&self) -> Result<Session, ToolError> {
         let epoch = NativeEpochId::new();
-        let mut state = self.state.lock().unwrap();
-        if state.closed {
-            return Err(failed("Computer Use Session owner is closed"));
-        }
-        if let OwnerBackend::Windows { active } = &mut state.backend {
-            if active.is_some() {
-                return Err(failed(
-                    "unsupported: Windows desktop worker requires the previous native epoch to close before replacement",
-                ));
-            }
-            *active = Some(RemoteEpoch {
-                epoch,
-                session: None,
-            });
-        }
+        self.ensure_open()?;
         Ok(Session::from_owner(self.clone(), epoch))
-    }
-
-    pub fn supports_epoch_retirement(&self) -> bool {
-        !matches!(
-            self.state.lock().unwrap().backend,
-            OwnerBackend::Windows { .. }
-        )
     }
 
     pub(crate) fn ensure_open(&self) -> Result<(), ToolError> {
@@ -192,32 +166,12 @@ impl SessionOwner {
         }
     }
 
-    fn select_backend(&self, epoch: NativeEpochId, windows: bool) -> Result<(), ToolError> {
+    fn register_remote(&self, epoch: NativeEpochId) -> Result<(), ToolError> {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(failed("Computer Use Session owner is closed"));
         }
-        if let OwnerBackend::Windows {
-            active: Some(active),
-        } = &state.backend
-            && active.epoch != epoch
-        {
-            return Err(failed(
-                "unsupported: Windows desktop worker still owns the previous native epoch",
-            ));
-        }
-        if windows {
-            if !matches!(&state.backend, OwnerBackend::Windows { active: Some(_) }) {
-                state.backend = OwnerBackend::Windows {
-                    active: Some(RemoteEpoch {
-                        epoch,
-                        session: None,
-                    }),
-                };
-            }
-        } else {
-            state.backend = OwnerBackend::Local;
-        }
+        state.remote_epochs.entry(epoch).or_default();
         Ok(())
     }
 
@@ -226,36 +180,30 @@ impl SessionOwner {
         if state.closed {
             return Err(failed("Computer Use Session owner is closed"));
         }
-        let OwnerBackend::Windows {
-            active: Some(active),
-        } = &mut state.backend
-        else {
-            return Err(failed("Windows native epoch is unavailable"));
-        };
-        if active.epoch != epoch || active.session.as_deref().is_some_and(|id| id != session) {
+        let current = state
+            .remote_epochs
+            .get_mut(&epoch)
+            .ok_or_else(|| failed("Windows native epoch is unavailable"))?;
+        if current.as_deref().is_some_and(|id| id != session) {
             return Err(failed("Computer Use Session identity mismatch"));
         }
-        active.session.get_or_insert_with(|| session.to_owned());
+        current.get_or_insert_with(|| session.to_owned());
+        state.remote_registered = true;
         Ok(())
     }
 
     fn remote_session(&self, epoch: NativeEpochId) -> Option<String> {
-        let state = self.state.lock().unwrap();
-        match &state.backend {
-            OwnerBackend::Windows {
-                active: Some(active),
-            } if active.epoch == epoch => active.session.clone(),
-            _ => None,
-        }
+        self.state
+            .lock()
+            .unwrap()
+            .remote_epochs
+            .get(&epoch)
+            .cloned()
+            .flatten()
     }
 
     fn release_remote(&self, epoch: NativeEpochId) {
-        let mut state = self.state.lock().unwrap();
-        if let OwnerBackend::Windows { active } = &mut state.backend
-            && active.as_ref().is_some_and(|active| active.epoch == epoch)
-        {
-            *active = None;
-        }
+        self.state.lock().unwrap().remote_epochs.remove(&epoch);
     }
 
     #[cfg(feature = "native-desktop")]
@@ -285,74 +233,114 @@ impl SessionOwner {
     }
 
     pub async fn finish_turn(&self, turn: &str, language: Language) -> Result<(), ToolError> {
-        let remote = {
-            let state = self.state.lock().unwrap();
-            match &state.backend {
-                OwnerBackend::Windows { active } => {
-                    Some(active.as_ref().and_then(|active| active.session.clone()))
-                }
-                _ => None,
-            }
-        };
-        if let Some(remote) = remote {
-            return match remote {
-                Some(session) => self
-                    .driver
-                    .lock()
-                    .await
-                    .windows
-                    .call(
-                        worker::Request::FinishTurn {
-                            session,
+        let registered = self.state.lock().unwrap().remote_registered;
+        let mut failures = Vec::new();
+        if registered {
+            let connection = self.driver.lock().await.windows.connection();
+            let result = match connection {
+                Some(connection) => connection
+                    .invoke(
+                        worker::Request::FinishOwnerTurn {
+                            owner: self.remote_id.to_string(),
                             turn: turn.to_owned(),
                             language,
                         },
-                        &CancellationToken::new(),
+                        None,
+                        CancellationToken::new(),
                     )
                     .await
                     .map(|_| ()),
-                None => Ok(()),
+                None => Err(ToolError::CleanupUnconfirmed(
+                    "Windows logical owner lost its original connection".into(),
+                )),
             };
+            if let Err(error) = result {
+                failures.push(error.to_string());
+            }
         }
         #[cfg(feature = "native-desktop")]
-        return crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
-            .finish_turn(turn, &self.cursor(), language)
-            .await;
-        #[cfg(not(feature = "native-desktop"))]
-        Ok(())
-    }
-
-    /// Finalize shared resources after joining every original epoch close.
-    /// A caller must preserve epoch failures; this result covers only shared cleanup.
-    pub async fn close(&self) -> Result<(), ToolError> {
-        let remote_live = {
-            let mut state = self.state.lock().unwrap();
-            state.closed = true;
-            matches!(&state.backend, OwnerBackend::Windows { active: Some(_) })
-        };
-        let mut failures = Vec::new();
-        if remote_live {
-            failures.push("Windows native epoch has not confirmed its cleanup".to_owned());
-        }
-        #[cfg(feature = "native-desktop")]
+        if let Err(error) =
+            crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
+                .finish_turn(turn, &self.cursor(), language)
+                .await
         {
-            let cursor = self.cursor();
-            if let Err(error) =
-                crate::browser::Browsers::with_owner(self.driver.clone(), self.browser_owner)
-                    .close(&cursor)
-                    .await
-            {
-                failures.push(error.to_string());
-            }
-            if let Err(error) = self.driver.lock().await.cursors.remove(&cursor.id).await {
-                failures.push(error.to_string());
-            }
+            failures.push(error.to_string());
         }
         if failures.is_empty() {
             Ok(())
         } else {
             Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
         }
+    }
+
+    /// Finalize shared resources after joining every original epoch close.
+    /// All observers retain the same original cleanup result.
+    pub async fn close(&self) -> Result<(), ToolError> {
+        let pending = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            if let Some(pending) = &state.cleanup {
+                pending.clone()
+            } else {
+                let remote_live = !state.remote_epochs.is_empty();
+                let registered = state.remote_registered;
+                let driver = self.driver.clone();
+                let remote_id = self.remote_id.to_string();
+                #[cfg(feature = "native-desktop")]
+                let cursor = self.cursor();
+                #[cfg(feature = "native-desktop")]
+                let browser_owner = self.browser_owner;
+                let (reply, pending) = tokio::sync::watch::channel(None);
+                tokio::spawn(async move {
+                    let mut failures = Vec::new();
+                    if remote_live {
+                        failures
+                            .push("Windows native epoch has not confirmed its cleanup".to_owned());
+                    }
+                    if registered {
+                        let connection = driver.lock().await.windows.connection();
+                        match connection {
+                            Some(connection) => {
+                                if let Err(error) = connection
+                                    .invoke(
+                                        worker::Request::CloseOwner { owner: remote_id },
+                                        None,
+                                        CancellationToken::new(),
+                                    )
+                                    .await
+                                {
+                                    failures.push(error.to_string());
+                                }
+                            }
+                            None => failures
+                                .push("Windows logical owner lost its original connection".into()),
+                        }
+                    }
+                    #[cfg(feature = "native-desktop")]
+                    {
+                        if let Err(error) =
+                            crate::browser::Browsers::with_owner(driver.clone(), browser_owner)
+                                .close(&cursor)
+                                .await
+                        {
+                            failures.push(error.to_string());
+                        }
+                        if let Err(error) = driver.lock().await.cursors.remove(&cursor.id).await {
+                            failures.push(error.to_string());
+                        }
+                    }
+                    let result = if failures.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
+                    };
+                    let _ = reply.send(Some(result));
+                });
+                state.cleanup = Some(pending.clone());
+                pending
+            }
+        };
+        observe_retirement(pending).await
     }
 }
 
@@ -373,9 +361,10 @@ enum SessionState {
 }
 enum Backend {
     #[cfg(feature = "native-desktop")]
-    Local(session::Session),
+    Local(Box<session::Session>),
     Windows {
         browsers: Vec<BrowserConnection>,
+        audio: Option<worker::AudioObservation>,
     },
 }
 impl Session {
@@ -445,19 +434,20 @@ impl Session {
             }));
         }
         if self.backend.is_none() {
-            self.owner.select_backend(self.native_epoch, windows)?;
             self.backend = Some(if windows {
+                self.owner.register_remote(self.native_epoch)?;
                 Backend::Windows {
                     browsers: Vec::new(),
+                    audio: None,
                 }
             } else {
                 #[cfg(feature = "native-desktop")]
                 {
-                    Backend::Local(session::Session::with_owner(
+                    Backend::Local(Box::new(session::Session::with_owner(
                         self.driver.clone(),
                         self.native_epoch,
                         self.owner.clone(),
-                    ))
+                    )))
                 }
                 #[cfg(not(feature = "native-desktop"))]
                 return Err(native_unavailable());
@@ -509,12 +499,7 @@ impl Session {
             self.configure(Desktop::Auto, Vec::new(), language)?;
         }
         if matches!(self.backend, Some(Backend::Windows { .. })) {
-            let mut driver = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(failed("Computer Use preparation cancelled")),
-                driver = self.driver.lock() => driver,
-            };
-            driver.windows.prepare(cancellation).await?;
+            prepare_windows(&self.driver, cancellation).await?;
         }
         Ok(())
     }
@@ -585,26 +570,37 @@ impl Session {
                     .invoke(command, invocation, cancellation, language)
                     .await
             }
-            Backend::Windows { browsers } => {
+            Backend::Windows { browsers, audio } => {
+                let start_audio = matches!(&command, Command::StartAudioRecording { .. });
+                let stop_audio = matches!(&command, Command::StopAudioRecording);
+                let request = worker::Request::Invoke {
+                    owner: self.owner.remote_id.to_string(),
+                    epoch: self.native_epoch.to_string(),
+                    session: session.into(),
+                    turn: turn.into(),
+                    browsers: browsers.clone(),
+                    command,
+                    language,
+                };
+                let connection = prepare_windows(&self.driver, cancellation).await?;
                 self.owner.bind_remote(self.native_epoch, session)?;
-                let mut driver = self.driver.lock().await;
-                if cancellation.is_cancelled() {
-                    return Err(failed("Computer Use cancelled before dispatch"));
-                }
-                driver
-                    .windows
+                let reply = connection
                     .invoke(
-                        worker::Request::Invoke {
-                            session: session.into(),
-                            turn: turn.into(),
-                            browsers: browsers.clone(),
-                            command,
-                            language,
-                        },
-                        invocation,
-                        cancellation,
+                        request,
+                        invocation.browser_authorization(),
+                        cancellation.clone(),
                     )
-                    .await
+                    .await?;
+                if start_audio {
+                    *audio = Some(reply.audio.ok_or_else(|| {
+                        ToolError::CleanupUnconfirmed(
+                            "Windows audio startup reply lost its bound capture observation".into(),
+                        )
+                    })?);
+                } else if stop_audio {
+                    *audio = None;
+                }
+                Ok(reply.value)
             }
         }
     }
@@ -614,26 +610,58 @@ impl Session {
         match self.backend.as_mut() {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.discard_audio().await,
-            Some(Backend::Windows { .. }) => match self.owner.remote_session(self.native_epoch) {
-                Some(id) => self.driver.lock().await.windows.discard_audio(&id).await,
-                None => Ok(()),
-            },
+            Some(Backend::Windows { audio, .. }) => {
+                if self.owner.remote_session(self.native_epoch).is_some() {
+                    let connection = self.driver.lock().await.windows.connection();
+                    let connection = connection.ok_or_else(|| {
+                        ToolError::CleanupUnconfirmed(
+                            "Windows native epoch lost its original connection".into(),
+                        )
+                    })?;
+                    connection
+                        .invoke(
+                            worker::Request::DiscardAudio {
+                                owner: self.owner.remote_id.to_string(),
+                                epoch: self.native_epoch.to_string(),
+                            },
+                            None,
+                            CancellationToken::new(),
+                        )
+                        .await
+                        .map_err(unconfirmed_remote_cleanup)?;
+                }
+                *audio = None;
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
 
-    /// Observe this native epoch's recording completion without retaining the Session lock.
+    /// Observe this native epoch's already-bound recording without the Session lock.
     pub fn wait_audio_finished(
         &self,
     ) -> futures_util::future::BoxFuture<'static, Result<(), ToolError>> {
         match self.backend.as_ref() {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.wait_audio_finished(),
-            _ => Box::pin(async {
-                Err(failed(
-                    "Computer audio completion is unavailable for this desktop",
-                ))
-            }),
+            Some(Backend::Windows { audio, .. }) => {
+                let audio = audio.clone();
+                Box::pin(async move {
+                    let mut audio =
+                        audio.ok_or_else(|| failed("Computer audio recording is not active"))?;
+                    loop {
+                        if let Some(result) = audio.borrow().clone() {
+                            return result;
+                        }
+                        audio.changed().await.map_err(|error| {
+                            ToolError::CleanupUnconfirmed(format!(
+                                "Windows audio completion observation was lost: {error}"
+                            ))
+                        })?;
+                    }
+                })
+            }
+            _ => Box::pin(async { Err(failed("Computer audio recording is not active")) }),
         }
     }
 
@@ -647,7 +675,7 @@ impl Session {
         match &mut self.backend {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.finish_turn(session, turn, language).await,
-            Some(Backend::Windows { .. }) => {
+            Some(Backend::Windows { audio, .. }) => {
                 if self
                     .owner
                     .remote_session(self.native_epoch)
@@ -656,7 +684,36 @@ impl Session {
                 {
                     return Err(failed("Computer Use Session identity mismatch"));
                 }
-                self.owner.finish_turn(turn, language).await
+                if self.owner.remote_session(self.native_epoch).is_none() {
+                    return Ok(());
+                }
+                let connection =
+                    self.driver
+                        .lock()
+                        .await
+                        .windows
+                        .connection()
+                        .ok_or_else(|| {
+                            ToolError::CleanupUnconfirmed(
+                                "Windows native epoch lost its original connection".into(),
+                            )
+                        })?;
+                connection
+                    .invoke(
+                        worker::Request::FinishTurn {
+                            owner: self.owner.remote_id.to_string(),
+                            epoch: self.native_epoch.to_string(),
+                            session: session.to_owned(),
+                            turn: turn.to_owned(),
+                            language,
+                        },
+                        None,
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .map_err(unconfirmed_remote_cleanup)?;
+                *audio = None;
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -678,9 +735,27 @@ impl Session {
                     let owner = self.owner.clone();
                     let epoch = self.native_epoch;
                     tokio::spawn(async move {
-                        let result = match owner.remote_session(epoch) {
-                            Some(id) => driver.lock().await.windows.release_session(&id).await,
-                            None => Ok(()),
+                        let result = if owner.remote_session(epoch).is_some() {
+                            let connection = driver.lock().await.windows.connection();
+                            match connection {
+                                Some(connection) => connection
+                                    .invoke(
+                                        worker::Request::CloseEpoch {
+                                            owner: owner.remote_id.to_string(),
+                                            epoch: epoch.to_string(),
+                                        },
+                                        None,
+                                        CancellationToken::new(),
+                                    )
+                                    .await
+                                    .map(|_| ())
+                                    .map_err(unconfirmed_remote_cleanup),
+                                None => Err(ToolError::CleanupUnconfirmed(
+                                    "Windows native epoch lost its original connection".into(),
+                                )),
+                            }
+                        } else {
+                            Ok(())
                         };
                         if result.is_ok() {
                             owner.release_remote(epoch);
@@ -715,6 +790,31 @@ impl Session {
             ))),
         }
     }
+}
+
+fn unconfirmed_remote_cleanup(error: ToolError) -> ToolError {
+    match error {
+        ToolError::CleanupUnconfirmed(_) => error,
+        other => ToolError::CleanupUnconfirmed(format!(
+            "Windows native cleanup was not confirmed: {other}"
+        )),
+    }
+}
+
+async fn prepare_windows(
+    driver: &Arc<Mutex<Driver>>,
+    cancellation: &CancellationToken,
+) -> Result<worker::Connection, ToolError> {
+    let mut driver = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(failed("Computer Use preparation cancelled")),
+        driver = driver.lock() => driver,
+    };
+    driver.windows.prepare(cancellation).await?;
+    driver
+        .windows
+        .connection()
+        .ok_or_else(|| failed("Windows desktop connection is unavailable"))
 }
 
 pub(crate) fn validate_connections(connections: &[BrowserConnection]) -> Result<(), ToolError> {
@@ -777,18 +877,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn windows_worker_replacement_requires_the_previous_epoch_cleanup() {
+    async fn windows_replacement_does_not_reuse_unconfirmed_epoch_cleanup() {
         let driver = Arc::new(Mutex::new(Driver::default()));
         let owner = SessionOwner::new(driver.clone());
         let mut first = owner.new_epoch().unwrap();
-        owner.select_backend(first.native_epoch(), true).unwrap();
-        assert!(!owner.supports_epoch_retirement());
-        assert!(owner.new_epoch().is_err());
-        first.close_native().await.unwrap();
+        owner.register_remote(first.native_epoch()).unwrap();
+        first.backend = Some(Backend::Windows {
+            browsers: Vec::new(),
+            audio: None,
+        });
+        owner
+            .bind_remote(first.native_epoch(), "logical-session")
+            .unwrap();
+        let error = first.close_native().await.unwrap_err();
+        assert!(matches!(&error, ToolError::CleanupUnconfirmed(message)
+            if message == "Windows native epoch lost its original connection"));
         let mut second = owner.new_epoch().unwrap();
+        owner.register_remote(second.native_epoch()).unwrap();
         assert_ne!(first.native_epoch(), second.native_epoch());
+        assert_eq!(
+            owner.remote_session(first.native_epoch()).as_deref(),
+            Some("logical-session")
+        );
+        assert_eq!(
+            first.close_native().await.unwrap_err().to_string(),
+            error.to_string()
+        );
         second.close_native().await.unwrap();
-        owner.close().await.unwrap();
+        assert_eq!(
+            owner.remote_session(first.native_epoch()).as_deref(),
+            Some("logical-session")
+        );
+        let error = owner.close().await.unwrap_err();
+        assert!(matches!(&error, ToolError::CleanupUnconfirmed(message)
+            if message.contains("Windows native epoch has not confirmed its cleanup")
+                && message.contains("Windows logical owner lost its original connection")));
+        assert_eq!(
+            owner.close().await.unwrap_err().to_string(),
+            error.to_string()
+        );
+        assert!(owner.new_epoch().is_err());
         driver.lock().await.close().await.unwrap();
     }
 

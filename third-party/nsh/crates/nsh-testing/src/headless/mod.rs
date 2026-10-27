@@ -592,22 +592,11 @@ impl Headless {
                     .iter()
                     .any(|item| matches!(item, MountItem::Delete { id } if id == old))
             });
-        self.screen.apply(batch);
-        // The app moved the focus (`focus()`, `blur()`): platforms tell the
-        // views as when the user moves it.
-        let now = self.screen.focused().or(self.screen.key_focus());
-        if now != focused {
-            self.engine
-                .control()
-                .set_focus_path(self.screen.focus_path());
-            if let Some(old) = focused {
-                self.set_focused_state(old, false);
-                self.send(old, EventKind::Blur, EventPayload::None);
-            }
-            if let Some(new) = now {
-                self.send(new, EventKind::Focus, EventPayload::None);
-            }
+        for item in &batch.items {
+            self.screen.apply_item(item);
+            self.focus_call(item);
         }
+        self.report_focus_change(focused);
         self.exited |= batch.items.iter().any(|item| {
             matches!(
                 item,
@@ -1158,12 +1147,22 @@ impl Headless {
         self.step(format!("pressAt({selector}, {}, {})", at.x.0, at.y.0));
         let pick = self.screen.pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
-        // `at` is in the view. The touch reports it in the root, as `press`
-        // reports a canvas node's center.
+        // `at` is in the view the selector names, which may be inside the
+        // pressable the press goes to (a paragraph's text in an editor):
+        // it is moved into that view's coordinates. The touch reports it
+        // in the root, as `press` reports a canvas node's center.
+        let named = match self.screen.resolve(&parsed)[..] {
+            [named] => named,
+            _ => id,
+        };
         let page = self
             .screen
-            .bounds_in_root(id)
+            .bounds_in_root(named)
             .map(|bounds| bounds.origin + at);
+        let at = match (page, self.screen.bounds_in_root(id)) {
+            (Some(page), Some(target)) => page - target.origin,
+            _ => at,
+        };
         let path = self.screen.touch_path(id);
         let contact = self
             .screen
@@ -1188,7 +1187,7 @@ impl Headless {
     /// press), as the platforms count them. `None` when the view has no
     /// bounds.
     fn press_payload(&mut self, view: NodeId, at: Option<Point<Points>>) -> EventPayload {
-        // A pointer's press takes the keyboard focus off the pressable Tab
+        // A pointer's press takes the keyboard focus off the view Tab
         // gave it to.
         if self.screen.key_focus().is_some_and(|id| id != view) {
             self.move_focus(None);
@@ -1958,6 +1957,177 @@ mod tests {
         assert_eq!(app.screen.key_focus(), None);
     }
 
+    #[component]
+    fn FocusCommands() -> impl IntoElement {
+        let focuses = signal(0_u32);
+        let blurs = signal(0_u32);
+        let presses = signal(0_u32);
+        view()
+            .child(
+                view().test_id("cell").child(
+                    view()
+                        .test_id("button")
+                        .w(px(100.0))
+                        .h(px(30.0))
+                        .focus(|s| s.opacity(0.5))
+                        .on_press(move || presses.update(|n| *n += 1))
+                        .on_focus(move || focuses.update(|n| *n += 1))
+                        .on_blur(move || blurs.update(|n| *n += 1)),
+                ),
+            )
+            .child(input().test_id("field"))
+            .child(text(move || {
+                format!(
+                    "Focuses {} Blurs {} Presses {}",
+                    focuses.get(),
+                    blurs.get(),
+                    presses.get()
+                )
+            }))
+    }
+
+    fn focus_commands_app(os: nsh_core::platform::Os) -> (Headless, NodeId, NodeId) {
+        let mut config = EngineConfig::new(Root::of::<FocusCommands>());
+        config.environment.os = os;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let cell = app.screen.resolve(&Selector::parse("id:cell").unwrap())[0];
+        let button = app.screen.resolve(&Selector::parse("id:button").unwrap())[0];
+        (app, cell, button)
+    }
+
+    #[test]
+    fn focus_commands_keep_a_pressable_focused_through_noop_and_update_batches() {
+        let (mut app, _, button) = focus_commands_app(nsh_core::platform::Os::MacOs);
+        let opacity = Arc::new(std::sync::Mutex::new(None));
+        let seen = opacity.clone();
+        app.observe(move |_, batch| {
+            for item in &batch.items {
+                if let MountItem::ViewStyle { id, style } = item
+                    && *id == button
+                {
+                    *seen.lock().unwrap() = Some(style.opacity);
+                }
+            }
+        });
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: button,
+                command: Command::Focus,
+            }],
+        });
+        app.done().unwrap();
+        app.wait_for("Focuses 1 Blurs 0 Presses 0").unwrap();
+        assert_eq!(app.screen.key_focus(), Some(button));
+        assert_eq!(*opacity.lock().unwrap(), Some(0.5));
+        app.apply(&MountBatch { items: vec![] });
+        app.done().unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("Focuses 1 Blurs 0 Presses 1").unwrap();
+        assert_eq!(app.screen.key_focus(), Some(button));
+        assert_eq!(*opacity.lock().unwrap(), Some(0.5));
+    }
+
+    #[test]
+    fn focus_commands_root_blur_after_view_focus_wins_in_the_same_batch() {
+        let (mut app, _, button) = focus_commands_app(nsh_core::platform::Os::MacOs);
+        app.apply(&MountBatch {
+            items: vec![
+                MountItem::Command {
+                    id: button,
+                    command: Command::Focus,
+                },
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::Blur,
+                },
+            ],
+        });
+        app.done().unwrap();
+        assert_eq!(app.screen.key_focus(), None);
+        assert_eq!(app.screen.focused(), None);
+        assert!(app.screen.focus_path().is_empty());
+        // Headless reports the net change, not a transient focus that was
+        // already cleared by the time the batch completed.
+        assert!(app.shows("Focuses 0 Blurs 0 Presses 0"));
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: button,
+                command: Command::Focus,
+            }],
+        });
+        app.done().unwrap();
+        app.wait_for("Focuses 1 Blurs 0 Presses 0").unwrap();
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: ROOT_ID,
+                command: Command::Blur,
+            }],
+        });
+        app.done().unwrap();
+        app.wait_for("Focuses 1 Blurs 1 Presses 0").unwrap();
+        assert_eq!(app.screen.key_focus(), None);
+    }
+
+    #[test]
+    fn focus_commands_are_applied_before_native_retirement_decisions() {
+        let (mut app, cell, button) = focus_commands_app(nsh_core::platform::Os::MacOs);
+        app.apply(&MountBatch {
+            items: vec![
+                MountItem::Command {
+                    id: button,
+                    command: Command::Focus,
+                },
+                MountItem::RetireListCell {
+                    id: cell,
+                    request: 1,
+                    roots: vec![cell],
+                },
+            ],
+        });
+        app.done().unwrap();
+        assert!(app.screen.is_attached(cell));
+        assert!(app.screen.is_attached(button));
+        assert_eq!(app.screen.key_focus(), Some(button));
+        assert!(app.screen.focus_path().contains(&cell));
+        app.wait_for("Focuses 1 Blurs 0 Presses 0").unwrap();
+        app.apply(&MountBatch {
+            items: vec![
+                MountItem::Command {
+                    id: ROOT_ID,
+                    command: Command::Blur,
+                },
+                MountItem::RetireListCell {
+                    id: cell,
+                    request: 2,
+                    roots: vec![cell],
+                },
+            ],
+        });
+        app.done().unwrap();
+        assert!(!app.screen.is_attached(cell));
+        assert!(!app.screen.is_attached(button));
+        assert_eq!(app.screen.key_focus(), None);
+        assert_eq!(app.screen.focused(), None);
+        // The detached old view receives no end-of-batch callback.
+        assert!(app.shows("Focuses 1 Blurs 0 Presses 0"));
+    }
+
+    #[test]
+    fn focus_commands_do_not_focus_pressable_views_on_mobile() {
+        let (mut app, _, button) = focus_commands_app(nsh_core::platform::Os::Ios);
+        app.apply(&MountBatch {
+            items: vec![MountItem::Command {
+                id: button,
+                command: Command::Focus,
+            }],
+        });
+        app.done().unwrap();
+        assert_eq!(app.screen.key_focus(), None);
+        assert_eq!(app.screen.focused(), None);
+        assert!(app.shows("Focuses 0 Blurs 0 Presses 0"));
+    }
+
     /// A name field that says hello and keeps what was sent.
     #[component]
     fn Form() -> impl IntoElement {
@@ -2087,7 +2257,7 @@ mod tests {
                 view()
                     .test_id("button")
                     .h(px(40.0))
-                    .on_press(move |_: &()| presses.update(|p| *p += 1))
+                    .on_press(move || presses.update(|p| *p += 1))
                     .on_press_up(move |_: &()| ups.update(|u| *u += 1))
                     .child(text("Button")),
             )
@@ -2564,6 +2734,100 @@ mount(() => {
         let mut android = open_shortcuts(nsh_core::platform::Os::Android);
         android.press_key("ctrl+k").unwrap();
         android.wait_for("Palette 1").unwrap();
+    }
+
+    /// A card that opens something when pressed, a chart in it that is a
+    /// stop of Tab without taking presses (its arrow key steps while it
+    /// has the focus), and a button.
+    #[component]
+    fn FocusStops() -> impl IntoElement {
+        let opens = signal(0_u32);
+        let presses = signal(0_u32);
+        let steps = signal(0_u32);
+        let focused = signal(false);
+        effect(move || {
+            if focused.get() {
+                on_key("right", move |_| steps.update(|s| *s += 1));
+            }
+        });
+        view()
+            .flex_1()
+            .child(
+                view()
+                    .test_id("card")
+                    .on_press(move || opens.update(|o| *o += 1))
+                    .child(
+                        view()
+                            .test_id("chart")
+                            .h(px(40.0))
+                            .focusable(true)
+                            .on_focus(move || focused.set(true))
+                            .on_blur(move || focused.set(false)),
+                    ),
+            )
+            .child(
+                view()
+                    .test_id("button")
+                    .on_press(move || presses.update(|p| *p += 1))
+                    .child(text("Button")),
+            )
+            .child(text(move || {
+                format!(
+                    "Opens {} presses {} steps {} focused {}",
+                    opens.get(),
+                    presses.get(),
+                    steps.get(),
+                    focused.get()
+                )
+            }))
+    }
+
+    #[test]
+    fn tab_stops_at_a_focusable_view_that_takes_no_presses() {
+        let mut config = EngineConfig::new(Root::of::<FocusStops>());
+        config.environment.os = nsh_core::platform::Os::MacOs;
+        config.environment.idiom = nsh_core::platform::Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.first_render().unwrap();
+        let id = |app: &Headless, s: &str| match app.screen().view(&Selector::parse(s).unwrap()) {
+            crate::screen::Pick::One(id) => id,
+            _ => panic!("{s} is shown"),
+        };
+        let (card, chart, button) = (
+            id(&app, "id:card"),
+            id(&app, "id:chart"),
+            id(&app, "id:button"),
+        );
+        assert_eq!(app.screen().tab_stops(), [card, chart, button]);
+        // In tree order: the card, then the chart inside it.
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(card));
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(chart));
+        app.wait_for("Opens 0 presses 0 steps 0 focused true")
+            .unwrap();
+        // Return presses nothing there; its keys reach it through the
+        // keymap while it has the focus.
+        app.press_key("enter").unwrap();
+        app.press_key("right").unwrap();
+        app.wait_for("Opens 0 presses 0 steps 1 focused true")
+            .unwrap();
+        app.press_key("tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(button));
+        app.wait_for("Opens 0 presses 0 steps 1 focused false")
+            .unwrap();
+        app.press_key("right").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for("Opens 0 presses 1 steps 1 focused false")
+            .unwrap();
+        app.press_key("shift+tab").unwrap();
+        assert_eq!(app.screen().key_focus(), Some(chart));
+        app.wait_for("Opens 0 presses 1 steps 1 focused true")
+            .unwrap();
+        // A press on the chart is the card's: being focusable takes none.
+        app.press("id:chart").unwrap();
+        app.wait_for("Opens 1 presses 1 steps 1 focused false")
+            .unwrap();
     }
 
     #[cfg(feature = "js")]

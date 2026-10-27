@@ -18,8 +18,13 @@
  */
 
 const engine = new (module.exports.InjectedScript())(globalThis, {
-  isUnderTest: false, sdkLanguage: 'javascript', testIdAttributeName: 'data-testid',
-  stableRafCount: 1, browserName: 'chromium', isUtilityWorld: true, customEngines: [],
+  isUnderTest: false,
+  sdkLanguage: 'javascript',
+  testIdAttributeName: 'data-testid',
+  stableRafCount: 1,
+  browserName: 'chromium',
+  isUtilityWorld: true,
+  customEngines: [],
 });
 // Adapt the upstream data tree before rendering. No live DOM value or attribute
 // changes, and the published dependency remains byte-identical.
@@ -51,7 +56,8 @@ engine.makaSegments = (query) => {
     result.push({ text: stringifySelector(chunk), parsed: chunk });
     start = index + 1;
   }
-  if (start === parsed.parts.length) throw new Error('A frame selector requires a descendant selector');
+  if (start === parsed.parts.length)
+    throw new Error('A frame selector requires a descendant selector');
   const capture = parsed.capture === undefined ? undefined : parsed.capture - start;
   const chunk = { parts: parsed.parts.slice(start), capture };
   result.push({ text: stringifySelector(chunk), parsed: chunk });

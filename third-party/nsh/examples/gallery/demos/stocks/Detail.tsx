@@ -71,7 +71,7 @@ function DayRange(props: { stock: Stock }) {
             borderWidth: 3,
             borderColor: colors.background,
             backgroundColor: toneOf(q().last - q().prevClose),
-            transform: [{ translateX: x }],
+            translate: [x, 0],
           }}
         />
       </View>
@@ -107,7 +107,7 @@ function Quote(props: { market: Market; stock: Stock }) {
   return (
     <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: 14, gap: 10 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text numberOfLines={1} style={{ flex: 1, fontSize: 15, color: colors.muted }}>
+        <Text style={{ numberOfLines: 1, flex: 1, fontSize: 15, color: colors.muted }}>
           {props.stock.name}
         </Text>
         <Text style={{ fontSize: 13, color: colors.faint }}>{sector}</Text>
@@ -116,7 +116,7 @@ function Quote(props: { market: Market; stock: Stock }) {
       </View>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Text style={{ fontSize: 36, fontWeight: "600", letterSpacing: -1, color: toneOf(change()), fontVariant: ["tabular-nums"] }}>{p(q().last)}</Text>
-        <View style={{ transform: [{ rotate: turn.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] }) }] }}>
+        <View style={{ rotate: turn.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "180deg"] }) }}>
           <Icon name="arrow-up" size={20} tint={toneOf(change())} />
         </View>
         <View style={{ flex: 1, alignItems: "flex-end", gap: 1 }}>

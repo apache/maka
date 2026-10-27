@@ -1,10 +1,9 @@
 import { type JSX, signal, Text, View, type YNode } from "nsh";
-import { type InputProps } from "nsh/base";
 import { announce, reduceMotion, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 import { LayoutAnimation } from "nsh";
 import { locale, pixelRatio, platform } from "nsh";
 import { InputAccessoryView } from "nsh/mobile";
-import { Dialog, NavPage, Sheet, Input } from "nsh/base";
+import { Dialog, Input, type InputProps, NavPage, Sheet } from "nsh/base";
 import { safeArea } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
@@ -24,6 +23,7 @@ function Field(props: InputProps) {
       {...props}
       style={{
         placeholderColor: colors.faint,
+        caretColor: colors.accent,
         selectionColor: colors.accent,
         height: 48,
         paddingHorizontal: 14,
@@ -52,7 +52,7 @@ function LinkRow(props: { icon: IconName; title: string; note: string; onPress: 
         <IconTile name={props.icon} size={34} />
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ fontSize: 15, fontWeight: "500", color: colors.text }}>{props.title}</Text>
-          <Text numberOfLines={1} style={{ fontSize: 12, color: colors.faint, fontFamily: mono }}>
+          <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.faint, fontFamily: mono }}>
             {props.note}
           </Text>
         </View>
@@ -347,10 +347,10 @@ function PlatformInfo() {
         <Each of={rows()}>
           {(row, i) => (
             <Row first={i() === 0}>
-              <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, color: colors.muted, fontFamily: mono }}>
+              <Text style={{ numberOfLines: 1, flex: 1, fontSize: 12, color: colors.muted, fontFamily: mono }}>
                 {row()[0]}
               </Text>
-              <Text numberOfLines={1} style={{ fontSize: 14, color: colors.text, fontVariant: ["tabular-nums"] }}>
+              <Text style={{ numberOfLines: 1, fontSize: 14, color: colors.text, fontVariant: ["tabular-nums"] }}>
                 {row()[1]}
               </Text>
             </Row>

@@ -31,7 +31,7 @@ pub use message::{AssistantExcerpt, MessageObservation, WorkOrigin};
 mod streams;
 mod tools;
 pub use delivery::{StoreStreamEvent, StreamEventPage, StreamFact, ToolSettlement};
-pub use streams::AssistantStreamSeed;
+pub use streams::{AssistantStreamSeed, CompactionProgress};
 pub use tools::ToolStreamSeed;
 
 /// Metadata, latest root Turn and catch-up cursor from the same SQL snapshot.
@@ -41,7 +41,7 @@ pub struct SessionObservation<T> {
     pub through_sequence: u64,
     pub active_streams: Vec<AssistantStreamSeed>,
     pub active_tools: Vec<ToolStreamSeed>,
-    pub compacting: bool,
+    pub compacting: Option<CompactionProgress>,
     pub pending_interactions: Vec<InteractionRecord>,
 }
 

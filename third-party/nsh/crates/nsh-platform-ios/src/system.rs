@@ -9,13 +9,22 @@ use nsh_core::{
     platform::{Appearance, clipboard},
 };
 use nsh_engine::EngineControl;
-use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained, runtime::Bool};
+use objc2::{
+    AllocAnyThread, MainThreadMarker, MainThreadOnly,
+    rc::Retained,
+    runtime::{AnyObject, Bool},
+};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSData, NSDictionary, NSString, NSURL};
+use objc2_foundation::{
+    NSAttributedString, NSData, NSDictionary, NSPropertyListReadOptions,
+    NSPropertyListSerialization, NSRange, NSString, NSURL,
+};
 use objc2_ui_kit::{
-    UIAlertAction, UIAlertActionStyle, UIAlertController, UIAlertControllerStyle, UIApplication,
-    UIDevice, UIPopoverArrowDirection, UIStatusBarAnimation, UIStatusBarStyle,
-    UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIViewController,
+    NSAttributedStringDocumentFormats, NSDocumentTypeDocumentAttribute,
+    NSDocumentTypeDocumentOption, NSHTMLTextDocumentType, NSRTFDTextDocumentType,
+    NSRTFTextDocumentType, UIAlertAction, UIAlertActionStyle, UIAlertController,
+    UIAlertControllerStyle, UIApplication, UIDevice, UIPopoverArrowDirection, UIStatusBarAnimation,
+    UIStatusBarStyle, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIViewController,
 };
 
 thread_local! {
@@ -362,8 +371,9 @@ pub(crate) fn read_clipboard_image(id: u32, has_only: bool) -> EventPayload {
 }
 
 /// What `board` holds, read as the user pastes into an input (`onPaste`):
-/// its text, its images (as they are in [`IMAGE_TYPES`], else PNG) and its
-/// local files' `file:` URLs (Mac Catalyst).
+/// its text, the same content as HTML ([`pasted_html`]), its images (as
+/// they are in [`IMAGE_TYPES`], else PNG) and its local files' `file:` URLs
+/// (Mac Catalyst).
 pub(crate) fn pasted(board: &objc2_ui_kit::UIPasteboard) -> nsh_core::PasteEvent {
     // SAFETY: plain getters of the pasteboard, read on the user's paste.
     unsafe {
@@ -375,6 +385,7 @@ pub(crate) fn pasted(board: &objc2_ui_kit::UIPasteboard) -> nsh_core::PasteEvent
                 .map(|s| s.to_string())
                 .unwrap_or_default(),
         );
+        paste.html = pasted_html(board).unwrap_or_default();
         if board.hasImages() {
             let first = IMAGE_TYPES
                 .iter()
@@ -402,6 +413,108 @@ pub(crate) fn pasted(board: &objc2_ui_kit::UIPasteboard) -> nsh_core::PasteEvent
         }
         paste
     }
+}
+
+/// The pasteboard's formatted content as HTML: `public.html` as browsers,
+/// office suites and most editors copy it; else the main resource of a web
+/// archive (Safari, Mail); else RTF (Notes, Pages, TextEdit on Mac
+/// Catalyst), written as HTML by UIKit.
+fn pasted_html(board: &objc2_ui_kit::UIPasteboard) -> Option<String> {
+    let data = |kind: &str| board.dataForPasteboardType(&NSString::from_str(kind));
+    if let Some(html) = data("public.html") {
+        return Some(decode_text(&html.to_vec(), None));
+    }
+    if let Some(archive) = data("com.apple.webarchive")
+        && let Some(html) = web_archive_html(&archive)
+    {
+        return Some(html);
+    }
+    // SAFETY: immutable UIKit constants.
+    let (rtfd, rtf) = unsafe { (NSRTFDTextDocumentType, NSRTFTextDocumentType) };
+    let (bytes, kind) = data("com.apple.flat-rtfd")
+        .map(|d| (d, rtfd))
+        .or_else(|| data("public.rtf").map(|d| (d, rtf)))?;
+    // SAFETY: immutable UIKit constants.
+    let (kind_option, kind_attribute, html) = unsafe {
+        (
+            NSDocumentTypeDocumentOption,
+            NSDocumentTypeDocumentAttribute,
+            NSHTMLTextDocumentType,
+        )
+    };
+    let options =
+        NSDictionary::<NSString, AnyObject>::from_slices(&[kind_option], &[kind.as_ref()]);
+    // SAFETY: the options name the data's document type, as UIKit takes
+    // them; no document attributes are asked for.
+    let text = unsafe {
+        NSAttributedString::initWithData_options_documentAttributes_error(
+            NSAttributedString::alloc(),
+            &bytes,
+            &options,
+            None,
+        )
+    }
+    .ok()?;
+    let attributes =
+        NSDictionary::<NSString, AnyObject>::from_slices(&[kind_attribute], &[html.as_ref()]);
+    // SAFETY: the attributes are the document type, as UIKit takes them.
+    let data = unsafe {
+        text.dataFromRange_documentAttributes_error(NSRange::new(0, text.length()), &attributes)
+    }
+    .ok()?;
+    Some(String::from_utf8_lossy(&data.to_vec()).into_owned())
+}
+
+/// The HTML of a web archive's main resource (`WebMainResource`'s
+/// `WebResourceData`), decoded as its `WebResourceTextEncodingName` says.
+fn web_archive_html(archive: &NSData) -> Option<String> {
+    // SAFETY: `archive` is plist data; a null format is allowed.
+    let plist = unsafe {
+        NSPropertyListSerialization::propertyListWithData_options_format_error(
+            archive,
+            NSPropertyListReadOptions::Immutable,
+            std::ptr::null_mut(),
+        )
+    }
+    .ok()?;
+    let main = plist
+        .downcast_ref::<NSDictionary>()?
+        .objectForKey(&NSString::from_str("WebMainResource"))?;
+    let main = main.downcast_ref::<NSDictionary>()?;
+    let data = main.objectForKey(&NSString::from_str("WebResourceData"))?;
+    let encoding = main
+        .objectForKey(&NSString::from_str("WebResourceTextEncodingName"))
+        .and_then(|e| e.downcast_ref::<NSString>().map(|e| e.to_string()));
+    Some(decode_text(
+        &data.downcast_ref::<NSData>()?.to_vec(),
+        encoding.as_deref(),
+    ))
+}
+
+/// Text `bytes` in `encoding` (an IANA name): UTF-16 as it names it or as
+/// a byte order mark says, else UTF-8.
+fn decode_text(bytes: &[u8], encoding: Option<&str>) -> String {
+    let encoding = encoding.map(str::to_ascii_lowercase);
+    let big_endian = match (encoding.as_deref(), bytes) {
+        (Some("utf-16be"), _) | (_, [0xfe, 0xff, ..]) => true,
+        (Some("utf-16" | "utf-16le"), _) | (_, [0xff, 0xfe, ..]) => false,
+        _ => return String::from_utf8_lossy(bytes).into_owned(),
+    };
+    let units: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| {
+            if big_endian {
+                u16::from_be_bytes(*c)
+            } else {
+                u16::from_le_bytes(*c)
+            }
+        })
+        .collect();
+    String::from_utf16_lossy(&units)
+        .trim_start_matches('\u{feff}')
+        .to_owned()
 }
 
 /// `Clipboard.readFiles`: the `file:` URLs on the general pasteboard

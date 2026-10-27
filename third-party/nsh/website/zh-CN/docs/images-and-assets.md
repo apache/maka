@@ -106,7 +106,7 @@ logo; // { url: "asset:/assets/logo.svg", size: { width: 120, height: 40 } }
 <Image src={star} style={{ width: 36, height: 36, tintColor: "#0969da" }} />
 ```
 
-SVG 在显示的尺寸下清晰。浏览器以矢量方式绘制它；iOS、macOS 和 Android 在图片加载时按视图显示它的像素尺寸绘制（与位图的降采样相同；之后变大的视图会缩放这次绘制的结果，直到图片重新加载）；Windows、Linux 和 GPUI 以每点四个像素绘制一次（每边最多 2048 像素），再缩放到各个视图。其余一切与位图相同：`resizeMode`、`tintColor`（透过 SVG 的不透明形状着色，单色图标因此能随主题变色）、滤镜、`blurRadius`、占位图、加载事件、`Image.getSize` 与 `Image.prefetch`。`onLoad` 和 `Image.getSize` 以整数点报告 SVG 的尺寸；图片按它的精确尺寸布局。远程 SVG 文件以同样的方式加载，经过同样的下载与[能力](./sandbox-and-capabilities.md)检查；NSH 根据内容识别 SVG（包括 gzip 压缩的 `.svgz`），与 URL 的结尾无关。
+SVG 在显示的尺寸下清晰。浏览器以矢量方式绘制它；iOS、macOS 和 Android 在图片加载时按视图显示它的像素尺寸绘制（与位图的降采样相同；之后变大的视图会缩放这次绘制的结果，直到图片重新加载）；Windows、Linux 和 GPUI 以每点四个像素绘制一次（每边最多 2048 像素），再缩放到各个视图。其余一切与位图相同：`objectFit`、`tintColor`（透过 SVG 的不透明形状着色，单色图标因此能随主题变色）、滤镜、`blurRadius`、占位图、加载事件、`Image.getSize` 与 `Image.prefetch`。`onLoad` 和 `Image.getSize` 以整数点报告 SVG 的尺寸；图片按它的精确尺寸布局。远程 SVG 文件以同样的方式加载，经过同样的下载与[能力](./sandbox-and-capabilities.md)检查；NSH 根据内容识别 SVG（包括 gzip 压缩的 `.svgz`），与 URL 的结尾无关。
 
 **原生平台绘制的内容。** iOS、macOS、Android、Windows、Linux 和 GPUI 用同一个渲染器（resvg）绘制 SVG，因此同一幅图在各平台上看起来一致：形状与路径、填充与描边、渐变与图案、裁剪路径与蒙版、不透明度、滤镜和变换。文本（`<text>`）、动画（SMIL 与 CSS）、嵌入的图片（`<image>`）和 HTML（`<foreignObject>`）在浏览器中显示；原生平台绘制 SVG 的其余部分，保持静止，`nsh build` 会指出用到它们的文件。把文本导出为轮廓（路径），即可在各处得到相同的效果。
 
@@ -175,35 +175,36 @@ nsh.setCacheOptions(NshCacheOptions.builder()
 
 ## 缩放模式
 
-缩放模式（Rust 中的 `.resize_mode(..)`，TSX 中的 `resizeMode`）决定图片如何填充形状不同的框：
+`objectFit` 样式，即 CSS 的 `object-fit`（Rust 中的 `.object_fit(..)`），决定图片如何填充形状不同的框：
 
 | 取值 | 效果 |
 |---|---|
 | `"cover"`（`ResizeMode::Cover`，默认） | 保持宽高比填满整个框，裁掉溢出部分 |
 | `"contain"`（`ResizeMode::Contain`） | 保持宽高比完整放入框内，留出空白 |
-| `"stretch"`（`ResizeMode::Stretch`） | 精确填满框，图片会变形 |
-| `"center"`（`ResizeMode::Center`） | 自然尺寸，居中 |
+| `"fill"`（`ResizeMode::Stretch`） | 精确填满框，图片会变形 |
+| `"none"`（`ResizeMode::Center`） | 自然尺寸，放在 `objectPosition` 处（默认居中） |
+| `"scale-down"`（`ResizeMode::ScaleDown`） | 自然尺寸，比框大时缩小到放得下 |
 
 ```rust tabs
-image(photo).resize_mode(ResizeMode::Contain).size(px(140.0)).bg(rgb(0xeaeef2))
+image(photo).object_fit(ResizeMode::Contain).size(px(140.0)).bg(rgb(0xeaeef2))
 ```
 
 ```tsx tabs
-<Image src={photo} resizeMode="contain" style={{ width: 140, height: 140, backgroundColor: "#eaeef2" }} />
+<Image src={photo} style={{ width: 140, height: 140, objectFit: "contain", backgroundColor: "#eaeef2" }} />
 ```
 
-Tailwind 类 `object-cover`、`object-contain` 等效果相同。
+Tailwind 类 `object-cover`、`object-contain`、`object-fill`、`object-none` 和 `object-scale-down` 设置的是同一个样式。
 
 ### 图片位置
 
 缩放后的图片在框中的位置由 `objectPosition` 样式决定（Rust 中为 `.object_position(..)` 和 `.object_top()` 等），即 CSS 的 `object-position`，默认居中。覆盖整个框的图片围绕这个位置裁剪，完整放入的图片在留白中按它移动。它接受关键字（`"top"`、`"left bottom"`）、百分比与长度（`"25% 75%"`、`"10px 0"`），以及带偏移的边（`"right 10px bottom 20%"`）。聊天气泡里的长图可以这样显示顶部：
 
 ```rust tabs
-image(photo).resize_mode(ResizeMode::Cover).object_top().w(px(220.0)).h(px(160.0)).rounded(px(16.0))
+image(photo).object_fit(ResizeMode::Cover).object_top().w(px(220.0)).h(px(160.0)).rounded(px(16.0))
 ```
 
 ```tsx tabs
-<Image src={photo} resizeMode="cover" style={{ width: 220, height: 160, borderRadius: 16, objectPosition: "top" }} />
+<Image src={photo} style={{ width: 220, height: 160, borderRadius: 16, objectPosition: "top" }} />
 ```
 
 Tailwind 类与 Tailwind 相同：`object-top`、`object-bottom`、`object-left`、`object-right`、`object-center`、`object-top-left`、`object-top-right`、`object-bottom-left`、`object-bottom-right`，以及任意值（`object-[25%_75%]`）。
@@ -260,7 +261,7 @@ image(cover).blur_radius(px(16.0)).absolute().inset_0()
 
 ## 动图
 
-动态 GIF、WebP 和 APNG 文件会自动播放，无论是资源还是来自 URL。它们支持相同的样式和缩放模式；在 iOS 上，着色后的动图只显示第一帧。
+动态 GIF、WebP 和 APNG 文件会自动播放，无论是资源还是来自 URL。它们支持相同的样式，包括 `objectFit`；在 iOS 上，着色后的动图只显示第一帧。
 
 ## 加载事件
 

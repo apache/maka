@@ -47,7 +47,7 @@ function PhotoRow(props: { photo: Photo }) {
           }}
         />
         <View style={{ flex: 1, gap: 4, alignSelf: "stretch", justifyContent: "center", borderBottomWidth: 1, borderBottomColor: colors.line }}>
-          <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: "600", color: colors.text }}>
+          <Text style={{ numberOfLines: 1, fontSize: 15, fontWeight: "600", color: colors.text }}>
             {props.photo.title}
           </Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -83,14 +83,14 @@ function PhotoTile(props: { photo: Photo }) {
         />
         <View style={{ gap: 3, paddingHorizontal: 4, paddingBottom: 4 }}>
           <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
-            <Text numberOfLines={1} style={{ flex: 1, fontSize: 14, fontWeight: "600", color: colors.text }}>
+            <Text style={{ numberOfLines: 1, flex: 1, fontSize: 14, fontWeight: "600", color: colors.text }}>
               {props.photo.title}
             </Text>
             <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>#{props.photo.id}</Text>
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: toneColor(props.photo.tone) }} />
-            <Text numberOfLines={1} style={{ fontSize: 12, color: colors.muted }}>
+            <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.muted }}>
               {props.photo.author} · {compact(props.photo.views)} views
             </Text>
           </View>
@@ -136,7 +136,7 @@ export function Photos() {
         paddingBottom: 16,
         opacity: scrollY.interpolate({ inputRange: [0, 150], outputRange: [1, 0] }),
         // Moves at half speed: the list slides over it.
-        transform: [{ translateY: scrollY.interpolate({ inputRange: [-200, 0, 300], outputRange: [0, 0, 150] }) }],
+        translate: [0, scrollY.interpolate({ inputRange: [-200, 0, 300], outputRange: [0, 0, 150] })],
       }}
     >
       <View
@@ -253,8 +253,8 @@ export function Photos() {
       </If>
       {/* The compact bar fades in once the hero has scrolled away. */}
       <View
-        pointerEvents="none"
         style={{
+          pointerEvents: "none",
           position: "absolute",
           top: 0,
           left: 0,
@@ -268,7 +268,7 @@ export function Photos() {
           borderBottomWidth: 1,
           borderBottomColor: colors.border,
           opacity: scrollY.interpolate({ inputRange: [140, 190], outputRange: [0, 1] }),
-          transform: [{ translateY: scrollY.interpolate({ inputRange: [140, 190], outputRange: [-8, 0] }) }],
+          translate: [0, scrollY.interpolate({ inputRange: [140, 190], outputRange: [-8, 0] })],
         }}
       >
         <Text style={{ flex: 1, fontSize: 15, fontWeight: "600", color: colors.text }}>Photo stream</Text>

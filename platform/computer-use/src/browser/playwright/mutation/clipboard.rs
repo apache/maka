@@ -59,12 +59,12 @@ impl Tab {
         }
         let store = self.clipboard_store.clone();
         let _items = lock(&store, context).await?;
-        self.locator_current(selected, context, Some(true)).await?;
+        self.locator_document_current(selected, context).await?;
         self.locator_clipboard_script(
             selected,
             json!({
                 "kind":"paste","items":ClipboardItems::text(value.to_owned()),
-                "plainTextOnly":true,"replaceInputValue":replace,
+                "plainTextOnly":true,"replaceInputValue":replace,"currentActiveElement":true,
             }),
             None,
             context,

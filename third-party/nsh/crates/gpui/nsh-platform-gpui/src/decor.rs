@@ -1,8 +1,8 @@
 //! View decoration: shadows, backgrounds, gradients, borders, outlines and
 //! filters, drawn with GPUI's primitives.
 //!
-//! Order, bottom to top (CSS painting order): outer shadows (React
-//! Native's `shadow*`, then `boxShadow` layers, last first), the
+//! Order, bottom to top (CSS painting order): outer shadows (`boxShadow`
+//! layers, last first), the
 //! background color, gradients (last first, [`gradient`]), inset shadows
 //! (inside the padding box), the content and children ([`crate::render`]),
 //! the border and the outline. The border is drawn over the children, as
@@ -20,17 +20,13 @@
 //! turns with the view. A path cannot be blurred: a rotated view's shadow
 //! is a stack of translucent outlines growing over the blur's width.
 //!
-//! React Native's shadow takes the rounded box's shape when the view has a
-//! fill (background color or gradient), else the content's, like iOS.
-//! GPUI cannot draw the content offscreen, so the content's shadow is the
-//! shadows of the boxes of the view's filled descendants (and images),
-//! drawn under all of them ([`draw_content_shadow`]), and of the glyphs
-//! of its texts, painted in the shadow's color around their places (a
-//! blur faked by copies); borders cast none. `filter: drop-shadow(…)` is
-//! drawn the same way. Its radius
-//! is the Gaussian's deviation, half the CSS blur, as Core Animation's
-//! `shadowRadius` is. Shadows are not cut out of a translucent fill (GPUI
-//! draws them whole), CSS box shadows included.
+//! `filter: drop-shadow(…)` follows the content. GPUI cannot draw the
+//! content offscreen, so the content's shadow is the shadows of the boxes
+//! of the view's filled descendants (and images), drawn under all of them
+//! ([`draw_content_shadow`]), and of the glyphs of its texts, painted in
+//! the shadow's color around their places (a blur faked by copies);
+//! borders cast none. Shadows are not cut out of a translucent fill (GPUI
+//! draws them whole).
 //!
 //! Color filters (brightness, contrast, grayscale, hue-rotate, invert,
 //! opacity, saturate, sepia) are color matrices applied to every color the
@@ -175,7 +171,7 @@ pub(crate) fn desaturates(m: &[f32; 20]) -> bool {
     (0..5).all(|i| (m[i] - m[5 + i]).abs() < 0.02 && (m[i] - m[10 + i]).abs() < 0.02)
 }
 
-/// One shadow: React Native's, a `boxShadow` layer or a drop shadow.
+/// One shadow: a `boxShadow` layer or a drop shadow.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ShadowSpec {
     dx: f32,
@@ -333,24 +329,13 @@ fn inset_shadow(
     }
 }
 
-/// Draws the shadows of the view's content when its shadow is the
-/// content's (React Native's shadow without a fill, `drop-shadow`
-/// filters): the boxes of its filled descendants cast them, under all of
-/// them. `world` is the view's transform, set on the context again after.
+/// Draws the shadows of the view's content (`drop-shadow` filters): the
+/// boxes of its filled descendants cast them, under all of them. `world`
+/// is the view's transform, set on the context again after.
 pub(crate) fn draw_content_shadow(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     let specs = {
         let state = view.state();
         let mut specs = Vec::new();
-        let s = state.shadow();
-        if s.is_visible() && !has_fill(&state) {
-            specs.push(ShadowSpec {
-                dx: s.offset_x.0,
-                dy: s.offset_y.0,
-                spread: 0.0,
-                sigma: s.radius.0.max(0.0),
-                color: faded(s.color, s.opacity),
-            });
-        }
         if let Some(e) = &state.style.effects {
             for f in &e.filters {
                 if let Filter::DropShadow {
@@ -442,17 +427,6 @@ pub(crate) fn draw_background(cx: &mut DrawCx<'_>, state: &ViewState) {
     let radii = state.radii();
     let effects = state.style.effects.as_deref();
 
-    let s = state.shadow();
-    if s.is_visible() && has_fill(state) {
-        let spec = ShadowSpec {
-            dx: s.offset_x.0,
-            dy: s.offset_y.0,
-            spread: 0.0,
-            sigma: s.radius.0.max(0.0),
-            color: faded(s.color, s.opacity),
-        };
-        outer_shadow(cx, w, h, radii, &spec);
-    }
     if let Some(e) = effects {
         // CSS lists the top layer first.
         for b in e.box_shadows.iter().rev() {

@@ -155,7 +155,7 @@ function Browser() {
   );
   return (
     <View style={{ flex: 1, paddingTop: 50 }}>
-      <Text numberOfLines={1} style={{ paddingHorizontal: 12, color: "#57606a" }}>
+      <Text style={{ numberOfLines: 1, paddingHorizontal: 12, color: "#57606a" }}>
         {nav()?.loading ? "Loading…" : nav()?.title ?? ""}
       </Text>
       <WebView
@@ -316,7 +316,7 @@ pub fn player() -> impl IntoElement {
                 .element_ref(&player)
                 .paused(paused)
                 .repeat(true)
-                .resize_mode(ResizeMode::Contain)
+                .object_fit(ResizeMode::Contain)
                 .h(px(220.0))
                 .rounded(px(12.0))
                 .overflow_hidden()
@@ -357,7 +357,6 @@ function Player() {
         src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"
         paused={paused()}
         repeat
-        resizeMode="contain"
         style={{ height: 220, borderRadius: 12, overflow: "hidden", backgroundColor: "#000000" }}
         onProgress={(e) => time.set(`${e.currentTime.toFixed(1)} / ${e.duration.toFixed(1)} s`)}
         onEnd={() => paused.set(true)}
@@ -380,7 +379,7 @@ mount(Player);
 
 播放由属性控制：用 signal 设置 `paused`、`muted`、`volume` 和 `rate`，播放器随之变化。ref 提供 `seek(seconds)`。
 
-在 Rust 中，`video(url)` 创建播放器（URL 可以是值、signal 或闭包），每个属性是一个蛇形命名的构建方法（`paused`、`repeat(true)`、`resize_mode(ResizeMode::Contain)`，`progressUpdateInterval` 对应 `progress_interval`）；`on_load` 收到 `VideoInfo`（`duration`、`size`），`on_progress` 收到 `VideoProgress`（`current_time`、`duration`），`on_buffer` 收到 `bool`。
+在 Rust 中，`video(url)` 创建播放器（URL 可以是值、signal 或闭包），每个属性是一个蛇形命名的构建方法（`paused`、`repeat(true)`、`object_fit(ResizeMode::Contain)`，`progressUpdateInterval` 对应 `progress_interval`）；`on_load` 收到 `VideoInfo`（`duration`、`size`），`on_progress` 收到 `VideoProgress`（`current_time`、`duration`），`on_buffer` 收到 `bool`。
 
 | 属性 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -390,7 +389,7 @@ mount(Player);
 | `volume` | `number` | `1` | 0..1。 |
 | `rate` | `number` | `1` | 播放速度。 |
 | `repeat` | `boolean` | `false` | 播放到结尾后从头再播。 |
-| `resizeMode` | `"cover" \| "contain" \| "stretch" \| "center"` | | 画面如何适应视图。 |
+| `objectFit`（样式）、`object-*` 类 | `"cover" \| "contain" \| "fill" \| "none" \| "scale-down"` | `"contain"` | 画面如何适应视图，与 CSS 的 `object-fit` 相同（`class="object-cover"`）。 |
 | `controls` | `boolean` | `false` | 显示平台的播放控件。 |
 | `progressUpdateInterval` | `number` | `250` | 两次 `onProgress` 之间的毫秒数。 |
 

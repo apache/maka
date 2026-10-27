@@ -164,7 +164,6 @@ const isUnder =
 const gpuiUpstreamFiles = new Set(
   [
     'gpui-fast',
-    'gpui-kit',
     'async-io',
     'gix-index',
     'gix-discover',

@@ -22,7 +22,7 @@ import test from 'node:test';
 import {
   computerAppOptions,
   computerAppRiskMessage,
-} from '../../products/maka/terminal-shell/app/interaction-computer-app.ts';
+} from '../../products/maka/workbench/app/interaction-computer-app.ts';
 
 test('terminal application consent offers only the original allowed lifetimes', () => {
   assert.deepEqual(computerAppOptions({ allowAlways: false }), [

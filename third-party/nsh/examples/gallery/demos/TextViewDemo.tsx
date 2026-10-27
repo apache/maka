@@ -383,7 +383,7 @@ function Selection() {
         <TextView markdown={QUESTION} />
         <TextView markdown={ANSWER} />
         <View class="flex-row items-baseline gap-2">
-          <Text selectable={false} style={{ fontSize: 13, color: colors.faint }}>Not selectable</Text>
+          <Text style={{ userSelect: "none", fontSize: 13, color: colors.faint }}>Not selectable</Text>
           <Text style={{ fontSize: 15, color: colors.text }}>A plain Text joins the selection too.</Text>
         </View>
       </View>

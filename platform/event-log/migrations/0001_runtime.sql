@@ -572,7 +572,6 @@ CREATE TABLE context_archive_copy_prefixes (
 
 CREATE TABLE context_semantic_heads (
     session_id TEXT PRIMARY KEY,
-    through_sequence INTEGER NOT NULL,
     unavailable_at INTEGER,
     unavailable_reason TEXT
 ) WITHOUT ROWID;
@@ -1109,6 +1108,9 @@ CREATE INDEX context_summary_round ON event_log(invocation_id,
 
 CREATE INDEX context_summary_sequence ON event_log(invocation_id,sequence)
     WHERE kind='model_requested' AND json_extract(event_json,'$.fact.purpose')='summary';
+
+CREATE INDEX context_compaction_waiting ON event_log(invocation_id,sequence)
+    WHERE kind='context_compaction_waiting';
 
 CREATE INDEX tool_call_identity ON event_log(invocation_id,
     json_extract(event_json,'$.fact.call.tool_call_id'),

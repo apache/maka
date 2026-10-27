@@ -231,16 +231,22 @@ its relative path, since both are served and published under the paths wasm-bind
 them by (`/snippets/…`; `dev.html`'s `GLUE`; all of them are part of `nsh.version`), and `nsh package --target web`
 (`web::publish_glue`) puts the snippets under one directory named by all of them and their paths
 (`snippets.<digest>/`, their paths under `snippets/` kept), points the glue at it (`bindgen::link_snippets`: the
-`./snippets/` prefix only), minifies the glue, names it by its content (`nsh-bindgen.<digest>.js`), preloads it
-(`<link rel="modulepreload">`) and passes it in `app.glue`. `createPlayer`'s option `glue` (a URL against the page)
+`./snippets/` prefix in ES module specifiers only), minifies the glue, names it by its content
+(`nsh-bindgen.<digest>.js`), preloads it (`<link rel="modulepreload">`) and passes it in `app.glue`.
+`createPlayer`'s option `glue` (a URL against the page)
 makes `Player.load` import it while the module compiles, check that it exports `__nsh_imports` and `__nsh_finalize`
 (wasm-bindgen's own output fails there, with its URL), merge `__nsh_imports()` into the import object (NSH's own
 `nsh` and `env` keys win), and call `__nsh_finalize(instance, module)` (its memory views, wasm-bindgen's externref
 table) right after instantiating, before `nsh_app_init`. The glue keeps its state at module level, so each player
 after the first imports it as `<url>?player=<n>` (`importGlue`): a module instance of its own, while the first keeps
-the URL the page preloads. `cargo test -p nsh-cli bindgen -- --ignored` runs the CLI on a real module
+the URL the page preloads. wasm-bindgen can import a snippet directly when its function needs no JS glue
+(numeric arguments and results, for example). Its `__wbg_get_imports` table then uses the snippet's original path
+as a module key, matching the Wasm binary. Publication keeps those keys unchanged while relocating the ES imports;
+separate `inline_js` blocks keep their own modules.
+`cargo test -p nsh-cli bindgen -- --ignored` runs the CLI on a real module
 (`wasm_bindgen_runs_on_a_real_module`: a crate built for `wasm32-unknown-unknown` with the CLI's wasm-bindgen; it
-needs the target, the CLI and the crates).
+needs the target, the CLI, the crates and Node.js). It instantiates the development and minified, relocated glue
+with the processed Wasm and calls both direct numeric imports and string-converting imports.
 
 The browser calls the glue's closures outside any `nsh_*` call (a WebSocket message), so a task they wake must make
 the page pump: `LocalEngine::set_wake` hooks the core's task notify and the posts' notify (each still sends
@@ -331,7 +337,7 @@ batch is being applied (a batch arrives inside a wasm call).
 A commit becomes one JSON array (`src/encode.rs`): `["c", id, kind]`, `["f", id, x, y, w, h]`, `["s", id, class,
 borderClass, tint]`, `["t", id, ...content, runs, styles, selectable, selectionClass]` (`styles`: a class per run
 style; `selectable` `null` when unset), `["vp", id, props]` (the view props as an object: `pointerEvents`, `hitSlop`,
-the accessibility props, `testID`, `focusable` when false, `selectableView` when true), `["in", id, config, class]`, `["css", class, text]`, and so on; `nsh.js` has one `op_<name>` method per
+the accessibility props, `testID`, `focusable` when set, `selectableView` when true), `["in", id, config, class]`, `["css", class, text]`, and so on; `nsh.js` has one `op_<name>` method per
 item. Views are absolutely positioned at the core's frames; borders are an overlay element (as UIKit draws layer
 borders) so they never move the content the core placed. Native animation items stay in Rust (`src/animation.rs`, a port
 of the Android animator); bound properties go out as `["a", id, prop, value]` after each batch and each
@@ -498,8 +504,10 @@ browsers' touches into what phones report:
   pressable (Return presses it, Space when released); going back (Escape, Alt+Left, Cmd+[, BrowserBack); scrolling the
   scroll view around the focus or under the mouse (arrows by 40 points, Page Up / Down and Space by 0.875 of a page,
   Home / End).
-- **Focus**: pressables are focusable (`tabindex=0`, role `button` unless they have one) unless disabled, hidden or
-  `focusable={false}` (a focused one that stops being a stop is blurred), so Tab and Shift+Tab reach them in DOM order; `focus:` states follow the keyboard focus (`:focus-visible`), which
+- **Focus**: the stops `ViewProps::focus_stop` decides are focusable (`tabindex=0`; `updateFocusable`): pressables
+  (role `button` unless they have one) unless `focusable={false}`, and `focusable={true}` views whether or not they take
+  presses (Return and Space press only pressables), never disabled or hidden ones (a focused one that stops being a
+  stop is blurred), so Tab and Shift+Tab reach them in DOM order; `focus:` states follow the keyboard focus (`:focus-visible`), which
   draws a ring inside the view; a popped page gives the focus back to what had it when the page was pushed
   (`screenGone`). A click never moves the focus (`mousedown` is prevented outside fields, selectable
   text, selectable views and hosted pages), as in native apps; it focuses the app's window in an iframe. The views under the newest
@@ -525,7 +533,7 @@ browsers' touches into what phones report:
   to the first entry. Entries carry the page load's id (`nshSession`): a reload keeps the earlier load's entries,
   which going back passes over (`history.back()` again) as if the app had been left from its first page. In an
   iframe (the website's demos) the app pushes nothing: each entry would be one of the embedding page's history.
-- **Text selection**: text is selectable when `selectable` is true (`nsh-selectable`), and with the desktop idiom also
+- **Text selection**: text is selectable when `selectable` is true (`userSelect: "text"`; `nsh-selectable`), and with the desktop idiom also
   when it is unset (`null` in the `t` item: `nsh-autoselect`, selectable under `.nsh-desktop`) unless a view around it,
   or the text itself, takes presses, touches, pans or pinches (`nsh-press`, set in `updateTouchAction`), as on a web
   page; phones and tablets select only what asks for it. `editable` (a field) / `textAt` tell `pointerDown` (a drag there
@@ -537,7 +545,7 @@ browsers' touches into what phones report:
 - **Selectable views** (`<View selectable>`, `ViewProps::selectable_view`): `op_vp` marks a view whose props have
   `selectableView` `nsh-area`, and the browser's own selection spans its texts (handles and long presses on phones
   included). The area and everything in it is `user-select: text` in every idiom, inside views that take presses too,
-  except texts set off (`selectable={false}`: `nsh-noselect`, set by `op_t`), images and videos; an area inside
+  except texts set off (`userSelect: "none"`: `nsh-noselect`, set by `op_t`), images and videos; an area inside
   another is part of the outer one (`areaOf`). `textAt` takes the area's texts and `areaGap` its other places outside
   views that take presses, so `mousedown` is not prevented there and a drag may start between texts, as between a
   web page's paragraphs; pressables in the area keep their presses. Select all selects the whole area. Copying joins

@@ -121,16 +121,6 @@ impl ViewState {
         self.anim.opacity.unwrap_or(self.style.opacity) * self.fade * live
     }
 
-    /// Its shadow, with animated color, opacity and radius.
-    pub(crate) fn shadow(&self) -> nsh_core::Shadow {
-        let mut s = self.style.shadow;
-        let a = &self.anim;
-        s.color = a.shadow_color.unwrap_or(s.color);
-        s.opacity = a.shadow_opacity.unwrap_or(s.opacity);
-        s.radius = a.shadow_radius.unwrap_or(s.radius);
-        s
-    }
-
     /// Its borders, with an animated color.
     pub(crate) fn borders(&self) -> nsh_core::Borders {
         let mut b = self.style.borders;

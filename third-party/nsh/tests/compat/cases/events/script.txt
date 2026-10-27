@@ -78,6 +78,7 @@ prop id:fixed readonly true
 noprop id:field readonly
 style id:secret placeholderColor #888888ff
 style id:secret selectionColor #ff6600ff
+style id:secret caretColor #0066ffff
 style id:pick selectionColor #00aa00ff
 # The selection the app sets.
 prop id:secret selectedRange start=0 end=2
@@ -87,6 +88,7 @@ covers [props] masked
 covers [props] readonly
 covers [styles] placeholderColor
 covers [styles] selectionColor
+covers [styles] caretColor
 covers [events] onFocus
 covers [events] onBlur
 covers [events] onKeyPress
@@ -98,7 +100,7 @@ covers [events] onCaretMove
 prop id:paste pasteBehavior report
 expect Pasted: none
 event id:paste onPaste text=hello
-expect Pasted: hello files 0 uris 0
+expect Pasted: hello html 0 files 0 uris 0
 covers [events] onPaste
 prop id:paste pasteBehavior report
 covers [props] pasteBehavior

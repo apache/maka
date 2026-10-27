@@ -411,9 +411,14 @@ async fn verify_wav(run: &Run, result: Value) {
     assert_eq!(u32::from_le_bytes(format[4..8].try_into().unwrap()), 24000);
     assert_eq!(&format[12..16], &[4, 0, 16, 0]);
     let pcm = pcm.unwrap();
-    assert!(pcm.chunks_exact(4).all(|frame| frame[..2] == frame[2..]));
-    let samples: Vec<_> = pcm
-        .chunks_exact(4)
+    let (frames, remainder) = pcm.as_chunks::<4>();
+    assert!(
+        remainder.is_empty(),
+        "stereo PCM must contain complete frames"
+    );
+    assert!(frames.iter().all(|frame| frame[..2] == frame[2..]));
+    let samples: Vec<_> = frames
+        .iter()
         .map(|frame| i16::from_le_bytes(frame[..2].try_into().unwrap()))
         .collect();
     let first = samples

@@ -123,7 +123,7 @@ pub(super) struct Instance {
     pub(super) class_list: Vec<Box<str>>,
     /// The app's classes, or the styles the view this one is in gives it:
     /// applied after the root's own.
-    pub(super) user: Option<Arc<ClassList>>,
+    pub(super) user: Option<std::rc::Rc<ClassList>>,
     /// Events JS listens to on the host.
     js_events: EventMask,
     /// The view, expanded (its root is the host); a list cell's row as
@@ -161,6 +161,11 @@ pub(super) struct Instance {
     /// In a view: the owner where it places its JS children (a region's),
     /// which the components JS made among them are under.
     children_owner: Option<crate::element::Owner>,
+    /// It joined a host as its children (content a view passed a nested
+    /// component, `tabs().child(tab())`): its view waits, as one JS made
+    /// does, to be in the tree under where that host's view places it, so
+    /// it reads the context there.
+    joined: bool,
     /// The component its view's root is, made on this host (its alias,
     /// [`Core::alias`]): its view makes the host's node.
     rooted: Option<NodeId>,
@@ -182,7 +187,7 @@ pub(super) struct Instance {
 /// and the views that place them ([`Core::root_context`]).
 pub(super) struct RootContext {
     /// Their styles, after the root's (the outer last).
-    pub(super) user: Option<Arc<ClassList>>,
+    pub(super) user: Option<std::rc::Rc<ClassList>>,
     /// Whether `app` is what goes after the root's inline style (else the
     /// component's own app style is).
     pub(super) combined: bool,
@@ -269,6 +274,7 @@ impl Instance {
             row_index: None,
             lazy_wanted: None,
             children_owner: None,
+            joined: false,
             rooted: None,
             above: None,
             fills: Vec::new(),
@@ -306,10 +312,17 @@ pub(super) enum Part {
 
 /// A node's app classes ([`Components::app_classes`]): its own rules, the
 /// classes, and what goes after them.
-pub(super) type AppClass = (Option<Arc<ClassList>>, SharedString, Option<Arc<ClassList>>);
+pub(super) type AppClass = (
+    Option<std::rc::Rc<ClassList>>,
+    SharedString,
+    Option<std::rc::Rc<ClassList>>,
+);
 
 /// The node's classes: its styles lowered, and what was merged after them.
-pub(super) type Classes = (Option<Arc<ClassList>>, Option<Arc<ClassList>>);
+pub(super) type Classes = (
+    Option<std::rc::Rc<ClassList>>,
+    Option<std::rc::Rc<ClassList>>,
+);
 
 /// An element of a view, as it was applied.
 pub(super) struct Expanded {
@@ -447,10 +460,15 @@ pub(super) struct Components {
     slot_names: FxHashMap<NodeId, Arc<str>>,
     /// Slot nodes in a host -> the host.
     pub(super) slot_hosts: FxHashMap<NodeId, NodeId>,
-    styles: FxHashMap<StyleRefinement, Arc<ClassList>>,
+    /// Slot nodes whose element gives them more than styles -> where that
+    /// goes ([`super::slots`]).
+    pub(super) slot_targets: FxHashMap<NodeId, super::slots::SlotTarget>,
+    /// The app's elements a slot's props go to -> their slot node.
+    pub(super) adopted: FxHashMap<NodeId, NodeId>,
+    styles: FxHashMap<StyleRefinement, std::rc::Rc<ClassList>>,
     /// The styles a component on another's host gets from each above it,
     /// merged (by the lists', which the entry keeps).
-    merges: FxHashMap<(usize, usize), [Arc<ClassList>; 3]>,
+    merges: FxHashMap<(usize, usize), [std::rc::Rc<ClassList>; 3]>,
     /// While a view's slot content is matched: the nested component's host
     /// and the slot (its regions are the slot's).
     pub(super) filling: Option<(NodeId, &'static str)>,
@@ -562,6 +580,8 @@ impl Default for Components {
             owners: FxHashMap::default(),
             slot_names: FxHashMap::default(),
             slot_hosts: FxHashMap::default(),
+            slot_targets: FxHashMap::default(),
+            adopted: FxHashMap::default(),
             styles: FxHashMap::default(),
             merges: FxHashMap::default(),
             filling: None,
@@ -646,7 +666,7 @@ impl Components {
 
     /// `style` as rules, shared between the elements that have it (its
     /// static declarations: bound parts are applied by bindings).
-    pub(super) fn lowered(&mut self, style: &StyleRefinement) -> Arc<ClassList> {
+    pub(super) fn lowered(&mut self, style: &StyleRefinement) -> std::rc::Rc<ClassList> {
         if style.is_bound() {
             return self.lowered(&style.static_part());
         }
@@ -656,7 +676,7 @@ impl Components {
         if self.styles.len() >= STYLE_CACHE {
             self.styles.clear();
         }
-        let list = Arc::new(style.lower());
+        let list = std::rc::Rc::new(style.lower());
         self.styles.insert(style.clone(), list.clone());
         list
     }
@@ -684,9 +704,9 @@ fn inline_style(
     Op::SetStyle { id, style, patch }
 }
 
-fn same(a: &Option<Arc<ClassList>>, b: &Option<Arc<ClassList>>) -> bool {
+fn same(a: &Option<std::rc::Rc<ClassList>>, b: &Option<std::rc::Rc<ClassList>>) -> bool {
     match (a, b) {
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (Some(a), Some(b)) => std::rc::Rc::ptr_eq(a, b),
         (None, None) => true,
         _ => false,
     }
@@ -908,6 +928,14 @@ impl<M: TextEngine> Core<M> {
     /// Ops from JS on a component's host take its place; others pass
     /// (`Some`).
     pub(super) fn intercept(&mut self, op: Op) -> Result<Option<Op>, ApplyError> {
+        // The app's elements that take a slot's props: their props combine
+        // with the component's ([`super::slots`]).
+        if !self.components.adopted.is_empty()
+            && let Op::SetProp { id, .. } | Op::Listen { id, .. } | Op::Release { id } = &op
+            && self.components.adopted.contains_key(id)
+        {
+            return Ok(self.js_slot_op(op));
+        }
         match op {
             // The app's style on a host goes after the root's own.
             Op::SetStyle { id, patch, .. } if self.is_host(id) => {
@@ -1004,6 +1032,8 @@ impl<M: TextEngine> Core<M> {
                     let host = self.components.slot_hosts[&parent];
                     self.components.mark(host);
                 }
+                // The slot's props follow its one element.
+                self.retarget_slot(parent, None);
                 Ok(None)
             }
             Op::Release { id } if self.components.slot_names.contains_key(&id) => {
@@ -1088,6 +1118,9 @@ impl<M: TextEngine> Core<M> {
                 }
                 if was_empty || place == Placement::Each {
                     self.components.mark(parent);
+                }
+                if let Some(joined) = self.components.instances.get_mut(&child) {
+                    joined.joined = true;
                 }
                 match place {
                     // Before its next JS sibling, else before what the
@@ -1376,7 +1409,7 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// What goes after `host`'s own styles.
-    pub(super) fn set_user(&mut self, host: NodeId, user: Option<Arc<ClassList>>) {
+    pub(super) fn set_user(&mut self, host: NodeId, user: Option<std::rc::Rc<ClassList>>) {
         let inst = self.components.instances.get_mut(&host).expect("host");
         if !same(&inst.user, &user) {
             inst.user = user;
@@ -1386,6 +1419,7 @@ impl<M: TextEngine> Core<M> {
 
     /// Slot node `id` leaves its host.
     fn unslot(&mut self, id: NodeId) {
+        self.drop_slot_target(id);
         if let Some(host) = self.components.slot_hosts.remove(&id) {
             if let Some(inst) = self.components.instances.get_mut(&host) {
                 inst.slots.retain(|(_, n)| *n != id);
@@ -1656,7 +1690,9 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// Whether `host` is a component that runs once, made by JS (no owner
-    /// placed it), whose view is not made yet, out of the tree.
+    /// placed it) or passed by a view as a nested component's content
+    /// (`joined`), whose view is not made yet, out of the tree: the view
+    /// that places it gives its context.
     fn waits_for_tree(&self, host: NodeId) -> bool {
         let Some(inst) = self.components.instances.get(&host) else {
             return false;
@@ -1664,7 +1700,9 @@ impl<M: TextEngine> Core<M> {
         let Inner::Component(inner) = &inst.inner else {
             return false;
         };
-        inst.root.is_none() && !inner.failure_owner().is_live() && !self.id_in_tree(host)
+        inst.root.is_none()
+            && (inst.joined || !inner.failure_owner().is_live())
+            && !self.id_in_tree(host)
     }
 
     /// Whether node `id` is in the root's tree.
@@ -2247,19 +2285,22 @@ impl<M: TextEngine> Core<M> {
     /// `inner`'s rules, then `outer`'s (one list per pair, kept).
     pub(super) fn merge_user(
         &mut self,
-        inner: Option<Arc<ClassList>>,
-        outer: Option<Arc<ClassList>>,
-    ) -> Option<Arc<ClassList>> {
+        inner: Option<std::rc::Rc<ClassList>>,
+        outer: Option<std::rc::Rc<ClassList>>,
+    ) -> Option<std::rc::Rc<ClassList>> {
         match (inner, outer) {
             (Some(a), Some(b)) => {
-                let key = (Arc::as_ptr(&a) as usize, Arc::as_ptr(&b) as usize);
+                let key = (
+                    std::rc::Rc::as_ptr(&a) as usize,
+                    std::rc::Rc::as_ptr(&b) as usize,
+                );
                 if let Some([_, _, merged]) = self.components.merges.get(&key) {
                     return Some(merged.clone());
                 }
                 if self.components.merges.len() >= STYLE_CACHE {
                     self.components.merges.clear();
                 }
-                let merged = Arc::new(a.merged(&b));
+                let merged = std::rc::Rc::new(a.merged(&b));
                 self.components.merges.insert(key, [a, b, merged.clone()]);
                 Some(merged)
             }
@@ -2335,7 +2376,7 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    fn apply_attrs(&mut self, id: NodeId, new: &Attrs, old: &Attrs) {
+    pub(super) fn apply_attrs(&mut self, id: NodeId, new: &Attrs, old: &Attrs) {
         self.apply_attrs_over(id, new, old, None);
     }
 
@@ -2387,7 +2428,7 @@ impl<M: TextEngine> Core<M> {
         style: &StyleRefinement,
         old_style: &StyleRefinement,
         old: Classes,
-        user: Option<Arc<ClassList>>,
+        user: Option<std::rc::Rc<ClassList>>,
     ) -> Classes {
         let own = if style == old_style {
             old.0.clone()
@@ -2398,7 +2439,7 @@ impl<M: TextEngine> Core<M> {
         };
         if !same(&own, &old.0) || !same(&user, &old.1) {
             let list = match (&own, &user) {
-                (Some(a), Some(b)) => Some(Arc::new(a.merged(b))),
+                (Some(a), Some(b)) => Some(std::rc::Rc::new(a.merged(b))),
                 (Some(a), None) => Some(a.clone()),
                 (None, Some(b)) => Some(b.clone()),
                 (None, None) => None,
@@ -2421,7 +2462,7 @@ impl<M: TextEngine> Core<M> {
         old_style: &StyleRefinement,
         old: Classes,
         class: Option<&SharedString>,
-        outer: Option<Arc<ClassList>>,
+        outer: Option<std::rc::Rc<ClassList>>,
     ) -> Classes {
         let Some(class) = class.filter(|c| !c.trim().is_empty()) else {
             if !self.components.app_classes.is_empty() {
@@ -2440,7 +2481,7 @@ impl<M: TextEngine> Core<M> {
 
     /// The rules of the app's classes `class` (the unknown ones warned of
     /// once, as a host's).
-    pub(super) fn app_class_list(&mut self, class: &str) -> Arc<ClassList> {
+    pub(super) fn app_class_list(&mut self, class: &str) -> std::rc::Rc<ClassList> {
         let (list, fresh) = self.tailwind.get(class);
         if fresh && !list.unknown().is_empty() {
             log::warn!(
@@ -2765,7 +2806,7 @@ impl<M: TextEngine> Core<M> {
                         .is_some_and(|o| o.part == Part::Slot && o.id == node)
                 });
                 let prev = at.and_then(|j| old[j].take());
-                out.push(self.reconcile_slot(prev, node, el, inst));
+                out.push(self.reconcile_slot(prev, node, el, host, inst));
             }
             ElKind::Children => {
                 if placeholder.is_some() || inst.children_at != Placement::None {
@@ -2846,7 +2887,7 @@ impl<M: TextEngine> Core<M> {
                     let _ = self.apply_op(Op::SetProp { id: node, prop });
                 }
                 self.components.props = props;
-                let mut e = self.reconcile_slot(prev, node, el, inst);
+                let mut e = self.reconcile_slot(prev, node, el, host, inst);
                 e.list = config;
                 let rows = self.rows_of_list(node);
                 self.components.lists.insert(node, (list.row.clone(), rows));
@@ -3410,26 +3451,30 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// Slot node `node` as element `el`: its styles, props and handlers
-    /// (its children are the app's JSX).
+    /// Slot node `node` as element `el` of `host`'s view: its styles, props
+    /// and handlers (its children are the app's JSX). Its bound parts are
+    /// bound as a node's of the view are; what is not a style goes to the
+    /// slot's target, the app's element when the node holds one
+    /// ([`super::slots`]).
     fn reconcile_slot(
         &mut self,
         prev: Option<Expanded>,
         node: NodeId,
         mut el: ElNode,
+        host: NodeId,
         inst: &mut Instance,
     ) -> Expanded {
-        el.resolve_once();
-        let (old_attrs, old_style, old_classes, old_events) = match prev {
-            Some(p) => (p.attrs, p.style, p.classes, p.events),
-            None => (
-                Attrs::default(),
-                StyleRefinement::default(),
-                (None, None),
-                EventMask::default(),
-            ),
+        let bound = super::views::Bound::take(&mut el);
+        // What its bindings applied since it was placed is what the node
+        // has (an `Expanded` keeps what was applied with it).
+        let applied = inst.bound.remove(&node);
+        let (old_attrs, old_style, old_classes) = match (prev, applied) {
+            (Some(_), Some(a)) => (a.attrs, a.style, a.classes),
+            (Some(p), None) => (p.attrs, p.style, p.classes),
+            (None, _) => (Attrs::default(), StyleRefinement::default(), (None, None)),
         };
-        self.apply_attrs(node, &el.attrs, &old_attrs);
+        let bound = bound.map(|bound| self.bind_parts(host, node, bound, &mut el));
+        self.apply_slot_attrs(node, host, &el.attrs, &old_attrs, Some(&mut *inst));
         let classes = self.apply_el_styles(
             node,
             &el.style,
@@ -3438,9 +3483,12 @@ impl<M: TextEngine> Core<M> {
             el.attrs.class.as_ref(),
             None,
         );
+        if bound.is_some() {
+            Self::keep_bound(inst, node, &el.attrs, &el.style, classes.clone(), None);
+        }
         // Its events are the component's first (`component_event` finds it
         // by its host); the node stays JS's or the placing view's.
-        let events = self.apply_handlers(node, &el, old_events, EventMask::default(), inst);
+        let events = self.apply_slot_handlers(node, host, &el, inst);
         Expanded {
             id: node,
             tag: Tag::View,
@@ -4089,6 +4137,7 @@ impl<M: TextEngine> Core<M> {
     pub(super) fn release_expanded(&mut self, e: Expanded) {
         match e.part {
             Part::Slot => {
+                self.drop_slot_target(e.id);
                 self.detach_id(e.id);
                 return;
             }
@@ -4170,6 +4219,7 @@ impl<M: TextEngine> Core<M> {
             }
         }
         for (_, node) in inst.slots {
+            self.drop_slot_target(node);
             self.components.slot_hosts.remove(&node);
             if !content.contains(&node) {
                 self.detach_id(node);
@@ -4263,8 +4313,14 @@ impl<M: TextEngine> Core<M> {
         }
         // A slot's node: the component it is a slot of handles its events,
         // then whoever made it: the component whose view has it, or JS (the
-        // app's list of an `Items` prop has the app's handlers).
-        let slot_of = self.components.slot_hosts.get(&id).copied();
+        // app's list of an `Items` prop has the app's handlers). So does the
+        // app's element that takes the slot's props, then JS.
+        let slot_of = self
+            .components
+            .slot_hosts
+            .get(&id)
+            .copied()
+            .or_else(|| self.adopted_host(id));
         let owner = self.components.owners.get(&id).copied();
         if let Some(host) = slot_of {
             self.handle(host, id, kind, payload);

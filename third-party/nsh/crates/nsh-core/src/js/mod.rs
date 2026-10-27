@@ -89,9 +89,11 @@ mod tests {
         let style = super::style::declarations();
         // Every property the core parses has a type, in its interface.
         for (name, ts) in [
-            ("boxShadow", "string"),
+            ("boxShadow", "string | BoxShadowLayer[]"),
+            ("textShadow", "string | TextShadowLayer[]"),
             ("gridTemplateColumns", "string"),
-            ("transform", "TransformStep[]"),
+            ("transform", "string | TransformStep[]"),
+            ("rotate", "string | number | AnimatedNode"),
             ("tintColor", "ColorValue"),
             (
                 "display",
@@ -101,12 +103,20 @@ mod tests {
             assert!(style.contains(&format!("  {name}?: {ts};")), "{name}");
         }
         assert!(!style.contains("backdropMaterial"));
+        // Style keys, not props.
+        for key in [
+            "numberOfLines",
+            "textOverflow",
+            "userSelect",
+            "pointerEvents",
+        ] {
+            assert!(style.contains(&format!("  {key}?: ")), "{key}");
+        }
         let text = style.find("export interface TextStyle").unwrap();
         assert!(style[text..].contains("  textDecorationStyle?:"));
         // Each host prop and event in the interface of the elements it is for.
         let elements = super::host::declarations();
         for (interface, prop) in [
-            ("HostProps", "  pointerEvents?: PointerEvents;"),
             ("HostProps", "  onPress?: (e?: PressEvent) => void;"),
             ("HostProps", "  onLongPress?: (e?: PressEvent) => void;"),
             ("HostProps", "  onPressDown?: (e?: PressEvent) => void;"),

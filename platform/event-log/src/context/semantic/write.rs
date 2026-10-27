@@ -470,7 +470,7 @@ async fn unavailable(
     sequence: i64,
     reason: &str,
 ) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO context_semantic_heads(session_id,through_sequence,unavailable_at,unavailable_reason) VALUES(?,0,?,?) ON CONFLICT(session_id) DO UPDATE SET unavailable_at=COALESCE(unavailable_at,excluded.unavailable_at),unavailable_reason=COALESCE(unavailable_reason,excluded.unavailable_reason)")
+    sqlx::query("INSERT INTO context_semantic_heads(session_id,unavailable_at,unavailable_reason) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET unavailable_at=COALESCE(unavailable_at,excluded.unavailable_at),unavailable_reason=COALESCE(unavailable_reason,excluded.unavailable_reason)")
         .bind(session)
         .bind(sequence)
         .bind(reason)
@@ -597,28 +597,22 @@ pub(crate) async fn record(
 ) -> Result<(), StoreError> {
     let sequence = stored.sequence as i64;
     let owner = &stored.event.invocation.session_id;
-    let mut progress: Option<(i64, Option<i64>)> = sqlx::query_as(
-        "SELECT through_sequence,unavailable_at FROM context_semantic_heads WHERE session_id=?",
-    )
-    .bind(owner)
-    .fetch_optional(&mut *db)
-    .await?;
-    if !matches!(progress, Some((_, None))) {
+    let mut availability: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT unavailable_at FROM context_semantic_heads WHERE session_id=?")
+            .bind(owner)
+            .fetch_optional(&mut *db)
+            .await?;
+    if !matches!(availability, Some(None)) {
         hydrate_copy(db, owner).await?;
-        progress = sqlx::query_as(
-            "SELECT through_sequence,unavailable_at FROM context_semantic_heads WHERE session_id=?",
+        availability = sqlx::query_scalar(
+            "SELECT unavailable_at FROM context_semantic_heads WHERE session_id=?",
         )
         .bind(owner)
         .fetch_optional(&mut *db)
         .await?;
     }
-    if let Some((through, unavailable)) = progress {
-        if unavailable.is_some() {
-            return Ok(());
-        }
-        if through >= sequence {
-            return Err(invalid("semantic append is not monotonic"));
-        }
+    if availability.flatten().is_some() {
+        return Ok(());
     }
     let previous: Option<String> = sqlx::query_scalar(
         "SELECT frontier_json FROM context_semantic_frontiers WHERE invocation_id=?",
@@ -709,10 +703,12 @@ pub(crate) async fn record(
         .bind(frontier_json)
         .execute(&mut *db).await?;
     }
-    sqlx::query("INSERT INTO context_semantic_heads(session_id,through_sequence) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET through_sequence=excluded.through_sequence")
-        .bind(owner)
-        .bind(sequence)
-        .execute(&mut *db).await?;
+    if availability.is_none() {
+        sqlx::query("INSERT INTO context_semantic_heads(session_id) VALUES(?)")
+            .bind(owner)
+            .execute(&mut *db)
+            .await?;
+    }
     Ok(())
 }
 
@@ -756,6 +752,10 @@ async fn hydrate_copy(db: &mut SqliteWorkerConnection<'_>, owner: &str) -> Resul
             after = sequence;
         }
     }
+    sqlx::query("INSERT INTO context_semantic_heads(session_id) VALUES(?) ON CONFLICT(session_id) DO NOTHING")
+        .bind(owner)
+        .execute(&mut *db)
+        .await?;
     Ok(())
 }
 
@@ -810,13 +810,16 @@ pub(crate) async fn copy_member(
         .bind(&source)
         .bind(sequence)
         .execute(&mut *db).await?;
-    sqlx::query("INSERT INTO context_semantic_heads(session_id,through_sequence) VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET through_sequence=MAX(through_sequence,excluded.through_sequence)")
-        .bind(owner)
-        .bind(sequence)
-        .execute(&mut *db).await?;
-    sqlx::query("INSERT OR IGNORE INTO context_semantic_copies(session_id) VALUES(?)")
-        .bind(owner)
-        .execute(&mut *db)
-        .await?;
+    let completed =
+        sqlx::query("INSERT OR IGNORE INTO context_semantic_copies(session_id) VALUES(?)")
+            .bind(owner)
+            .execute(&mut *db)
+            .await?;
+    if completed.rows_affected() != 0 {
+        sqlx::query("INSERT INTO context_semantic_heads(session_id) VALUES(?) ON CONFLICT(session_id) DO NOTHING")
+            .bind(owner)
+            .execute(&mut *db)
+            .await?;
+    }
     Ok(())
 }

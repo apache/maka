@@ -90,7 +90,7 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         let old_rows = crate::test_store::inspect(&log, transcript).await;
         let compact = identity(mode);
         let mut view = InvocationView::new();
-        hidden(
+        let opening = hidden(
             &log,
             &mut view,
             &compact,
@@ -102,6 +102,23 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             },
         )
         .await;
+        let preparing = log
+            .observe_session::<Value>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .compacting
+            .unwrap();
+        assert_eq!(preparing.id, opening.event.id);
+        assert_eq!(
+            preparing.started_at,
+            opening
+                .event
+                .recorded_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        );
         let source = log
             .capture_compaction_context(
                 "session",
@@ -161,7 +178,7 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             .await
             .unwrap()
             .unwrap();
-        assert!(running.compacting);
+        assert_eq!(running.compacting, Some(preparing));
         let root = running.root_turn.unwrap();
         assert_eq!(root.invocation, compact);
         assert!(matches!(root.input, InvocationInput::ContextCompact { .. }));
@@ -258,7 +275,7 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             .unwrap()
             .unwrap();
         assert!(ended.active_streams.is_empty());
-        assert!(!ended.compacting);
+        assert!(ended.compacting.is_none());
         assert!(
             matches!(ended.root_turn.unwrap().state, InvocationState::Ended {
             event_id, outcome: actual

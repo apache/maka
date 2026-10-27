@@ -1144,7 +1144,8 @@ pub(crate) fn focusable(surface: &Surface, view: &NshView) -> bool {
     }
     let s = view.state();
     !s.props.accessibility.state.disabled
-        && (s.kind == ViewKind::Input
+        && ((s.kind != ViewKind::Native && s.props.focusable == Some(true))
+            || s.kind == ViewKind::Input
             || crate::text::selectable(&s)
             || s.scroll.as_ref().is_some_and(|s| s.behavior.enabled)
             || (s.kind == ViewKind::Native && crate::native::focusable(surface, s.id))
@@ -1470,7 +1471,10 @@ fn collect_stops(surface: &Surface, view: &NshView, out: &mut Vec<crate::text_in
         }
         if focusable(surface, view) {
             if s.props.focusable != Some(false)
-                && (s.kind != ViewKind::Text || crate::text::selectable(&s) || has_press(s.events))
+                && (s.props.focusable == Some(true)
+                    || s.kind != ViewKind::Text
+                    || crate::text::selectable(&s)
+                    || has_press(s.events))
             {
                 out.push(crate::text_input::FocusTarget::View(view.clone()));
             }
@@ -3153,6 +3157,105 @@ mod tests {
     }
 
     use crate::geom::rect;
+
+    #[test]
+    fn nonpressable_focusable_views_join_native_stops_without_stealing_presses() {
+        use nsh_core::MountItem;
+
+        for kind in [ViewKind::View, ViewKind::Text] {
+            let surface = Surface::new(nsh_engine::Environment::default());
+            for (id, parent, kind, frame) in [
+                (2, ROOT_ID, ViewKind::View, rect(0.0, 0.0, 100.0, 100.0)),
+                (4, 2, kind, rect(0.0, 0.0, 50.0, 50.0)),
+            ] {
+                for item in [
+                    MountItem::Create { id, kind },
+                    MountItem::Frame { id, frame },
+                    MountItem::Insert {
+                        parent,
+                        child: id,
+                        before: None,
+                    },
+                ] {
+                    surface.mounter.borrow_mut().apply(&surface, &item);
+                }
+            }
+            let parent = surface.view(2).unwrap();
+            let child = surface.view(4).unwrap();
+            parent.state_mut().events.set(EventKind::Press, true);
+            child.state_mut().props.focusable = Some(true);
+            let stops = || {
+                let mut stops = Vec::new();
+                collect_stops(&surface, &surface.root, &mut stops);
+                stops
+                    .into_iter()
+                    .map(|target| target.id())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(stops(), [2, 4]);
+            assert!(!has_press(child.state().events));
+            let press = find_press(
+                &surface,
+                &child,
+                &chain(&child),
+                10.0,
+                10.0,
+                Modifiers::default(),
+                1,
+            )
+            .expect("the enclosing card still owns presses");
+            assert_eq!(press.node, 2);
+            assert!(focus_view(&surface, &child));
+            let original = crate::text_input::focused_target(&surface).unwrap();
+            assert_eq!(original.id(), 4);
+            for vk in [crate::keys::VK_RETURN, crate::keys::VK_SPACE] {
+                assert!(!activate_focused(
+                    &surface,
+                    &KeyEvent {
+                        vk,
+                        down: true,
+                        repeat: false,
+                        modifiers: Modifiers::default(),
+                    }
+                ));
+            }
+
+            child.state_mut().props.focusable = Some(false);
+            assert_eq!(stops(), [2]);
+            child.state_mut().props.focusable = Some(true);
+            child.state_mut().props.accessibility.state.disabled = true;
+            assert_eq!(stops(), [2]);
+            child.state_mut().props.accessibility.state.disabled = false;
+            parent.state_mut().props.pointer_events = PointerEvents::None;
+            assert!(stops().is_empty());
+            parent.state_mut().props.pointer_events = PointerEvents::Auto;
+
+            surface
+                .mounter
+                .borrow_mut()
+                .apply(&surface, &MountItem::Delete { id: 4 });
+            assert!(!original.valid(&surface));
+            assert!(crate::text_input::focused_target(&surface).is_none());
+            for item in [
+                MountItem::Create { id: 4, kind },
+                MountItem::Insert {
+                    parent: 2,
+                    child: 4,
+                    before: None,
+                },
+            ] {
+                surface.mounter.borrow_mut().apply(&surface, &item);
+            }
+            assert!(!focusable(&surface, &surface.view(4).unwrap()));
+            assert!(!original.valid(&surface));
+            let native = view(&parent, 8, ViewKind::Native, rect(0.0, 0.0, 50.0, 50.0));
+            native.state_mut().props.focusable = Some(true);
+            assert!(
+                !focusable(&surface, &native),
+                "a native component must provide a focus handle"
+            );
+        }
+    }
 
     #[test]
     fn picks_the_innermost_topmost_view() {

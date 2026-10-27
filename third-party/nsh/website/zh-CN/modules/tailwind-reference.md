@@ -50,9 +50,9 @@ view()
 
 - **后写的生效。** 同一变体层级的工具类中，字符串里靠后的那个生效：`"p-4 p-2"` 等于 `p-2`。组件可以接收 `class` 属性并直接拼接到自己的类后面，不需要 `tailwind-merge`。
 - **变体在普通工具类之后应用**，顺序与 Tailwind 的变体顺序一致：`group-*:`（先按状态，再按组名）、`selection:`、`placeholder:`、位置（`first:` 等）、`checked:`、`indeterminate:`、`selected:`、`focus-within:`、`hover:`、`focus:`、`focus-visible:`、`active:`、`enabled:`、`disabled:`、动效偏好、从宽到窄的 `max-*:` 断点、按宽度升序的断点、方向（横竖屏）、书写方向、`dark:`，最后是平台。与 Tailwind 的排序一样，先比较类中顺序最靠后的变体，再比较次靠后的变体，多一个变体的排在后面（`dark:hover:` 在 `dark:` 之后）。因此 `"active:bg-red-500 bg-blue-500"` 按下时是红色。
-- **`style` 优先于类。** 内联 `style` 叠加在解析后的类之上。重要标记的工具类（`!p-4` 或 `p-4!`）连内联样式也能覆盖。
+- **`style` 优先于类。** 内联 `style` 叠加在解析后的类之上。样式键就是与它同名的 CSS 属性，也就是工具类设置的那个属性，因此它只替换这一个属性：`style={{ paddingLeft: 8 }}` 胜过 `pl-4`，并保留 `pr-4`。重要标记的工具类（`!p-4` 或 `p-4!`）连内联样式也能覆盖。
 - **文字样式会继承。** 写在视图上的文字类（`text-white`、`font-bold`、`text-center` 等）会像 CSS 一样传给其中的 `<Text>` 和 `<Input>`。
-- **display 遵循 CSS。** `flex` 和 `inline-flex` 是横向排列，除非有方向类另行指定，且与其在字符串中的位置无关（`flex-col flex` 是纵向）。没有 `flex` 的视图保持 NSH 默认的纵向排列。
+- **display 遵循 CSS。** `flex` 和 `inline-flex` 是横向排列，除非有方向类另行指定，且与其在字符串中的位置无关（`flex-col flex` 是纵向）。样式中的 `display: "flex"` 同样是横向；未设置 display 的视图保持 NSH 默认的纵向排列。
 
 ## 单位与主题
 
@@ -88,7 +88,7 @@ view()
 | 任意颜色 | `bg-[#0ea5e9]`、`border-[rgb(0_0_0_/_0.1)]`、`text-[oklch(70%_0.2_50)]` |
 | 任意颜色加修饰 | `bg-[rgb(0_0_255)]/25` |
 
-`currentColor` 和 `inherit` 不是可用的颜色值。与浏览器一样，没有颜色类的边框、轮廓或环使用元素的文字颜色，可以是它自己的，也可以是继承的（`<View class="text-white"><View class="border ring-2" /></View>` 两者都是白色）；在 `style` 属性中设置的边框默认是黑色。
+`currentColor` 和 `inherit` 不是可用的颜色值。与浏览器一样，没有颜色类的边框、轮廓或环使用元素的文字颜色，可以是它自己的，也可以是继承的（`<View class="text-white"><View class="border ring-2" /></View>` 两者都是白色），在 `style` 属性中只设置了宽度、没有设置颜色的边框也是如此。
 
 ## 任意值
 
@@ -173,10 +173,10 @@ view()
 |---|---|
 | `p-<n>`、`px-<n>`、`py-<n>` | `padding`、`paddingHorizontal`、`paddingVertical` |
 | `pt-<n>`、`pr-<n>`、`pb-<n>`、`pl-<n>` | `paddingTop` / `Right` / `Bottom` / `Left` |
-| `ps-<n>`、`pe-<n>` | `paddingStart`、`paddingEnd` |
+| `ps-<n>`、`pe-<n>` | `paddingStart`、`paddingEnd`（随书写方向） |
 | `m-<n>`、`mx-<n>`、`my-<n>` | `margin`、`marginHorizontal`、`marginVertical` |
 | `mt-<n>`、`mr-<n>`、`mb-<n>`、`ml-<n>` | `marginTop` / `Right` / `Bottom` / `Left` |
-| `ms-<n>`、`me-<n>` | `marginStart`、`marginEnd` |
+| `ms-<n>`、`me-<n>` | `marginStart`、`marginEnd`（随书写方向） |
 
 ## 尺寸
 
@@ -242,17 +242,16 @@ view()
 | Class | 设置 |
 |---|---|
 | `text-left`、`text-center`、`text-right`、`text-justify` | `textAlign` |
-| `text-start` | `textAlign: "auto"` |
+| `text-start`、`text-end` | `textAlign: "start"` / `"end"`：按布局方向的行首或行尾 |
 | `align-baseline`、`align-text-top`、`align-text-bottom`、`align-middle` | `verticalAlign`（文本中的视图和图片） |
-| `text-end` | `textAlign: "right"` |
 | `uppercase`、`lowercase`、`capitalize`、`normal-case` | `textTransform` |
 | `truncate` | 单行、尾部省略、不换行、`overflow: hidden`（用在视图上时：其中的文本不换行） |
-| `line-clamp-<n>`、`line-clamp-none` | `numberOfLines`（`none` 取消限制） |
-| `text-ellipsis`、`text-clip` | `ellipsizeMode` 为 `"tail"` / `"clip"` |
+| `line-clamp-<n>`、`line-clamp-none` | `numberOfLines`（`none` 显示全部行） |
+| `text-ellipsis`、`text-clip` | `textOverflow: "ellipsis"` / `"clip"` |
 | `whitespace-nowrap`、`text-nowrap` | 不换行；用在视图上时，作用于其中文本的行（与 CSS 的 `white-space` 一样会继承） |
 | `whitespace-normal`、`text-wrap`、`text-balance`、`text-pretty` | 正常换行（不做行平衡） |
-| `select-text`、`select-none` | `selectable`；用在视图上时，作用于其中未自行设置的文本 |
-| `select-auto` | 取外层视图的 `selectable`，与 CSS 的 `user-select: auto` 一样（`select-none md:select-auto`） |
+| `select-text`、`select-none` | `userSelect: "text"` / `"none"`；用在视图上时，作用于其中未自行设置的文本 |
+| `select-auto` | `userSelect: "auto"`：由外层视图决定，与 CSS 的 `user-select: auto` 一样（`select-none md:select-auto`） |
 
 ### 装饰线与阴影
 
@@ -320,7 +319,7 @@ view()
 | `border-none`、`border-hidden` | `borderStyle: "none"` / `"hidden"`：无论宽度类如何、顺序如何都没有边框（`md:border-solid` 会重新显示） |
 | `rounded`、`rounded-<size>`、`rounded-none`、`rounded-full`、`rounded-[<length>]` | `borderRadius`（不带值为 `sm`） |
 | `rounded-t-`、`-r-`、`-b-`、`-l-`、`-tl-`、`-tr-`、`-br-`、`-bl-` | 对应的角 |
-| `rounded-s-`、`-e-`、`-ss-`、`-se-`、`-es-`、`-ee-` | 起始 / 结束侧的角（随书写方向） |
+| `rounded-s-`、`-e-`、`-ss-`、`-se-`、`-es-`、`-ee-` | 起始 / 结束侧的角（随书写方向）：`borderTopStartRadius`、`borderTopEndRadius`、`borderBottomStartRadius`、`borderBottomEndRadius` |
 | `outline`、`outline-<n>`、`outline-[<length>]` | `outlineWidth`（不带值为 1），字符串中任何位置有样式类时用该样式，否则为实线（`outline-dashed outline-2` 是虚线，`outline-none outline-2` 不绘制） |
 | `outline-<color>` | `outlineColor` |
 | `outline-solid`、`outline-dashed`、`outline-dotted`、`outline-none`、`outline-hidden` | `outlineStyle`；只有样式类时宽度为 CSS 的 medium，即 3 点 |
@@ -376,18 +375,18 @@ view()
 
 | Class | 设置 |
 |---|---|
-| `translate-x-<n>`、`translate-y-<n>`、`translate-<n>` | 平移（间距、`full`、元素自身尺寸的分数：`-translate-x-1/2`、任意值） |
-| `rotate-<deg>`、`rotate-[<angle>]` | 旋转（CSS 的 `rotate`） |
+| `translate-x-<n>`、`translate-y-<n>`、`translate-<n>` | `translate`（间距、`full`、元素自身尺寸的分数：`-translate-x-1/2`、任意值） |
+| `rotate-<deg>`、`rotate-[<angle>]` | `rotate` |
 | `rotate-x-<deg>`、`rotate-y-<deg>`、`rotate-z-<deg>` | 3D 旋转（属于 `transform`，在平移、旋转和缩放之后） |
-| `scale-<pct>`、`scale-x-<pct>`、`scale-y-<pct>`、`scale-[<factor>]` | 缩放：`scale-95` = 0.95，`-scale-x-100` 为水平镜像 |
-| `skew-<deg>`、`skew-x-<deg>`、`skew-y-<deg>` | 斜切（Android 不支持） |
+| `scale-<pct>`、`scale-x-<pct>`、`scale-y-<pct>`、`scale-[<factor>]` | `scale`：`scale-95` = 0.95，`-scale-x-100` 为水平镜像 |
+| `skew-<deg>`、`skew-x-<deg>`、`skew-y-<deg>` | 斜切，在 `transform` 中（Android 不支持） |
 | `perspective-dramatic`（100）、`-near`（300）、`-normal`（500）、`-midrange`（800）、`-distant`（1200）、`perspective-[<length>]`、`perspective-none` | 元素子元素 3D 旋转的透视距离，从元素中心观察（CSS 的 `perspective`：`<View class="perspective-near"><View class="rotate-y-45" /></View>`） |
 | `origin-center`、`-top`、`-top-right`、`-right`、`-bottom-right`、`-bottom`、`-bottom-left`、`-left`、`-top-left`、`origin-[<value>]` | `transformOrigin` |
 | `backface-hidden`、`backface-visible` | `backfaceVisibility` |
 | `transform-none` | 清除 3D 旋转和斜切（CSS 的 `transform: none`） |
 | `translate-none`、`rotate-none`、`scale-none` | 分别清除平移、旋转、缩放 |
 
-变换类与 CSS 一样组合：`translate-*`、`rotate-*` 和 `scale-*` 无论顺序都会叠加。`transform`、`transform-gpu`、`transform-cpu` 和 `transform-flat` 可以写，但不起作用：NSH 以同一种方式合成所有变换，且都是平面的。按尺寸分数的平移会根据元素的实际尺寸计算，尺寸变化时自动更新。
+变换类与 CSS 一样组合：`translate-*`、`rotate-*` 和 `scale-*` 设置 `translate`、`rotate` 和 `scale` 属性，无论顺序都会叠加，然后应用 `transform`（`rotate-x-*`、`skew-*`）。`style` 属性中同名的键只替换各自的属性：`style={{ scale: 1.1 }}` 替换 `scale-95`，并保留 `rotate-3`。`transform`、`transform-gpu`、`transform-cpu` 和 `transform-flat` 可以写，但不起作用：NSH 以同一种方式合成所有变换，且都是平面的。按尺寸分数的平移会根据元素的实际尺寸计算，尺寸变化时自动更新。
 
 ## 过渡与动画
 
@@ -408,7 +407,7 @@ view()
 
 | Class | 设置 |
 |---|---|
-| `pointer-events-none`、`pointer-events-auto` | 视图是否接收触摸和指针事件，与 CSS 一样会继承：在 `pointer-events-none` 视图内，`pointer-events-auto` 的视图仍会接收事件（`pointerEvents` 属性保持自身的含义：`"none"` 使整个子树都不接收事件） |
+| `pointer-events-none`、`pointer-events-auto` | `pointerEvents: "none"` / `"auto"`：视图是否接收触摸和指针事件，与 CSS 一样会继承：在 `pointer-events-none` 视图内，`pointer-events-auto` 的视图仍会接收事件 |
 | `cursor-<name>`、`cursor-[<name>]` | `cursor`：`cursor-pointer`、`cursor-grab`、`cursor-not-allowed` 等（所有 CSS 光标关键字） |
 | `select-none`、`select-text`、`select-auto` | 文字选择（见排版） |
 
@@ -424,7 +423,7 @@ view()
 
 | Class | 设置 |
 |---|---|
-| `object-cover`、`object-contain`、`object-fill`、`object-none`、`object-scale-down` | `resizeMode`（`fill` 拉伸；`none` 即 `"center"`：原始尺寸，按 `objectPosition` 放置；`scale-down` 即 `"scale-down"`：同样放置，较大时缩小以适应） |
+| `object-cover`、`object-contain`、`object-fill`、`object-none`、`object-scale-down` | `objectFit`（`fill` 拉伸；`none` 保持原始尺寸，按 `objectPosition` 放置；`scale-down` 同样放置，较大时缩小以适应）；图片和视频 |
 | `object-top`、`object-bottom`、`object-left`、`object-right`、`object-center`、`object-top-left`、`object-top-right`、`object-bottom-left`、`object-bottom-right`、`object-[<position>]` | `objectPosition`（`object-left-top` 等与 `object-top-left` 等相同） |
 | `tint-<color>` | `tintColor`（为模板图片着色） |
 
