@@ -1680,7 +1680,12 @@ export class McpClientManager {
     // this round performed, the scope from its challenge — surfaced so a
     // consumer can show the user what they are consenting to BEFORE a
     // browser opens, instead of burying the issuer inside the URL.
-    const discovery = await provider.discoveryState().catch(() => undefined);
+    // The read-back must not swallow storage failures: a failed read is
+    // unknown, never absent (#6318). Falling back to the resource origin
+    // would put a GUESSED issuer on the trust-decision surface — exactly
+    // the mix-up this display exists to prevent — so a failed read fails
+    // the round loudly instead (#6350).
+    const discovery = await provider.discoveryState();
     const resolvedScope = challenge?.scope || config.oauth?.scopes?.join(' ') || undefined;
     return {
       status: 'redirect',
