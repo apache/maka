@@ -189,7 +189,10 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         crate::transcript_cache::materialize_all_rows(&log, "session", delta.sequence)
             .await
             .unwrap();
-        assert_eq!(crate::test_store::inspect_cache(&log, transcript).await, old_rows);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, transcript).await,
+            old_rows
+        );
         let outcome = match mode {
             "accepted" | "rejected" => {
                 hidden(
@@ -292,7 +295,10 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         crate::transcript_cache::materialize_all_rows(&log, "session", terminal.sequence)
             .await
             .unwrap();
-        assert_eq!(crate::test_store::inspect_cache(&log, transcript).await, old_rows);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, transcript).await,
+            old_rows
+        );
         let acknowledged = log
             .set_session_read_marker::<Value>("session", &opened.event.id)
             .await
@@ -318,7 +324,10 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         crate::transcript_cache::materialize_all_rows(&log, "session", terminal.sequence)
             .await
             .unwrap();
-        assert_eq!(crate::test_store::inspect_cache(&log, transcript).await, old_rows);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, transcript).await,
+            old_rows
+        );
         assert_eq!(
             log.prefix(100, 1024 * 1024).await.unwrap().digest,
             canonical

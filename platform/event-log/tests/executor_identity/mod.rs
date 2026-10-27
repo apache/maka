@@ -365,7 +365,10 @@ async fn executor_closing_rejects_prior_client_result_identity_and_rolls_back() 
             "canonical bytes, receipt and transaction prefix must roll back"
         );
         rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(crate::test_store::inspect_cache(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         assert_eq!(
             log.message_submit_receipt("epoch", "session", &id)
                 .await
@@ -441,9 +444,15 @@ async fn client_source_rejects_executor_result_identity_after_reopen() {
                 .await
                 .unwrap_err(),
         );
-        assert_eq!(crate::test_store::inspect_cache(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(crate::test_store::inspect_cache(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         assert_eq!(
             log.message_submit_receipt("epoch", "session", "receipt-control")
                 .await
@@ -642,9 +651,15 @@ async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
                 .await
                 .unwrap_err(),
         );
-        assert_eq!(crate::test_store::inspect_cache(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(crate::test_store::inspect_cache(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         assert_eq!(
             log.message_submit_receipt("epoch", "session", &receipt_id)
                 .await
