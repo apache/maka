@@ -147,7 +147,7 @@ export function Composer(props: {
   return (
     <View
       style={{
-        flex: hero() ? 1 : 0,
+        flex: hero() ? 1 : 'initial',
         flexShrink: 1,
         minHeight: 0,
         justifyContent: 'center',

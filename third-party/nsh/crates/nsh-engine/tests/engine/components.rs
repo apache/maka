@@ -101,6 +101,89 @@ fn text_ids(batch: &MountBatch, wanted: &str) -> Option<u32> {
     })
 }
 
+// Reduced caller layouts, not the full Maka application. Keep these assertions
+// about allocated frames: overflowing children can still produce visible text.
+#[test]
+fn caller_layout_composer_reserves_its_toolbar_height() {
+    let (_engine, rx) = start(
+        r#"import { mount, View, Text } from "nsh";
+mount(() => <View style={{ width: 390, height: 300 }}>
+  <View style={{ flex: 1, minHeight: 0 }} />
+  <View style={{ flex: 'initial', flexShrink: 1, minHeight: 0 }}>
+    <View style={{ height: 128, flexShrink: 0 }}><Text>Composer toolbar</Text></View>
+  </View>
+</View>);
+"#,
+    );
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let parent_of = |id| {
+        first.items.iter().find_map(|item| match item {
+            MountItem::Insert { parent, child, .. } if *child == id => Some(*parent),
+            _ => None,
+        })
+    };
+    let frame = |id| {
+        first.items.iter().find_map(|item| match item {
+            MountItem::Frame { id: actual, frame } if *actual == id => Some(*frame),
+            _ => None,
+        })
+    };
+    let toolbar = parent_of(text_ids(&first, "Composer toolbar").unwrap()).unwrap();
+    let composer = parent_of(toolbar).unwrap();
+    let composer = frame(composer).unwrap();
+    let toolbar = frame(toolbar).unwrap();
+    assert!(
+        composer.size.height >= toolbar.size.height,
+        "composer {composer:?}, toolbar {toolbar:?}"
+    );
+    assert!(
+        composer.origin.y.0 + composer.size.height.0 <= 300.0,
+        "{composer:?}"
+    );
+}
+
+#[test]
+fn caller_layout_explicit_flex_stacks_history_and_footer() {
+    let (_engine, rx) = start(
+        r#"import { mount, View, Text } from "nsh";
+mount(() => <View style={{ display: 'flex', flexDirection: 'column', width: 390, height: 300 }}>
+  <View style={{ width: 100, height: 100, flexShrink: 0 }}><Text>History body</Text></View>
+  <View style={{ width: 100, height: 32, flexShrink: 0 }}><Text>History footer</Text></View>
+</View>);
+"#,
+    );
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let parent_frame = |label| {
+        let id = text_ids(&first, label).unwrap();
+        let parent = first
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Insert { parent, child, .. } if *child == id => Some(*parent),
+                _ => None,
+            })
+            .unwrap();
+        first
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Frame { id, frame } if *id == parent => Some(*frame),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let body = parent_frame("History body");
+    let footer = parent_frame("History footer");
+    assert!(
+        footer.origin.y.0 >= body.origin.y.0 + body.size.height.0,
+        "body {body:?}, footer {footer:?}"
+    );
+}
+
 const INSET: &str = r#"import { mount, signal, Text } from "nsh";
 import { ListView } from "test/ui";
 

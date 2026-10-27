@@ -80,6 +80,8 @@ state styles use their respective typed style domains; canonical `line-clamp-*`,
 those same style rules. Legacy single-shadow fields become `boxShadow` layers.
 Consumers must regenerate declarations and rebuild old JS bundles with the
 matching compiler/runtime; old prop or style aliases are not restored.
+Maka's content-sized composer uses CSS `flex: initial`, and its conversation
+wrapper explicitly keeps column layout when setting `display: flex`.
 
 Independent local corrections retain RichEditor geometry on its owning thread,
 retire its session subscription before dropping the geometry payload, and keep
