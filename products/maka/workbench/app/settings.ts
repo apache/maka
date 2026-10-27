@@ -31,6 +31,7 @@ import type {
   SettingsConnectionsRead,
   SettingsConnectionSummary,
   SettingsProvider,
+  SettingsProvidersPage,
   SettingsProviderSummary,
   SettingsModelLimitSettings,
   ThinkingLevel,
@@ -293,15 +294,16 @@ export function createModelSettings(
     }
   };
   const loadProviders = async (more = false) => {
-    let offset = more ? providerNext() : 0;
-    if (!alive || !active() || loading() || offset === null || page() !== 'providers') return;
+    const start = more ? providerNext() : 0;
+    if (!alive || !active() || loading() || start === null || page() !== 'providers') return;
+    let offset = start;
     const generation = ++read;
     loading.set(true);
     error.set('');
     try {
       let rows = more ? providers() : [];
       for (;;) {
-        const result = await host.query('settings', 'providers', { offset });
+        const result: SettingsProvidersPage = await host.query('settings', 'providers', { offset });
         if (!alive || !active() || generation !== read) return;
         if (result.next !== null && result.next <= offset)
           throw new UiError('The provider catalog did not advance.');

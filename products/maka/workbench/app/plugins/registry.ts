@@ -17,11 +17,12 @@
  * under the License.
  */
 
-import { batch, cleanup, computed, importModule, signal, type JSX } from 'nsh';
+import { batch, cleanup, computed, importModule, signal, type JSX, type Signal } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import type {
   UiCatalog,
-  UiInstance,
+  UiContribution,
+  UiInstance as CatalogInstance,
 } from '../../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type {
   UiContext,
@@ -38,11 +39,16 @@ import type {
   UiCommandContext,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
 import { UiError } from '../text';
+import { uiHost } from '../host';
 import { currentLocale } from '../locale';
 import { sameValue } from '../../../../../plugins/shared/value';
 import { renderContribution } from './RuntimeView';
 
-type Catalog = UiCatalog;
+// The Host validates JSON maps; their present values cannot be undefined.
+type UiInstance = Omit<CatalogInstance, 'contributions'> & {
+  contributions: Record<string, UiContribution>;
+};
+type Catalog = Omit<UiCatalog, 'instances'> & { instances: UiInstance[] };
 type Loaded = UiModule<JSX.Element>;
 type Exports = UiExports<JSX.Element>;
 type Bindings = Awaited<ReturnType<typeof nativeHost.bindUi>>;
@@ -64,7 +70,7 @@ export type PluginEntry = {
   identity: string;
   source: Catalog['source'];
   instance: UiInstance;
-  state: ReturnType<typeof signal<State>>;
+  state: Signal<State>;
   live: boolean;
 };
 type RootIdentity = { instance: UiInstance['instance']; id: string; packageId: string };
@@ -258,7 +264,7 @@ export function createPlugins() {
     const generation = ++watchGeneration;
     await subscription?.close();
     subscription = undefined;
-    const first = (await nativeHost.readUi({})) as Catalog;
+    const first = (await uiHost.readUi({})) as Catalog;
     if (!alive || generation !== watchGeneration) return;
     const stream = (await nativeHost.subscribe('management', 'watch', {
       source: first.source,
@@ -273,7 +279,7 @@ export function createPlugins() {
       const source = await stream.next();
       if (!alive || generation !== watchGeneration || source === null) return;
       try {
-        const next = (await nativeHost.readUi({ source })) as Catalog;
+        const next = (await uiHost.readUi({ source })) as Catalog;
         if (!alive || generation !== watchGeneration) return;
         publish(next);
       } catch (reason) {
@@ -346,7 +352,7 @@ export function createPlugins() {
       package: instance.package,
       configuration: instance.configuration as Readonly<Record<string, unknown>>,
       locale: currentLocale,
-      host: nativeHost,
+      host: uiHost,
       services,
       operations: {
         pending: () => bindings.pending(),

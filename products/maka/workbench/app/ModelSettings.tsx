@@ -184,19 +184,26 @@ export function ModelSettings(props: {
     });
   const title = () => {
     const current = section();
-    return current === 'connections'
-      ? {
+    switch (current) {
+      case 'connections':
+        return {
           connections: tr('Connections & models'),
           providers: tr('Add connection'),
           connection: tr('Connection settings'),
           models: tr('Connection models'),
           model: tr('Model settings'),
-        }[connections.page()]
-      : (page(current)?.title() ??
-          (() => {
-            const item = contributed();
-            return item ? contributionTitle(item) : '';
-          })());
+        }[connections.page()];
+      case 'general':
+        return general.title();
+      case 'network':
+        return network.title();
+      case 'plugins':
+        return plugins.title();
+      default: {
+        const item = contributed();
+        return item ? contributionTitle(item) : '';
+      }
+    }
   };
   const nested = () =>
     section() === 'connections'

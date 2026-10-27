@@ -29,9 +29,14 @@ import type {
   OperationReply,
   ServiceMethods,
 } from '../../../../packages/plugin-sdk/src/index.js';
+import type { UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 
-// Native checks each exact method contract before querying or subscribing. The Host
-// validates their returned values; callers cannot choose an unrelated result T.
+// Native JSON results have Rust-owned shapes. Project the shared API while
+// retaining the admitted native Host object and its original request custody.
+export const uiHost = nativeHost as UiHost;
+
+// The default root declares these service contracts in its composition. The
+// Host validates values against the selected contracts; this facade types the calls.
 type Services = {
   agent: ServiceMethods['agent'];
   settings: ServiceMethods['settings'];
@@ -211,8 +216,7 @@ export const host = {
 // Session methods take the original native Instance. In particular, the same
 // instance still goes directly into AttachmentPicker.client.
 export type { ScopedHost };
-// The schema also accepts old inputs without attachments. These native methods
-// serialize Draft without skipping that field, including [] for an empty draft.
+// Native draft results always include attachments, including [] for an empty draft.
 type SavedDraft = ClientDraft & Required<Pick<ClientDraft, 'attachments'>>;
 export const loadDraft = (scope: ScopedHost) => scope.loadDraft() as Promise<SavedDraft>;
 export const saveDraft = (scope: ScopedHost, revision: number, edit: ClientDraftEdit) =>
