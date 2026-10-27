@@ -58,7 +58,7 @@ import { createBrowsing } from './browsing';
 import type { BrowserWorkspace } from './browsing';
 import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
-import { applicationMenu } from './chrome';
+import { applicationMenu, windowTitle } from './chrome';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
 
@@ -623,6 +623,7 @@ function App() {
     },
     { when: 'always' },
   );
+  windowTitle(() => handle()?.title() ?? null);
   // The bindings above take the same keys first; the menu shows and offers them.
   applicationMenu({
     newConversation: () => newConversation(selected()),
