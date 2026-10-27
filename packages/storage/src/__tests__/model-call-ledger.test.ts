@@ -411,6 +411,10 @@ describe('catching the read model up from the AgentRun authority', () => {
   test('does not advance the checkpoint when projection storage fails', async () => {
     await withLedger(async (ledger, root) => {
       appendAuthorityEvent(root, 0, attempt({ attemptId: 'retry-after-storage-failure' }));
+      const projected: string[] = [];
+      const observe = (value: ModelCallAttempt) => {
+        projected.push(value.attemptId);
+      };
       const lease = acquireOperationalStateDatabase(root);
       try {
         lease.transaction('write', () => {
@@ -422,7 +426,11 @@ describe('catching the read model up from the AgentRun authority', () => {
             END;
           `);
         });
-        await assert.rejects(() => ledger.catchUpProjection(), ModelCallLedgerPublicationError);
+        await assert.rejects(
+          () => ledger.catchUpProjection(undefined, observe),
+          ModelCallLedgerPublicationError,
+        );
+        assert.deepEqual(projected, [], 'rolled-back attempts must not reach export observers');
         lease.transaction('write', () => {
           lease.database.exec('DROP TRIGGER reject_model_call_projection');
         });
@@ -430,7 +438,8 @@ describe('catching the read model up from the AgentRun authority', () => {
         lease.close();
       }
 
-      const recovered = await ledger.catchUpProjection();
+      const recovered = await ledger.catchUpProjection(undefined, observe);
+      assert.deepEqual(projected, ['retry-after-storage-failure']);
       assert.equal(recovered.pendingRuns, 0);
       assert.deepEqual(ids(ledger), ['retry-after-storage-failure']);
     });
