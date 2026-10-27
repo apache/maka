@@ -1209,10 +1209,12 @@ impl Agent {
             TestStep::Paste {
                 selector,
                 text,
+                html,
                 files,
                 uris,
             } => {
                 let mut content = nsh_core::PasteEvent::new(text);
+                content.html = html;
                 content.files = files
                     .into_iter()
                     .map(|f| nsh_core::PastedFile::new(f.name, f.mime, f.data))

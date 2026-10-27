@@ -731,6 +731,8 @@ pub struct WaitOptions {
 pub struct PasteContent {
     /// The text.
     pub text: Option<String>,
+    /// The same content as HTML, as a browser or an office suite copies it.
+    pub html: Option<String>,
     /// Paths of files whose bytes are pasted (a screenshot: an image file),
     /// each a `File` of `onPaste`, its type from its extension.
     pub files: Option<Vec<String>>,
@@ -742,6 +744,7 @@ impl PasteContent {
     /// What `onPaste` reports of it, the files read.
     fn read(self) -> Result<nsh_core::PasteEvent, String> {
         let mut paste = nsh_core::PasteEvent::new(self.text.unwrap_or_default());
+        paste.html = self.html.unwrap_or_default();
         for path in self.files.unwrap_or_default() {
             let data = std::fs::read(&path).map_err(|e| format!("paste: {path}: {e}"))?;
             let name = std::path::Path::new(&path)

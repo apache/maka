@@ -295,8 +295,10 @@ export function QueueDock(props: { session: QueueSession }) {
                 >
                   <Icon name="queue" color={C.muted} />
                   <Text
-                    numberOfLines={1}
-                    style={{ ...captionTextStyle, color: C.secondary, flex: 1 }}
+                    style={[
+                      { ...captionTextStyle, color: C.secondary, flex: 1 },
+                      { numberOfLines: 1 },
+                    ]}
                   >
                     {row().kind === 'steering'
                       ? tr('Sending to current turn · {preview}', { preview: row().preview })
@@ -394,7 +396,9 @@ export function QueueDock(props: { session: QueueSession }) {
                       {tr('Current queued message')}
                     </Text>
                     <Scroll style={{ maxHeight: readerHeight(), flexGrow: 0 }}>
-                      <Text selectable style={{ ...bodyTextStyle, color: C.secondary }}>
+                      <Text
+                        style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}
+                      >
                         {review()!.message}
                       </Text>
                     </Scroll>
@@ -474,7 +478,9 @@ export function QueueDock(props: { session: QueueSession }) {
           </Text>
         </If>
         <If when={error()}>
-          <Text selectable style={{ ...captionTextStyle, padding: 12, color: C.warning }}>
+          <Text
+            style={[{ ...captionTextStyle, padding: 12, color: C.warning }, { userSelect: 'text' }]}
+          >
             {error()}
           </Text>
         </If>

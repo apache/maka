@@ -124,7 +124,7 @@ export function WorkspaceChanges(props: {
         <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Reading current changes…')}</Text>
       </If>
       <If when={state().kind === 'error'}>
-        <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
           {renderText((state() as Extract<ChangesState, { kind: 'error' }>).message)}
         </Text>
       </If>
@@ -135,7 +135,7 @@ export function WorkspaceChanges(props: {
             <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Not a Git workspace.')}</Text>
           }
         >
-          <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+          <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
             {tr('{head} · {count} changes', {
               head: status()?.head ?? tr('No commits yet'),
               count: entries().length,
@@ -176,10 +176,10 @@ export function WorkspaceChanges(props: {
               >
                 <Icon name="file" color={entry().kind === 'deleted' ? C.danger : C.muted} />
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.text }}>
+                  <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
                     {host.pathLabel(entry().path)}
                   </Text>
-                  <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+                  <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
                     {gitAreaLabel[entry().area]} · {changeKindLabel[entry().kind]}
                   </Text>
                 </View>

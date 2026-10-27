@@ -154,22 +154,22 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
               src={image.uri}
               role="image"
               accessibilityLabel={image.title}
-              pointerEvents="none"
-              resizeMode="contain"
               onError={(reason) => {
                 if (alive) error.set(reason.message);
               }}
-              style={{
-                width: image.width,
-                height: image.height,
-                flexShrink: 0,
-                transform: [{ translateX: x }, { translateY: y }, { scale }],
-              }}
+              style={[
+                {
+                  width: image.width,
+                  height: image.height,
+                  flexShrink: 0,
+                  transform: [{ translateX: x }, { translateY: y }, { scale }],
+                },
+                { pointerEvents: 'none', objectFit: 'contain' },
+              ]}
             />
           </If>
         </View>
         <View
-          pointerEvents="box-none"
           style={{
             position: 'absolute',
             top: dialogTop(16),
@@ -178,10 +178,11 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
             flexDirection: 'row',
             gap: 16,
             alignItems: 'center',
+            pointerEvents: 'box-none',
           }}
         >
-          <View pointerEvents="none" style={{ flex: 1, gap: 4 }}>
-            <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.text }}>
+          <View style={[{ flex: 1, gap: 4 }, { pointerEvents: 'none' }]}>
+            <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
               {image.title}
             </Text>
             <Text style={{ ...captionTextStyle, color: C.muted }}>
@@ -210,8 +211,10 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
           </Button>
         </View>
         <View
-          pointerEvents="box-none"
-          style={{ position: 'absolute', left: 16, right: 16, bottom: 16, alignItems: 'center' }}
+          style={[
+            { position: 'absolute', left: 16, right: 16, bottom: 16, alignItems: 'center' },
+            { pointerEvents: 'box-none' },
+          ]}
         >
           <View
             style={{

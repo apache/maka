@@ -125,8 +125,10 @@ export function TurnSummary(props: {
         <Icon name={props.expanded() ? 'down' : 'right'} color={C.secondary} />
       </If>
       <Text
-        numberOfLines={1}
-        style={{ flex: 1, color: turnOutcome(props.turn()) === 'failed' ? C.danger : C.muted }}
+        style={[
+          { flex: 1, color: turnOutcome(props.turn()) === 'failed' ? C.danger : C.muted },
+          { numberOfLines: 1 },
+        ]}
       >
         {label()}
       </Text>
@@ -494,9 +496,10 @@ export function TurnPanel(props: {
       >
         <Icon name={props.state.open() ? 'down' : 'right'} color={C.secondary} />
         <Text
-          numberOfLines={1}
-          ellipsizeMode="tail"
-          style={{ ...captionTextStyle, flex: 1, color: active() ? C.secondary : C.muted }}
+          style={[
+            { ...captionTextStyle, flex: 1, color: active() ? C.secondary : C.muted },
+            { numberOfLines: 1, textOverflow: 'ellipsis' },
+          ]}
         >
           {active() ? stableTitle() : desiredTitle()}
         </Text>

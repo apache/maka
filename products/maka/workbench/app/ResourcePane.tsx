@@ -192,12 +192,14 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       color={C.muted}
                     />
                     <Text
-                      numberOfLines={1}
-                      style={{
-                        ...captionTextStyle,
-                        color: resources.active() === tab().instance ? C.text : C.muted,
-                        maxWidth: 160,
-                      }}
+                      style={[
+                        {
+                          ...captionTextStyle,
+                          color: resources.active() === tab().instance ? C.text : C.muted,
+                          maxWidth: 160,
+                        },
+                        { numberOfLines: 1 },
+                      ]}
                     >
                       {tab().title}
                     </Text>
@@ -279,11 +281,10 @@ function OriginalImage(props: { image: ImagePreview; openImageViewer: OpenImageV
       </Text>
       <Image
         src={props.image.uri}
-        resizeMode="contain"
         onError={(reason) => {
           if (mounted) error.set(reason.message);
         }}
-        style={{ flex: 1, minHeight: 0, width: '100%' }}
+        style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
       />
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>

@@ -157,18 +157,22 @@ export function ModelSelect(props: {
             }}
           >
             <Text
-              numberOfLines={1}
-              style={{
-                color: owner.backend() ? C.secondary : C.warning,
-                fontSize: 13,
-                minWidth: 0,
-                flexShrink: 1,
-              }}
+              style={[
+                {
+                  color: owner.backend() ? C.secondary : C.warning,
+                  fontSize: 13,
+                  minWidth: 0,
+                  flexShrink: 1,
+                },
+                { numberOfLines: 1 },
+              ]}
             >
               {model()}
             </Text>
             <If when={effort()}>
-              <Text numberOfLines={1} style={{ color: C.secondary, fontSize: 13, flexShrink: 0 }}>
+              <Text
+                style={[{ color: C.secondary, fontSize: 13, flexShrink: 0 }, { numberOfLines: 1 }]}
+              >
                 {` · ${effort()}`}
               </Text>
             </If>
@@ -561,14 +565,16 @@ function ModelMenu(props: {
         >
           <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Model')}</Text>
           <Text
-            numberOfLines={1}
-            style={{
-              ...captionTextStyle,
-              color: C.muted,
-              flex: 1,
-              minWidth: 0,
-              textAlign: 'right',
-            }}
+            style={[
+              {
+                ...captionTextStyle,
+                color: C.muted,
+                flex: 1,
+                minWidth: 0,
+                textAlign: 'right',
+              },
+              { numberOfLines: 1 },
+            ]}
           >
             {modelCaption(owner.backend(), owner.modelDetails())}
           </Text>
@@ -598,14 +604,16 @@ function ModelMenu(props: {
               {tr('Reasoning effort')}
             </Text>
             <Text
-              numberOfLines={1}
-              style={{
-                ...captionTextStyle,
-                color: C.muted,
-                flex: 1,
-                minWidth: 0,
-                textAlign: 'right',
-              }}
+              style={[
+                {
+                  ...captionTextStyle,
+                  color: C.muted,
+                  flex: 1,
+                  minWidth: 0,
+                  textAlign: 'right',
+                },
+                { numberOfLines: 1 },
+              ]}
             >
               {effortCaption(owner.backend(), owner.modelDetails())}
             </Text>
@@ -662,11 +670,11 @@ function ModelMenu(props: {
                   hoverStyle={controlHoverStyle}
                   focusStyle={controlFocusStyle}
                 >
-                  <View pointerEvents="none" style={{ flex: 1, minWidth: 0 }}>
-                    <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.text }}>
+                  <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
+                    <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
                       {item().name}
                     </Text>
-                    <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+                    <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
                       {item().slug}
                     </Text>
                   </View>
@@ -709,8 +717,10 @@ function ModelMenu(props: {
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Connection')}</Text>
           <Text
-            numberOfLines={1}
-            style={{ ...captionTextStyle, color: C.text, flex: 1, textAlign: 'right' }}
+            style={[
+              { ...captionTextStyle, color: C.text, flex: 1, textAlign: 'right' },
+              { numberOfLines: 1 },
+            ]}
           >
             {connection() ? `${connection()!.name} · ${connection()!.slug}` : tr('All connections')}
           </Text>
@@ -797,14 +807,16 @@ function ModelMenu(props: {
                     focusStyle={{ backgroundColor: C.raised }}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <View pointerEvents="none" style={{ flex: 1, minWidth: 0 }}>
+                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
                       <Text
-                        numberOfLines={1}
-                        style={{ ...captionTextStyle, color: C.text, fontSize: 14 }}
+                        style={[
+                          { ...captionTextStyle, color: C.text, fontSize: 14 },
+                          { numberOfLines: 1 },
+                        ]}
                       >
                         {choice().label}
                       </Text>
-                      <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+                      <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
                         {choice().connectionName} · {choice().selection.modelId}
                       </Text>
                     </View>
@@ -948,7 +960,7 @@ function ModelMenu(props: {
           accessibilityLabel={tr('Model selection error')}
           style={{ minHeight: 16, flexShrink: 1 }}
         >
-          <Text selectable style={{ ...captionTextStyle, color: C.danger }}>
+          <Text style={[{ ...captionTextStyle, color: C.danger }, { userSelect: 'text' }]}>
             {error()}
           </Text>
         </Scroll>

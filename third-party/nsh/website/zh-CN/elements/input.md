@@ -96,24 +96,26 @@ function NameField() {
 
 ### 颜色
 
-提示文字的颜色以及光标和选区的颜色是样式键，有对应的 Tailwind 变体，在 Rust 中是方法：
+提示文字、光标和选区高亮的颜色是样式键，有对应的 Tailwind 类，在 Rust 中是方法（UIKit 用同一种颜色绘制光标和选区，设置了光标颜色时以它为准）：
 
 | 样式键 | Rust | 类 | 说明 |
 |---|---|---|---|
 | `placeholderColor` | `.placeholder_color(..)` | `placeholder:text-*` | 提示文字的颜色。 |
-| `selectionColor` | `.selection_color(..)` | `selection:text-*` | 光标和选区的颜色。 |
+| `caretColor` | `.caret_color(..)` | `caret-*` | 光标的颜色。 |
+| `selectionColor` | `.selection_color(..)` | `selection:text-*` | 选区高亮的颜色。 |
 
 ```rust tabs
 input()
     .placeholder("搜索")
     .text_color(rgb(0x18181b))
     .placeholder_color(rgb(0x9ca3af))
-    .selection_color(rgb(0x2563eb))
+    .caret_color(rgb(0x2563eb))
+    .selection_color(rgb(0x93c5fd))
 ```
 
 ```tsx tabs
 <Input placeholder="搜索" class="text-zinc-900 placeholder:text-zinc-400 selection:text-blue-600" />
-<Input placeholder="搜索" style={{ placeholderColor: "#9ca3af", selectionColor: "#2563eb" }} />
+<Input placeholder="搜索" style={{ placeholderColor: "#9ca3af", caretColor: "#2563eb", selectionColor: "#93c5fd" }} />
 ```
 
 ### iOS
@@ -142,7 +144,7 @@ input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
 | `onSubmit` | `.on_submit(\|text: &str\| ..)` | `{ text }` | 在会提交的输入框中按下了回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | `.on_focus` / `.on_blur` | 无 | 输入框获得 / 失去焦点。 |
 | `onSelectionChange` | `.on_selection_change(\|s: &Selection\| ..)` | `{ start, end }` | 光标或选区移动（UTF-16 单位）。 |
-| `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, files, uris }` | 用户粘贴了内容：文本、作为 `File` 的图片（如截图）、本地文件的 `file:` URL。在它插入的文本的 `onChange` 之前（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
+| `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, html, files, uris }` | 用户粘贴了内容：文本、带格式的 HTML（Linux、Web）、作为 `File` 的图片（如截图）、本地文件的 `file:` URL。在它插入的文本的 `onChange` 之前（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
 | `onCaretMove` | `.on_caret_move(\|e: &CaretEvent\| ..)` | `{ bounds, pageBounds }` | 光标随选区移动，或因文本滚动、重新换行而移动：`bounds` 是它在输入框中的位置，`pageBounds` 是它在窗口中的位置，可作为 `Overlay` 的 `anchor`（[表单与键盘](../docs/forms-and-keyboard.md#光标位置)）。 |
 | `onKeyPress` | `.on_key_press(\|key: &str\| ..)` | `{ key }` | 文本变化之前：`key` 是输入的文本、`"Backspace"` 或 `"Enter"`。 |
 | `onContentSizeChange` | `.on_content_size_change(\|size: &Size<Points>\| ..)` | `{ width, height }` | 文本尺寸变化（多行时按输入框宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |

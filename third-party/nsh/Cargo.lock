@@ -3239,6 +3239,7 @@ dependencies = [
  "libc",
  "log",
  "nsh-macros",
+ "ordered-float",
  "regex",
  "resvg",
  "rustc-hash",

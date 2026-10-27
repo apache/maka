@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`1e912e1a9e079c2dc632db7bb505ce40bed1d5f9`. The first upstream synchronization
+`1849776f68ee41d73c08970fe530cf952451af13`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -62,6 +62,24 @@ accessibility role indices 34/35 are separate from the preserved mount opcodes
 34 (retire), 35 (project) and 36 (component slots). Cartesian stationary-hover
 geometry refresh remains separate from selection notifications, while radial
 placement follows the pointer without requiring a finite Cartesian x value.
+
+The bounded RichEditor and typed-style synchronization through that revision
+uses canonical typed styles for pointer events, text selection, line limits,
+image fitting and box shadows. Direct Maka callers migrate with these APIs;
+local selectable roots, source-backed TextView selection, Android mount opcodes
+and terminal shadow rendering remain intact. Existing `ordered-float` 5.5.0 is
+retained with the required core dependency edge rather than an unrelated upgrade.
+
+This is a breaking source and bundle migration, not a compatibility alias layer.
+Primitive `pointerEvents` moves into typed `style`; Text `numberOfLines`,
+`ellipsizeMode` and `selectable` become style `numberOfLines`, `textOverflow` and
+`userSelect`, and Image `resizeMode` becomes `objectFit`. Selectable View roots
+and component-owned selection props remain distinct. Text, Image and Input
+state styles use their respective typed style domains; canonical `line-clamp-*`,
+`truncate`, `select-*`, `pointer-events-*` and `object-*` classes resolve through
+those same style rules. Legacy single-shadow fields become `boxShadow` layers.
+Consumers must regenerate declarations and rebuild old JS bundles with the
+matching compiler/runtime; old prop or style aliases are not restored.
 
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while

@@ -82,7 +82,6 @@ pub(super) fn split(attrs: &Attrs) -> (Attrs, Attrs) {
         class: attrs.class.clone(),
         inset_padding: attrs.inset_padding,
         inset_margin: attrs.inset_margin,
-        number_of_lines: attrs.number_of_lines,
         src: attrs.src.clone(),
         drawing: attrs.drawing.clone(),
         selectable_view: attrs.selectable_view,

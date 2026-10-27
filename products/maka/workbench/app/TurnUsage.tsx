@@ -220,7 +220,7 @@ export function TurnUsage(props: {
               </Text>
             </If>
             <If when={reading().kind === 'failed'}>
-              <Text selectable style={{ color: C.danger }}>
+              <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
                 {reading().kind === 'failed'
                   ? renderText((reading() as Extract<Reading, { kind: 'failed' }>).message)
                   : ''}
@@ -259,7 +259,7 @@ export function TurnUsage(props: {
                 {(counter) => (
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
                     <Text style={{ flex: 1, color: C.secondary }}>{counter().label}</Text>
-                    <Text selectable style={{ color: C.text }}>
+                    <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
                       {total(attempts(), counter().key)}
                     </Text>
                   </View>
@@ -267,9 +267,7 @@ export function TurnUsage(props: {
               </Each>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
                 <Text style={{ flex: 1, color: C.secondary }}>{tr('Recorded cost')}</Text>
-                <Text selectable style={{ color: C.text }}>
-                  {cost()}
-                </Text>
+                <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{cost()}</Text>
               </View>
               <Text style={{ color: C.muted }}>
                 {tr(

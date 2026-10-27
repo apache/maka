@@ -1175,7 +1175,7 @@ pub(crate) struct DrawnText {
     node: OnceCell<Option<gsk::RenderNode>>,
     /// Selection geometry reused across redraws, including selectable views.
     selection_rects: RefCell<Vec<Bounds<Points>>>,
-    /// The selection of `selectable` text, kept across new content.
+    /// The selection of selectable text, kept across new content.
     selection: Option<Rc<Selection>>,
 }
 
@@ -1216,7 +1216,7 @@ pub(crate) fn set(
     view.changed();
 }
 
-/// The view draws `selectable` text: mouse drags over it select rather
+/// The view draws selectable text: mouse drags over it select rather
 /// than scroll, and its pointer is the I-beam.
 pub(crate) fn selectable(state: &ViewState) -> bool {
     state.text.as_ref().is_some_and(|t| t.text.is_selectable())
@@ -1538,7 +1538,7 @@ enum Unit {
     Paragraph,
 }
 
-/// The range selection of a `selectable` text view, desktop style: a mouse
+/// The range selection of a selectable text view, desktop style: a mouse
 /// drag selects characters, a double click words and a triple click the
 /// paragraph (and drags on by them), Shift+click extends, Ctrl+C copies,
 /// Ctrl+A selects all, Escape or a press anywhere else clears. Offsets are

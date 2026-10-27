@@ -269,6 +269,32 @@ impl Native for LinuxNative {
         Ok(())
     }
 
+    fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
+        // As the user's paste of `content` does (`text_input`'s `pasting`),
+        // without the system's clipboard: reported, then its text inserted
+        // where the input inserts pastes.
+        let content = content.clone();
+        self.with_window(move |surface, w| {
+            let field = synth::focused_text(w).ok_or("no focused input to paste into")?;
+            let view = field
+                .ancestor(crate::view::NshView::static_type())
+                .and_then(|v| v.downcast::<crate::view::NshView>().ok())
+                .ok_or("the focused field is no input's")?;
+            if view.state().events.contains(nsh_core::EventKind::Paste) {
+                surface.event(
+                    view.id(),
+                    nsh_core::EventKind::Paste,
+                    nsh_core::EventPayload::Paste(Box::new(content.clone())),
+                );
+            }
+            if crate::text_input::pastes_text(&view) && !content.text.is_empty() {
+                synth::type_text(w, &content.text);
+            }
+            Ok(())
+        })
+        .unwrap_or_else(|| Err("the window is gone".into()))
+    }
+
     fn input_text(&self, id: NodeId) -> Option<String> {
         self.on_main(move |surface| {
             let view = surface.mounter.borrow().views.get(&id)?.clone();

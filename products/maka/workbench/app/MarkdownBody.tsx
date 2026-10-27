@@ -45,7 +45,7 @@ export function MarkdownBody(props: {
       <If
         when={hasCompletePrefix(props.row())}
         else={
-          <Text selectable style={{ ...readingStyle, color }}>
+          <Text style={[{ ...readingStyle, color }, { userSelect: 'text' }]}>
             <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
         }
@@ -90,7 +90,7 @@ export function MarkdownBody(props: {
             />
           )}
           renderCodeBlockAction={(action) => (
-            <Text selectable={false} style={{ ...secondaryTextStyle, color: C.muted }}>
+            <Text style={[{ ...secondaryTextStyle, color: C.muted }, { userSelect: 'none' }]}>
               {action.id === 'wrap' ? tr('Wrap code') : (action.label ?? action.id)}
             </Text>
           )}
@@ -131,7 +131,7 @@ export function MarkdownBody(props: {
           }}
         />
         <If when={failure()}>
-          <Text selectable={false} style={{ ...secondaryTextStyle, color: C.danger }}>
+          <Text style={[{ ...secondaryTextStyle, color: C.danger }, { userSelect: 'none' }]}>
             {tr('Formatting unavailable: {reason}', { reason: failure()! })}
           </Text>
         </If>

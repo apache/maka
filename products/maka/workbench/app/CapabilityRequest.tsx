@@ -67,14 +67,14 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
               ? tr('Computer access for this session')
               : tr('Requested client capability')}
           </Text>
-          <Text selectable style={{ ...codeTextStyle, color: C.secondary }}>
+          <Text style={[{ ...codeTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
             {tr('{tool} · Permission boundary: {revision}', {
               tool: props.request.target.toolName,
               revision: props.request.basis?.boundaryRevision ?? tr('unavailable'),
             })}
           </Text>
           <If when={computerCapability(props.request)}>
-            <Text selectable style={{ ...bodyTextStyle, color: C.secondary }}>
+            <Text style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
               {tr(
                 "This allows the requesting tool to inspect and control the local computer, including screenshots, keyboard and pointer actions. The grant lasts for this session's current permission boundary.",
               )}
@@ -84,7 +84,7 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
       </View>
       <View style={{ gap: 8 }}>
         <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Scope')}</Text>
-        <Text selectable style={{ ...bodyTextStyle, color: C.secondary }}>
+        <Text style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
           {props.request.target.scope.kind === 'browser_origin'
             ? tr('Browser origin: {origin}', { origin: props.request.target.scope.origin })
             : props.request.target.scope.kind === 'mcp_tool'
@@ -120,7 +120,7 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
           ]}
         >
           {(detail) => (
-            <Text selectable style={{ ...codeTextStyle, color: C.secondary }}>
+            <Text style={[{ ...codeTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
               {`${detail()[0]}: ${detail()[1]}`}
             </Text>
           )}

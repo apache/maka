@@ -419,7 +419,7 @@ export function Terminal(props: { model: TerminalModel }) {
             : tr('shared · view only')}
       </Text>
       <If when={model.error()}>
-        <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
           {model.error()}
         </Text>
       </If>
@@ -526,27 +526,28 @@ export function Terminal(props: { model: TerminalModel }) {
                               color(run().style.background, frame().metadata.palette, false);
                             return (
                               <Text
-                                numberOfLines={1}
-                                selectable={false}
-                                style={{
-                                  fontFamily: 'monospace',
-                                  fontSize: 16,
-                                  lineHeight: LINE,
-                                  width: cells(run()).columns * CELL,
-                                  flexShrink: 0,
-                                  color: run().style.flags & 1 ? background() : foreground(),
-                                  backgroundColor:
-                                    run().style.flags & 1 ? foreground() : background(),
-                                  fontWeight: run().style.flags & 2 ? '700' : '400',
-                                  fontStyle: run().style.flags & 4 ? 'italic' : 'normal',
-                                  textDecorationLine:
-                                    run().style.flags & 512
-                                      ? 'line-through'
-                                      : run().style.flags & (8 | 2048 | 4096 | 8192 | 16384)
-                                        ? 'underline'
-                                        : 'none',
-                                  opacity: run().style.flags & 128 ? 0.6 : 1,
-                                }}
+                                style={[
+                                  {
+                                    fontFamily: 'monospace',
+                                    fontSize: 16,
+                                    lineHeight: LINE,
+                                    width: cells(run()).columns * CELL,
+                                    flexShrink: 0,
+                                    color: run().style.flags & 1 ? background() : foreground(),
+                                    backgroundColor:
+                                      run().style.flags & 1 ? foreground() : background(),
+                                    fontWeight: run().style.flags & 2 ? '700' : '400',
+                                    fontStyle: run().style.flags & 4 ? 'italic' : 'normal',
+                                    textDecorationLine:
+                                      run().style.flags & 512
+                                        ? 'line-through'
+                                        : run().style.flags & (8 | 2048 | 4096 | 8192 | 16384)
+                                          ? 'underline'
+                                          : 'none',
+                                    opacity: run().style.flags & 128 ? 0.6 : 1,
+                                  },
+                                  { numberOfLines: 1, userSelect: 'none' },
+                                ]}
                               >
                                 {cells(run()).text}
                               </Text>
@@ -582,7 +583,7 @@ export function Terminal(props: { model: TerminalModel }) {
         </If>
         <If when={model.entry().result.mode === 'pipes'}>
           <Scroll style={{ flex: 1 }}>
-            <Text selectable style={{ ...codeTextStyle, color: C.text }}>
+            <Text style={[{ ...codeTextStyle, color: C.text }, { userSelect: 'text' }]}>
               {pipes()}
             </Text>
           </Scroll>

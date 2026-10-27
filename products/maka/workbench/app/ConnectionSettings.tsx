@@ -178,14 +178,16 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
                 hoverStyle={{ backgroundColor: C.raised }}
                 disabledStyle={controlDisabledStyle}
               >
-                <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                <View style={[{ flex: 1, minWidth: 0, gap: 4 }, { pointerEvents: 'none' }]}>
                   <Text
-                    numberOfLines={1}
-                    style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}
+                    style={[
+                      { ...captionTextStyle, color: C.text, fontWeight: '500' },
+                      { numberOfLines: 1 },
+                    ]}
                   >
                     {item().name}
                   </Text>
-                  <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+                  <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
                     {tr('{status} · {count} models', {
                       status: item().enabled ? tr('Enabled') : tr('Disabled'),
                       count: item().enabledModelCount,
@@ -248,7 +250,9 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
                 hoverStyle={{ backgroundColor: C.raised }}
                 disabledStyle={controlDisabledStyle}
               >
-                <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+                <Text
+                  style={[{ ...captionTextStyle, color: C.text, flex: 1 }, { numberOfLines: 1 }]}
+                >
                   {item().label}
                 </Text>
                 <Icon name="right" color={C.muted} />
@@ -328,12 +332,13 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
                     focusStyle={controlFocusStyle}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <View pointerEvents="none" style={{ minWidth: 0 }}>
+                    <View style={[{ minWidth: 0 }, { pointerEvents: 'none' }]}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                         <Text
-                          numberOfLines={1}
-                          ellipsizeMode="tail"
-                          style={{ ...captionTextStyle, color: C.text, minWidth: 0, flexShrink: 1 }}
+                          style={[
+                            { ...captionTextStyle, color: C.text, minWidth: 0, flexShrink: 1 },
+                            { numberOfLines: 1, textOverflow: 'ellipsis' },
+                          ]}
                         >
                           {name()}
                         </Text>
@@ -354,9 +359,10 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
                       </View>
                       <If when={name() !== id()}>
                         <Text
-                          numberOfLines={1}
-                          ellipsizeMode="tail"
-                          style={{ ...captionTextStyle, color: C.muted }}
+                          style={[
+                            { ...captionTextStyle, color: C.muted },
+                            { numberOfLines: 1, textOverflow: 'ellipsis' },
+                          ]}
                         >
                           {id()}
                         </Text>

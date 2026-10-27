@@ -63,26 +63,26 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
   if (platform.isTerminal)
     return (
       <Text
-        selectable={false}
-        pointerEvents="none"
         accessibilityElementsHidden
-        style={{
-          width: 16,
-          height: 16,
-          lineHeight: 16,
-          color: props.color,
-          textAlign: 'center',
-          flexShrink: 0,
-        }}
+        style={[
+          {
+            width: 16,
+            height: 16,
+            lineHeight: 16,
+            color: props.color,
+            textAlign: 'center',
+            flexShrink: 0,
+          },
+          { userSelect: 'none', pointerEvents: 'none' },
+        ]}
       >
         {glyphs[props.name]}
       </Text>
     );
   return (
     <Canvas
-      pointerEvents="none"
       accessibilityElementsHidden
-      style={{ width: 16, height: 16, flexShrink: 0 }}
+      style={[{ width: 16, height: 16, flexShrink: 0 }, { pointerEvents: 'none' }]}
       draw={(cx) => {
         cx.strokeStyle = props.color;
         cx.fillStyle = props.color;

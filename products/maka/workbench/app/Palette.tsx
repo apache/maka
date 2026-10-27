@@ -190,24 +190,26 @@ export function Palette(props: {
                     focusStyle={controlFocusStyle}
                     disabledStyle={controlDisabledStyle}
                   >
-                    <View pointerEvents="none" style={{ flex: 1, minWidth: 0 }}>
+                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
                       <Text
-                        numberOfLines={1}
-                        ellipsizeMode="tail"
-                        style={{
-                          ...secondaryTextStyle,
-                          color: C.text,
-                          fontSize: 14,
-                          fontWeight: '500',
-                        }}
+                        style={[
+                          {
+                            ...secondaryTextStyle,
+                            color: C.text,
+                            fontSize: 14,
+                            fontWeight: '500',
+                          },
+                          { numberOfLines: 1, textOverflow: 'ellipsis' },
+                        ]}
                       >
                         {entry().title}
                       </Text>
                       <If when={entry().detail}>
                         <Text
-                          numberOfLines={1}
-                          ellipsizeMode="tail"
-                          style={{ ...captionTextStyle, color: C.muted }}
+                          style={[
+                            { ...captionTextStyle, color: C.muted },
+                            { numberOfLines: 1, textOverflow: 'ellipsis' },
+                          ]}
                         >
                           {entry().detail}
                         </Text>
@@ -215,19 +217,21 @@ export function Palette(props: {
                     </View>
                     <If when={entry().hint}>
                       <Text
-                        pointerEvents="none"
-                        style={{
-                          ...captionTextStyle,
-                          color: C.muted,
-                          fontSize: 11,
-                          paddingHorizontal: 6,
-                          paddingVertical: 2,
-                          borderWidth: 1,
-                          borderColor: C.line,
-                          borderRadius: 4,
-                          backgroundColor: C.background,
-                          flexShrink: 0,
-                        }}
+                        style={[
+                          {
+                            ...captionTextStyle,
+                            color: C.muted,
+                            fontSize: 11,
+                            paddingHorizontal: 6,
+                            paddingVertical: 2,
+                            borderWidth: 1,
+                            borderColor: C.line,
+                            borderRadius: 4,
+                            backgroundColor: C.background,
+                            flexShrink: 0,
+                          },
+                          { pointerEvents: 'none' },
+                        ]}
                       >
                         {entry().hint}
                       </Text>

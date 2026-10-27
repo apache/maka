@@ -326,7 +326,7 @@ function App() {
             fontSize: 22,
             fontWeight: "700",
             transformOrigin: "left center",
-            transform: [{ scale: offset.interpolate({ inputRange: [0, 80], outputRange: [1, 0.8] }) }],
+            scale: offset.interpolate({ inputRange: [0, 80], outputRange: [1, 0.8] }),
           }}
         >
           Inbox
@@ -362,7 +362,7 @@ const header = offset.diffClamp(0, 56);
   <Scroll style={{ flex: 1 }} scrollValue={offset}>
     <View style={{ paddingTop: 56 }}>…</View>
   </Scroll>
-  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, transform: [{ translateY: header.mul(-1) }] }}>…</View>
+  <View style={{ position: "absolute", top: 0, left: 0, right: 0, height: 56, translate: [0, header.mul(-1)] }}>…</View>
 </View>
 ```
 
@@ -451,8 +451,8 @@ const pull = createAnimatedValue(0);
     …
   </Scroll>
   <View
-    pointerEvents="none"
     style={{
+      pointerEvents: "none",
       position: "absolute",
       top: 0,
       left: 0,

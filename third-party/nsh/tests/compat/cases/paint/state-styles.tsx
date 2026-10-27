@@ -3,7 +3,8 @@
 // JS: `activeStyle` while pressed, `hoverStyle` while a pointer is over it,
 // `focusStyle` while it has focus, `disabledStyle` while `disabled`, which
 // also takes the element's presses away (a press goes to the pressable
-// around it). Its script reports the states as a platform does and checks the styles
+// around it). Each takes the element's own style (a text's, its text
+// style). Its script reports the states as a platform does and checks the styles
 // mounted before, during and after each.
 import { Text, View, signal } from "nsh";
 import { Input } from "nsh/base";
@@ -21,6 +22,14 @@ function App() {
         onPress={() => presses.set(presses() + 1)}
       />
       <Text>Presses: {presses()}</Text>
+      <Text
+        testID="link"
+        style={{ color: "#3366ff" }}
+        activeStyle={{ color: "#ff0000" }}
+        onPress={() => presses.set(presses() + 1)}
+      >
+        Link
+      </Text>
       <View
         testID="hover"
         style={{ height: 40, backgroundColor: "#ffffff" }}

@@ -3,7 +3,7 @@
 //! The platforms' image decoders (ImageIO, `BitmapFactory`, WIC, GDK) do not
 //! read SVG, so every native backend hands sniffed SVG bytes to this module
 //! and draws the premultiplied RGBA [`Raster`] it gets back through its usual
-//! bitmap path (tint, blur and `resizeMode` included). One renderer, resvg,
+//! bitmap path (tint, blur and `objectFit` included). One renderer, resvg,
 //! draws them on every platform, so an SVG looks the same everywhere. The web
 //! runtime does not enable the feature: the browser draws SVG itself.
 //!

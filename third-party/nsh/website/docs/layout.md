@@ -14,11 +14,11 @@ The layout properties below are style properties. In Rust they are typed style m
 
 ## Flexbox
 
-A view lays out its children with flexbox. The defaults differ from the web's:
+A view lays out its children with flexbox. A view that sets no `display` stacks its children in a column; `display: "flex"` in a style makes a row unless `flexDirection` is set, exactly as in CSS and as Tailwind's `flex` class. Where nothing sets them, these defaults apply:
 
 | Property | NSH default | Web default |
 |---|---|---|
-| `flexDirection` | `"column"` | `row` |
+| `flexDirection` | `"column"` (a view that sets no `display`); `"row"` once `display: "flex"` is set | `row` |
 | `flexShrink` | `0` | `1` |
 | `alignContent` | `"flex-start"` (grids: `"normal"`) | `normal` |
 | `alignItems` | `"stretch"` | `stretch` |
@@ -47,7 +47,7 @@ view()
   <Image src={avatar} style={{ width: 40, height: 40, borderRadius: 20 }} />
   <View style={{ flex: 1, gap: 2 }}>
     <Text style={{ fontWeight: "600" }}>{props.name}</Text>
-    <Text style={{ color: "#6e7781" }} numberOfLines={1}>{props.message}</Text>
+    <Text style={{ numberOfLines: 1, color: "#6e7781" }}>{props.message}</Text>
   </View>
   <Text style={{ color: "#6e7781" }}>{props.time}</Text>
 </View>
@@ -67,7 +67,7 @@ view()
 
 `flex-start` and `flex-end` follow the flex direction; `start` and `end` follow the writing direction, as in CSS (right to left, `start` is the right side), and `self-start` / `self-end` the child's own.
 
-`flex` takes one number and is not the CSS shorthand: a positive number `n` means grow by `n`, shrink by 1 and start from a basis of 0, so `flex: 1` siblings (`.flex_1()` in Rust) share the space equally whatever their content; `flex: 0` (the default) sizes the view to its content; a negative number shrinks it by that much down to its minimum.
+`flex` is CSS's shorthand, as Tailwind's `flex-*` classes are: a number `n` means grow by `n`, shrink by 1 and start from a basis of 0, so `flex: 1` siblings (`.flex_1()` in Rust, `flex-1`) share the space equally whatever their content; `"none"` is `0 0 auto` (the view keeps its size), `"auto"` is `1 1 auto`, `"initial"` is `0 1 auto`, and grow, shrink and basis can be written out (`"2 0 50%"`, `"1 1 120px"`). As minimum sizes default to 0, `flex: 0` (`0 1 0`) shrinks a view to nothing unless `minWidth: "auto"` keeps its content's size.
 
 ```rust tabs
 view()
@@ -89,17 +89,17 @@ view()
 </View>
 ```
 
-Because minimum sizes default to 0, a `flex: 1` text in a row shrinks and wraps instead of pushing its siblings out.
+Because minimum sizes default to 0, a `flex: 1` text in a row shrinks and wraps instead of pushing its siblings out. `minWidth: "auto"` / `minHeight: "auto"` (`min-w-auto` / `min-h-auto`, `.min_w(auto())` in Rust) is CSS's automatic minimum: a shrinking item stops at its content's smallest size, the longest word of a text, as on the web.
 
 > [!NOTE]
-> `display: "flex"` in a style keeps the column default. Only Tailwind's `flex` class means a row, as in CSS ([Tailwind](./tailwind.md#what-differs-from-tailwind-on-the-web)); in Rust, `.flex_row()` sets the direction.
+> `display: "flex"` means a row, in a style, a class (`flex`) and Rust (`.flex()`) alike, unless a direction is set: `{ display: "flex", flexDirection: "column" }`, `flex flex-col`, `.flex().flex_col()`. A view without `display` needs nothing to be a column.
 
 ## Sizes
 
 | Property | Values | Rust |
 |---|---|---|
 | `width`, `height` | Points, a percentage of the parent (`"50%"`), or `"auto"` | `.w(px(120.0))`, `.h(relative(0.5))`, `.w_full()`, `.size(px(44.0))`, the steps `.w_10()`, ... |
-| `minWidth`, `maxWidth`, `minHeight`, `maxHeight` | Points or percentages | `.min_w(..)`, `.max_w(..)`, `.min_h(..)`, `.max_h(..)` |
+| `minWidth`, `maxWidth`, `minHeight`, `maxHeight` | Points or percentages; `minWidth` / `minHeight` also `"auto"`, the content's smallest size | `.min_w(..)`, `.max_w(..)`, `.min_h(..)`, `.max_h(..)` |
 | `aspectRatio` | Width divided by height: `1`, `16 / 9` | `.aspect_ratio(16.0 / 9.0)`, `.aspect_square()` |
 | `padding`, `paddingHorizontal`, `paddingVertical`, `paddingTop`, ... | Points or percentages | `.p(..)`, `.px(..)`, `.py(..)`, `.pt(..)`, ..., and the steps `.p_4()`, `.px_2()`, ... |
 | `margin`, `marginHorizontal`, `marginVertical`, `marginTop`, ... | Points, percentages, or `"auto"` | `.m(..)`, `.mx(..)`, `.my(..)`, `.mt(..)`, ..., `.mx(auto())` |
@@ -251,8 +251,8 @@ The root view covers the whole screen, under the status bar and the home indicat
 The app's layout direction follows the system language, and a view's `direction` style (`"ltr"`, `"rtl"` or `"inherit"`; `.direction(LayoutDirection::Rtl)` in Rust) sets the direction of its subtree. When the app lays out right to left:
 
 - rows run from the right;
-- `left` and `right` style keys (margins, paddings, positions, borders, corners) swap sides, as in React Native, while Tailwind's physical classes keep theirs, as in a browser: `pl-4`, `ml-2`, `left-0`, `border-l`, `rounded-tl-lg` and `text-left` stay on the left (`ps-4`, `ms-2`, `start-0`, `border-s`, `rounded-ss-lg` and `text-start` follow the direction);
-- `start` and `end` properties always mean the leading and trailing side: `marginStart`, `marginEnd`, `paddingStart`, `paddingEnd`, `start`, `end`, `borderStartWidth`, `borderTopStartRadius`, ... (`.ms(..)`, `.me(..)`, `.ps(..)`, `.pe(..)`, `.border_s(..)`, `.rounded_ss(..)`, ... in Rust);
+- `left` and `right` keep their sides, as in a browser, in style keys and classes alike: `paddingLeft`, `marginLeft`, `left`, `borderLeftWidth`, `borderTopLeftRadius`, `textAlign: "left"` and `pl-4`, `ml-2`, `left-0`, `border-l`, `rounded-tl-lg`, `text-left` stay on the left;
+- the logical properties follow the direction, inline start being the right side: `marginStart`, `marginEnd`, `paddingStart`, `paddingEnd`, `start`, `end`, `borderStartWidth`, `borderEndColor`, `borderTopStartRadius`, ..., `textAlign: "start"` / `"end"` (`ps-4`, `ms-2`, `start-0`, `border-s`, `rounded-ss-lg`, `text-start` as classes; `.ms(..)`, `.me(..)`, `.ps(..)`, `.pe(..)`, `.border_s(..)`, `.rounded_ss(..)`, ... in Rust); `marginHorizontal` and `paddingHorizontal` set both sides;
 - text with `textAlign: "auto"` aligns right, and native controls mirror.
 
 ```rust tabs

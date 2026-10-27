@@ -364,11 +364,21 @@ pub(crate) fn test_paste(
     let item = |kind: &str, value: &AnyObject| {
         NSDictionary::from_slices(&[&*NSString::from_str(kind)], &[value])
     };
+    // Text and its HTML are one item, as a browser copies them.
+    let mut kinds = Vec::new();
+    let mut values: Vec<Retained<AnyObject>> = Vec::new();
     if !content.text.is_empty() {
-        items.push(item(
-            "public.utf8-plain-text",
-            &NSString::from_str(&content.text),
-        ));
+        kinds.push(NSString::from_str("public.utf8-plain-text"));
+        values.push(NSString::from_str(&content.text).into());
+    }
+    if !content.html.is_empty() {
+        kinds.push(NSString::from_str("public.html"));
+        values.push(NSString::from_str(&content.html).into());
+    }
+    if !kinds.is_empty() {
+        let kinds: Vec<&NSString> = kinds.iter().map(|k| &**k).collect();
+        let values: Vec<&AnyObject> = values.iter().map(|v| &**v).collect();
+        items.push(NSDictionary::from_slices(&kinds, &values));
     }
     for file in &content.files {
         let kind = match file.mime.as_str() {
@@ -750,7 +760,8 @@ impl Input {
             TextAlign::Center => NSTextAlignment::Center,
             TextAlign::Right => NSTextAlignment::Right,
         };
-        let tint = config.selection_color.map(ui_color);
+        // UIKit tints the caret and the selection with one color.
+        let tint = config.caret_color.or(config.selection_color).map(ui_color);
         match &self.editor {
             Editor::Line(field) => {
                 field.setFont(Some(&font));

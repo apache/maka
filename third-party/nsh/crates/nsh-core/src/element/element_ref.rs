@@ -116,12 +116,16 @@ impl ElementRef {
         self.reach(|node, executor| executor.act(Action::Command(node, command)));
     }
 
-    /// Focuses an input (showing the keyboard).
+    /// Focuses an input (showing the keyboard), or gives a view that takes
+    /// presses the keyboard focus where Tab stops at it (macOS, the web),
+    /// as Tab does: `focus:` styles, `on_focus`. A view `focusable(false)`,
+    /// disabled or hidden stays unfocused.
     pub fn focus(&self) {
         self.send(Command::Focus);
     }
 
-    /// Unfocuses an input.
+    /// Unfocuses an input, or takes the keyboard focus off a view that
+    /// takes presses.
     pub fn blur(&self) {
         self.send(Command::Blur);
     }

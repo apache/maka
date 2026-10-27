@@ -683,10 +683,15 @@ export function InteractionComposer({
               <View style={{ gap: 16 }}>
                 <If when={request()?.kind === 'service_approval'}>
                   <View style={{ gap: 4 }}>
-                    <Text selectable style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
+                    <Text
+                      style={[
+                        { ...bodyTextStyle, color: C.text, fontWeight: '600' },
+                        { userSelect: 'text' },
+                      ]}
+                    >
                       {approvalRequest()?.toolName}
                     </Text>
-                    <Text selectable style={{ ...codeTextStyle, color: C.muted }}>
+                    <Text style={[{ ...codeTextStyle, color: C.muted }, { userSelect: 'text' }]}>
                       {`${approvalRequest()?.service}.${approvalRequest()?.method}`}
                     </Text>
                   </View>
@@ -701,7 +706,7 @@ export function InteractionComposer({
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr('Original arguments')}
                     </Text>
-                    <Text selectable style={{ ...codeTextStyle, color: C.text }}>
+                    <Text style={[{ ...codeTextStyle, color: C.text }, { userSelect: 'text' }]}>
                       {argumentsText()}
                     </Text>
                   </View>
@@ -728,7 +733,7 @@ export function InteractionComposer({
                   </If>
                 </If>
                 <If when={request()?.kind === 'permissions'}>
-                  <Text selectable style={{ ...bodyTextStyle, color: C.text }}>
+                  <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
                     {permissionsRequest()?.request.reason}
                   </Text>
                   <If when={permissionsRequest()?.request.command}>
@@ -740,10 +745,12 @@ export function InteractionComposer({
                         borderRadius: 8,
                       }}
                     >
-                      <Text selectable style={{ ...codeTextStyle, color: C.text }}>
+                      <Text style={[{ ...codeTextStyle, color: C.text }, { userSelect: 'text' }]}>
                         {permissionsRequest()?.request.command?.command}
                       </Text>
-                      <Text selectable style={{ ...captionTextStyle, color: C.muted }}>
+                      <Text
+                        style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}
+                      >
                         {tr('Working directory: {path}', {
                           path: permissionsRequest()?.request.command?.cwd ?? '',
                         })}
@@ -754,7 +761,7 @@ export function InteractionComposer({
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr('Requested access')}
                     </Text>
-                    <Text selectable style={{ ...bodyTextStyle, color: C.text }}>
+                    <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
                       {permissionsRequest()
                         ? interactionPermissions(permissionsRequest()!.request.permissions)
                         : ''}
@@ -800,8 +807,10 @@ export function InteractionComposer({
                     {(question, index) => (
                       <View style={{ gap: 8 }}>
                         <Text
-                          selectable
-                          style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}
+                          style={[
+                            { ...bodyTextStyle, color: C.text, fontWeight: '600' },
+                            { userSelect: 'text' },
+                          ]}
                         >{`${index() + 1}. ${question().question}`}</Text>
                         <Each of={question().options} key="index">
                           {(option) => (
@@ -837,7 +846,12 @@ export function InteractionComposer({
                                 checked={answers()[index()]?.value === option().label}
                                 disabled={blocked()}
                               />
-                              <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                              <View
+                                style={[
+                                  { flex: 1, minWidth: 0, gap: 4 },
+                                  { pointerEvents: 'none' },
+                                ]}
+                              >
                                 <Text
                                   style={{ ...bodyTextStyle, color: blocked() ? C.muted : C.text }}
                                 >
@@ -930,14 +944,16 @@ export function InteractionComposer({
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Icon name="check" color={C.accent} />
                 <Text
-                  selectable
-                  style={{
-                    ...bodyTextStyle,
-                    flex: 1,
-                    minWidth: 0,
-                    color: C.text,
-                    fontWeight: '600',
-                  }}
+                  style={[
+                    {
+                      ...bodyTextStyle,
+                      flex: 1,
+                      minWidth: 0,
+                      color: C.text,
+                      fontWeight: '600',
+                    },
+                    { userSelect: 'text' },
+                  ]}
                 >
                   {record()?.outcome
                     ? renderText(interactionOutcomeSummary(record()!.outcome!))
@@ -947,7 +963,7 @@ export function InteractionComposer({
             </View>
           </If>
           <If when={error()}>
-            <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+            <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
               {error()}
             </Text>
           </If>

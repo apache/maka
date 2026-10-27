@@ -222,8 +222,10 @@ export function SessionActions(props: {
                 </Text>
               </Button>
               <View
-                pointerEvents="none"
-                style={{ height: 1, backgroundColor: C.line, margin: 4 }}
+                style={[
+                  { height: 1, backgroundColor: C.line, margin: 4 },
+                  { pointerEvents: 'none' },
+                ]}
               />
               <Button
                 disabled={pending()}
@@ -244,7 +246,12 @@ export function SessionActions(props: {
                 </Text>
               </Button>
               <If when={renderText(error())}>
-                <Text selectable style={{ ...bodyTextStyle, color: C.danger, padding: 8 }}>
+                <Text
+                  style={[
+                    { ...bodyTextStyle, color: C.danger, padding: 8 },
+                    { userSelect: 'text' },
+                  ]}
+                >
                   {renderText(error())}
                 </Text>
               </If>
@@ -300,8 +307,10 @@ export function SessionActions(props: {
                 <Icon name="back" color={C.secondary} />
               </Button>
               <Text
-                numberOfLines={2}
-                style={{ flex: 1, color: C.text, fontSize: 18, lineHeight: 24, fontWeight: '600' }}
+                style={[
+                  { flex: 1, color: C.text, fontSize: 18, lineHeight: 24, fontWeight: '600' },
+                  { numberOfLines: 2 },
+                ]}
               >
                 {page() === 'rename'
                   ? tr('Rename conversation')
@@ -326,17 +335,17 @@ export function SessionActions(props: {
             </View>
             <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
               <View style={{ gap: 8 }}>
-                <Text selectable style={{ color: C.text }}>
+                <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
                   {session().title || tr('Untitled conversation')}
                 </Text>
-                <Text numberOfLines={2} style={{ color: C.muted }}>
+                <Text style={[{ color: C.muted }, { numberOfLines: 2 }]}>
                   {session().workspace.path}
                 </Text>
                 <If when={session().archived}>
                   <Text style={{ color: C.warning }}>{tr('Archived conversation')}</Text>
                 </If>
                 <If when={renderText(error())}>
-                  <Text selectable style={{ color: C.danger }}>
+                  <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
                     {renderText(error())}
                   </Text>
                 </If>

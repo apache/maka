@@ -7,7 +7,7 @@ use crate::{
     js::host::HostProps,
     overlay::{Align, HintWatchToken, OverlayAnchor, Placement, TooltipContent},
     props::{AccessibilityProp, EdgeInsets, LayoutAnimation, PointerEvents},
-    style::{Color, EllipsizeMode, Style, StylePatch},
+    style::{Color, Style, StylePatch},
 };
 
 /// Identifier of a node, assigned by the JS renderer.
@@ -430,6 +430,10 @@ pub struct TouchEvent {
 pub struct PasteEvent {
     /// The plain text, empty when it held none.
     pub text: String,
+    /// The same content as HTML (`text/html`), empty when the clipboard
+    /// held none: what a browser, an office suite or a rich text editor
+    /// copied, with its formatting.
+    pub html: String,
     /// Files with their bytes: images (a screenshot, an image copied from a
     /// page or an app), in the platform's order.
     pub files: Vec<PastedFile>,
@@ -445,11 +449,15 @@ impl EventPayload {
     pub fn into_paste(self) -> EventPayload {
         match self {
             EventPayload::Map(fields) => {
-                let text = fields.into_iter().find_map(|(k, v)| match (k, v) {
-                    ("text", PayloadValue::Str(text)) => Some(text),
-                    _ => None,
-                });
-                EventPayload::Paste(Box::new(PasteEvent::new(text.unwrap_or_default())))
+                let mut paste = PasteEvent::default();
+                for (key, value) in fields {
+                    match (key, value) {
+                        ("text", PayloadValue::Str(text)) => paste.text = text,
+                        ("html", PayloadValue::Str(html)) => paste.html = html,
+                        _ => {}
+                    }
+                }
+                EventPayload::Paste(Box::new(paste))
             }
             EventPayload::None => EventPayload::Paste(Box::default()),
             payload => payload,
@@ -468,7 +476,10 @@ impl PasteEvent {
 
     /// Whether it holds nothing.
     pub fn is_empty(&self) -> bool {
-        self.text.is_empty() && self.files.is_empty() && self.uris.is_empty()
+        self.text.is_empty()
+            && self.html.is_empty()
+            && self.files.is_empty()
+            && self.uris.is_empty()
     }
 }
 
@@ -1889,9 +1900,6 @@ pub enum Prop {
     /// `src`: a URL, `asset:/path`, or an imported asset.
     #[prop(js = "src", on = IMAGE, shared)]
     Source(Option<ImageSource>),
-    /// `resizeMode`: how an image (or a video) fits its box.
-    #[prop(js = "resizeMode", on = IMAGE | VIDEO)]
-    ResizeMode(ResizeMode),
     /// `horizontal`: scrolls sideways.
     #[prop(js = "horizontal", on = SCROLL | LIST)]
     Horizontal(bool),
@@ -1991,12 +1999,6 @@ pub enum Prop {
         Option<crate::animation::NodeId>,
         Option<crate::animation::NodeId>,
     ),
-    /// `numberOfLines`: the most lines shown; 0 (default) is unlimited.
-    #[prop(js = "numberOfLines", on = TEXT)]
-    NumberOfLines(u32),
-    /// `ellipsizeMode`: where text that does not fit `numberOfLines` is cut.
-    #[prop(js = "ellipsizeMode", on = TEXT)]
-    EllipsizeMode(EllipsizeMode),
     /// `value`: the text, controlled by JS.
     #[prop(js = "value", on = INPUT)]
     Value(String),
@@ -2067,10 +2069,13 @@ pub enum Prop {
     /// `inputAccessoryViewID`).
     #[prop(js = "nativeID")]
     NativeId(Option<Box<str>>),
-    /// An input's caret and selection, the highlight of a `selectable`
-    /// text's selection (Rust components; TS sets the `selectionColor`
-    /// style key or `selection:bg-*`).
+    /// The highlight of an input's or a selectable text's selection (Rust
+    /// components; TS sets the `selectionColor` style key or
+    /// `selection:bg-*`).
     SelectionColor(Option<Color>),
+    /// An input's caret (Rust components; TS sets the `caretColor` style
+    /// key or `caret-*`).
+    CaretColor(Option<Color>),
     /// `autoComplete` (iOS: also `textContentType`): what an input holds, for
     /// autofill (React Native's values, e.g. "username", "current-password",
     /// "new-password", "one-time-code", "email", "tel", "postal-code", "cc-number",
@@ -2084,9 +2089,9 @@ pub enum Prop {
     /// `keyboardDismissMode`: whether dragging dismisses the keyboard.
     #[prop(js = "keyboardDismissMode", on = SCROLL | LIST)]
     KeyboardDismissMode(KeyboardDismissMode),
-    /// `pointerEvents`: touch handling of the view and its children (React Native
-    /// semantics).
-    #[prop(js = "pointerEvents")]
+    /// Touch handling of the view and its children (React Native
+    /// semantics), which wins over the style's `pointerEvents` unless
+    /// `auto`. Set by the core (a tooltip's overlay), never by JS.
     PointerEvents(PointerEvents),
     /// `hitSlop`: extends the touch area beyond the bounds.
     #[prop(js = "hitSlop", with = crate::js::host_values::hit_slop, reset = Prop::HitSlop(EdgeInsets::default()), ts = "number | Partial<Edges>")]
@@ -2105,24 +2110,24 @@ pub enum Prop {
     PanScrollHandoff(bool),
     /// `activeStyle`: the style while pressed (and not disabled), over the
     /// view's style; applied natively, no JS round trip.
-    ActiveStyle(Option<Arc<StylePatch>>),
+    ActiveStyle(Option<std::rc::Rc<StylePatch>>),
     /// `hoverStyle`: the style while a pointer is over the view (and it is
     /// not disabled).
-    HoverStyle(Option<Arc<StylePatch>>),
+    HoverStyle(Option<std::rc::Rc<StylePatch>>),
     /// `focusStyle`: the style while the view has focus (and is not
     /// disabled).
-    FocusStyle(Option<Arc<StylePatch>>),
+    FocusStyle(Option<std::rc::Rc<StylePatch>>),
     /// `disabledStyle`: the style while `disabled`, over every other state's.
-    DisabledStyle(Option<Arc<StylePatch>>),
+    DisabledStyle(Option<std::rc::Rc<StylePatch>>),
     /// `selectedStyle`: the style while `accessibilityState.selected` (a
     /// `Button`'s `selected`), and not disabled.
-    SelectedStyle(Option<Arc<StylePatch>>),
+    SelectedStyle(Option<std::rc::Rc<StylePatch>>),
     /// `checkedStyle`: the style while `accessibilityState.checked` (true,
     /// not mixed: a checkbox's, a switch's, a radio's), and not disabled.
-    CheckedStyle(Option<Arc<StylePatch>>),
+    CheckedStyle(Option<std::rc::Rc<StylePatch>>),
     /// `indeterminateStyle`: the style while `accessibilityState.checked`
     /// is mixed (a checkbox's `indeterminate`), and not disabled.
-    IndeterminateStyle(Option<Arc<StylePatch>>),
+    IndeterminateStyle(Option<std::rc::Rc<StylePatch>>),
     /// The states a part of a control shows its classes and state styles
     /// as its control has them ([`crate::tailwind::state`] bits: `checked`,
     /// `indeterminate`, `disabled`): a switch's thumb styled `checked:`
@@ -2133,14 +2138,14 @@ pub enum Prop {
     ProjectedStates(u8),
     /// `headerStyle` of a page: `backgroundColor`, `color` (the title's) and
     /// `tintColor` (the buttons') of its header.
-    HeaderStyle(Option<Arc<StylePatch>>),
+    HeaderStyle(Option<std::rc::Rc<StylePatch>>),
     /// `headerClass` of a page: the header's colors as classes (`bg-*`,
     /// `text-*`, `tint-*`); `headerStyle` wins over them.
     HeaderClass(Box<str>),
     /// A page header's colors as typed styles lowered as classes are (Rust:
     /// `Screen::header_style_with`), in place of `headerClass`;
     /// `headerStyle` wins over them. Set by components, never by JS.
-    HeaderClassList(Option<Arc<crate::tailwind::ClassList>>),
+    HeaderClassList(Option<std::rc::Rc<crate::tailwind::ClassList>>),
     /// The surface lays out right to left (on the root, from the user's
     /// language).
     #[prop(js = "layoutDirectionRtl", internal)]
@@ -2232,11 +2237,6 @@ pub enum Prop {
     /// `maxFontSizeMultiplier`: the upper bound of the system scale (0 is none).
     #[prop(js = "maxFontSizeMultiplier", min = 0, on = TEXT | INPUT)]
     MaxFontSizeMultiplier(f32),
-    /// `selectable`: a long press offers to copy the text; `false` also
-    /// keeps it from being selected where text is by default (desktop
-    /// browsers), unset leaves it to the platform.
-    #[prop(js = "selectable", on = TEXT, shared)]
-    Selectable(Option<bool>),
     /// `textSource`: the original source of this text. Local segment ranges are
     /// UTF-16 offsets; source offsets are absolute UTF-8 byte offsets. The core
     /// validates ranges against the flattened text before using them.
@@ -2348,7 +2348,7 @@ pub enum NativeProp {
     /// `repeat` (videos): plays again from the start at the end.
     #[prop(js = "repeat", on = VIDEO)]
     Repeat(bool),
-    /// Video `resizeMode`.
+    /// How a video fits its box (`objectFit`, a Rust `resize_mode`).
     #[prop(reset = NativeProp::VideoResizeMode(ResizeMode::Contain))]
     VideoResizeMode(ResizeMode),
     /// `controls` (videos): the platform's playback controls.

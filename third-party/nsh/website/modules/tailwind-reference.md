@@ -50,9 +50,9 @@ view()
 
 - **Later wins.** Among utilities of the same variant level, the one later in the string wins: `"p-4 p-2"` is `p-2`. A component can take a `class` prop and append it to its own classes without `tailwind-merge`.
 - **Variants apply after plain utilities**, in Tailwind's variant order: `group-*:` (by their state, then by group name), `selection:`, `placeholder:`, position (`first:` ...), `checked:`, `indeterminate:`, `selected:`, `focus-within:`, `hover:`, `focus:`, `focus-visible:`, `active:`, `enabled:`, `disabled:`, motion, `max-*:` breakpoints widest first, then breakpoints ascending, orientation, direction, `dark:`, then platform. A class's highest variant decides, then its next highest, and one more variant comes later (`dark:hover:` after `dark:`), as Tailwind sorts them. So `"active:bg-red-500 bg-blue-500"` is red while pressed.
-- **`style` wins over classes.** The inline `style` is applied on top of the resolved classes. An important utility (`!p-4` or `p-4!`) wins over the inline style too.
+- **`style` wins over classes.** The inline `style` is applied on top of the resolved classes. A style key is the CSS property of its name, the one the utilities set, so it replaces that property and nothing else: `style={{ paddingLeft: 8 }}` beats `pl-4` and keeps `pr-4`. An important utility (`!p-4` or `p-4!`) wins over the inline style too.
 - **Text styles inherit.** Text utilities on a view (`text-white`, `font-bold`, `text-center`, ...) pass to the `<Text>` and `<Input>` elements inside it, as in CSS.
-- **Display is CSS's.** `flex` and `inline-flex` make a row unless a direction utility says otherwise, wherever it is in the string (`flex-col flex` is a column). Views without `flex` keep NSH's column default.
+- **Display is CSS's.** `flex` and `inline-flex` make a row unless a direction utility says otherwise, wherever it is in the string (`flex-col flex` is a column). A style's `display: "flex"` is a row in the same way; views that set no display keep NSH's column default.
 
 ## Units and the theme
 
@@ -88,7 +88,7 @@ Every color utility takes:
 | An arbitrary color | `bg-[#0ea5e9]`, `border-[rgb(0_0_0_/_0.1)]`, `text-[oklch(70%_0.2_50)]` |
 | An arbitrary color with a modifier | `bg-[rgb(0_0_255)]/25` |
 
-`currentColor` and `inherit` are not color values. As in a browser, a border, an outline or a ring without a color class is drawn in the element's text color, its own or the one it inherits (`<View class="text-white"><View class="border ring-2" /></View>` draws both white); a border set in the `style` prop is black by default.
+`currentColor` and `inherit` are not color values. As in a browser, a border, an outline or a ring without a color class is drawn in the element's text color, its own or the one it inherits (`<View class="text-white"><View class="border ring-2" /></View>` draws both white), and so is a border whose width the `style` prop sets without a color.
 
 ## Arbitrary values
 
@@ -173,10 +173,10 @@ Scrolling is an element, not a class: `overflow-auto` and `overflow-scroll` are 
 |---|---|
 | `p-<n>`, `px-<n>`, `py-<n>` | `padding`, `paddingHorizontal`, `paddingVertical` |
 | `pt-<n>`, `pr-<n>`, `pb-<n>`, `pl-<n>` | `paddingTop` / `Right` / `Bottom` / `Left` |
-| `ps-<n>`, `pe-<n>` | `paddingStart`, `paddingEnd` |
+| `ps-<n>`, `pe-<n>` | `paddingStart`, `paddingEnd` (direction-aware) |
 | `m-<n>`, `mx-<n>`, `my-<n>` | `margin`, `marginHorizontal`, `marginVertical` |
 | `mt-<n>`, `mr-<n>`, `mb-<n>`, `ml-<n>` | `marginTop` / `Right` / `Bottom` / `Left` |
-| `ms-<n>`, `me-<n>` | `marginStart`, `marginEnd` |
+| `ms-<n>`, `me-<n>` | `marginStart`, `marginEnd` (direction-aware) |
 
 ## Sizing
 
@@ -242,17 +242,16 @@ Container widths (points): `3xs` 256, `2xs` 288, `xs` 320, `sm` 384, `md` 448, `
 | Class | Sets |
 |---|---|
 | `text-left`, `text-center`, `text-right`, `text-justify` | `textAlign` |
-| `text-start` | `textAlign: "auto"` |
+| `text-start`, `text-end` | `textAlign: "start"` / `"end"`: the start or end of the line in the layout direction |
 | `align-baseline`, `align-text-top`, `align-text-bottom`, `align-middle` | `verticalAlign` (views and images inside a text) |
-| `text-end` | `textAlign: "right"` |
 | `uppercase`, `lowercase`, `capitalize`, `normal-case` | `textTransform` |
 | `truncate` | one line, tail ellipsis, no wrapping, `overflow: hidden` (on a view: its texts do not wrap) |
-| `line-clamp-<n>`, `line-clamp-none` | `numberOfLines` (`none` removes the limit) |
-| `text-ellipsis`, `text-clip` | `ellipsizeMode` `"tail"` / `"clip"` |
+| `line-clamp-<n>`, `line-clamp-none` | `numberOfLines` (`none` shows every line) |
+| `text-ellipsis`, `text-clip` | `textOverflow: "ellipsis"` / `"clip"` |
 | `whitespace-nowrap`, `text-nowrap` | lines never wrap; on a view, the lines of the texts in it (inherited, as CSS's `white-space`) |
 | `whitespace-normal`, `text-wrap`, `text-balance`, `text-pretty` | lines wrap (balancing is not done) |
-| `select-text`, `select-none` | `selectable`; on a view, of the texts in it that set none |
-| `select-auto` | the `selectable` of the view around it, as CSS's `user-select: auto` (`select-none md:select-auto`) |
+| `select-text`, `select-none` | `userSelect: "text"` / `"none"`; on a view, of the texts in it that set none |
+| `select-auto` | `userSelect: "auto"`: the view around it decides, as CSS's `user-select: auto` (`select-none md:select-auto`) |
 
 ### Decoration and shadow
 
@@ -320,7 +319,7 @@ view()
 | `border-none`, `border-hidden` | `borderStyle: "none"` / `"hidden"`: no border whatever the width classes, in any order (`md:border-solid` shows it again) |
 | `rounded`, `rounded-<size>`, `rounded-none`, `rounded-full`, `rounded-[<length>]` | `borderRadius` (bare: `sm`) |
 | `rounded-t-`, `-r-`, `-b-`, `-l-`, `-tl-`, `-tr-`, `-br-`, `-bl-` | the matching corners |
-| `rounded-s-`, `-e-`, `-ss-`, `-se-`, `-es-`, `-ee-` | start / end corners (direction-aware) |
+| `rounded-s-`, `-e-`, `-ss-`, `-se-`, `-es-`, `-ee-` | start / end corners (direction-aware): `borderTopStartRadius`, `borderTopEndRadius`, `borderBottomStartRadius`, `borderBottomEndRadius` |
 | `outline`, `outline-<n>`, `outline-[<length>]` | `outlineWidth` (bare: 1), solid unless a style class is anywhere in the string (`outline-dashed outline-2` is dashed, `outline-none outline-2` draws nothing) |
 | `outline-<color>` | `outlineColor` |
 | `outline-solid`, `outline-dashed`, `outline-dotted`, `outline-none`, `outline-hidden` | `outlineStyle`; a style alone is CSS's medium width, 3 points |
@@ -376,18 +375,18 @@ Shadows, rings and inset shadows combine into one `boxShadow` list, as in CSS. A
 
 | Class | Sets |
 |---|---|
-| `translate-x-<n>`, `translate-y-<n>`, `translate-<n>` | translation (spacing, `full`, fractions of the element's own size: `-translate-x-1/2`, arbitrary) |
-| `rotate-<deg>`, `rotate-[<angle>]` | rotation (CSS's `rotate`) |
+| `translate-x-<n>`, `translate-y-<n>`, `translate-<n>` | `translate` (spacing, `full`, fractions of the element's own size: `-translate-x-1/2`, arbitrary) |
+| `rotate-<deg>`, `rotate-[<angle>]` | `rotate` |
 | `rotate-x-<deg>`, `rotate-y-<deg>`, `rotate-z-<deg>` | 3D rotation (in `transform`, after the translation, the rotation and the scale) |
-| `scale-<pct>`, `scale-x-<pct>`, `scale-y-<pct>`, `scale-[<factor>]` | scale: `scale-95` = 0.95, `-scale-x-100` mirrors |
-| `skew-<deg>`, `skew-x-<deg>`, `skew-y-<deg>` | skew (not on Android) |
+| `scale-<pct>`, `scale-x-<pct>`, `scale-y-<pct>`, `scale-[<factor>]` | `scale`: `scale-95` = 0.95, `-scale-x-100` mirrors |
+| `skew-<deg>`, `skew-x-<deg>`, `skew-y-<deg>` | skew, in `transform` (not on Android) |
 | `perspective-dramatic` (100), `-near` (300), `-normal` (500), `-midrange` (800), `-distant` (1200), `perspective-[<length>]`, `perspective-none` | depth for the 3D rotations of the element's children, seen from its center (CSS's `perspective`: `<View class="perspective-near"><View class="rotate-y-45" /></View>`) |
 | `origin-center`, `-top`, `-top-right`, `-right`, `-bottom-right`, `-bottom`, `-bottom-left`, `-left`, `-top-left`, `origin-[<value>]` | `transformOrigin` |
 | `backface-hidden`, `backface-visible` | `backfaceVisibility` |
 | `transform-none` | clears the 3D rotations and the skews (CSS's `transform: none`) |
 | `translate-none`, `rotate-none`, `scale-none` | clears the translation, the rotation, the scale |
 
-Transform utilities compose like CSS: `translate-*`, `rotate-*` and `scale-*` combine regardless of order. `transform`, `transform-gpu`, `transform-cpu` and `transform-flat` are accepted and do nothing: NSH composes every transform alike, flat. Translations by a fraction of the size are resolved against the element's frame and follow it when it resizes.
+Transform utilities compose like CSS: `translate-*`, `rotate-*` and `scale-*` set the `translate`, `rotate` and `scale` properties and combine regardless of order, then `transform` applies (`rotate-x-*`, `skew-*`). The `style` prop's keys of the same names replace only their own property: `style={{ scale: 1.1 }}` replaces `scale-95` and keeps `rotate-3`. `transform`, `transform-gpu`, `transform-cpu` and `transform-flat` are accepted and do nothing: NSH composes every transform alike, flat. Translations by a fraction of the size are resolved against the element's frame and follow it when it resizes.
 
 ## Transitions and animation
 
@@ -408,7 +407,7 @@ Transitions run on the UI thread when a value changes, including when a variant 
 
 | Class | Sets |
 |---|---|
-| `pointer-events-none`, `pointer-events-auto` | whether the view is a target for touches and the pointer, inherited as in CSS: inside a `pointer-events-none` view, a `pointer-events-auto` one is a target again (the `pointerEvents` prop keeps its own meaning: `"none"` takes the whole subtree out) |
+| `pointer-events-none`, `pointer-events-auto` | `pointerEvents: "none"` / `"auto"`: whether the view is a target for touches and the pointer, inherited as in CSS: inside a `pointer-events-none` view, a `pointer-events-auto` one is a target again |
 | `cursor-<name>`, `cursor-[<name>]` | `cursor`: `cursor-pointer`, `cursor-grab`, `cursor-not-allowed`, ... (every CSS cursor keyword) |
 | `select-none`, `select-text`, `select-auto` | text selection (see Typography) |
 
@@ -424,7 +423,7 @@ Transitions run on the UI thread when a value changes, including when a variant 
 
 | Class | Sets |
 |---|---|
-| `object-cover`, `object-contain`, `object-fill`, `object-none`, `object-scale-down` | `resizeMode` (`fill` stretches, `none` is `"center"`: natural size, placed at `objectPosition`, `scale-down` is `"scale-down"`: the same, shrunk to fit where larger) |
+| `object-cover`, `object-contain`, `object-fill`, `object-none`, `object-scale-down` | `objectFit` (`fill` stretches, `none` keeps the natural size, placed at `objectPosition`, `scale-down` is the same, shrunk to fit where larger); images and videos |
 | `object-top`, `object-bottom`, `object-left`, `object-right`, `object-center`, `object-top-left`, `object-top-right`, `object-bottom-left`, `object-bottom-right`, `object-[<position>]` | `objectPosition` (`object-left-top`, ... are the same as `object-top-left`, ...) |
 | `tint-<color>` | `tintColor` (recolors template images) |
 

@@ -1342,6 +1342,7 @@ pub unsafe extern "C" fn nsh_paste(
             .to_owned()
     };
     let mut paste = nsh_core::PasteEvent::new(text(&value, "text"));
+    paste.html = text(&value, "html");
     let mut at = 0usize;
     for file in value
         .get("files")

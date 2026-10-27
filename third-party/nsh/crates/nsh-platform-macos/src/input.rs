@@ -814,6 +814,46 @@ pub(crate) fn focus_path(surface: &Surface) -> Vec<NodeId> {
     path
 }
 
+/// `focus()` on a view that is not an input: the keyboard focus moves to
+/// it as Tab moves it there (its `becomeFirstResponder` sets `focus:` and
+/// reports `onFocus`), if it is a stop of Tab ([`is_key_stop`]).
+pub(crate) fn focus_control(surface: &Surface, view: &NshView) {
+    if !is_key_stop(view) || has_key_focus(view) {
+        return;
+    }
+    let Some(window) = view.ns().window() else {
+        return;
+    };
+    // A field that edits keeps the focus while a click is handled (the
+    // view refuses it then): the window takes it first, as `blur()` does.
+    if crate::text_input::editing(surface) {
+        window.makeFirstResponder(None);
+    }
+    window.makeFirstResponder(Some(view.ns()));
+}
+
+/// `blur()` on a view that is not an input and has the keyboard focus:
+/// the surface's root takes it, as when an input is blurred.
+pub(crate) fn blur_control(surface: &Surface, view: &NshView) {
+    if let Some(window) = view.ns().window()
+        && has_key_focus(view)
+    {
+        window.makeFirstResponder(Some(surface.root.ns()));
+    }
+}
+
+/// Whether `view` itself is its window's first responder.
+fn has_key_focus(view: &NshView) -> bool {
+    view.ns()
+        .window()
+        .and_then(|window| window.firstResponder())
+        .is_some_and(|responder| {
+            responder
+                .downcast_ref::<objc2_app_kit::NSView>()
+                .is_some_and(|v| v == view.ns())
+        })
+}
+
 /// Enter or Space addressed to a focused control inside the current modal.
 /// The keymap leaves these keys to the responder so a global Enter binding
 /// cannot activate an unrelated control underneath keyboard focus.

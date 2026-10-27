@@ -245,7 +245,7 @@ const styles = {
     borderRadius: 12,
     backgroundColor: "#ffffff",
     ...platform.select({
-      ios: { shadowColor: "#000000", shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 } },
+      ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.12)" },
       android: { borderWidth: 1, borderColor: "#e5e7eb" },
     }),
   },

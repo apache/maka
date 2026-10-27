@@ -57,7 +57,7 @@ function NavButton(props: { flip?: boolean; enabled: boolean; label: string; onP
           borderColor: colors.border,
           alignItems: "center",
           justifyContent: "center",
-          transform: props.flip ? [{ rotate: "180deg" }] : [],
+          transform: props.flip ? "rotate(180deg)" : "none",
         }}
       >
         <Icon name="chevron" size={18} tint={colors.text} />
@@ -95,7 +95,7 @@ function Site() {
         }}
       >
         <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: state()?.loading ? colors.warn : colors.up }} />
-        <Text numberOfLines={1} ellipsizeMode="middle" style={{ flex: 1, fontSize: 15, color: colors.muted }}>
+        <Text style={{ numberOfLines: 1, textOverflow: "ellipsis-middle", flex: 1, fontSize: 15, color: colors.muted }}>
           {host()}
         </Text>
       </View>

@@ -929,7 +929,7 @@ import { Framed } from "test/classes";
 
 const v = createAnimatedValue(0.25);
 mount(() => (
-  <Framed inner={[{ transform: [{ translateX: 7 }, { scale: 2 }] }, { shadowOffset: { width: 1, height: 2 }, opacity: v }]} />
+  <Framed inner={[{ transform: "translateX(7px) scale(2)" }, { translate: [1, 2], opacity: v }]} />
 ));
 "#;
 
@@ -937,15 +937,14 @@ mount(() => (
 fn a_style_prop_takes_what_a_host_elements_style_does() {
     let (_engine, rx) = start(FRAMED, vec![registry()]);
     let (_, items) = mounted(&rx, 500);
-    // The transforms and the shadow offset (objects and arrays), and the
-    // animated value bound to the inner view.
+    // The transform's string and the translation's array, in CSS's order,
+    // and the animated value bound to the inner view.
     assert!(
         items.contains(
-            "transform: [TransformOp { kind: TranslateX, value: 7.0 }, TransformOp { kind: Scale, value: 2.0 }]"
+            "transform: [TransformOp { kind: TranslateX, value: 1.0 }, TransformOp { kind: TranslateY, value: 2.0 }, TransformOp { kind: TranslateX, value: 7.0 }, TransformOp { kind: Scale, value: 2.0 }]"
         ),
         "{items}"
     );
-    assert!(items.contains("offset_x: 1pt, offset_y: 2pt"), "{items}");
     assert!(items.contains("bindings: [(Opacity, "), "{items}");
 }
 

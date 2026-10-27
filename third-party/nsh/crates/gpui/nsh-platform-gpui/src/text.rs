@@ -2132,7 +2132,7 @@ pub(crate) struct DrawnText {
     pub(crate) layout: TextLayout,
     /// Where the layout goes inside the view.
     pub(crate) content: nsh_core::Bounds<Points>,
-    /// The selection of `selectable` text, kept across new content.
+    /// The selection of selectable text, kept across new content.
     selection: Option<Rc<Selection>>,
     /// The part of the selection of the selectable view around it that is
     /// this text's ([`crate::selectable_view`]).
@@ -2624,7 +2624,7 @@ enum Unit {
     Paragraph,
 }
 
-/// The range selection of a `selectable` text view, desktop style: a mouse
+/// The range selection of a selectable text view, desktop style: a mouse
 /// drag selects characters, a double click words and a triple click the
 /// paragraph (and drags on by them), Shift+click extends, Ctrl+C (Cmd+C on
 /// macOS) copies, Ctrl+A selects all, Escape or a press anywhere else

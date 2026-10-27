@@ -278,6 +278,11 @@ style id:card opacity 0.5
 style id:card transform rotate(45deg) scale(2)
 nostyle id:plain backgroundColor
 nostyle id:plain transform
+# CSS's order: translate, rotate, scale, then transform (its functions, or
+# its list of steps); a percentage of translate is of the view's own size.
+style id:moved transform translateX(10) translateY(20) rotate(30deg) scale(1.5)
+style id:composed transform translateX(5) translateY(20) rotateX(40deg) scaleX(2) scaleY(3) translateX(4) rotate(10deg)
+style id:stepped transform perspective(800) rotateY(30deg) translateX(4)
 prop id:card role button
 noprop id:plain role
 listens id:card onLongPress
@@ -298,6 +303,9 @@ covers [styles] backgroundColor
 covers [styles] borderRadius
 covers [styles] opacity
 covers [styles] transform
+covers [styles] translate
+covers [styles] rotate
+covers [styles] scale
 covers [styles] color
 covers [styles] fontWeight
 # core-primitives

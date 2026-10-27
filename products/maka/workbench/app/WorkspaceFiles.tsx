@@ -78,11 +78,13 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                 >
                   <Icon name={index() ? 'right' : 'folder'} color={C.muted} />
                   <Text
-                    numberOfLines={1}
-                    style={{
-                      ...captionTextStyle,
-                      color: index() === model.breadcrumbs().length - 1 ? C.text : C.accent,
-                    }}
+                    style={[
+                      {
+                        ...captionTextStyle,
+                        color: index() === model.breadcrumbs().length - 1 ? C.text : C.accent,
+                      },
+                      { numberOfLines: 1 },
+                    ]}
                   >
                     {directory().path ? label(directory().path!) : directory().title}
                   </Text>
@@ -177,13 +179,17 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                 >
                   <Icon name={entry().kind === 'directory' ? 'folder' : 'file'} color={C.muted} />
                   <Text
-                    numberOfLines={1}
-                    style={{
-                      ...captionTextStyle,
-                      flex: 1,
-                      color:
-                        entry().kind === 'file' || entry().kind === 'directory' ? C.text : C.muted,
-                    }}
+                    style={[
+                      {
+                        ...captionTextStyle,
+                        flex: 1,
+                        color:
+                          entry().kind === 'file' || entry().kind === 'directory'
+                            ? C.text
+                            : C.muted,
+                      },
+                      { numberOfLines: 1 },
+                    ]}
                   >
                     {label(entry().path)}
                   </Text>
@@ -215,8 +221,10 @@ function DirectoryStatus(props: { model: WorkspaceFilesModel }) {
     <If when={message()}>
       <View style={{ padding: 8, gap: 8, alignItems: 'flex-start' }}>
         <Text
-          selectable={!!model.error()}
-          style={{ ...bodyTextStyle, color: model.error() ? C.danger : C.muted }}
+          style={[
+            { ...bodyTextStyle, color: model.error() ? C.danger : C.muted },
+            { userSelect: !!model.error() ? 'text' : 'none' },
+          ]}
         >
           {message()}
         </Text>

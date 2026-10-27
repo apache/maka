@@ -173,9 +173,7 @@ export function FinalActions(props: {
         </If>
       </View>
       <If when={notice()}>
-        <Text selectable style={{ color: C.warning }}>
-          {notice()}
-        </Text>
+        <Text style={[{ color: C.warning }, { userSelect: 'text' }]}>{notice()}</Text>
       </If>
       <If when={usage()}>
         <TurnUsage

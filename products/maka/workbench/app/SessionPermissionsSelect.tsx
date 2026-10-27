@@ -133,7 +133,9 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
           focusStyle={controlFocusStyle}
           disabledStyle={controlDisabledStyle}
         >
-          <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted, flexShrink: 1 }}>
+          <Text
+            style={[{ ...captionTextStyle, color: C.muted, flexShrink: 1 }, { numberOfLines: 1 }]}
+          >
             {label()}
           </Text>
           <Icon name="down" color={C.muted} />
@@ -195,7 +197,7 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                       checked={owner.snapshot()?.permissions.access === access()}
                       disabled={disabled()}
                     />
-                    <View pointerEvents="none" style={{ flex: 1, minWidth: 0 }}>
+                    <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
                       <Text style={{ ...captionTextStyle, color: C.text }}>
                         {accessLabel(access())}
                       </Text>
@@ -207,8 +209,10 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                 )}
               </Each>
               <View
-                pointerEvents="none"
-                style={{ height: 1, backgroundColor: C.line, margin: 4 }}
+                style={[
+                  { height: 1, backgroundColor: C.line, margin: 4 },
+                  { pointerEvents: 'none' },
+                ]}
               />
               <Text
                 style={{
@@ -262,7 +266,12 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                 </Text>
               </If>
               <If when={owner.error()}>
-                <Text selectable style={{ ...captionTextStyle, color: C.danger, padding: 8 }}>
+                <Text
+                  style={[
+                    { ...captionTextStyle, color: C.danger, padding: 8 },
+                    { userSelect: 'text' },
+                  ]}
+                >
                   {owner.error()}
                 </Text>
               </If>

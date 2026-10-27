@@ -28,9 +28,7 @@ export function ProjectMcp(props: { owner: Owner }) {
   return (
     <View>
       <If when={owner.error()}>
-        <Text selectable style={{ color: C.danger }}>
-          {owner.error()}
-        </Text>
+        <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{owner.error()}</Text>
       </If>
       <If when={owner.notice()}>
         <Text style={{ color: C.muted }}>{owner.notice()}</Text>
@@ -41,9 +39,7 @@ export function ProjectMcp(props: { owner: Owner }) {
             <Text style={{ color: C.text, fontWeight: '600' }}>
               {tr('Trust project MCP configuration?')}
             </Text>
-            <Text selectable style={{ color: C.muted }}>
-              {proposal().path}
-            </Text>
+            <Text style={[{ color: C.muted }, { userSelect: 'text' }]}>{proposal().path}</Text>
             <Text style={{ color: C.warning }}>
               {tr(
                 'These servers can run commands as your user or contact remote services. They start outside the conversation sandbox. Trust only servers you recognize.',
@@ -57,7 +53,7 @@ export function ProjectMcp(props: { owner: Owner }) {
               <Each of={proposal().servers} key={(server) => server.name}>
                 {(server) => (
                   <View style={{ gap: 4 }}>
-                    <Text selectable style={{ color: C.text }}>
+                    <Text style={[{ color: C.text }, { userSelect: 'text' }]}>
                       {server().name}: {server().launch}
                     </Text>
                     <If when={server().environment.length > 0}>

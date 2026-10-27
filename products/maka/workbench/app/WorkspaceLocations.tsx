@@ -151,7 +151,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
         )}
       </Text>
       <If when={operations.error()}>
-        <Text selectable style={{ color: C.danger, fontSize: 13 }}>
+        <Text style={[{ color: C.danger, fontSize: 13 }, { userSelect: 'text' }]}>
           {operations.error()}
         </Text>
       </If>
@@ -193,13 +193,14 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
         {(root) => (
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', paddingVertical: 8 }}>
             <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-              <Text numberOfLines={1} style={{ color: C.text, fontSize: 14, lineHeight: 18 }}>
+              <Text style={[{ color: C.text, fontSize: 14, lineHeight: 18 }, { numberOfLines: 1 }]}>
                 {root().label}
               </Text>
               <Text
-                selectable
-                numberOfLines={1}
-                style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}
+                style={[
+                  { color: C.muted, fontSize: 12, lineHeight: 16 },
+                  { userSelect: 'text', numberOfLines: 1 },
+                ]}
               >
                 {root().path}
               </Text>

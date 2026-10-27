@@ -33,14 +33,13 @@
   `sample_driver` (the drivers' own code, stepped like frames, at most `MAX_SAMPLES`), so drawn curves are what runs;
   Rust components call `element::sample_easing` / `sample_spring` / `sample_decay` / `sample_decay_within`.
   Bindable: `opacity`, `backgroundColor`, `borderColor` (all sides), a text's `color` (the whole text: iOS and Android draw
-  it into a layer and paint over it in the color, `SourceIn` / `SRC_IN`), `shadowColor` / `shadowOpacity` /
-  `shadowRadius`, the translate / scale / rotate parts of `transform`, and where views stick: a sticky view's `top` /
+  it into a layer and paint over it in the color, `SourceIn` / `SRC_IN`), `translate` / `rotate` / `scale` (`[x, y]` per axis) and the steps of a `transform` list (a motion's,
+  `createMotion`: `{ opacity, transform }`), and where views stick: a sticky view's `top` /
   `left` and a list's `stickyHeaderOffset` (`StickyCell::offset`, `docs/dev/scrolling-and-lists.md`), and a registered native
   component's own props (`AnimationProp::ComponentSlot(slot)`, `docs/dev/embedding.md`: the component is handed the value,
-  a number or an ARGB color, on the frames it changes). iOS shapes the decoration with the bound
-  values (and the layers for them even while they are transparent: `bound_style`), then sets the colors and shadow
-  on those layers each frame; Android and web get them as properties (`Mounter.java` codes 11–14; the web composes
-  `box-shadow`, dropping layered `boxShadow`s while bound). Driven on the main thread by `CADisplayLink`,
+  a number or an ARGB color, on the frames it changes). iOS shapes the decoration with a bound
+  border color (and the layers for it even while it is transparent: `bound_style`), then sets the colors on those
+  layers each frame; Android and web get them as properties (`Mounter.java` codes 11 and 12). Driven on the main thread by `CADisplayLink`,
   paused while nothing animates. `scrollValue` writes the scroll offset into an animated value in the same frame; `pan` lets drags drive animated values
   directly, and JS receives the velocity when the drag ends. Animated values referenced by a view's style (or `pan`, `scrollValue`, ...) are kept by its node
   (`nsh-js` `dom.rs`) and derived nodes hold their inputs, so bindings do not break when JS objects are collected. In

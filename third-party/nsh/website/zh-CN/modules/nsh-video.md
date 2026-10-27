@@ -39,7 +39,7 @@ function Player() {
         paused={paused()}
         muted
         repeat
-        resizeMode="cover"
+        class="object-cover"
         style={{ height: 220, borderRadius: 8, overflow: "hidden", backgroundColor: "#000" }}
         onProgress={(e) => time.set(`${e.currentTime.toFixed(1)} / ${e.duration.toFixed(1)} s`)}
       />
@@ -68,7 +68,7 @@ mount(Player);
 | `rate` | `number` | `1` | 播放速度。 |
 | `repeat` | `boolean` | `false` | 播放到结尾后从头重新播放。 |
 | `controls` | `boolean` | `false` | 显示平台自带的播放控件。 |
-| `resizeMode` | `"cover" \| "contain" \| "stretch" \| "center"` | | 视频如何适应其区域。 |
+| `objectFit`（样式）、`object-*` 类 | `"cover" \| "contain" \| "fill" \| "none" \| "scale-down"` | `"contain"` | 视频如何适应其区域，同 CSS 的 `object-fit`（`class="object-cover"`）。 |
 | `progressUpdateInterval` | `number` | `250` | `onProgress` 事件之间的毫秒数。 |
 | `audioSession` | `"default" \| "playback" \| "mixWithOthers"` | `"default"` | 声音与设备上其他音频的关系：见[声音与其他应用](#声音与其他应用)。 |
 

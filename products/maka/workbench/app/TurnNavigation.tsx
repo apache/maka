@@ -39,24 +39,25 @@ function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) 
   if (platform.isTerminal)
     return (
       <Text
-        pointerEvents="none"
         accessibilityElementsHidden
-        style={{
-          width: railWidth(),
-          height: markPitch(),
-          lineHeight: markPitch(),
-          textAlign: 'center',
-          color: color(),
-        }}
+        style={[
+          {
+            width: railWidth(),
+            height: markPitch(),
+            lineHeight: markPitch(),
+            textAlign: 'center',
+            color: color(),
+          },
+          { pointerEvents: 'none' },
+        ]}
       >
         {props.busy ? '◌' : props.active ? '●' : '━'}
       </Text>
     );
   return (
     <Canvas
-      pointerEvents="none"
       accessibilityElementsHidden
-      style={{ width: railWidth(), height: markPitch() }}
+      style={[{ width: railWidth(), height: markPitch() }, { pointerEvents: 'none' }]}
       draw={(cx) => {
         cx.strokeStyle = color();
         cx.lineWidth = 2;
@@ -77,16 +78,18 @@ function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) 
 function RailFade(props: { bottom: boolean }) {
   return (
     <Canvas
-      pointerEvents="none"
       accessibilityElementsHidden
-      style={{
-        position: 'absolute',
-        left: 0,
-        top: props.bottom ? undefined : 0,
-        bottom: props.bottom ? 0 : undefined,
-        width: railWidth(),
-        height: 24,
-      }}
+      style={[
+        {
+          position: 'absolute',
+          left: 0,
+          top: props.bottom ? undefined : 0,
+          bottom: props.bottom ? 0 : undefined,
+          width: railWidth(),
+          height: 24,
+        },
+        { pointerEvents: 'none' },
+      ]}
       draw={(cx) => {
         const fade = cx.createLinearGradient(0, 0, 0, 24);
         fade.addColorStop(0, props.bottom ? `${C.background}00` : C.background);
@@ -124,7 +127,6 @@ function NavigationMark(props: {
       })}
       tooltip={
         <Overlay
-          pointerEvents="none"
           placement="left"
           hintDelay={0}
           offset={12}
@@ -138,9 +140,15 @@ function NavigationMark(props: {
             backgroundColor: C.surface,
             borderWidth: 1,
             borderColor: C.line,
+            pointerEvents: 'none',
           }}
         >
-          <Text numberOfLines={3} style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}>
+          <Text
+            style={[
+              { ...captionTextStyle, color: C.text, fontWeight: '500' },
+              { numberOfLines: 3 },
+            ]}
+          >
             {props.item().label || tr('Recorded turn')}
           </Text>
           <If when={props.busy}>
@@ -275,14 +283,16 @@ export function ReturnToLatest(props: { visible: boolean; activate(): void }) {
   return (
     <If when={props.visible}>
       <View
-        pointerEvents="box-none"
-        style={{
-          position: 'absolute',
-          left: 0,
-          right: 0,
-          bottom: 8,
-          alignItems: 'center',
-        }}
+        style={[
+          {
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 8,
+            alignItems: 'center',
+          },
+          { pointerEvents: 'box-none' },
+        ]}
       >
         <Button
           accessibilityLabel={tr('Return to latest')}

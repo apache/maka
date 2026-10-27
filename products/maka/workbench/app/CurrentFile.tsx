@@ -340,8 +340,10 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="file" color={C.muted} />
         <Text
-          numberOfLines={1}
-          style={{ ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' }}
+          style={[
+            { ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' },
+            { numberOfLines: 1 },
+          ]}
         >
           {model.target.title}
         </Text>
@@ -394,11 +396,12 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
             }
           >
             <Text
-              selectable
-              numberOfLines={1}
               accessibilityLabel={tr('Captured version {version}', { version: version() })}
               tooltip={textTooltip(() => tr('Captured version {version}', { version: version() }))}
-              style={{ ...captionTextStyle, flex: 1, minWidth: 0, color: C.muted }}
+              style={[
+                { ...captionTextStyle, flex: 1, minWidth: 0, color: C.muted },
+                { userSelect: 'text', numberOfLines: 1 },
+              ]}
             >
               {tr('Captured version {version}', { version: version() })}
             </Text>
@@ -438,27 +441,31 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
             }}
           >
             <View
-              pointerEvents="none"
               accessibilityElementsHidden
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                backgroundColor: C.surface,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
+              style={[
+                {
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  backgroundColor: C.surface,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                },
+                { pointerEvents: 'none' },
+              ]}
             >
               <Icon name="file" color={C.muted} />
             </View>
             <Text
-              selectable={failed()}
-              style={{
-                ...bodyTextStyle,
-                width: '100%',
-                color: failed() ? C.danger : C.secondary,
-                textAlign: 'center',
-              }}
+              style={[
+                {
+                  ...bodyTextStyle,
+                  width: '100%',
+                  color: failed() ? C.danger : C.secondary,
+                  textAlign: 'center',
+                },
+                { userSelect: failed() ? 'text' : 'none' },
+              ]}
             >
               {emptyMessage()}
             </Text>
@@ -519,19 +526,21 @@ function CapturedFileStatus(props: { model: CurrentFileModel; selectable?: boole
     <If when={model.stale() || model.state().kind === 'loading' || model.state().kind === 'error'}>
       <View style={{ padding: 8, gap: 8, alignItems: 'flex-start' }}>
         <If when={model.stale()}>
-          <Text selectable={false} style={{ ...bodyTextStyle, color: C.warning }}>
+          <Text style={[{ ...bodyTextStyle, color: C.warning }, { userSelect: 'none' }]}>
             {tr('The workspace may have changed. Refresh for current contents.')}
           </Text>
         </If>
         <If when={model.state().kind === 'loading'}>
-          <Text selectable={false} style={{ ...bodyTextStyle, color: C.muted }}>
+          <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'none' }]}>
             {tr('Reading current file…')}
           </Text>
         </If>
         <If when={model.state().kind === 'error'}>
           <Text
-            selectable={props.selectable !== false}
-            style={{ ...bodyTextStyle, color: C.danger }}
+            style={[
+              { ...bodyTextStyle, color: C.danger },
+              { userSelect: props.selectable !== false ? 'text' : 'none' },
+            ]}
           >
             {renderText((model.state() as Extract<FileState, { kind: 'error' }>).message)}
           </Text>
@@ -572,23 +581,27 @@ function FileRows(props: { model: CurrentFileModel; view: Extract<FileView, { ki
             }}
           >
             <Text
-              selectable={false}
-              style={{
-                ...codeTextStyle,
-                width: Math.max(24, String(props.view.rows.length).length * 8),
-                color: C.muted,
-              }}
+              style={[
+                {
+                  ...codeTextStyle,
+                  width: Math.max(24, String(props.view.rows.length).length * 8),
+                  color: C.muted,
+                },
+                { userSelect: 'none' },
+              ]}
             >
               {row().line}
             </Text>
             <Text
-              selectable
-              style={{
-                ...codeTextStyle,
-                flex: 1,
-                minWidth: 0,
-                color: C.text,
-              }}
+              style={[
+                {
+                  ...codeTextStyle,
+                  flex: 1,
+                  minWidth: 0,
+                  color: C.text,
+                },
+                { userSelect: 'text' },
+              ]}
             >
               {/* Soft-wrapped visual lines retain their original source line number. */}
               {row().text.replace(/\r?\n$/, '')}
@@ -622,7 +635,6 @@ function FileImage(props: {
       <View style={{ height: Math.max(0, viewportHeight() - footerHeight() - 8), marginBottom: 8 }}>
         <Image
           src={props.view.uri}
-          resizeMode="contain"
           onLoad={(value) => {
             if (mounted) dimensions.set(value);
           }}
@@ -630,7 +642,7 @@ function FileImage(props: {
             if (mounted) error.set(reason.message);
           }}
           accessibilityLabel={tr('Captured workspace image')}
-          style={{ flex: 1, minHeight: 0, width: '100%' }}
+          style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
         />
       </View>
       <View onLayout={(frame) => footerHeight.set(frame.size.height)} style={{ gap: 8 }}>
@@ -649,7 +661,7 @@ function FileImage(props: {
           </View>
         </If>
         <If when={error()}>
-          <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+          <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
             {error()}
           </Text>
           <Button

@@ -1272,6 +1272,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
         // The bytes cross natively: each file is a `File` over them.
         EventPayload::Paste(paste) => {
             obj.set("text", paste.text.as_str())?;
+            obj.set("html", paste.html.as_str())?;
             let files = rquickjs::Array::new(cx.clone())?;
             for (index, file) in paste.files.iter().enumerate() {
                 let blob = crate::web::blob::Blob::new(file.data.clone(), file.mime.clone());
@@ -2523,31 +2524,30 @@ const report = (v) => text(String(v));
             r##"import { element, prop } from "nsh:rt";
             prop(element("view"), "style", {
                 flexDirection: "row", backgroundColor: "#ff0000", bogus: 1,
-                shadowColor: "#000", shadowOffset: { width: 2, height: 6 },
-                shadowOpacity: 0.25, shadowRadius: 10,
+                boxShadow: "2px 6px 10px rgb(0 0 0 / 0.25)", textShadow: "0 1px 4px #000",
                 borderRadius: 12, borderBottomLeftRadius: 0,
-            });
-            prop(element("view"), "style", { shadowOffset: null });"##,
+            });"##,
         )
         .unwrap();
-        let styles: Vec<_> = ops(&host)
+        let style = ops(&host)
             .into_iter()
-            .filter_map(|op| match op {
+            .find_map(|op| match op {
                 Op::SetStyle { style, .. } => Some(style),
                 _ => None,
             })
-            .collect();
-        let style = &styles[0];
+            .unwrap();
         assert_eq!(format!("{:?}", style.layout.flex_direction), "Row");
         assert_eq!(style.view.background_color, nsh_core::Color(0xff00_00ff));
-        let shadow = style.view.shadow;
-        assert_eq!((shadow.offset_x.0, shadow.offset_y.0), (2.0, 6.0));
-        assert_eq!((shadow.opacity, shadow.radius.0), (0.25, 10.0));
+        let shadow = style.view.effects.as_ref().unwrap().box_shadows[0];
+        assert_eq!(
+            (shadow.offset_x.0, shadow.offset_y.0, shadow.blur.0),
+            (2.0, 6.0, 10.0)
+        );
+        assert_eq!(style.text.shadow_radius.map(|r| r.0), Some(4.0));
         assert_eq!(
             style.view.radii().to_array().map(|r| r.0),
             [12.0, 12.0, 12.0, 0.0]
         );
-        assert_eq!(styles[1].view.shadow, nsh_core::Shadow::DEFAULT);
     }
 
     /// `style={[base, props.style]}` where `props.style` is itself a list:

@@ -129,7 +129,7 @@ export function StorageDemo() {
             <Each of={entries()}>
               {(entry, i) => (
                 <Row first={i() === 0}>
-                  <Text numberOfLines={1} style={{ flex: 1, fontSize: 14, color: colors.text, fontFamily: mono }}>
+                  <Text style={{ numberOfLines: 1, flex: 1, fontSize: 14, color: colors.text, fontFamily: mono }}>
                     {entry().key}
                   </Text>
                   <Text style={{ fontSize: 13, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${entry().length} chars`}</Text>

@@ -1,16 +1,16 @@
 ---
 title: Style reference
-description: Every style key NSH accepts, grouped by LayoutStyle, ViewStyle, TextStyle and ImageStyle, with its type and meaning.
+description: Every style key NSH accepts, grouped by LayoutStyle, ViewStyle, TextStyle, InputStyle and ImageStyle, with its type and meaning.
 order: 16
 ---
 
 # Style reference
 
-This page lists every key of the `style` prop, and the method of `Styled` that sets it in Rust. Rust components style elements with typed methods named after Tailwind's utilities (`.p_4()`, `.rounded(px(12.0))`, `.bg(color)`, from `nsh_core::prelude`), which lower to the same keys; TSX passes `style` objects (and classes). The Rust column names the method; a value, a signal or a closure goes to most of them, and `.style_when(…)` / `.style_with(…)` make any of them conditional. The keys and their types come from the generated declarations in `.nsh/types/nsh/types.d.ts`, so your editor checks them as you type. Layout is flexbox with a column default, numbers are points, and the CSS features are there too: grid, gradients, box shadows, filters, blend modes, outlines, transitions and keyframe animations.
+This page lists every key of the `style` prop, and the method of `Styled` that sets it in Rust. Rust components style elements with typed methods named after Tailwind's utilities (`.p_4()`, `.rounded(px(12.0))`, `.bg(color)`, from `nsh_core::prelude`), which lower to the same keys; TSX passes `style` objects (and classes). The Rust column names the method; a value, a signal or a closure goes to most of them, and `.style_when(…)` / `.style_with(…)` make any of them conditional. The keys and their types come from the generated declarations in `.nsh/types/nsh/types.d.ts`, so your editor checks them as you type. A style key means the CSS property of its name, the same as the class that sets it: `paddingLeft` is CSS's `padding-left` and `pl-4`, `boxShadow` is `box-shadow` and `shadow-md`; a few keys take plainer names apps write (`paddingHorizontal` for `padding-inline`, `marginStart` for `margin-inline-start`, `numberOfLines` for `line-clamp`). Numbers are points, and the CSS features are there too: grid, gradients, box shadows, filters, blend modes, outlines, transforms, transitions and keyframe animations.
 
 For how to apply styles, combine them with classes and inherit text styles, see [Styling](../docs/styling.md). For the class syntax, see the [Tailwind reference](./tailwind-reference.md).
 
-## The four interfaces
+## The five interfaces
 
 Each interface extends the one before it:
 
@@ -19,6 +19,7 @@ Each interface extends the one before it:
 | `LayoutStyle` | | Layout of every element (flexbox, grid, sizes, spacing, position) |
 | `ViewStyle` | `LayoutStyle` | `<View>`, `<Scroll>`, `<List>`, controls and every other element |
 | `TextStyle` | `ViewStyle` | `<Text>` and `<Input>` (and views, whose text styles pass to the text inside them) |
+| `InputStyle` | `TextStyle` | `<Input>`: adds `placeholderColor` and `caretColor` |
 | `ImageStyle` | `ViewStyle` | `<Image>` |
 
 ```rust tabs
@@ -71,6 +72,15 @@ card().style_when(selected, |s| s.border_color(rgb(0x2563eb)).border(px(2.0)))
 > [!NOTE]
 > The inline `style` always wins over `class`. Setting a key to `null` or `undefined` resets it to its default.
 
+## How style keys read
+
+Style keys follow CSS, so a style and a class that name one property do the same thing:
+
+- **Layout direction.** A view that sets no `display` lays its children out in a column. `display: "flex"` is a row unless `flexDirection` is set, as in CSS and the `flex` class. `flexShrink` is `0` unless set.
+- **Physical and logical sides.** `left`, `right`, `marginLeft`, `paddingRight`, `borderLeftWidth`, `borderTopLeftRadius` and `textAlign: "left"` keep their side in right-to-left layouts. The start and end keys (`marginStart`, `paddingEnd`, `start`, `end`, `borderStartWidth`, ...), the `borderTopStartRadius` family and `textAlign: "start" | "end"` follow the direction: inline start is the left in left-to-right layouts and the right in right-to-left ones.
+- **Border colors.** A border or an outline whose width is set and whose color is not is drawn in the text color (CSS's `currentColor`).
+- **Transforms.** `translate`, `rotate` and `scale` are properties of their own, and `transform` takes CSS's string of functions or a list of steps whose amounts may be animated values. They compose in that order: `translate`, `rotate`, `scale`, then `transform`.
+
 ## Value types
 
 | Type | Accepts | Rust |
@@ -80,35 +90,35 @@ card().style_when(selected, |s| s.border_color(rgb(0x2563eb)).border(px(2.0)))
 | `LengthValue` | `number` (points) or `` `${number}%` ``. No `"auto"`. | `DefiniteLength`: `px(…)`, `relative(0.5)` |
 | `ColorValue` | A CSS color string: `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`, `hsl()`, `hsla()`, `oklch()`, `oklab()`, or a named CSS color (`black`, `white`, `transparent`, `rebeccapurple`, ...). | `Hsla` / `AdaptiveColor`: `rgb(0x2563eb)`, `hsla(…)`, theme colors (`theme().primary`) |
 | `EnvValue` | An environment variable in a padding or margin: `env(name)`, `env(name, <length>)` (the length stands in for an unknown name), `calc(env(name) + <length>)` or `calc(<length> + env(name))`. The names are `safe-area-inset-top`, `-right`, `-bottom`, `-left` ([Safe area](../elements/safe-area.md)) and `keyboard-inset-height` ([Keyboard](../elements/keyboard.md)). Accepted by the physical padding and margin keys and their shorthands. | `.p_safe_area()`, `.pt_safe_area_plus(px(8.0))`, `.pb_keyboard()`, `.mb_keyboard_plus(…)`, ... |
-| `AnimatedNode` | A native animated value or a node derived from it (see [`nsh`'s animation API](./nsh.md#animation)). Accepted by `backgroundColor`, `opacity` and the steps of `transform`; the value then animates on the UI thread without JS. | `AnimatedValue` / `AnimatedNode`, bound with `.bind_opacity(&v)`, `.bind_background(&v)`, `.bind_translate_x(&v)`, ... |
+| `AnimatedNode` | A native animated value or a node derived from it (see [`nsh`'s animation API](./nsh.md#animation)). Accepted by `opacity`, `backgroundColor`, `borderColor`, `color`, `translate`, `rotate`, `scale`, the steps of a `transform` list, and a sticky view's `top` / `left`; the value then animates on the UI thread without JS. | `AnimatedValue` / `AnimatedNode`, bound with `.bind_opacity(&v)`, `.bind_background(&v)`, `.bind_border_color(&v)`, `.bind_color(&v)`, `.bind_translate_x(&v)`, ... |
 
-Strings with CSS syntax (`boxShadow`, `backgroundImage`, `filter`, `gridTemplateColumns`, ...) take lengths in `px` and bare numbers (both points), `pt` (4/3 of a point, as in CSS), or `rem` (16 points).
+Strings with CSS syntax (`boxShadow`, `textShadow`, `backgroundImage`, `filter`, `gridTemplateColumns`, ...) take lengths in `px` and bare numbers (both points), `pt` (4/3 of a point, as in CSS), or `rem` (16 points).
 
 ## LayoutStyle
 
-Layout is computed in Rust (flexbox and CSS grid). The defaults differ from CSS's: `display: "flex"`, `flexDirection: "column"`, `flexShrink: 0`, `alignContent: "flex-start"` (grids: CSS's `"normal"`), `alignItems: "stretch"`, and no automatic minimum size. See [Layout](../docs/layout.md).
+Layout is computed in Rust (flexbox and CSS grid). A view that sets no `display` is a flex container whose children stack in a column; `display: "flex"` makes it a row unless `flexDirection` is set, as in CSS. Elements default to `flexShrink: 0`, `alignContent: "flex-start"` (grids: CSS's `"normal"`), `alignItems: "stretch"`, and no automatic minimum size. See [Layout](../docs/layout.md).
 
 ### Display and position
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `display` | `"flex" \| "grid" \| "block" \| "flow-root" \| "none"` | `.flex()`, `.grid()`, `.hidden()` | The layout of the children. `"none"` removes the element from layout and hides it. `"block"` stacks children as CSS block layout does. Default `"flex"`. |
+| `display` | `"flex" \| "grid" \| "block" \| "flow-root" \| "none"` | `.flex()`, `.grid()`, `.hidden()` | The layout of the children. `"flex"` lays them out in a row unless `flexDirection` sets a direction, as in CSS; a view that sets no display lays them out in a column. `"none"` removes the element from layout and hides it. `"block"` stacks children as CSS block layout does. |
 | `boxSizing` | `"border-box" \| "content-box"` | | Dimensions include borders and padding, or content alone. Default `"border-box"`. |
 | `position` | `"relative" \| "absolute" \| "static" \| "fixed" \| "sticky"` | `.relative()`, `.absolute()` | `"absolute"` takes the element out of the flow and places it by `top` / `right` / `bottom` / `left` relative to its nearest positioned ancestor (its parent unless that is `"static"`). `"static"` stays in flow and ignores insets. `"fixed"` preserves the element type and lays out and mounts it in its surface or modal root, keeping it in place while surrounding content scrolls. `"sticky"` stays in the flow and, while its parent is in view, sticks `top` (`left` in a horizontal scroll view) from the start of the viewport of the scroll view around it, until its end meets its parent's content box's; it draws above its siblings of the same `zIndex`. Default `"relative"`. |
 | `top` | `DimensionValue \| AnimatedNode` | `.top(…)`, `.inset(…)`, `.bind_sticky_top(&node)` | Offset from the parent's top edge (absolute) or from the element's own position (relative). On a sticky view, where it sticks, which an animated value moves every frame. |
-| `right` | `DimensionValue` | `.right(…)` | Offset from the right edge. In right-to-left layouts it means the end edge. |
+| `right` | `DimensionValue` | `.right(…)` | Offset from the right edge, in either direction. |
 | `bottom` | `DimensionValue` | `.bottom(…)` | Offset from the bottom edge. |
-| `left` | `DimensionValue \| AnimatedNode` | `.left(…)`, `.bind_sticky_left(&node)` | Offset from the left edge. In right-to-left layouts it means the start edge. On a sticky view in a horizontal scroll view, where it sticks, which an animated value moves every frame. |
-| `start` | `DimensionValue` | | Left in left-to-right layouts, right in right-to-left ones. |
-| `end` | `DimensionValue` | | Right in left-to-right layouts, left in right-to-left ones. |
+| `left` | `DimensionValue \| AnimatedNode` | `.left(…)`, `.bind_sticky_left(&node)` | Offset from the left edge, in either direction. On a sticky view in a horizontal scroll view, where it sticks, which an animated value moves every frame. |
+| `start` | `DimensionValue` | | Offset from the inline start edge: left in left-to-right layouts, right in right-to-left ones. |
+| `end` | `DimensionValue` | | Offset from the inline end edge: right in left-to-right layouts, left in right-to-left ones. |
 | `zIndex` | `number` | `.z_index(z)` | Order among siblings (stable for equal values); also the native stacking order. |
-| `direction` | `"inherit" \| "ltr" \| "rtl"` | | Layout direction, inherited by default. Right to left, `left` and `right` properties mean start and end. |
+| `direction` | `"inherit" \| "ltr" \| "rtl"` | | Layout direction, inherited by default. As in CSS, `left` and `right` properties keep their sides right to left, while the inline start / end ones (`marginStart`, `end`, ...) take the sides the direction gives them. |
 
 ### Flexbox
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `flexDirection` | `"row" \| "column" \| "row-reverse" \| "column-reverse"` | `.flex_row()`, `.flex_col()`, `.flex_row_reverse()`, `.flex_col_reverse()` | The main axis. Default `"column"`. |
+| `flexDirection` | `"row" \| "column" \| "row-reverse" \| "column-reverse"` | `.flex_row()`, `.flex_col()`, `.flex_row_reverse()`, `.flex_col_reverse()` | The main axis. Default `"column"` for a view that sets no `display`, `"row"` once `display: "flex"` is set. |
 | `flexWrap` | `"wrap" \| "nowrap" \| "wrap-reverse"` | `.flex_wrap()` | Whether children wrap onto several lines. Default `"nowrap"`. |
 | `flex` | `number` | `.flex_1()`, `.flex_auto()`, `.flex_none()` | One number, not the CSS shorthand: a positive number sets `flexGrow` to it, `flexShrink: 1` and `flexBasis: 0`; `0` makes the element inflexible; a negative number shrinks it down to its minimum size. |
 | `flexGrow` | `number` | `.flex_grow(f)` | How much of the free space the element takes. Default `0`. |
@@ -117,7 +127,7 @@ Layout is computed in Rust (flexbox and CSS grid). The defaults differ from CSS'
 | `justifyContent` | `"flex-start" \| "flex-end" \| "start" \| "end" \| "center" \| "space-between" \| "space-around" \| "space-evenly" \| "stretch" \| "normal"` | `.justify_start()`, `.justify_center()`, `.justify_end()`, `.justify_between()`, `.justify_around()`, `.justify_evenly()` | Distribution of children along the main axis. Default `"normal"`: `"flex-start"` in flex containers; in grids, tracks sized `auto` stretch. |
 | `alignItems` | `"flex-start" \| "flex-end" \| "start" \| "end" \| "self-start" \| "self-end" \| "center" \| "stretch" \| "baseline" \| "normal"` | `.items_start()`, `.items_center()`, `.items_end()`, `.items_stretch()`, `.items_baseline()` | Alignment of children on the cross axis. Default `"stretch"`. |
 | `alignSelf` | `"auto" \| "flex-start" \| "flex-end" \| "start" \| "end" \| "self-start" \| "self-end" \| "center" \| "stretch" \| "baseline" \| "normal"` | `.self_start()`, `.self_center()`, `.self_end()`, `.self_stretch()` | Overrides the parent's `alignItems` for this element. |
-| `alignContent` | `"flex-start" \| "flex-end" \| "start" \| "end" \| "center" \| "stretch" \| "space-between" \| "space-around" \| "space-evenly" \| "normal"` | | Distribution of wrapped lines (and grid tracks) on the cross axis. Default `"flex-start"` in flex containers and `"normal"` in grids, where tracks sized `auto` stretch. `"start"` / `"end"` follow the writing direction. |
+| `alignContent` | `"flex-start" \| "flex-end" \| "start" \| "end" \| "center" \| "stretch" \| "space-between" \| "space-around" \| "space-evenly" \| "normal"` | `.content_start()`, `.content_center()`, `.content_between()`, … | Distribution of wrapped lines (and grid tracks) on the cross axis. Default `"flex-start"` in flex containers and `"normal"` in grids, where tracks sized `auto` stretch. `"start"` / `"end"` follow the writing direction. |
 | `gap` | `LengthValue` | `.gap(…)`, `.gap_4()` | Space between rows and columns of children. |
 | `rowGap` | `LengthValue` | `.gap_y(…)` | Space between rows. |
 | `columnGap` | `LengthValue` | `.gap_x(…)` | Space between columns. |
@@ -168,7 +178,7 @@ view()
 | `minHeight` | `LengthValue` | `.min_h(…)` | Minimum height. |
 | `maxWidth` | `LengthValue` | `.max_w(…)` | Maximum width. |
 | `maxHeight` | `LengthValue` | `.max_h(…)` | Maximum height. |
-| `aspectRatio` | `number` | `.aspect_ratio(r)`, `.aspect_square()` | Width divided by height; the missing dimension is computed from the other one. |
+| `aspectRatio` | `number \| "auto" \| "16 / 9"` | `.aspect_ratio(r)`, `.aspect_square()` | Width divided by height, a number (`1.5`) or CSS's ratio (`"16 / 9"`); the missing dimension is computed from the other one. `"auto"` sets none. |
 
 ### Margin
 
@@ -183,8 +193,8 @@ Margins accept `"auto"` (absorbs free space, as in flexbox) and negative values.
 | `marginRight` | `DimensionValue \| EnvValue` | `.mr(…)` | Right. |
 | `marginBottom` | `DimensionValue \| EnvValue` | `.mb(…)` | Bottom. |
 | `marginLeft` | `DimensionValue \| EnvValue` | `.ml(…)` | Left. |
-| `marginStart` | `DimensionValue` | `.ms(…)` | Left in left-to-right layouts, right in right-to-left ones. |
-| `marginEnd` | `DimensionValue` | `.me(…)` | The opposite of `marginStart`. |
+| `marginStart` | `DimensionValue` | `.ms(…)` | Inline start: left in left-to-right layouts, right in right-to-left ones. |
+| `marginEnd` | `DimensionValue` | `.me(…)` | Inline end: the opposite side of `marginStart`. |
 
 ### Padding
 
@@ -199,8 +209,8 @@ The physical keys (all but `paddingStart` / `paddingEnd`) also take an `EnvValue
 | `paddingRight` | `LengthValue \| EnvValue` | `.pr(…)` | Right. |
 | `paddingBottom` | `LengthValue \| EnvValue` | `.pb(…)` | Bottom. |
 | `paddingLeft` | `LengthValue \| EnvValue` | `.pl(…)` | Left. |
-| `paddingStart` | `LengthValue` | `.ps(…)` | Left in left-to-right layouts, right in right-to-left ones. |
-| `paddingEnd` | `LengthValue` | `.pe(…)` | The opposite of `paddingStart`. |
+| `paddingStart` | `LengthValue` | `.ps(…)` | Inline start: left in left-to-right layouts, right in right-to-left ones. |
+| `paddingEnd` | `LengthValue` | `.pe(…)` | Inline end: the opposite side of `paddingStart`. |
 
 ## ViewStyle
 
@@ -230,16 +240,18 @@ view().h(px(120.0)).rounded(px(16.0)).bg_linear(deg(135.0)).gradient_from(rgb(0x
 | `borderRightWidth` | `number` | `.border_r(w)` | Right side. |
 | `borderBottomWidth` | `number` | `.border_b(w)` | Bottom side. |
 | `borderLeftWidth` | `number` | `.border_l(w)` | Left side. |
-| `borderStartWidth` | `number` | `.border_s(w)` | Start side (left in left-to-right layouts). |
-| `borderEndWidth` | `number` | `.border_e(w)` | End side. |
-| `borderColor` | `ColorValue` | `.border_color(c)` | Color of all four sides. |
+| `borderStartWidth` | `number` | `.border_s(w)` | Inline start side (left in left-to-right layouts, right in right-to-left ones). |
+| `borderEndWidth` | `number` | `.border_e(w)` | Inline end side. |
+| `borderColor` | `ColorValue \| AnimatedNode` | `.border_color(c)`, `.bind_border_color(&node)` | Color of all four sides. Takes a native animated color. |
 | `borderTopColor` | `ColorValue` | `.border_t_color(c)` | Top side. |
 | `borderRightColor` | `ColorValue` | `.border_r_color(c)` | Right side. |
 | `borderBottomColor` | `ColorValue` | `.border_b_color(c)` | Bottom side. |
 | `borderLeftColor` | `ColorValue` | `.border_l_color(c)` | Left side. |
-| `borderStartColor` | `ColorValue` | `.border_s_color(c)` | Start side. |
-| `borderEndColor` | `ColorValue` | `.border_e_color(c)` | End side. |
+| `borderStartColor` | `ColorValue` | `.border_s_color(c)` | Inline start side. |
+| `borderEndColor` | `ColorValue` | `.border_e_color(c)` | Inline end side. |
 | `borderStyle` | `"solid" \| "dashed" \| "dotted" \| "none" \| "hidden"` | `.border_solid()`, `.border_dashed()`, `.border_dotted()`, `.border_none()` | Line style. Default `"solid"`. `"none"` and `"hidden"` draw and lay out no border whatever the widths, set before or after, as in CSS. |
+
+A side whose width is set and whose color nothing sets is drawn in the text color, CSS's `currentColor`: `{ borderWidth: 1, color: "#2563eb" }` draws a blue border. Outlines take the text color the same way.
 
 ### Corners
 
@@ -250,10 +262,10 @@ view().h(px(120.0)).rounded(px(16.0)).bg_linear(deg(135.0)).gradient_from(rgb(0x
 | `borderTopRightRadius` | `number` | `.rounded_tr(r)` | Top-right corner. |
 | `borderBottomRightRadius` | `number` | `.rounded_br(r)` | Bottom-right corner. |
 | `borderBottomLeftRadius` | `number` | `.rounded_bl(r)` | Bottom-left corner. |
-| `borderTopStartRadius` | `number` | `.rounded_ss(r)` | Top corner on the start side. |
-| `borderTopEndRadius` | `number` | `.rounded_se(r)` | Top corner on the end side. |
-| `borderBottomStartRadius` | `number` | `.rounded_es(r)` | Bottom corner on the start side. |
-| `borderBottomEndRadius` | `number` | `.rounded_ee(r)` | Bottom corner on the end side. |
+| `borderTopStartRadius` | `number` | `.rounded_ss(r)` | Top corner on the inline start side. |
+| `borderTopEndRadius` | `number` | `.rounded_se(r)` | Top corner on the inline end side. |
+| `borderBottomStartRadius` | `number` | `.rounded_es(r)` | Bottom corner on the inline start side. |
+| `borderBottomEndRadius` | `number` | `.rounded_ee(r)` | Bottom corner on the inline end side. |
 | `borderCurve` | `"circular" \| "continuous"` | `.border_curve(curve)` | `"continuous"`: corners whose curvature eases into the edges, like iOS app icons. Where the box is too small the curve falls back to circular, so pills stay pills. Works on both platforms. |
 
 ### Outline
@@ -263,21 +275,17 @@ An outline is drawn outside the border and takes no space in layout.
 | Key | Type | Rust | Description |
 |---|---|---|---|
 | `outlineWidth` | `number` | `.outline(w)` | Line width. |
-| `outlineColor` | `ColorValue` | `.outline_color(c)` | Line color. |
+| `outlineColor` | `ColorValue` | `.outline_color(c)` | Line color. Default the text color. |
 | `outlineStyle` | `"solid" \| "dashed" \| "dotted" \| "none" \| "hidden"` | `.outline_dashed()`, `.outline_dotted()`, `.outline_none()` | Line style. |
 | `outlineOffset` | `number` | `.outline_offset(o)` | Distance from the border edge; negative values move it inside. |
 
 ### Shadows
 
-Two ways to cast a shadow: the CSS `boxShadow` (several layers, spread, inset) or the four `shadow*` keys.
+A view casts shadows with CSS's `boxShadow`: several layers, spread and inset shadows. Transitions animate it (`transitionProperty: "boxShadow"`).
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `boxShadow` | `string` | `.shadow([BoxShadow { … }])`, `.shadow_md()` | CSS `box-shadow`: offsets, blur, spread and color, several layers separated by commas, `inset` for inner shadows. |
-| `shadowColor` | `ColorValue` | `.shadow_color(c)` | Shadow color. |
-| `shadowOffset` | `{ width: number; height: number }` | `.shadow_offset(point)` | Offset. Default `{ width: 0, height: -3 }`. |
-| `shadowOpacity` | `number` | `.shadow_opacity(o)` | Opacity, 0 to 1. Default `0` (no shadow). |
-| `shadowRadius` | `number` | `.shadow_radius(r)` | Blur radius. Default `3`. |
+| `boxShadow` | `string \| BoxShadowLayer[]` | `.shadow([BoxShadow { … }])`, `.shadow_md()`, `.shadow_color(c)` | CSS `box-shadow`: offsets, blur, spread and color, several layers separated by commas, `inset` for inner shadows; or its layers as numbers, `[{ x, y, blur, spread, color, inset }]` (only `x` and `y` required); a layer without a color is drawn in the text color, as CSS's `currentColor`. `.shadow_color(c)` recolors the layers of a preset or of `.shadow(…)`. |
 
 ```rust tabs
 view().p_4().rounded(px(12.0)).bg(white()).shadow([
@@ -306,31 +314,46 @@ view().p_4().rounded(px(12.0)).bg(white()).shadow([
 
 ### Transforms
 
+Transforms are CSS's: the `translate`, `rotate` and `scale` properties and `transform`, composed in that order. Each is a property of its own, so a style's `scale` replaces a class's `scale-*` and keeps its `rotate-*`, and a style's `transform` replaces a class's transform functions (`rotate-x-*`, `skew-*`).
+
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `transform` | `TransformStep[]` | `.translate_x(…)`, `.scale(…)`, `.rotate(…)`, ... (below) | A list of steps, applied right to left like CSS. |
-| `transformOrigin` | `string \| (number \| string)[]` | `.transform_origin(…)`, `.origin_top_left()`, ... | The point `transform` acts around: keywords, percentages and lengths (`"top left"`, `"50% 0"`, `[10, 20]`). Default the center. |
+| `translate` | `string \| number \| AnimatedNode \| [x, y]` | `.translate_x(…)`, `.translate_y(…)`; `.bind_translate_x(&v)`, `.bind_translate_y(&v)` | CSS's `translate`: x, then y (`"10px 20px"`; percentages of the view's own size, `"-50% 0"`). A number is points along x. `[x, y]` takes a number, a string (`"50%"`, `"10px"`) or an animated value per axis; an animated value alone moves it along x. |
+| `rotate` | `string \| number \| AnimatedNode` | `.rotate(deg(…))`; `.bind_rotate(&v)` | CSS's `rotate`: `"45deg"`, `"0.5turn"`, or about an axis, `"x 90deg"`. A number, and an animated value, is degrees about z, clockwise. |
+| `scale` | `string \| number \| AnimatedNode \| [x, y]` | `.scale(f)`, `.scale_x(f)`, `.scale_y(f)`; `.bind_scale(&v)` | CSS's `scale`: `1.5`, `"150%"`, x and y (`"1 2"`). An animated value scales both axes; `[x, y]` takes a number or an animated value per axis. |
+| `transform` | `string \| TransformStep[]` | `.rotate_x(…)`, `.rotate_y(…)`, `.skew_x(…)`, `.skew_y(…)`, `.transform_none()`; animated steps: `.bind_transform(kind, &v)`, `.bind_motion(&m)` (after every style transform) | CSS's `transform`: `"translateX(10px) rotate(45deg) scale(1.5)"`, or `"none"`. Functions: `translate()`, `translateX()`, `translateY()`, `scale()`, `scaleX()`, `scaleY()`, `rotate()` / `rotateZ()`, `rotateX()`, `rotateY()`, `skew()`, `skewX()`, `skewY()`, `perspective()`. Lengths take `px` (translations also `%`, of the view's own size), angles `deg`, `rad` or `turn`. Or a list of steps whose amounts may be animated values: what the string cannot hold, such as an animated 3D rotation (`[{ perspective: 800 }, { rotateY: angle }]`), and a motion's channels (`m.transform`). A style's `transform` is one form or the other, so a perspective before animated steps is a step of the list. Applied after `translate`, `rotate` and `scale`. |
+| `transformOrigin` | `string \| (number \| string)[]` | `.transform_origin(…)`, `.origin_top_left()`, ... | The point the transforms act around: keywords, percentages and lengths (`"top left"`, `"50% 0"`, `[10, 20]`). Default the center. |
 
-A `TransformStep` is an object with one key:
+A `TransformStep` is an object with one key, applied in the order of the list:
 
-| Step | Value | Rust | Native animated |
-|---|---|---|---|
-| `translateX`, `translateY` | `number` (points) | `.translate_x(…)`, `.translate_y(…)`; `.bind_translate_x(&v)` | yes |
-| `scale`, `scaleX`, `scaleY` | `number` (factor) | `.scale(f)`, `.scale_x(f)`, `.scale_y(f)`; `.bind_scale(&v)` | yes |
-| `rotate`, `rotateZ`, `rotateX`, `rotateY` | `number` (degrees) or `string` (`"45deg"`, `"0.5rad"`) | `.rotate(deg(…))`, `.rotate_x(…)`, `.rotate_y(…)`; `.bind_rotate(&v)` | yes |
-| `skewX`, `skewY` | `number` (degrees) or `string` | `.skew_x(…)`, `.skew_y(…)` | no |
-| `perspective` | `number` | `.perspective(d)` on the parent (CSS's `perspective` property) | no |
+| Step | Value | Native animated |
+|---|---|---|
+| `translateX`, `translateY` | `number` (points) | yes |
+| `scale`, `scaleX`, `scaleY` | `number` (factor) | yes |
+| `rotate`, `rotateZ`, `rotateX`, `rotateY` | `number` (degrees) or `string` (`"45deg"`, `"0.5rad"`) | yes |
+| `skewX`, `skewY` | `number` (degrees) or `string` | no |
+| `perspective` | `number` (points) | no |
 
 ```rust tabs
 view().perspective(px(600.0)).child(view().rotate_y(deg(20.0)).scale(0.95))
 ```
 
 ```tsx tabs
-<View style={{ transform: [{ perspective: 600 }, { rotateY: "20deg" }, { scale: 0.95 }] }} />
+<View style={{ transform: "perspective(600px) rotateY(20deg) scale(0.95)" }} />
+```
+
+An animated value drives `translate`, `rotate` and `scale` directly, and the steps of a `transform` list:
+
+```tsx
+const x = createAnimatedValue(0);
+const angle = createAnimatedValue(0);
+
+<View style={{ translate: [x, 0], rotate: angle }} />
+<View style={{ transform: [{ perspective: 800 }, { rotateY: angle }] }} />
 ```
 
 > [!NOTE]
-> Android has no skew: `skewX` and `skewY` are ignored there.
+> Android draws no skew: `skew()`, `skewX()` and `skewY()` leave the view unskewed there.
 
 ### Filters and blending
 
@@ -338,7 +361,8 @@ view().perspective(px(600.0)).child(view().rotate_y(deg(20.0)).scale(0.95))
 |---|---|---|---|
 | `filter` | `string` | `.blur(r)`, `.brightness(…)`, `.contrast(…)`, `.grayscale(…)`, `.hue_rotate(…)`, `.invert(…)`, `.saturate(…)`, `.sepia(…)` | CSS filters of the view and its content: `brightness()`, `contrast()`, `grayscale()`, `hue-rotate()`, `invert()`, `saturate()`, `sepia()`, `opacity()`, `blur()`, `drop-shadow()`. |
 | `backdropFilter` | `string` | `.backdrop_blur(r)`, `.backdrop_brightness(…)`, ... | CSS filters of what is behind the view, such as `"blur(10px)"` for frosted glass. |
-| `glassEffect` | `"none" \| "regular" \| "clear"` | `ViewStyle::glass_effect` (`GlassEffect`) | Liquid Glass behind the view's content on iOS 26 and later. `"regular"` uses the standard material; `"clear"` takes less color from the background. `"none"` is the default. Pair with `backdropFilter` for the blur shown on earlier iOS versions and other platforms. |
+| `maskImage` | `string` | | A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included. |
+| `glassEffect` | `"none" \| "regular" \| "clear"` | `.glass_effect(GlassEffect::Regular)` | Liquid Glass behind the view's content on iOS 26 and macOS 26 and later. `"regular"` uses the standard material; `"clear"` takes less color from the background. `"none"` is the default. Pair with `backdropFilter` for the blur shown on earlier iOS versions and other platforms. |
 | `mixBlendMode` | `"normal" \| "multiply" \| "screen" \| "overlay" \| "darken" \| "lighten" \| "color-dodge" \| "color-burn" \| "hard-light" \| "soft-light" \| "difference" \| "exclusion" \| "hue" \| "saturation" \| "color" \| "luminosity" \| "plus-darker" \| "plus-lighter"` | `.mix_blend_mode(mode)` | How the view blends with what is behind it. |
 
 > [!WARNING]
@@ -353,7 +377,7 @@ When a transitioned property changes (from a new style, a class or a variant suc
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `transitionProperty` | `string` | `.transition()`, `.transition_all()`, `.transition_colors()`, `.transition_opacity()`, `.transition_shadow()`, `.transition_transform()`, `.transition_none()` | Comma-separated properties that animate: `"all"`, `"colors"` (`color`, `backgroundColor`, `borderColor`, ...), `"opacity"`, `"transform"`, `"boxShadow"`, `"borderRadius"`, `"borderWidth"`, or `"none"`. |
+| `transitionProperty` | `string` | `.transition()`, `.transition_all()`, `.transition_colors()`, `.transition_opacity()`, `.transition_shadow()`, `.transition_transform()`, `.transition_none()` | Comma-separated properties that animate: `"all"`, `"colors"` (`color`, `backgroundColor`, `borderColor`, ...), `"opacity"`, `"transform"` (every transform property), `"boxShadow"`, `"borderRadius"`, `"borderWidth"`, or `"none"`. |
 | `transitionDuration` | `number \| "${number}ms" \| "${number}s"` | `.duration(ms)` | Milliseconds as a number, or `"150ms"` / `"0.2s"`. |
 | `transitionDelay` | `number \| "${number}ms" \| "${number}s"` | `.delay(ms)` | Delay before the transition starts. |
 | `transitionTimingFunction` | `"linear" \| "ease" \| "ease-in" \| "ease-out" \| "ease-in-out" \| "cubic-bezier(...)"` | `.ease_linear()`, `.ease_in()`, `.ease_out()`, `.ease_in_out()`, `.ease_bezier(…)` | The easing curve. |
@@ -389,11 +413,13 @@ Built-in keyframe animations, run natively (Tailwind's `animate-*`).
 
 For animations driven by values, gestures or springs, use [`nsh`'s animation API](./nsh.md#animation) instead.
 
-### Pointer
+### Pointer and selection
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
 | `cursor` | `"auto" \| "default" \| "pointer" \| "text" \| "grab" \| "grabbing" \| "not-allowed" \| ...` (every CSS cursor keyword, and `"none"`) | `.cursor(Cursor)`, `.cursor_pointer()` | The pointer shape over the view, for pointers (iPad trackpads, Mac Catalyst, desktops). |
+| `pointerEvents` | `"auto" \| "none" \| "box-none" \| "box-only"` | `.pointer_events(PointerEvents::BoxNone)` | Which touches the view and the views in it take (`pointer-events-none`, `pointer-events-auto`). `"none"`: none, for the views in it too unless one sets `"auto"`, inherited as in CSS. `"box-none"`: none on the view itself, the views in it take theirs; `"box-only"`: the view itself takes them, the views in it none (both React Native's, for the view only). Default `"auto"`. See [touch and gestures](../docs/touch-and-gestures.md#pointerevents). |
+| `userSelect` | `"auto" \| "none" \| "text"` | `.select_text()`, `.select_none()` | Whether a `<Text>` can be selected and copied (`"text"`, `select-text`) or not (`"none"`, `select-none`); a view's reaches the texts in it that set none. `"auto"` (`select-auto`), the default, leaves it to the view around it, else to the platform. See [text](../elements/text.md). |
 
 ### SVG paint
 
@@ -415,12 +441,12 @@ Text styles apply to `<Text>` and `<Input>`. They are also inherited, as in CSS:
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `color` | `ColorValue` | `.text_color(c)` | Text color. |
+| `color` | `ColorValue \| AnimatedNode` | `.text_color(c)`, `.bind_color(&node)` | Text color. Takes a native animated color. Also the color of borders and outlines that set none. |
 | `fontSize` | `number` | `.text_size(s)`, `.text_sm()`, `.text_lg()`, ... | Size in points. |
 | `fontWeight` | `"normal" \| "bold" \| number \| "${number}"` | `.font_weight(FontWeight::SEMIBOLD)` | `"normal"` (400), `"bold"` (700) or 100–900. |
 | `fontFamily` | `string` | `.font_family(name)` | A system family, or the name an imported font evaluates to (`import Inter from "./Inter.ttf"`). See [Fonts](../docs/fonts.md). |
 | `fontStyle` | `"normal" \| "italic"` | `.italic()` | Italic. |
-| `fontVariant` | `("small-caps" \| "oldstyle-nums" \| "lining-nums" \| "tabular-nums" \| "proportional-nums")[]` | `.small_caps()`, `.oldstyle_nums()`, `.lining_nums()`, `.tabular_nums()`, `.proportional_nums()` | OpenType number and letter forms. `tabular-nums` keeps digits the same width, useful for counters and timers. |
+| `fontVariant` | `FontVariantName[] \| string` | `.small_caps()`, `.oldstyle_nums()`, `.lining_nums()`, `.tabular_nums()`, `.proportional_nums()` | OpenType number and letter forms, a list (`["tabular-nums"]`) or CSS's names separated by spaces (`"tabular-nums small-caps"`). `tabular-nums` keeps digits the same width, useful for counters and timers. |
 
 ### Spacing and alignment
 
@@ -428,13 +454,19 @@ Text styles apply to `<Text>` and `<Input>`. They are also inherited, as in CSS:
 |---|---|---|---|
 | `lineHeight` | `number` | `.line_height(h)` | Line height in points. |
 | `letterSpacing` | `number` | `.letter_spacing(s)` | Extra space between characters, in points. |
-| `textAlign` | `"auto" \| "left" \| "center" \| "right" \| "justify"` | `.text_left()`, `.text_center()`, `.text_right()`, `.text_justify()` | Horizontal alignment. |
-| `textAlignVertical` | `"auto" \| "top" \| "center" \| "bottom"` | | Where text shorter than its box sits (a `<Text>` with a height). |
+| `textAlign` | `"auto" \| "left" \| "center" \| "right" \| "justify" \| "start" \| "end"` | `.text_left()`, `.text_center()`, `.text_right()`, `.text_justify()` | Horizontal alignment. `"left"` and `"right"` keep their sides in right-to-left layouts; `"start"` and `"end"` follow the direction. |
 | `writingDirection` | `"auto" \| "ltr" \| "rtl"` | `.writing_direction(d)` | Base direction of the text; `"auto"` takes it from the content. |
 | `textTransform` | `"none" \| "uppercase" \| "lowercase" \| "capitalize"` | `.uppercase()`, `.lowercase()`, `.capitalize()`, `.normal_case()` | Case transformation. |
 
 > [!TIP]
 > Tailwind's `leading-*` and `tracking-*` classes set line heights as multiples of the font size and letter spacing in `em`, so they scale with `text-*` sizes.
+
+### Lines and overflow
+
+| Key | Type | Rust | Description |
+|---|---|---|---|
+| `numberOfLines` | `number` | `.number_of_lines(n)`, `.truncate()` | The most lines a `<Text>` shows (CSS's `line-clamp`, `line-clamp-*`); `0` (`line-clamp-none`), the default, shows them all. `truncate` is one line cut with an ellipsis. |
+| `textOverflow` | `"ellipsis" \| "clip" \| "ellipsis-start" \| "ellipsis-middle"` | `.text_overflow(EllipsizeMode::Middle)` | How a clamped `<Text>` is cut: an ellipsis at its end (`"ellipsis"`, `text-ellipsis`, the default), clipped (`"clip"`, `text-clip`), or the ellipsis at its start or in its middle (file paths). |
 
 ### Decoration
 
@@ -446,20 +478,36 @@ Text styles apply to `<Text>` and `<Input>`. They are also inherited, as in CSS:
 | `textDecorationThickness` | `number \| "auto" \| "from-font"` | `.text_decoration_thickness(t)` | Line thickness. |
 | `textUnderlineOffset` | `number \| "auto"` | `.underline_offset(o)` | Distance of the underline from the baseline. |
 
-### Placeholder and selection
+### Placeholder, caret and selection
+
+`placeholderColor` and `caretColor` belong to `InputStyle`, the style of `<Input>`; `selectionColor` to `TextStyle`, as
+selectable texts take it too.
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
 | `placeholderColor` | `ColorValue` | `.placeholder_color(c)` of an input | The color of an `<Input>`'s placeholder (`placeholder:text-*`). |
-| `selectionColor` | `ColorValue` | `.selection_color(c)` of an input or a text | An `<Input>`'s caret and selection, a selectable `<Text>`'s selection highlight and handles (`selection:bg-*`); the platform's accent by default. |
+| `textAlignVertical` | `"auto" \| "top" \| "center" \| "bottom"` | | Where text shorter than its box sits (a `<Text>` with a height). |
+| `selectionColor` | `ColorValue` | `.selection_color(c)` of an input or a text | An `<Input>`'s or a selectable `<Text>`'s selection highlight and handles (`selection:bg-*`); the platform's accent by default. On iOS also an input's caret, unless `caretColor` is set (UIKit tints both with one color). |
+| `caretColor` | `ColorValue` | `.caret_color(c)` of an input | An `<Input>`'s caret (`caret-*`); the platform's default when unset. |
 
 ### Text shadow
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `textShadowColor` | `ColorValue` | `.text_shadow_color(c)` | Shadow color. |
-| `textShadowOffset` | `{ width: number; height: number }` | `.text_shadow_offset(point)` | Shadow offset. |
-| `textShadowRadius` | `number` | `.text_shadow_radius(r)` | Blur radius. |
+| `textShadow` | `string \| TextShadowLayer[]` | `.text_shadow([TextShadow { … }])`, `.text_shadow_sm()`, `.text_shadow_color(c)` | CSS's `text-shadow`: offsets, blur and color (`"0 1px 2px rgb(0 0 0 / 0.3)"`), or its layers as numbers, `[{ x, y, blur, color }]`; several layers drawn as the widest one; a layer without a color is drawn in the text color; `"none"`. |
+
+```rust tabs
+text("Title").text_shadow([TextShadow {
+    offset_y: px(1.0),
+    radius: px(2.0),
+    color: rgba(0x0000004d).into(),
+    ..TextShadow::default()
+}])
+```
+
+```tsx tabs
+<Text style={{ textShadow: "0 1px 2px rgb(0 0 0 / 0.3)" }}>Title</Text>
+```
 
 > [!NOTE]
 > iOS draws no gradients (`backgroundImage`) or inset box shadows on `<Text>`.
@@ -471,21 +519,17 @@ All keys of `ViewStyle`, plus:
 | Key | Type | Rust | Description |
 |---|---|---|---|
 | `tintColor` | `ColorValue` | `.tint_color(c)` of an image | Recolors a template image (every opaque pixel takes this color), for monochrome icons. |
-| `objectPosition` | `string` | `.object_position(p)`, `.object_top()`, ... of an image | Where the image sits in its box once `resizeMode` has sized it, as CSS's `object-position`: keywords, percentages and lengths (`"top"`, `"left bottom"`, `"25% 75%"`, `"right 10px bottom 20%"`). A covering image is cropped around it. Default the center. |
+| `objectFit` | `"fill" \| "contain" \| "cover" \| "none" \| "scale-down"` | `.object_fit(ResizeMode::Contain)` | CSS's `object-fit`: how an image or a video fits its box. `"cover"` fills it and crops, `"contain"` fits inside it, `"fill"` stretches, `"none"` keeps the natural size, `"scale-down"` is `"none"` or `"contain"`, whichever is smaller. Images cover their box by default, videos are contained in it. |
+| `objectPosition` | `string` | `.object_position(p)`, `.object_top()`, ... of an image | Where the image sits in its box once `objectFit` has sized it, as CSS's `object-position`: keywords, percentages and lengths (`"top"`, `"left bottom"`, `"25% 75%"`, `"right 10px bottom 20%"`). A covering image is cropped around it. Default the center. |
 
-How an image fills its box is the `resizeMode` prop of `<Image>`, not a style; see [image](../elements/image.md).
+`objectFit` applies to `<Video>` too; see [image](../elements/image.md) and [video](../elements/video.md).
 
 ## Props that look like styles
 
-Some settings are props in NSH, not style keys. Their Tailwind classes exist, but an explicit prop wins over the class:
+Android's material shadow is a platform prop, set beside the style:
 
 | Setting | Prop | Rust | Class |
 |---|---|---|---|
-| Line limit | `numberOfLines` on `<Text>` | `.number_of_lines(n)` | `line-clamp-*`, `truncate` |
-| Ellipsis position | `ellipsizeMode` on `<Text>` | `.ellipsize_mode(mode)` | `text-ellipsis`, `text-clip` |
-| Touch pass-through | `pointerEvents` | `.pointer_events(…)` | `pointer-events-none`, `pointer-events-auto` |
-| Image fit | `resizeMode` on `<Image>` | `.resize_mode(mode)` | `object-cover`, `object-contain`, ... |
-| Selectable text | `selectable` on `<Text>` | `.selectable(true)` | `select-text`, `select-none` |
 | Material shadow (Android) | `android={{ elevation }}` | `.elevation(e)` | |
 
 ## Related

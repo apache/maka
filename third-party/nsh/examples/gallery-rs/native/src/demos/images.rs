@@ -92,7 +92,7 @@ fn resize_modes() -> AnyElement {
             view()
                 .flex_1()
                 .gap_2()
-                .child(frame(image(WIDE).resize_mode(mode)).h(px(140.0)))
+                .child(frame(image(WIDE).object_fit(mode)).h(px(140.0)))
                 .child(note(name, true))
         }))
     });
@@ -199,7 +199,7 @@ fn placeholders(seed: Signal<u32>) -> AnyElement {
                     })
                     .placeholder(LOGO)
                     .fade_duration(ms as f32)
-                    .resize_mode(ResizeMode::Cover),
+                    .object_fit(ResizeMode::Cover),
                 )
                 .h(px(100.0)),
             )

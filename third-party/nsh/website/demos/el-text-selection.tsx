@@ -23,14 +23,14 @@ function App() {
           <Text style={{ color: ui().text, lineHeight: 22 }}>Version 2.4 moves the app to offline sync.</Text>
           <TextView markdown={NOTES} />
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <Text selectable={false} style={{ color: ui().faint }}>
-              Updated (selectable=false)
+            <Text style={{ userSelect: "none", color: ui().faint }}>
+              Updated (userSelect none)
             </Text>
             <Text style={{ color: ui().text }}>October 21</Text>
           </View>
         </View>
 
-        <Text style={{ fontSize: 12, color: ui().muted }}>Paste what you copied: the label marked selectable=false stays out of it.</Text>
+        <Text style={{ fontSize: 12, color: ui().muted }}>Paste what you copied: the label marked userSelect none stays out of it.</Text>
         <Input
           multiline
           value={pasted()}

@@ -593,21 +593,7 @@ impl Headless {
                     .any(|item| matches!(item, MountItem::Delete { id } if id == old))
             });
         self.screen.apply(batch);
-        // The app moved the focus (`focus()`, `blur()`): platforms tell the
-        // views as when the user moves it.
-        let now = self.screen.focused().or(self.screen.key_focus());
-        if now != focused {
-            self.engine
-                .control()
-                .set_focus_path(self.screen.focus_path());
-            if let Some(old) = focused {
-                self.set_focused_state(old, false);
-                self.send(old, EventKind::Blur, EventPayload::None);
-            }
-            if let Some(new) = now {
-                self.send(new, EventKind::Focus, EventPayload::None);
-            }
-        }
+        self.focus_calls(batch, focused);
         self.exited |= batch.items.iter().any(|item| {
             matches!(
                 item,
@@ -1158,12 +1144,22 @@ impl Headless {
         self.step(format!("pressAt({selector}, {}, {})", at.x.0, at.y.0));
         let pick = self.screen.pressable(&parsed);
         let id = self.picked(pick, selector, "pressable view")?;
-        // `at` is in the view. The touch reports it in the root, as `press`
-        // reports a canvas node's center.
+        // `at` is in the view the selector names, which may be inside the
+        // pressable the press goes to (a paragraph's text in an editor):
+        // it is moved into that view's coordinates. The touch reports it
+        // in the root, as `press` reports a canvas node's center.
+        let named = match self.screen.resolve(&parsed)[..] {
+            [named] => named,
+            _ => id,
+        };
         let page = self
             .screen
-            .bounds_in_root(id)
+            .bounds_in_root(named)
             .map(|bounds| bounds.origin + at);
+        let at = match (page, self.screen.bounds_in_root(id)) {
+            (Some(page), Some(target)) => page - target.origin,
+            _ => at,
+        };
         let path = self.screen.touch_path(id);
         let contact = self
             .screen

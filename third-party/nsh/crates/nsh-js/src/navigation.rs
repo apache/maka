@@ -1119,7 +1119,7 @@ unsafe extern "C" fn modal_run(
 
 /// Whether dialog `props` slides its popup itself: it has a backdrop, it
 /// slides (the default), the user did not ask for less motion, and its
-/// `style` has no transform of its own (the slide's would replace it).
+/// `style` has no `translate` of its own (the slide's would replace it).
 fn slides_popup(cx: *mut JsContext, props: JsValue) -> bool {
     // SAFETY: the props borrowed as the function's one data value; it
     // returns a boolean.
@@ -1134,10 +1134,10 @@ fn slides_popup(cx: *mut JsContext, props: JsValue) -> bool {
     let slides = unset || dom::string_arg(cx, animation).is_some_and(|a| a == "slide");
     free(cx, animation);
     let style = get(cx, props, c"style");
-    let transform = get(cx, style, c"transform");
+    let translate = get(cx, style, c"translate");
     // SAFETY: inline checks of live values.
-    let own = unsafe { !qjs::JS_IsUndefined(transform) && !qjs::JS_IsNull(transform) };
-    free(cx, transform);
+    let own = unsafe { !qjs::JS_IsUndefined(translate) && !qjs::JS_IsNull(translate) };
+    free(cx, translate);
     free(cx, style);
     slides && !own && !crate::env::current(cx).reduce_motion
 }
@@ -1195,7 +1195,7 @@ fn popup_part(
 }
 
 /// The popup's style while it slides: the dialog's `style`, then a
-/// `translateY` of the offset, which runs to 0.
+/// `translate` down by the offset, which runs to 0.
 unsafe extern "C" fn slid_style(
     cx: *mut JsContext,
     _this: JsValue,
@@ -1208,17 +1208,10 @@ unsafe extern "C" fn slid_style(
     // values owned by the arrays and objects that take them.
     unsafe {
         let (props, offset) = (*data, *data.add(1));
-        let translate = qjs::JS_NewObject(cx);
-        qjs::JS_SetPropertyStr(
-            cx,
-            translate,
-            c"translateY".as_ptr(),
-            qjs::JS_DupValue(cx, offset),
-        );
-        let mut one = [translate];
-        let transform = qjs::JS_NewArrayFrom(cx, 1, one.as_mut_ptr());
+        let mut axes = [qjs::JS_NewFloat64(0.0), qjs::JS_DupValue(cx, offset)];
+        let translate = qjs::JS_NewArrayFrom(cx, 2, axes.as_mut_ptr());
         let motion = qjs::JS_NewObject(cx);
-        qjs::JS_SetPropertyStr(cx, motion, c"transform".as_ptr(), transform);
+        qjs::JS_SetPropertyStr(cx, motion, c"translate".as_ptr(), translate);
         let mut both = [get(cx, props, c"style"), motion];
         qjs::JS_NewArrayFrom(cx, 2, both.as_mut_ptr())
     }

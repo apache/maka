@@ -249,12 +249,14 @@ fn fonts() -> Card {
                         .text_size(px(26.0))
                         .font_weight(FontWeight::EXTRA_BOLD)
                         .text_color(colors::ACCENT)
+                        .text_shadow([TextShadow {
+                            radius: px(10.0),
+                            ..TextShadow::default()
+                        }])
                         .text_shadow_color(AdaptiveColor::new(
                             colors::ACCENT.light.opacity(0.3),
                             colors::ACCENT.dark.opacity(0.6),
-                        ))
-                        .text_shadow_offset(point(px(0.0), px(0.0)))
-                        .text_shadow_radius(px(10.0)),
+                        )),
                 )
                 .child(
                     view()
@@ -272,12 +274,16 @@ fn fonts() -> Card {
                                 .text_size(px(26.0))
                                 .font_weight(FontWeight::EXTRA_BOLD)
                                 .text_color(colors::INFO)
+                                .text_shadow([TextShadow {
+                                    offset_x: px(2.0),
+                                    offset_y: px(3.0),
+                                    radius: px(3.0),
+                                    ..TextShadow::default()
+                                }])
                                 .text_shadow_color(AdaptiveColor::new(
                                     rgb_a(0x14140a, 0.22),
                                     rgb_a(0x000000, 0.9),
-                                ))
-                                .text_shadow_offset(point(px(2.0), px(3.0)))
-                                .text_shadow_radius(px(3.0)),
+                                )),
                         ),
                 ),
         ))
@@ -319,32 +325,32 @@ fn scaling() -> Card {
 
 /// Lines and ellipsis modes.
 fn truncation() -> Card {
-    let lorem = |mode: EllipsizeMode| body(LOREM).number_of_lines(1).ellipsize_mode(mode);
+    let lorem = |mode: EllipsizeMode| body(LOREM).number_of_lines(1).text_overflow(mode);
     Card::new()
         .icon(IconName::Lists)
         .title("Truncation")
-        .subtitle("numberOfLines and ellipsizeMode")
+        .subtitle("numberOfLines and textOverflow")
         .child(specimen(
             "Two lines, tail",
-            Some("numberOfLines={2}"),
+            Some("numberOfLines: 2"),
             true,
             body(LOREM).number_of_lines(2),
         ))
         .child(specimen(
             "One line, head",
-            Some("ellipsizeMode=\"head\""),
+            Some("textOverflow: \"ellipsis-start\""),
             false,
             lorem(EllipsizeMode::Head),
         ))
         .child(specimen(
             "One line, middle",
-            Some("ellipsizeMode=\"middle\""),
+            Some("textOverflow: \"ellipsis-middle\""),
             false,
             lorem(EllipsizeMode::Middle),
         ))
         .child(specimen(
             "One line, clip",
-            Some("ellipsizeMode=\"clip\""),
+            Some("textOverflow: \"clip\""),
             false,
             lorem(EllipsizeMode::Clip),
         ))
@@ -375,17 +381,17 @@ fn cjk() -> Card {
         ))
         .child(specimen(
             "Two lines, tail",
-            Some("numberOfLines={2}"),
+            Some("numberOfLines: 2"),
             false,
             body(CHINESE).number_of_lines(2),
         ))
         .child(specimen(
             "One line, middle",
-            Some("ellipsizeMode=\"middle\""),
+            Some("textOverflow: \"ellipsis-middle\""),
             false,
             body(JAPANESE)
                 .number_of_lines(1)
-                .ellipsize_mode(EllipsizeMode::Middle),
+                .text_overflow(EllipsizeMode::Middle),
         ))
 }
 
@@ -415,7 +421,7 @@ fn right_to_left() -> Card {
         ))
         .child(specimen(
             "One line, tail",
-            Some("numberOfLines={1}"),
+            Some("numberOfLines: 1"),
             false,
             body(ARABIC).number_of_lines(1),
         ))

@@ -253,7 +253,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           gap: 8,
         }}
       >
-        <Image src={logo} resizeMode="contain" style={{ width: 24, height: 24 }} />
+        <Image src={logo} style={[{ width: 24, height: 24 }, { objectFit: 'contain' }]} />
         <Text style={{ color: C.text, fontSize: 18, lineHeight: 24, fontWeight: '600', flex: 1 }}>
           Maka
         </Text>
@@ -291,7 +291,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         focusStyle={{ backgroundColor: C.line }}
       >
         <Icon name="folder" color={C.secondary} />
-        <Text numberOfLines={1} style={{ color: C.secondary, flex: 1, fontSize: 13 }}>
+        <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
           {scopeLabel()}
         </Text>
         <Icon name="down" color={C.secondary} />
@@ -314,7 +314,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         focusStyle={controlFocusStyle}
       >
         <Icon name="search" color={C.secondary} />
-        <Text numberOfLines={1} style={{ color: C.muted, flex: 1, fontSize: 13 }}>
+        <Text style={[{ color: C.muted, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
           {tr('Search titles and messages…')}
         </Text>
       </Button>
@@ -406,10 +406,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       hoverStyle={controlHoverStyle}
                       focusStyle={controlFocusStyle}
                     >
-                      <Text numberOfLines={1} style={{ color: C.text }}>
+                      <Text style={[{ color: C.text }, { numberOfLines: 1 }]}>
                         {scope()?.title}
                       </Text>
-                      <Text numberOfLines={1} style={{ color: C.muted }}>
+                      <Text style={[{ color: C.muted }, { numberOfLines: 1 }]}>
                         {scope()?.detail}
                       </Text>
                     </Button>
@@ -479,16 +479,22 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                     focusStyle={{ backgroundColor: C.raised }}
                   >
                     <View
-                      pointerEvents="none"
-                      style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                      style={[
+                        { flexDirection: 'row', alignItems: 'center', gap: 8 },
+                        { pointerEvents: 'none' },
+                      ]}
                     >
                       <Text
-                        numberOfLines={1}
-                        style={{
-                          color:
-                            props.selected() === key() || session()?.hasUnread ? C.accent : C.text,
-                          flex: 1,
-                        }}
+                        style={[
+                          {
+                            color:
+                              props.selected() === key() || session()?.hasUnread
+                                ? C.accent
+                                : C.text,
+                            flex: 1,
+                          },
+                          { numberOfLines: 1 },
+                        ]}
                       >
                         {session()?.title || tr('Untitled conversation')}
                       </Text>
@@ -497,8 +503,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       </If>
                     </View>
                     <Text
-                      numberOfLines={1}
-                      style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}
+                      style={[
+                        { color: C.muted, fontSize: 12, lineHeight: 16 },
+                        { numberOfLines: 1 },
+                      ]}
                     >
                       {session()?.activity === 'working'
                         ? `${sessionStatusCaption.working} · `
@@ -547,8 +555,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       </If>
       <If when={navigationNotice()}>
         <Text
-          selectable
-          style={{ color: navigationNotice()?.kind === 'action' ? C.danger : C.warning }}
+          style={[
+            { color: navigationNotice()?.kind === 'action' ? C.danger : C.warning },
+            { userSelect: 'text' },
+          ]}
         >
           {renderText(navigationNotice()?.message ?? '')}
         </Text>
@@ -564,7 +574,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         </If>
       </If>
       <If when={browser.error() || browser.projectError()}>
-        <Text selectable style={{ color: C.danger }}>
+        <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
           {browser.error() || browser.projectError()}
         </Text>
         <Button

@@ -1,6 +1,7 @@
 # Text
 
-- **Text**: `<Text numberOfLines ellipsizeMode="tail|head|middle|clip">`; styles `fontFamily` (system or imported fonts:
+- **Text**: `<Text>`; styles `numberOfLines`, `textOverflow` (`ellipsis|clip|ellipsis-start|ellipsis-middle`: `EllipsizeMode`'s
+  `Tail|Clip|Head|Middle`), `fontFamily` (system or imported fonts:
   `import Inter from "./Inter.ttf"` evaluates to the family name and registers the font before the first frame), `fontWeight`,
   `fontStyle`, `letterSpacing`, `textDecorationLine` + `textDecorationColor`, `textTransform`, `lineHeight`, `textAlign`,
   `textAlignVertical` (the core moves the content box down). `adjustsFontSizeToFit` shrinks the fonts (down to
@@ -21,7 +22,7 @@
   A text out of the layout (`display: none` on it or on a view around it, `hidden`) is sent with an empty layout (its
   text unchanged, for tests and screen readers): its box is zero, and the web, which does not clip text to its box,
   would still draw the glyphs laid out in it.
-  `selectable` (or `select-text`): range selection, drawing only (`AttributedText::selectable` /
+  `userSelect: "text"` (or `select-text`): range selection, drawing only (`AttributedText::selectable` /
   `selection_color`, not part of layout). iOS (`text_selection.rs`): the CoreText `TextView` adopts `UITextInput`
   (non-editable: no keyboard, `inputView` is empty) and a `UITextInteraction` (`NonEditable`) attached only while the text
   is selectable gives UIKit's long press, loupe, handles, highlight (the view's tint, which `selectionColor` sets) and edit
@@ -33,8 +34,8 @@
   action mode offers Copy, Select all and Share. A touch elsewhere in the surface (`Mounter.touchDown`), new text or
   detaching ends it; one selection at a time per surface. Copy leaves attachments' placeholders out on both. Text that is
   not selectable has no interaction, listener or extra drawing. `selectable` is `Option<bool>` (unset, or `false` from
-  `selectable={false}` / `select-none`) because the web's desktop idiom selects text that is not set off by default, as a
-  web page does, except inside views that take presses or touches. Web: the browser's own selection, `::selection` in
+  `userSelect: "none"` / `select-none`; a view's `userSelect` reaches the texts in it that set none) because the
+  web's desktop idiom selects text that is not set off by default, as a web page does, except inside views that take presses or touches. Web: the browser's own selection, `::selection` in
   `selectionColor`; copying joins the absolutely placed runs with each line's break ([web.md](web.md)). Linux (`text.rs`, desktop conventions): a mouse drag selects characters (past a 3 pt slop, 10 pt over a
   press target, so clicking a link still presses it), a double click words, a triple click the paragraph (drags go on by
   them), Shift+click extends; the highlight is drawn behind the glyphs in `selectionColor` at 30% (the system blue by
@@ -64,7 +65,7 @@
   of spaces, or single other characters (each CJK ideograph, kana, emoji or punctuation mark); a triple click selects
   a whole text. Desktops select as their single texts do (drag, double click words, triple click paragraphs, drags go
   on by them, Shift+click extends; Ctrl / Cmd+A, Ctrl / Cmd+C, Escape; a press elsewhere clears), touch screens with a
-  long press (a word) and then the platform's handles and edit menu (Copy, Select All). Texts with `selectable={false}`
+  long press (a word) and then the platform's handles and edit menu (Copy, Select All). Texts with `userSelect: "none"`
   stay out; an area inside another is part of the outer one (only the outermost area keeps a model); texts outside
   areas select alone, as above. Views without the flag change nothing (no extra mount items). iOS
   (`selectable_view.rs`): `UITextInteraction` selects within one `UITextInput` view, so an area has its own

@@ -110,7 +110,6 @@ export function Header(props: {
   return (
     <View
       accessibilityElementsHidden={props.browser.hidden}
-      pointerEvents={props.browser.hidden ? 'none' : 'auto'}
       desktop={windowDrag}
       style={{
         opacity: props.browser.hidden ? 0 : 1,
@@ -128,6 +127,7 @@ export function Header(props: {
         gap: 8,
         borderBottomWidth: !platform.isTerminal && !props.title && !props.status ? 0 : 1,
         borderBottomColor: C.line,
+        pointerEvents: props.browser.hidden ? 'none' : 'auto',
       }}
     >
       <Button
@@ -144,7 +144,10 @@ export function Header(props: {
         hoverStyle={{ backgroundColor: C.surface }}
         focusStyle={{ backgroundColor: C.raised }}
       >
-        <View pointerEvents="none" accessibilityElementsHidden style={{ width: 16, height: 16 }}>
+        <View
+          accessibilityElementsHidden
+          style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
+        >
           <View class="group-hover/sidebar-toggle:opacity-0">
             <Icon name="sidebar" color={C.secondary} />
           </View>
@@ -170,7 +173,9 @@ export function Header(props: {
       >
         <Icon name="command" color={C.secondary} />
       </Button>
-      <Text numberOfLines={1} style={{ color: C.text, flex: 1, minWidth: 0, fontWeight: '500' }}>
+      <Text
+        style={[{ color: C.text, flex: 1, minWidth: 0, fontWeight: '500' }, { numberOfLines: 1 }]}
+      >
         {props.title}
       </Text>
       <If when={props.files}>
@@ -193,8 +198,10 @@ export function Header(props: {
         >
           <Icon name="folder" color={C.secondary} />
           <Text
-            numberOfLines={1}
-            style={{ ...captionTextStyle, color: C.secondary, minWidth: 0, flexShrink: 1 }}
+            style={[
+              { ...captionTextStyle, color: C.secondary, minWidth: 0, flexShrink: 1 },
+              { numberOfLines: 1 },
+            ]}
           >
             {workspaceName()}
           </Text>

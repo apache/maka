@@ -122,7 +122,12 @@ export function MessageRow({
                           <If
                             when={row().role === 'assistant' && row().field === 'body'}
                             else={
-                              <Text selectable style={{ color: C.text, ...bodyTextStyle }}>
+                              <Text
+                                style={[
+                                  { color: C.text, ...bodyTextStyle },
+                                  { userSelect: 'text' },
+                                ]}
+                              >
                                 <SourceText row={row} sourceId={sourceId()} />
                               </Text>
                             }
@@ -137,7 +142,7 @@ export function MessageRow({
                           </If>
                         }
                       >
-                        <Text selectable style={{ color: C.text, ...bodyTextStyle }}>
+                        <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
                           <SourceText row={row} sourceId={sourceId()} />
                         </Text>
                       </If>
@@ -229,9 +234,10 @@ export function MessageRow({
                           >
                             <Icon name={expanded() ? 'down' : 'right'} color={C.secondary} />
                             <Text
-                              numberOfLines={1}
-                              ellipsizeMode="tail"
-                              style={{ flex: 1, color: C.muted, fontSize: 13, lineHeight: 16 }}
+                              style={[
+                                { flex: 1, color: C.muted, fontSize: 13, lineHeight: 16 },
+                                { numberOfLines: 1, textOverflow: 'ellipsis' },
+                              ]}
                             >
                               {summary()}
                             </Text>
@@ -287,7 +293,12 @@ export function MessageRow({
                                 />
                               }
                             >
-                              <Text selectable style={{ ...secondaryTextStyle, color: C.muted }}>
+                              <Text
+                                style={[
+                                  { ...secondaryTextStyle, color: C.muted },
+                                  { userSelect: 'text' },
+                                ]}
+                              >
                                 <SourceText row={row} sourceId={sourceId()} />
                               </Text>
                             </If>
@@ -326,7 +337,7 @@ export function MessageRow({
                   backgroundColor: C.surface,
                 }}
               >
-                <Text selectable style={{ color: C.text, ...bodyTextStyle }}>
+                <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
                   <SourceText row={row} sourceId={sourceId()} />
                 </Text>
                 <If when={(row().attachments?.length ?? 0) > 0}>

@@ -62,7 +62,7 @@ next.forEach((p) => Image.prefetch(p.url));
 
 ## 相关内容
 
-- [`<Image>`](../elements/image.md)：`src`、`resizeMode`、`placeholder`、`onLoad`、`onProgress`、`onError` 等属性。
+- [`<Image>`](../elements/image.md)：`src`、`placeholder`、`objectFit` 样式、`onLoad`、`onProgress`、`onError` 等属性。
 - 导入图片文件（`import logo from "./logo.png"`）会得到一个 `ImageAsset`（`{ url, size, scales? }`，尺寸单位为点），`<Image src>` 和画布的 `drawImage` 都接受它。
 
 > [!NOTE]

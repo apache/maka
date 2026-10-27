@@ -48,8 +48,8 @@ export function Segmented<T extends string>(props: {
       }}
     >
       <View
-        pointerEvents="none"
         style={{
+          pointerEvents: "none",
           position: "absolute",
           top: inset,
           left: inset,
@@ -69,8 +69,8 @@ export function Segmented<T extends string>(props: {
             style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5 }}
           >
             <Text
-              numberOfLines={1}
               style={{
+                numberOfLines: 1,
                 fontSize: props.size === "small" ? 13 : 14,
                 fontWeight: "500",
                 color: props.value === option().value ? colors.text : colors.muted,

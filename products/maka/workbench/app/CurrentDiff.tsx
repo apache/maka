@@ -167,8 +167,10 @@ export function CurrentDiff(props: { model: CurrentDiffModel }) {
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
         <Icon name="code" color={C.muted} />
         <Text
-          numberOfLines={1}
-          style={{ ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' }}
+          style={[
+            { ...captionTextStyle, flex: 1, color: C.text, fontWeight: '500' },
+            { numberOfLines: 1 },
+          ]}
         >
           {model.target.title}
         </Text>
@@ -190,8 +192,10 @@ export function CurrentDiff(props: { model: CurrentDiffModel }) {
       </Text>
       <If when={notice()}>
         <Text
-          selectable
-          style={{ ...bodyTextStyle, color: model.state().kind === 'error' ? C.danger : C.muted }}
+          style={[
+            { ...bodyTextStyle, color: model.state().kind === 'error' ? C.danger : C.muted },
+            { userSelect: 'text' },
+          ]}
         >
           {notice()}
         </Text>
@@ -235,7 +239,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
         }}
         style={{ flex: 1, minHeight: 0, backgroundColor: C.surface }}
         empty={
-          <Text selectable={false} style={{ ...bodyTextStyle, color: C.muted }}>
+          <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'none' }]}>
             {tr('The current patch has no displayable rows.')}
           </Text>
         }
@@ -256,63 +260,71 @@ function DiffRows(props: { model: CurrentDiffModel }) {
           >
             <If when={row().kind !== 'hunk' && row().kind !== 'meta'}>
               <Text
-                selectable={false}
-                style={{
-                  ...codeTextStyle,
-                  width: (digits() + 1) * 8,
-                  flexShrink: 0,
-                  paddingRight: 8,
-                  textAlign: 'right',
-                  color: C.muted,
-                }}
+                style={[
+                  {
+                    ...codeTextStyle,
+                    width: (digits() + 1) * 8,
+                    flexShrink: 0,
+                    paddingRight: 8,
+                    textAlign: 'right',
+                    color: C.muted,
+                  },
+                  { userSelect: 'none' },
+                ]}
               >
                 {row().old ?? ''}
               </Text>
               <Text
-                selectable={false}
-                style={{
-                  ...codeTextStyle,
-                  width: (digits() + 1) * 8,
-                  flexShrink: 0,
-                  paddingRight: 8,
-                  textAlign: 'right',
-                  color: C.muted,
-                }}
+                style={[
+                  {
+                    ...codeTextStyle,
+                    width: (digits() + 1) * 8,
+                    flexShrink: 0,
+                    paddingRight: 8,
+                    textAlign: 'right',
+                    color: C.muted,
+                  },
+                  { userSelect: 'none' },
+                ]}
               >
                 {row().new ?? ''}
               </Text>
               <Text
-                selectable={false}
-                style={{
-                  ...codeTextStyle,
-                  width: 8,
-                  flexShrink: 0,
-                  color:
-                    row().kind === 'added'
-                      ? '#9bd5a5'
-                      : row().kind === 'removed'
-                        ? C.danger
-                        : C.text,
-                }}
+                style={[
+                  {
+                    ...codeTextStyle,
+                    width: 8,
+                    flexShrink: 0,
+                    color:
+                      row().kind === 'added'
+                        ? '#9bd5a5'
+                        : row().kind === 'removed'
+                          ? C.danger
+                          : C.text,
+                  },
+                  { userSelect: 'none' },
+                ]}
               >
                 {row().kind === 'added' ? '+' : row().kind === 'removed' ? '-' : ' '}
               </Text>
             </If>
             <Text
-              selectable
-              style={{
-                ...codeTextStyle,
-                flex: 1,
-                minWidth: 0,
-                color:
-                  row().kind === 'added'
-                    ? '#9bd5a5'
-                    : row().kind === 'removed'
-                      ? C.danger
-                      : row().kind === 'context'
-                        ? C.text
-                        : C.muted,
-              }}
+              style={[
+                {
+                  ...codeTextStyle,
+                  flex: 1,
+                  minWidth: 0,
+                  color:
+                    row().kind === 'added'
+                      ? '#9bd5a5'
+                      : row().kind === 'removed'
+                        ? C.danger
+                        : row().kind === 'context'
+                          ? C.text
+                          : C.muted,
+                },
+                { userSelect: 'text' },
+              ]}
             >
               {row().text}
             </Text>

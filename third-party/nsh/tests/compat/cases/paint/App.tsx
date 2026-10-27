@@ -4,6 +4,7 @@
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
 import PaintBorders from "./paint-borders";
+import PaintCurrentColor from "./paint-current-color";
 import PaintEffects from "./paint-effects";
 import PaintInlineAlign from "./paint-inline-align";
 import PaintMisc from "./paint-misc";
@@ -18,6 +19,7 @@ import StateIndeterminate from "./state-indeterminate";
 
 const cases: Record<string, () => JSX.Element> = {
   "paint-borders": PaintBorders,
+  "paint-current-color": PaintCurrentColor,
   "paint-effects": PaintEffects,
   "paint-misc": PaintMisc,
   "paint-motion": PaintMotion,

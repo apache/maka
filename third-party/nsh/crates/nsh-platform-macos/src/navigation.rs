@@ -436,7 +436,7 @@ fn set_fade(view: &NshView, fade: f32) {
 /// How far below the window `view` must go to be out of sight with its
 /// shadow.
 fn shadow_room(view: &NshView) -> f32 {
-    if view.state().style.shadow.is_visible() {
+    if crate::visual::draws_outside(&view.state().style) {
         SHADOW_ROOM
     } else {
         0.0

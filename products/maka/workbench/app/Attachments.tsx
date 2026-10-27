@@ -115,7 +115,9 @@ export function DraftAttachments(props: {
                         >
                           <Icon name="file" color={C.secondary} />
                           <View style={{ flex: 1, minWidth: 0, paddingRight: 24, gap: 4 }}>
-                            <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.text }}>
+                            <Text
+                              style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}
+                            >
                               {original.name}
                             </Text>
                             <Text style={{ ...captionTextStyle, color: C.muted }}>
@@ -166,9 +168,7 @@ export function DraftAttachments(props: {
       <Each of={owner.rows()} key={(row) => row.id}>
         {(row) => (
           <View style={{ backgroundColor: C.surface, borderRadius: 8, padding: 8, gap: 8 }}>
-            <Text selectable style={{ color: C.text }}>
-              {row().name}
-            </Text>
+            <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{row().name}</Text>
             <Text
               style={{
                 color:
@@ -188,7 +188,7 @@ export function DraftAttachments(props: {
                     : tr('Upload failed')}
             </Text>
             <If when={row().error}>
-              <Text selectable style={{ color: C.danger }}>
+              <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
                 {renderText(row().error!)}
               </Text>
             </If>
@@ -248,9 +248,7 @@ export function DraftAttachments(props: {
         <Text style={{ ...captionTextStyle, color: C.warning }}>{owner.notice()}</Text>
       </If>
       <If when={owner.error()}>
-        <Text selectable style={{ color: C.danger }}>
-          {owner.error()}
-        </Text>
+        <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{owner.error()}</Text>
         <Button
           onPress={inputAction(owner.retry, owner.sessionId)}
           style={controlStyle}
@@ -298,7 +296,7 @@ export function HistoryAttachments(props: {
                   >
                     <Icon name={image(original.mimeType) ? 'image' : 'file'} color={C.secondary} />
                     <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-                      <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.text }}>
+                      <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
                         {original.name}
                       </Text>
                       <Text style={{ ...captionTextStyle, color: C.muted }}>

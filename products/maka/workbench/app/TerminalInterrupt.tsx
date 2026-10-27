@@ -125,8 +125,10 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
     <>
       <If when={props.state.prompt()}>
         <View
-          pointerEvents="none"
-          style={{ position: 'absolute', left: 0, right: 0, bottom: 24, alignItems: 'center' }}
+          style={[
+            { position: 'absolute', left: 0, right: 0, bottom: 24, alignItems: 'center' },
+            { pointerEvents: 'none' },
+          ]}
         >
           <View
             style={{

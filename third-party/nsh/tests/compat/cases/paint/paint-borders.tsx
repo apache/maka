@@ -1,8 +1,9 @@
 // A case of the API's test suite (docs/dev/compatibility.md): the border
 // keys as the platform receives them: widths and colors per side and all
 // at once, colors in every notation, border styles, corner radii (each
-// corner, the shorthand under them) and the curve, and the logical start /
-// end keys left to right and right to left.
+// corner, the shorthand under them) and the curve, the logical inline
+// start / end keys left to right and right to left, and the left / right
+// keys, which keep their sides right to left, as in CSS.
 import { Text, View } from "nsh";
 
 function App() {

@@ -187,9 +187,9 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           }}
           disabledStyle={controlDisabledStyle}
         >
-          <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
+          <View style={[{ flex: 1, minWidth: 0, gap: 4 }, { pointerEvents: 'none' }]}>
             <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Personalization')}</Text>
-            <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+            <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
               {owner.facts()?.displayName || tr('Display name')}
             </Text>
           </View>
@@ -210,7 +210,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           }}
           disabledStyle={controlDisabledStyle}
         >
-          <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
+          <View style={[{ flex: 1, minWidth: 0, gap: 4 }, { pointerEvents: 'none' }]}>
             <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Compaction prompt')}</Text>
             <Text style={{ ...captionTextStyle, color: C.muted }}>
               {tr('Instructions for summarizing conversation context.')}
@@ -234,7 +234,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
         }}
         disabledStyle={controlDisabledStyle}
       >
-        <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
+        <View style={[{ flex: 1, minWidth: 0, gap: 4 }, { pointerEvents: 'none' }]}>
           <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Global instructions')}</Text>
           <Text style={{ ...captionTextStyle, color: C.muted }}>
             {tr('Edit the global AGENTS.md used by the assistant.')}
@@ -364,7 +364,7 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
   return (
     <View style={{ gap: 16, flex: 1, minHeight: 0 }}>
       <If when={document()}>
-        <Text selectable style={{ ...captionTextStyle, color: C.muted }}>
+        <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
           {document()?.basis.path}
         </Text>
         <If when={document()?.basis.exists === false}>

@@ -426,6 +426,7 @@ impl Driver for Remote {
         self.action(TestStep::Paste {
             selector: selector.into(),
             text: content.text.clone(),
+            html: content.html.clone(),
             files: content
                 .files
                 .iter()

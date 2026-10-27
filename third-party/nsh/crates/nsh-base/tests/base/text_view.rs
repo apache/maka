@@ -22,13 +22,12 @@ use std::{
 };
 
 use nsh_base::{
-    MarkdownPlugin, MarkdownPlugins, TextViewClasses, TextViewPart, TextViewParts, TextViewStyles,
-    text_view,
+    MarkdownPlugin, MarkdownPlugins, text_view,
     text_view::{Block, ParseContext, mdast},
 };
 use nsh_core::{
-    ListContentStyle, MountItem, NodeId, PatchValue, Size, StyleKey,
-    element::{EngineContext, Root, Style, engine_context},
+    ListContentStyle, MountItem, NodeId, Size,
+    element::{EngineContext, Root, engine_context},
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -451,7 +450,7 @@ mod typed_root_parts {
 
     use nsh_base::{TextViewClasses, TextViewPart, TextViewParts, TextViewStyles, text_view};
     use nsh_core::{
-        PatchValue, StyleKey,
+        StyleKey,
         element::{Root, Style},
         prelude::*,
     };
@@ -474,7 +473,10 @@ mod typed_root_parts {
         let styles = TextViewStyles {
             root: Some(
                 Style::default()
-                    .with(StyleKey::FontSize, PatchValue::Number(23.0))
+                    .with(
+                        StyleKey::FontSize,
+                        StyleKey::FontSize.number_value(23.0).unwrap(),
+                    )
                     .into(),
             ),
             ..Default::default()

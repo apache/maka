@@ -186,12 +186,12 @@ view()
 
 ## pointerEvents
 
-指针事件设置（`.pointer_events(..)`、`pointerEvents`）决定子树中哪些视图可以成为触摸的目标。它在原生命中测试时求值，每次触摸都不产生额外开销。
+样式键 `pointerEvents`（Rust 中为 `.pointer_events(..)`）决定子树中哪些视图可以成为触摸的目标。它在原生命中测试时求值，每次触摸都不产生额外开销。
 
 | Rust | TSX | 视图本身 | 子视图 |
 |---|---|---|---|
 | `PointerEvents::Auto`（默认） | `"auto"` | 接收触摸 | 接收触摸 |
-| `PointerEvents::None` | `"none"` | 永远不是目标 | 永远不是目标：触摸穿透到后面的内容 |
+| `PointerEvents::None` | `"none"` | 永远不是目标 | 永远不是目标，除非设置了 `"auto"`：触摸穿透到后面的内容 |
 | `PointerEvents::BoxNone` | `"box-none"` | 永远不是目标 | 接收触摸 |
 | `PointerEvents::BoxOnly` | `"box-only"` | 接收触摸 | 永远不是目标 |
 
@@ -222,7 +222,7 @@ view().flex_1().child(map()).child(
 <View style={{ flex: 1 }}>
   <Map />
   {/* 浮动工具栏：空白区域把触摸交给地图。 */}
-  <View pointerEvents="box-none" style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", padding: 16 }}>
+  <View style={{ pointerEvents: "box-none", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, justifyContent: "flex-end", padding: 16 }}>
     <View onPress={locate} style={{ alignSelf: "flex-end", padding: 12, borderRadius: 24, backgroundColor: "#ffffff" }}>
       <Text>Locate</Text>
     </View>
@@ -230,7 +230,7 @@ view().flex_1().child(map()).child(
 </View>
 ```
 
-Tailwind 类 `pointer-events-none` 和 `pointer-events-auto` 设置的是同一件事；显式属性优先于类。
+`"none"` 与 CSS 的 `pointer-events` 一样会继承：其中设置了 `"auto"` 的视图会重新接收触摸。`"box-none"` 和 `"box-only"` 只作用于设置它们的视图。Tailwind 类 `pointer-events-none` 和 `pointer-events-auto` 分别设置 `"none"` 和 `"auto"`；作为样式键，`pointerEvents` 也能用在状态样式（`activeStyle` 等）和变体中。
 
 ## 原生手势：拖动、捏合与旋转
 
@@ -277,7 +277,7 @@ function App() {
           x.spring(0, { velocity: e.velocityX });
           y.spring(0, { velocity: e.velocityY });
         }}
-        style={{ width: 120, height: 120, borderRadius: 24, backgroundColor: "#8250df", transform: [{ translateX: x }, { translateY: y }] }}
+        style={{ width: 120, height: 120, borderRadius: 24, backgroundColor: "#8250df", translate: [x, y] }}
       />
     </View>
   );
@@ -324,7 +324,7 @@ view()
     const projected = (e.valueX ?? 0) + e.velocityX * 0.2;
     x.spring(projected > 0 ? 140 : -140, { velocity: e.velocityX });
   }}
-  style={{ transform: [{ translateX: x }] }}
+  style={{ translate: [x, 0] }}
 />
 ```
 
@@ -571,7 +571,7 @@ function Ball() {
   return (
     <View
       {...responder.panHandlers}
-      style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "#0969da", transform: [{ translateX: pos().x }, { translateY: pos().y }] }}
+      style={{ width: 60, height: 60, borderRadius: 30, backgroundColor: "#0969da", translate: [pos().x, pos().y] }}
     />
   );
 }

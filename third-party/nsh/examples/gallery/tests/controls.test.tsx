@@ -2,7 +2,8 @@
 // needs another on), checkboxes under a "select all" that shows a partial
 // selection, a plan picker of radios with a disabled plan, tabs that switch
 // a section, collapsible sections whose content is kept while collapsed,
-// progress bars of a transfer the app drives and of one of unknown size.
+// progress bars of a transfer the app drives and of one of unknown size,
+// sliders of a level and of a price range.
 // Every row is the control, its label included. Also the
 // gallery's own `Toggle` (a `Switch`) and `Segmented` (`Tabs`).
 import { beforeEach, expect, open, test } from "nsh/test";
@@ -131,6 +132,29 @@ test("a progress bar shows the transfer's value the app drives, and one of unkno
   await app.press("Reset");
   await app.waitFor("Upload: reset");
   expect(app.texts()).toContain("0%");
+});
+
+test("a slider reports the value the app owns, a range's thumbs never cross, and a disabled one takes no drag", async () => {
+  expect(app.count("role:adjustable")).toBe(3);
+  expect(app.texts()).toContain("60%");
+  expect(app.texts()).toContain("$100 – $400");
+  // Far past the end: held at the maximum, the end reported once.
+  await app.drag("label:Volume", { x: 600, y: 0 });
+  await app.waitFor("Volume: 100");
+  expect(app.texts()).toContain("100%");
+  // The range's start stops at its end.
+  await app.drag("label:Minimum price", { x: 600, y: 0 });
+  await app.waitFor("Price: 400 to 400");
+  expect(app.texts()).toContain("$400 – $400");
+  // Muted: the volume's slider is disabled.
+  await app.press("Mute");
+  await app.waitFor("Volume: muted");
+  expect(app.enabled("label:Volume")).toBe(false);
+  await app.drag("label:Volume", { x: -600, y: 0 });
+  expect(app.texts()).toContain("Volume: muted");
+  await app.press("Unmute");
+  await app.waitFor("Volume: unmuted");
+  expect(app.texts()).toContain("100%");
 });
 
 test("the gallery's segmented control is a tab list", async () => {

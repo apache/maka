@@ -75,11 +75,9 @@ export function ConnectionLogin(props: { owner: ModelSettingsOwner; disabled: bo
                 : tr('Starting sign-in…')}
           </Text>
           <If when={login()!.prompt}>
-            <Text selectable style={{ color: C.text }}>
-              {login()!.prompt!.url}
-            </Text>
+            <Text style={[{ color: C.text }, { userSelect: 'text' }]}>{login()!.prompt!.url}</Text>
             <If when={login()!.prompt!.userCode}>
-              <Text selectable style={{ color: C.accent, fontWeight: '700' }}>
+              <Text style={[{ color: C.accent, fontWeight: '700' }, { userSelect: 'text' }]}>
                 {login()!.prompt!.userCode}
               </Text>
             </If>

@@ -891,7 +891,7 @@ function App() {
                   contentStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}
                 >
                   <If when={error()}>
-                    <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+                    <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
                       {error()}
                     </Text>
                   </If>
@@ -903,7 +903,7 @@ function App() {
                     </Text>
                   </If>
                   <If when={status()}>
-                    <Text selectable style={{ ...bodyTextStyle, color: C.muted }}>
+                    <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'text' }]}>
                       {status()}
                     </Text>
                   </If>

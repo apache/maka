@@ -27,7 +27,7 @@ mod hooks;
 mod keymap;
 pub(crate) mod language;
 pub(crate) mod languages;
-mod layout;
+pub(crate) mod layout;
 mod movement;
 mod parts;
 mod search;

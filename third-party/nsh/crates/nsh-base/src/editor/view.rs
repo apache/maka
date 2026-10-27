@@ -101,7 +101,7 @@ pub(crate) fn render(ed: Ed) -> impl IntoElement {
         .text_color(move || theme().foreground)
         .font_family(move || font_a().family)
         .text_size(move || Length::from(font_b().size))
-        .line_height(move || Length::from(font_c().line_height))
+        .line_height(move || nsh_core::LineHeight::from(font_c().line_height))
         .child(
             scroll()
                 .element_ref(&ed.vscroll)

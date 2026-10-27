@@ -1,7 +1,7 @@
 // A case of the API's test suite (docs/dev/compatibility.md): how a video
 // plays, as the platform receives it: its source, paused (then playing),
 // muted, its volume and speed, looping, the platform's controls, how it
-// fits its box, how often it reports progress and what its sound does to
+// fits its box (`objectFit`), how often it reports progress and what its sound does to
 // other apps' audio. Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Video } from "nsh";
@@ -22,10 +22,9 @@ function App() {
         rate={1.5}
         repeat
         controls
-        resizeMode="cover"
         progressUpdateInterval={500}
         audioSession="playback"
-        style={{ width: 160, height: 90 }}
+        style={{ width: 160, height: 90, objectFit: "cover" }}
       />
     </View>
   );

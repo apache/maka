@@ -467,18 +467,21 @@ export function RecallSearch(props: {
                     focusStyle={controlFocusStyle}
                   >
                     <View
-                      pointerEvents="none"
-                      style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}
+                      style={[
+                        { flexDirection: 'row', gap: 8, alignItems: 'center' },
+                        { pointerEvents: 'none' },
+                      ]}
                     >
                       <Text
-                        numberOfLines={1}
-                        ellipsizeMode="tail"
-                        style={{
-                          ...bodyTextStyle,
-                          flex: 1,
-                          color: C.text,
-                          fontWeight: '500',
-                        }}
+                        style={[
+                          {
+                            ...bodyTextStyle,
+                            flex: 1,
+                            color: C.text,
+                            fontWeight: '500',
+                          },
+                          { numberOfLines: 1, textOverflow: 'ellipsis' },
+                        ]}
                       >
                         {title()}
                       </Text>
@@ -489,19 +492,19 @@ export function RecallSearch(props: {
                       </If>
                     </View>
                     <Text
-                      pointerEvents="none"
-                      numberOfLines={1}
-                      ellipsizeMode="tail"
-                      style={{ ...captionTextStyle, color: C.muted }}
+                      style={[
+                        { ...captionTextStyle, color: C.muted },
+                        { pointerEvents: 'none', numberOfLines: 1, textOverflow: 'ellipsis' },
+                      ]}
                     >
                       {session.workspace.path}
                     </Text>
                     <If when={result.kind === 'passage'}>
                       <Text
-                        pointerEvents="none"
-                        numberOfLines={3}
-                        ellipsizeMode="tail"
-                        style={{ ...captionTextStyle, color: C.secondary }}
+                        style={[
+                          { ...captionTextStyle, color: C.secondary },
+                          { pointerEvents: 'none', numberOfLines: 3, textOverflow: 'ellipsis' },
+                        ]}
                       >
                         <Each of={preview}>
                           {(run) => (

@@ -328,7 +328,10 @@ pub fn input_accessory_view(native_id: &str) -> InputAccessoryView {
     };
     let mut node = ElNode::new(tag);
     if cfg!(target_os = "android") {
-        node.style.keyword(crate::StyleKey::Display, "none");
+        node.style.value(
+            crate::StyleKey::Display,
+            crate::PropertyValue::Display(taffy::Display::None),
+        );
     } else {
         set(&mut node, Prop::NativeId(Some(native_id.into())));
     }
@@ -400,11 +403,17 @@ impl Input {
         })
     }
 
-    /// The caret's and the selection's color.
+    /// The selection highlight's color (on iOS also the caret's, unless
+    /// [`Self::caret_color`] is set: UIKit tints both with one).
     pub fn selection_color(self, color: impl IntoReactive<Hsla>) -> Self {
         self.bind_prop(color, |color: Hsla| {
             Prop::SelectionColor(Some(color.into()))
         })
+    }
+
+    /// The caret's color.
+    pub fn caret_color(self, color: impl IntoReactive<Hsla>) -> Self {
+        self.bind_prop(color, |color: Hsla| Prop::CaretColor(Some(color.into())))
     }
 
     /// Hides what is typed (passwords; TS: `masked`).
@@ -678,7 +687,7 @@ impl Screen {
             set_in(&mut a.props, Prop::HeaderStyle(s.0));
             if !s.1.is_empty() {
                 let typed = s.1.resolved();
-                let list = (!typed.is_empty()).then(|| Arc::new(typed.lower()));
+                let list = (!typed.is_empty()).then(|| std::rc::Rc::new(typed.lower()));
                 set_in(&mut a.props, Prop::HeaderClassList(list));
             }
         });
@@ -697,7 +706,7 @@ impl Screen {
     ) -> Self {
         let list = move || {
             let style = f(super::StyleRefinement::default()).resolved();
-            (!style.is_empty()).then(|| Arc::new(style.lower()))
+            (!style.is_empty()).then(|| std::rc::Rc::new(style.lower()))
         };
         self.bind_prop(super::Reactive::Bound(std::rc::Rc::new(list)), |list| {
             Prop::HeaderClassList(list)
@@ -1170,13 +1179,6 @@ impl Video {
     pub fn repeat(self, repeat: impl IntoReactive<bool>) -> Self {
         self.bind_prop(repeat, |repeat: bool| {
             Prop::Native(NativeProp::Repeat(repeat))
-        })
-    }
-
-    /// How the picture fits (default: contain).
-    pub fn resize_mode(self, mode: impl IntoReactive<ResizeMode>) -> Self {
-        self.bind_prop(mode, |mode: ResizeMode| {
-            Prop::Native(NativeProp::VideoResizeMode(mode))
         })
     }
 

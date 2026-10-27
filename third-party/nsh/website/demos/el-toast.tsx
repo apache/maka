@@ -55,7 +55,7 @@ function App() {
       </View>
       <Log title="ToastManager.advance · onExpandedChange" lines={events()} minHeight={130} />
 
-      <Overlay pointerEvents="box-none" style={{ left: 0, right: 0, bottom: 0, padding: 16, paddingBottom: safeArea().bottom + 16, alignItems: wide() ? "flex-end" : "center" }}>
+      <Overlay style={{ pointerEvents: "box-none", left: 0, right: 0, bottom: 0, padding: 16, paddingBottom: safeArea().bottom + 16, alignItems: wide() ? "flex-end" : "center" }}>
         <ToastStack
           placement={wide() ? "bottomRight" : "bottomCenter"}
           style={{ width: 340, maxWidth: "100%" }}

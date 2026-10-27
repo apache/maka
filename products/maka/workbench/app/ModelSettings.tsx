@@ -254,7 +254,7 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
             style={{ flex: 1, minWidth: 0, minHeight: 0, padding: compact() ? 8 : 16, gap: 16 }}
           >
             <If when={operations.error()}>
-              <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+              <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
                 {operations.error()}
               </Text>
             </If>

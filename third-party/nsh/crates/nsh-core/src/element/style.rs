@@ -25,26 +25,13 @@ use crate::{
     color::{Hsla, Rgba, transparent_black},
     effects::{Filter, GradientKind, GradientSize, KeyframeAnimation, Keyframes},
     geometry::{
-        AbsoluteLength, DefiniteLength, Length, Percentage, Point, Points, REM_SIZE, Radians, Rems,
-        deg, percentage, point, px, relative,
+        AbsoluteLength, DefiniteLength, Length, Percentage, Points, REM_SIZE, Radians, Rems, deg,
+        percentage, px, relative,
     },
-    style::{Color, PatchValue, StyleDecl, StyleKey},
+    style::{Color, LineHeight, PositionAxis, PropertyValue, StyleKey},
     tailwind::{self, ClassList, Decl, Part, Rank, Rule, rank, state},
     transform::TransformKind,
 };
-
-/// The style value of a length.
-fn length_patch(length: Length) -> PatchValue {
-    match length {
-        Length::Definite(DefiniteLength::Absolute(a)) => {
-            PatchValue::Number(a.to_points(REM_SIZE).0)
-        }
-        Length::Definite(DefiniteLength::Fraction(f)) => {
-            PatchValue::Str(format!("{}%", f.0 * 100.0).into())
-        }
-        Length::Auto => PatchValue::Str("auto".into()),
-    }
-}
 
 /// An absolute length in points (a rem at [`REM_SIZE`]).
 fn points(length: AbsoluteLength) -> f32 {
@@ -375,6 +362,40 @@ impl Hash for Layers {
     }
 }
 
+/// Layers of [`TextShadow`](crate::TextShadow)s, compared and hashed by
+/// their bits.
+#[derive(Debug, Clone)]
+pub(crate) struct TextLayers(Arc<[crate::TextShadow]>);
+
+impl TextLayers {
+    fn bits(&self) -> impl Iterator<Item = (u32, u32, u32, u32)> + '_ {
+        self.0.iter().map(|l| {
+            (
+                l.offset_x.0.to_bits(),
+                l.offset_y.0.to_bits(),
+                l.radius.0.to_bits(),
+                l.color.0,
+            )
+        })
+    }
+}
+
+impl PartialEq for TextLayers {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.bits().eq(other.bits())
+    }
+}
+
+impl Eq for TextLayers {}
+
+impl Hash for TextLayers {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for l in self.bits() {
+            l.hash(state);
+        }
+    }
+}
+
 /// `underline` in [`Declaration::Decoration`].
 const UNDERLINE: u8 = 1;
 /// `line-through` in [`Declaration::Decoration`].
@@ -383,15 +404,12 @@ const LINE_THROUGH: u8 = 2;
 /// One typed declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Declaration {
-    Number(StyleKey, Bits),
-    Length(StyleKey, Length),
-    Keyword(StyleKey, &'static str),
+    /// A property's value.
+    Value(StyleKey, PropertyValue),
     /// What a declaration implies for another property, which any
     /// declaration of that property overrides wherever it is (an outline
     /// width's solid style).
-    DefaultKeyword(StyleKey, &'static str),
-    DefaultNumber(StyleKey, Bits),
-    Str(StyleKey, SharedString),
+    Default(StyleKey, PropertyValue),
     Color(StyleKey, AdaptiveColor),
     /// Tailwind's `text-*` size and line height.
     TextPreset(&'static str),
@@ -408,9 +426,8 @@ pub(crate) enum Declaration {
     RingOffset(Bits),
     RingInset,
     InsetRing(Bits),
-    /// `shadowOffset` (React Native's shadow).
-    ShadowOffset(Bits, Bits),
-    TextShadowOffset(Bits, Bits),
+    /// Text shadows of the element's own.
+    TextShadows(TextLayers),
     /// One step of the transform the styles compose (CSS's order:
     /// translate, rotate, scale, then the 3D rotations and skews).
     Transform(TransformKind, Bits),
@@ -461,8 +478,30 @@ pub(crate) enum Declaration {
 static PRESETS: LazyLock<tailwind::Theme> = LazyLock::new(tailwind::Theme::default);
 
 /// A color enters styles packed (`crate::color`'s rounding).
-fn color_patch(c: Hsla) -> PatchValue {
-    PatchValue::Str(format!("#{:08x}", Color::from(c).0).into())
+fn color_value(key: StyleKey, c: Hsla) -> PropertyValue {
+    let c = Color::from(c);
+    match key {
+        // SVG's paint: a color is one of its kinds.
+        StyleKey::Fill | StyleKey::Stroke => PropertyValue::Paint(Some(crate::SvgPaint::Color(c))),
+        _ => PropertyValue::Color(Some(c)),
+    }
+}
+
+/// A transform origin at fractions of the size.
+fn origin(x: f32, y: f32) -> TransformOrigin {
+    TransformOrigin {
+        x: DefiniteLength::Fraction(Percentage(x)),
+        y: DefiniteLength::Fraction(Percentage(y)),
+        z: Points::ZERO,
+    }
+}
+
+/// `1 / -1`: from the first line to the last.
+fn full_line() -> taffy::Line<taffy::GridPlacement<String>> {
+    taffy::Line {
+        start: crate::grid::line_number(1),
+        end: crate::grid::line_number(-1),
+    }
 }
 
 fn shadow_preset(layers: Option<&Vec<BoxShadow>>) -> Arc<[BoxShadow]> {
@@ -481,8 +520,8 @@ impl Declaration {
     fn lower(&self, out: &mut Vec<Decl>) {
         let part = |out: &mut Vec<Decl>, p: Part| out.push(Decl::Part(p));
         match self {
-            Declaration::Number(key, n) => {
-                out.push(Decl::Set(*key, PatchValue::Number(n.0)));
+            Declaration::Value(key, value) => {
+                out.push(Decl::Set(*key, value.clone()));
                 // As the classes': a width's color is `currentColor` unless
                 // a color method sets one.
                 match key {
@@ -499,33 +538,31 @@ impl Declaration {
                     _ => {}
                 }
             }
-            Declaration::Length(key, l) => out.push(Decl::Set(*key, length_patch(*l))),
-            Declaration::Keyword(key, k) => out.push(Decl::Set(*key, PatchValue::Str((*k).into()))),
-            Declaration::DefaultKeyword(key, k) => {
-                out.push(Decl::Default(*key, PatchValue::Str((*k).into())))
-            }
-            Declaration::DefaultNumber(key, n) => {
-                out.push(Decl::Default(*key, PatchValue::Number(n.0)));
+            Declaration::Default(key, value) => {
+                out.push(Decl::Default(*key, value.clone()));
                 if *key == StyleKey::OutlineWidth {
                     out.push(Decl::CurrentColor(StyleKey::OutlineColor));
                 }
             }
-            Declaration::Str(key, s) => {
-                out.push(Decl::Set(*key, PatchValue::Str(s.as_str().into())))
-            }
             Declaration::Color(key, c) => out.push(if c.light == c.dark {
-                Decl::Set(*key, color_patch(c.light))
+                Decl::Set(*key, color_value(*key, c.light))
             } else {
-                Decl::Adaptive(*key, [color_patch(c.light), color_patch(c.dark)])
+                Decl::Adaptive(
+                    *key,
+                    [color_value(*key, c.light), color_value(*key, c.dark)],
+                )
             }),
             Declaration::TextPreset(name) => {
                 if let Some(&(size, line)) = PRESETS.text.get(*name) {
-                    out.push(Decl::Set(StyleKey::FontSize, PatchValue::Number(size)));
+                    out.push(Decl::Set(
+                        StyleKey::FontSize,
+                        PropertyValue::OptPoints(Some(px(size))),
+                    ));
                     // As `text-lg`'s: a line height set anywhere wins.
                     if let Some(m) = line {
                         out.push(Decl::Default(
                             StyleKey::LineHeight,
-                            PatchValue::Str(m.to_string().into()),
+                            PropertyValue::LineHeight(LineHeight::Multiple(m)),
                         ));
                     }
                 }
@@ -556,12 +593,7 @@ impl Declaration {
             Declaration::RingOffset(w) => part(out, Part::RingOffset(w.0)),
             Declaration::RingInset => part(out, Part::RingInset),
             Declaration::InsetRing(w) => part(out, Part::InsetRing(w.0)),
-            Declaration::ShadowOffset(x, y) => out.push(Decl::Style(StyleDecl::ShadowOffset(
-                Some(point(px(x.0), px(y.0))),
-            ))),
-            Declaration::TextShadowOffset(x, y) => out.push(Decl::Style(
-                StyleDecl::TextShadowOffset(Some(point(px(x.0), px(y.0)))),
-            )),
+            Declaration::TextShadows(layers) => part(out, Part::TextShadow(layers.0.clone())),
             Declaration::Transform(kind, v) => {
                 let v = v.0;
                 let parts: &[Part] = match kind {
@@ -592,14 +624,18 @@ impl Declaration {
             Declaration::Origin(axes) => {
                 let [x, y] = axes.map(|(fraction, v)| {
                     if fraction {
-                        format!("{}%", v.0 * 100.0)
+                        DefiniteLength::Fraction(Percentage(v.0))
                     } else {
-                        format!("{}px", v.0)
+                        DefiniteLength::Absolute(AbsoluteLength::Points(px(v.0)))
                     }
                 });
                 out.push(Decl::Set(
                     StyleKey::TransformOrigin,
-                    PatchValue::Str(format!("{x} {y}").into()),
+                    PropertyValue::TransformOrigin(TransformOrigin {
+                        x,
+                        y,
+                        z: Points::ZERO,
+                    }),
                 ));
             }
             Declaration::Gradient(shape) => part(
@@ -649,15 +685,10 @@ impl Declaration {
             ),
             Declaration::Decoration(bits) => out.push(Decl::Set(
                 StyleKey::TextDecorationLine,
-                PatchValue::Str(
-                    match *bits {
-                        0 => "none",
-                        UNDERLINE => "underline",
-                        LINE_THROUGH => "line-through",
-                        _ => "underline line-through",
-                    }
-                    .into(),
-                ),
+                PropertyValue::TextDecoration(Some(crate::TextDecoration {
+                    underline: bits & UNDERLINE != 0,
+                    line_through: bits & LINE_THROUGH != 0,
+                })),
             )),
             Declaration::Transition(props) => part(out, Part::TransitionProps(*props)),
             Declaration::TransitionNone => part(out, Part::TransitionNone),
@@ -682,11 +713,11 @@ impl Declaration {
             ),
             Declaration::Tracks(key, n) => out.push(Decl::Set(
                 *key,
-                PatchValue::Str(format!("repeat({n}, minmax(0, 1fr))").into()),
+                PropertyValue::grid_template(crate::grid::equal_tracks(*n)),
             )),
             Declaration::Span(key, n) => out.push(Decl::Set(
                 *key,
-                PatchValue::Str(format!("span {n} / span {n}").into()),
+                PropertyValue::GridLine(crate::grid::span(*n)),
             )),
             // A property of the class list, not a declaration.
             Declaration::Group(_) => {}
@@ -701,6 +732,7 @@ crate::static_reactive!(Length: Length, Points, Rems, AbsoluteLength, DefiniteLe
 crate::static_reactive!(DefiniteLength: Points, Rems, AbsoluteLength, DefiniteLength, Percentage);
 crate::static_reactive!(AbsoluteLength: Points, Rems, AbsoluteLength);
 crate::static_reactive!(Points: Points);
+crate::static_reactive!(LineHeight: LineHeight, Points, Rems, AbsoluteLength);
 crate::static_reactive!(Radians: Radians);
 crate::static_reactive!(Percentage: Percentage);
 crate::static_reactive!(u16: u16);
@@ -815,12 +847,12 @@ impl StyleRefinement {
     pub(crate) fn lengths(&mut self, keys: &[StyleKey], length: impl Into<Length>) {
         let length = length.into();
         for key in keys {
-            self.push(Declaration::Length(*key, length));
+            self.checked(*key, key.length_value(length));
         }
     }
 
     pub(crate) fn number(&mut self, key: StyleKey, n: f32) {
-        self.push(Declaration::Number(key, Bits(n)));
+        self.checked(key, key.number_value(n));
     }
 
     pub(crate) fn numbers(&mut self, keys: &[StyleKey], n: f32) {
@@ -831,12 +863,37 @@ impl StyleRefinement {
 
     /// `key: calc(env(name) + extra)`.
     pub(crate) fn env_plus(&mut self, key: StyleKey, name: &str, extra: AbsoluteLength) {
-        let calc = format!("calc(env({name}) + {}px)", points(extra));
-        self.push(Declaration::Str(key, calc.into()));
+        match crate::style::EnvVar::parse(name) {
+            Some(var) => self.value(key, PropertyValue::EnvLength(px(points(extra)), var)),
+            None => debug_assert!(false, "no environment variable `{name}`"),
+        }
     }
 
-    pub(crate) fn keyword(&mut self, key: StyleKey, k: &'static str) {
-        self.push(Declaration::Keyword(key, k));
+    /// `key: env(var)`.
+    pub(crate) fn env(&mut self, key: StyleKey, var: crate::style::EnvVar) {
+        self.value(key, PropertyValue::EnvLength(Points::ZERO, var));
+    }
+
+    pub(crate) fn value(&mut self, key: StyleKey, value: PropertyValue) {
+        self.push(Declaration::Value(key, value));
+    }
+
+    /// A value the method makes, valid by construction (its type allows
+    /// no other).
+    fn checked(&mut self, key: StyleKey, value: Result<PropertyValue, crate::StyleError>) {
+        match value {
+            Ok(value) => self.value(key, value),
+            Err(_) => debug_assert!(false, "an invalid typed value of `{}`", key.name()),
+        }
+    }
+
+    /// A value written in CSS's syntax (a grid's tracks), parsed when the
+    /// style is made: an invalid one is logged and sets nothing.
+    fn css(&mut self, key: StyleKey, value: &str) {
+        match key.parse_value(crate::StyleValue::Str(value)) {
+            Ok(value) => self.value(key, value),
+            Err(_) => log::warn!("invalid value for style `{}`: {value}", key.name()),
+        }
     }
 
     pub(crate) fn color(&mut self, keys: &[StyleKey], color: AdaptiveColor) {
@@ -1063,10 +1120,19 @@ pub trait Styled: Sized {
     /// header).
     fn p_safe_area(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::PaddingTop, "env(safe-area-inset-top)");
-        s.keyword(StyleKey::PaddingRight, "env(safe-area-inset-right)");
-        s.keyword(StyleKey::PaddingBottom, "env(safe-area-inset-bottom)");
-        s.keyword(StyleKey::PaddingLeft, "env(safe-area-inset-left)");
+        s.env(StyleKey::PaddingTop, crate::style::EnvVar::SafeAreaInsetTop);
+        s.env(
+            StyleKey::PaddingRight,
+            crate::style::EnvVar::SafeAreaInsetRight,
+        );
+        s.env(
+            StyleKey::PaddingBottom,
+            crate::style::EnvVar::SafeAreaInsetBottom,
+        );
+        s.env(
+            StyleKey::PaddingLeft,
+            crate::style::EnvVar::SafeAreaInsetLeft,
+        );
         self
     }
 
@@ -1074,8 +1140,14 @@ pub trait Styled: Sized {
     /// ([`Styled::p_safe_area`]).
     fn px_safe_area(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::PaddingRight, "env(safe-area-inset-right)");
-        s.keyword(StyleKey::PaddingLeft, "env(safe-area-inset-left)");
+        s.env(
+            StyleKey::PaddingRight,
+            crate::style::EnvVar::SafeAreaInsetRight,
+        );
+        s.env(
+            StyleKey::PaddingLeft,
+            crate::style::EnvVar::SafeAreaInsetLeft,
+        );
         self
     }
 
@@ -1083,8 +1155,11 @@ pub trait Styled: Sized {
     /// ([`Styled::p_safe_area`]).
     fn py_safe_area(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::PaddingTop, "env(safe-area-inset-top)");
-        s.keyword(StyleKey::PaddingBottom, "env(safe-area-inset-bottom)");
+        s.env(StyleKey::PaddingTop, crate::style::EnvVar::SafeAreaInsetTop);
+        s.env(
+            StyleKey::PaddingBottom,
+            crate::style::EnvVar::SafeAreaInsetBottom,
+        );
         self
     }
 
@@ -1092,7 +1167,7 @@ pub trait Styled: Sized {
     /// (CSS's `padding-top: env(safe-area-inset-top)`, [`Styled::p_safe_area`]).
     fn pt_safe_area(mut self) -> Self {
         self.style()
-            .keyword(StyleKey::PaddingTop, "env(safe-area-inset-top)");
+            .env(StyleKey::PaddingTop, crate::style::EnvVar::SafeAreaInsetTop);
         self
     }
 
@@ -1107,8 +1182,10 @@ pub trait Styled: Sized {
     /// Right padding by the safe area's right inset where the view renders
     /// (CSS's `padding-right: env(safe-area-inset-right)`, [`Styled::p_safe_area`]).
     fn pr_safe_area(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::PaddingRight, "env(safe-area-inset-right)");
+        self.style().env(
+            StyleKey::PaddingRight,
+            crate::style::EnvVar::SafeAreaInsetRight,
+        );
         self
     }
 
@@ -1126,8 +1203,10 @@ pub trait Styled: Sized {
     /// Bottom padding by the safe area's bottom inset where the view renders
     /// (CSS's `padding-bottom: env(safe-area-inset-bottom)`, [`Styled::p_safe_area`]).
     fn pb_safe_area(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::PaddingBottom, "env(safe-area-inset-bottom)");
+        self.style().env(
+            StyleKey::PaddingBottom,
+            crate::style::EnvVar::SafeAreaInsetBottom,
+        );
         self
     }
 
@@ -1145,8 +1224,10 @@ pub trait Styled: Sized {
     /// Left padding by the safe area's left inset where the view renders
     /// (CSS's `padding-left: env(safe-area-inset-left)`, [`Styled::p_safe_area`]).
     fn pl_safe_area(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::PaddingLeft, "env(safe-area-inset-left)");
+        self.style().env(
+            StyleKey::PaddingLeft,
+            crate::style::EnvVar::SafeAreaInsetLeft,
+        );
         self
     }
 
@@ -1163,8 +1244,10 @@ pub trait Styled: Sized {
     /// content kept above the keyboard, moving with it natively. For a
     /// view that reaches the bottom of the surface.
     fn pb_keyboard(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::PaddingBottom, "env(keyboard-inset-height)");
+        self.style().env(
+            StyleKey::PaddingBottom,
+            crate::style::EnvVar::KeyboardInsetHeight,
+        );
         self
     }
 
@@ -1186,10 +1269,19 @@ pub trait Styled: Sized {
     /// header).
     fn m_safe_area(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::MarginTop, "env(safe-area-inset-top)");
-        s.keyword(StyleKey::MarginRight, "env(safe-area-inset-right)");
-        s.keyword(StyleKey::MarginBottom, "env(safe-area-inset-bottom)");
-        s.keyword(StyleKey::MarginLeft, "env(safe-area-inset-left)");
+        s.env(StyleKey::MarginTop, crate::style::EnvVar::SafeAreaInsetTop);
+        s.env(
+            StyleKey::MarginRight,
+            crate::style::EnvVar::SafeAreaInsetRight,
+        );
+        s.env(
+            StyleKey::MarginBottom,
+            crate::style::EnvVar::SafeAreaInsetBottom,
+        );
+        s.env(
+            StyleKey::MarginLeft,
+            crate::style::EnvVar::SafeAreaInsetLeft,
+        );
         self
     }
 
@@ -1197,8 +1289,14 @@ pub trait Styled: Sized {
     /// ([`Styled::m_safe_area`]).
     fn mx_safe_area(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::MarginRight, "env(safe-area-inset-right)");
-        s.keyword(StyleKey::MarginLeft, "env(safe-area-inset-left)");
+        s.env(
+            StyleKey::MarginRight,
+            crate::style::EnvVar::SafeAreaInsetRight,
+        );
+        s.env(
+            StyleKey::MarginLeft,
+            crate::style::EnvVar::SafeAreaInsetLeft,
+        );
         self
     }
 
@@ -1206,8 +1304,11 @@ pub trait Styled: Sized {
     /// ([`Styled::m_safe_area`]).
     fn my_safe_area(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::MarginTop, "env(safe-area-inset-top)");
-        s.keyword(StyleKey::MarginBottom, "env(safe-area-inset-bottom)");
+        s.env(StyleKey::MarginTop, crate::style::EnvVar::SafeAreaInsetTop);
+        s.env(
+            StyleKey::MarginBottom,
+            crate::style::EnvVar::SafeAreaInsetBottom,
+        );
         self
     }
 
@@ -1215,7 +1316,7 @@ pub trait Styled: Sized {
     /// (CSS's `margin-top: env(safe-area-inset-top)`, [`Styled::m_safe_area`]).
     fn mt_safe_area(mut self) -> Self {
         self.style()
-            .keyword(StyleKey::MarginTop, "env(safe-area-inset-top)");
+            .env(StyleKey::MarginTop, crate::style::EnvVar::SafeAreaInsetTop);
         self
     }
 
@@ -1230,8 +1331,10 @@ pub trait Styled: Sized {
     /// Right margin by the safe area's right inset where the view renders
     /// (CSS's `margin-right: env(safe-area-inset-right)`, [`Styled::m_safe_area`]).
     fn mr_safe_area(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::MarginRight, "env(safe-area-inset-right)");
+        self.style().env(
+            StyleKey::MarginRight,
+            crate::style::EnvVar::SafeAreaInsetRight,
+        );
         self
     }
 
@@ -1246,8 +1349,10 @@ pub trait Styled: Sized {
     /// Bottom margin by the safe area's bottom inset where the view renders
     /// (CSS's `margin-bottom: env(safe-area-inset-bottom)`, [`Styled::m_safe_area`]).
     fn mb_safe_area(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::MarginBottom, "env(safe-area-inset-bottom)");
+        self.style().env(
+            StyleKey::MarginBottom,
+            crate::style::EnvVar::SafeAreaInsetBottom,
+        );
         self
     }
 
@@ -1265,8 +1370,10 @@ pub trait Styled: Sized {
     /// Left margin by the safe area's left inset where the view renders
     /// (CSS's `margin-left: env(safe-area-inset-left)`, [`Styled::m_safe_area`]).
     fn ml_safe_area(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::MarginLeft, "env(safe-area-inset-left)");
+        self.style().env(
+            StyleKey::MarginLeft,
+            crate::style::EnvVar::SafeAreaInsetLeft,
+        );
         self
     }
 
@@ -1283,8 +1390,10 @@ pub trait Styled: Sized {
     /// content kept above the keyboard, moving with it natively. For a
     /// view that reaches the bottom of the surface.
     fn mb_keyboard(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::MarginBottom, "env(keyboard-inset-height)");
+        self.style().env(
+            StyleKey::MarginBottom,
+            crate::style::EnvVar::KeyboardInsetHeight,
+        );
         self
     }
 
@@ -1302,15 +1411,28 @@ pub trait Styled: Sized {
 
     // Layout.
 
-    /// Flex layout (the default).
+    /// Flex layout, its children in a row unless a direction is set (CSS's
+    /// `display: flex`, Tailwind's `flex`). A view that sets no display
+    /// lays its children out in a column.
     fn flex(mut self) -> Self {
-        self.style().keyword(StyleKey::Display, "flex");
+        let s = self.style();
+        s.value(
+            StyleKey::Display,
+            PropertyValue::Display(taffy::Display::Flex),
+        );
+        s.push(Declaration::Default(
+            StyleKey::FlexDirection,
+            PropertyValue::FlexDirection(taffy::FlexDirection::Row),
+        ));
         self
     }
 
     /// Grid layout.
     fn grid(mut self) -> Self {
-        self.style().keyword(StyleKey::Display, "grid");
+        self.style().value(
+            StyleKey::Display,
+            PropertyValue::Display(taffy::Display::Grid),
+        );
         self
     }
 
@@ -1334,7 +1456,7 @@ pub trait Styled: Sized {
     /// minmax(80px, 1fr))"`, line names).
     fn grid_template_columns(mut self, tracks: impl IntoReactive<SharedString>) -> Self {
         self.style().bind_value(tracks, |s, tracks: SharedString| {
-            s.push(Declaration::Str(StyleKey::GridTemplateColumns, tracks));
+            s.css(StyleKey::GridTemplateColumns, &tracks);
         });
         self
     }
@@ -1342,20 +1464,26 @@ pub trait Styled: Sized {
     /// The grid's rows as CSS tracks.
     fn grid_template_rows(mut self, tracks: impl IntoReactive<SharedString>) -> Self {
         self.style().bind_value(tracks, |s, tracks: SharedString| {
-            s.push(Declaration::Str(StyleKey::GridTemplateRows, tracks));
+            s.css(StyleKey::GridTemplateRows, &tracks);
         });
         self
     }
 
     /// Items fill the grid column by column.
     fn grid_flow_col(mut self) -> Self {
-        self.style().keyword(StyleKey::GridAutoFlow, "column");
+        self.style().value(
+            StyleKey::GridAutoFlow,
+            PropertyValue::GridAutoFlow(taffy::GridAutoFlow::Column),
+        );
         self
     }
 
     /// Items fill the grid's holes left by larger ones.
     fn grid_flow_dense(mut self) -> Self {
-        self.style().keyword(StyleKey::GridAutoFlow, "row dense");
+        self.style().value(
+            StyleKey::GridAutoFlow,
+            PropertyValue::GridAutoFlow(taffy::GridAutoFlow::RowDense),
+        );
         self
     }
 
@@ -1377,13 +1505,15 @@ pub trait Styled: Sized {
 
     /// Across every column of the grid.
     fn col_span_full(mut self) -> Self {
-        self.style().keyword(StyleKey::GridColumn, "1 / -1");
+        self.style()
+            .value(StyleKey::GridColumn, PropertyValue::GridLine(full_line()));
         self
     }
 
     /// Across every row of the grid.
     fn row_span_full(mut self) -> Self {
-        self.style().keyword(StyleKey::GridRow, "1 / -1");
+        self.style()
+            .value(StyleKey::GridRow, PropertyValue::GridLine(full_line()));
         self
     }
 
@@ -1422,38 +1552,55 @@ pub trait Styled: Sized {
 
     /// Not laid out nor shown.
     fn hidden(mut self) -> Self {
-        self.style().keyword(StyleKey::Display, "none");
+        self.style().value(
+            StyleKey::Display,
+            PropertyValue::Display(taffy::Display::None),
+        );
         self
     }
 
     /// Children in a row.
     fn flex_row(mut self) -> Self {
-        self.style().keyword(StyleKey::FlexDirection, "row");
+        self.style().value(
+            StyleKey::FlexDirection,
+            PropertyValue::FlexDirection(taffy::FlexDirection::Row),
+        );
         self
     }
 
     /// Children in a row, last first.
     fn flex_row_reverse(mut self) -> Self {
-        self.style().keyword(StyleKey::FlexDirection, "row-reverse");
+        self.style().value(
+            StyleKey::FlexDirection,
+            PropertyValue::FlexDirection(taffy::FlexDirection::RowReverse),
+        );
         self
     }
 
-    /// Children in a column (the default).
+    /// Children in a column (the default of a view that sets no display).
     fn flex_col(mut self) -> Self {
-        self.style().keyword(StyleKey::FlexDirection, "column");
+        self.style().value(
+            StyleKey::FlexDirection,
+            PropertyValue::FlexDirection(taffy::FlexDirection::Column),
+        );
         self
     }
 
     /// Children in a column, last first.
     fn flex_col_reverse(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::FlexDirection, "column-reverse");
+        self.style().value(
+            StyleKey::FlexDirection,
+            PropertyValue::FlexDirection(taffy::FlexDirection::ColumnReverse),
+        );
         self
     }
 
     /// Children wrap onto new lines.
     fn flex_wrap(mut self) -> Self {
-        self.style().keyword(StyleKey::FlexWrap, "wrap");
+        self.style().value(
+            StyleKey::FlexWrap,
+            PropertyValue::FlexWrap(taffy::FlexWrap::Wrap),
+        );
         self
     }
 
@@ -1509,94 +1656,199 @@ pub trait Styled: Sized {
 
     /// Children at the cross axis' start.
     fn items_start(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignItems, "flex-start");
+        self.style().value(
+            StyleKey::AlignItems,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::FLEX_START)),
+        );
         self
     }
 
     /// Children centered on the cross axis.
     fn items_center(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignItems, "center");
+        self.style().value(
+            StyleKey::AlignItems,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::CENTER)),
+        );
         self
     }
 
     /// Children at the cross axis' end.
     fn items_end(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignItems, "flex-end");
+        self.style().value(
+            StyleKey::AlignItems,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::FLEX_END)),
+        );
         self
     }
 
     /// Children stretched across (the default).
     fn items_stretch(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignItems, "stretch");
+        self.style().value(
+            StyleKey::AlignItems,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::STRETCH)),
+        );
         self
     }
 
     /// Children aligned on their text baseline.
     fn items_baseline(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignItems, "baseline");
+        self.style().value(
+            StyleKey::AlignItems,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::BASELINE)),
+        );
         self
     }
 
     /// Children at the main axis' start (the default).
     fn justify_start(mut self) -> Self {
-        self.style().keyword(StyleKey::JustifyContent, "flex-start");
+        self.style().value(
+            StyleKey::JustifyContent,
+            PropertyValue::AlignContent(taffy::AlignContent::FLEX_START),
+        );
         self
     }
 
     /// Children centered on the main axis.
     fn justify_center(mut self) -> Self {
-        self.style().keyword(StyleKey::JustifyContent, "center");
+        self.style().value(
+            StyleKey::JustifyContent,
+            PropertyValue::AlignContent(taffy::AlignContent::CENTER),
+        );
         self
     }
 
     /// Children at the main axis' end.
     fn justify_end(mut self) -> Self {
-        self.style().keyword(StyleKey::JustifyContent, "flex-end");
+        self.style().value(
+            StyleKey::JustifyContent,
+            PropertyValue::AlignContent(taffy::AlignContent::FLEX_END),
+        );
         self
     }
 
     /// Free space between children.
     fn justify_between(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::JustifyContent, "space-between");
+        self.style().value(
+            StyleKey::JustifyContent,
+            PropertyValue::AlignContent(taffy::AlignContent::SPACE_BETWEEN),
+        );
         self
     }
 
     /// Free space around children.
     fn justify_around(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::JustifyContent, "space-around");
+        self.style().value(
+            StyleKey::JustifyContent,
+            PropertyValue::AlignContent(taffy::AlignContent::SPACE_AROUND),
+        );
         self
     }
 
     /// Free space evenly between and around children.
     fn justify_evenly(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::JustifyContent, "space-evenly");
+        self.style().value(
+            StyleKey::JustifyContent,
+            PropertyValue::AlignContent(taffy::AlignContent::SPACE_EVENLY),
+        );
+        self
+    }
+
+    /// Wrapped lines at the cross axis' start (`alignContent`, the default; Tailwind's `content-start`).
+    fn content_start(mut self) -> Self {
+        self.style().value(
+            StyleKey::AlignContent,
+            PropertyValue::AlignContent(taffy::AlignContent::FLEX_START),
+        );
+        self
+    }
+
+    /// Wrapped lines centered on the cross axis (`content-center`).
+    fn content_center(mut self) -> Self {
+        self.style().value(
+            StyleKey::AlignContent,
+            PropertyValue::AlignContent(taffy::AlignContent::CENTER),
+        );
+        self
+    }
+
+    /// Wrapped lines at the cross axis' end (`content-end`).
+    fn content_end(mut self) -> Self {
+        self.style().value(
+            StyleKey::AlignContent,
+            PropertyValue::AlignContent(taffy::AlignContent::FLEX_END),
+        );
+        self
+    }
+
+    /// Free space between wrapped lines (`content-between`).
+    fn content_between(mut self) -> Self {
+        self.style().value(
+            StyleKey::AlignContent,
+            PropertyValue::AlignContent(taffy::AlignContent::SPACE_BETWEEN),
+        );
+        self
+    }
+
+    /// Free space around wrapped lines (`content-around`).
+    fn content_around(mut self) -> Self {
+        self.style().value(
+            StyleKey::AlignContent,
+            PropertyValue::AlignContent(taffy::AlignContent::SPACE_AROUND),
+        );
+        self
+    }
+
+    /// Free space evenly between and around wrapped lines (`content-evenly`).
+    fn content_evenly(mut self) -> Self {
+        self.style().value(
+            StyleKey::AlignContent,
+            PropertyValue::AlignContent(taffy::AlignContent::SPACE_EVENLY),
+        );
+        self
+    }
+
+    /// Wrapped lines stretched to fill the cross axis (`content-stretch`).
+    fn content_stretch(mut self) -> Self {
+        self.style().value(
+            StyleKey::AlignContent,
+            PropertyValue::AlignContent(taffy::AlignContent::STRETCH),
+        );
         self
     }
 
     /// Itself at the cross axis' start.
     fn self_start(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignSelf, "flex-start");
+        self.style().value(
+            StyleKey::AlignSelf,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::FLEX_START)),
+        );
         self
     }
 
     /// Itself centered on the cross axis.
     fn self_center(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignSelf, "center");
+        self.style().value(
+            StyleKey::AlignSelf,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::CENTER)),
+        );
         self
     }
 
     /// Itself at the cross axis' end.
     fn self_end(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignSelf, "flex-end");
+        self.style().value(
+            StyleKey::AlignSelf,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::FLEX_END)),
+        );
         self
     }
 
     /// Itself stretched across.
     fn self_stretch(mut self) -> Self {
-        self.style().keyword(StyleKey::AlignSelf, "stretch");
+        self.style().value(
+            StyleKey::AlignSelf,
+            PropertyValue::AlignItems(Some(taffy::AlignItems::STRETCH)),
+        );
         self
     }
 
@@ -1630,13 +1882,19 @@ pub trait Styled: Sized {
 
     /// Laid out in the flow (the default).
     fn relative(mut self) -> Self {
-        self.style().keyword(StyleKey::Position, "relative");
+        self.style().value(
+            StyleKey::Position,
+            PropertyValue::Position(taffy::Position::Relative, false, false),
+        );
         self
     }
 
     /// Out of the flow, placed by `top` / `left` / ... in the parent.
     fn absolute(mut self) -> Self {
-        self.style().keyword(StyleKey::Position, "absolute");
+        self.style().value(
+            StyleKey::Position,
+            PropertyValue::Position(taffy::Position::Absolute, false, false),
+        );
         self
     }
 
@@ -1646,13 +1904,17 @@ pub trait Styled: Sized {
     /// (CSS `position: sticky`; `.top(..)` / `.bind_sticky_top(..)` say
     /// where).
     fn sticky(mut self) -> Self {
-        self.style().keyword(StyleKey::Position, "sticky");
+        self.style().value(
+            StyleKey::Position,
+            PropertyValue::Position(taffy::Position::Relative, false, true),
+        );
         self
     }
 
     /// Clips its children.
     fn overflow_hidden(mut self) -> Self {
-        self.style().keyword(StyleKey::Overflow, "hidden");
+        self.style()
+            .value(StyleKey::Overflow, PropertyValue::Bool(true));
         self
     }
 
@@ -1954,37 +2216,46 @@ pub trait Styled: Sized {
 
     /// Solid borders (the default).
     fn border_solid(mut self) -> Self {
-        self.style().keyword(StyleKey::BorderStyle, "solid");
+        self.style().value(
+            StyleKey::BorderStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Solid, false),
+        );
         self
     }
 
     /// Dashed borders.
     fn border_dashed(mut self) -> Self {
-        self.style().keyword(StyleKey::BorderStyle, "dashed");
+        self.style().value(
+            StyleKey::BorderStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Dashed, false),
+        );
         self
     }
 
     /// Dotted borders.
     fn border_dotted(mut self) -> Self {
-        self.style().keyword(StyleKey::BorderStyle, "dotted");
+        self.style().value(
+            StyleKey::BorderStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Dotted, false),
+        );
         self
     }
 
     /// No border, whatever the widths set before or after (they take no
     /// space); [`Styled::border_solid`] and the other styles show it again.
     fn border_none(mut self) -> Self {
-        self.style().keyword(StyleKey::BorderStyle, "none");
+        self.style().value(
+            StyleKey::BorderStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Solid, true),
+        );
         self
     }
 
     /// The shape of its rounded corners.
     fn border_curve(mut self, curve: BorderCurve) -> Self {
-        self.style().keyword(
+        self.style().value(
             StyleKey::BorderCurve,
-            match curve {
-                BorderCurve::Circular => "circular",
-                BorderCurve::Continuous => "continuous",
-            },
+            PropertyValue::Bool(matches!(curve, BorderCurve::Continuous)),
         );
         self
     }
@@ -2115,7 +2386,10 @@ pub trait Styled: Sized {
     fn outline(mut self, width: impl Into<AbsoluteLength>) -> Self {
         let s = self.style();
         s.number(StyleKey::OutlineWidth, points(width.into()));
-        s.push(Declaration::DefaultKeyword(StyleKey::OutlineStyle, "solid"));
+        s.push(Declaration::Default(
+            StyleKey::OutlineStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Solid, false),
+        ));
         self
     }
 
@@ -2140,10 +2414,13 @@ pub trait Styled: Sized {
     /// width, as CSS's `medium`).
     fn outline_dashed(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::OutlineStyle, "dashed");
-        s.push(Declaration::DefaultNumber(
+        s.value(
+            StyleKey::OutlineStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Dashed, false),
+        );
+        s.push(Declaration::Default(
             StyleKey::OutlineWidth,
-            Bits(3.0),
+            PropertyValue::Points(px(3.0)),
         ));
         self
     }
@@ -2152,17 +2429,23 @@ pub trait Styled: Sized {
     /// width).
     fn outline_dotted(mut self) -> Self {
         let s = self.style();
-        s.keyword(StyleKey::OutlineStyle, "dotted");
-        s.push(Declaration::DefaultNumber(
+        s.value(
+            StyleKey::OutlineStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Dotted, false),
+        );
+        s.push(Declaration::Default(
             StyleKey::OutlineWidth,
-            Bits(3.0),
+            PropertyValue::Points(px(3.0)),
         ));
         self
     }
 
     /// No outline.
     fn outline_none(mut self) -> Self {
-        self.style().keyword(StyleKey::OutlineStyle, "none");
+        self.style().value(
+            StyleKey::OutlineStyle,
+            PropertyValue::BorderStyle(crate::BorderStyle::Solid, true),
+        );
         self
     }
 
@@ -2224,41 +2507,11 @@ pub trait Styled: Sized {
 
     /// The shadow's color: of the presets' layers (an opaque color keeps
     /// their alpha, Tailwind's `shadow-sky-500`; one with an alpha sets it,
-    /// `shadow-sky-500/50`), or of the shadow set with
-    /// [`Styled::shadow_opacity`], [`Styled::shadow_radius`] and
-    /// [`Styled::shadow_offset`].
+    /// `shadow-sky-500/50`).
     fn shadow_color(mut self, color: impl Into<AdaptiveColor>) -> Self {
         let color = color.into();
-        let s = self.style();
-        s.color(&[StyleKey::ShadowColor], color);
-        s.push(Declaration::PartColor(ColorPart::Shadow, color));
-        self
-    }
-
-    /// A shadow of this opacity (0 by default: none), with
-    /// [`Styled::shadow_color`] (black by default), [`Styled::shadow_radius`]
-    /// and [`Styled::shadow_offset`].
-    fn shadow_opacity(mut self, opacity: impl IntoReactive<f32>) -> Self {
-        self.style().bind_value(opacity, |s, opacity: f32| {
-            s.number(StyleKey::ShadowOpacity, opacity.clamp(0.0, 1.0));
-        });
-        self
-    }
-
-    /// The shadow's blur radius (3 points by default).
-    fn shadow_radius(mut self, radius: impl IntoReactive<Points>) -> Self {
-        self.style().bind_value(radius, |s, radius: Points| {
-            s.number(StyleKey::ShadowRadius, radius.0);
-        });
-        self
-    }
-
-    /// The shadow's offset (right and down; `(0, -3)` points by default).
-    fn shadow_offset(mut self, offset: Point<Points>) -> Self {
-        self.style().push(Declaration::ShadowOffset(
-            Bits(offset.x.0),
-            Bits(offset.y.0),
-        ));
+        self.style()
+            .push(Declaration::PartColor(ColorPart::Shadow, color));
         self
     }
 
@@ -2590,14 +2843,54 @@ pub trait Styled: Sized {
 
     /// How it blends with what is behind it.
     fn mix_blend_mode(mut self, mode: BlendMode) -> Self {
-        self.style().keyword(StyleKey::MixBlendMode, mode.name());
+        self.style()
+            .value(StyleKey::MixBlendMode, PropertyValue::BlendMode(mode));
+        self
+    }
+
+    /// Which touches it and the views in it take (`pointerEvents`):
+    /// `PointerEvents::None` none, for the views in it too unless one says
+    /// `Auto`; `BoxNone` none on itself; `BoxOnly` none on the views in it.
+    fn pointer_events(mut self, pointer_events: impl IntoReactive<crate::PointerEvents>) -> Self {
+        self.style()
+            .bind_value(pointer_events, |s, p: crate::PointerEvents| {
+                s.value(
+                    StyleKey::PointerEvents,
+                    PropertyValue::PointerEvents(Some(p)),
+                );
+            });
+        self
+    }
+
+    /// Its texts can be selected and copied (`userSelect: "text"`,
+    /// Tailwind's `select-text`).
+    fn select_text(mut self) -> Self {
+        self.style()
+            .value(StyleKey::UserSelect, PropertyValue::OptBool(Some(true)));
+        self
+    }
+
+    /// Its texts cannot be selected (`userSelect: "none"`, Tailwind's
+    /// `select-none`).
+    fn select_none(mut self) -> Self {
+        self.style()
+            .value(StyleKey::UserSelect, PropertyValue::OptBool(Some(false)));
+        self
+    }
+
+    /// Apple's Liquid Glass behind the element (`glassEffect`; iOS 26 and
+    /// macOS 26), its `backdropFilter` elsewhere.
+    fn glass_effect(mut self, glass: crate::GlassEffect) -> Self {
+        self.style()
+            .value(StyleKey::GlassEffect, PropertyValue::GlassEffect(glass));
         self
     }
 
     /// The pointer's look over the element (`cursor`; desktops, and iPad
     /// and Android with a mouse).
     fn cursor(mut self, cursor: Cursor) -> Self {
-        self.style().keyword(StyleKey::Cursor, cursor.name());
+        self.style()
+            .value(StyleKey::Cursor, PropertyValue::Cursor(cursor));
         self
     }
 
@@ -2876,57 +3169,92 @@ pub trait Styled: Sized {
 
     /// Transforms around its top left corner.
     fn origin_top_left(mut self) -> Self {
-        self.style().keyword(StyleKey::TransformOrigin, "top left");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(0.0, 0.0)),
+        );
         self
     }
 
     /// Transforms around the middle of its top edge.
     fn origin_top(mut self) -> Self {
-        self.style().keyword(StyleKey::TransformOrigin, "top");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(0.5, 0.0)),
+        );
         self
     }
 
     /// Transforms around its top right corner.
     fn origin_top_right(mut self) -> Self {
-        self.style().keyword(StyleKey::TransformOrigin, "top right");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(1.0, 0.0)),
+        );
         self
     }
 
     /// Transforms around the middle of its left edge.
     fn origin_left(mut self) -> Self {
-        self.style().keyword(StyleKey::TransformOrigin, "left");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(0.0, 0.5)),
+        );
         self
     }
 
     /// Transforms around its center (the default).
     fn origin_center(mut self) -> Self {
-        self.style().keyword(StyleKey::TransformOrigin, "center");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(0.5, 0.5)),
+        );
         self
     }
 
     /// Transforms around the middle of its right edge.
     fn origin_right(mut self) -> Self {
-        self.style().keyword(StyleKey::TransformOrigin, "right");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(1.0, 0.5)),
+        );
         self
     }
 
     /// Transforms around its bottom left corner.
     fn origin_bottom_left(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::TransformOrigin, "bottom left");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(0.0, 1.0)),
+        );
         self
     }
 
     /// Transforms around the middle of its bottom edge.
     fn origin_bottom(mut self) -> Self {
-        self.style().keyword(StyleKey::TransformOrigin, "bottom");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(0.5, 1.0)),
+        );
         self
     }
 
     /// Transforms around its bottom right corner.
     fn origin_bottom_right(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::TransformOrigin, "bottom right");
+        self.style().value(
+            StyleKey::TransformOrigin,
+            PropertyValue::TransformOrigin(origin(1.0, 1.0)),
+        );
+        self
+    }
+
+    /// How an image or a video fits its box (`objectFit`): `Cover` (an
+    /// image's default), `Contain` (a video's), `Stretch` (CSS's `fill`),
+    /// `Center` (`none`) or `ScaleDown`.
+    fn object_fit(mut self, fit: impl IntoReactive<crate::ResizeMode>) -> Self {
+        self.style().bind_value(fit, |s, fit: crate::ResizeMode| {
+            s.value(StyleKey::ObjectFit, PropertyValue::ObjectFit(Some(fit)));
+        });
         self
     }
 
@@ -2934,83 +3262,136 @@ pub trait Styled: Sized {
     /// (CSS's `object-position`; the center by default): a covering image
     /// is cropped around it.
     fn object_position(mut self, position: ObjectPosition) -> Self {
-        self.style().push(Declaration::Str(
+        self.style().value(
             StyleKey::ObjectPosition,
-            position.to_string().into(),
-        ));
+            PropertyValue::ObjectPosition(position),
+        );
         self
     }
 
     /// Shows an image's top left corner (Tailwind's `object-top-left`).
     fn object_top_left(mut self) -> Self {
-        self.style().keyword(StyleKey::ObjectPosition, "left top");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::START,
+                PositionAxis::START,
+            )),
+        );
         self
     }
 
     /// Shows an image's top (Tailwind's `object-top`): a tall image
     /// covering its box is cropped at the bottom.
     fn object_top(mut self) -> Self {
-        self.style().keyword(StyleKey::ObjectPosition, "top");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::CENTER,
+                PositionAxis::START,
+            )),
+        );
         self
     }
 
     /// Shows an image's top right corner (Tailwind's `object-top-right`).
     fn object_top_right(mut self) -> Self {
-        self.style().keyword(StyleKey::ObjectPosition, "right top");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::END,
+                PositionAxis::START,
+            )),
+        );
         self
     }
 
     /// Shows an image's left side (Tailwind's `object-left`).
     fn object_left(mut self) -> Self {
-        self.style().keyword(StyleKey::ObjectPosition, "left");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::START,
+                PositionAxis::CENTER,
+            )),
+        );
         self
     }
 
     /// Centers an image in its box (Tailwind's `object-center`, the
     /// default).
     fn object_center(mut self) -> Self {
-        self.style().keyword(StyleKey::ObjectPosition, "center");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::CENTER,
+                PositionAxis::CENTER,
+            )),
+        );
         self
     }
 
     /// Shows an image's right side (Tailwind's `object-right`).
     fn object_right(mut self) -> Self {
-        self.style().keyword(StyleKey::ObjectPosition, "right");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::END,
+                PositionAxis::CENTER,
+            )),
+        );
         self
     }
 
     /// Shows an image's bottom left corner (Tailwind's
     /// `object-bottom-left`).
     fn object_bottom_left(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::ObjectPosition, "left bottom");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::START,
+                PositionAxis::END,
+            )),
+        );
         self
     }
 
     /// Shows an image's bottom (Tailwind's `object-bottom`).
     fn object_bottom(mut self) -> Self {
-        self.style().keyword(StyleKey::ObjectPosition, "bottom");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::CENTER,
+                PositionAxis::END,
+            )),
+        );
         self
     }
 
     /// Shows an image's bottom right corner (Tailwind's
     /// `object-bottom-right`).
     fn object_bottom_right(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::ObjectPosition, "right bottom");
+        self.style().value(
+            StyleKey::ObjectPosition,
+            PropertyValue::ObjectPosition(ObjectPosition::new(
+                PositionAxis::END,
+                PositionAxis::END,
+            )),
+        );
         self
     }
 
     /// Invisible while its 3D rotations turn it away (a card's back).
     fn backface_hidden(mut self) -> Self {
-        self.style().keyword(StyleKey::BackfaceVisibility, "hidden");
+        self.style()
+            .value(StyleKey::BackfaceVisibility, PropertyValue::Bool(true));
         self
     }
 
     /// Visible from behind too (the default).
     fn backface_visible(mut self) -> Self {
         self.style()
-            .keyword(StyleKey::BackfaceVisibility, "visible");
+            .value(StyleKey::BackfaceVisibility, PropertyValue::Bool(false));
         self
     }
 
@@ -3045,13 +3426,19 @@ pub trait Styled: Sized {
 
     /// No fill (`fill-none`).
     fn fill_none(mut self) -> Self {
-        self.style().keyword(StyleKey::Fill, "none");
+        self.style().value(
+            StyleKey::Fill,
+            PropertyValue::Paint(Some(crate::SvgPaint::None)),
+        );
         self
     }
 
     /// The text color as the fill (`fill-current`, `currentColor`).
     fn fill_current(mut self) -> Self {
-        self.style().keyword(StyleKey::Fill, "currentColor");
+        self.style().value(
+            StyleKey::Fill,
+            PropertyValue::Paint(Some(crate::SvgPaint::CurrentColor)),
+        );
         self
     }
 
@@ -3067,13 +3454,19 @@ pub trait Styled: Sized {
 
     /// No stroke (`stroke-none`).
     fn stroke_none(mut self) -> Self {
-        self.style().keyword(StyleKey::Stroke, "none");
+        self.style().value(
+            StyleKey::Stroke,
+            PropertyValue::Paint(Some(crate::SvgPaint::None)),
+        );
         self
     }
 
     /// The text color as the stroke (`stroke-current`, `currentColor`).
     fn stroke_current(mut self) -> Self {
-        self.style().keyword(StyleKey::Stroke, "currentColor");
+        self.style().value(
+            StyleKey::Stroke,
+            PropertyValue::Paint(Some(crate::SvgPaint::CurrentColor)),
+        );
         self
     }
 
@@ -3172,10 +3565,11 @@ pub trait Styled: Sized {
         self
     }
 
-    /// The line height, in points.
-    fn line_height(mut self, height: impl IntoReactive<Length>) -> Self {
-        self.style().bind_value(height, |s, height: Length| {
-            s.lengths(&[StyleKey::LineHeight], height);
+    /// The line height: points (`px(20.0)`), or a multiple of the font
+    /// size (`LineHeight::Multiple(1.5)`).
+    fn line_height(mut self, height: impl IntoReactive<LineHeight>) -> Self {
+        self.style().bind_value(height, |s, height: LineHeight| {
+            s.value(StyleKey::LineHeight, PropertyValue::LineHeight(height));
         });
         self
     }
@@ -3189,14 +3583,18 @@ pub trait Styled: Sized {
     /// The font family (`None` style: the system font is the default).
     fn font_family(mut self, family: impl IntoReactive<SharedString>) -> Self {
         self.style().bind_value(family, |s, family: SharedString| {
-            s.push(Declaration::Str(StyleKey::FontFamily, family));
+            s.value(
+                StyleKey::FontFamily,
+                PropertyValue::FontFamily(Some(crate::FontFamily::new(family.trim()))),
+            );
         });
         self
     }
 
     /// Italic text.
     fn italic(mut self) -> Self {
-        self.style().keyword(StyleKey::FontStyle, "italic");
+        self.style()
+            .value(StyleKey::FontStyle, PropertyValue::OptBool(Some(true)));
         self
     }
 
@@ -3229,34 +3627,46 @@ pub trait Styled: Sized {
 
     /// Solid decoration lines (the default).
     fn text_decoration_solid(mut self) -> Self {
-        self.style().keyword(StyleKey::TextDecorationStyle, "solid");
+        self.style().value(
+            StyleKey::TextDecorationStyle,
+            PropertyValue::DecorationStyle(Some(crate::DecorationStyle::Solid)),
+        );
         self
     }
 
     /// Double decoration lines.
     fn text_decoration_double(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::TextDecorationStyle, "double");
+        self.style().value(
+            StyleKey::TextDecorationStyle,
+            PropertyValue::DecorationStyle(Some(crate::DecorationStyle::Double)),
+        );
         self
     }
 
     /// Dotted decoration lines.
     fn text_decoration_dotted(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::TextDecorationStyle, "dotted");
+        self.style().value(
+            StyleKey::TextDecorationStyle,
+            PropertyValue::DecorationStyle(Some(crate::DecorationStyle::Dotted)),
+        );
         self
     }
 
     /// Dashed decoration lines.
     fn text_decoration_dashed(mut self) -> Self {
-        self.style()
-            .keyword(StyleKey::TextDecorationStyle, "dashed");
+        self.style().value(
+            StyleKey::TextDecorationStyle,
+            PropertyValue::DecorationStyle(Some(crate::DecorationStyle::Dashed)),
+        );
         self
     }
 
     /// Wavy decoration lines (spelling marks).
     fn text_decoration_wavy(mut self) -> Self {
-        self.style().keyword(StyleKey::TextDecorationStyle, "wavy");
+        self.style().value(
+            StyleKey::TextDecorationStyle,
+            PropertyValue::DecorationStyle(Some(crate::DecorationStyle::Wavy)),
+        );
         self
     }
 
@@ -3278,25 +3688,37 @@ pub trait Styled: Sized {
 
     /// Shown in capitals (the content stays as it is).
     fn uppercase(mut self) -> Self {
-        self.style().keyword(StyleKey::TextTransform, "uppercase");
+        self.style().value(
+            StyleKey::TextTransform,
+            PropertyValue::TextTransform(Some(crate::TextTransform::Uppercase)),
+        );
         self
     }
 
     /// Shown in small letters.
     fn lowercase(mut self) -> Self {
-        self.style().keyword(StyleKey::TextTransform, "lowercase");
+        self.style().value(
+            StyleKey::TextTransform,
+            PropertyValue::TextTransform(Some(crate::TextTransform::Lowercase)),
+        );
         self
     }
 
     /// Each word shown with a capital first letter.
     fn capitalize(mut self) -> Self {
-        self.style().keyword(StyleKey::TextTransform, "capitalize");
+        self.style().value(
+            StyleKey::TextTransform,
+            PropertyValue::TextTransform(Some(crate::TextTransform::Capitalize)),
+        );
         self
     }
 
     /// Shown as written (undoes an inherited case).
     fn normal_case(mut self) -> Self {
-        self.style().keyword(StyleKey::TextTransform, "none");
+        self.style().value(
+            StyleKey::TextTransform,
+            PropertyValue::TextTransform(Some(crate::TextTransform::None)),
+        );
         self
     }
 
@@ -3344,34 +3766,68 @@ pub trait Styled: Sized {
     fn direction(mut self, direction: impl IntoReactive<LayoutDirection>) -> Self {
         self.style()
             .bind_value(direction, |s, direction: LayoutDirection| {
-                s.keyword(
+                s.value(
                     StyleKey::Direction,
-                    match direction {
-                        LayoutDirection::Inherit => "inherit",
-                        LayoutDirection::Ltr => "ltr",
-                        LayoutDirection::Rtl => "rtl",
-                    },
+                    PropertyValue::OptBool(match direction {
+                        LayoutDirection::Inherit => None,
+                        LayoutDirection::Ltr => Some(false),
+                        LayoutDirection::Rtl => Some(true),
+                    }),
                 );
             });
         self
     }
 
+    /// At most `lines` lines (`numberOfLines`; 0: no limit), the last one cut
+    /// as [`Styled::text_overflow`] says.
+    fn number_of_lines(mut self, lines: impl IntoReactive<u32>) -> Self {
+        self.style().bind_value(lines, |s, lines: u32| {
+            s.value(
+                StyleKey::NumberOfLines,
+                PropertyValue::NumberOfLines(Some(lines)),
+            );
+        });
+        self
+    }
+
+    /// Where a clamped text is cut (`textOverflow`): its end with an
+    /// ellipsis (`Tail`, the default), its start or middle, or clipped.
+    fn text_overflow(mut self, mode: impl IntoReactive<crate::EllipsizeMode>) -> Self {
+        self.style()
+            .bind_value(mode, |s, mode: crate::EllipsizeMode| {
+                s.value(
+                    StyleKey::TextOverflow,
+                    PropertyValue::TextOverflow(Some(mode)),
+                );
+            });
+        self
+    }
+
+    /// One line, cut with an ellipsis (Tailwind's `truncate`).
+    fn truncate(self) -> Self {
+        self.number_of_lines(1u32)
+            .text_overflow(crate::EllipsizeMode::Tail)
+    }
+
     /// The text's base direction (by default its content's).
     fn writing_direction(mut self, direction: WritingDirection) -> Self {
-        self.style().keyword(
+        self.style().value(
             StyleKey::WritingDirection,
-            match direction {
-                WritingDirection::Auto => "auto",
-                WritingDirection::Ltr => "ltr",
-                WritingDirection::Rtl => "rtl",
-            },
+            PropertyValue::OptBool(match direction {
+                WritingDirection::Auto => None,
+                WritingDirection::Ltr => Some(false),
+                WritingDirection::Rtl => Some(true),
+            }),
         );
         self
     }
 
     /// Lines stretched to both edges.
     fn text_justify(mut self) -> Self {
-        self.style().keyword(StyleKey::TextAlign, "justify");
+        self.style().value(
+            StyleKey::TextAlign,
+            PropertyValue::TextAlign(Some(crate::TextAlign::Justify), false),
+        );
         self
     }
 
@@ -3411,77 +3867,88 @@ pub trait Styled: Sized {
         self
     }
 
-    /// The text shadow's color: of a preset (an opaque color keeps the
-    /// preset's alpha), or of the shadow set with
-    /// [`Styled::text_shadow_radius`] and [`Styled::text_shadow_offset`].
+    /// The text shadow's color: of a preset or of [`Styled::text_shadow`]'s
+    /// layers (an opaque color keeps their alpha).
     fn text_shadow_color(mut self, color: impl Into<AdaptiveColor>) -> Self {
         let color = color.into();
-        let s = self.style();
-        s.color(&[StyleKey::TextShadowColor], color);
-        s.push(Declaration::PartColor(ColorPart::TextShadow, color));
+        self.style()
+            .push(Declaration::PartColor(ColorPart::TextShadow, color));
         self
     }
 
-    /// The text shadow's blur radius.
-    fn text_shadow_radius(mut self, radius: impl IntoReactive<Points>) -> Self {
-        self.style().bind_value(radius, |s, radius: Points| {
-            s.number(StyleKey::TextShadowRadius, radius.0);
-        });
-        self
-    }
-
-    /// The text shadow's offset (right and down).
-    fn text_shadow_offset(mut self, offset: Point<Points>) -> Self {
-        self.style().push(Declaration::TextShadowOffset(
-            Bits(offset.x.0),
-            Bits(offset.y.0),
-        ));
+    /// Text shadows of its own (CSS's `text-shadow`: offsets, blur and
+    /// color), instead of a preset's; drawn as the widest one.
+    fn text_shadow(mut self, layers: impl IntoIterator<Item = crate::TextShadow>) -> Self {
+        let layers: Arc<[crate::TextShadow]> = layers.into_iter().collect();
+        self.style()
+            .push(Declaration::TextShadows(TextLayers(layers)));
         self
     }
 
     /// Text aligned left.
     fn text_left(mut self) -> Self {
-        self.style().keyword(StyleKey::TextAlign, "left");
+        self.style().value(
+            StyleKey::TextAlign,
+            PropertyValue::TextAlign(Some(crate::TextAlign::Left), true),
+        );
         self
     }
 
     /// Text centered.
     fn text_center(mut self) -> Self {
-        self.style().keyword(StyleKey::TextAlign, "center");
+        self.style().value(
+            StyleKey::TextAlign,
+            PropertyValue::TextAlign(Some(crate::TextAlign::Center), false),
+        );
         self
     }
 
     /// Text aligned right.
     fn text_right(mut self) -> Self {
-        self.style().keyword(StyleKey::TextAlign, "right");
+        self.style().value(
+            StyleKey::TextAlign,
+            PropertyValue::TextAlign(Some(crate::TextAlign::Right), true),
+        );
         self
     }
 
     /// Inside a text, its bottom on the baseline (the default:
     /// `align-baseline`).
     fn align_baseline(mut self) -> Self {
-        self.style().keyword(StyleKey::VerticalAlign, "baseline");
+        self.style().value(
+            StyleKey::VerticalAlign,
+            PropertyValue::VerticalAlign(crate::VerticalAlign::Baseline),
+        );
         self
     }
 
     /// Inside a text, its top at the top of the text's font
     /// (`align-text-top`).
     fn align_text_top(mut self) -> Self {
-        self.style().keyword(StyleKey::VerticalAlign, "text-top");
+        self.style().value(
+            StyleKey::VerticalAlign,
+            PropertyValue::VerticalAlign(crate::VerticalAlign::TextTop),
+        );
         self
     }
 
     /// Inside a text, its bottom at the bottom of the text's font
     /// (`align-text-bottom`).
     fn align_text_bottom(mut self) -> Self {
-        self.style().keyword(StyleKey::VerticalAlign, "text-bottom");
+        self.style().value(
+            StyleKey::VerticalAlign,
+            PropertyValue::VerticalAlign(crate::VerticalAlign::TextBottom),
+        );
         self
     }
 
     /// Inside a text, its middle half the font's x height above the
     /// baseline (`align-middle`).
     fn align_middle(mut self) -> Self {
-        self.style().keyword(StyleKey::VerticalAlign, "middle");
+        self.style().value(
+            StyleKey::VerticalAlign,
+            PropertyValue::VerticalAlign(crate::VerticalAlign::Middle),
+        );
         self
     }
 
@@ -3716,7 +4183,7 @@ mod tests {
     use super::*;
     use crate::{
         Style,
-        color::{rgb, rgba},
+        color::rgba,
         element::palette::{EMERALD, PINK, RED, SKY, VIOLET},
         geometry::point,
         tailwind::{ClassEnvironment, ClassProps, Context},
@@ -3853,6 +4320,25 @@ mod tests {
     }
 
     #[test]
+    fn flex_is_tailwinds_row() {
+        // `.flex()` is a row unless a direction is set, as the class is.
+        same(s().flex(), "flex");
+        same(s().flex().flex_col(), "flex flex-col");
+        same(s().flex_col().flex(), "flex-col flex");
+        same(s().items_center(), "items-center");
+    }
+
+    #[test]
+    fn auto_minimum_sizes_are_tailwinds() {
+        // CSS's automatic minimum, as `min-w-auto` / `min-h-auto` are.
+        same(
+            s().min_w(crate::geometry::auto())
+                .min_h(crate::geometry::auto()),
+            "min-w-auto min-h-auto",
+        );
+    }
+
+    #[test]
     fn borders_and_corners_are_tailwinds() {
         same(
             s().border_t(px(6.0))
@@ -3911,18 +4397,14 @@ mod tests {
 
     #[test]
     fn shadows_and_rings_are_tailwinds() {
-        // The color is React Native's shadow's too (invisible at its
-        // default opacity 0).
         let emerald = EMERALD.shade(500).opacity(0.5);
-        same_with(
+        same(
             s().shadow_lg().shadow_color(emerald),
             "shadow-lg shadow-emerald-500/50",
-            &|s| s.view.shadow.color = emerald.into(),
         );
-        same_with(
+        same(
             s().shadow_xl().shadow_color(SKY.shade(500)),
             "shadow-xl shadow-sky-500",
-            &|s| s.view.shadow.color = SKY.shade(500).into(),
         );
         same(s().inset_shadow_sm(), "inset-shadow-sm");
         same(
@@ -3946,23 +4428,20 @@ mod tests {
             let classes = format!("shadow-md shadow-{}-500", hue.name());
             assert_eq!(
                 resolve(&adaptive, dark, 0, 0),
-                resolve_with(&tailwind::parse(&PRESETS, &classes), dark, 0, 0, &|s| {
-                    s.view.shadow.color = hue.shade(500).into()
-                })
+                resolve(&tailwind::parse(&PRESETS, &classes), dark, 0, 0)
             );
         }
     }
 
     #[test]
-    fn custom_shadows_set_react_natives_and_box_shadows() {
+    fn custom_shadows_are_layers_of_their_own() {
         let list = s()
-            .shadow_color(rgb(0x0969da))
-            .shadow_opacity(0.35)
-            .shadow_radius(px(10.0))
-            .shadow_offset(point(px(4.0), px(8.0)))
-            .text_shadow_color(rgba(0x0000_0099))
-            .text_shadow_radius(px(4.0))
-            .text_shadow_offset(point(px(2.0), px(2.0)))
+            .text_shadow([crate::TextShadow {
+                color: rgba(0x0000_0099).into(),
+                offset_x: px(2.0),
+                offset_y: px(2.0),
+                radius: px(4.0),
+            }])
             .lower();
         let mut style = Style::default();
         list.apply(
@@ -3978,13 +4457,6 @@ mod tests {
             &mut style,
             &mut ClassProps::default(),
             |_| {},
-        );
-        assert_eq!(style.view.shadow.color, rgb(0x0969da).into());
-        assert_eq!(style.view.shadow.opacity, 0.35);
-        assert_eq!(style.view.shadow.radius, px(10.0));
-        assert_eq!(
-            (style.view.shadow.offset_x, style.view.shadow.offset_y),
-            (px(4.0), px(8.0))
         );
         assert_eq!(style.text.shadow_color, Some(rgba(0x0000_0099).into()));
         assert_eq!(style.text.shadow_radius, Some(px(4.0)));

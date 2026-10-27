@@ -146,7 +146,7 @@ server client, log forwarding, the error overlay: `dev.rs`). The runtime needs m
 
 | Area | Module | AppKit |
 |---|---|---|
-| Text | `text.rs` | CoreText on the engine thread, `CTLine`s drawn in `drawRect:`; decorations CoreText lacks drawn by hand (iOS); `selectable` text's range selection, desktop style: drag, double-click word, triple-click paragraph, Shift extends, Cmd+A / Cmd+C (the root's `selectAll:` / `copy:`), Escape clears; selectable views (`selectable_view.rs`, `ViewProps::selectable_view`): the same gestures across the texts of an area's subtree in document order, driving `nsh_core::selection`'s model (frames from the views' origins and container offsets, hit tests on the drawn `CTLine`s), each text highlighting its part as a single text's selection; the texts are listed again after each batch while something is selected; a drag past the edge of a scroll view around the area scrolls it on the display link (0.4 pt per pt past the edge per 60 Hz frame, at most 40), held still too, extending the selection each frame |
+| Text | `text.rs` | CoreText on the engine thread, `CTLine`s drawn in `drawRect:`; decorations CoreText lacks drawn by hand (iOS); selectable text's range selection, desktop style: drag, double-click word, triple-click paragraph, Shift extends, Cmd+A / Cmd+C (the root's `selectAll:` / `copy:`), Escape clears; selectable views (`selectable_view.rs`, `ViewProps::selectable_view`): the same gestures across the texts of an area's subtree in document order, driving `nsh_core::selection`'s model (frames from the views' origins and container offsets, hit tests on the drawn `CTLine`s), each text highlighting its part as a single text's selection; the texts are listed again after each batch while something is selected; a drag past the edge of a scroll view around the area scrolls it on the display link (0.4 pt per pt past the edge per 60 Hz frame, at most 40), held still too, extending the selection each frame |
 | Decoration | `decor.rs`, `visual.rs` | The view's layer for one radius (circular or continuous), shape layers for differing radii and borders whose sides differ or are dashed / dotted; box and inset shadows, gradients, outlines, filters (iOS's `visual.rs`); backdrop blur as an `NSVisualEffectView` subview, with the background moved to a fill layer above it; `apply` caches what it set, so per-frame calls are cheap |
 | Images | `image.rs`, `blur.rs` | ImageIO decoding off the main thread, downsampled to the view; an LRU cache (128 MB); `asset:/`, http(s) (`NSURLSession`), `file:`, `data:`; tint as a colored layer masked by the image; animated GIF / APNG / WebP as a keyframe animation of `contents` |
 | Canvas | `canvas.rs` | The recorded drawing replayed with Core Graphics (iOS); drawings that clear or composite go into a transparency layer, so they only touch the canvas's own pixels |
@@ -276,7 +276,10 @@ rings of box shadows are missing from them, and so are outer box shadows under a
 - **Zooming scroll views**: `zoomTo` and the zoom props are ignored (as on Linux).
 - **`mixBlendMode`**, `brightness()` above 1. **`backdropFilter: blur()`** is an `NSVisualEffectView` (within-window
   blending, the popover material) below the view's background: AppKit picks the blur radius and adds the material's
-  light tint; in-process screenshots cannot show it.
+  light tint; in-process screenshots cannot show it. `glassEffect` puts an `NSGlassEffectView` there instead on macOS 26
+  and later (looked up at run time, `setStyle:` regular / clear, `setCornerRadius:` the shared radius); before, the
+  blur stands in, and glass alone draws nothing. Not yet seen on macOS 26: written and checked on macOS 15, where the
+  class is missing.
 - **Inputs**: content types / autofill, keyboard types, autocapitalization, letter spacing; input accessory views are
   never shown (there is no software keyboard); `keyboardShouldPersistTaps` is ignored.
 - **Accessibility**: `accessibilityActions`.

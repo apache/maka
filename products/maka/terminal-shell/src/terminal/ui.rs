@@ -1256,7 +1256,7 @@ mod tests {
                 prop(detail, "accessibilityLabel", "Request detail");
                 prop(detail, "style", { height: 32 });
                 if (useText) {
-                    prop(detail, "selectable", true);
+                    prop(detail, "style", { height: 32, userSelect: "text" });
                     insert(detail, "Physical form decision");
                 } else {
                     const content = element("text");
@@ -1629,7 +1629,7 @@ mod tests {
             import { element, prop, insert } from "nsh:rt";
             mount(() => {
                 const node = element("text");
-                prop(node, "selectable", true);
+                prop(node, "style", { userSelect: "text" });
                 insert(node, "你好A");
                 return node;
             });

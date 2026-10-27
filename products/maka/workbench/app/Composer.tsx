@@ -173,7 +173,7 @@ export function Composer(props: {
               }}
             >
               <If when={windowSize().height >= 336}>
-                <Image src={logo} resizeMode="contain" style={{ width: 32, height: 32 }} />
+                <Image src={logo} style={[{ width: 32, height: 32 }, { objectFit: 'contain' }]} />
               </If>
               <Text
                 style={{
@@ -212,7 +212,12 @@ export function Composer(props: {
                 focusStyle={{ backgroundColor: C.raised }}
               >
                 <Icon name="folder" color={C.secondary} />
-                <Text numberOfLines={1} style={{ color: C.secondary, fontSize: 13, flexShrink: 1 }}>
+                <Text
+                  style={[
+                    { color: C.secondary, fontSize: 13, flexShrink: 1 },
+                    { numberOfLines: 1 },
+                  ]}
+                >
                   {workspaceLabel()}
                 </Text>
                 <Icon name="down" color={C.secondary} />
@@ -230,7 +235,7 @@ export function Composer(props: {
           </View>
         </If>
         <If when={props.session()?.error()}>
-          <Text selectable style={{ color: C.danger }}>
+          <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
             {props.session()?.error()}
           </Text>
         </If>
@@ -353,7 +358,7 @@ export function Composer(props: {
                       borderRadius: compact() ? 16 : 24,
                     }}
                   />
-                  <View pointerEvents="box-none" style={{ gap: 8 }}>
+                  <View style={[{ gap: 8 }, { pointerEvents: 'box-none' }]}>
                     <If when={owner !== null}>
                       <DraftAttachments draft={owner!.attachments} preview={owner!.previewImage} />
                     </If>
@@ -366,7 +371,6 @@ export function Composer(props: {
                       testID="message"
                       accessibilityLabel={tr('Message composer')}
                       autoFocus={owner !== null}
-                      pointerEvents={owner ? 'auto' : 'none'}
                       multiline
                       submitBehavior="submit"
                       tokens={skillTokens}
@@ -388,13 +392,16 @@ export function Composer(props: {
                       placeholder={
                         owner ? tr('Message or run a task…') : tr('Choose a workspace to begin…')
                       }
-                      style={{
-                        minHeight: hero() && !compact() ? 40 : 24,
-                        maxHeight: compact() ? 64 : 144,
-                        color: C.text,
-                        placeholderColor: C.muted,
-                        ...bodyTextStyle,
-                      }}
+                      style={[
+                        {
+                          minHeight: hero() && !compact() ? 40 : 24,
+                          maxHeight: compact() ? 64 : 144,
+                          color: C.text,
+                          placeholderColor: C.muted,
+                          ...bodyTextStyle,
+                        },
+                        { pointerEvents: owner ? 'auto' : 'none' },
+                      ]}
                     />
                   </View>
                 </>
@@ -402,8 +409,10 @@ export function Composer(props: {
             }}
           </Each>
           <View
-            pointerEvents="box-none"
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            style={[
+              { flexDirection: 'row', alignItems: 'center', gap: 8 },
+              { pointerEvents: 'box-none' },
+            ]}
           >
             <Button
               ref={completion.addButton}
@@ -428,12 +437,12 @@ export function Composer(props: {
             </Button>
             <SessionPermissionsSelect owner={props.session()?.permissions ?? null} />
             <If when={props.session() !== null}>
-              <View pointerEvents="box-none" style={{ flex: 1, minWidth: 0 }}>
+              <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'box-none' }]}>
                 {props.models}
               </View>
             </If>
             <If when={props.session() === null}>
-              <View pointerEvents="none" style={{ flex: 1 }} />
+              <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
             </If>
             <Button
               accessibilityLabel={primaryStops() ? tr('Stop response') : sendLabel()}
@@ -484,7 +493,7 @@ export function Composer(props: {
           </If>
         </View>
         <If when={props.session()?.metrics()}>
-          <Text numberOfLines={1} style={{ color: C.muted, fontSize: 12, paddingTop: 4 }}>
+          <Text style={[{ color: C.muted, fontSize: 12, paddingTop: 4 }, { numberOfLines: 1 }]}>
             {props.session()?.metrics()}
           </Text>
         </If>

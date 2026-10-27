@@ -138,7 +138,12 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                                 focusStyle={controlFocusStyle}
                                 disabledStyle={controlDisabledStyle}
                               >
-                                <View pointerEvents="none" style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                                <View
+                                  style={[
+                                    { flex: 1, minWidth: 0, gap: 4 },
+                                    { pointerEvents: 'none' },
+                                  ]}
+                                >
                                   <Text style={{ ...bodyTextStyle, color: C.text }}>
                                     {pluginTitle(instance)}
                                   </Text>
@@ -166,13 +171,17 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                       <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
                         {pluginTitle(owner.selected()!)}
                       </Text>
-                      <Text selectable style={{ ...captionTextStyle, color: C.muted }}>
+                      <Text
+                        style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}
+                      >
                         {owner.selected()!.path.join(' / ')}
                       </Text>
-                      <Text selectable style={{ ...captionTextStyle, color: C.muted }}>
+                      <Text
+                        style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}
+                      >
                         {owner.selected()!.package.id} · {owner.selected()!.package.revision}
                       </Text>
-                      <Text numberOfLines={3} style={{ ...bodyTextStyle, color: C.muted }}>
+                      <Text style={[{ ...bodyTextStyle, color: C.muted }, { numberOfLines: 3 }]}>
                         {owner.selected()!.presentation?.description}
                       </Text>
                       <Text style={{ ...captionTextStyle, color: C.muted }}>
@@ -277,15 +286,19 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                                       disabledStyle={controlDisabledStyle}
                                     >
                                       <View
-                                        pointerEvents="none"
-                                        style={{ flex: 1, minWidth: 0, gap: 4 }}
+                                        style={[
+                                          { flex: 1, minWidth: 0, gap: 4 },
+                                          { pointerEvents: 'none' },
+                                        ]}
                                       >
                                         <Text style={{ ...bodyTextStyle, color: C.text }}>
                                           {field.label}
                                         </Text>
                                         <Text
-                                          numberOfLines={2}
-                                          style={{ ...captionTextStyle, color: C.muted }}
+                                          style={[
+                                            { ...captionTextStyle, color: C.muted },
+                                            { numberOfLines: 2 },
+                                          ]}
                                         >
                                           {group
                                             ? field.kind === 'array'

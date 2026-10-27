@@ -269,7 +269,7 @@ export function Dock() {
               // it; a touch screen keeps it beside the shown tab's title.
               <View testID={`tab-${tab.panel}`} class="h-9 flex-row items-center gap-1 px-3">
                 <Text
-                  numberOfLines={1}
+                  style={{ numberOfLines: 1 }}
                   class={`max-w-40 text-[13px] font-medium transition-colors ${tab.active ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"}`}
                 >
                   {title(tab.panel)}
@@ -288,7 +288,7 @@ export function Dock() {
                   </Button>
                 </If>
                 <If when={tab.active}>
-                  <View pointerEvents="none" class="absolute bottom-0 left-3 right-3 h-0.5 rounded-full bg-brand" />
+                  <View style={{ pointerEvents: "none" }} class="absolute bottom-0 left-3 right-3 h-0.5 rounded-full bg-brand" />
                 </If>
               </View>
               );

@@ -1,2 +1,2 @@
 // Documentation demos use the repository's internal shared example UI.
-export { ui, tint, hoverFill, focusRing, desktop, wide, size, button, buttonText, field, type ButtonKind, type ButtonOptions, type FieldOptions, Stage, Inspector, Split, Panel, Log, Segmented, dataTableClasses, dataTableFitPadding } from "../../examples/nsh-gallery-ui/demo";
+export { ui, tint, hoverFill, focusRing, desktop, wide, size, button, buttonText, field, type ButtonKind, type ButtonOptions, type FieldOptions, Stage, Inspector, Split, Panel, Log, Segmented, dataTableClasses, dataTableFitPadding, sliderFill, sliderLook, sliderValueClass, sliderValueStyle, type SliderLookOptions } from "../../examples/nsh-gallery-ui/demo";

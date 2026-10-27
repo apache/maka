@@ -300,7 +300,12 @@ export function WorkspacePicker(props: {
                 </Text>
               </If>
               <If when={error()}>
-                <Text selectable style={{ color: C.danger, fontSize: 13, lineHeight: 16 }}>
+                <Text
+                  style={[
+                    { color: C.danger, fontSize: 13, lineHeight: 16 },
+                    { userSelect: 'text' },
+                  ]}
+                >
                   {error()}
                 </Text>
                 <Button
@@ -492,7 +497,12 @@ export function WorkspacePicker(props: {
                         ? tr('Folder · {name}', { name: read.trail.at(-1)!.name })
                         : tr('Workspace locations')}
                     </Text>
-                    <Text selectable style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>
+                    <Text
+                      style={[
+                        { color: C.muted, fontSize: 12, lineHeight: 16 },
+                        { userSelect: 'text' },
+                      ]}
+                    >
                       {currentDirectory(read)?.path ??
                         read.trail.at(-1)?.path ??
                         tr(
@@ -537,7 +547,7 @@ export function WorkspacePicker(props: {
                     disabledStyle={controlDisabledStyle}
                   >
                     <Icon name="folder" color={C.muted} />
-                    <Text numberOfLines={1} style={{ flex: 1, color: C.text, fontSize: 13 }}>
+                    <Text style={[{ flex: 1, color: C.text, fontSize: 13 }, { numberOfLines: 1 }]}>
                       {entry().name}
                     </Text>
                     <Icon name="right" color={C.muted} />

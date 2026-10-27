@@ -140,7 +140,7 @@ export function OriginalToolSource(props: { source: ToolSource; label: string })
   return (
     <View style={{ gap: 8 }}>
       <Text style={{ ...captionTextStyle, color: C.muted }}>{props.label}</Text>
-      <Text selectable style={{ color: C.text, ...codeTextStyle }}>
+      <Text style={[{ color: C.text, ...codeTextStyle }, { userSelect: 'text' }]}>
         {source.content()}
       </Text>
       <If when={source.error()}>

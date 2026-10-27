@@ -44,7 +44,6 @@ function App() {
             repeat={repeat()}
             controls={controls()}
             rate={fast() ? 2 : 1}
-            resizeMode="contain"
             progressUpdateInterval={100}
             style={{ width: "100%", aspectRatio: ratio(), borderRadius: 14, overflow: "hidden", backgroundColor: "#000000" }}
             onLoadStart={() => status.set("onLoadStart")}

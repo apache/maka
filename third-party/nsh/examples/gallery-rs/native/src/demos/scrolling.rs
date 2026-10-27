@@ -848,6 +848,7 @@ pub(crate) fn Scrolling() -> impl IntoElement {
                         "Type here, then click the button",
                     ))
                     .placeholder_color(|| color(colors::FAINT))
+                    .caret_color(|| color(colors::ACCENT))
                     .selection_color(|| color(colors::ACCENT))
                     .h(px(44.0))
                     .text_size(px(15.0))

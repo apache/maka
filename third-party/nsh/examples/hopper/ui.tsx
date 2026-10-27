@@ -83,10 +83,7 @@ export function Panel(props: {
         borderWidth: 1,
         borderColor: color.line,
         padding: 5,
-        shadowColor: "#000",
-        shadowOpacity: 0.35,
-        shadowRadius: 18,
-        shadowOffset: { width: 0, height: 8 },
+        boxShadow: "0px 8px 18px rgb(0 0 0 / 0.35)",
       }}
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 11, paddingTop: 11, paddingBottom: 13 }}>
@@ -95,7 +92,7 @@ export function Panel(props: {
         </View>
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ color: color.text, fontSize: 17, fontWeight: "600", letterSpacing: -0.2 }}>{props.title}</Text>
-          <Text style={{ color: color.muted, fontSize: 13 }} numberOfLines={1}>
+          <Text style={{ numberOfLines: 1, color: color.muted, fontSize: 13 }}>
             {props.status}
           </Text>
         </View>
@@ -201,7 +198,7 @@ export function Gauge(props: { value: number; warnAbove?: number }) {
           borderRadius: 4,
           backgroundColor: props.value > (props.warnAbove ?? 2) ? color.caution : color.accent,
           transformOrigin: "left",
-          transform: [{ scaleX: fill }],
+          scale: [fill, 1],
         }}
       />
     </View>
@@ -280,7 +277,7 @@ export function Switch(props: { value: boolean; onChange: (v: boolean) => void; 
           borderWidth: 3,
           borderColor: on.interpolate({ inputRange: [0, 1], outputRange: [color.muted, color.ink] }),
           backgroundColor: color.ink,
-          transform: [{ translateX: on.interpolate({ inputRange: [0, 1], outputRange: [0, 18] }) }],
+          translate: [on.interpolate({ inputRange: [0, 1], outputRange: [0, 18] }), 0],
         }}
       />
     </View>

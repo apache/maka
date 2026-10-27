@@ -157,7 +157,7 @@ const scrollY = createAnimatedValue(0);
 <View
   style={{
     opacity: scrollY.interpolate({ inputRange: [0, 120], outputRange: [1, 0.35] }),
-    transform: [{ translateY: scrollY.interpolate({ inputRange: [0, 120], outputRange: [0, -6] }) }],
+    translate: [0, scrollY.interpolate({ inputRange: [0, 120], outputRange: [0, -6] })],
   }}
 />;
 <List each={photos()} scrollValue={scrollY} estimatedItemSize={64} style={{ flex: 1 }}>

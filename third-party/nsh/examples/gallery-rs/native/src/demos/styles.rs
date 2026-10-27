@@ -14,6 +14,18 @@ use crate::ui::{
     caption, colors, hint, inset_shadow, press, radius, rgb_a, segmented, tints, toggle,
 };
 
+/// A black box shadow at `x`, `y`, blurred by `blur` points: its color
+/// comes from `shadow_color`.
+fn shade(x: f32, y: f32, blur: f32) -> BoxShadow {
+    BoxShadow {
+        offset_x: px(x),
+        offset_y: px(y),
+        blur: px(blur),
+        color: rgb(0x000000).to_packed(),
+        ..BoxShadow::default()
+    }
+}
+
 /// The stage every specimen stands on: the card's light, without its
 /// drop shadow.
 fn stage() -> View {
@@ -411,28 +423,26 @@ fn shadows() -> Card {
     Card::new()
         .icon(IconName::Spark)
         .title("Shadows and glow")
-        .subtitle("shadowColor · elevation · text shadow")
+        .subtitle("boxShadow · elevation · text shadow")
         .child(
             grid()
                 .child(tile(
                     "Glow",
-                    some("shadowColor"),
+                    some("shadow_color"),
                     some("A colored shadow"),
                     None,
                     specimen_box()
                         .rounded(px(16.0))
                         .border_curve(BorderCurve::Continuous)
                         .bg(colors::ACCENT_FILL)
-                        .shadow_color(colors::ACCENT_FILL)
-                        .shadow_opacity(0.55)
-                        .shadow_radius(px(18.0))
-                        .shadow_offset(point(px(0.0), px(6.0)))
+                        .shadow([shade(0.0, 6.0, 18.0)])
+                        .shadow_color(colors::ACCENT_FILL.opacity(0.55))
                         .child(label("Glow", colors::ON_ACCENT)),
                 ))
                 .child(tile(
                     "Offset shadow",
-                    some("shadowOffset"),
-                    some("4, 8 pt · radius 10"),
+                    some("shadow"),
+                    some("4, 8 pt · blur 10"),
                     None,
                     specimen_box()
                         .bg(AdaptiveColor::new(rgb(0xe7edfb), rgb(0x1d2740)))
@@ -440,10 +450,8 @@ fn shadows() -> Card {
                         .rounded_br(px(30.0))
                         .border_1()
                         .border_color(colors::INFO)
-                        .shadow_color(colors::INFO)
-                        .shadow_opacity(0.45)
-                        .shadow_radius(px(10.0))
-                        .shadow_offset(point(px(4.0), px(8.0)))
+                        .shadow([shade(4.0, 8.0, 10.0)])
+                        .shadow_color(colors::INFO.opacity(0.45))
                         .child(label("Offset", colors::INFO)),
                 ))
                 .child(tile(
@@ -457,31 +465,29 @@ fn shadows() -> Card {
                         .rounded_tl(px(28.0))
                         .rounded_br(px(28.0))
                         .bg(colors::RAISED)
-                        .shadow_color(rgb(0x000000))
-                        .shadow_opacity(move || if dark() { 0.6_f32 } else { 0.22 })
-                        .shadow_radius(px(12.0))
-                        .shadow_offset(point(px(0.0), px(8.0))),
+                        .shadow([shade(0.0, 8.0, 12.0)])
+                        .shadow_color(AdaptiveColor::new(
+                            rgb_a(0x000000, 0.22),
+                            rgb_a(0x000000, 0.6),
+                        )),
                 ))
-                // A transparent view's shadow follows its content: the
-                // text.
                 .child(tile(
                     "Text shadow",
                     None,
-                    some("Shadow of the content"),
+                    some("Shadow of the glyphs"),
                     None,
-                    specimen_box()
-                        .bg(transparent_black())
-                        .shadow_color(colors::DANGER)
-                        .shadow_opacity(0.9)
-                        .shadow_radius(px(8.0))
-                        .shadow_offset(point(px(0.0), px(0.0)))
-                        .child(
-                            text("Shadow")
-                                .text_size(px(24.0))
-                                .font_weight(FontWeight::EXTRA_BOLD)
-                                .text_color(colors::TEXT)
-                                .letter_spacing(px(-0.5)),
-                        ),
+                    specimen_box().bg(transparent_black()).child(
+                        text("Shadow")
+                            .text_size(px(24.0))
+                            .font_weight(FontWeight::EXTRA_BOLD)
+                            .text_color(colors::TEXT)
+                            .letter_spacing(px(-0.5))
+                            .text_shadow([TextShadow {
+                                radius: px(8.0),
+                                ..TextShadow::default()
+                            }])
+                            .text_shadow_color(colors::DANGER.opacity(0.9)),
+                    ),
                 ))
                 .child(tile(
                     "Text corners",
@@ -507,9 +513,8 @@ fn shadows() -> Card {
                         .elevation(10.0)
                         .rounded(px(16.0))
                         .bg(colors::RAISED)
-                        .shadow_opacity(0.5)
-                        .shadow_radius(px(10.0))
-                        .shadow_offset(point(px(0.0), px(6.0)))
+                        .shadow([shade(0.0, 6.0, 10.0)])
+                        .shadow_color(rgb_a(0x000000, 0.5))
                         .child(label("Elevation", colors::TEXT)),
                 )),
         )
@@ -544,10 +549,11 @@ fn layers() -> Card {
                 .border_color(colors::TEXT)
                 .z_index(0)
                 .style_when(on_top, |s| s.z_index(10))
-                .shadow_color(rgb(0x000000))
-                .shadow_opacity(move || if dark() { 0.5_f32 } else { 0.18 })
-                .shadow_radius(px(6.0))
-                .shadow_offset(point(px(0.0), px(3.0)))
+                .shadow([shade(0.0, 3.0, 6.0)])
+                .shadow_color(AdaptiveColor::new(
+                    rgb_a(0x000000, 0.18),
+                    rgb_a(0x000000, 0.5),
+                ))
         });
     Card::new()
         .icon(IconName::Lists)
@@ -902,7 +908,7 @@ fn right_to_left() -> Card {
             )
             .child(view().h(px(1.0)).bg(colors::LINE))
             .child(
-                text("textAlign left (the start side right to left)")
+                text("textAlign left (the left side right to left too)")
                     .text_size(px(13.0))
                     .text_left()
                     .text_color(colors::MUTED),

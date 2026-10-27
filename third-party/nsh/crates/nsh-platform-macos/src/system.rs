@@ -45,21 +45,25 @@ use nsh_core::{
 };
 use nsh_engine::{ColorScheme, Edges, Environment, Idiom, Locale, Os};
 use objc2::{
-    MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
     runtime::{AnyObject, ProtocolObject},
 };
 use objc2_app_kit::{
     NSAccessibilityPriorityLevel, NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAppearance,
     NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSBitmapImageFileType, NSBitmapImageRep, NSModalResponse, NSPasteboard, NSPasteboardTypeString,
-    NSScreen, NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
+    NSAttributedStringAppKitDocumentFormats, NSAttributedStringDocumentFormats,
+    NSBitmapImageFileType, NSBitmapImageRep, NSDocumentTypeDocumentAttribute,
+    NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType, NSModalResponse, NSPasteboard,
+    NSPasteboardTypeRTF, NSPasteboardTypeRTFD, NSPasteboardTypeString, NSScreen, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{
-    NSCurrentLocaleDidChangeNotification, NSData, NSDictionary, NSKeyValueObservingOptions,
-    NSLocale, NSLocaleLanguageDirection, NSNotification, NSNotificationCenter, NSObject,
-    NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSOperationQueue, NSProcessInfo,
-    NSString, NSURL, ns_string,
+    NSArray, NSAttributedString, NSCurrentLocaleDidChangeNotification, NSData, NSDictionary,
+    NSKeyValueObservingOptions, NSLocale, NSLocaleLanguageDirection, NSNotification,
+    NSNotificationCenter, NSObject, NSObjectNSKeyValueObserverRegistration, NSObjectProtocol,
+    NSOperationQueue, NSProcessInfo, NSPropertyListReadOptions, NSPropertyListSerialization,
+    NSRange, NSString, NSURL, ns_string,
 };
 
 use crate::surface::Surface;
@@ -666,9 +670,10 @@ fn read_clipboard_image(surface: &Rc<Surface>, id: u32, has_only: bool) {
 }
 
 /// What `pasteboard` holds, read as the user pastes into an input
-/// (`onPaste`): its text, each item's image (as it is in [`IMAGE_TYPES`], a
-/// TIFF or BMP as PNG) and local files' `file:` URLs (a file copied in the
-/// Finder is its URL, not the icon it carries).
+/// (`onPaste`): its text, the same content as HTML ([`pasted_html`]), each
+/// item's image (as it is in [`IMAGE_TYPES`], a TIFF or BMP as PNG) and
+/// local files' `file:` URLs (a file copied in the Finder is its URL, not
+/// the icon it carries).
 pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
     // SAFETY: an immutable AppKit constant.
     let string = unsafe { NSPasteboardTypeString };
@@ -678,6 +683,7 @@ pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
             .map(|s| s.to_string())
             .unwrap_or_default(),
     );
+    paste.html = pasted_html(pasteboard).unwrap_or_default();
     let file_url = NSString::from_str("public.file-url");
     for item in pasteboard
         .pasteboardItems()
@@ -704,6 +710,127 @@ pub(crate) fn pasted(pasteboard: &NSPasteboard) -> nsh_core::PasteEvent {
         paste.files.push(nsh_core::PastedFile::image(bytes));
     }
     paste
+}
+
+/// The pasteboard's formatted content as HTML: `public.html` as browsers,
+/// office suites and most editors copy it; else the main resource of a web
+/// archive (Safari, Mail); else RTF (TextEdit, Notes, Pages), written as
+/// HTML by AppKit with its styles inline, as the editors' parsers read
+/// them.
+fn pasted_html(pasteboard: &NSPasteboard) -> Option<String> {
+    if let Some(html) = pasteboard.stringForType(&NSString::from_str("public.html")) {
+        return Some(html.to_string());
+    }
+    if let Some(archive) = pasteboard.dataForType(&NSString::from_str("com.apple.webarchive"))
+        && let Some(html) = web_archive_html(&archive)
+    {
+        return Some(html);
+    }
+    // SAFETY: immutable AppKit constants.
+    let (rtfd, rtf) = unsafe { (NSPasteboardTypeRTFD, NSPasteboardTypeRTF) };
+    let text = if let Some(data) = pasteboard.dataForType(rtfd) {
+        // SAFETY: `data` is the pasteboard's RTFD; no document attributes
+        // are asked for.
+        unsafe {
+            NSAttributedString::initWithRTFD_documentAttributes(
+                NSAttributedString::alloc(),
+                &data,
+                None,
+            )
+        }
+    } else if let Some(data) = pasteboard.dataForType(rtf) {
+        // SAFETY: as above, with RTF.
+        unsafe {
+            NSAttributedString::initWithRTF_documentAttributes(
+                NSAttributedString::alloc(),
+                &data,
+                None,
+            )
+        }
+    } else {
+        None
+    }?;
+    attributed_html(&text)
+}
+
+/// The HTML of a web archive's main resource (`WebMainResource`'s
+/// `WebResourceData`), decoded as its `WebResourceTextEncodingName` says
+/// (UTF-8 when it names none).
+fn web_archive_html(archive: &NSData) -> Option<String> {
+    // SAFETY: `archive` is plist data; a null format is allowed.
+    let plist = unsafe {
+        NSPropertyListSerialization::propertyListWithData_options_format_error(
+            archive,
+            NSPropertyListReadOptions::Immutable,
+            std::ptr::null_mut(),
+        )
+    }
+    .ok()?;
+    let archive = plist.downcast_ref::<NSDictionary>()?;
+    let main = archive.objectForKey(&NSString::from_str("WebMainResource"))?;
+    let main = main.downcast_ref::<NSDictionary>()?;
+    let data = main.objectForKey(&NSString::from_str("WebResourceData"))?;
+    let encoding = main
+        .objectForKey(&NSString::from_str("WebResourceTextEncodingName"))
+        .and_then(|e| e.downcast_ref::<NSString>().map(|e| e.to_string()));
+    Some(decode_text(
+        &data.downcast_ref::<NSData>()?.to_vec(),
+        encoding.as_deref(),
+    ))
+}
+
+/// Text `bytes` in `encoding` (an IANA name): UTF-16 as it names it or as
+/// a byte order mark says, else UTF-8.
+fn decode_text(bytes: &[u8], encoding: Option<&str>) -> String {
+    let encoding = encoding.map(str::to_ascii_lowercase);
+    let big_endian = match (encoding.as_deref(), bytes) {
+        (Some("utf-16be"), _) | (_, [0xfe, 0xff, ..]) => true,
+        (Some("utf-16" | "utf-16le"), _) | (_, [0xff, 0xfe, ..]) => false,
+        _ => return String::from_utf8_lossy(bytes).into_owned(),
+    };
+    let units: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| {
+            if big_endian {
+                u16::from_be_bytes(*c)
+            } else {
+                u16::from_le_bytes(*c)
+            }
+        })
+        .collect();
+    String::from_utf16_lossy(&units)
+        .trim_start_matches('\u{feff}')
+        .to_owned()
+}
+
+/// `text` written as HTML by AppKit, without the document around it (its
+/// head and style sheet), so its styles are inline.
+fn attributed_html(text: &NSAttributedString) -> Option<String> {
+    let excluded = NSArray::from_retained_slice(
+        &[
+            "doctype", "html", "head", "body", "xml", "style", "meta", "title",
+        ]
+        .map(NSString::from_str),
+    );
+    // SAFETY: immutable AppKit constants.
+    let (kind, html, excluded_key) = unsafe {
+        (
+            NSDocumentTypeDocumentAttribute,
+            NSHTMLTextDocumentType,
+            NSExcludedElementsDocumentAttribute,
+        )
+    };
+    let attributes = NSDictionary::<NSString, AnyObject>::from_slices(
+        &[kind, excluded_key],
+        &[html.as_ref(), excluded.as_ref()],
+    );
+    let range = NSRange::new(0, text.length());
+    // SAFETY: the attributes are the document type and an array of strings,
+    // as AppKit takes them.
+    let data = unsafe { text.dataFromRange_documentAttributes_error(range, &attributes) }.ok()?;
+    Some(String::from_utf8_lossy(&data.to_vec()).into_owned())
 }
 
 /// Whether `pasteboard` holds what a text view's own paste leaves out:
@@ -783,4 +910,76 @@ fn read_clipboard(surface: &Rc<Surface>, id: u32, has_only: bool) {
         fields.push(("text", PayloadValue::Str(text)));
     }
     surface.event(ROOT_ID, EventKind::Clipboard, EventPayload::Map(fields));
+}
+
+#[cfg(test)]
+mod tests {
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::{
+        NSData, NSDictionary, NSPropertyListFormat, NSPropertyListSerialization, NSString,
+    };
+
+    use super::pasted_html;
+
+    /// A private pasteboard holding `bytes` as `kind`.
+    fn board(kind: &str, bytes: &[u8]) -> objc2::rc::Retained<NSPasteboard> {
+        let board = NSPasteboard::pasteboardWithUniqueName();
+        board.clearContents();
+        board.setData_forType(Some(&NSData::with_bytes(bytes)), &NSString::from_str(kind));
+        board
+    }
+
+    #[test]
+    fn html_as_browsers_copy_it() {
+        let board = board("public.html", b"<p>a <b>b</b></p>");
+        assert_eq!(pasted_html(&board).as_deref(), Some("<p>a <b>b</b></p>"));
+    }
+
+    #[test]
+    fn web_archive_main_resource() {
+        let html = "<p>caf\u{e9} <b>b</b></p>";
+        let main = NSDictionary::<NSString, AnyObject>::from_slices(
+            &[
+                &*NSString::from_str("WebResourceData"),
+                &*NSString::from_str("WebResourceTextEncodingName"),
+            ],
+            &[
+                NSData::with_bytes(html.as_bytes()).as_ref(),
+                NSString::from_str("UTF-8").as_ref(),
+            ],
+        );
+        let archive = NSDictionary::<NSString, AnyObject>::from_slices(
+            &[&*NSString::from_str("WebMainResource")],
+            &[main.as_ref()],
+        );
+        // SAFETY: a dictionary of strings and data is a property list.
+        let plist = unsafe {
+            NSPropertyListSerialization::dataWithPropertyList_format_options_error(
+                &archive,
+                NSPropertyListFormat::BinaryFormat_v1_0,
+                0,
+            )
+        }
+        .unwrap()
+        .to_vec();
+        let board = board("com.apple.webarchive", &plist);
+        assert_eq!(pasted_html(&board).as_deref(), Some(html));
+    }
+
+    #[test]
+    fn rtf_as_html_with_inline_styles() {
+        let rtf = br"{\rtf1\ansi{\fonttbl\f0 Helvetica;}\f0 a \b bold\b0  \i it\i0\par}";
+        let board = board("public.rtf", rtf);
+        let html = pasted_html(&board).unwrap();
+        assert!(html.contains("<b>bold</b>"), "{html}");
+        assert!(html.contains("<i>it</i>"), "{html}");
+        assert!(!html.contains("<style"), "{html}");
+    }
+
+    #[test]
+    fn no_formatted_content() {
+        let board = board("public.utf8-plain-text", b"plain");
+        assert_eq!(pasted_html(&board), None);
+    }
 }

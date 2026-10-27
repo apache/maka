@@ -369,7 +369,6 @@ See [Animation](../docs/animation.md) for the guide.
 | `opacity` | `.bind_opacity(&value)` | `style={{ opacity: value }}` |
 | `backgroundColor` | `.bind_background(&value.interpolate_colors(&[0.0, 1.0], &[white(), black()]))` | `style={{ backgroundColor: value.interpolate({ inputRange: [0, 1], outputRange: ["#fff", "#000"] }) }}` |
 | `borderColor`, `color` | `.bind_border_color(&node)`, `.bind_color(&node)` | The same: a node of colors. `borderColor` colors every side; a `Text`'s `color` colors the whole text |
-| `shadowColor`, `shadowOpacity`, `shadowRadius` | `.bind_shadow_color(&node)`, `.bind_shadow_opacity(&value)`, `.bind_shadow_radius(&value)` | `style={{ shadowOpacity: value }}` (a node of colors for `shadowColor`) |
 | `transform` | `.bind_translate_x(&value)`, `.bind_translate_y`, `.bind_scale`, `.bind_rotate` (degrees) | `translateX`, `translateY`, `scale`, `scaleX`, `scaleY`, `rotate`, `rotateX`, `rotateY`, `rotateZ` steps: `transform: [{ translateX: value }]` |
 | Scroll position | `.scroll_value(&value)` on a scroll view or a list | `<Scroll scrollValue={value}>` and `<List scrollValue={value}>` write the scroll offset into it each frame |
 | Gestures | `.pan_values(Some(&x), Some(&y))`, `.pinch_value(&scale)`, `.rotation_value(&angle)` | `pan={{ x, y }}`, `pinch={{ scale }}`, `rotation={{ angle }}` on any element: the gesture writes the values directly (see [Touch and gestures](../docs/touch-and-gestures.md)) |
@@ -1022,7 +1021,12 @@ use nsh_core::platform::Os;
 
 let card = view().p_4();
 let card = match os() {
-    Os::Ios => card.shadow_color(black()).shadow_opacity(0.15).shadow_radius(px(8.0)),
+    Os::Ios => card.shadow([BoxShadow {
+        offset_y: px(2.0),
+        blur: px(8.0),
+        color: rgba(0x00000026).into(),
+        ..BoxShadow::default()
+    }]),
     Os::Android => card.elevation(px(4.0)),
     _ => card,
 };
@@ -1030,7 +1034,7 @@ let card = match os() {
 
 ```tsx tabs
 const shadow = platform.select({
-  ios: { shadowColor: "#000", shadowOpacity: 0.15, shadowRadius: 8 },
+  ios: { boxShadow: "0px 2px 8px rgb(0 0 0 / 0.15)" },
   android: { elevation: 4 },
 });
 ```
@@ -2595,7 +2599,7 @@ function Saved() {
 | `JSX` | The JSX namespace (`JSX.Element`) |
 | `YNode` | What a `ref` receives: focus, scroll and other commands. See [Elements](../elements/index.md) |
 | `ViewProps`, `TextProps`, `ImageProps`, `ScrollProps`, `CommonProps`, `TouchProps` | Props of host elements |
-| `ViewStyle`, `TextStyle`, `ImageStyle`, `LayoutStyle`, `StyleProp<T>` | Style objects; see the [style reference](./style-reference.md) |
+| `ViewStyle`, `TextStyle`, `InputStyle`, `ImageStyle`, `LayoutStyle`, `StyleProp<T>` | Style objects; see the [style reference](./style-reference.md) |
 | `ColorValue`, `DimensionValue`, `LengthValue`, `TransformStep` | Values inside styles |
 | `GestureResponderEvent`, `HoverEvent`, `ContextMenuEvent`, `ScrollEvent`, `PanEvent`, `TouchPoint` | Event payloads |
 | `Point`, `Size`, `Bounds`, `Edges`, `Modifiers` | The shapes payloads and props are made of, with GPUI's fields (`nsh_core::geometry`) |

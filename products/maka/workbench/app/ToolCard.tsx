@@ -37,10 +37,12 @@ function Status(props: { label: string; success?: boolean; error?: boolean; warn
   const color = () => (props.error ? C.danger : props.warning ? C.warning : C.muted);
   return (
     <View
-      pointerEvents="none"
       accessible
       accessibilityLabel={props.label}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 }}
+      style={[
+        { flexDirection: 'row', alignItems: 'center', gap: 4, flexShrink: 0 },
+        { pointerEvents: 'none' },
+      ]}
     >
       <Icon name={props.error ? 'close' : props.success ? 'check' : 'activity'} color={color()} />
       <If when={!props.success}>
@@ -277,9 +279,10 @@ export function ToolCard(props: {
         >
           <Icon name={props.expanded() ? 'down' : 'right'} color={C.secondary} />
           <Text
-            numberOfLines={1}
-            ellipsizeMode="tail"
-            style={{ flex: 1, minWidth: 0, color: C.secondary, fontSize: 13, lineHeight: 16 }}
+            style={[
+              { flex: 1, minWidth: 0, color: C.secondary, fontSize: 13, lineHeight: 16 },
+              { numberOfLines: 1, textOverflow: 'ellipsis' },
+            ]}
           >
             {title()}
           </Text>
@@ -368,7 +371,7 @@ export function ToolCard(props: {
               )}
             </Each>
             <If when={!references().length}>
-              <Text selectable style={{ color: C.muted }}>
+              <Text style={[{ color: C.muted }, { userSelect: 'text' }]}>
                 {props.row().text || tr('Original tool source is unavailable in this history row.')}
               </Text>
             </If>

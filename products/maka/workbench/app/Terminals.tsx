@@ -70,7 +70,7 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
         </Button>
       </View>
       <If when={model.error()}>
-        <Text selectable style={{ ...bodyTextStyle, color: C.danger }}>
+        <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
           {model.error()}
         </Text>
       </If>
@@ -155,12 +155,14 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
             <Icon name="terminal" color={C.muted} />
             <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
               <Text
-                numberOfLines={1}
-                style={{ ...captionTextStyle, color: C.text, fontWeight: '500' }}
+                style={[
+                  { ...captionTextStyle, color: C.text, fontWeight: '500' },
+                  { numberOfLines: 1 },
+                ]}
               >
                 {entry().value().result.cmd || tr('Interactive shell')}
               </Text>
-              <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+              <Text style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}>
                 {terminalStatus(entry().value().result.status)} · {entry().value().result.mode} ·{' '}
                 {entry().value().ownership.kind === 'local'
                   ? entry().value().result.cwd

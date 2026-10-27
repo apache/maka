@@ -89,16 +89,21 @@ export function FormRequest(props: {
   return (
     <View style={{ gap: 16 }}>
       <View style={{ gap: 4 }}>
-        <Text selectable style={{ ...bodyTextStyle, color: C.secondary, fontWeight: '500' }}>
+        <Text
+          style={[
+            { ...bodyTextStyle, color: C.secondary, fontWeight: '500' },
+            { userSelect: 'text' },
+          ]}
+        >
           {props.request.requester.name}
         </Text>
         <If when={props.request.requester.source}>
-          <Text selectable style={{ ...captionTextStyle, color: C.muted }}>
+          <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
             {props.request.requester.source}
           </Text>
         </If>
       </View>
-      <Text selectable style={{ ...bodyTextStyle, color: C.text }}>
+      <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
         {props.request.message}
       </Text>
       <Each<FormField> of={props.request.fields} key="index">
@@ -146,7 +151,7 @@ export function FormRequest(props: {
                 </If>
               </View>
               <If when={field().description}>
-                <Text selectable style={{ ...bodyTextStyle, color: C.muted }}>
+                <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'text' }]}>
                   {field().description}
                 </Text>
               </If>

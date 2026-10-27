@@ -125,8 +125,6 @@ export function MarkdownImageView(props: {
               src={captured.uri}
               role="image"
               accessibilityLabel={name()}
-              pointerEvents="none"
-              resizeMode="contain"
               onLoad={(size) => {
                 if (current()) dimensions.set(size);
               }}
@@ -136,13 +134,16 @@ export function MarkdownImageView(props: {
                   error.set(reason.message);
                 }
               }}
-              style={{
-                width: width() === undefined ? undefined : '100%',
-                maxWidth: '100%',
-                height: dimensions() ? undefined : props.lineHeight,
-                aspectRatio: aspectRatio(),
-                flexShrink: 0,
-              }}
+              style={[
+                {
+                  width: width() === undefined ? undefined : '100%',
+                  maxWidth: '100%',
+                  height: dimensions() ? undefined : props.lineHeight,
+                  aspectRatio: aspectRatio(),
+                  flexShrink: 0,
+                },
+                { pointerEvents: 'none', objectFit: 'contain' },
+              ]}
             />
           );
         }}
@@ -161,8 +162,10 @@ export function MarkdownImageView(props: {
   );
   return (
     <View
-      pointerEvents={props.linked ? 'none' : undefined}
-      style={{ width: props.flow === 'block' ? '100%' : undefined, maxWidth: '100%' }}
+      style={[
+        { width: props.flow === 'block' ? '100%' : undefined, maxWidth: '100%' },
+        { pointerEvents: props.linked ? 'none' : undefined },
+      ]}
     >
       <If when={!props.linked} else={content()}>
         <Button

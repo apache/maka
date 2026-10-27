@@ -6075,6 +6075,7 @@ dependencies = [
  "libc",
  "log",
  "nsh-macros",
+ "ordered-float",
  "regex",
  "resvg 0.46.0",
  "rustc-hash 2.1.3",

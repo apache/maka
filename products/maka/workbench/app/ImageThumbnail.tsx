@@ -151,7 +151,6 @@ export function ImageThumbnail(props: {
           {() => (
             <Image
               src={uri}
-              resizeMode={props.compact ? 'cover' : 'contain'}
               onLoad={(dimensions) => {
                 if (alive) size.set(dimensions);
               }}
@@ -161,28 +160,33 @@ export function ImageThumbnail(props: {
                   error.set(reason.message);
                 }
               }}
-              style={{
-                width: props.compact ? 64 : 320,
-                maxWidth: '100%',
-                height: props.compact
-                  ? 64
-                  : Math.max(64, Math.min(192, Math.floor(windowSize().height / 48) * 16)),
-              }}
+              style={[
+                {
+                  width: props.compact ? 64 : 320,
+                  maxWidth: '100%',
+                  height: props.compact
+                    ? 64
+                    : Math.max(64, Math.min(192, Math.floor(windowSize().height / 48) * 16)),
+                },
+                { objectFit: props.compact ? 'cover' : 'contain' },
+              ]}
             />
           )}
         </Each>
         <If when={props.compact && !size()}>
           <View
-            pointerEvents="none"
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: 64,
-              height: 64,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
+            style={[
+              {
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: 64,
+                height: 64,
+                alignItems: 'center',
+                justifyContent: 'center',
+              },
+              { pointerEvents: 'none' },
+            ]}
           >
             <Icon name="image" color={error() ? C.danger : C.muted} />
           </View>
@@ -197,14 +201,12 @@ export function ImageThumbnail(props: {
           }}
         >
           <If when={props.compact}>
-            <Text selectable style={{ ...captionTextStyle, color: C.text }}>
+            <Text style={[{ ...captionTextStyle, color: C.text }, { userSelect: 'text' }]}>
               {props.tooltip ?? props.label ?? tr('Image')}
             </Text>
             <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Image unavailable')}</Text>
           </If>
-          <Text selectable style={{ color: C.danger }}>
-            {error()}
-          </Text>
+          <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{error()}</Text>
           <Button
             onPress={inputAction(retry, action)}
             style={controlStyle}

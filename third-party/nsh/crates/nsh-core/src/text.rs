@@ -292,7 +292,7 @@ pub struct AttributedText {
     /// The block is laid out right to left: `auto` alignment is the right
     /// side.
     pub rtl: bool,
-    /// A long press copies the text (`selectable` or `select-text`;
+    /// A long press copies the text (`userSelect: "text"` or `select-text`;
     /// drawing only): `Some(false)` when set off, `None` when not set, which
     /// is not selectable except where text is by default (desktop
     /// browsers). [`is_selectable`](Self::is_selectable) is whether it is asked for.
@@ -485,7 +485,7 @@ pub struct SpanTestId {
 }
 
 impl AttributedText {
-    /// Whether the text was made selectable (`selectable`, `select-text`).
+    /// Whether the text was made selectable (`userSelect: "text"`, `select-text`).
     pub fn is_selectable(&self) -> bool {
         self.selectable == Some(true)
     }

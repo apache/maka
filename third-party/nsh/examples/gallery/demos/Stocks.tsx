@@ -25,7 +25,7 @@ function SectorBar(props: { label: string; change: () => number; scale: () => nu
   const share = () => Math.min(1, Math.abs(props.change()) / props.scale());
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 10, height: 22 }}>
-      <Text numberOfLines={1} style={{ width: 84, fontSize: 13, color: colors.muted }}>
+      <Text style={{ numberOfLines: 1, width: 84, fontSize: 13, color: colors.muted }}>
         {props.label}
       </Text>
       <View style={{ flex: 1, flexDirection: "row", alignItems: "center" }}>
@@ -104,14 +104,14 @@ function MarketStrip(props: { market: Market }) {
           accessibilityLabel={opened() ? "Hide breadth" : "Show breadth"}
           style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8, height: 56 }}
         >
-          <Text numberOfLines={1} style={{ fontSize: 13, color: colors.muted }}>
+          <Text style={{ numberOfLines: 1, fontSize: 13, color: colors.muted }}>
             Composite
           </Text>
-          <Text numberOfLines={1} style={{ fontSize: 15, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>
+          <Text style={{ numberOfLines: 1, fontSize: 15, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>
             {grouped(level())}
           </Text>
           <Text style={{ fontSize: 13, fontWeight: "500", color: toneOf(change()), fontVariant: ["tabular-nums"] }}>{signed(change())}%</Text>
-          <View style={{ transform: [{ rotate: turn.interpolate({ inputRange: [0, 1], outputRange: ["90deg", "-90deg"] }) }] }}>
+          <View style={{ rotate: turn.interpolate({ inputRange: [0, 1], outputRange: ["90deg", "-90deg"] }) }}>
             <Icon name="chevron" size={12} tint={colors.faint} />
           </View>
         </View>
@@ -171,8 +171,7 @@ function Sparkline(props: { stock: Stock }) {
   const ys: number[] = [];
   return (
     <Canvas
-      pointerEvents="none"
-      style={{ width: SPARK_W + RING * 2, height: SPARK_H + RING * 2, margin: -RING }}
+      style={{ pointerEvents: "none", width: SPARK_W + RING * 2, height: SPARK_H + RING * 2, margin: -RING }}
       draw={(cx, { width, height }) => {
         const minutes = props.stock.minutes();
         const q = props.stock.quote();
@@ -294,19 +293,19 @@ function StockRow(props: { market: Market; stock: Stock; first: boolean; onPress
         <View style={{ position: "absolute", top: 0, left: 16, right: 0, height: 1, backgroundColor: colors.line }} />
       </If>
       <View style={{ flex: 1, gap: 3 }}>
-        <Text numberOfLines={1} style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>
+        <Text style={{ numberOfLines: 1, fontSize: 16, fontWeight: "600", color: colors.text }}>
           {props.stock.code}
         </Text>
-        <Text numberOfLines={1} style={{ fontSize: 13, color: colors.muted }}>
+        <Text style={{ numberOfLines: 1, fontSize: 13, color: colors.muted }}>
           {props.stock.name}
         </Text>
       </View>
       <Sparkline stock={props.stock} />
       <View style={{ width: 84, alignItems: "flex-end", gap: 3 }}>
-        <Text numberOfLines={1} style={{ fontSize: 16, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>
+        <Text style={{ numberOfLines: 1, fontSize: 16, fontWeight: "600", color: colors.text, fontVariant: ["tabular-nums"] }}>
           {price(q().last, props.stock)}
         </Text>
-        <Text numberOfLines={1} style={{ fontSize: 13, fontWeight: "500", color: toneOf(change()), fontVariant: ["tabular-nums"] }}>
+        <Text style={{ numberOfLines: 1, fontSize: 13, fontWeight: "500", color: toneOf(change()), fontVariant: ["tabular-nums"] }}>
           {signed(change())}%
         </Text>
       </View>

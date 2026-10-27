@@ -869,7 +869,9 @@ export function ComposerCompletion(props: { state: ComposerCompletionState }) {
           </Text>
         </If>
         <If when={state.error()}>
-          <Text selectable style={{ ...captionTextStyle, color: C.danger, padding: 8 }}>
+          <Text
+            style={[{ ...captionTextStyle, color: C.danger, padding: 8 }, { userSelect: 'text' }]}
+          >
             {state.error()}
           </Text>
         </If>
@@ -919,11 +921,13 @@ export function ComposerCompletion(props: { state: ComposerCompletionState }) {
                     >
                       <Icon name={row.icon} color={C.secondary} />
                       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-                        <Text numberOfLines={1} style={{ ...bodyTextStyle, color: C.text }}>
+                        <Text style={[{ ...bodyTextStyle, color: C.text }, { numberOfLines: 1 }]}>
                           {row.title}
                         </Text>
                         <If when={row.detail}>
-                          <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+                          <Text
+                            style={[{ ...captionTextStyle, color: C.muted }, { numberOfLines: 1 }]}
+                          >
                             {row.detail}
                           </Text>
                         </If>

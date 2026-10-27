@@ -114,7 +114,87 @@ pub(crate) fn amount(s: &str) -> Option<f32> {
     }
 }
 
+// --- Flex -----------------------------------------------------------------
+
+/// CSS's `flex` shorthand, `none | <grow> <shrink>? || <basis>` and the
+/// keywords: its grow and shrink factors and its basis as written (`None`:
+/// 0, which a shorthand without one sets). Factors are unitless numbers of
+/// at least 0; a unitless 0 is a factor unless two came before it.
+pub(crate) fn flex(s: &str) -> Option<(f32, f32, Option<&str>)> {
+    let factor = |w: &str| number(w).filter(|n| *n >= 0.0);
+    let w = words(s);
+    Some(match w.as_slice() {
+        ["none"] => (0.0, 0.0, Some("auto")),
+        ["auto"] => (1.0, 1.0, Some("auto")),
+        ["initial"] => (0.0, 1.0, Some("auto")),
+        [a] => match factor(a) {
+            Some(g) => (g, 1.0, None),
+            None => (1.0, 1.0, Some(basis(a)?)),
+        },
+        [a, b] => match (factor(a), factor(b)) {
+            (Some(g), Some(sh)) => (g, sh, None),
+            (Some(g), None) => (g, 1.0, Some(basis(b)?)),
+            (None, Some(g)) => (g, 1.0, Some(basis(a)?)),
+            (None, None) => return None,
+        },
+        [a, b, c] => match (factor(a), factor(b), factor(c)) {
+            // After two factors, a unitless 0 is the basis.
+            (Some(g), Some(sh), Some(0.0)) => (g, sh, None),
+            (Some(g), Some(sh), _) => (g, sh, Some(basis(c)?)),
+            (None, Some(g), Some(sh)) => (g, sh, Some(basis(a)?)),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// A `flex` word that can only be its basis: not a number (a unitless
+/// one is a factor) and not a negative length.
+fn basis(w: &str) -> Option<&str> {
+    (number(w).is_none() && !w.starts_with('-')).then_some(w)
+}
+
 // --- Colors ---------------------------------------------------------------
+
+/// Whether `s` is CSS's `currentColor` keyword (ASCII case insensitive, as
+/// CSS keywords are).
+pub(crate) fn is_current_color(s: &str) -> bool {
+    s.trim().eq_ignore_ascii_case("currentcolor")
+}
+
+/// The spans of `s` that are the word `currentColor` (in any case), not
+/// part of a longer name.
+fn current_color_spans(s: &str) -> impl Iterator<Item = usize> + '_ {
+    const WORD: &[u8] = b"currentcolor";
+    let bytes = s.as_bytes();
+    let name = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+    (0..bytes.len().saturating_sub(WORD.len() - 1)).filter(move |&i| {
+        bytes[i..i + WORD.len()].eq_ignore_ascii_case(WORD)
+            && (i == 0 || !name(bytes[i - 1]))
+            && bytes.get(i + WORD.len()).is_none_or(|&b| !name(b))
+    })
+}
+
+/// Whether the value `s` writes `currentColor` somewhere in it (a
+/// gradient's stop, a `color-mix()`, a shadow's color).
+pub(crate) fn mentions_current_color(s: &str) -> bool {
+    current_color_spans(s).next().is_some()
+}
+
+/// `s` with every `currentColor` in it written as `color`, to parse once
+/// the color is known.
+pub(crate) fn with_current_color(s: &str, color: Color) -> String {
+    let hex = format!("#{:08x}", color.0);
+    let mut out = String::with_capacity(s.len());
+    let mut at = 0;
+    for i in current_color_spans(s) {
+        out.push_str(&s[at..i]);
+        out.push_str(&hex);
+        at = i + "currentcolor".len();
+    }
+    out.push_str(&s[at..]);
+    out
+}
 
 /// Parses a CSS color.
 pub(crate) fn color(s: &str) -> Option<Color> {
@@ -504,16 +584,40 @@ use crate::{
 
 /// A `box-shadow` list (`none` is empty).
 pub(crate) fn box_shadows(s: &str) -> Option<Vec<BoxShadow>> {
+    Some(shadow_layers(s)?.into_iter().map(|(l, _)| l).collect())
+}
+
+/// A shadow list's layers, each with whether it names its color (else it
+/// is black here, CSS's `currentColor` for a style to fill in).
+pub(crate) fn shadow_layers(s: &str) -> Option<Vec<(BoxShadow, bool)>> {
     let s = s.trim();
     if s.is_empty() || s == "none" {
         return Some(Vec::new());
     }
-    split_top(s, ',').into_iter().map(box_shadow).collect()
+    split_top(s, ',').into_iter().map(shadow_layer).collect()
 }
 
-/// One shadow: `[inset] <x> <y> [<blur> [<spread>]] [<color>]`, words in
-/// any order around the lengths.
-pub(crate) fn box_shadow(s: &str) -> Option<BoxShadow> {
+/// A `text-shadow` list (`none` is empty): offsets, blur and color.
+pub(crate) fn text_shadows(s: &str) -> Option<Vec<(crate::style::TextShadow, bool)>> {
+    shadow_layers(s)?
+        .into_iter()
+        .map(|(l, colored)| {
+            (!l.inset && l.spread.0 == 0.0).then_some((
+                crate::style::TextShadow {
+                    color: l.color,
+                    offset_x: l.offset_x,
+                    offset_y: l.offset_y,
+                    radius: l.blur,
+                },
+                colored,
+            ))
+        })
+        .collect()
+}
+
+/// One shadow, `[inset] <x> <y> [<blur> [<spread>]] [<color>]` (words in
+/// any order around the lengths), and whether it names its color.
+fn shadow_layer(s: &str) -> Option<(BoxShadow, bool)> {
     let mut shadow = BoxShadow {
         color: Color(0x0000_00ff),
         ..BoxShadow::default()
@@ -543,7 +647,7 @@ pub(crate) fn box_shadow(s: &str) -> Option<BoxShadow> {
         }
         _ => return None,
     }
-    Some(shadow)
+    Some((shadow, color_seen))
 }
 
 /// A `background-image` list of gradients (`none` is empty).
@@ -1120,6 +1224,13 @@ pub(crate) fn object_position(s: &str) -> Option<ObjectPosition> {
 
 /// A `filter` list (`none` is empty).
 pub(crate) fn filters(s: &str) -> Option<Vec<Filter>> {
+    Some(filter_list(s)?.into_iter().map(|(f, _)| f).collect())
+}
+
+/// A `filter` list, each function with whether it names its color: a
+/// `drop-shadow()` without one is black here, CSS's `currentColor` for a
+/// style to fill in.
+pub(crate) fn filter_list(s: &str) -> Option<Vec<(Filter, bool)>> {
     let s = s.trim();
     if s.is_empty() || s == "none" {
         return Some(Vec::new());
@@ -1127,7 +1238,7 @@ pub(crate) fn filters(s: &str) -> Option<Vec<Filter>> {
     words(s).into_iter().map(filter).collect()
 }
 
-fn filter(s: &str) -> Option<Filter> {
+fn filter(s: &str) -> Option<(Filter, bool)> {
     let open = s.find('(')?;
     let name = &s[..open];
     let arg = s[open + 1..].strip_suffix(')')?.trim();
@@ -1138,7 +1249,8 @@ fn filter(s: &str) -> Option<Filter> {
             amount(arg)
         }
     };
-    Some(match name {
+    let mut named = true;
+    let filter = match name {
         "blur" => Filter::Blur(px(if arg.is_empty() { 0.0 } else { length(arg)? })),
         "brightness" => Filter::Brightness(factor(1.0)?),
         "contrast" => Filter::Contrast(factor(1.0)?),
@@ -1149,7 +1261,8 @@ fn filter(s: &str) -> Option<Filter> {
         "saturate" => Filter::Saturate(factor(1.0)?),
         "sepia" => Filter::Sepia(factor(1.0)?.clamp(0.0, 1.0)),
         "drop-shadow" => {
-            let s = box_shadow(arg)?;
+            let (s, colored) = shadow_layer(arg)?;
+            named = colored;
             Filter::DropShadow {
                 offset_x: s.offset_x,
                 offset_y: s.offset_y,
@@ -1158,12 +1271,26 @@ fn filter(s: &str) -> Option<Filter> {
             }
         }
         _ => return None,
-    })
+    };
+    Some((filter, named))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_color_in_values() {
+        assert!(mentions_current_color(
+            "color-mix(in srgb, CurrentColor 50%, red)"
+        ));
+        // Part of a longer name: not the keyword.
+        assert!(!mentions_current_color("var(--currentcolor) currentcolors"));
+        assert_eq!(
+            with_current_color("0 1px currentColor, 0 2px currentcolor", Color(0x1234_56ff)),
+            "0 1px #123456ff, 0 2px #123456ff"
+        );
+    }
 
     #[test]
     fn object_positions() {

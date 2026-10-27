@@ -101,10 +101,24 @@ function App() {
         <View testID="min-shrink-a" style={{ width: 200, height: 20, flexShrink: 1, minWidth: 180 }} />
         <View testID="min-shrink-b" style={{ width: 200, height: 20, flexShrink: 1 }} />
       </Frame>
-      {/* aspectRatio: from the width, from the height, from a stretched width */}
+      {/* `minWidth: "auto"`: CSS's automatic minimum, the content's width;
+          unset, a shrinking item's minimum is 0 (Yoga's) */}
+      <Frame id="min-auto" style={{ flexDirection: "row" }}>
+        <View testID="min-auto-a" style={{ flexShrink: 1, minWidth: "auto" }}>
+          <View style={{ width: 200, height: 20 }} />
+        </View>
+        <View testID="min-auto-b" style={{ width: 200, height: 20 }} />
+      </Frame>
+      <Frame id="min-unset" style={{ flexDirection: "row" }}>
+        <View testID="min-unset-a" style={{ flexShrink: 1 }}>
+          <View style={{ width: 200, height: 20 }} />
+        </View>
+        <View testID="min-unset-b" style={{ width: 200, height: 20 }} />
+      </Frame>
+      {/* aspectRatio: from the width, from the height (CSS's ratio), from a stretched width */}
       <Frame id="ratio" style={{ height: 160, alignItems: "flex-start" }}>
         <View testID="ratio-a" style={{ width: 100, aspectRatio: 2 }} />
-        <View testID="ratio-b" style={{ height: 60, aspectRatio: 1.5 }} />
+        <View testID="ratio-b" style={{ height: 60, aspectRatio: "3 / 2" }} />
       </Frame>
       <Frame id="ratio-stretch" style={{ height: 160 }}>
         <View testID="ratio-stretch-a" style={{ aspectRatio: 3 }} />
@@ -134,6 +148,10 @@ function App() {
       <Frame id="display-flex" style={{ display: "flex", flexDirection: "row" }}>
         <Box id="display-flex-a" />
         <Box id="display-flex-b" />
+      </Frame>
+      <Frame id="display-row" style={{ display: "flex" }}>
+        <Box id="display-row-a" />
+        <Box id="display-row-b" />
       </Frame>
       <Frame id="display-block" style={{ display: "block", flexDirection: "row" }}>
         <View testID="display-block-a" style={{ height: 20 }} />

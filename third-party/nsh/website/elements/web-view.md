@@ -36,7 +36,7 @@ function Browser() {
   const nav = signal<WebViewNavigation | null>(null);
   return (
     <View style={{ flex: 1 }}>
-      <Text numberOfLines={1}>{nav()?.title ?? "Loading…"}</Text>
+      <Text style={{ numberOfLines: 1 }}>{nav()?.title ?? "Loading…"}</Text>
       <WebView
         src="https://example.com"
         style={{ flex: 1 }}

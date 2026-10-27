@@ -32,16 +32,18 @@ export function ChoiceIndicator(props: {
   if (platform.isTerminal)
     return (
       <Text
-        pointerEvents="none"
         accessibilityElementsHidden
-        style={{
-          width: width(),
-          height: 16,
-          lineHeight: 16,
-          color: color(),
-          textAlign: 'center',
-          flexShrink: 0,
-        }}
+        style={[
+          {
+            width: width(),
+            height: 16,
+            lineHeight: 16,
+            color: color(),
+            textAlign: 'center',
+            flexShrink: 0,
+          },
+          { pointerEvents: 'none' },
+        ]}
       >
         {props.kind === 'checkbox'
           ? props.checked
@@ -58,9 +60,8 @@ export function ChoiceIndicator(props: {
     );
   return (
     <Canvas
-      pointerEvents="none"
       accessibilityElementsHidden
-      style={{ width: width(), height: 16, flexShrink: 0 }}
+      style={[{ width: width(), height: 16, flexShrink: 0 }, { pointerEvents: 'none' }]}
       draw={(cx) => {
         cx.lineWidth = 1.5;
         cx.lineCap = 'round';

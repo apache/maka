@@ -123,7 +123,7 @@ export function Checklist(props: { sessionId: string }) {
           <Text style={{ ...captionTextStyle, color: C.text }}>
             {tr('Todo')} {snapshot()!.completed}/{snapshot()!.total}
           </Text>
-          <Text numberOfLines={1} style={{ ...captionTextStyle, flex: 1, color: C.muted }}>
+          <Text style={[{ ...captionTextStyle, flex: 1, color: C.muted }, { numberOfLines: 1 }]}>
             {snapshot()!.current?.content ??
               (snapshot()!.completed === snapshot()!.total
                 ? tr('All items complete')
@@ -158,17 +158,19 @@ export function Checklist(props: { sessionId: string }) {
                   <Icon name="activity" color={C.accent} />
                 </If>
                 <Text
-                  selectable
-                  style={{
-                    ...bodyTextStyle,
-                    flex: 1,
-                    color:
-                      item().status === 'in_progress'
-                        ? C.accent
-                        : item().status === 'completed'
-                          ? C.muted
-                          : C.secondary,
-                  }}
+                  style={[
+                    {
+                      ...bodyTextStyle,
+                      flex: 1,
+                      color:
+                        item().status === 'in_progress'
+                          ? C.accent
+                          : item().status === 'completed'
+                            ? C.muted
+                            : C.secondary,
+                    },
+                    { userSelect: 'text' },
+                  ]}
                 >
                   {item().content}
                 </Text>
@@ -176,7 +178,7 @@ export function Checklist(props: { sessionId: string }) {
             )}
           </List>
           <If when={error()}>
-            <Text numberOfLines={1} style={{ paddingHorizontal: 16, color: C.danger }}>
+            <Text style={[{ paddingHorizontal: 16, color: C.danger }, { numberOfLines: 1 }]}>
               {error()}
             </Text>
           </If>

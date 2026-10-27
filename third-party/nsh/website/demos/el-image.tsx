@@ -42,7 +42,7 @@ const star = svg(`<path d="M12 2l3 6.5 7 .8-5.2 4.8 1.5 7L12 17.6 5.7 21.1l1.5-7
 
 const sources = { landscape, portrait, missing: "asset:/missing.png" } as const;
 type Source = keyof typeof sources;
-const modes = ["cover", "contain", "stretch", "center"] as const;
+const modes = ["cover", "contain", "fill", "none"] as const;
 type Mode = (typeof modes)[number];
 
 function Segments<T extends string>(props: { options: readonly T[]; value: T; onChange: (v: T) => void }) {
@@ -91,19 +91,18 @@ function App() {
         <Image
           src={sources[source()]}
           placeholder={placeholder}
-          resizeMode={mode()}
           blurRadius={blur() ? 12 : 0}
           fadeDuration={250}
           onLoadStart={() => log("onLoadStart")}
           onLoad={(e) => log(`onLoad ${Math.round(e.width)} × ${Math.round(e.height)}`)}
           onError={(e) => log(`onError ${e.message}`)}
           onLoadEnd={() => log("onLoadEnd")}
-          style={{ ...ui().inset, flex: 1, minHeight: 180, borderRadius: 14 }}
+          style={{ ...ui().inset, flex: 1, minHeight: 180, borderRadius: 14, objectFit: mode() }}
         />
         <View style={{ gap: 12, width: wide() ? 320 : undefined }}>
           <Text style={{ color: ui().muted }}>src</Text>
           <Segments options={Object.keys(sources) as Source[]} value={source()} onChange={(s) => source.set(s)} />
-          <Text style={{ color: ui().muted }}>resizeMode</Text>
+          <Text style={{ color: ui().muted }}>objectFit</Text>
           <Segments options={modes} value={mode()} onChange={(m) => mode.set(m)} />
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <View onPress={() => blur.set(!blur())} {...button("secondary", { on: blur })}>
