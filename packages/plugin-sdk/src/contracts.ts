@@ -48181,6 +48181,7 @@ export const contracts = {
                         type: 'string',
                       },
                     },
+                    additionalProperties: false,
                     required: ['kind', 'step_id'],
                   },
                   {
@@ -48197,11 +48198,10 @@ export const contracts = {
                         type: 'string',
                       },
                     },
+                    additionalProperties: false,
                     required: ['kind', 'parent_operation_id', 'parent_tool_call_id'],
                   },
                   {
-                    description:
-                      "An independently running cell accepted by an exec control call.\nIts parent may settle once startup/observation completes; its own nested\ntool effects must still drain before the cell's canonical settlement.",
                     type: 'object',
                     properties: {
                       kind: {
@@ -48215,6 +48215,7 @@ export const contracts = {
                         type: 'string',
                       },
                     },
+                    additionalProperties: false,
                     required: ['kind', 'parent_operation_id', 'parent_tool_call_id'],
                   },
                   {
@@ -48226,10 +48227,9 @@ export const contracts = {
                       },
                     },
                     required: ['kind'],
+                    additionalProperties: false,
                   },
                   {
-                    description:
-                      'Explicit Host SDK work, never dispatch inferred from executor observations.',
                     type: 'object',
                     properties: {
                       kind: {
@@ -48248,7 +48248,18 @@ export const contracts = {
                       parent_operation_id: {
                         type: ['string', 'null'],
                       },
+                      parent_relationship: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/HostSdkRelationship',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
+                    additionalProperties: false,
                     required: [
                       'kind',
                       'package_id',
@@ -48256,6 +48267,24 @@ export const contracts = {
                       'activation',
                       'parent_operation_id',
                     ],
+                  },
+                ],
+              },
+              HostSdkRelationship: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'evaluation_observer',
+                      },
+                      epoch: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'epoch'],
                   },
                 ],
               },

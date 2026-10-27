@@ -191,23 +191,19 @@ export type SettingsUsageOutput_ToolOrigin =
   | {
       kind: 'provider';
       step_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_mode';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_cell';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'standalone';
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'host_sdk';
@@ -215,8 +211,12 @@ export type SettingsUsageOutput_ToolOrigin =
       entry_id: string;
       activation: string;
       parent_operation_id: string | null;
-      [k: string]: unknown | undefined;
+      parent_relationship?: SettingsUsageOutput_HostSdkRelationship | null;
     };
+export type SettingsUsageOutput_HostSdkRelationship = {
+  kind: 'evaluation_observer';
+  epoch: string;
+};
 export type SettingsUsageOutput_UsageToolResult =
   | {
       kind: 'rejected';

@@ -2028,23 +2028,19 @@ export type ToolOrigin =
   | {
       kind: 'provider';
       step_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_mode';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_cell';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'standalone';
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'host_sdk';
@@ -2052,8 +2048,12 @@ export type ToolOrigin =
       entry_id: string;
       activation: string;
       parent_operation_id?: string | null;
-      [k: string]: unknown | undefined;
+      parent_relationship?: HostSdkRelationship | null;
     };
+export type HostSdkRelationship = {
+  kind: 'evaluation_observer';
+  epoch: string;
+};
 export type UsageToolResult =
   | {
       kind: 'rejected';

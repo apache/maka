@@ -21,6 +21,7 @@
 use super::{
     SemanticSelection,
     lifetime::{Key, PreparedRegistry},
+    runtime::InFlight,
 };
 use crate::StoreError;
 use sqlx::{Connection, SqliteConnection};
@@ -89,9 +90,11 @@ pub(crate) async fn retire_owner(
 pub(crate) async fn maintain(
     connection: &mut SqliteConnection,
     registry: &PreparedRegistry,
+    in_flight: &mut InFlight,
 ) -> Result<bool, StoreError> {
     let released = registry.take_released(METADATA_ROWS);
-    let pending = registry.has_released() || !released.is_empty() || has_work(connection).await?;
+    let pending =
+        registry.has_released() || !released.is_empty() || has_work(connection, registry).await?;
     if !pending {
         return Ok(false);
     }
@@ -105,6 +108,7 @@ pub(crate) async fn maintain(
                 .await?;
         }
         let mut rows = METADATA_ROWS;
+        let mut retired = Vec::new();
         for _ in 0..16 {
             if rows == 0 {
                 break;
@@ -118,9 +122,9 @@ pub(crate) async fn maintain(
                 break;
             };
             let done = if kind == "wire_view" {
-                retire_wire(&mut tx, registry, &id, &mut rows).await?
+                retire_wire(&mut tx, registry, &id, &mut rows, &mut retired).await?
             } else {
-                retire_build(&mut tx, registry, &id, &mut rows).await?
+                retire_build(&mut tx, registry, &id, &mut rows, &mut retired).await?
             };
             if done {
                 sqlx::query("DELETE FROM context_prepared_retire WHERE kind=? AND id=?")
@@ -134,12 +138,17 @@ pub(crate) async fn maintain(
         // large cancelled build cannot starve reclaimed nodes or wire bodies.
         collect_unreachable(&mut tx).await?;
         tx.commit().await.map_err(StoreError::CommitUnknown)?;
-        // Reclaim retired working pages without a stop-the-world VACUUM. This
-        // budget is independent of root/metadata/body collection budgets.
-        sqlx::query("PRAGMA prepared_cache.incremental_vacuum(128)")
-            .execute(&mut *connection)
-            .await?;
-        Ok(has_work(connection).await? || registry.has_released())
+        for (kind, id) in retired {
+            in_flight.remove(kind, &id);
+        }
+        // Live preparations reuse reclaimed pages. The last lease release wakes
+        // this owner to shrink idle storage with the existing bounded budget.
+        if !registry.has_live() {
+            sqlx::query("PRAGMA prepared_cache.incremental_vacuum(128)")
+                .execute(&mut *connection)
+                .await?;
+        }
+        Ok(has_work(connection, registry).await? || registry.has_released())
     }
     .await;
     match result {
@@ -155,10 +164,16 @@ pub(crate) async fn maintain(
         }
     }
 }
-async fn has_work(connection: &mut SqliteConnection) -> Result<bool, StoreError> {
-    let roots: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_retire) OR EXISTS(SELECT 1 FROM context_prepared_refs WHERE refs=0)").fetch_one(&mut *connection).await?;
+async fn has_work(
+    connection: &mut SqliteConnection,
+    registry: &PreparedRegistry,
+) -> Result<bool, StoreError> {
+    let roots: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_retire) OR EXISTS(SELECT 1 FROM context_prepared_refs WHERE refs=0) OR EXISTS(SELECT 1 FROM context_prepared_payloads WHERE digest IS NULL)").fetch_one(&mut *connection).await?;
     if roots {
         return Ok(true);
+    }
+    if registry.has_live() {
+        return Ok(false);
     }
     Ok(
         sqlx::query_scalar::<_, i64>("PRAGMA prepared_cache.freelist_count")
@@ -172,6 +187,7 @@ async fn retire_wire(
     registry: &PreparedRegistry,
     id: &str,
     budget: &mut usize,
+    retired: &mut Vec<(&'static str, String)>,
 ) -> Result<bool, StoreError> {
     if registry.live("wire_view", id) {
         return Ok(true);
@@ -185,6 +201,7 @@ async fn retire_wire(
     if cached {
         return Ok(true);
     }
+    retired.push(("wire_view", id.to_owned()));
     sqlx::query(
         "UPDATE context_prepared_wire_views SET root=NULL,discovery_root=NULL,retiring=1 WHERE id=? AND retiring=0",
     )
@@ -207,7 +224,7 @@ async fn retire_wire(
     // Release that last cache edge only when its wire root is really retired.
     sqlx::query("INSERT OR IGNORE INTO context_prepared_retire SELECT 'build',build_id FROM context_prepared_wire_views WHERE id=?")
         .bind(id).execute(&mut *connection).await?;
-    if !retire_assembly(connection, "wire_view", id, budget).await? {
+    if !retire_pins(connection, "wire_view", id, budget).await? {
         return Ok(false);
     }
     sqlx::query("DELETE FROM context_prepared_wire_views WHERE id=?")
@@ -222,6 +239,7 @@ async fn retire_build(
     registry: &PreparedRegistry,
     id: &str,
     budget: &mut usize,
+    retired: &mut Vec<(&'static str, String)>,
 ) -> Result<bool, StoreError> {
     if registry.live("build", id) {
         return Ok(true);
@@ -234,6 +252,7 @@ async fn retire_build(
     if cached {
         return Ok(true);
     }
+    retired.push(("build", id.to_owned()));
     sqlx::query(
         "UPDATE context_prepared_builds SET root=NULL,retiring=1 WHERE id=? AND retiring=0",
     )
@@ -264,7 +283,7 @@ async fn retire_build(
     if remains {
         return Ok(false);
     }
-    if !retire_assembly(connection, "build", id, budget).await? {
+    if !retire_pins(connection, "build", id, budget).await? {
         return Ok(false);
     }
     sqlx::query("DELETE FROM context_prepared_builds WHERE id=?")
@@ -339,35 +358,55 @@ pub(crate) async fn collect_unreachable(
     .await?;
     if let Some(wire) = wire {
         changed = true;
-        sqlx::query("DELETE FROM context_prepared_chunks WHERE wire_id=?1 AND piece_index IN (SELECT piece_index FROM context_prepared_chunks WHERE wire_id=?1 ORDER BY piece_index LIMIT ?2)")
-            .bind(&wire).bind(WIRE_PIECES).execute(&mut *connection).await?;
+        // Withdraw reuse before deleting any pieces. The same digest can then
+        // publish new complete storage while this physical body drains.
+        sqlx::query("UPDATE context_prepared_payloads SET digest=NULL WHERE digest=?")
+            .bind(&wire)
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query("DELETE FROM context_prepared_refs WHERE kind='wire' AND id=? AND refs=0")
+            .bind(wire)
+            .execute(&mut *connection)
+            .await?;
+    }
+    let storage: Option<String> = sqlx::query_scalar(
+        "SELECT storage_id FROM context_prepared_payloads WHERE digest IS NULL ORDER BY storage_id LIMIT 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await?;
+    if let Some(storage) = storage {
+        changed = true;
+        sqlx::query("DELETE FROM context_prepared_chunks WHERE storage_id=?1 AND piece_index IN (SELECT piece_index FROM context_prepared_chunks WHERE storage_id=?1 ORDER BY piece_index LIMIT ?2)")
+            .bind(&storage).bind(WIRE_PIECES).execute(&mut *connection).await?;
         let remains: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM context_prepared_chunks WHERE wire_id=?)",
+            "SELECT EXISTS(SELECT 1 FROM context_prepared_chunks WHERE storage_id=?)",
         )
-        .bind(&wire)
+        .bind(&storage)
         .fetch_one(&mut *connection)
         .await?;
         if !remains {
-            sqlx::query("DELETE FROM context_prepared_refs WHERE kind='wire' AND id=? AND refs=0")
-                .bind(wire)
-                .execute(connection)
-                .await?;
+            sqlx::query(
+                "DELETE FROM context_prepared_payloads WHERE storage_id=? AND digest IS NULL",
+            )
+            .bind(storage)
+            .execute(connection)
+            .await?;
         }
     }
     Ok(changed)
 }
 
-async fn retire_assembly(
+async fn retire_pins(
     connection: &mut SqliteConnection,
     kind: &str,
     id: &str,
     budget: &mut usize,
 ) -> Result<bool, StoreError> {
-    let changed=sqlx::query("DELETE FROM context_prepared_frames WHERE kind=?1 AND owner_id=?2 AND depth IN (SELECT depth FROM context_prepared_frames WHERE kind=?1 AND owner_id=?2 ORDER BY depth LIMIT ?3)")
+    let changed=sqlx::query("DELETE FROM context_prepared_generation_nodes WHERE kind=?1 AND owner_id=?2 AND node_id IN (SELECT node_id FROM context_prepared_generation_nodes WHERE kind=?1 AND owner_id=?2 ORDER BY node_id LIMIT ?3)")
         .bind(kind).bind(id).bind(*budget as i64).execute(&mut *connection).await?.rows_affected() as usize;
     *budget = budget.saturating_sub(changed);
     let remains: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM context_prepared_frames WHERE kind=? AND owner_id=?)",
+        "SELECT EXISTS(SELECT 1 FROM context_prepared_generation_nodes WHERE kind=? AND owner_id=?)",
     )
     .bind(kind)
     .bind(id)
@@ -376,10 +415,5 @@ async fn retire_assembly(
     if remains {
         return Ok(false);
     }
-    sqlx::query("DELETE FROM context_prepared_assembly WHERE kind=? AND owner_id=?")
-        .bind(kind)
-        .bind(id)
-        .execute(connection)
-        .await?;
     Ok(true)
 }

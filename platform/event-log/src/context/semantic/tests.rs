@@ -766,6 +766,10 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .execute(&mut db)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO context_prepared_payloads VALUES('wire','wire')")
+        .execute(&mut db)
+        .await
+        .unwrap();
     for index in 0..260 {
         sqlx::query("INSERT INTO context_prepared_chunks VALUES('wire',?,0,0,1,NULL,?)")
             .bind(index)
@@ -778,9 +782,13 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert!(
-        !crate::context::prepared::gc::maintain(&mut db, &registry)
-            .await
-            .unwrap()
+        !crate::context::prepared::gc::maintain(
+            &mut db,
+            &registry,
+            &mut crate::context::prepared::runtime::InFlight::default()
+        )
+        .await
+        .unwrap()
     );
     let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_chunks")
         .fetch_one(&mut db)
@@ -791,18 +799,26 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert!(
-        crate::context::prepared::gc::maintain(&mut db, &registry)
-            .await
-            .unwrap()
+        crate::context::prepared::gc::maintain(
+            &mut db,
+            &registry,
+            &mut crate::context::prepared::runtime::InFlight::default()
+        )
+        .await
+        .unwrap()
     );
     let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_chunks")
         .fetch_one(&mut db)
         .await
         .unwrap();
     assert_eq!(remaining, 132);
-    while crate::context::prepared::gc::maintain(&mut db, &registry)
-        .await
-        .unwrap()
+    while crate::context::prepared::gc::maintain(
+        &mut db,
+        &registry,
+        &mut crate::context::prepared::runtime::InFlight::default(),
+    )
+    .await
+    .unwrap()
     {}
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_chunks)")
         .fetch_one(&mut db)

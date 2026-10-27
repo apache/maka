@@ -63,7 +63,7 @@ fn value(sequence: u64, variant: u64) -> Group {
     }
 }
 async fn owner(db: &mut SqliteConnection, id: &str, root: Option<&str>) {
-    sqlx::query("INSERT INTO context_prepared_builds(id,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,identity) VALUES(?,'test','{}',0,0,0,0,?,?)")
+    sqlx::query("INSERT INTO context_prepared_builds(id,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,identity,discovered) VALUES(?,'test','{}',0,0,0,0,?,?,1)")
         .bind(id).bind(root).bind(id).execute(db).await.unwrap();
 }
 async fn stage(db: &mut SqliteConnection, id: &str, sequence: u64, variant: u64) {
@@ -76,21 +76,33 @@ async fn stage(db: &mut SqliteConnection, id: &str, sequence: u64, variant: u64)
         .execute(&mut *db)
         .await
         .unwrap();
-    assembly::stage(db, assembly::Kind::Logical, id, sequence, &content)
-        .await
-        .unwrap();
+    assembly::stage(
+        db,
+        &runtime::InFlight::default(),
+        assembly::Kind::Logical,
+        id,
+        sequence,
+        &content,
+    )
+    .await
+    .unwrap();
 }
 async fn finish(db: &mut SqliteConnection, id: &str) -> Option<String> {
+    let mut in_flight = runtime::InFlight::default();
+    in_flight.insert(assembly::Kind::Logical, id, runtime::Generation::Rendering);
     for _ in 0..100_000 {
-        let mut tx = db.begin().await.unwrap();
-        let ready = assembly::advance(&mut tx, assembly::Kind::Logical, id)
+        let ready = assembly::advance(db, &mut in_flight, assembly::Kind::Logical, id)
             .await
             .unwrap();
         // Deliberately collect between every chunk. Staging and unfinished
         // frame results must survive without pausing the normal collector.
-        gc::collect_unreachable(&mut tx).await.unwrap();
-        tx.commit().await.unwrap();
+        gc::collect_unreachable(db).await.unwrap();
         if ready {
+            sqlx::query("UPDATE context_prepared_builds SET complete=1 WHERE id=?")
+                .bind(id)
+                .execute(&mut *db)
+                .await
+                .unwrap();
             return sqlx::query_scalar("SELECT root FROM context_prepared_builds WHERE id=?")
                 .bind(id)
                 .fetch_one(db)
@@ -216,38 +228,124 @@ async fn bulk_assembly_saves_only_final_nodes_and_reuses_sparse_warm_subtrees() 
 async fn staging_is_write_once_and_discovery_blocks_freezing() {
     let mut db = database().await;
     owner(&mut db, "build", None).await;
-    sqlx::query("UPDATE context_prepared_builds SET discovery_json='{}' WHERE id='build'")
+    sqlx::query("UPDATE context_prepared_builds SET discovered=0 WHERE id='build'")
         .execute(&mut db)
         .await
         .unwrap();
     assert!(
-        assembly::advance(&mut db, assembly::Kind::Logical, "build")
-            .await
-            .is_err()
+        assembly::advance(
+            &mut db,
+            &mut runtime::InFlight::default(),
+            assembly::Kind::Logical,
+            "build"
+        )
+        .await
+        .is_err()
     );
-    sqlx::query("UPDATE context_prepared_builds SET discovery_json=NULL WHERE id='build'")
+    sqlx::query("UPDATE context_prepared_builds SET discovered=1 WHERE id='build'")
         .execute(&mut db)
         .await
         .unwrap();
     stage(&mut db, "build", 4, 0).await;
     let original = tree::save_group(&mut db, &value(4, 0)).await.unwrap();
-    assembly::stage(&mut db, assembly::Kind::Logical, "build", 4, &original)
-        .await
-        .unwrap();
+    assembly::stage(
+        &mut db,
+        &runtime::InFlight::default(),
+        assembly::Kind::Logical,
+        "build",
+        4,
+        &original,
+    )
+    .await
+    .unwrap();
     let different = tree::save_group(&mut db, &value(4, 1)).await.unwrap();
     assert!(
-        assembly::stage(&mut db, assembly::Kind::Logical, "build", 4, &different)
-            .await
-            .is_err()
+        assembly::stage(
+            &mut db,
+            &runtime::InFlight::default(),
+            assembly::Kind::Logical,
+            "build",
+            4,
+            &different
+        )
+        .await
+        .is_err()
     );
     let root = finish(&mut db, "build").await;
     assert!(
-        assembly::stage(&mut db, assembly::Kind::Logical, "build", 4, &different)
-            .await
-            .is_err()
+        assembly::stage(
+            &mut db,
+            &runtime::InFlight::default(),
+            assembly::Kind::Logical,
+            "build",
+            4,
+            &different
+        )
+        .await
+        .is_err()
     );
     assert_eq!(
         tree::content_id(&mut db, root.as_deref(), 4).await.unwrap(),
         original
     );
+}
+
+#[tokio::test]
+async fn confirmed_rollback_retries_the_same_frontier_without_skipping_work() {
+    for fail_merge in [false, true] {
+        let mut db = database().await;
+        let values = (1..=130)
+            .map(|sequence| (sequence, 0))
+            .collect::<BTreeMap<_, _>>();
+        owner(&mut db, "rollback", None).await;
+        for &sequence in values.keys() {
+            stage(&mut db, "rollback", sequence, 0).await;
+        }
+        let trigger = if fail_merge {
+            "CREATE TEMP TRIGGER injected_failure BEFORE INSERT ON prepared_cache.context_prepared_nodes WHEN (SELECT COUNT(*) FROM context_prepared_nodes)>=3 BEGIN SELECT RAISE(ABORT,'injected assembly failure'); END"
+        } else {
+            "CREATE TEMP TRIGGER injected_failure BEFORE UPDATE OF cart_left,cart_right ON prepared_cache.context_prepared_dirty BEGIN SELECT RAISE(ABORT,'injected assembly failure'); END"
+        };
+        sqlx::raw_sql(trigger).execute(&mut db).await.unwrap();
+        let mut in_flight = runtime::InFlight::default();
+        in_flight.insert(
+            assembly::Kind::Logical,
+            "rollback",
+            runtime::Generation::Rendering,
+        );
+        loop {
+            match assembly::advance(&mut db, &mut in_flight, assembly::Kind::Logical, "rollback")
+                .await
+            {
+                Ok(ready) => assert!(!ready, "injected failure must precede publication"),
+                Err(error) => {
+                    assert!(
+                        error.to_string().contains("injected assembly failure"),
+                        "{error}"
+                    );
+                    break;
+                }
+            }
+        }
+        sqlx::query("DROP TRIGGER injected_failure")
+            .execute(&mut db)
+            .await
+            .unwrap();
+        while !assembly::advance(&mut db, &mut in_flight, assembly::Kind::Logical, "rollback")
+            .await
+            .unwrap()
+        {
+            gc::collect_unreachable(&mut db).await.unwrap();
+        }
+        let root: Option<String> =
+            sqlx::query_scalar("SELECT root FROM context_prepared_builds WHERE id='rollback'")
+                .fetch_one(&mut db)
+                .await
+                .unwrap();
+        assert_eq!(
+            root,
+            reference(&values).await,
+            "rollback must restore every Cartesian and merge step"
+        );
+    }
 }

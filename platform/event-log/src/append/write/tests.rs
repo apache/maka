@@ -21,7 +21,7 @@ use super::*;
 use maka_agent_facts::event::CommitError;
 use maka_agent_facts::{
     event::{Fact, Invocation, InvocationInput, LogScope, RuntimeEvent},
-    model::{ModelEvent, TextKind},
+    model::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, TextKind},
 };
 use std::sync::{Arc, atomic::Ordering};
 use std::{sync::atomic::AtomicUsize, time::Duration};
@@ -50,6 +50,28 @@ fn delta(id: &str, text: &str) -> EventWrite {
                 id: "part".into(),
                 text: text.into(),
                 provider_options: None,
+            },
+        },
+    )
+}
+
+fn completion(id: &str, text: &str) -> EventWrite {
+    event(
+        id,
+        Fact::ModelCompleted {
+            step_id: "step".into(),
+            output: ModelStep {
+                parts: vec![ModelPart::Text {
+                    text_kind: TextKind::Text,
+                    text: text.into(),
+                    provider_options: None,
+                }],
+                finish_reason: ModelFinishReason::Stop,
+                usage: Default::default(),
+                provider_options: None,
+                response_id: None,
+                model: None,
+                timestamp: None,
             },
         },
     )
@@ -215,6 +237,96 @@ async fn neighbors_share_commit_and_isolate_bad_batch_and_conflicting_replay() {
 }
 
 #[tokio::test]
+async fn queued_model_boundaries_share_commit_and_keep_checkpoint_proof_rejection() {
+    for interrupted in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.sqlite");
+        let log = open(&path).await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = count.clone();
+        let (entered, reached) = oneshot::channel();
+        let mut entered = Some(entered);
+        let (release_commit, commit_gate) = std::sync::mpsc::channel();
+        hook(&log, move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            if let Some(entered) = entered.take() {
+                entered.send(()).unwrap();
+                commit_gate.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            true
+        })
+        .await;
+        let (release, blocked) = gate(&log).await;
+        let first = delta("observed", "one");
+        let late = event(
+            "late-checkpoint",
+            Fact::ModelRequested {
+                context_breakdown: None,
+                item_acceptance: false,
+                purpose: maka_agent_facts::context::ModelPurpose::Main,
+                context: None,
+                checkpoint_event_id: Some("missing-checkpoint".into()),
+                step_id: "late-step".into(),
+                model_id: "model".into(),
+                source_scope: LogScope::Session {
+                    id: "session".into(),
+                },
+                source_high_water: 0,
+                source_digest: "source".into(),
+                effective_source_digest: None,
+                input_digest: "input".into(),
+                route_identity: "route".into(),
+            },
+        );
+        let boundary = if interrupted {
+            event(
+                "boundary",
+                Fact::ModelInterrupted {
+                    step_id: "step".into(),
+                    status: maka_agent_facts::event::ModelInterruption::Failed,
+                    diagnostic: None,
+                    model_failure: None,
+                },
+            )
+        } else {
+            completion("boundary", "one")
+        };
+        let mut first = Box::pin(log.append(&first));
+        let mut late = Box::pin(log.append(&late));
+        let mut boundary = Box::pin(log.append(&boundary));
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(futures_util::poll!(&mut late).is_pending());
+        assert!(futures_util::poll!(&mut boundary).is_pending());
+        let mut commits = log.subscribe_commits();
+        commits.borrow_and_update();
+        release.send(()).unwrap();
+        blocked.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), reached)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(futures_util::poll!(&mut first).is_pending());
+        assert!(futures_util::poll!(&mut late).is_pending());
+        assert!(futures_util::poll!(&mut boundary).is_pending());
+        assert!(!commits.has_changed().unwrap());
+        assert_eq!(ids(&path), ["opened", "requested", "part"]);
+        release_commit.send(()).unwrap();
+        assert_eq!(first.await.unwrap(), 4);
+        assert!(
+            matches!(late.await, Err(CommitError::Rejected(reason)) if reason.contains("missing request baseline"))
+        );
+        assert_eq!(boundary.await.unwrap(), 5);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            ids(&path),
+            ["opened", "requested", "part", "observed", "boundary"]
+        );
+        assert_projection_positions(&path);
+        log.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn commit_failure_preserves_domain_rejection_and_stops_pending_control() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("events.sqlite");
@@ -223,7 +335,7 @@ async fn commit_failure_preserves_domain_rejection_and_stops_pending_control() {
     let (release, gate) = gate(&log).await;
     let first = [delta("first", "one")];
     let bad = [delta("part", "conflicting original")];
-    let last = [delta("last", "two")];
+    let last = [completion("completed", "one")];
     let mut a = Box::pin(log.append_batch(&first));
     let mut b = Box::pin(log.append_batch(&bad));
     let mut c = Box::pin(log.append_batch(&last));
@@ -556,7 +668,7 @@ async fn projection_sql_fault_preserves_database_codes_and_rolls_back_all_neighb
             log.commits.session("session"),
         ));
         let mut last = Box::pin(log.connection.write(
-            WriteAppend::from_events(&[delta("last", "three")]).unwrap(),
+            WriteAppend::from_events(&[completion("completed", "one")]).unwrap(),
             log.commits.session("session"),
         ));
         assert!(futures_util::poll!(&mut first).is_pending());

@@ -64,7 +64,7 @@ impl EventLog {
         let lease = build.lease.clone();
         let id = build.id.clone();
         let sequence = group_number(group)?;
-        self.connection.run(move |connection|Box::pin(async move {
+        self.prepared_store()?.run(move |connection, in_flight|Box::pin(async move {
             let mut tx=connection.begin().await?;
             require_build_session(&mut tx, expected_session.as_deref(), &scope_id).await?;
             assembly::require_discovered(&mut tx,assembly::Kind::Logical,&id).await?;
@@ -82,8 +82,8 @@ impl EventLog {
                     .bind(&content).bind(call_id).bind(message_index as i64).bind(sequence as i64).execute(&mut *tx).await?;
             }
 
-            assembly::stage(&mut tx,assembly::Kind::Logical,&id,sequence,&content).await?;
-            tx.commit().await?;lease.wake();Ok(())
+            assembly::stage(&mut tx,in_flight,assembly::Kind::Logical,&id,sequence,&content).await?;
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;lease.wake();Ok(())
         })).await
     }
 }
