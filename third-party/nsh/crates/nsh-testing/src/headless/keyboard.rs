@@ -10,7 +10,7 @@
 //! the focused input takes the keys that edit it, and Escape goes back.
 
 use nsh_core::{
-    Command, EventKind, EventPayload, MountBatch, MountItem, NodeId, PayloadValue, ROOT_ID,
+    Command, EventKind, EventPayload, MountItem, NodeId, PayloadValue, ROOT_ID,
     keymap::{Key, KeyMatch, Keystroke},
     platform::Os,
     tailwind::state::FOCUSED,
@@ -133,12 +133,35 @@ impl Headless {
         }
     }
 
-    /// The app moved the focus (`focus()`, `blur()`) in `batch`, applied
-    /// with input `focused` focused before it: platforms tell the views as
-    /// when the user moves it. The screen applied the calls on inputs;
-    /// where Tab stops at views that take presses, a call on one of those
-    /// moves the keyboard focus as Tab does (the batch's last call counts).
-    pub(super) fn focus_calls(&mut self, batch: &MountBatch, focused: Option<NodeId>) {
+    /// Applies a non-input focus call after the screen applied this item,
+    /// before the next item can retire or remove its target. Inputs and
+    /// root blur are already handled by the screen.
+    pub(super) fn focus_call(&mut self, item: &MountItem) {
+        if !self.tabs_to_views() {
+            return;
+        }
+        let MountItem::Command { id, command } = item else {
+            return;
+        };
+        match command {
+            Command::Focus
+                if *id != ROOT_ID
+                    && self.screen.input(*id).is_none()
+                    && self.screen.tab_stops().contains(id) =>
+            {
+                self.screen.set_focused(None);
+                self.screen.set_key_focus(Some(*id));
+            }
+            Command::Blur if self.screen.key_focus() == Some(*id) => {
+                self.screen.set_key_focus(None);
+            }
+            _ => {}
+        }
+    }
+
+    /// Reports the batch's net focus change. An intermediate target may
+    /// already have been deleted or replaced, so it receives no late event.
+    pub(super) fn report_focus_change(&mut self, focused: Option<NodeId>) {
         let now = self.screen.focused().or(self.screen.key_focus());
         if now != focused {
             self.engine
@@ -149,37 +172,9 @@ impl Headless {
                 self.send(old, EventKind::Blur, EventPayload::None);
             }
             if let Some(new) = now {
+                self.set_focused_state(new, true);
                 self.send(new, EventKind::Focus, EventPayload::None);
             }
-        }
-        if !self.tabs_to_views() {
-            return;
-        }
-        let mut key = self.screen.key_focus();
-        let mut to = None;
-        for item in &batch.items {
-            let MountItem::Command { id, command } = item else {
-                continue;
-            };
-            let id = *id;
-            match command {
-                Command::Focus if self.screen.input(id).is_some() => {
-                    to = None;
-                    key = None;
-                }
-                Command::Focus if id != ROOT_ID && self.screen.tab_stops().contains(&id) => {
-                    to = Some(Some(id));
-                    key = Some(id);
-                }
-                Command::Blur if id != ROOT_ID && key == Some(id) => {
-                    to = Some(None);
-                    key = None;
-                }
-                _ => {}
-            }
-        }
-        if let Some(to) = to {
-            self.move_focus(to);
         }
     }
 
