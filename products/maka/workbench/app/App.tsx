@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { delayed } from './delayed';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { applyLanguagePreference, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
@@ -84,6 +85,9 @@ function App() {
   const status = createText();
   const switching = signal(false);
   const busy = signal(false);
+  // Shown only when saving a draft or confirming an action takes a while, so a
+  // quick one does not flash the feedback row and move the page.
+  const working = delayed(() => switching() || busy());
   const controls = signal<any[]>([]);
   const controlsKnown = signal(false);
   const recovering = signal(false);
@@ -871,16 +875,7 @@ function App() {
                   );
                 }}
               </Each>
-              <If
-                when={
-                  error() ||
-                  status() ||
-                  switching() ||
-                  busy() ||
-                  !controlsKnown() ||
-                  controls().length
-                }
-              >
+              <If when={error() || status() || working() || !controlsKnown() || controls().length}>
                 <Scroll
                   accessibilityLabel={tr('Action feedback')}
                   style={{
@@ -895,7 +890,7 @@ function App() {
                       {error()}
                     </Text>
                   </If>
-                  <If when={switching() || busy()}>
+                  <If when={working()}>
                     <Text style={{ ...bodyTextStyle, color: C.muted }}>
                       {switching()
                         ? tr('Saving draft before switching…')
