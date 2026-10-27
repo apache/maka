@@ -750,7 +750,7 @@
     "third-party/nsh/crates/nsh-base/src/rich_editor/transform/transform.rs": "ed9b53bd4dcd1f775c89893c39c9a0e2ab3ffd264e69c1649bc76b4be6ff2159",
     "third-party/nsh/crates/nsh-base/src/rich_editor/view/controller.rs": "8249ba6e68da53c9a326287d6a169d4a9b3056c3c8285fbf9c5f4ecc098c48cf",
     "third-party/nsh/crates/nsh-base/src/rich_editor/view/geometry.rs": "eee606e0e4729a07e255372e40499eb59f594e631191e62cce2fa6f52b7a51aa",
-    "third-party/nsh/crates/nsh-base/src/rich_editor/view/geometry_handle.rs": "145f80cf6268545384c8c848447399a509aed29eee22309143d9dd8d32b36a6c",
+    "third-party/nsh/crates/nsh-base/src/rich_editor/view/geometry_handle.rs": "d6386309477204afbc24d318afc8c40fde2a315f2feaafb0cd612e53ddf56f15",
     "third-party/nsh/crates/nsh-base/src/rich_editor/view/keys.rs": "8521028ae9b42960b5e6e232d6531ff33395e0bf5530c921062ebaeae089def7",
     "third-party/nsh/crates/nsh-base/src/rich_editor/view/mod.rs": "5ed812529a854bab107f2e6be99fcb7801810972a6e4fc0bca4fb459150747fc",
     "third-party/nsh/crates/nsh-base/src/rich_editor/view/node_view.rs": "41117655d137a88e25503d989633bc001f311bb6ba0f0ca546543cbec01611d4",
