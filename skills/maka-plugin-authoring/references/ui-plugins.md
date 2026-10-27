@@ -76,7 +76,11 @@ export function activate(context) {
 }
 ```
 
-Root `render` receives `{ context, runtime, restored }`. The shared `runtime` exposes contributions, rendering and command invocation; the root chooses how to present them. Optional `prepareReload()` persists owned drafts and returns JSON before a shared VM reload; its JSON is supplied as `restored` on the next root mount. A root that needs no reload handoff can just provide `render`, as the local-state counter does.
+Root `render(props: UiRootProps)` receives `{ context, runtime, restored }`. The shared `runtime` exposes contributions, rendering and command invocation; the root chooses how to present them. The returned root implementation may also provide `prepareReload(): Promise<unknown>` to persist owned drafts and return JSON before the shared VM is replaced. A root that needs no reload handoff can just provide `render`, as the local-state counter does.
+
+The client pauses input before awaiting `prepareReload()`. Its JSON becomes `restored` only when the next root has the same instance identity, contribution ID and package ID; changing the package revision or configuration preserves that identity. A different root receives `null`. If preparation rejects before VM replacement, the old root remains and input resumes. A failure activating the new root is reported; it does not restore the previous root. Await durable saves in `prepareReload()` rather than relying on JavaScript cleanup callbacks during VM destruction.
+
+UI reload reuses the Client, operation journal and Host. Accepted Host work continues with its original operations and receipts, without replay by the new UI. The default Maka root saves its conversation draft before handing off; custom roots are responsible for their own drafts and private state.
 
 Contributions are `root`, `panel`, `command`, `settings` or `tool_renderer`. Panels and settings expose `render(props)`; commands expose `run({ sessionId })`. A tool renderer declares an exact `presentation` key and receives the already-read `arguments` or `result` value plus tool metadata. The workbench owns the tool card's status, disclosure and original-source access.
 
