@@ -1158,6 +1158,7 @@ mod tests {
             native_wire: None,
             native_host_operation: None,
             native_acquired: false,
+            native_acquired_turn: None,
             frame: None,
             refs: HashMap::new(),
             frames: frames::Frames::default(),

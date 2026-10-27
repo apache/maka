@@ -70,6 +70,22 @@ enum UserPreparation {
 }
 
 #[derive(Clone)]
+enum PreparedOperation {
+    Observed(NativeHostOperation),
+    Acquired {
+        operation: NativeHostOperation,
+        epoch: crate::desktop::NativeEpochId,
+    },
+}
+impl PreparedOperation {
+    fn context(&self) -> &NativeHostOperation {
+        match self {
+            Self::Observed(operation) | Self::Acquired { operation, .. } => operation,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct PreparationAcknowledgement {
     proof: NativeClaimPreparationProof,
     policy: Arc<NativePreparationPolicy>,
@@ -164,7 +180,7 @@ pub(super) struct ClaimState {
     lease_children: Option<LeaseChildScope>,
     focus_readiness: FocusReadiness,
     user_preparation: UserPreparation,
-    user_prepared_operation: Option<NativeHostOperation>,
+    user_prepared_operation: Option<PreparedOperation>,
     claim_preparation: ClaimPreparation,
     preparation_effects: PreparationEffects,
     metadata_attached: bool,
@@ -1502,6 +1518,57 @@ impl Host {
         Ok(())
     }
 
+    fn apply_user_preparation(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        browser: &BrowserIdentity,
+        target: Option<String>,
+        receipt: PreparedOperation,
+        tab: cua_driver_core::browser::NativeTabInfo,
+    ) -> Result<(), ToolError> {
+        let target =
+            target.ok_or_else(|| unknown("native preparation ACK lost its issued target"))?;
+        if tab.id.to_string() != target {
+            // Leave the original completion retained and its current
+            // Pending/Unknown custody untouched; this is not an ACK.
+            return Err(unknown("native preparation ACK changed its issued target"));
+        }
+        let generation = &provider
+            .native()
+            .ok_or_else(|| unknown("native preparation ACK lost its provider"))?
+            .identity()
+            .generation;
+        let identity = browser.tab(&target);
+        let lease = self
+            .tabs
+            .get(&identity)
+            .ok_or_else(|| unknown("native preparation ACK lost its reserved lease"))?;
+        if lease.creator.owner != owner
+            || lease.creator.provider != *provider
+            || &lease.creator.generation != generation
+            || lease.native.is_none()
+        {
+            return Err(unknown(
+                "native preparation ACK changed its reserved owner or custody",
+            ));
+        }
+        let sequence = match (&receipt, lease.native_sequence) {
+            (_, Some(sequence)) => Some(sequence),
+            (PreparedOperation::Acquired { .. }, None) => Some(self.allocate_native_sequence()?),
+            (PreparedOperation::Observed(_), None) => None,
+        };
+        let lease = self
+            .tabs
+            .get_mut(&identity)
+            .expect("validated reserved lease");
+        lease.native_sequence = sequence;
+        let state = lease.native.as_mut().expect("validated native custody");
+        state.user_preparation = UserPreparation::Completed;
+        state.user_prepared_operation = Some(receipt);
+        Ok(())
+    }
+
     fn apply_native_completion(
         &mut self,
         owner: uuid::Uuid,
@@ -1533,9 +1600,9 @@ impl Host {
             ));
         }
         let target = match operation {
-            NativeOperation::Attach { tab_id } | NativeOperation::PrepareUserTab { tab_id } => {
-                Some(tab_id.to_string())
-            }
+            NativeOperation::Attach { tab_id }
+            | NativeOperation::PrepareUserTab { tab_id }
+            | NativeOperation::PrepareSessionTab { tab_id } => Some(tab_id.to_string()),
             NativeOperation::Detach { claim, .. }
             | NativeOperation::CloseTab { claim, .. }
             | NativeOperation::PrepareClaim { claim, .. }
@@ -1723,29 +1790,34 @@ impl Host {
             }
             NativeRecoveredOperation::PopupRequested(_) => {}
             NativeRecoveredOperation::Prepared(prepared) => {
-                let target = target
-                    .ok_or_else(|| unknown("native preparation ACK lost its issued target"))?;
-                if prepared.tab.id.to_string() != target {
-                    // Leave the original completion retained and its current
-                    // Pending/Unknown custody untouched; this is not an ACK.
-                    return Err(unknown("native preparation ACK changed its issued target"));
-                }
-                let lease = self
-                    .tabs
-                    .get_mut(&browser.tab(&target))
-                    .ok_or_else(|| unknown("native preparation ACK lost its reserved lease"))?;
-                if lease.creator.owner != owner
-                    || lease.creator.provider != *provider
-                    || lease.creator.generation != native.identity().generation
-                {
-                    return Err(unknown("native preparation ACK changed its reserved owner"));
-                }
-                let state = lease
-                    .native
-                    .as_mut()
-                    .ok_or_else(|| unknown("native preparation ACK replaced native custody"))?;
-                state.user_preparation = UserPreparation::Completed;
-                state.user_prepared_operation = context.cloned();
+                let operation = context
+                    .cloned()
+                    .ok_or_else(|| unknown("native preparation ACK lost its Host operation"))?;
+                self.apply_user_preparation(
+                    owner,
+                    provider,
+                    &browser,
+                    target,
+                    PreparedOperation::Observed(operation),
+                    prepared.tab,
+                )?;
+            }
+            NativeRecoveredOperation::SessionPrepared(prepared) => {
+                let operation = context
+                    .cloned()
+                    .ok_or_else(|| unknown("native session ACK lost its Host operation"))?;
+                let epoch = call
+                    .as_ref()
+                    .ok_or_else(|| unknown("native session ACK lost its issued epoch"))?
+                    .epoch;
+                self.apply_user_preparation(
+                    owner,
+                    provider,
+                    &browser,
+                    target,
+                    PreparedOperation::Acquired { operation, epoch },
+                    prepared.tab,
+                )?;
             }
             NativeRecoveredOperation::Presentation(_) => {}
             NativeRecoveredOperation::Refused { message, .. }
@@ -2763,6 +2835,59 @@ impl Browsers {
         }
         Ok(json!(result))
     }
+    pub(super) async fn check_download_tab_lease(
+        &self,
+        handle: &str,
+        turn: &str,
+    ) -> Result<(), ToolError> {
+        let tab = self
+            .targets
+            .get(handle)
+            .ok_or_else(|| failed("stale_tab: bind it again"))?;
+        let Some(acquired) = tab.native_acquired_turn.as_deref() else {
+            return Ok(());
+        };
+        let selected = self
+            .providers(Some(tab.provider.id()))?
+            .pop()
+            .ok_or_else(|| failed("native download provider is unavailable"))?;
+        if selected != tab.provider
+            || selected.native().is_none_or(|native| {
+                native.is_closed() || native.identity().generation != tab.generation
+            })
+        {
+            return Err(failed(
+                "native download belongs to an old provider generation",
+            ));
+        }
+        if tab.provider.native().is_none() || acquired != turn {
+            return Ok(());
+        }
+        let identity = tab.identity()?;
+        let host = self.host().await;
+        let ledger = host.lock().await;
+        ledger.known(&identity.browser)?;
+        let current = ledger
+            .native
+            .get(&(self.owner, identity.browser.clone()))
+            .is_some_and(|state| {
+                state.current_turn.as_deref() == Some(turn) && state.retiring_turn.is_none()
+            });
+        let logical = ledger.tabs.get(&identity).is_some_and(|lease| {
+            lease.creator.owner == self.owner
+                && lease.creator.provider == tab.provider
+                && lease.creator.generation == tab.generation
+                && lease.creator.turn == turn
+                && matches!(lease.disposition, Disposition::Live)
+        });
+        if !current || !logical {
+            return Err(failed(
+                "stale_tab: native download has no current logical session lease",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) async fn claim_user_tab(
         &mut self,
         browser_id: &str,
@@ -3156,6 +3281,10 @@ impl Browsers {
         else {
             unreachable!()
         };
+        self.targets
+            .get_mut(&handle)
+            .expect("created tab is bound")
+            .native_acquired_turn = Some(invocation.turn().to_owned());
         Ok(BoundNativeCreated {
             response: bound,
             handle,
@@ -3773,6 +3902,223 @@ impl Tab {
         check_input(cancellation)
     }
 
+    async fn authorize_native_download_path(
+        &mut self,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        let native = self
+            .provider
+            .native()
+            .cloned()
+            .ok_or_else(|| failed("native provider required"))?;
+        if native.is_closed() || native.identity().generation != self.generation {
+            return Err(failed(
+                "native download tab belongs to an old provider generation",
+            ));
+        }
+        let acquired = self
+            .native_acquired_turn
+            .as_deref()
+            .ok_or_else(|| failed("native download has no acknowledged acquisition"))?;
+        let mut reclaim = acquired != invocation.turn();
+        let capabilities = native.capabilities().map_err(provider::native_error)?;
+        if !capabilities.session_tab_resolution || (reclaim && !capabilities.session_committed_url)
+        {
+            return Err(failed(
+                "native adapter lacks purpose-bound session tab metadata",
+            ));
+        }
+        let host = self.cursor_host.clone();
+        register(&host, self.cursor_owner, &self.provider).await?;
+        let identity = self.identity()?;
+        let scope = {
+            let mut ledger = host.lock().await;
+            if ledger
+                .reconcile_provider(self.cursor_owner, &self.provider)
+                .await?
+            {
+                return Err(ToolError::CleanupUnconfirmed(
+                    "native provider has an unsettled mutation; download reclaim was not replayed"
+                        .into(),
+                ));
+            }
+            ledger.native_reserve(
+                self.cursor_owner,
+                &self.provider,
+                invocation.turn(),
+                &self.info.id,
+                Origin::UserClaimed,
+            )?;
+            ledger.native_context(
+                self.cursor_owner,
+                &self.provider,
+                operation(invocation)?,
+                self.cursor_epoch,
+                Origin::UserClaimed,
+                Some(self.info.id.clone()),
+                true,
+            )?
+        };
+        let preparation = scope
+            .authorize_preparation(
+                &host,
+                invocation,
+                crate::BrowserPreparationTarget::ReservedTab {
+                    tab_id: self.info.id.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        let recovered_acquisition = {
+            let ledger = host.lock().await;
+            ledger.native_preparation_current(&scope, &preparation)?;
+            ledger
+                .tabs
+                .get(&identity)
+                .and_then(|lease| lease.native.as_ref())
+                .and_then(|state| state.user_prepared_operation.as_ref())
+                .is_some_and(|receipt| {
+                    matches!(receipt,
+                    PreparedOperation::Acquired { operation, epoch }
+                        if operation.turn_id == invocation.turn() && *epoch == self.cursor_epoch)
+                })
+        };
+        if recovered_acquisition {
+            // Adopt the actual late ACK folded by reconcile, without replaying
+            // its already completed acquisition or treating metadata as proof.
+            self.native_acquired_turn = Some(invocation.turn().to_owned());
+            reclaim = false;
+        }
+        if reclaim {
+            // This observation may activate the native logical session. Its
+            // bounded preparation admission is not a document or Site grant.
+            scope
+                .check_preparation(&host, invocation, &preparation, cancellation)
+                .await?;
+            let url = scope
+                .dispatch(scope.control.committed_session_tab_url(&self.info.id))
+                .await;
+            let url = self.session_path_result(&host, url).await?;
+            if !is_new_tab(url.as_str()) {
+                validate_url(url.as_str())?;
+            }
+            let raw_id = self.info.id.parse().map_err(failed)?;
+            scope
+                .check_preparation(&host, invocation, &preparation, cancellation)
+                .await?;
+            {
+                let mut ledger = host.lock().await;
+                check_input(cancellation)?;
+                ledger.native_preparation_current(&scope, &preparation)?;
+                let state = ledger
+                    .tabs
+                    .get_mut(&identity)
+                    .and_then(|lease| lease.native.as_mut())
+                    .ok_or_else(|| unknown("native reclaim lost its reserved custody"))?;
+                match &state.user_preparation {
+                    UserPreparation::Pending => {
+                        return Err(ToolError::CleanupUnconfirmed(
+                            "native reclaim remains unsettled; it was not replayed".into(),
+                        ));
+                    }
+                    UserPreparation::Unknown(reason) => return Err(unknown(reason)),
+                    UserPreparation::NotAttempted | UserPreparation::Completed => {}
+                }
+                state.user_preparation = UserPreparation::Pending;
+            }
+            let prepared = scope
+                .dispatch(scope.control.prepare_session_tab(raw_id))
+                .await;
+            host.lock()
+                .await
+                .reconcile_provider(self.cursor_owner, &self.provider)
+                .await?;
+            match prepared {
+                Ok(prepared) => {
+                    if prepared.tab.id.to_string() != self.info.id {
+                        return Err(unknown("native reclaim ACK changed its reserved target"));
+                    }
+                    // The receipt is acquisition history only. Its tab snapshot
+                    // may precede native hooks; read current metadata separately.
+                    self.native_acquired_turn = Some(invocation.turn().to_owned());
+                    self.origin_proof = None;
+                    if let Some(state) = host
+                        .lock()
+                        .await
+                        .native
+                        .get_mut(&(self.cursor_owner, identity.browser.clone()))
+                    {
+                        state.logical_active = Some(self.info.id.clone());
+                    }
+                }
+                Err(error) => {
+                    host.lock()
+                        .await
+                        .native_preparation_failed(&identity, &error);
+                    return Err(provider::native_error(error));
+                }
+            }
+        }
+        self.refresh_download_session(&host, &scope, &preparation, invocation, cancellation)
+            .await?;
+        let source = self
+            .authorize_download_source(invocation, cancellation)
+            .await?;
+        self.refresh_download_session(&host, &scope, &preparation, invocation, cancellation)
+            .await?;
+        self.check_download_source(&source, invocation, cancellation)
+            .await
+    }
+
+    async fn session_path_result<T>(
+        &self,
+        host: &Arc<tokio::sync::Mutex<Host>>,
+        result: Result<T, cua_driver_core::browser::NativeProviderError>,
+    ) -> Result<T, ToolError> {
+        if let Err(cua_driver_core::browser::NativeProviderError::OutcomeUnknown { .. }) = &result
+            && let Some(state) = host
+                .lock()
+                .await
+                .tabs
+                .get_mut(&self.identity()?)
+                .and_then(|lease| lease.native.as_mut())
+        {
+            // A nonretained metadata transaction may still activate the
+            // Original session. Preserve its independent sticky uncertainty.
+            state.unknown =
+                Some("native session metadata activation has an unknown outcome".into());
+        }
+        result.map_err(provider::native_error)
+    }
+
+    async fn refresh_download_session(
+        &mut self,
+        host: &Arc<tokio::sync::Mutex<Host>>,
+        scope: &CallScope,
+        preparation: &crate::BrowserSessionPreparation,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        scope
+            .check_preparation(host, invocation, preparation, cancellation)
+            .await?;
+        let observed = scope
+            .dispatch(scope.control.resolve_session_tab(&self.info.id))
+            .await;
+        let observed = self.session_path_result(host, observed).await?;
+        // A filtered/missing session inventory result is not proof that the
+        // physical tab closed, and never triggers a global inventory fallback.
+        if observed.id.to_string() != self.info.id {
+            return Err(unknown("native session metadata changed its issued target"));
+        }
+        scope
+            .check_preparation(host, invocation, preparation, cancellation)
+            .await?;
+        self.info = provider::native_tab(observed);
+        Ok(())
+    }
+
     /// Acquire the existing native session transport under its bounded Host
     /// purpose. This installs no Host content attachment or focus/overlay.
     pub(super) async fn prepare_native_session(
@@ -3864,7 +4210,11 @@ impl Tab {
                 applied.map_err(provider::native_error)?;
             }
         }
-        let user_prepared = prior.user_prepared_operation.as_ref() == Some(&context);
+        let user_prepared = prior
+            .user_prepared_operation
+            .as_ref()
+            .map(PreparedOperation::context)
+            == Some(&context);
         let needs_user_preparation = !already_prepared
             && !user_prepared
             && (!matches!(prior.user_preparation, UserPreparation::Completed)
@@ -3971,6 +4321,7 @@ impl Tab {
         );
         self.native_host_operation = Some(context.clone());
         self.native_acquired = true;
+        self.native_acquired_turn = Some(invocation.turn().to_owned());
         if let Some(socket) = &mut self.socket {
             socket.native_context = self.native_wire.clone();
         }
@@ -3982,6 +4333,10 @@ impl Tab {
                 .get_mut(&identity)
                 .and_then(|lease| lease.native.as_mut())
                 .ok_or_else(|| unknown("native preparation lost its known receipt"))?;
+            state.user_prepared_operation = Some(PreparedOperation::Acquired {
+                operation: context.clone(),
+                epoch: self.cursor_epoch,
+            });
             state.session_prepared_operation = Some(context);
             if changes_logical_active
                 && let Some(state) = ledger

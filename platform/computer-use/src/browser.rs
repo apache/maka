@@ -25,6 +25,7 @@ use maka_capabilities::computer::BrowserConnection;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, time::Duration};
+use tokio_util::sync::CancellationToken;
 mod ax;
 mod clipboard_bridge;
 mod cursor;
@@ -98,6 +99,8 @@ struct Tab {
     native_wire: Option<cua_driver_core::browser::NativeWireContext>,
     native_host_operation: Option<cua_driver_core::browser::NativeHostOperation>,
     native_acquired: bool,
+    // Set only by an acknowledged logical acquisition, never metadata use.
+    native_acquired_turn: Option<String>,
     frame: Option<String>,
     refs: HashMap<u64, ElementRef>,
     frames: frames::Frames,
@@ -765,6 +768,10 @@ impl Browsers {
                 download_id,
                 options: _,
             } => {
+                // Check actual acquisition history before use_tab can update
+                // the logical lease's recorded turn.
+                self.check_download_tab_lease(&handle, invocation.turn())
+                    .await?;
                 let identity = self
                     .targets
                     .get(&handle)
@@ -776,20 +783,8 @@ impl Browsers {
                     .get_mut(&handle)
                     .expect("checked browser handle");
                 tab.last_turn = turn.to_owned();
-                // A filename remains provider metadata, but the public Download
-                // object still belongs to its original currently available tab.
-                // Do not prepare page content or attach a debugger for this lookup.
-                tab.refresh_info(language).await?;
-                invocation
-                    .authorize_browser(
-                        crate::BrowserAccess::Metadata {
-                            document: tab.document(),
-                        },
-                        cancellation,
-                    )
+                tab.authorize_download_path(invocation, cancellation, language)
                     .await?;
-                tab.refresh_info(language).await?;
-                check_input(cancellation)?;
                 self.host()
                     .await
                     .lock()
@@ -1280,6 +1275,7 @@ impl Browsers {
                     native_wire: None,
                     native_host_operation: None,
                     native_acquired: false,
+                    native_acquired_turn: None,
                     frame: None,
                     refs: HashMap::new(),
                     ax: ax::Projection::default(),
@@ -1932,6 +1928,91 @@ impl Tab {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
+    async fn authorize_download_path(
+        &mut self,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<(), ToolError> {
+        if self.provider.native().is_some() && self.native_acquired_turn.is_some() {
+            return self
+                .authorize_native_download_path(invocation, cancellation)
+                .await;
+        }
+        self.refresh_info(language).await?;
+        let source = self
+            .authorize_download_source(invocation, cancellation)
+            .await?;
+        self.refresh_info(language).await?;
+        self.check_download_source(&source, invocation, cancellation)
+            .await
+    }
+
+    async fn authorize_download_source(
+        &self,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::BrowserDocument, ToolError> {
+        let source = self.document();
+        invocation
+            .authorize_browser(
+                crate::BrowserAccess::Metadata {
+                    document: source.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        validate_url(&source.url)?;
+        // Download.path's public policy uses the current URL. This does not
+        // grant content on an inherited about:blank or invent its effective Origin.
+        if source.url != "about:blank" {
+            invocation
+                .authorize_browser(
+                    crate::BrowserAccess::Read {
+                        document: source.clone(),
+                    },
+                    cancellation,
+                )
+                .await?;
+        }
+        Ok(source)
+    }
+
+    async fn check_download_source(
+        &self,
+        source: &crate::BrowserDocument,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        if self.document() != *source {
+            return Err(failed(
+                "download source URL or target changed during path authorization; retry the lookup",
+            ));
+        }
+        let authorization = invocation
+            .browser_authorization()
+            .ok_or_else(|| failed("download path requires current Host authorization"))?;
+        authorization
+            .check(
+                crate::BrowserAccess::Metadata {
+                    document: source.clone(),
+                },
+                cancellation.clone(),
+            )
+            .await?;
+        if source.url != "about:blank" {
+            authorization
+                .check(
+                    crate::BrowserAccess::Read {
+                        document: source.clone(),
+                    },
+                    cancellation.clone(),
+                )
+                .await?;
+        }
+        check_input(cancellation)
+    }
+
     async fn refresh_info(&mut self, language: Language) -> Result<(), ToolError> {
         let (generation, tabs) = match self.provider.native() {
             Some(native) => {
@@ -2788,6 +2869,212 @@ mod tests {
                 .unwrap();
         }
         paths
+    }
+
+    struct PathPolicyFixture {
+        site_allowed: bool,
+        accesses: Arc<Mutex<Vec<crate::BrowserAccess>>>,
+    }
+    impl crate::BrowserAuthorization for PathPolicyFixture {
+        fn authorize(
+            &self,
+            access: crate::BrowserAccess,
+            _: CancellationToken,
+        ) -> crate::AuthorizationFuture {
+            let allowed = match &access {
+                crate::BrowserAccess::Metadata { .. } => true,
+                crate::BrowserAccess::Read { .. } => self.site_allowed,
+                _ => false,
+            };
+            self.accesses.lock().unwrap().push(access);
+            Box::pin(async move {
+                if allowed {
+                    Ok(())
+                } else {
+                    Err(failed("fixture current URL policy denied"))
+                }
+            })
+        }
+        fn check(
+            &self,
+            access: crate::BrowserAccess,
+            cancellation: CancellationToken,
+        ) -> crate::AuthorizationFuture {
+            self.authorize(access, cancellation)
+        }
+    }
+
+    #[tokio::test]
+    async fn download_path_checks_url_site_policy_without_connecting_to_page_content() {
+        for (url, site_allowed, succeeds, inventories, reads) in [
+            ("https://source.example/file", false, false, 2, 1),
+            ("https://source.example/file", true, true, 3, 2),
+            ("about:blank", false, true, 3, 0),
+            ("data:text/plain,source", true, false, 2, 0),
+            ("blob:https://source.example/id", true, false, 2, 0),
+            ("file:///tmp/maka-download-source.html", true, false, 2, 0),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let tabs = [json!({
+                    "id":"page", "title":"Download source", "url":url,
+                    "type":"page",
+                    "webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page")
+                })];
+                let mut paths = Vec::new();
+                for _ in 0..inventories {
+                    paths.extend(serve_inventory(&listener, &tabs).await);
+                }
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(30), listener.accept())
+                        .await
+                        .is_err(),
+                    "filename preflight must not connect to page CDP or fetch content"
+                );
+                paths
+            });
+            let accesses = Arc::new(Mutex::new(Vec::new()));
+            let context = crate::InvocationContext::new("fixture", "turn")
+                .with_browser_authorization(Arc::new(PathPolicyFixture {
+                    site_allowed,
+                    accesses: accesses.clone(),
+                }));
+            let mut browsers = Browsers::default();
+            browsers
+                .configure(
+                    vec![BrowserConnection {
+                        id: "fixture".into(),
+                        endpoint: format!("http://{address}"),
+                    }],
+                    Language::En,
+                )
+                .unwrap();
+            let cancellation = CancellationToken::new();
+            let bound = browsers
+                .invoke(
+                    Command::BrowserTab {
+                        browser_id: "fixture".into(),
+                        reference: BrowserTabReference::Existing("page".into()),
+                    },
+                    &context,
+                    &crate::cursor::Spec::default(),
+                    &cancellation,
+                    Language::En,
+                )
+                .await
+                .unwrap();
+            let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap()
+            else {
+                unreachable!()
+            };
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                browsers
+                    .targets
+                    .get_mut(&handle)
+                    .unwrap()
+                    .authorize_download_path(&context, &cancellation, Language::En),
+            )
+            .await
+            .expect("finite metadata preflight");
+            assert_eq!(result.is_ok(), succeeds, "{url}: {result:?}");
+            {
+                let accesses = accesses.lock().unwrap();
+                assert_eq!(
+                    accesses
+                        .iter()
+                        .filter(|access| matches!(access, crate::BrowserAccess::Read { .. }))
+                        .count(),
+                    reads,
+                    "only the HTTP(S) current URL uses site consent: {url}"
+                );
+                assert!(accesses.iter().all(|access| matches!(
+                    access,
+                    crate::BrowserAccess::Metadata { .. } | crate::BrowserAccess::Read { .. }
+                )));
+            }
+            assert_eq!(server.await.unwrap().len(), inventories * 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn download_path_rechecks_actual_target_url_after_host_consent() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let before = [json!({
+                "id":"page", "title":"Before", "url":"https://source.example/",
+                "type":"page"
+            })];
+            let after = [json!({
+                "id":"page", "title":"After", "url":"https://replacement.example/",
+                "type":"page"
+            })];
+            let mut paths = serve_inventory(&listener, &before).await;
+            paths.extend(serve_inventory(&listener, &before).await);
+            paths.extend(serve_inventory(&listener, &after).await);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), listener.accept())
+                    .await
+                    .is_err(),
+                "replacement URL must be rejected before any page connection"
+            );
+            paths
+        });
+        let mut browsers = Browsers::default();
+        browsers
+            .configure(
+                vec![BrowserConnection {
+                    id: "fixture".into(),
+                    endpoint: format!("http://{address}"),
+                }],
+                Language::En,
+            )
+            .unwrap();
+        let (context, accesses) = decision_context(true);
+        let cancellation = CancellationToken::new();
+        let bound = browsers
+            .invoke(
+                Command::BrowserTab {
+                    browser_id: "fixture".into(),
+                    reference: BrowserTabReference::Existing("page".into()),
+                },
+                &context,
+                &crate::cursor::Spec::default(),
+                &cancellation,
+                Language::En,
+            )
+            .await
+            .unwrap();
+        let Handle::Tab(handle) = serde_json::from_value(bound["handle"].clone()).unwrap() else {
+            unreachable!()
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            browsers
+                .targets
+                .get_mut(&handle)
+                .unwrap()
+                .authorize_download_path(&context, &cancellation, Language::En),
+        )
+        .await
+        .expect("finite replacement metadata preflight");
+        assert!(matches!(result, Err(ToolError::Failed(message))
+            if message == "download source URL or target changed during path authorization; retry the lookup"));
+        {
+            let accesses = accesses.lock().unwrap();
+            assert_eq!(
+                accesses.len(),
+                3,
+                "no final approval/check for replacement URL"
+            );
+            assert!(
+                matches!(&accesses[2], crate::BrowserAccess::Read { document }
+                if document.url == "https://source.example/")
+            );
+        }
+        assert_eq!(server.await.unwrap().len(), 6);
     }
 
     #[tokio::test]
