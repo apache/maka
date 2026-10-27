@@ -1766,7 +1766,6 @@ impl Tab {
         claim_intent: native::ClaimIntent,
     ) -> Result<(), ToolError> {
         self.refresh_info(language).await?;
-        let mut document = self.document();
         if let Some(url) = navigation {
             self.navigation_admission = None;
             validate_url(url)?;
@@ -1774,7 +1773,7 @@ impl Tab {
             // document replacement during consent cannot evade the source fence.
             self.prepare_origin_transport(invocation, cancellation, language, claim_intent)
                 .await?;
-            document = self.document();
+            let document = self.document();
             let source = self.document_identity().await?;
             invocation
                 .authorize_browser(
@@ -1805,7 +1804,7 @@ impl Tab {
         // authorized by a prior URL's site consent.
         self.prepare_origin_transport(invocation, cancellation, language, claim_intent)
             .await?;
-        document = self.document();
+        let document = self.document();
         let proof = self.document_origin().await?;
         let access = proof.access();
         invocation

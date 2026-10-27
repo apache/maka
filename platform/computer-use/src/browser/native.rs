@@ -3902,7 +3902,7 @@ impl Tab {
         check_input(cancellation)
     }
 
-    async fn authorize_native_download_path(
+    pub(super) async fn authorize_native_download_path(
         &mut self,
         invocation: &crate::InvocationContext<'_>,
         cancellation: &CancellationToken,
