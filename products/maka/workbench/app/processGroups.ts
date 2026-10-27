@@ -55,6 +55,8 @@ export type MessageEntry = {
   key: string;
   rowId: string;
   processTurnId?: string;
+  /** How many identical failures in a row this entry stands for, when more than one. */
+  repeats?: number;
 };
 export type ProcessEntry = ProcessGroup | MessageEntry;
 export type TurnPresentation = {
@@ -267,6 +269,20 @@ export function projectProcessGroups(input: {
       body || row.role === 'user' || row.role === 'failure' || row.role === 'compaction';
     if (!row.turnId || outside) {
       flush(true);
+      // A provider that keeps refusing (a rate limit, an overload) fails each retry
+      // with the same text; show the run once with its count.
+      const last = entries.at(-1);
+      const lastRow = last?.kind === 'message' ? rowsById.get(last.rowId) : undefined;
+      if (
+        row.role === 'failure' &&
+        last?.kind === 'message' &&
+        lastRow?.role === 'failure' &&
+        lastRow.turnId === row.turnId &&
+        lastRow.text === row.text
+      ) {
+        last.repeats = (last.repeats ?? 1) + 1;
+        continue;
+      }
       const message: MessageEntry = { kind: 'message', key: position.rowId, rowId: position.rowId };
       if (row.turnId) {
         if (row.role === 'user' && progressed.has(row.turnId))

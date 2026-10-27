@@ -357,7 +357,7 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
-    | { kind: 'row'; key: string; rowId: string };
+    | { kind: 'row'; key: string; rowId: string; repeats?: number };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -367,7 +367,10 @@ export function Conversation(props: ConversationProps) {
       const turn = turnId ? projection().turns.get(turnId) : undefined;
       if (
         turn &&
-        (entry.kind === 'process' || row?.role === 'assistant') &&
+        (entry.kind === 'process' ||
+          row?.role === 'assistant' ||
+          // Recovered failures sit under the summary that folds them.
+          (row?.role === 'failure' && turnOutcome(turn) === 'completed')) &&
         !summaries.has(turn.turnId) &&
         turnOutcome(turn) !== null
       ) {
@@ -383,6 +386,9 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
+        // A completed turn recovered from its failures (retries that later
+        // succeeded); they fold away with the rest of its work.
+        if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
         if (
           reading() === 'trajectory' &&
           (row.role === 'user' ||
@@ -391,7 +397,7 @@ export function Conversation(props: ConversationProps) {
             (!row.turnId && row.role !== 'failure'))
         )
           continue;
-        result.push({ kind: 'row', key: entry.key, rowId: entry.rowId });
+        result.push({ kind: 'row', key: entry.key, rowId: entry.rowId, repeats: entry.repeats });
       }
     }
     return result;
@@ -2280,6 +2286,10 @@ export function Conversation(props: ConversationProps) {
                   return (
                     <MessageRow
                       item={row}
+                      repeats={() => {
+                        const item = displayByKey().get(initial.rowId);
+                        return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
+                      }}
                       toolMaxHeight={() => readingSize().height}
                       ownerKey={() => initial.rowId}
                       viewState={rowState(initial.rowId)}

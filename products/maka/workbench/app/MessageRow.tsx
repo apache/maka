@@ -46,6 +46,7 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  repeats,
   sessionId,
   through,
   viewState,
@@ -59,6 +60,8 @@ export function MessageRow({
   finalActions,
 }: {
   item: () => Row;
+  /** How many identical failures this row stands for. */
+  repeats?: () => number;
   sessionId: string;
   through: () => number;
   viewState?: MessageViewState;
@@ -78,6 +81,22 @@ export function MessageRow({
         if (row().role === 'compaction')
           return (
             <CompactionDivider state="completed" durationMs={() => row().compaction!.durationMs} />
+          );
+        // A failure is a notice about the run, not an answer: one quiet line, with
+        // no source view since its source is the same text.
+        if (row().role === 'failure')
+          return (
+            <Text
+              style={[
+                { ...secondaryTextStyle, color: C.warning, paddingVertical: 4 },
+                { userSelect: 'text' },
+              ]}
+            >
+              {row().text}
+              {(repeats?.() ?? 1) > 1
+                ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
+                : ''}
+            </Text>
           );
         const expanded = viewState?.expanded ?? signal(false),
           sourceMode = viewState?.sourceMode ?? signal(false);
