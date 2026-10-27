@@ -1408,6 +1408,7 @@ pub struct Window {
     pub(crate) handle: AnyWindowHandle,
     pub(crate) invalidator: WindowInvalidator,
     pub(crate) removed: bool,
+    title: Option<SharedString>,
     pub(crate) platform_window: Box<dyn PlatformWindow>,
     pub(crate) display_id: Option<DisplayId>,
     pub(crate) display_observers: SubscriberSet<(), AnyObserver>,
@@ -2436,11 +2437,8 @@ impl Window {
             inspector: None,
             #[cfg(feature = "profiler")]
             debug_frame_overlay: crate::debug_overlay::DebugFrameOverlay::new(),
-            a11y: A11y::new(
-                a11y_active_flag,
-                accessibility_force_disabled,
-                initial_window_title,
-            ),
+            title: initial_window_title,
+            a11y: A11y::new(a11y_active_flag, accessibility_force_disabled),
         })
     }
 
@@ -3355,8 +3353,8 @@ impl Window {
 
     /// Updates the window's title at the platform level.
     pub fn set_window_title(&mut self, title: &str) {
+        self.title = Some(title.to_owned().into());
         self.platform_window.set_title(title);
-        self.a11y.set_window_title(title.to_string());
     }
 
     /// Sets the position of the macOS traffic light buttons.
@@ -4032,7 +4030,7 @@ impl Window {
 
         self.a11y.sync_active_flag();
         if self.a11y.is_active() {
-            self.a11y.begin_frame();
+            self.a11y.begin_frame(self.title.as_ref());
         }
 
         let _inspector_width: Pixels = rems(30.0).to_pixels(self.rem_size());
@@ -4153,7 +4151,7 @@ impl Window {
                 tab_stop_count: self.next_frame.tab_stops.tab_stop_count(),
             };
             // clear the builder state regardless
-            let tree_update = self.a11y.end_frame(frame_info);
+            let tree_update = self.a11y.end_frame(frame_info, self.title.as_ref());
 
             if should_send_a11y_update {
                 log::debug!(
@@ -7807,10 +7805,12 @@ impl Window {
             .titlebar_double_click(self.is_resizable, self.is_minimizable);
     }
 
-    /// Gets the window's title at the platform level.
-    /// This is macOS specific.
+    /// Returns the window's title, including changes made with [`Self::set_window_title`].
     pub fn window_title(&self) -> String {
-        self.platform_window.get_title()
+        self.title
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default()
     }
 
     /// Returns a list of all tabbed windows and their titles.

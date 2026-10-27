@@ -156,6 +156,8 @@ pub(crate) struct Surface {
     /// The app's appearance (`nsh.json`, `setColorScheme`): the color
     /// scheme is the system's resolved with it ([`crate::system`]).
     pub(crate) appearance: Cell<nsh_core::platform::Appearance>,
+    /// The embedding options' initial appearance, restored for each app load.
+    pub(crate) initial_appearance: Cell<nsh_core::platform::Appearance>,
     /// JS asked for a display frame.
     js_frame: Cell<bool>,
     /// Extra frame clients (transitions, glides, spinners): called on every
@@ -241,6 +243,7 @@ impl Surface {
             input_hovered: Cell::new(false),
             environment: Cell::new(environment),
             appearance: Cell::default(),
+            initial_appearance: Cell::default(),
             js_frame: Cell::new(false),
             frame_clients: RefCell::default(),
             #[cfg(feature = "dev")]
@@ -372,6 +375,7 @@ impl Surface {
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
         self.rx.borrow_mut().take();
+        crate::chrome::clear(self);
         self.focus_returns.borrow_mut().clear();
         self.pending_auto_focus.borrow_mut().take();
         self.mounter.borrow_mut().clear();

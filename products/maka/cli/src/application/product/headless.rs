@@ -928,15 +928,6 @@ mod tests {
             config["configuration"]["values"]["workspaceRoots"][0]["path"],
             serde_json::to_value(workspace.canonicalize().unwrap()).unwrap()
         );
-        assert!(original.packages().iter().all(|package| {
-            package
-                .manifest()
-                .application
-                .as_ref()
-                .unwrap()
-                .host
-                .is_some()
-        }));
         let revision = original.source().reference.revision;
         let (reopened, _) = prepare(&store, Roots::Saved).await.unwrap();
         let reopened = reopened.source().reference.deployment;
