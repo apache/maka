@@ -1054,7 +1054,7 @@
     "third-party/nsh/crates/nsh-engine/tests/engine/components.rs": "3581fb9fabbe9f40f07383fdf51429ff0f464c8f3f7479322c596e30f793497f",
     "third-party/nsh/crates/nsh-engine/tests/engine/counter.rs": "74be45e59cabdf58a9131bca87597aca51946c98266a654c382c45fcc3486e17",
     "third-party/nsh/crates/nsh-engine/tests/engine/errors.rs": "0bc82cbe6054777dc5b627a1b1a3449b3f85488914a5503e8d3c95feb63bd79c",
-    "third-party/nsh/crates/nsh-engine/tests/engine/external_wake.rs": "ea030d8c7893ca8814e5ed2f3f38952f6bfcf31a6316f6043f3357e843634b8f",
+    "third-party/nsh/crates/nsh-engine/tests/engine/external_wake.rs": "ab325f1e07c45d6f1aa8030b2049d7b4417bea08dadffdd8b6e5519e52647d16",
     "third-party/nsh/crates/nsh-engine/tests/engine/fetch.rs": "f22a160981ef3dbe6404c52019c5687cb32cbdcb3061e8eb781e624354cd06ae",
     "third-party/nsh/crates/nsh-engine/tests/engine/focus.rs": "e94b35caaf073ea39ed9cfd1a7bf3b3c5fb42832cef476bb011eab67aece7801",
     "third-party/nsh/crates/nsh-engine/tests/engine/fs.rs": "e789756808bdf1586ba20c3ba7edec554f00cbc6412c1f8635ce43dcbbe122bb",
