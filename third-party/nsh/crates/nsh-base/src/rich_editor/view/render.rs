@@ -1162,13 +1162,19 @@ fn sink(rv: Rv) -> impl IntoElement {
         .top(move || Length::from(at.get().y))
         .w(px(1.0))
         .h(px(16.0))
-        .pointer_events(PointerEvents::None)
+        .pointer_events(if is_terminal() {
+            PointerEvents::BoxNone
+        } else {
+            PointerEvents::None
+        })
         .p_0()
         .border(px(0.0))
         .bg(AdaptiveColor::TRANSPARENT)
         .text_color(AdaptiveColor::TRANSPARENT)
         .caret(false)
         .multiline(true)
+        // The terminal applies native autofocus after the sink is attached.
+        .auto_focus(move || is_terminal() && props.auto_focus.get())
         .auto_correct(false)
         .auto_capitalize(AutoCapitalize::None)
         .paste_behavior(PasteBehavior::Report)

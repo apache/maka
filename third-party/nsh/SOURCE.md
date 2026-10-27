@@ -86,8 +86,10 @@ retire its session subscription before dropping the geometry payload, and keep
 host-specific keyboard conventions and explicit event policy. Plot stationary
 geometry refresh also supports horizontal Bar bands without duplicate hover
 notifications. Headless view focus commands follow mount-item order so later
-blur and retirement decisions observe the current owner. These are local quality
-adaptations, not upstream import bytes.
+blur and retirement decisions observe the current owner. The RichEditor terminal
+sink uses the same leaf `BoxNone` and native post-mount `autoFocus` approach as
+the code Editor; graphical backends and existing focus admission checks are not
+weakened. These are local quality adaptations, not upstream import bytes.
 
 The trailing-whitespace measurement integration preserves `TextEngine::measure_canvas`
 for platform-specific advances (including the terminal font catalog), while

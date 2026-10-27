@@ -1746,6 +1746,125 @@ mod tests {
         }
     }
 
+    #[component]
+    fn RichEditorFocusProbe() -> impl IntoElement {
+        use nsh_base::rich_editor::{
+            extensions::starter,
+            state::{EditorState, EditorStateConfig},
+            view::{EditorSession, NodeViews, RichEditorChange, rich_editor},
+        };
+
+        let state = EditorState::create(EditorStateConfig::new(starter::schema())).unwrap();
+        let session = EditorSession::new(state, NodeViews::default());
+        let changed = session.clone();
+        let value = signal(String::new());
+        let focused = signal(false);
+        view()
+            .flex_col()
+            .child(
+                rich_editor()
+                    .editor(session)
+                    .accessibility_label("Focus probe input")
+                    .auto_focus(true)
+                    .w(px(400.0))
+                    .h(px(160.0))
+                    .on_focus(move || focused.set(true))
+                    .on_change(move |_: &RichEditorChange| {
+                        value.set(changed.state().doc().text_content());
+                    }),
+            )
+            .child(text(move || {
+                format!("Probe focused:{} value:{}", focused.get(), value.get())
+            }))
+    }
+
+    #[test]
+    fn rich_editor_autofocus_reaches_its_native_sink_like_an_ordinary_input() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use nsh_core::ViewKind;
+
+        fn settle(view: &mut AppView) {
+            view.poll().unwrap();
+            let (tx, rx) = mpsc::channel();
+            view.control()
+                .unwrap()
+                .advance_clock(Duration::ZERO, move || tx.send(()).unwrap());
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            view.poll().unwrap();
+        }
+        fn wait(view: &mut AppView, ready: impl Fn(&AppView) -> bool, stage: &str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                settle(view);
+                if ready(view) {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{stage}: focused={:?}, error={:?}\n{}",
+                    view.surface().focused(),
+                    view.last_error(),
+                    view.snapshot()
+                );
+            }
+        }
+        for editor in [false, true] {
+            let app: App = if editor {
+                Root::of::<RichEditorFocusProbe>().into()
+            } else {
+                Root::of::<PlainInputFocusProbe>().into()
+            };
+            let mut view = AppView::new(AppOptions::default());
+            view.load(app).unwrap();
+            let sink = |view: &AppView| {
+                view.accessibility_snapshot()
+                    .into_iter()
+                    .find(|node| {
+                        node.label == "Focus probe input"
+                            && view
+                                .surface()
+                                .node(node.id)
+                                .is_some_and(|n| n.kind == ViewKind::Input)
+                    })
+                    .map(|node| node.id)
+            };
+            // Readiness comes from the real mounted Input and rendered callback state,
+            // not a guessed frame count, direct Surface focus assignment or a click.
+            wait(
+                &mut view,
+                |view| sink(view).is_some() && view.snapshot().contains("Probe focused:"),
+                "probe did not mount",
+            );
+            let id = sink(&view).unwrap();
+            wait(
+                &mut view,
+                |view| {
+                    view.surface().focused() == Some(id)
+                        && view.snapshot().contains("Probe focused:true")
+                },
+                if editor {
+                    "RichEditor autofocus did not reach its native sink"
+                } else {
+                    "ordinary Input control autofocus failed"
+                },
+            );
+            view.handle_event(crossterm::event::Event::Key(KeyEvent::new(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            )));
+            wait(
+                &mut view,
+                |view| view.snapshot().contains("Probe focused:true value:x"),
+                if editor {
+                    "RichEditor did not receive native typing"
+                } else {
+                    "ordinary Input control did not receive native typing"
+                },
+            );
+            view.stop();
+        }
+    }
+
     #[cfg(feature = "js")]
     #[class]
     struct ScopedHost {
