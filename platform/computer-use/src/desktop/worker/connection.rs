@@ -19,10 +19,12 @@
 
 //! One connection retains each original request and its authorization until settlement.
 
-use super::callbacks::{ParentCallbacks, ParentCapabilities, ScopeIdentity, WorkerMessage};
+use super::callbacks::{
+    CallbackFault, ParentCallbacks, ParentCapabilities, ScopeIdentity, WorkerMessage,
+};
 use super::{
     AuthorizationMode, BrowserAuthorizationRequest, Failure, ParentFrame, Process, Request,
-    WorkerFrame, authorization_cleanup, failed, read, write,
+    WorkerFrame, authorization_cleanup, connection_error, failed, read, write,
 };
 use crate::{BrowserAuthorization, protocol::Command};
 use maka_agent_facts::tools::ToolError;
@@ -97,7 +99,7 @@ impl Connection {
             if settlement.native_cleanup_error().is_some()
                 && let Err(error) = settlement.clone().cleanup()
             {
-                task.fault.send_replace(Some(error));
+                task.fault.send_replace(Some(connection_error(&error)));
             }
             task.closed.send_replace(Some(settlement));
         });
@@ -254,8 +256,13 @@ impl Connection {
                 };
             }
         };
-        let needs_close = matches!(&result, Err(ToolError::CleanupUnconfirmed(_)))
-            || (matches!(&result, Err(ToolError::OutcomeUnknown(_))) && self.fault().is_some());
+        let needs_close = matches!(
+            &result,
+            Err(ToolError::CleanupUnconfirmed(_) | ToolError::OperationCleanupUnconfirmed { .. })
+        ) || (matches!(
+            &result,
+            Err(ToolError::OutcomeUnknown(_) | ToolError::OperationUnknown { .. })
+        ) && self.fault().is_some());
         if needs_close {
             self.sealed.cancel();
             let cleanup = match self.settlement().await {
@@ -266,9 +273,10 @@ impl Connection {
                 && let Err(original) = &result
                 && cleanup.to_string() != original.to_string()
             {
-                return Err(ToolError::CleanupUnconfirmed(format!(
-                    "{original}; {cleanup}"
-                )));
+                return Err(preserve_operation_observation(
+                    ToolError::CleanupUnconfirmed(format!("{original}; {cleanup}")),
+                    original.clone(),
+                ));
             }
         }
         result
@@ -303,9 +311,24 @@ struct CloseSettlement {
 impl CloseSettlement {
     fn native_cleanup_error(&self) -> Option<ToolError> {
         match (&self.transport, &self.process) {
-            (_, Err(error)) | (Err(error @ ToolError::CleanupUnconfirmed(_)), _) => {
-                Some(error.clone())
-            }
+            (
+                Err(
+                    transport @ (ToolError::OperationUnknown { .. }
+                    | ToolError::OperationCleanupUnconfirmed { .. }),
+                ),
+                Err(process),
+            ) => Some(preserve_operation_observation(
+                ToolError::CleanupUnconfirmed(format!("{transport}; {process}")),
+                transport.clone(),
+            )),
+            (_, Err(error))
+            | (
+                Err(
+                    error @ (ToolError::CleanupUnconfirmed(_)
+                    | ToolError::OperationCleanupUnconfirmed { .. }),
+                ),
+                _,
+            ) => Some(error.clone()),
             _ => None,
         }
     }
@@ -313,13 +336,23 @@ impl CloseSettlement {
     fn cleanup(self) -> Completion {
         match (self.transport, self.process) {
             (Ok(()), result) => result,
-            (Err(error @ ToolError::CleanupUnconfirmed(_)), Ok(())) => Err(error),
-            (Err(error), Ok(())) => Err(ToolError::CleanupUnconfirmed(format!(
-                "Windows desktop cleanup was not confirmed: {error}"
-            ))),
-            (Err(transport), Err(process)) => Err(ToolError::CleanupUnconfirmed(format!(
-                "{transport}; {process}"
-            ))),
+            (
+                Err(
+                    error @ (ToolError::CleanupUnconfirmed(_)
+                    | ToolError::OperationCleanupUnconfirmed { .. }),
+                ),
+                Ok(()),
+            ) => Err(error),
+            (Err(error), Ok(())) => Err(preserve_operation_observation(
+                ToolError::CleanupUnconfirmed(format!(
+                    "Windows desktop cleanup was not confirmed: {error}"
+                )),
+                error,
+            )),
+            (Err(transport), Err(process)) => Err(preserve_operation_observation(
+                ToolError::CleanupUnconfirmed(format!("{transport}; {process}")),
+                transport,
+            )),
         }
     }
 }
@@ -373,7 +406,7 @@ impl ConnectionTask {
         received: &mut mpsc::Receiver<std::io::Result<WorkerFrame>>,
         writer_failed: &mut mpsc::Receiver<std::io::Error>,
     ) -> Completion {
-        let (protocol_fault, mut protocol_failed) = mpsc::unbounded_channel::<ToolError>();
+        let (protocol_fault, mut protocol_failed) = mpsc::unbounded_channel::<CallbackFault>();
         let callback_send = send.clone();
         let callbacks = ParentCallbacks::new(
             Arc::new(move |message| {
@@ -490,8 +523,13 @@ impl ConnectionTask {
                         }
                     }
                 }
-                Some(error) = protocol_failed.recv() => {
-                    let _ = terminal.get_or_insert(error);
+                Some(fault) = protocol_failed.recv() => {
+                    if let Some(invocation_id) = fault.invocation_id
+                        && let Some(request) = pending.get(&invocation_id)
+                    {
+                        let _ = request.frames.send(Err(fault.error.clone()));
+                    }
+                    terminal.get_or_insert(fault.error);
                     break;
                 }
                 error = writer_failed.recv() => {
@@ -513,10 +551,10 @@ impl ConnectionTask {
                             if let Some(capture) = audio.remove(&result.id) {
                                 capture.completion.send_replace(Some(Err(error.clone())));
                             }
-                            if matches!(error, ToolError::CleanupUnconfirmed(_)) {
+                            if matches!(error, ToolError::CleanupUnconfirmed(_) | ToolError::OperationCleanupUnconfirmed { .. }) {
                                 closing = true;
                                 self.sealed.cancel();
-                                self.fault.send_replace(Some(error.clone()));
+                                self.fault.send_replace(Some(connection_error(&error)));
                                 terminal.get_or_insert_with(|| error.clone());
                             }
                             Err(error)
@@ -591,23 +629,29 @@ impl ConnectionTask {
         });
         if terminal.is_some() {
             let fault = match &lost {
-                ToolError::CleanupUnconfirmed(_) => lost.clone(),
+                ToolError::CleanupUnconfirmed(_)
+                | ToolError::OperationCleanupUnconfirmed { .. } => lost.clone(),
                 _ => failed(format!(
                     "Windows desktop connection lost: {lost}; restart the Host before using Computer Use again"
                 )),
             };
-            self.fault.send_replace(Some(fault));
+            self.fault.send_replace(Some(connection_error(&fault)));
         }
         while let Ok(invocation) = self.receive.try_recv() {
             let _ = invocation
                 .reply
                 .send(Err(failed("Windows desktop worker closed before dispatch")));
         }
+        // A connection-wide fault can originate in a different request.
+        // Its receipt must not become another pending request's observation.
+        let pending_error = connection_error(&lost);
         for (_, request) in pending.drain() {
-            let _ = request.frames.send(Err(lost.clone()));
+            let _ = request.frames.send(Err(pending_error.clone()));
         }
         for (_, capture) in audio {
-            capture.completion.send_replace(Some(Err(lost.clone())));
+            capture
+                .completion
+                .send_replace(Some(Err(pending_error.clone())));
         }
         // A response already read still settles its own request; EOF cannot erase that ACK.
         // Request tasks retain canonical prompt cleanup before returning it.
@@ -643,8 +687,10 @@ async fn invoke_routed(
     callbacks: ParentCallbacks,
     identity: Option<ScopeIdentity>,
 ) -> Result<Value, ToolError> {
-    let mut message = next(&mut frames).await?;
     let mut cleanup_error = None;
+    let mut decision_unknown = None;
+    let result = async {
+    let mut message = next(&mut frames).await?;
     loop {
         match message {
             WorkerFrame::BrowserCallback {
@@ -665,6 +711,7 @@ async fn invoke_routed(
                     })?;
                 let callback_cancellation = cancellation.child_token();
                 let prepare = callbacks.prepare(
+                    id,
                     request_id,
                     key,
                     expected,
@@ -682,7 +729,7 @@ async fn invoke_routed(
                 message = following?;
             }
             WorkerFrame::Response { result, .. } => {
-                return cleanup_error.map_or_else(|| result.map_err(Into::into), Err);
+                return result.map_err(ToolError::from);
             }
             frame @ (WorkerFrame::BrowserAuthorization { .. }
             | WorkerFrame::BrowserSessionPreparationAuthorization { .. }) => {
@@ -775,8 +822,20 @@ async fn invoke_routed(
                         (received.await, cleanup)
                     }
                     result = &mut decision => {
-                        let cleanup = authorization_cleanup(result.clone());
-                        let _ = send.send(ParentFrame::BrowserAuthorizationResult { id, authorization_id, result: result.map_err(Failure::from) });
+                        // A completed decision's unknown outcome is not a
+                        // separate failure to withdraw that decision.
+                        let (result, cleanup) = match result {
+                            Err(error @ (ToolError::OutcomeUnknown(_) | ToolError::OperationUnknown { .. })) => {
+                                let wire_error = Failure::from(error.clone());
+                                decision_unknown.get_or_insert(error);
+                                (Err(wire_error), None)
+                            }
+                            result => {
+                                let cleanup = authorization_cleanup(result.clone());
+                                (result.map_err(Failure::from), cleanup)
+                            }
+                        };
+                        let _ = send.send(ParentFrame::BrowserAuthorizationResult { id, authorization_id, result });
                         (received.await, cleanup)
                     }
                 };
@@ -785,7 +844,7 @@ async fn invoke_routed(
                 }
                 message = match following {
                     Ok(frame) => frame,
-                    Err(error) => return Err(cleanup_error.unwrap_or(error)),
+                    Err(error) => return Err(error),
                 };
             }
             _ => {
@@ -794,6 +853,45 @@ async fn invoke_routed(
                 ));
             }
         }
+    }
+    }.await;
+    authorization_result(result, cleanup_error, decision_unknown)
+}
+
+fn authorization_result(
+    result: Result<Value, ToolError>,
+    cleanup_error: Option<ToolError>,
+    decision_unknown: Option<ToolError>,
+) -> Result<Value, ToolError> {
+    let result = cleanup_error.map_or(result, Err);
+    match (result, decision_unknown) {
+        (
+            Err(
+                error @ (ToolError::CleanupUnconfirmed(_)
+                | ToolError::OperationCleanupUnconfirmed { .. }),
+            ),
+            Some(original),
+        ) => Err(preserve_operation_observation(error, original)),
+        (_, Some(original)) => Err(original),
+        (result, None) => result,
+    }
+}
+
+fn preserve_operation_observation(cleanup: ToolError, original: ToolError) -> ToolError {
+    let message = match cleanup {
+        ToolError::CleanupUnconfirmed(message)
+        | ToolError::OperationCleanupUnconfirmed { message, .. } => message,
+        cleanup => return cleanup,
+    };
+    match original {
+        ToolError::OperationUnknown { observation, .. }
+        | ToolError::OperationCleanupUnconfirmed { observation, .. } => {
+            ToolError::OperationCleanupUnconfirmed {
+                message,
+                observation,
+            }
+        }
+        _ => ToolError::CleanupUnconfirmed(message),
     }
 }
 
@@ -897,10 +995,25 @@ mod tests {
         respond(peer, id, Value::Null).await;
     }
 
+    #[derive(Clone)]
     struct PendingAuthorization {
         started: Arc<tokio::sync::Notify>,
         cleanup: Arc<tokio::sync::Notify>,
-        unconfirmed: bool,
+        failure: ToolError,
+    }
+
+    impl PendingAuthorization {
+        fn withdrawn(&self, cancellation: CancellationToken) -> crate::AuthorizationFuture {
+            let started = self.started.clone();
+            let cleanup = self.cleanup.clone();
+            let failure = self.failure.clone();
+            Box::pin(async move {
+                started.notify_one();
+                cancellation.cancelled().await;
+                cleanup.notify_one();
+                Err(failure)
+            })
+        }
     }
 
     impl BrowserAuthorization for PendingAuthorization {
@@ -909,49 +1022,51 @@ mod tests {
             _: BrowserAccess,
             cancellation: CancellationToken,
         ) -> crate::AuthorizationFuture {
-            let started = self.started.clone();
-            let cleanup = self.cleanup.clone();
-            let unconfirmed = self.unconfirmed;
-            Box::pin(async move {
-                started.notify_one();
-                cancellation.cancelled().await;
-                cleanup.notify_one();
-                if unconfirmed {
-                    Err(ToolError::CleanupUnconfirmed(
-                        "fixture canonical withdrawal unavailable".into(),
-                    ))
-                } else {
-                    Err(failed("fixture authorization withdrawn"))
-                }
-            })
+            self.withdrawn(cancellation)
         }
-
         fn check(
             &self,
-            access: BrowserAccess,
+            _: BrowserAccess,
             cancellation: CancellationToken,
         ) -> crate::AuthorizationFuture {
-            self.authorize(access, cancellation)
+            self.withdrawn(cancellation)
         }
         fn authorize_session_preparation(
             &self,
             _: crate::BrowserSessionPreparation,
             cancellation: CancellationToken,
         ) -> crate::AuthorizationFuture {
-            let started = self.started.clone();
-            let cleanup = self.cleanup.clone();
-            let unconfirmed = self.unconfirmed;
+            self.withdrawn(cancellation)
+        }
+    }
+    #[derive(Clone)]
+    struct AttachmentAuthority {
+        pending: PendingAuthorization,
+        release: Arc<tokio::sync::Notify>,
+    }
+    impl BrowserAuthorization for AttachmentAuthority {
+        fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> crate::AuthorizationFuture {
+            Box::pin(async { Ok(()) })
+        }
+        fn check(&self, _: BrowserAccess, _: CancellationToken) -> crate::AuthorizationFuture {
+            Box::pin(async { Ok(()) })
+        }
+        fn attachment(&self) -> Option<Arc<dyn crate::BrowserAttachmentAuthorization>> {
+            Some(Arc::new(self.clone()))
+        }
+    }
+    impl crate::BrowserAttachmentAuthorization for AttachmentAuthority {
+        fn check(
+            &self,
+            _: crate::BrowserAttachmentOrigin,
+            cancellation: CancellationToken,
+        ) -> crate::AuthorizationFuture {
+            let pending = self.pending.withdrawn(cancellation);
+            let release = self.release.clone();
             Box::pin(async move {
-                started.notify_one();
-                cancellation.cancelled().await;
-                cleanup.notify_one();
-                if unconfirmed {
-                    Err(ToolError::CleanupUnconfirmed(
-                        "fixture canonical withdrawal unavailable".into(),
-                    ))
-                } else {
-                    Err(failed("fixture authorization withdrawn"))
-                }
+                let result = pending.await;
+                release.notified().await;
+                result
             })
         }
     }
@@ -989,7 +1104,7 @@ mod tests {
             let authorization = Arc::new(PendingAuthorization {
                 started: started.clone(),
                 cleanup: cleanup.clone(),
-                unconfirmed: false,
+                failure: failed("fixture authorization withdrawn"),
             });
             tokio::spawn(async move {
                 connection
@@ -1200,7 +1315,9 @@ mod tests {
             let authorization = Arc::new(PendingAuthorization {
                 started: started.clone(),
                 cleanup: cleanup.clone(),
-                unconfirmed: true,
+                failure: ToolError::CleanupUnconfirmed(
+                    "fixture canonical withdrawal unavailable".into(),
+                ),
             });
             tokio::spawn(async move {
                 connection
@@ -1269,7 +1386,7 @@ mod tests {
             let authorization = Arc::new(PendingAuthorization {
                 started: started.clone(),
                 cleanup: cleanup.clone(),
-                unconfirmed: false,
+                failure: failed("fixture authorization withdrawn"),
             });
             tokio::spawn(async move {
                 connection
@@ -1367,7 +1484,7 @@ mod tests {
             let authorization = Arc::new(PendingAuthorization {
                 started: started.clone(),
                 cleanup: cleanup.clone(),
-                unconfirmed: false,
+                failure: failed("fixture authorization withdrawn"),
             });
             tokio::spawn(async move {
                 connection
@@ -2219,7 +2336,9 @@ mod tests {
             let authorization = Arc::new(PendingAuthorization {
                 started: started.clone(),
                 cleanup: cleanup.clone(),
-                unconfirmed: true,
+                failure: ToolError::CleanupUnconfirmed(
+                    "fixture canonical withdrawal unavailable".into(),
+                ),
             });
             tokio::spawn(async move {
                 connection
@@ -2273,59 +2392,488 @@ mod tests {
         ));
     }
     #[tokio::test]
-    async fn typed_preparation_outcome_unknown_is_not_downgraded_to_refusal() {
+    async fn scoped_callback_fault_reaches_only_its_original_request_with_the_same_scope() {
+        for source_completed in [false, true] {
+            let (connection, mut peer) = fixture();
+            let original = super::super::fixture_operation_unknown(3);
+            let started = Arc::new(tokio::sync::Notify::new());
+            let cleanup = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let authority = Arc::new(AttachmentAuthority {
+                pending: PendingAuthorization {
+                    started: started.clone(),
+                    cleanup: cleanup.clone(),
+                    failure: original.clone(),
+                },
+                release: release.clone(),
+            });
+            let mut calls = Vec::new();
+            for preparation_id in [1_u64, 2] {
+                let request = preparation_request("same-epoch", false);
+                let identity = super::super::callback_identity(&request).unwrap();
+                let call = {
+                    let connection = connection.clone();
+                    let authority = authority.clone();
+                    tokio::spawn(async move {
+                        connection
+                            .invoke(request, Some(authority), CancellationToken::new())
+                            .await
+                    })
+                };
+                let id = incoming(&mut peer).await;
+                write(
+                    &mut peer,
+                    &WorkerFrame::BrowserCallback {
+                        message: WorkerMessage::Prepare {
+                            invocation_id: id,
+                            request_id: preparation_id,
+                            key: super::super::callbacks::ScopeKey {
+                                identity,
+                                access: browser_access("https://fixture.test/"),
+                            },
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+                let ParentFrame::BrowserCallback { message } = read(&mut peer).await.unwrap()
+                else {
+                    panic!("expected the actual prepared parent scope");
+                };
+                let super::super::callbacks::ParentMessage::Prepared {
+                    request_id, result, ..
+                } = *message
+                else {
+                    panic!("expected the actual prepared parent token");
+                };
+                assert_eq!(request_id, preparation_id);
+                let grant = serde_json::to_value((*result).unwrap()).unwrap();
+                let token: super::super::callbacks::ScopeToken =
+                    serde_json::from_value(grant["token"].clone()).unwrap();
+                assert!(!call.is_finished());
+                calls.push((id, token, call));
+            }
+            let mut calls = calls.into_iter();
+            let (first_id, first_token, first) = calls.next().unwrap();
+            let (second_id, second_token, second) = calls.next().unwrap();
+            assert_ne!(first_id, second_id);
+            assert_eq!(first_token.key.identity, second_token.key.identity);
+            write(
+                &mut peer,
+                &WorkerFrame::BrowserCallback {
+                    message: WorkerMessage::Check {
+                        token: first_token.clone(),
+                        id: 1,
+                        origin: super::super::callbacks::AttachmentOrigin::Opaque,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            started.notified().await;
+            write(
+                &mut peer,
+                &WorkerFrame::BrowserCallback {
+                    message: WorkerMessage::CancelCheck {
+                        token: first_token,
+                        id: 1,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            cleanup.notified().await;
+            let mut first = Some(first);
+            if source_completed {
+                // The raw native ACK does not settle the held original Host cleanup.
+                respond(&mut peer, first_id, json!("original native ACK")).await;
+                assert_eq!(
+                    first.take().unwrap().await.unwrap().unwrap().value,
+                    json!("original native ACK")
+                );
+            }
+            release.notify_one();
+            let ToolError::OperationUnknown {
+                observation: expected,
+                ..
+            } = original
+            else {
+                unreachable!()
+            };
+            if let Some(first) = first {
+                let ToolError::OperationCleanupUnconfirmed {
+                    observation: actual,
+                    ..
+                } = first.await.unwrap().unwrap_err()
+                else {
+                    panic!("the source call lost its original observation");
+                };
+                assert_eq!(actual, expected);
+            }
+            let second = second.await.unwrap().unwrap_err();
+            assert!(
+                matches!(second, ToolError::CleanupUnconfirmed(_)),
+                "a concurrent same-scope call must not inherit the source receipt"
+            );
+            let later = connection
+                .invoke(
+                    request("later", Command::Documentation),
+                    None,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(later, ToolError::CleanupUnconfirmed(_)),
+                "the connection fault watch cannot lend the source receipt"
+            );
+            assert!(
+                matches!(connection.close().await, Err(ToolError::OperationCleanupUnconfirmed { observation, .. }) if observation == expected)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_and_overlapping_preparation_keep_the_original_operation_receipt() {
+        for overlap in [false, true] {
+            let (connection, mut peer) = fixture();
+            let started = Arc::new(tokio::sync::Notify::new());
+            let cleanup = Arc::new(tokio::sync::Notify::new());
+            let cancellation = CancellationToken::new();
+            let request = preparation_request("original-epoch", false);
+            let identity = super::super::callback_identity(&request).unwrap();
+            let original = super::super::fixture_operation_unknown(3);
+            let call = {
+                let connection = connection.clone();
+                let cancellation = cancellation.clone();
+                let failure = original.clone();
+                let authorization = Arc::new(PendingAuthorization {
+                    started: started.clone(),
+                    cleanup: cleanup.clone(),
+                    failure,
+                });
+                tokio::spawn(async move {
+                    connection
+                        .invoke(request, Some(authorization), cancellation)
+                        .await
+                })
+            };
+            let id = incoming(&mut peer).await;
+            preparation_callback(
+                &mut peer,
+                id,
+                1,
+                AuthorizationMode::Authorize,
+                identity.clone(),
+                preparation(),
+            )
+            .await;
+            started.notified().await;
+            if overlap {
+                preparation_callback(
+                    &mut peer,
+                    id,
+                    2,
+                    AuthorizationMode::Authorize,
+                    identity,
+                    preparation(),
+                )
+                .await;
+                cleanup.notified().await;
+            } else {
+                cancellation.cancel();
+                cleanup.notified().await;
+                assert!(
+                    matches!(cancelled_authorization_result(&mut peer, id).await, Err(Failure::CleanupUnconfirmed(message)) if message.contains("original result remains unknown"))
+                );
+                assert!(
+                    !call.is_finished(),
+                    "cancelled authorization cleanup must still await the original native ACK"
+                );
+                respond(&mut peer, id, json!("original native ACK")).await;
+            }
+            let error = call.await.unwrap().unwrap_err();
+            let (
+                ToolError::OperationUnknown {
+                    observation: expected,
+                    ..
+                },
+                ToolError::OperationCleanupUnconfirmed {
+                    message,
+                    observation: actual,
+                },
+            ) = (original, error)
+            else {
+                panic!("uncertain withdrawal must preserve the original operation observation");
+            };
+            assert!(message.contains("original result remains unknown"));
+            assert_eq!(actual, expected);
+            assert!(connection.fault().is_some());
+            assert!(connection.close().await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn another_requests_cleanup_cannot_replace_a_preparation_unknown_receipt() {
         let (connection, mut peer) = fixture();
-        let request = preparation_request("current-epoch", false);
-        let identity = super::super::callback_identity(&request).unwrap();
-        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let call = {
-            let connection = connection.clone();
-            tokio::spawn(async move {
-                connection
-                    .invoke(
-                        request,
-                        Some(Arc::new(PreparationAuthority {
-                            calls,
-                            failure: Some(ToolError::OutcomeUnknown(
-                                "original result remains unknown".into(),
-                            )),
-                        })),
-                        CancellationToken::new(),
-                    )
-                    .await
-            })
-        };
-        let id = incoming(&mut peer).await;
-        preparation_callback(
-            &mut peer,
-            id,
-            1,
-            AuthorizationMode::Check,
-            identity,
-            preparation(),
-        )
-        .await;
-        let result = preparation_result(&mut peer, id, 1).await;
-        assert!(
-            matches!(&result, Err(Failure::OutcomeUnknown(message)) if message == "original result remains unknown")
-        );
+        let mut calls = Vec::new();
+        for operation in [3_u64, 4] {
+            let request = preparation_request("shared-epoch", false);
+            let identity = super::super::callback_identity(&request).unwrap();
+            let original = super::super::fixture_operation_unknown(u128::from(operation));
+            let call = {
+                let connection = connection.clone();
+                let original = original.clone();
+                tokio::spawn(async move {
+                    connection
+                        .invoke(
+                            request,
+                            Some(Arc::new(PreparationAuthority {
+                                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+                                failure: Some(original),
+                            })),
+                            CancellationToken::new(),
+                        )
+                        .await
+                })
+            };
+            let id = incoming(&mut peer).await;
+            let dto = preparation();
+            preparation_callback(
+                &mut peer,
+                id,
+                operation,
+                AuthorizationMode::Check,
+                identity,
+                dto,
+            )
+            .await;
+            assert!(matches!(
+                preparation_result(&mut peer, id, operation).await,
+                Err(Failure::OutcomeUnknown(_))
+            ));
+            assert!(!call.is_finished());
+            calls.push((id, original, call));
+        }
+        assert_ne!(calls[0].0, calls[1].0);
         write(
             &mut peer,
             &WorkerFrame::Response {
-                id,
-                result: result.map(|()| Value::Null),
+                id: calls[1].0,
+                result: Err(Failure::CleanupUnconfirmed(
+                    "second request native cleanup failed".into(),
+                )),
             },
         )
         .await
         .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            connection.sealed.cancelled(),
+        )
+        .await
+        .unwrap();
         assert!(
-            matches!(call.await.unwrap(), Err(ToolError::OutcomeUnknown(message)) if message == "original result remains unknown")
+            calls.iter().all(|(_, _, call)| !call.is_finished()),
+            "cleanup sealing is not native termination"
         );
-        let close = {
-            let connection = connection.clone();
-            tokio::spawn(async move { connection.close().await })
-        };
-        shutdown(&mut peer).await;
-        close.await.unwrap().unwrap();
+        drop(peer);
+        for (_, original, call) in calls {
+            let actual = call.await.unwrap().unwrap_err();
+            let (
+                ToolError::OperationUnknown {
+                    observation: expected,
+                    ..
+                },
+                ToolError::OperationCleanupUnconfirmed {
+                    observation: actual,
+                    ..
+                },
+            ) = (original, actual)
+            else {
+                panic!(
+                    "each request must retain its own original observation with cleanup uncertainty"
+                );
+            };
+            assert_eq!(actual, expected);
+        }
+        assert!(matches!(
+            connection.close().await,
+            Err(ToolError::OperationCleanupUnconfirmed { .. })
+        ));
+        let later = connection
+            .invoke(
+                request("later-epoch", Command::Documentation),
+                None,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(later, ToolError::CleanupUnconfirmed(_)),
+            "a later call must not inherit a different request's receipt"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_preparation_outcome_unknown_is_not_downgraded_to_refusal() {
+        enum NativeReply {
+            Response(Result<Value, Failure>),
+            Eof,
+            ForeignPreparation,
+        }
+        for original in [
+            ToolError::OutcomeUnknown("original result remains unknown".into()),
+            super::super::fixture_operation_unknown(3),
+        ] {
+            for peer_result in [
+                NativeReply::Response(Err(Failure::OutcomeUnknown("child outcome unknown".into()))),
+                NativeReply::Response(Err(Failure::Failed(
+                    "child reported a known refusal".into(),
+                ))),
+                NativeReply::Response(Ok(Value::Null)),
+                NativeReply::Response(Err(Failure::CleanupUnconfirmed(
+                    "child cleanup is not confirmed".into(),
+                ))),
+                NativeReply::Eof,
+                NativeReply::ForeignPreparation,
+            ] {
+                let (connection, peer) = fixture();
+                let mut peer = Some(peer);
+                let request = preparation_request("current-epoch", false);
+                let identity = super::super::callback_identity(&request).unwrap();
+                let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let call = {
+                    let connection = connection.clone();
+                    let original = original.clone();
+                    tokio::spawn(async move {
+                        connection
+                            .invoke(
+                                request,
+                                Some(Arc::new(PreparationAuthority {
+                                    calls,
+                                    failure: Some(original),
+                                })),
+                                CancellationToken::new(),
+                            )
+                            .await
+                    })
+                };
+                let id = incoming(peer.as_mut().unwrap()).await;
+                preparation_callback(
+                    peer.as_mut().unwrap(),
+                    id,
+                    1,
+                    AuthorizationMode::Check,
+                    identity.clone(),
+                    preparation(),
+                )
+                .await;
+                let decision = preparation_result(peer.as_mut().unwrap(), id, 1).await;
+                assert!(
+                    matches!(decision, Err(Failure::OutcomeUnknown(message)) if message == "original result remains unknown")
+                );
+                assert!(
+                    !call.is_finished(),
+                    "the authorization decision cannot replace the original native ACK"
+                );
+                let native_cleanup = matches!(
+                    &peer_result,
+                    NativeReply::Response(Err(Failure::CleanupUnconfirmed(_)))
+                );
+                let native_response = matches!(&peer_result, NativeReply::Response(_));
+                match peer_result {
+                    NativeReply::Response(result) => {
+                        write(
+                            peer.as_mut().unwrap(),
+                            &WorkerFrame::Response { id, result },
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    NativeReply::Eof => drop(peer.take()),
+                    NativeReply::ForeignPreparation => {
+                        let mut foreign = identity;
+                        foreign.operation_id = "foreign-host-operation".into();
+                        write(
+                            peer.as_mut().unwrap(),
+                            &WorkerFrame::BrowserCallback {
+                                message: WorkerMessage::Prepare {
+                                    invocation_id: id,
+                                    request_id: 99,
+                                    key: super::super::callbacks::ScopeKey {
+                                        identity: foreign,
+                                        access: BrowserAccess::Read {
+                                            document: crate::BrowserDocument {
+                                                browser_id: "fixture-browser".into(),
+                                                generation: "fixture-generation".into(),
+                                                tab_id: "owned-tab".into(),
+                                                url: "https://fixture.test".into(),
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    }
+                }
+                let actual = call.await.unwrap().unwrap_err();
+                match (&original, &actual) {
+                    (ToolError::OutcomeUnknown(expected), ToolError::OutcomeUnknown(actual)) => {
+                        assert!(!native_cleanup);
+                        assert_eq!(actual, expected);
+                    }
+                    (
+                        ToolError::OperationUnknown {
+                            message: expected,
+                            observation: expected_observation,
+                        },
+                        ToolError::OperationUnknown {
+                            message: actual,
+                            observation: actual_observation,
+                        },
+                    ) => {
+                        assert!(!native_cleanup);
+                        assert_eq!(actual, expected);
+                        assert_eq!(actual_observation, expected_observation);
+                    }
+                    (ToolError::OutcomeUnknown(_), ToolError::CleanupUnconfirmed(message)) => {
+                        assert!(native_cleanup);
+                        assert_eq!(message, "child cleanup is not confirmed");
+                    }
+                    (
+                        ToolError::OperationUnknown {
+                            observation: expected,
+                            ..
+                        },
+                        ToolError::OperationCleanupUnconfirmed {
+                            message,
+                            observation: actual,
+                        },
+                    ) => {
+                        assert!(native_cleanup);
+                        assert_eq!(message, "child cleanup is not confirmed");
+                        assert_eq!(actual, expected);
+                    }
+                    _ => panic!("original {original:?} was replaced by {actual:?}"),
+                }
+                if native_response && !native_cleanup {
+                    let close = {
+                        let connection = connection.clone();
+                        tokio::spawn(async move { connection.close().await })
+                    };
+                    shutdown(peer.as_mut().unwrap()).await;
+                    close.await.unwrap().unwrap();
+                } else {
+                    assert!(matches!(
+                        connection.close().await,
+                        Err(ToolError::CleanupUnconfirmed(_)
+                            | ToolError::OperationCleanupUnconfirmed { .. })
+                    ));
+                }
+            }
+        }
     }
 }

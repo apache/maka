@@ -384,6 +384,7 @@ impl Future for SignalUncertainty {
 }
 type Job = (u64, u64);
 struct ParentScope {
+    invocation_id: u64,
     token: ScopeToken,
     capabilities: ParentCapabilities,
     sealed: bool,
@@ -401,15 +402,20 @@ struct ParentState {
     closed: Option<ToolError>,
     authority_cleanup: Option<ToolError>,
 }
+#[derive(Debug)]
+pub(super) struct CallbackFault {
+    pub invocation_id: Option<u64>,
+    pub error: ToolError,
+}
 struct ParentInner {
     send: ParentSender,
-    fault: mpsc::UnboundedSender<ToolError>,
+    fault: mpsc::UnboundedSender<CallbackFault>,
     state: Mutex<ParentState>,
 }
 #[derive(Clone)]
 pub(super) struct ParentCallbacks(Arc<ParentInner>);
 impl ParentCallbacks {
-    pub fn new(send: ParentSender, fault: mpsc::UnboundedSender<ToolError>) -> Self {
+    pub fn new(send: ParentSender, fault: mpsc::UnboundedSender<CallbackFault>) -> Self {
         Self(Arc::new(ParentInner {
             send,
             fault,
@@ -418,13 +424,17 @@ impl ParentCallbacks {
     }
 
     pub fn report_protocol_fault(&self, error: ToolError) {
-        let _ = self.0.fault.send(error);
+        let _ = self.0.fault.send(CallbackFault {
+            invocation_id: None,
+            error: super::connection_error(&error),
+        });
     }
 
     /// Only this entry borrows the live original invocation. Later messages use
     /// its captured capabilities, never whichever invocation is currently active.
     pub async fn prepare(
         &self,
+        invocation_id: u64,
         request_id: u64,
         key: ScopeKey,
         expected: &ScopeIdentity,
@@ -503,6 +513,7 @@ impl ParentCallbacks {
                 state.scopes.insert(
                     grant.token.id,
                     ParentScope {
+                        invocation_id,
                         token: grant.token,
                         capabilities,
                         sealed: false,
@@ -533,6 +544,7 @@ impl ParentCallbacks {
         let prepared = {
             let mut state = self.0.state.lock().unwrap();
             let scope = checked_scope(&state, &token, true)?;
+            let invocation_id = scope.invocation_id;
             let attachment = scope.capabilities.attachment.clone();
             if matches!(intent, AttachmentCheck::Metadata)
                 && !matches!(
@@ -554,10 +566,10 @@ impl ParentCallbacks {
                 }
                 let cancellation = CancellationToken::new();
                 state.checks.insert((token.id, id), cancellation.clone());
-                Ok((attachment.unwrap(), cancellation))
+                Ok((attachment.unwrap(), cancellation, invocation_id))
             }
         };
-        let (attachment, cancellation) = match prepared {
+        let (attachment, cancellation, invocation_id) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 return (self.0.send)(ParentMessage::Checked {
@@ -597,7 +609,10 @@ impl ParentCallbacks {
             }
             if let Some(error) = cleanup {
                 parent.disconnect("Browser attachment authorization cleanup was not confirmed");
-                let _ = parent.0.fault.send(error);
+                let _ = parent.0.fault.send(CallbackFault {
+                    invocation_id: Some(invocation_id),
+                    error,
+                });
             }
             parent.prune(token.id);
         });
@@ -617,7 +632,7 @@ impl ParentCallbacks {
                 .check_turn(&token.key.identity.turn)
                 .and_then(|()| effect_preparation_scope(&state, &token, effect_id));
             match prepared {
-                Ok((scope, lifetime)) => {
+                Ok((scope, lifetime, invocation_id)) => {
                     if state.checks.contains_key(&(token.id, id)) {
                         return Err(failed(
                             "Browser effect preparation callback identity mismatch",
@@ -625,12 +640,12 @@ impl ParentCallbacks {
                     }
                     let cancellation = lifetime.child_token();
                     state.checks.insert((token.id, id), cancellation.clone());
-                    Ok((scope, cancellation))
+                    Ok((scope, cancellation, invocation_id))
                 }
                 Err(error) => Err(error),
             }
         };
-        let (scope, cancellation) = match prepared {
+        let (scope, cancellation, invocation_id) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 return (self.0.send)(ParentMessage::Checked {
@@ -667,7 +682,10 @@ impl ParentCallbacks {
             }
             if let Some(error) = cleanup {
                 parent.disconnect("Browser Host effect preparation cleanup was not confirmed");
-                let _ = parent.0.fault.send(error);
+                let _ = parent.0.fault.send(CallbackFault {
+                    invocation_id: Some(invocation_id),
+                    error,
+                });
             }
             parent.prune(token.id);
         });
@@ -683,6 +701,7 @@ impl ParentCallbacks {
         let prepared = {
             let mut state = self.0.state.lock().unwrap();
             let scope = checked_scope(&state, &token, true)?;
+            let invocation_id = scope.invocation_id;
             let document = token.key.access.document();
             let host = scope.capabilities.effects.clone();
             if state.closed.is_some()
@@ -707,11 +726,14 @@ impl ParentCallbacks {
                 // This tracks the existing callback observation. The original
                 // Host service independently admits and owns its physical work.
                 check.insert(CancellationToken::new());
-                Ok(host.expect("validated lease-child Host capability"))
+                Ok((
+                    host.expect("validated lease-child Host capability"),
+                    invocation_id,
+                ))
             }
         };
-        let host = match prepared {
-            Ok(host) => host,
+        let (host, invocation_id) = match prepared {
+            Ok(prepared) => prepared,
             Err(error) => {
                 return (self.0.send)(ParentMessage::Checked {
                     token,
@@ -740,7 +762,10 @@ impl ParentCallbacks {
             }
             if let Some(error) = cleanup {
                 parent.disconnect("Browser lease-child service cleanup was not confirmed");
-                let _ = parent.0.fault.send(error);
+                let _ = parent.0.fault.send(CallbackFault {
+                    invocation_id: Some(invocation_id),
+                    error,
+                });
             }
             parent.prune(token.id);
         });
@@ -1118,8 +1143,8 @@ fn effect_preparation_scope(
     state: &ParentState,
     token: &ScopeToken,
     id: u64,
-) -> Result<(Arc<dyn BrowserEffectScope>, CancellationToken), ToolError> {
-    checked_scope(state, token, false)?;
+) -> Result<(Arc<dyn BrowserEffectScope>, CancellationToken, u64), ToolError> {
+    let invocation_id = checked_scope(state, token, false)?.invocation_id;
     let signal = state
         .effects
         .get(&(token.id, id))
@@ -1136,7 +1161,7 @@ fn effect_preparation_scope(
         .effect_scope
         .clone()
         .ok_or_else(|| failed("Browser Host effect has no actual preparation scope"))?;
-    Ok((scope, signal.scope_cancellation.clone()))
+    Ok((scope, signal.scope_cancellation.clone(), invocation_id))
 }
 fn prune_parent(state: &mut ParentState, scope: u64) -> Option<ScopeToken> {
     if state.scopes.get(&scope).is_some_and(|scope| scope.released)
@@ -2367,7 +2392,7 @@ mod scoped_effect_tests {
         worker: WorkerCallbacks,
         parent_messages: mpsc::UnboundedReceiver<ParentMessage>,
         worker_messages: mpsc::UnboundedReceiver<WorkerMessage>,
-        faults: mpsc::UnboundedReceiver<ToolError>,
+        faults: mpsc::UnboundedReceiver<CallbackFault>,
     }
     fn identity() -> ScopeIdentity {
         ScopeIdentity {
@@ -2459,6 +2484,7 @@ mod scoped_effect_tests {
             let authority = Arc::new(ServicesAuthority::default());
             self.parent
                 .prepare(
+                    11,
                     request_id,
                     key,
                     &identity(),
@@ -2714,8 +2740,9 @@ mod scoped_effect_tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(fault.invocation_id, Some(11));
         assert!(
-            matches!(fault, ToolError::CleanupUnconfirmed(message) if message == expected_cleanup)
+            matches!(fault.error, ToolError::CleanupUnconfirmed(message) if message == expected_cleanup)
         );
         assert!(matches!(
             poll!(uncertainty.as_mut()),

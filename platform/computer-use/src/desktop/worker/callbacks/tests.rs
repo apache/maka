@@ -135,7 +135,7 @@ struct Fixture {
     parent_messages: mpsc::UnboundedReceiver<ParentMessage>,
     worker_messages: mpsc::UnboundedReceiver<WorkerMessage>,
     fail_send: Arc<AtomicBool>,
-    faults: mpsc::UnboundedReceiver<ToolError>,
+    faults: mpsc::UnboundedReceiver<CallbackFault>,
 }
 impl Fixture {
     fn new() -> Self {
@@ -168,18 +168,23 @@ impl Fixture {
         }
     }
     async fn prepare(&mut self, authority: Arc<Authority>, host: Arc<Host>) -> BrowserServices {
-        self.prepare_access(key(), authority, host).await
+        self.prepare_access(17, key(), authority, host).await
     }
     async fn prepare_access(
         &mut self,
+        invocation_id: u64,
         key: ScopeKey,
         authority: Arc<Authority>,
         host: Arc<Host>,
     ) -> BrowserServices {
         let identity = key.identity.clone();
         let worker = self.worker.clone();
-        let preparing =
-            tokio::spawn(async move { worker.prepare(17, key, CancellationToken::new()).await });
+        let preparing = tokio::spawn(async move {
+            worker
+                .prepare(invocation_id, key, CancellationToken::new())
+                .await
+        });
+        let actual_invocation = invocation_id;
         let WorkerMessage::Prepare {
             invocation_id,
             request_id,
@@ -188,9 +193,10 @@ impl Fixture {
         else {
             panic!("expected service preparation");
         };
-        assert_eq!(invocation_id, 17);
+        assert_eq!(invocation_id, actual_invocation);
         self.parent
             .prepare(
+                actual_invocation,
                 request_id,
                 actual,
                 &identity,
@@ -481,6 +487,7 @@ async fn preparation_refuses_foreign_session_and_preserves_original_cleanup_fail
     fixture
         .parent
         .prepare(
+            17,
             1,
             foreign,
             &identity(),
@@ -507,6 +514,7 @@ async fn preparation_refuses_foreign_session_and_preserves_original_cleanup_fail
     let result = fixture
         .parent
         .prepare(
+            17,
             2,
             key(),
             &identity(),
@@ -620,7 +628,7 @@ async fn valid_host_admitted_tab_scopes_are_released_without_a_worker_only_limit
         document.tab_id = format!("tab-{tab}");
         scopes.push(
             fixture
-                .prepare_access(key, authority.clone(), host.clone())
+                .prepare_access(17, key, authority.clone(), host.clone())
                 .await,
         );
     }
@@ -683,8 +691,9 @@ async fn cancelled_attachment_cleanup_faults_original_connection_after_receiver_
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(fault.invocation_id, Some(17));
     assert!(
-        matches!(fault, ToolError::CleanupUnconfirmed(message) if message.contains("original authority prompt cleanup was lost"))
+        matches!(fault.error, ToolError::CleanupUnconfirmed(message) if message.contains("original authority prompt cleanup was lost"))
     );
     assert!(
         fixture.parent.has_unsettled(),
@@ -694,9 +703,10 @@ async fn cancelled_attachment_cleanup_faults_original_connection_after_receiver_
     let mut key = key();
     key.identity.operation_id = "next-operation".into();
     let identity = key.identity.clone();
-    fixture
+    let refused = fixture
         .parent
         .prepare(
+            18,
             901,
             key,
             &identity,
@@ -706,17 +716,89 @@ async fn cancelled_attachment_cleanup_faults_original_connection_after_receiver_
             },
             CancellationToken::new(),
         )
-        .await
-        .unwrap();
+        .await;
+    assert!(matches!(refused, Err(ToolError::Failed(_))));
     assert!(matches!(
-        fixture.parent_message().await,
-        ParentMessage::Prepared { result, .. }
-            if matches!(*result, Err(Failure::Failed(_)))
+        fixture.parent_messages.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
     assert!(
         foreign.reads.lock().unwrap().is_empty(),
         "a later invocation cannot supply replacement authority"
     );
+    assert!(
+        fixture.parent.has_unsettled(),
+        "a rejected invocation cannot erase the original cleanup custody"
+    );
+}
+
+#[tokio::test]
+async fn same_scope_cleanup_fault_uses_the_captured_parent_request_id() {
+    let mut fixture = Fixture::new();
+    let original = super::super::fixture_operation_unknown(3);
+    let authority = Arc::new(Authority {
+        attachment_failure: Some(original.clone()),
+        attachment_wait_for_cancel: true,
+        ..Authority::default()
+    });
+    let first = fixture
+        .prepare_access(41, key(), authority.clone(), Arc::new(Host::default()))
+        .await;
+    let second = fixture
+        .prepare_access(
+            42,
+            key(),
+            Arc::new(Authority::default()),
+            Arc::new(Host::default()),
+        )
+        .await;
+    let cancellation = CancellationToken::new();
+    let cancelled = cancellation.clone();
+    let checking = tokio::spawn(async move {
+        first
+            .attachment
+            .unwrap()
+            .check(BrowserAttachmentOrigin::Opaque, cancellation)
+            .await
+    });
+    let message = fixture.worker_message().await;
+    fixture.parent.handle(message).unwrap();
+    authority.attachment_started.notified().await;
+    cancelled.cancel();
+    let message = fixture.worker_message().await;
+    fixture.parent.handle(message).unwrap();
+    assert!(checking.await.unwrap().is_err());
+    let fault = tokio::time::timeout(std::time::Duration::from_secs(2), fixture.faults.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fault.invocation_id, Some(41));
+    let (
+        ToolError::OperationUnknown {
+            observation: expected,
+            ..
+        },
+        ToolError::OperationCleanupUnconfirmed {
+            observation: actual,
+            ..
+        },
+    ) = (original, fault.error)
+    else {
+        panic!("the scoped cleanup must preserve its own operation observation");
+    };
+    assert_eq!(actual, expected);
+    let state = fixture.parent.0.state.lock().unwrap();
+    assert_eq!(state.scopes.len(), 2);
+    assert!(state.scopes.values().any(|scope| scope.invocation_id == 42));
+    assert!(
+        state
+            .scopes
+            .values()
+            .all(|scope| scope.token.key.identity == identity())
+    );
+    drop(state);
+    drop(second);
+    assert!(fixture.parent.has_unsettled());
 }
 
 #[tokio::test]
@@ -760,7 +842,7 @@ async fn verified_opaque_presentation_uses_the_same_host_scope_without_clipboard
         origin: BrowserAttachmentOrigin::Opaque,
     };
     let services = fixture
-        .prepare_access(opaque, authority.clone(), Arc::new(Host::default()))
+        .prepare_access(17, opaque, authority.clone(), Arc::new(Host::default()))
         .await;
     let checking = tokio::spawn(async move {
         services

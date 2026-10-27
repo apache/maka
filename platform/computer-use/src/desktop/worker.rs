@@ -401,9 +401,63 @@ impl Process {
 fn authorization_cleanup(result: Result<(), ToolError>) -> Option<ToolError> {
     match result {
         Ok(()) | Err(ToolError::Failed(_) | ToolError::Io { .. }) => None,
-        Err(error) => Some(ToolError::CleanupUnconfirmed(format!(
-            "Browser authorization cleanup was not confirmed: {error}"
-        ))),
+        Err(error) => {
+            let message = format!("Browser authorization cleanup was not confirmed: {error}");
+            Some(match error {
+                ToolError::OperationUnknown { observation, .. }
+                | ToolError::OperationCleanupUnconfirmed { observation, .. } => {
+                    ToolError::OperationCleanupUnconfirmed {
+                        message,
+                        observation,
+                    }
+                }
+                _ => ToolError::CleanupUnconfirmed(message),
+            })
+        }
+    }
+}
+
+fn connection_error(error: &ToolError) -> ToolError {
+    match error {
+        ToolError::OperationUnknown { message, .. } => ToolError::OutcomeUnknown(message.clone()),
+        ToolError::OperationCleanupUnconfirmed { message, .. } => {
+            ToolError::CleanupUnconfirmed(message.clone())
+        }
+        error => error.clone(),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn fixture_operation_unknown(operation: u128) -> ToolError {
+    let observation = serde_json::json!({
+        "reference": {
+            "source": {
+                "stateDomain": "a".repeat(64),
+                "deployment": uuid::Uuid::from_u128(1),
+                "revision": 3,
+            },
+            "namespace": [uuid::Uuid::from_u128(2)],
+            "export": "Service",
+            "method": "apply",
+            "operation": uuid::Uuid::from_u128(operation),
+            "fingerprint": format!("sha256-{}", "b".repeat(64)),
+            "contract": {
+                "name": "fixture.Service",
+                "version": 1,
+                "transport": "remote",
+                "digest": format!("sha256-{}", "c".repeat(64)),
+            },
+            "recovery": "journal_v1",
+        },
+        "receipt": {
+            "kind": "recorded",
+            "outcome": { "kind": "unknown", "diagnostic": "original fixture outcome" },
+            "cleanup": { "kind": "confirmed" },
+        },
+    });
+    ToolError::OperationUnknown {
+        message: "original result remains unknown".into(),
+        observation: serde_json::from_value(observation).unwrap(),
     }
 }
 
@@ -627,6 +681,7 @@ mod tests {
                         "epoch": "fixture-epoch",
                         "session": "same-session",
                         "turn": "fixture-turn",
+                        "operation_id": null,
                         "browsers": [],
                         "command": { "method": "documentation" },
                         "language": tag,
