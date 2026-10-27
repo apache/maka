@@ -151,6 +151,7 @@ export class MatterController {
     // Observation only (#6309): undefined means no model execution was admitted.
     const startedAt = m.activation!.startedAt;
     let outcome: AssistantRunOutcome | undefined = 'failed';
+    let retried = false;
     try {
       if (!alreadyStarted) {
         const result = await agent.followup(
@@ -192,6 +193,7 @@ export class MatterController {
               if (failure?.retryable) {
                 this.store.retryExecution(m.id, activationId, failure);
                 outcome = 'retried';
+                retried = true;
                 return;
               }
               throw Error(
@@ -212,7 +214,10 @@ export class MatterController {
           'Queued wake ended without claiming its activation; inspect conversation before resuming',
         );
       const live = this.store.get(m.id).matter.activation;
-      outcome = live?.id !== activationId ? 'interrupted' : live.settled ? 'completed' : 'failed';
+      // A retry already decided the outcome: it cleared the activation on purpose,
+      // so do not read that as the user interrupting the run.
+      if (!retried)
+        outcome = live?.id !== activationId ? 'interrupted' : live.settled ? 'completed' : 'failed';
       this.store.finish(m.id, activationId);
     } catch (e) {
       this.lastError = String(e);

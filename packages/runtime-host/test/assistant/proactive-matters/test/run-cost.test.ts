@@ -140,3 +140,62 @@ test('an admission the Host rejected ran no model and is not recorded as an acti
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// A retryable failure clears the activation on purpose (retryExecution). That is
+// an automatic retry, not the user pausing the run, and must be recorded as one.
+for (const [name, errorClass, expected] of [
+  ['a retryable execution failure', 'network', 'retried'],
+  ['a failure that is not retryable', 'invalid_request', 'failed'],
+] as const)
+  test(`${name} is recorded as ${expected}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'maka-matter-cost-retry-'));
+    const store = createMatterStore(root);
+    const ledger = new RunCostLedger(join(root, 'cost'), async () => ({
+      calls: 1,
+      inputTokens: 10,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 1,
+      modelDurationMs: 5,
+      complete: true,
+    }));
+    let running = false;
+    const agent = {
+      snapshot: async () => ({
+        agent: { status: running ? 'running' : 'blocked' },
+        pendingInteractions: 0,
+      }),
+      followup: async () => {
+        running = true;
+        return { disposition: 'turn_started', turnId: 'turn-1' };
+      },
+      whenIdle: async () => {
+        running = false;
+      },
+      transcript: async () => [{ type: 'turn_state', turnId: 'turn-1', errorClass }],
+      cancel: async () => {
+        running = false;
+      },
+    };
+    const ctx = {
+      runCost: ledger,
+      agents: {
+        withInvocation: (_: unknown, fn: () => unknown) => fn(),
+        resume: async () => agent,
+      },
+    };
+    const controller = createMatterController(ctx, store);
+    try {
+      store.create({ sessionId: 'matter-session', cwd: root, title: '核查', request: 'x' });
+      controller.start();
+      await controller.tick();
+      await controller.close();
+      const [row] = ledger.summary().recent;
+      assert.equal(row.kind, 'matter_activation');
+      assert.equal(row.outcome, expected);
+    } finally {
+      ledger.close();
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
