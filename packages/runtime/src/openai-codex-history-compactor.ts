@@ -83,6 +83,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
           },
           options.connectionId,
           options.modelId,
+          options.providerStateIdentity,
         );
       const events = canContinuePrevious
         ? (input.newlyFoldedRuntimeEvents ?? [])
@@ -158,6 +159,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
           },
           options.modelId,
         ),
+        options.providerStateIdentity,
       );
       if (!state) throw new HistoryCompactSummarizerError('invalid_provider_state');
       return state;
@@ -339,6 +341,7 @@ export function extractOpenAiCodexCompactionState(
   connectionId: string,
   modelId: string,
   codexCompactionHash?: string,
+  providerStateIdentity?: `sha256:${string}`,
 ): HistoryCompactProviderState | undefined {
   const parts = (content ?? []).filter(isOpenAiCompactionPart);
   if (parts.length !== 1) return undefined;
@@ -349,6 +352,7 @@ export function extractOpenAiCodexCompactionState(
     connectionId,
     modelId,
     ...(codexCompactionHash ? { codexCompactionHash } : {}),
+    ...(providerStateIdentity ? { providerStateIdentity } : {}),
     itemId: metadata.itemId,
     encryptedContent: metadata.encryptedContent,
   };

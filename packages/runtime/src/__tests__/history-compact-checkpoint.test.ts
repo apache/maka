@@ -201,6 +201,113 @@ describe('history compact checkpoint', () => {
     );
   });
 
+  test('rejects provider-native state replay after a credential rotation on the same connection (#6385)', () => {
+    const state = {
+      kind: 'openai_codex_remote_v2' as const,
+      connectionId: 'connection-a',
+      modelId: 'model-a',
+      codexCompactionHash: '3000',
+      providerStateIdentity: 'sha256:identity-account-1' as const,
+      itemId: 'cmp_123',
+      encryptedContent: 'encrypted-state',
+    };
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      providerState: state,
+    });
+    assert.equal(validateHistoryCompactCheckpointShape(checkpoint, 'session-1'), true);
+    const connection = {
+      providerType: 'openai-codex',
+      codexCompactionMetadataFetchedAt: Date.now(),
+      models: [
+        { id: 'model-a', codexCompactionHash: '3000' },
+        { id: 'model-b', codexCompactionHash: '3000' },
+      ],
+    };
+    for (const check of [
+      canReplayHistoryCompactCheckpointForModel,
+      canContinueHistoryCompactCheckpointForModel,
+    ]) {
+      // Same wire identity: replay still works, cross-model through the same hash.
+      assert.equal(
+        check(checkpoint, connection, 'connection-a', 'model-a', 'sha256:identity-account-1'),
+        true,
+      );
+      assert.equal(
+        check(checkpoint, connection, 'connection-a', 'model-b', 'sha256:identity-account-1'),
+        true,
+      );
+      // The connection was re-authenticated with another account: the old
+      // account's encrypted context must not replay on the new one (#6385).
+      assert.equal(
+        check(checkpoint, connection, 'connection-a', 'model-a', 'sha256:identity-account-2'),
+        false,
+      );
+      assert.equal(
+        check(checkpoint, connection, 'connection-a', 'model-b', 'sha256:identity-account-2'),
+        false,
+      );
+      // A route that cannot state its wire identity fails closed.
+      assert.equal(check(checkpoint, connection, 'connection-a', 'model-a', undefined), false);
+    }
+  });
+
+  test('checkpoints captured before identity pinning keep their legacy replay path', () => {
+    const state = {
+      kind: 'openai_codex_remote_v2' as const,
+      connectionId: 'connection-a',
+      modelId: 'model-a',
+      codexCompactionHash: '3000',
+      itemId: 'cmp_123',
+      encryptedContent: 'encrypted-state',
+    };
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      providerState: state,
+    });
+    const connection = {
+      providerType: 'openai-codex',
+      codexCompactionMetadataFetchedAt: Date.now(),
+      models: [
+        { id: 'model-a', codexCompactionHash: '3000' },
+        { id: 'model-b', codexCompactionHash: '3000' },
+      ],
+    };
+    // No identity pinned: an available current identity neither helps nor hurts.
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        connection,
+        'connection-a',
+        'model-a',
+        'sha256:identity-account-1',
+      ),
+      true,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        connection,
+        'connection-a',
+        'model-b',
+        'sha256:identity-account-1',
+      ),
+      true,
+    );
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        connection,
+        'connection-b',
+        'model-a',
+        'sha256:identity-account-1',
+      ),
+      false,
+    );
+  });
+
   test('expired, missing, or future catalog timestamps cannot authorize a cross-model checkpoint', () => {
     const now = Date.now();
     const cached = {
@@ -365,6 +472,20 @@ describe('history compact checkpoint', () => {
       validateHistoryCompactCheckpointShape({
         ...checkpoint,
         providerState: { ...checkpoint.providerState, encryptedContent: '' },
+      }),
+      false,
+    );
+    assert.equal(
+      validateHistoryCompactCheckpointShape({
+        ...checkpoint,
+        providerState: { ...checkpoint.providerState, providerStateIdentity: '' },
+      }),
+      false,
+    );
+    assert.equal(
+      validateHistoryCompactCheckpointShape({
+        ...checkpoint,
+        providerState: { ...checkpoint.providerState, providerStateIdentity: 'sha256:\u0000x' },
       }),
       false,
     );

@@ -136,6 +136,16 @@ export interface OpenAiCodexRemoteCompactState {
   modelId: string;
   /** Compatibility identity captured when this checkpoint was produced. */
   codexCompactionHash?: string;
+  /**
+   * Wire identity of the execution route that produced this provider state
+   * (`providerStateIdentity`: connectionId + providerType + endpoint +
+   * credentialId + revision). Provider state from one wire cannot replay on
+   * another: a connection re-authenticated with a different account rotates
+   * the credential while `connectionId` stays the same, so a pinned
+   * checkpoint stops replaying (#6385). Absent on checkpoints minted before
+   * identity pinning — they keep the legacy same-model/hash path.
+   */
+  providerStateIdentity?: `sha256:${string}`;
   itemId: string;
   encryptedContent: string;
 }
@@ -446,6 +456,7 @@ export function canReplayHistoryCompactCheckpointForModel(
   connection: CompactionModelConnection,
   connectionId: string | undefined,
   modelId: string,
+  providerStateIdentity?: `sha256:${string}`,
 ): boolean {
   if (!isProviderHistoryCompactCheckpoint(checkpoint)) return true;
   const state = checkpoint.providerState;
@@ -453,6 +464,17 @@ export function canReplayHistoryCompactCheckpointForModel(
     connection.providerType !== 'openai-codex' ||
     connectionId === undefined ||
     state.connectionId !== connectionId
+  )
+    return false;
+  // One connectionId can serve different wires over time: re-login with
+  // another account rotates the credential without changing the connection,
+  // and the old account's encrypted context must not replay on the new one
+  // (#6385). A checkpoint that pinned its wire identity only replays on that
+  // exact identity — a route that cannot state one fails closed. Checkpoints
+  // captured before identity pinning keep the legacy same-model/hash path.
+  if (
+    state.providerStateIdentity !== undefined &&
+    state.providerStateIdentity !== providerStateIdentity
   )
     return false;
   const targetHash = freshCodexCompactionHash(connection, modelId);
@@ -472,10 +494,17 @@ export function canContinueHistoryCompactCheckpointForModel(
   connection: CompactionModelConnection,
   connectionId: string | undefined,
   modelId: string,
+  providerStateIdentity?: `sha256:${string}`,
 ): boolean {
   // Portable text is ordinary model context for both replay and compaction.
   // Only opaque provider state needs a matching route.
-  return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, connectionId, modelId);
+  return canReplayHistoryCompactCheckpointForModel(
+    checkpoint,
+    connection,
+    connectionId,
+    modelId,
+    providerStateIdentity,
+  );
 }
 
 export function historyCompactCheckpointToRuntimeEvent(
@@ -955,6 +984,11 @@ function validHistoryCompactProviderState(value: unknown): value is HistoryCompa
         state.codexCompactionHash.length <= 128 &&
         state.codexCompactionHash.trim() === state.codexCompactionHash &&
         !/[\u0000-\u001f\u007f]/.test(state.codexCompactionHash))) &&
+    (state.providerStateIdentity === undefined ||
+      (nonEmpty(state.providerStateIdentity) &&
+        state.providerStateIdentity.length <= 128 &&
+        state.providerStateIdentity.trim() === state.providerStateIdentity &&
+        !/[\u0000-\u001f\u007f]/.test(state.providerStateIdentity))) &&
     nonEmpty(state.itemId) &&
     nonEmpty(state.encryptedContent)
   );
