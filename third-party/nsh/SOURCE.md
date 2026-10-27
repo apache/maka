@@ -133,6 +133,13 @@ OSC 777 `nsh-text-input` extension; a matching terminal-side IME producer must
 supply the composition snapshots. These local adaptations do not establish
 stock-terminal support or end-to-end OS IME validation.
 
+The code `Editor`'s terminal input sink uses `BoxNone` to leave pointer hits
+with the underlying content while remaining a keyboard focus target. Its native
+`autoFocus` prop handles initial focus after mounting; an early controller focus
+request can precede attachment. Other renderers retain their existing sink
+behavior, and terminal scope, disabled, ancestor and retirement checks remain
+unchanged. This is a local integration correction, not an upstream sync.
+
 The GPUI and terminal backends also implement node-scoped `Input.replaceRange`
 for completion edits. The command checks the observed native edit count,
 original text and UTF-16 selection before replacing a range in one undoable
