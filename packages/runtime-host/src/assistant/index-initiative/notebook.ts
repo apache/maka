@@ -123,22 +123,31 @@ export class Notebook {
     for (const e of this.feedbackResolutions().sort(
       (a, b) => this.event(a.payload.feedbackId).seq - this.event(b.payload.feedbackId).seq,
     ))
-      for (const rule of e.payload.rules) {
+      for (const [ruleIndex, rule] of e.payload.rules.entries()) {
         if (!rule.topicIds.includes(topicId) && !overlaps(rule.tags, topic.tags)) continue;
-        current = { ...rule, feedbackId: e.payload.feedbackId };
+        current = { ...rule, feedbackId: e.payload.feedbackId, ruleIndex };
       }
     if (current.feedbackId && ['closed', 'deferred'].includes(current.status)) {
       const governing = this.event(current.feedbackId)!.seq;
+      // A reopening answers one specific rule. Topics gain tags over time, so the
+      // rule that governs a topic can change with no new feedback event: a later
+      // rule may start to match. Apply only a reopening the model judged against
+      // the rule that governs now; a different rule was never judged.
       const reopen = this.events('reopen')
-        .filter((e) => e.payload.topicId === topicId && e.seq > governing)
+        .filter(
+          (e) =>
+            e.payload.topicId === topicId &&
+            e.seq > governing &&
+            e.payload.feedbackId === current.feedbackId &&
+            e.payload.ruleIndex === current.ruleIndex,
+        )
         .at(-1);
-      // Open again by changed information. A newer user rule replaced `current`
-      // above, so a reopening from before it no longer applies.
       if (reopen)
         current = {
           status: 'open',
           reason: reopen.payload.reason,
           feedbackId: current.feedbackId,
+          ruleIndex: current.ruleIndex,
           reopenedByChange: true,
         };
     }
@@ -301,7 +310,12 @@ export class Notebook {
       this.events('note').some((e) => e.payload.topicId === entry.topicId && e.seq > governing),
       'Reopening needs a note on this topic recorded after the user feedback',
     );
-    return this.put(id, 'reopen', entry);
+    // Bind the reopening to the rule it was validated against (see state()).
+    return this.put(id, 'reopen', {
+      ...entry,
+      feedbackId: current.feedbackId,
+      ruleIndex: current.ruleIndex,
+    });
   }
   commitDraft({
     role,
