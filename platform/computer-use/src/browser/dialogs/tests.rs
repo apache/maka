@@ -455,6 +455,8 @@ async fn cancelled_close_keeps_original_join_and_closing_refuses_new_host_effect
     let socket = super::super::Cdp {
         connection: Arc::new(connected.unwrap()),
         dialogs: None,
+        native_context: None,
+        preparation: crate::browser::native::PreparationTransport::NotRequired,
     };
     let host = Arc::new(RejectingHost::default());
     let capability: Arc<Mutex<Option<Arc<dyn crate::BrowserHostEffects>>>> =

@@ -47,6 +47,11 @@ pub enum Identity {
     Background {
         grant: crate::authorization::Id,
     },
+    /// Captured browser source lease observation, not a grant or Agent invocation.
+    BrowserLease {
+        session_id: String,
+        turn_id: String,
+    },
 }
 impl Identity {
     pub fn agent(&self) -> Option<&Invocation> {

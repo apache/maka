@@ -103,6 +103,19 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
             "連線瀏覽器",
             options.id.as_deref(),
         ),
+        Command::BrowserManagedTabs { browser_id }
+        | Command::BrowserUserOpenTabs { browser_id } => (
+            "List user tabs",
+            "查看用户标签页",
+            "查看使用者分頁",
+            Some(browser_id.as_str()),
+        ),
+        Command::BrowserUserClaimTab { browser_id, .. } => (
+            "Claim tab",
+            "接管标签页",
+            "接管分頁",
+            Some(browser_id.as_str()),
+        ),
         Command::GetTab { .. } => ("Connect tab", "连接标签页", "連線分頁", None),
         Command::BrowserTab {
             browser_id,
@@ -127,6 +140,24 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
         Command::BrowserMutation { .. } => {
             ("Interact with page", "操作网页", "操作網頁", bound_target)
         }
+        Command::BrowserDownloadWait { .. } => (
+            "Wait for browser download",
+            "等待浏览器下载",
+            "等待瀏覽器下載",
+            bound_target,
+        ),
+        Command::BrowserDownloadPath { .. } => (
+            "Get download path",
+            "获取下载路径",
+            "取得下載路徑",
+            bound_target,
+        ),
+        Command::BrowserDownloadMedia { .. } => (
+            "Download page media",
+            "下载网页媒体",
+            "下載網頁媒體",
+            bound_target,
+        ),
         Command::ClipboardRead { .. } | Command::ClipboardReadText { .. } => (
             "Read browser clipboard",
             "读取浏览器剪贴板",

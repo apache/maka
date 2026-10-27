@@ -19,6 +19,7 @@
 
 use super::*;
 
+mod download_media;
 mod mutation;
 pub(super) use mutation::validate_mutation;
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Mutex};

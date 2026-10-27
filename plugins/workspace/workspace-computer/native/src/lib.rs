@@ -22,6 +22,7 @@ mod access;
 mod admission;
 mod app_access;
 mod browser_access;
+mod browser_popup;
 mod evaluate;
 #[cfg(all(test, target_os = "linux"))]
 mod live_tests;
@@ -46,6 +47,7 @@ struct Computer {
     stopping: CancellationToken,
     tasks: tokio_util::task::TaskTracker,
     origin: ToolOrigin,
+    popup_provenance: Option<Arc<browser_popup::Provenance>>,
 }
 struct Service(Arc<Computer>);
 
@@ -93,6 +95,7 @@ impl Computer {
             .ok_or("computer_requires_persistence")?;
         let owner = Arc::new(Self {
             store: persistence.store().clone(),
+            popup_provenance: Some(Arc::new(browser_popup::Provenance::capture(&context)?)),
             configuration,
             sessions,
             resources: Arc::new(Resources::default()),

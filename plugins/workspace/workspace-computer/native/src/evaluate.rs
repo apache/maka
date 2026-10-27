@@ -395,6 +395,7 @@ impl Computer {
             matches!(native.platform(), "mac" | "windows") && !browser_command(&command);
         let session = invocation.session_id.clone();
         let turn = invocation.turn_id.clone();
+        let preparation_active = CancellationToken::new();
         let browser_access = browser_access::Access::new(
             self.clone(),
             call.clone(),
@@ -402,6 +403,11 @@ impl Computer {
             cell.clone(),
             cancellation.clone(),
             bridge.admission.clone(),
+            browser_access::PreparationScope {
+                epoch: bridge.epoch.clone(),
+                operation: operation_id.clone(),
+                active: preparation_active.clone(),
+            },
         );
         let lease = self
             .store
@@ -416,15 +422,37 @@ impl Computer {
         let effect_owner = self.clone();
         let effect_store = lease.store();
         let journal_store = effect_store.clone();
-        let settlement = admission::Operation::new(self, lease)?;
+        let settlement = admission::Operation::new(self, lease, &bridge.epoch.native)?;
         let operation_settlement = settlement.handoff();
-        let host_effects = admission::host_effects(self, bridge.admission.clone());
+        let host_effects = admission::host_effects_with_lease_children(
+            self,
+            bridge.admission.clone(),
+            &bridge.epoch.native,
+            browser_access.popup_attachment(),
+        );
         let effect_targets = targets.clone();
         let effect_invocation = invocation.clone();
+        let browser_operation_id = operation_id.clone();
+        let preparation_policy = maka_computer_use::BrowserPreparationPolicy {
+            popup_enabled: self.configuration.browser_preparation.popup,
+            headers: self
+                .configuration
+                .browser_preparation
+                .request_headers
+                .iter()
+                .map(|header| maka_computer_use::BrowserPreparationHeader {
+                    name: header.name.clone(),
+                    value: header.value.clone(),
+                })
+                .collect(),
+        };
         let effect_app = app.clone();
         let admitted = receipt.clone();
         let effect = PreparedEffect::new(move |_producer_cancellation| {
             Box::pin(async move {
+                // This owner is inside the actual admitted future. Keeping an
+                // authorization Arc after Ready/drop does not keep it active.
+                let _preparation_lifetime = preparation_active.drop_guard();
                 let mut output = access::settle(
                     &effect_owner,
                     &effect_call,
@@ -439,16 +467,25 @@ impl Computer {
                             move |operation_cancel| async move {
                                 let mut context =
                                     maka_computer_use::InvocationContext::new(&session, &turn)
+                                        .with_operation_id(browser_operation_id)
                                         .with_browser_authorization(browser_access)
+                                        .with_browser_preparation_policy(preparation_policy)
                                         .with_operation_settlement(operation_settlement)
                                         .with_browser_host_effects(host_effects);
                                 if let Some(subject) = subject {
                                     context = context.with_app_target(subject);
                                 }
                                 let _timeout = pause_native.then(|| cell.suspend_timeout());
-                                let result = native
-                                    .invoke(command, &context, &operation_cancel, language)
+                                let completion = native
+                                    .prepare_invoke(command, &context, &operation_cancel, language)
                                     .await?;
+                                if completion.is_pending() {
+                                    drop(native);
+                                    return completion.wait().await;
+                                }
+                                // Immediate operations, including audio receipt
+                                // publication, keep the original Session lock.
+                                let result = completion.wait().await?;
                                 if starts_audio {
                                     epoch.record_audio(basis, audio_consent);
                                 } else if stops_audio {
@@ -518,12 +555,14 @@ impl Computer {
         let journal_failure = if let Err(
             error @ (ToolError::Persistence(_)
             | ToolError::CleanupUnconfirmed(_)
+            | ToolError::OutcomeUnknown(_)
+            | ToolError::OperationUnknown { .. }
             | ToolError::OperationCleanupUnconfirmed { .. }),
         ) = &result
         {
             receipt.fail(error.clone());
             self.stopping.cancel();
-            Some(message(error))
+            Some(error.clone())
         } else {
             None
         };
@@ -579,7 +618,13 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
             | Command::ListTabs { .. }
             | Command::GetBrowser { .. }
             | Command::BrowserTab { .. }
+            | Command::BrowserManagedTabs { .. }
+            | Command::BrowserUserOpenTabs { .. }
+            | Command::BrowserUserClaimTab { .. }
             | Command::BrowserRead { .. }
+            | Command::BrowserDownloadWait { .. }
+            | Command::BrowserDownloadPath { .. }
+            | Command::BrowserDownloadMedia { .. }
             | Command::BrowserMutation {
                 handle: Handle::Tab(_),
                 ..
@@ -634,6 +679,8 @@ impl ToolExecutor for Bridge {
                 Err(
                     error @ (ToolError::Persistence(_)
                     | ToolError::CleanupUnconfirmed(_)
+                    | ToolError::OutcomeUnknown(_)
+                    | ToolError::OperationUnknown { .. }
                     | ToolError::OperationCleanupUnconfirmed { .. }),
                 ) => {
                     receipt.fail(error.clone());

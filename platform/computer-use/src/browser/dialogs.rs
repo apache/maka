@@ -561,14 +561,19 @@ fn route_event(
                     ),
                     ("Page.enable", json!({})),
                 ] {
-                    let socket = socket.clone();
                     let session = session.to_owned();
-                    let _ = host.spawn(Box::pin(async move {
-                        socket
-                            .request_in(Some(&session), method, params)
-                            .await
-                            .map(|_| ())
-                    }));
+                    let _ = socket.spawn_host_effect(
+                        host,
+                        move |socket| {
+                            Box::pin(async move {
+                                socket
+                                    .request_in(Some(&session), method, params)
+                                    .await
+                                    .map(|_| ())
+                            })
+                        },
+                        Box::new(|_| {}),
+                    );
                 }
             }
         }
@@ -631,17 +636,22 @@ fn route_event(
     if let Ok(Some(request)) = effect
         && let Some(host) = capability.lock().unwrap().as_ref()
     {
-        let socket = socket.clone();
-        let _ = host.spawn(Box::pin(async move {
-            socket
-                .request_in(
-                    request.target.session.as_deref(),
-                    "Page.handleJavaScriptDialog",
-                    json!({"accept":request.accept}),
-                )
-                .await
-                .map(|_| ())
-        }));
+        let _ = socket.spawn_host_effect(
+            host,
+            move |socket| {
+                Box::pin(async move {
+                    socket
+                        .request_in(
+                            request.target.session.as_deref(),
+                            "Page.handleJavaScriptDialog",
+                            json!({"accept":request.accept}),
+                        )
+                        .await
+                        .map(|_| ())
+                })
+            },
+            Box::new(|_| {}),
+        );
     }
 }
 
@@ -784,9 +794,6 @@ impl super::Tab {
     ) -> Result<serde_json::Value, ToolError> {
         use crate::protocol::ObservationKind;
         use serde_json::json;
-        self.refs.clear();
-        self.capture = None;
-        self.frame = None;
         let message = format!(
             "Screenshot unavailable while a JavaScript {} dialog is open. Use getAXState() and its dialog controls.",
             dialog.metadata.kind.name()
@@ -794,6 +801,8 @@ impl super::Tab {
         if matches!(kind, ObservationKind::Screenshot) {
             return Ok(json!({"screenshotUnavailable":message}));
         }
+        self.refs.clear();
+        self.frame = None;
         let document = format!("javascript-dialog:{}", dialog.metadata.id);
         let (full, refs) =
             self.ax
@@ -958,7 +967,6 @@ impl super::Tab {
             .socket
             .as_ref()
             .ok_or_else(|| failed("dialog connection is unavailable"))?
-            .connection
             .clone();
         let mut rpc: maka_agent_facts::tools::ToolFuture<()> = Box::pin(async move {
             let mut params = serde_json::json!({"accept":request.accept});
@@ -966,7 +974,7 @@ impl super::Tab {
                 params["promptText"] = serde_json::json!(text);
             }
             let result = socket
-                .call(
+                .raw_call(
                     request.target.session.as_deref(),
                     "Page.handleJavaScriptDialog",
                     params,
@@ -977,26 +985,177 @@ impl super::Tab {
         });
         let outcome = prepared.confirm(rpc.as_mut(), cancellation).await;
         if outcome.dispatch == DispatchDisposition::Pending {
-            let pending: crate::SettlementFuture = Box::pin(async move {
-                let _ = rpc.await;
+            // The physical close witness does not prove the pending transport
+            // reply arrived. Keep that same request under checked custody.
+            let pending: crate::CheckedSettlementFuture = Box::pin(async move {
+                match rpc.await {
+                    Ok(()) | Err(ToolError::Failed(_)) => Ok(()),
+                    Err(error) => Err(error),
+                }
             });
-            match invocation.operation_settlement() {
+            match self
+                .attachment_settlement
+                .clone()
+                .or_else(|| invocation.operation_settlement())
+            {
                 Some(host) => {
-                    if let Err((error, pending)) = host.retain(pending) {
-                        pending.await;
+                    if let Err((error, pending)) = host.retain_checked(pending) {
+                        pending.await?;
                         return Err(error);
                     }
                 }
-                None => pending.await,
+                None => pending.await?,
             }
         }
         outcome.result?;
         self.refs.clear();
         self.frame = None;
-        self.capture = None;
         Ok(serde_json::Value::Null)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod iframe_effect_tests {
+    use super::*;
+    use crate::{BrowserEffectScope, BrowserHostEffects, HostEffectFactory, HostEffectFuture};
+    use cua_driver_core::browser::cdp_ws::{CdpConnection, CdpEvent};
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::{Value, json};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    #[derive(Default)]
+    struct Host {
+        ordinary: Mutex<Vec<HostEffectFuture>>,
+        scoped: Mutex<Vec<HostEffectFactory>>,
+    }
+    impl BrowserHostEffects for Host {
+        fn spawn(&self, pending: HostEffectFuture) -> Result<(), ToolError> {
+            self.ordinary.lock().unwrap().push(pending);
+            Ok(())
+        }
+        fn spawn_scoped_guarded(
+            &self,
+            factory: HostEffectFactory,
+            _: Box<dyn FnOnce(ToolError) + Send>,
+        ) -> Result<(), ToolError> {
+            self.scoped.lock().unwrap().push(factory);
+            Ok(())
+        }
+    }
+    struct Server(tokio::task::JoinHandle<()>);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    struct OpaqueScope;
+    impl BrowserEffectScope for OpaqueScope {
+        fn check_session_preparation(
+            &self,
+            _: crate::BrowserPreparationBinding,
+            _: CancellationToken,
+        ) -> crate::AuthorizationFuture {
+            panic!("an unadmitted transport cannot promote a fixture Host scope");
+        }
+    }
+
+    #[tokio::test]
+    async fn iframe_setup_selects_scoped_admission_without_promoting_unadmitted_transport() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sent, mut requests) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        let mut server = Server(tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut wire = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(message)) = wire.next().await {
+                if message.is_close() {
+                    break;
+                }
+                let request: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                sent.send(request.clone()).unwrap();
+                if wire
+                    .send(Message::Text(
+                        json!({"id":request["id"],"result":{}}).to_string().into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+        let connection = CdpConnection::connect_bounded(&format!("ws://{address}"), usize::MAX)
+            .await
+            .unwrap();
+        let socket = crate::browser::Cdp {
+            connection: Arc::new(connection),
+            dialogs: None,
+            native_context: None,
+            preparation: crate::browser::native::PreparationTransport::NotRequired,
+        };
+        let mut old = socket.clone();
+        old.preparation = crate::browser::native::PreparationTransport::Unadmitted;
+        let host = Arc::new(Host::default());
+        let captured: Arc<Mutex<Option<Arc<dyn BrowserHostEffects>>>> =
+            Arc::new(Mutex::new(Some(host.clone())));
+        let observed = Dialogs::default();
+        let mut children = std::collections::HashMap::new();
+        let event = |session: &str| CdpEvent {
+            method: "Target.attachedToTarget".into(),
+            params: json!({"sessionId":session,"targetInfo":{"type":"iframe"}}),
+            session_id: None,
+        };
+        route_event(
+            event("unadmitted-child"),
+            &mut children,
+            &old,
+            &observed,
+            &captured,
+        );
+        assert!(host.ordinary.lock().unwrap().is_empty());
+        let factories = std::mem::take(&mut *host.scoped.lock().unwrap());
+        assert_eq!(factories.len(), 2);
+        for factory in factories {
+            assert!(matches!(
+                factory(Arc::new(OpaqueScope)).await,
+                Err(ToolError::Failed(_))
+            ));
+        }
+        assert!(
+            requests.try_recv().is_err(),
+            "new opaque admission cannot bypass an unadmitted native transport"
+        );
+
+        // This positive half is explicitly a generic CDP wire fixture. It proves
+        // fixed request routing, not actual native preparation or Host DB grants.
+        route_event(
+            event("current-child"),
+            &mut children,
+            &socket,
+            &observed,
+            &captured,
+        );
+        assert!(host.scoped.lock().unwrap().is_empty());
+        let futures = std::mem::take(&mut *host.ordinary.lock().unwrap());
+        assert_eq!(futures.len(), 2);
+        for (pending, method) in futures
+            .into_iter()
+            .zip(["Target.setAutoAttach", "Page.enable"])
+        {
+            tokio::time::timeout(Duration::from_secs(2), pending)
+                .await
+                .unwrap()
+                .unwrap();
+            let request = requests.recv().await.unwrap();
+            assert_eq!(request["method"], method);
+            assert_eq!(request["sessionId"], "current-child");
+        }
+        assert!(requests.try_recv().is_err());
+        server.0.abort();
+        let _ = (&mut server.0).await;
+    }
+}

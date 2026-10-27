@@ -206,6 +206,11 @@ input listening for file drops. Other input fields keep their literal text.
 The file content is reported once through `onPaste`, or through `onFileDrop`
 when no paste listener is mounted, without inserting the paths as text.
 
+A local declaration adaptation names the private CSS alignment helper
+`LayoutAlign`, distinct from the public overlay `Align`. Its four layout
+property descriptors keep the same accepted values; runtime parsing is
+unchanged.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 

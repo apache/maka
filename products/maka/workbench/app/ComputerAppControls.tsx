@@ -86,9 +86,12 @@ export function ComputerAppControls(props: {
                     {entry().activity.display.appPath}
                   </Text>
                   <Text style={[{ ...codeTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
-                    {entry().activity.target.scope.kind === 'computer_app'
-                      ? entry().activity.target.scope.applicationId
-                      : tr('unavailable')}
+                    {(() => {
+                      const scope = entry().activity.target.scope;
+                      return scope.kind === 'computer_app'
+                        ? scope.applicationId
+                        : tr('unavailable');
+                    })()}
                   </Text>
                   <Text style={{ ...captionTextStyle, color: C.secondary }}>
                     {renderText(computerAppRiskMessage(entry().activity.display.risk))}

@@ -2422,7 +2422,7 @@ dependencies = [
 [[package]]
 name = "cua-cursor-motion"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "serde",
 ]
@@ -2430,7 +2430,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-contract"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "schemars 1.2.3",
  "serde",
@@ -2441,7 +2441,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-core"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2481,7 +2481,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-sdk"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
@@ -2510,7 +2510,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 [[package]]
 name = "cursor-overlay"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "anyhow",
  "cua-cursor-motion",
@@ -7642,6 +7642,7 @@ dependencies = [
 name = "maka-computer-use"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "base64 0.23.1",
  "core-foundation 0.10.1",
  "cua-driver-contract",
@@ -9330,7 +9331,7 @@ checksum = "a5eb86a92577833b75522336f210c49d9ebd7dd55a44d80a92e68c668a75f27c"
 [[package]]
 name = "nom"
 version = "1.2.4"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 
 [[package]]
 name = "nom"
@@ -11182,7 +11183,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pip-preview"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "serde_json",
 ]
@@ -11243,7 +11244,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-linux"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -11290,7 +11291,7 @@ dependencies = [
 [[package]]
 name = "platform-macos"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -11330,7 +11331,7 @@ dependencies = [
 [[package]]
 name = "platform-windows"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980"
+source = "git+https://github.com/maka-agent/cua?rev=626e5bfe794fc2d5a86269128b328f6b6fc78442#626e5bfe794fc2d5a86269128b328f6b6fc78442"
 dependencies = [
  "anyhow",
  "async-trait",

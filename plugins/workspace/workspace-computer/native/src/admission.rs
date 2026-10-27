@@ -21,7 +21,9 @@ use futures_util::FutureExt;
 use maka_agent_facts::tools::ToolError;
 use maka_capabilities::call::Ticket;
 use maka_computer_use::{
-    BrowserHostEffects, HostEffectFuture, OperationSettlement, SettlementFuture,
+    BrowserEffectScope, BrowserHostEffects, BrowserPreparationBinding, CheckedSettlementFuture,
+    HostEffectFactory, HostEffectFuture, HostUncertaintyFuture, OperationSettlement,
+    SettlementFuture,
 };
 use maka_event_log::root_store::InvocationEffectLease;
 use maka_js_runtime::repl::ReplAdmission;
@@ -31,6 +33,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use tokio::sync::Notify;
+
+type NativeSession = tokio::sync::Mutex<maka_computer_use::Session>;
 
 /// The VM producer's admission handshake. Actual effect completion and
 /// authority remain in the original journal and invocation execution lease.
@@ -103,6 +107,22 @@ impl Gate {
 
     pub fn close_admission(&self) {
         self.state.lock().unwrap().sealed = true;
+        self.changed.notify_waiters();
+    }
+
+    pub(super) async fn wait_closed(&self) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            {
+                let state = self.state.lock().unwrap();
+                if state.sealed || state.failure.is_some() {
+                    return;
+                }
+            }
+            changed.await;
+        }
     }
 
     fn resolve(&self, failure: Option<ToolError>) {
@@ -158,11 +178,30 @@ impl Receipt {
 /// A native call can return a confirmed result before its exact RPC replies.
 /// This slot carries only those owned futures, never another grant or Run.
 struct Settlement {
-    pending: Mutex<Option<Vec<SettlementFuture>>>,
+    pending: Mutex<Option<Vec<CheckedSettlementFuture>>>,
 }
 impl OperationSettlement for Settlement {
     fn retain(&self, pending: SettlementFuture) -> Result<(), (ToolError, SettlementFuture)> {
         let mut slot = self.pending.lock().unwrap();
+        match slot.as_mut() {
+            Some(retained) => {
+                retained.push(Box::pin(async move {
+                    pending.await;
+                    Ok(())
+                }));
+                Ok(())
+            }
+            None => Err((
+                ToolError::Failed("Computer call settlement is closed".into()),
+                pending,
+            )),
+        }
+    }
+    fn retain_checked(
+        &self,
+        pending: CheckedSettlementFuture,
+    ) -> Result<(), (ToolError, CheckedSettlementFuture)> {
+        let mut slot = self.pending.lock().expect("settlement state lock poisoned");
         match slot.as_mut() {
             Some(retained) => {
                 retained.push(pending);
@@ -179,6 +218,8 @@ impl OperationSettlement for Settlement {
 /// Original effect custody while the journal is still committing its outcome.
 /// Drop transfers the same RPCs to tracked cleanup rather than dropping them.
 pub(super) struct Operation {
+    native: Option<Arc<NativeSession>>,
+    root: Option<Arc<maka_event_log::RootStore>>,
     settlement: Arc<Settlement>,
     lease: Option<InvocationEffectLease>,
     ticket: Option<Ticket>,
@@ -189,7 +230,12 @@ impl Operation {
     pub fn new(
         owner: &Arc<super::Computer>,
         lease: InvocationEffectLease,
+        native: &Arc<NativeSession>,
     ) -> Result<Self, ToolError> {
+        if owner.stopping.is_cancelled() {
+            lease.finish(Ok(())); // No journal dispatch or native effect was admitted.
+            return Err(ToolError::Failed("Computer Host service is closed".into()));
+        }
         let mut ticket = match owner.resources.reserve() {
             Ok(ticket) => ticket,
             Err(error) => {
@@ -200,6 +246,8 @@ impl Operation {
         };
         ticket.start();
         Ok(Self {
+            native: Some(native.clone()),
+            root: Some(owner.store.clone()),
             settlement: Arc::new(Settlement {
                 pending: Mutex::new(Some(Vec::new())),
             }),
@@ -214,11 +262,11 @@ impl Operation {
         self.settlement.clone()
     }
 
-    pub fn complete(mut self, journal_failure: Option<String>) {
+    pub fn complete(mut self, journal_failure: Option<ToolError>) {
         self.transfer(journal_failure);
     }
 
-    fn transfer(&mut self, journal_failure: Option<String>) {
+    fn transfer(&mut self, journal_failure: Option<ToolError>) {
         let Some(lease) = self.lease.take() else {
             return;
         };
@@ -230,11 +278,14 @@ impl Operation {
             .take()
             .expect("original settlement owner");
         let mut custody = PendingSettlement {
-            pending: Some(pending),
+            pending: Some(pending.into_iter().map(Some).collect()),
+            native: self.native.take(),
+            root: self.root.take(),
             lease: Some(lease),
             ticket: self.ticket.take(),
             stopping: self.stopping.clone(),
             failure: None,
+            observations: Vec::new(),
         };
         if let Some(failure) = journal_failure {
             custody.fail(failure);
@@ -249,88 +300,198 @@ impl Operation {
 impl Drop for Operation {
     fn drop(&mut self) {
         if self.lease.is_some() {
-            self.transfer(Some(
+            self.transfer(Some(ToolError::CleanupUnconfirmed(
                 "Computer journal owner disappeared before settlement".into(),
-            ));
+            )));
         }
     }
 }
 
 struct PendingSettlement {
-    pending: Option<Vec<SettlementFuture>>,
+    pending: Option<Vec<Option<CheckedSettlementFuture>>>,
+    native: Option<Arc<NativeSession>>,
+    root: Option<Arc<maka_event_log::RootStore>>,
     lease: Option<InvocationEffectLease>,
     ticket: Option<Ticket>,
     stopping: tokio_util::sync::CancellationToken,
     failure: Option<String>,
+    observations: Vec<ToolError>,
 }
 impl PendingSettlement {
-    fn fail(&mut self, failure: String) {
+    fn fail(&mut self, observation: ToolError) {
+        let failure = observation.to_string();
+        self.observations.push(observation);
         self.stopping.cancel();
         if let Some(lease) = self.lease.take() {
             lease.retain_unconfirmed(failure.clone());
+        }
+        if let Some(ticket) = &self.ticket {
+            ticket.record_failure(failure.clone());
         }
         self.failure.get_or_insert(failure);
     }
 
     fn finish(&mut self) {
-        // Every retained future has become Ready. A late RPC rejection was
-        // already mapped to () by the backend after proving exact Closed.
+        // Only a failure-free terminal set releases the original invocation.
+        // An empty list never overrides existing uncertainty: on failure the
+        // actual native owner and typed observations remain unconfirmed.
         self.pending.take();
         if let Some(lease) = self.lease.take() {
             lease.finish(Ok(()));
         }
         if let Some(ticket) = self.ticket.take() {
-            ticket.complete(self.failure.take().map_or(Ok(()), Err));
+            match self.failure.take() {
+                Some(failure) => ticket.unconfirmed(
+                    failure,
+                    (
+                        self.native.take(),
+                        self.root.take(),
+                        std::mem::take(&mut self.observations),
+                    ),
+                ),
+                None => ticket.complete(Ok(())),
+            }
         }
     }
 
     async fn run(mut self) {
-        let result = {
-            // Keep the opaque boxes outside catch_unwind. An unwinding poll
-            // must not drop a Cua PendingCall and close its original socket.
+        loop {
             let pending = self.pending.as_mut().expect("owned settlement futures");
-            AssertUnwindSafe(async {
-                for future in pending {
-                    future.as_mut().await;
+            if pending.iter().all(Option::is_none) {
+                break;
+            }
+            // Poll every original retained RPC on each wake. A later failure
+            // must fence admission while an earlier RPC is still pending.
+            let result = AssertUnwindSafe(std::future::poll_fn(|context| {
+                for (index, slot) in pending.iter_mut().enumerate() {
+                    if let Some(future) = slot
+                        && let std::task::Poll::Ready(result) = future.as_mut().poll(context)
+                    {
+                        return std::task::Poll::Ready((index, result));
+                    }
                 }
-            })
+                std::task::Poll::Pending
+            }))
             .catch_unwind()
-            .await
-        };
-        if result.is_ok() {
-            self.finish();
-        } else {
-            self.fail("Computer RPC settlement worker panicked".into());
-            // Drop retains the original opaque futures with failed custody.
+            .await;
+            match result {
+                Ok((index, result)) => {
+                    // Drop only the actual terminal box; it is never re-polled
+                    // or retained as evidence that another RPC has drained.
+                    self.pending.as_mut().expect("owned settlement futures")[index].take();
+                    if let Err(error) = result {
+                        self.fail(error);
+                    }
+                }
+                Err(_) => {
+                    self.fail(ToolError::CleanupUnconfirmed(
+                        "Computer RPC settlement worker panicked".into(),
+                    ));
+                    return; // Drop retains the original nonterminal boxes.
+                }
+            }
         }
+        self.finish();
     }
 }
 impl Drop for PendingSettlement {
     fn drop(&mut self) {
         if self.pending.is_some() {
-            self.fail("Computer RPC settlement owner disappeared".into());
+            self.fail(ToolError::CleanupUnconfirmed(
+                "Computer RPC settlement owner disappeared".into(),
+            ));
             if let Some(ticket) = self.ticket.take() {
-                ticket.unconfirmed(self.failure.take().unwrap(), self.pending.take().unwrap());
+                ticket.unconfirmed(
+                    self.failure.take().unwrap(),
+                    (
+                        self.pending.take().unwrap(),
+                        self.native.take(),
+                        self.root.take(),
+                        std::mem::take(&mut self.observations),
+                    ),
+                );
             }
         }
     }
 }
 
+#[derive(Clone)]
 struct HostEffects {
     owner: std::sync::Weak<super::Computer>,
+    native: std::sync::Weak<NativeSession>,
     gate: Arc<Gate>,
+    popup: Option<Arc<super::browser_access::Attachment>>,
 }
+#[cfg(test)]
 pub(super) fn host_effects(
     owner: &Arc<super::Computer>,
     gate: Arc<Gate>,
+    native: &Arc<NativeSession>,
 ) -> Arc<dyn BrowserHostEffects> {
     Arc::new(HostEffects {
         owner: Arc::downgrade(owner),
+        native: Arc::downgrade(native),
         gate,
+        popup: None,
     })
 }
-impl BrowserHostEffects for HostEffects {
-    fn spawn(&self, unpolled: HostEffectFuture) -> Result<(), ToolError> {
+pub(super) fn host_effects_with_lease_children(
+    owner: &Arc<super::Computer>,
+    gate: Arc<Gate>,
+    native: &Arc<NativeSession>,
+    popup: Arc<super::browser_access::Attachment>,
+) -> Arc<dyn BrowserHostEffects> {
+    Arc::new(HostEffects {
+        owner: Arc::downgrade(owner),
+        native: Arc::downgrade(native),
+        gate,
+        popup: Some(popup),
+    })
+}
+// Constructed only after HostEffects::reserve starts the actual ticket.
+// This scope carries no Agent operation ID, Run, site permission, or new store.
+struct AttachedEffectScope {
+    attachment: Arc<super::browser_access::Attachment>,
+    gate: Arc<Gate>,
+    active: tokio_util::sync::CancellationToken,
+}
+impl BrowserEffectScope for AttachedEffectScope {
+    fn check_session_preparation(
+        &self,
+        binding: BrowserPreparationBinding,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> maka_computer_use::AuthorizationFuture {
+        let attachment = self.attachment.clone();
+        let gate = self.gate.clone();
+        let active = self.active.clone();
+        Box::pin(async move {
+            if active.is_cancelled() {
+                return Err(ToolError::Failed(
+                    "Browser service effect has finished".into(),
+                ));
+            }
+            gate.check_open()?;
+            attachment
+                .effect_preparation_current(&binding, &cancellation)
+                .await?;
+            if active.is_cancelled() {
+                return Err(ToolError::Failed(
+                    "Browser service effect has finished".into(),
+                ));
+            }
+            gate.check_open()
+        })
+    }
+}
+
+struct HostAdmission {
+    owner: Arc<super::Computer>,
+    native: Arc<NativeSession>,
+    receipt: Receipt,
+    ticket: Ticket,
+}
+impl HostEffects {
+    fn reserve(&self) -> Result<HostAdmission, ToolError> {
         let owner = self
             .owner
             .upgrade()
@@ -338,6 +499,9 @@ impl BrowserHostEffects for HostEffects {
         if owner.stopping.is_cancelled() {
             return Err(ToolError::Failed("Computer Host service is closed".into()));
         }
+        let native = self.native.upgrade().ok_or_else(|| {
+            ToolError::Failed("Computer native epoch custody is unavailable".into())
+        })?;
         let receipt = self.gate.register()?;
         let mut ticket = match owner.resources.reserve() {
             Ok(ticket) => ticket,
@@ -347,59 +511,336 @@ impl BrowserHostEffects for HostEffects {
             }
         };
         ticket.start();
+        Ok(HostAdmission {
+            owner,
+            native,
+            receipt,
+            ticket,
+        })
+    }
+
+    fn launch(
+        admitted: HostAdmission,
+        unpolled: HostEffectFuture,
+        uncertainty: Option<HostUncertaintyFuture>,
+        completed: Option<tokio::sync::oneshot::Sender<Result<(), ToolError>>>,
+        preparation_active: Option<tokio_util::sync::CancellationToken>,
+    ) {
+        let HostAdmission {
+            owner,
+            native,
+            receipt,
+            ticket,
+        } = admitted;
         let custody = HostCustody {
             pending: Some(unpolled),
+            native: Some(native),
+            uncertainty,
+            failure: None,
+            observations: Vec::new(),
             ticket: Some(ticket),
             stopping: owner.stopping.clone(),
             root: Some(owner.store.clone()),
+            completed,
+            preparation_active,
         };
         owner.tasks.spawn(custody.run());
         receipt.host_transferred();
+    }
+
+    fn admit_scoped(
+        &self,
+        factory: HostEffectFactory,
+        uncertainty: Option<HostUncertaintyFuture>,
+    ) -> Result<(), ToolError> {
+        let attachment = self.popup.clone().ok_or_else(|| {
+            ToolError::Failed("Browser service preparation authority is unavailable".into())
+        })?;
+        let admitted = self.reserve()?;
+        let active = tokio_util::sync::CancellationToken::new();
+        let scope: Arc<dyn BrowserEffectScope> = Arc::new(AttachedEffectScope {
+            attachment,
+            gate: self.gate.clone(),
+            active: active.clone(),
+        });
+        let lifetime = active.clone();
+        let work: HostEffectFuture = Box::pin(async move {
+            let _lifetime = lifetime.drop_guard();
+            factory(scope).await
+        });
+        Self::launch(admitted, work, uncertainty, None, Some(active));
+        Ok(())
+    }
+
+    fn admit(
+        &self,
+        unpolled: HostEffectFuture,
+        uncertainty: Option<HostUncertaintyFuture>,
+    ) -> Result<(), ToolError> {
+        let admitted = self.reserve()?;
+        Self::launch(admitted, unpolled, uncertainty, None, None);
         Ok(())
     }
 }
+impl BrowserHostEffects for HostEffects {
+    fn spawn_scoped_guarded(
+        &self,
+        factory: HostEffectFactory,
+        _rejected: Box<dyn FnOnce(ToolError) + Send>,
+    ) -> Result<(), ToolError> {
+        self.admit_scoped(factory, None)
+    }
+
+    fn spawn_scoped_custodied(
+        &self,
+        factory: HostEffectFactory,
+        uncertainty: HostUncertaintyFuture,
+        _rejected: Box<dyn FnOnce(ToolError) + Send>,
+    ) -> Result<(), ToolError> {
+        self.admit_scoped(factory, Some(uncertainty))
+    }
+
+    fn supports_lease_children(&self) -> bool {
+        self.popup.is_some()
+            && self.owner.upgrade().is_some_and(|owner| {
+                owner.popup_provenance.is_some()
+                    && (owner.configuration.browser_preparation.popup
+                        || !owner
+                            .configuration
+                            .browser_preparation
+                            .request_headers
+                            .is_empty())
+            })
+            && self.native.upgrade().is_some()
+    }
+
+    fn adopt_lease_child(
+        &self,
+        request: maka_computer_use::BrowserLeaseChildRequest,
+    ) -> HostEffectFuture {
+        let effects = self.clone();
+        Box::pin(async move {
+            let attachment = effects.popup.clone().ok_or_else(|| {
+                ToolError::Failed("Host lease-child authorization is unavailable".into())
+            })?;
+            let owner = effects
+                .owner
+                .upgrade()
+                .ok_or_else(|| ToolError::Failed("Computer Host service is closed".into()))?;
+            if !owner.configuration.browser_preparation.popup
+                && owner
+                    .configuration
+                    .browser_preparation
+                    .request_headers
+                    .is_empty()
+            {
+                return Err(ToolError::Failed(
+                    "Maka popup adoption is disabled by Host preparation policy".into(),
+                ));
+            }
+            let admitted = effects.reserve()?;
+            let (completed, result) = tokio::sync::oneshot::channel();
+            let owner = admitted.owner.clone();
+            let native = admitted.native.clone();
+            let gate = effects.gate.clone();
+            let work = Box::pin(super::browser_popup::run(
+                owner,
+                native,
+                attachment,
+                gate,
+                request,
+                Arc::new(effects),
+            ));
+            Self::launch(admitted, work, None, Some(completed), None);
+            result.await.map_err(|_| {
+                ToolError::CleanupUnconfirmed(
+                    "Host lease-child service lost its terminal observation; do not replay".into(),
+                )
+            })?
+        })
+    }
+
+    fn spawn(&self, unpolled: HostEffectFuture) -> Result<(), ToolError> {
+        self.admit(unpolled, None)
+    }
+    fn spawn_custodied(
+        &self,
+        unpolled: HostEffectFuture,
+        uncertainty: HostUncertaintyFuture,
+        _rejected: Box<dyn FnOnce(ToolError) + Send>,
+    ) -> Result<(), ToolError> {
+        // Admission is synchronous. A refusal returns before either future is
+        // polled; the caller still owns its normal rejection cleanup.
+        self.admit(unpolled, Some(uncertainty))
+    }
+}
+struct HostServiceSettlement(HostEffects);
+impl OperationSettlement for HostServiceSettlement {
+    fn retain(&self, pending: SettlementFuture) -> Result<(), (ToolError, SettlementFuture)> {
+        let admitted = match self.0.reserve() {
+            Ok(admitted) => admitted,
+            Err(error) => return Err((error, pending)),
+        };
+        HostEffects::launch(
+            admitted,
+            Box::pin(async move {
+                pending.await;
+                Ok(())
+            }),
+            None,
+            None,
+        );
+        Ok(())
+    }
+    fn retain_checked(
+        &self,
+        pending: CheckedSettlementFuture,
+    ) -> Result<(), (ToolError, CheckedSettlementFuture)> {
+        let admitted = match self.0.reserve() {
+            Ok(admitted) => admitted,
+            Err(error) => return Err((error, pending)),
+        };
+        HostEffects::launch(admitted, pending, None, None);
+        Ok(())
+    }
+}
+pub(super) fn host_service_settlement(
+    owner: &Arc<super::Computer>,
+    native: &Arc<NativeSession>,
+    gate: Arc<Gate>,
+) -> Arc<dyn OperationSettlement> {
+    Arc::new(HostServiceSettlement(HostEffects {
+        owner: Arc::downgrade(owner),
+        native: Arc::downgrade(native),
+        gate,
+        popup: None,
+    }))
+}
+
 struct HostCustody {
     pending: Option<HostEffectFuture>,
+    native: Option<Arc<NativeSession>>,
+    uncertainty: Option<HostUncertaintyFuture>,
+    failure: Option<String>,
+    observations: Vec<ToolError>,
     ticket: Option<Ticket>,
     stopping: tokio_util::sync::CancellationToken,
     root: Option<Arc<maka_event_log::RootStore>>,
+    completed: Option<tokio::sync::oneshot::Sender<Result<(), ToolError>>>,
+    preparation_active: Option<tokio_util::sync::CancellationToken>,
+}
+enum HostObservation {
+    Completed(Result<(), ToolError>),
+    Uncertain(ToolError),
+}
+fn outcome_unconfirmed(error: &ToolError) -> bool {
+    matches!(
+        error,
+        ToolError::Persistence(_)
+            | ToolError::CleanupUnconfirmed(_)
+            | ToolError::OutcomeUnknown(_)
+            | ToolError::OperationUnknown { .. }
+            | ToolError::OperationCleanupUnconfirmed { .. }
+    )
 }
 impl HostCustody {
+    fn publish(&mut self, result: Result<(), ToolError>) {
+        if let Some(completed) = self.completed.take() {
+            let _ = completed.send(result);
+        }
+    }
+
+    fn fail(&mut self, observation: ToolError) {
+        if let Some(active) = &self.preparation_active {
+            active.cancel();
+        }
+        let error = observation.to_string();
+        self.observations.push(observation);
+        self.stopping.cancel();
+        if let Some(ticket) = &self.ticket {
+            ticket.record_failure(error.clone());
+        }
+        self.failure.get_or_insert(error);
+    }
     async fn run(mut self) {
-        let result = AssertUnwindSafe(self.pending.as_mut().unwrap().as_mut())
-            .catch_unwind()
-            .await;
-        match result {
-            Ok(result) => {
-                self.pending.take();
-                let failure = match result {
-                    Err(
-                        error @ (ToolError::Persistence(_)
-                        | ToolError::CleanupUnconfirmed(_)
-                        | ToolError::OperationCleanupUnconfirmed { .. }),
-                    ) => {
-                        self.stopping.cancel();
-                        Some(error.to_string())
+        loop {
+            let result = {
+                let pending = self.pending.as_mut().expect("owned Host effect future");
+                let uncertainty = self.uncertainty.as_mut();
+                AssertUnwindSafe(async {
+                    match uncertainty {
+                        Some(uncertainty) => tokio::select! { biased;
+                            error = uncertainty.as_mut() => HostObservation::Uncertain(error),
+                            result = pending.as_mut() => HostObservation::Completed(result),
+                        },
+                        None => HostObservation::Completed(pending.as_mut().await),
                     }
-                    _ => None, // A rejected, Ready RPC has settled its custody.
-                };
-                self.ticket
-                    .take()
-                    .unwrap()
-                    .complete(failure.map_or(Ok(()), Err));
+                })
+                .catch_unwind()
+                .await
+            };
+            match result {
+                Ok(HostObservation::Uncertain(error)) => {
+                    self.uncertainty.take();
+                    self.fail(error);
+                    // Keep polling the same admitted future and its original
+                    // started ticket. Uncertainty is not physical settlement.
+                }
+                Ok(HostObservation::Completed(result)) => {
+                    if let Err(error) = &result
+                        && outcome_unconfirmed(error)
+                    {
+                        self.fail(error.clone());
+                        // A terminal error must never be re-polled as a drain.
+                        // Keep actual independent native Session/Driver/controller
+                        // custody; neither this box nor an empty list is proof.
+                        self.pending.take();
+                        self.uncertainty.take();
+                        self.ticket
+                            .take()
+                            .expect("owned Host effect ticket")
+                            .unconfirmed(
+                                error.to_string(),
+                                (
+                                    self.native.take(),
+                                    self.root.take(),
+                                    std::mem::take(&mut self.observations),
+                                ),
+                            );
+                        self.publish(Err(error.clone()));
+                        return;
+                    }
+                    self.pending.take();
+                    self.uncertainty.take();
+                    self.ticket
+                        .take()
+                        .expect("owned Host effect ticket")
+                        .complete(self.failure.take().map_or(Ok(()), Err));
+                    self.publish(result);
+                    return;
+                }
+                Err(_) => return, // Drop retains the original opaque futures.
             }
-            Err(_) => { /* Drop retains the original future. */ }
         }
     }
 }
 impl Drop for HostCustody {
     fn drop(&mut self) {
+        if let Some(active) = self.preparation_active.take() {
+            active.cancel();
+        }
         if let Some(pending) = self.pending.take() {
             self.stopping.cancel();
             if let Some(ticket) = self.ticket.take() {
                 ticket.unconfirmed(
                     "Computer Host-service effect owner disappeared".into(),
-                    (pending, self.root.take()),
+                    (
+                        pending,
+                        self.uncertainty.take(),
+                        self.native.take(),
+                        self.root.take(),
+                        std::mem::take(&mut self.observations),
+                    ),
                 );
             }
         }
@@ -439,6 +880,7 @@ mod tests {
         invocation: Invocation,
         parent: maka_event_log::root_store::SessionExecutionLease,
         effects: maka_event_log::root_store::InvocationEffects,
+        native: Arc<NativeSession>,
     }
     impl Fixture {
         async fn new() -> Self {
@@ -494,6 +936,7 @@ mod tests {
                 resources: Arc::default(),
                 stopping: CancellationToken::new(),
                 tasks,
+                popup_provenance: None,
                 origin: maka_agent_facts::tool_call::ToolOrigin::HostSdk {
                     package_id: "fixture".into(),
                     entry_id: "fixture".into(),
@@ -501,8 +944,11 @@ mod tests {
                     parent: None,
                 },
             });
+            let native_owner = maka_computer_use::SessionOwner::new(owner.sessions.driver.clone());
+            let native = Arc::new(tokio::sync::Mutex::new(native_owner.new_epoch().unwrap()));
             Self {
                 directory,
+                native,
                 owner,
                 store,
                 invocation,
@@ -576,7 +1022,7 @@ mod tests {
     #[tokio::test]
     async fn durable_closed_result_retains_same_run_until_original_rpc_is_ready() {
         let fixture = Fixture::new().await;
-        let operation = Operation::new(&fixture.owner, fixture.lease()).unwrap();
+        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
         let handoff = operation.handoff();
         let release = CancellationToken::new();
         let _release_on_failure = release.clone().drop_guard();
@@ -646,7 +1092,8 @@ mod tests {
     async fn journal_failure_or_lost_owner_keeps_same_rpc_and_quarantines_original_authority() {
         for lost_owner in [false, true] {
             let fixture = Fixture::new().await;
-            let operation = Operation::new(&fixture.owner, fixture.lease()).unwrap();
+            let operation =
+                Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
             let handoff = operation.handoff();
             let release = CancellationToken::new();
             let _release_on_failure = release.clone().drop_guard();
@@ -685,7 +1132,7 @@ mod tests {
                 drop(operation);
             } else {
                 assert!(matches!(result, Err(ToolError::Persistence(_))));
-                operation.complete(Some("fixture T2 commit was not observed".into()));
+                operation.complete(result.as_ref().err().cloned());
             }
             assert!(fixture.owner.stopping.is_cancelled());
             assert!(!dropped.load(Ordering::SeqCst));
@@ -707,14 +1154,18 @@ mod tests {
         let dropped = Arc::new(AtomicBool::new(false));
         let witness = DropWitness(dropped.clone());
         let custody = PendingSettlement {
-            pending: Some(vec![Box::pin(async move {
+            native: Some(fixture.native.clone()),
+            root: Some(fixture.owner.store.clone()),
+            pending: Some(vec![Some(Box::pin(async move {
                 let _witness = witness;
                 std::future::pending::<()>().await;
-            })]),
+                Ok(())
+            }))]),
             lease: Some(fixture.lease()),
             ticket: Some(ticket),
             stopping: fixture.owner.stopping.clone(),
             failure: None,
+            observations: Vec::new(),
         };
         drop(custody);
         assert!(!dropped.load(Ordering::SeqCst));
@@ -731,7 +1182,7 @@ mod tests {
     async fn automatic_host_effect_transfers_resource_custody_without_agent_dispatch() {
         let fixture = Fixture::new().await;
         let gate = Arc::new(Gate::default());
-        let host = host_effects(&fixture.owner, gate.clone());
+        let host = host_effects(&fixture.owner, gate.clone(), &fixture.native);
         let release = CancellationToken::new();
         let _release_on_failure = release.clone().drop_guard();
         let started = CancellationToken::new();
@@ -777,7 +1228,7 @@ mod tests {
     #[tokio::test]
     async fn late_handoff_returns_the_exact_unpolled_future_for_synchronous_draining() {
         let fixture = Fixture::new().await;
-        let operation = Operation::new(&fixture.owner, fixture.lease()).unwrap();
+        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
         let handoff = operation.handoff();
         operation.complete(None);
         let sent = Arc::new(AtomicUsize::new(0));
@@ -820,7 +1271,7 @@ mod tests {
             }
         }
         let fixture = Fixture::new().await;
-        let operation = Operation::new(&fixture.owner, fixture.lease()).unwrap();
+        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
         let handoff = operation.handoff();
         let polled = CancellationToken::new();
         let dropped = Arc::new(AtomicBool::new(false));
@@ -909,5 +1360,370 @@ mod tests {
         receipt.fail(ToolError::Persistence("inner T1 commit uncertain".into()));
         other.acknowledge();
         assert!(matches!(gate.seal().await, Err(ToolError::Persistence(_))));
+    }
+
+    #[tokio::test]
+    async fn real_custodied_host_effect_admits_the_original_ticket_before_polling() {
+        let fixture = Fixture::new().await;
+        let gate = Arc::new(Gate::default());
+        let host = host_effects(&fixture.owner, gate.clone(), &fixture.native);
+        let resources = Arc::downgrade(&fixture.owner.resources);
+        let started = CancellationToken::new();
+        let release = CancellationToken::new();
+        let _release_on_failure = release.clone().drop_guard();
+        let effect_started = started.clone();
+        let effect_release = release.clone();
+        host.spawn_custodied(
+            Box::pin(async move {
+                assert!(
+                    !resources.upgrade().unwrap().is_idle(),
+                    "real Host ticket must precede first poll"
+                );
+                effect_started.cancel();
+                effect_release.cancelled().await;
+                Ok(())
+            }),
+            Box::pin(std::future::pending::<ToolError>()),
+            Box::new(|_| panic!("synchronous Host admission must not reject later")),
+        )
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.cancelled())
+            .await
+            .expect("admitted Host future was not polled");
+        gate.seal().await.unwrap();
+        let mut resources = Box::pin(fixture.owner.resources.settle());
+        assert!(
+            poll!(&mut resources).is_pending(),
+            "admission ACK is not the worker's settlement"
+        );
+        assert!(
+            !fixture
+                .facts()
+                .await
+                .iter()
+                .any(|fact| matches!(fact, Fact::ToolDispatched { .. })),
+            "automatic Host custody must not fabricate Agent T1"
+        );
+        release.cancel();
+        resources.await.unwrap();
+        fixture.effects.settle().await.unwrap();
+        fixture.close(false).await;
+    }
+
+    #[tokio::test]
+    async fn real_uncertainty_signal_fences_admission_but_drains_the_same_host_future() {
+        let fixture = Fixture::new().await;
+        let host = host_effects(&fixture.owner, Arc::default(), &fixture.native);
+        let started = CancellationToken::new();
+        let uncertain = CancellationToken::new();
+        let release = CancellationToken::new();
+        let _release_on_failure = release.clone().drop_guard();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let pending_calls = calls.clone();
+        let pending_started = started.clone();
+        let pending_release = release.clone();
+        let signal = uncertain.clone();
+        let witness = DropWitness(dropped.clone());
+        host.spawn_custodied(
+            Box::pin(async move {
+                let _witness = witness;
+                pending_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                pending_started.cancel();
+                pending_release.cancelled().await;
+                Ok(())
+            }),
+            Box::pin(async move {
+                signal.cancelled().await;
+                ToolError::OutcomeUnknown("actual remote effect observation was lost".into())
+            }),
+            Box::new(|_| panic!("accepted effect cannot be rejected as unadmitted")),
+        )
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.cancelled())
+            .await
+            .expect("admitted Host future was not polled");
+        uncertain.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.owner.stopping.cancelled(),
+        )
+        .await
+        .expect("actual uncertainty was not recorded");
+        let rejected_calls = calls.clone();
+        assert!(
+            host.spawn(Box::pin(async move {
+                rejected_calls.fetch_add(1, AtomicOrdering::SeqCst);
+                Ok(())
+            }))
+            .is_err(),
+            "real owner uncertainty must fence new admission before polling"
+        );
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        assert!(
+            matches!(
+                Operation::new(&fixture.owner, fixture.lease(), &fixture.native),
+                Err(ToolError::Failed(_))
+            ),
+            "uncertain real owner must refuse a fresh operation before native or journal dispatch"
+        );
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "uncertainty cannot discard the original future"
+        );
+        let mut resources = Box::pin(fixture.owner.resources.settle());
+        assert!(
+            poll!(&mut resources).is_pending(),
+            "same started ticket must wait for the late terminal reply"
+        );
+        release.cancel();
+        assert!(
+            resources.await.is_err(),
+            "late success cannot erase sticky uncertainty"
+        );
+        assert!(dropped.load(Ordering::SeqCst));
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            1,
+            "no replacement request was dispatched"
+        );
+        fixture.effects.settle().await.unwrap();
+        fixture.close(false).await;
+    }
+
+    #[tokio::test]
+    async fn ready_unknown_parks_the_actual_native_controller_without_repolling_completed_future() {
+        struct ReadyUnknown(Arc<AtomicUsize>);
+        impl std::future::Future for ReadyUnknown {
+            type Output = Result<(), ToolError>;
+            fn poll(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Self::Output> {
+                self.0.fetch_add(1, AtomicOrdering::SeqCst);
+                std::task::Poll::Ready(Err(ToolError::OutcomeUnknown(
+                    "native RPC replied while Chrome effect remains unknown".into(),
+                )))
+            }
+        }
+        let fixture = Fixture::new().await;
+        let native_owner =
+            maka_computer_use::SessionOwner::new(fixture.owner.sessions.driver.clone());
+        let actual_native = Arc::new(tokio::sync::Mutex::new(native_owner.new_epoch().unwrap()));
+        let original_native = Arc::downgrade(&actual_native);
+        let host = host_effects(&fixture.owner, Arc::default(), &actual_native);
+        let polls = Arc::new(AtomicUsize::new(0));
+        host.spawn_custodied(
+            Box::pin(ReadyUnknown(polls.clone())),
+            Box::pin(std::future::pending::<ToolError>()),
+            Box::new(|_| panic!("Host admission should succeed")),
+        )
+        .unwrap();
+        drop(actual_native);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.owner.stopping.cancelled(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(fixture.owner.resources.settle().await,
+            Err(ToolError::CleanupUnconfirmed(message)) if message.contains("native RPC replied while Chrome effect remains unknown")));
+        assert_eq!(
+            polls.load(AtomicOrdering::SeqCst),
+            1,
+            "a Ready error cannot be polled again as physical drain"
+        );
+        assert!(
+            original_native.upgrade().is_some(),
+            "real independent native Session/Driver/controller custody was lost"
+        );
+        drop(host);
+        fixture.effects.settle().await.unwrap();
+        let resources = fixture.owner.resources.clone();
+        fixture.close(false).await;
+        assert!(
+            original_native.upgrade().is_some(),
+            "the failed resource ticket must own actual native custody independently of Computer"
+        );
+        drop(resources);
+        assert!(
+            original_native.upgrade().is_none(),
+            "retained native custody must not introduce a Computer/resources cycle"
+        );
+    }
+
+    #[tokio::test]
+    async fn checked_rpc_uncertainty_quarantines_the_original_invocation_before_other_rpc_drains() {
+        let fixture = Fixture::new().await;
+        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
+        let handoff = operation.handoff();
+        let fail_first = CancellationToken::new();
+        let release_last = CancellationToken::new();
+        let _release_on_failure = release_last.clone().drop_guard();
+        let fail = fail_first.clone();
+        let release = release_last.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let witness = DropWitness(dropped.clone());
+        let first: CheckedSettlementFuture = Box::pin(async move {
+            fail.cancelled().await;
+            Err(ToolError::OutcomeUnknown(
+                "required original RPC custody is unknown".into(),
+            ))
+        });
+        let last: CheckedSettlementFuture = Box::pin(async move {
+            let _witness = witness;
+            release.cancelled().await;
+            Ok(())
+        });
+        ToolJournal::new(fixture.store.clone(), fixture.invocation.clone())
+            .invoke_prepared_output(
+                "checked-operation".into(),
+                ToolCallIdentity::standalone("checked-call".into()),
+                "fixture_checked_settlement".into(),
+                json!({}),
+                CancellationToken::new(),
+                PreparedEffect::new(move |_| {
+                    Box::pin(async move {
+                        if let Err((error, pending)) = handoff.retain_checked(first) {
+                            pending.await?;
+                            return Err(error);
+                        }
+                        if let Err((error, pending)) = handoff.retain_checked(last) {
+                            pending.await?;
+                            return Err(error);
+                        }
+                        Ok(json!({"confirmedObservation":true}).into())
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        operation.complete(None);
+        fail_first.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.owner.stopping.cancelled(),
+        )
+        .await
+        .expect("actual uncertainty was not recorded");
+        assert!(
+            fixture.effects.settle().await.is_err(),
+            "the real original invocation must retain unconfirmed custody"
+        );
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "sibling required RPC remains the original owned future"
+        );
+        let mut resources = Box::pin(fixture.owner.resources.settle());
+        assert!(
+            poll!(&mut resources).is_pending(),
+            "checked failure must not discard another original request"
+        );
+        release_last.cancel();
+        assert!(resources.await.is_err());
+        assert!(dropped.load(Ordering::SeqCst));
+        fixture.close(true).await;
+    }
+
+    #[tokio::test]
+    async fn later_checked_uncertainty_is_observed_while_the_first_original_rpc_is_still_pending() {
+        let fixture = Fixture::new().await;
+        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
+        let handoff = operation.handoff();
+        let fail_first = CancellationToken::new();
+        let release_last = CancellationToken::new();
+        let _release_on_failure = release_last.clone().drop_guard();
+        let fail = fail_first.clone();
+        let release = release_last.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let witness = DropWitness(dropped.clone());
+        let first: CheckedSettlementFuture = Box::pin(async move {
+            fail.cancelled().await;
+            Err(ToolError::OutcomeUnknown(
+                "required original RPC custody is unknown".into(),
+            ))
+        });
+        let last: CheckedSettlementFuture = Box::pin(async move {
+            let _witness = witness;
+            release.cancelled().await;
+            Ok(())
+        });
+        ToolJournal::new(fixture.store.clone(), fixture.invocation.clone())
+            .invoke_prepared_output(
+                "checked-operation".into(),
+                ToolCallIdentity::standalone("checked-call".into()),
+                "fixture_checked_settlement".into(),
+                json!({}),
+                CancellationToken::new(),
+                PreparedEffect::new(move |_| {
+                    Box::pin(async move {
+                        if let Err((error, pending)) = handoff.retain_checked(last) {
+                            pending.await?;
+                            return Err(error);
+                        }
+                        if let Err((error, pending)) = handoff.retain_checked(first) {
+                            pending.await?;
+                            return Err(error);
+                        }
+                        Ok(json!({"confirmedObservation":true}).into())
+                    })
+                }),
+            )
+            .await
+            .unwrap();
+        operation.complete(None);
+        fail_first.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            fixture.owner.stopping.cancelled(),
+        )
+        .await
+        .expect("later checked error was blocked by the earlier pending RPC");
+        assert!(
+            fixture.effects.settle().await.is_err(),
+            "the real original invocation must retain unconfirmed custody"
+        );
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "sibling required RPC remains the original owned future"
+        );
+        let mut resources = Box::pin(fixture.owner.resources.settle());
+        assert!(
+            poll!(&mut resources).is_pending(),
+            "checked failure must not discard another original request"
+        );
+        release_last.cancel();
+        assert!(resources.await.is_err());
+        assert!(dropped.load(Ordering::SeqCst));
+        fixture.close(true).await;
+    }
+
+    #[tokio::test]
+    async fn closed_checked_handoff_returns_the_original_unpolled_future() {
+        let fixture = Fixture::new().await;
+        let operation = Operation::new(&fixture.owner, fixture.lease(), &fixture.native).unwrap();
+        let handoff = operation.handoff();
+        operation.complete(None);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let future_calls = calls.clone();
+        let witness = DropWitness(dropped.clone());
+        let pending: CheckedSettlementFuture = Box::pin(async move {
+            let _witness = witness;
+            future_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
+        });
+        let pending = match handoff.retain_checked(pending) {
+            Err((ToolError::Failed(_), pending)) => pending,
+            _ => panic!("closed actual settlement must return its input future"),
+        };
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+        assert!(!dropped.load(Ordering::SeqCst));
+        pending.await.unwrap();
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        assert!(dropped.load(Ordering::SeqCst));
+        fixture.effects.settle().await.unwrap();
+        fixture.owner.resources.settle().await.unwrap();
+        fixture.close(false).await;
     }
 }

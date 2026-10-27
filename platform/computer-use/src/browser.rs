@@ -29,8 +29,13 @@ mod ax;
 mod clipboard_bridge;
 mod cursor;
 mod dialogs;
+mod downloads;
 mod frames;
+mod native;
+mod origin;
 mod ownership;
+pub(crate) mod provider;
+use provider::Provider;
 mod playwright;
 pub(crate) use ownership::Host;
 use ownership::{BrowserIdentity, TabIdentity};
@@ -55,6 +60,8 @@ pub(crate) struct Browsers {
     epoch: crate::desktop::NativeEpochId,
     cursor_spec: Option<std::sync::Arc<std::sync::Mutex<crate::cursor::Spec>>>,
     connections: Vec<BrowserConnection>,
+    native_providers: Vec<Provider>,
+    native_errors: Vec<String>,
     clipboards: HashMap<String, clipboard_bridge::Backend>,
     targets: HashMap<String, Tab>,
 }
@@ -67,9 +74,11 @@ struct TabInfo {
     kind: String,
     #[serde(rename = "webSocketDebuggerUrl")]
     websocket: Option<String>,
+    #[serde(skip)]
+    native: Option<cua_driver_core::browser::NativeTabInfo>,
 }
 struct TabSource {
-    provider: BrowserConnection,
+    provider: Provider,
     generation: String,
     info: TabInfo,
 }
@@ -78,16 +87,22 @@ enum InitialState {
     Deferred,
 }
 struct Tab {
-    provider: BrowserConnection,
+    provider: Provider,
     generation: String,
     info: TabInfo,
     socket: Option<Cdp>,
+    socket_prepared: bool,
+    origin_proof: Option<origin::DocumentOrigin>,
+    navigation_admission: Option<origin::NavigationAdmission>,
+    native_claim: Option<cua_driver_core::browser::NativePhysicalClaim>,
+    native_wire: Option<cua_driver_core::browser::NativeWireContext>,
+    native_host_operation: Option<cua_driver_core::browser::NativeHostOperation>,
+    native_acquired: bool,
     frame: Option<String>,
     refs: HashMap<u64, ElementRef>,
     frames: frames::Frames,
     ax: ax::Projection,
     previous: Option<String>,
-    capture: Option<Capture>,
     navigation: Option<Navigation>,
     cursor_world: Option<(String, u64)>,
     cursor_epoch: crate::desktop::NativeEpochId,
@@ -96,34 +111,93 @@ struct Tab {
     cursor_spec: Option<std::sync::Arc<std::sync::Mutex<crate::cursor::Spec>>>,
     last_turn: String,
     dialogs: Option<dialogs::Controller>,
+    downloads: Option<downloads::Controller>,
     dialog_host: Option<std::sync::Arc<dyn crate::BrowserHostEffects>>,
     clipboard: Option<clipboard_bridge::Bridge>,
     clipboard_store: std::sync::Arc<crate::browser_clipboard::Store>,
     clipboard_authorization: Option<std::sync::Arc<dyn crate::BrowserAttachmentAuthorization>>,
+    attachment_settlement: Option<std::sync::Arc<dyn crate::OperationSettlement>>,
 }
 enum Navigation {
     Loader(String),
     Reload(String),
     Url(String),
 }
-#[derive(Clone, Copy)]
-struct Capture {
-    width: f64,
-    height: f64,
-    image_width: f64,
-    image_height: f64,
-    x: f64,
-    y: f64,
-}
 #[derive(Clone)]
 struct Cdp {
     connection: std::sync::Arc<cua_driver_core::browser::cdp_ws::CdpConnection>,
     dialogs: Option<dialogs::Link>,
+    native_context: Option<cua_driver_core::browser::NativeWireContext>,
+    preparation: native::PreparationTransport,
 }
+
+// Preserve the Host's typed pre-dispatch refusal/uncertainty through existing
+// anyhow CDP plumbing. This is not a transport reply or text classifier.
+#[derive(Debug)]
+struct CdpPreparationFailure(ToolError);
+impl std::fmt::Display for CdpPreparationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+impl std::error::Error for CdpPreparationFailure {}
+
 impl Cdp {
-    fn failure(error: impl ToString) -> ToolError {
+    fn with_effect_scope(&self, scope: std::sync::Arc<dyn crate::BrowserEffectScope>) -> Self {
+        let mut socket = self.clone();
+        socket.preparation = self.preparation.with_effect_scope(scope);
+        socket
+    }
+
+    fn spawn_host_effect(
+        &self,
+        host: &std::sync::Arc<dyn crate::BrowserHostEffects>,
+        factory: impl FnOnce(Cdp) -> crate::HostEffectFuture + Send + 'static,
+        rejected: Box<dyn FnOnce(ToolError) + Send>,
+    ) -> Result<(), ToolError> {
+        if matches!(self.preparation, native::PreparationTransport::NotRequired) {
+            // Generic CDP and metadata-only adapters retain their existing
+            // effect path. No artificial native preparation scope is needed.
+            host.spawn_guarded(factory(self.clone()), rejected)
+        } else {
+            let socket = self.clone();
+            host.spawn_scoped_guarded(
+                Box::new(move |scope| factory(socket.with_effect_scope(scope))),
+                rejected,
+            )
+        }
+    }
+
+    /// This marker is created only before this physical CDP call is submitted.
+    /// An older effect may still be unknown; this is not its settlement proof.
+    fn is_pre_dispatch_guard_failure(error: &anyhow::Error) -> bool {
+        error.is::<CdpPreparationFailure>()
+    }
+
+    fn failure(error: anyhow::Error) -> ToolError {
+        if let Some(preparation) = error.downcast_ref::<CdpPreparationFailure>() {
+            return preparation.0.clone();
+        }
+        use cua_driver_core::browser::{
+            CdpFailureDisposition,
+            cdp_ws::{CdpReplyError, NativeCdpRefusal},
+        };
+        let disposition = error
+            .downcast_ref::<CdpReplyError>()
+            .map(CdpReplyError::disposition)
+            .or_else(|| {
+                error
+                    .downcast_ref::<NativeCdpRefusal>()
+                    .map(NativeCdpRefusal::disposition)
+            });
         let message = error.to_string();
-        if message.contains(" failed (") {
+        // A matched native invocation error can follow Chrome's timeout while
+        // the Chrome effect continues. Only trusted local producer disposition
+        // can distinguish that from a replied failure or an undispatched refusal.
+        if matches!(
+            disposition,
+            Some(CdpFailureDisposition::ReplyFailure | CdpFailureDisposition::NotDispatched)
+        ) {
             failed(message)
         } else {
             unknown(message)
@@ -159,7 +233,53 @@ impl Cdp {
         Ok(Self {
             connection: std::sync::Arc::new(connection),
             dialogs: None,
+            native_context: None,
+            preparation: native::PreparationTransport::NotRequired,
         })
+    }
+    async fn raw_call(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> anyhow::Result<Value> {
+        let _preparation = self
+            .preparation
+            .before_request()
+            .await
+            .map_err(|error| anyhow::Error::new(CdpPreparationFailure(error)))?;
+        match &self.native_context {
+            Some(context) => {
+                self.connection
+                    .call_with_native_context(context, session, method, params)
+                    .await
+            }
+            None => self.connection.call(session, method, params).await,
+        }
+    }
+    async fn raw_observation(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: Value,
+    ) -> anyhow::Result<Value> {
+        let _preparation = self
+            .preparation
+            .before_request()
+            .await
+            .map_err(|error| anyhow::Error::new(CdpPreparationFailure(error)))?;
+        match &self.native_context {
+            Some(context) => {
+                self.connection
+                    .call_observation_with_native_context(context, session, method, params)
+                    .await
+            }
+            None => {
+                self.connection
+                    .call_observation(session, method, params)
+                    .await
+            }
+        }
     }
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, ToolError> {
         self.request_in(None, method, params).await
@@ -189,7 +309,15 @@ impl Cdp {
             dialogs.synchronize().await;
             dialogs.state.check_method(method)?;
         }
-        let result = self.connection.call(session, method, params).await;
+        let _preparation = self.preparation.before_request().await?;
+        let result = match &self.native_context {
+            Some(context) => {
+                self.connection
+                    .call_with_native_context(context, session, method, params)
+                    .await
+            }
+            None => self.connection.call(session, method, params).await,
+        };
         if let Some(dialogs) = &self.dialogs {
             dialogs.synchronize().await;
         }
@@ -207,7 +335,25 @@ impl Cdp {
             dialogs.state.check_method(method)?;
         }
         let result = {
-            let call = self.connection.call_observation(session, method, params);
+            let call = async {
+                let _preparation = self
+                    .preparation
+                    .before_request()
+                    .await
+                    .map_err(|error| anyhow::Error::new(CdpPreparationFailure(error)))?;
+                match &self.native_context {
+                    Some(context) => {
+                        self.connection
+                            .call_observation_with_native_context(context, session, method, params)
+                            .await
+                    }
+                    None => {
+                        self.connection
+                            .call_observation(session, method, params)
+                            .await
+                    }
+                }
+            };
             tokio::pin!(call);
             if let Some(dialogs) = &self.dialogs {
                 tokio::select! {
@@ -270,11 +416,14 @@ async fn inventory(provider: &BrowserConnection) -> Result<(String, Vec<TabInfo>
         tabs.into_iter().filter(|t| t.kind == "page").collect(),
     ))
 }
-fn tab_info(provider: &BrowserConnection, tab: &TabInfo) -> Value {
-    json!({"id":format!("{}:{}",provider.id,tab.id),"providerTabId":tab.id,"browserId":provider.id,"title":tab.title,"url":tab.url})
+fn tab_info(provider: &Provider, tab: &TabInfo) -> Value {
+    if let Some(native) = &tab.native {
+        return native::tab_info(native);
+    }
+    json!({"id":provider.public_tab_id(&tab.id),"providerTabId":tab.id,"browserId":provider.id(),"title":tab.title,"url":tab.url})
 }
-fn tab_matches(provider: &BrowserConnection, tab: &TabInfo, id: &str) -> bool {
-    id == tab.id || id == format!("{}:{}", provider.id, tab.id)
+fn tab_matches(provider: &Provider, tab: &TabInfo, id: &str) -> bool {
+    id == tab.id || id == provider.public_tab_id(&tab.id)
 }
 impl Browsers {
     pub(crate) fn new(native: std::sync::Arc<tokio::sync::Mutex<crate::Driver>>) -> Self {
@@ -291,6 +440,8 @@ impl Browsers {
             epoch: crate::desktop::NativeEpochId::new(),
             cursor_spec: None,
             connections: Vec::new(),
+            native_providers: Vec::new(),
+            native_errors: Vec::new(),
             clipboards: HashMap::new(),
             targets: HashMap::new(),
         }
@@ -308,6 +459,8 @@ impl Browsers {
             epoch,
             cursor_spec: Some(cursor_spec),
             connections: Vec::new(),
+            native_providers: Vec::new(),
+            native_errors: Vec::new(),
             clipboards: HashMap::new(),
             targets: HashMap::new(),
         }
@@ -319,10 +472,10 @@ impl Browsers {
 
     async fn visible_inventory(
         &self,
-        provider: &BrowserConnection,
+        provider: &Provider,
     ) -> Result<(String, Vec<TabInfo>), ToolError> {
-        let (generation, tabs) = inventory(provider).await?;
-        let browser = BrowserIdentity::new(provider, &generation)?;
+        let (generation, tabs) = provider.inventory().await?;
+        let browser = BrowserIdentity::of(provider, &generation)?;
         let host = self.host().await;
         let host = host.lock().await;
         host.known(&browser)?;
@@ -343,7 +496,7 @@ impl Browsers {
     }
 
     pub(crate) fn target_label(&self, id: &str) -> Option<&str> {
-        self.targets.get(id).map(|tab| tab.provider.id.as_str())
+        self.targets.get(id).map(|tab| tab.provider.id())
     }
 
     pub(crate) fn configure(
@@ -368,12 +521,28 @@ impl Browsers {
         Ok(())
     }
     pub(crate) async fn state(&self) -> (Vec<Value>, Vec<String>) {
+        let mut providers: Vec<_> = self
+            .connections
+            .iter()
+            .cloned()
+            .map(Provider::Cdp)
+            .collect();
+        let discovered = provider::discover(&self.native, self.owner).await;
+        let mut errors = discovered.errors;
+        providers.extend(discovered.providers);
         let mut browsers = Vec::new();
-        let mut errors = Vec::new();
-        for provider in &self.connections {
-            match self.visible_inventory(provider).await {
-                Ok((_, tabs)) => browsers.push(json!({"id":provider.id,"name":provider.id,"type":"cdp","tabs":tabs.iter().map(|t| tab_info(provider,t)).collect::<Vec<_>>() })),
-                Err(error) => errors.push(format!("{}: {error}", provider.id)),
+        for provider in providers {
+            match self.visible_inventory(&provider).await {
+                Ok((_, tabs)) => {
+                    let mut info = provider.info();
+                    info["tabs"] = json!(
+                        tabs.iter()
+                            .map(|tab| tab_info(&provider, tab))
+                            .collect::<Vec<_>>()
+                    );
+                    browsers.push(info);
+                }
+                Err(error) => errors.push(format!("{}: {error}", provider.id())),
             }
         }
         (browsers, errors)
@@ -387,7 +556,30 @@ impl Browsers {
         language: Language,
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
+        if matches!(
+            &command,
+            Command::ListBrowsers { .. }
+                | Command::ListTabs { .. }
+                | Command::GetBrowser { .. }
+                | Command::BrowserTab { .. }
+                | Command::GetTab { .. }
+                | Command::CreateBrowserTab { .. }
+                | Command::BrowserManagedTabs { .. }
+                | Command::BrowserUserOpenTabs { .. }
+                | Command::BrowserUserClaimTab { .. }
+        ) {
+            let discovered = provider::discover(&self.native, self.owner).await;
+            self.native_providers = discovered.providers;
+            self.native_errors = discovered.errors;
+        }
+        self.reconcile_native_command(&command).await?;
         match command {
+            Command::BrowserManagedTabs { browser_id } => self.managed_tabs(&browser_id).await,
+            Command::BrowserUserOpenTabs { browser_id } => self.user_tabs(&browser_id).await,
+            Command::BrowserUserClaimTab { browser_id, tab_id } => {
+                self.claim_user_tab(&browser_id, &tab_id, invocation, cancellation, language)
+                    .await
+            }
             Command::ListBrowsers { .. } => {
                 let (mut browsers, errors) = self.state().await;
                 if !errors.is_empty() {
@@ -401,15 +593,12 @@ impl Browsers {
             Command::ListTabs { options } => {
                 let mut tabs = Vec::new();
                 for provider in self.providers(options.browser.as_deref())? {
-                    let (_, listed) = self.visible_inventory(provider).await?;
-                    tabs.extend(listed.iter().map(|tab| tab_info(provider, tab)));
+                    let (_, listed) = self.visible_inventory(&provider).await?;
+                    tabs.extend(listed.iter().map(|tab| tab_info(&provider, tab)));
                 }
                 Ok(json!(tabs))
             }
             Command::GetBrowser { options } => {
-                if options.extension_instance_id.is_some() {
-                    return Err(failed("extension browser providers are unavailable"));
-                }
                 if options.id.is_none()
                     && let Some(url) = options.url
                 {
@@ -417,7 +606,14 @@ impl Browsers {
                 }
                 let mut matches = Vec::new();
                 for provider in self.providers(options.id.as_deref())? {
-                    inventory(provider).await?;
+                    if options.extension_instance_id.as_deref().is_some_and(|id| {
+                        provider
+                            .native()
+                            .is_none_or(|native| native.identity().instance_id != id)
+                    }) {
+                        continue;
+                    }
+                    provider.inventory().await?;
                     matches.push(provider);
                 }
                 if matches.len() != 1 {
@@ -429,7 +625,7 @@ impl Browsers {
                         Language::ZhTw => "瀏覽器選擇不明確或缺少；請從 listBrowsers 選擇 ID",
                     }));
                 }
-                Ok(json!({"id":matches[0].id}))
+                Ok(matches[0].info())
             }
             Command::BrowserTab {
                 browser_id,
@@ -452,11 +648,27 @@ impl Browsers {
                         if id.is_empty() {
                             return Err(failed("tab ID is required"));
                         }
-                        let (generation, tabs) = inventory(&provider).await?;
-                        let info = tabs
-                            .into_iter()
-                            .find(|tab| tab_matches(&provider, tab, &id))
-                            .ok_or_else(|| failed("tab is unavailable in the selected browser"))?;
+                        let (generation, info) = match provider.native() {
+                            Some(native) => (
+                                native.identity().generation.clone(),
+                                provider::native_tab(
+                                    native
+                                        .resolve_user_tab(&id)
+                                        .await
+                                        .map_err(provider::native_error)?,
+                                ),
+                            ),
+                            None => {
+                                let (generation, tabs) = provider.inventory().await?;
+                                let info = tabs
+                                    .into_iter()
+                                    .find(|tab| tab_matches(&provider, tab, &id))
+                                    .ok_or_else(|| {
+                                        failed("tab is unavailable in the selected browser")
+                                    })?;
+                                (generation, info)
+                            }
+                        };
                         self.bind(
                             TabSource {
                                 provider,
@@ -546,6 +758,90 @@ impl Browsers {
                         }
                     })
                     .await
+            }
+            Command::BrowserDownloadPath {
+                handle: Handle::Tab(handle),
+                scope,
+                download_id,
+                options: _,
+            } => {
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn).await?;
+                let tab = self
+                    .targets
+                    .get_mut(&handle)
+                    .expect("checked browser handle");
+                tab.last_turn = turn.to_owned();
+                // A filename remains provider metadata, but the public Download
+                // object still belongs to its original currently available tab.
+                // Do not prepare page content or attach a debugger for this lookup.
+                tab.refresh_info(language).await?;
+                invocation
+                    .authorize_browser(
+                        crate::BrowserAccess::Metadata {
+                            document: tab.document(),
+                        },
+                        cancellation,
+                    )
+                    .await?;
+                tab.refresh_info(language).await?;
+                check_input(cancellation)?;
+                self.host()
+                    .await
+                    .lock()
+                    .await
+                    .download_metadata
+                    .path(self.owner, &identity.browser, &scope, &download_id)
+                    .await
+            }
+            Command::BrowserDownloadMedia {
+                handle: Handle::Tab(handle),
+                target,
+                options,
+            } => {
+                let identity = self
+                    .targets
+                    .get(&handle)
+                    .ok_or_else(|| failed("stale_tab: bind it again"))?
+                    .identity()?;
+                self.use_tab(&identity, turn).await?;
+                let tab = self
+                    .targets
+                    .get_mut(&handle)
+                    .expect("checked browser handle");
+                match target {
+                    BrowserMediaTarget::Locator { locator } => {
+                        tab.last_turn = turn.to_owned();
+                        tab.authorize(None, invocation, cancellation, language)
+                            .await?;
+                        tab.verify(language).await?;
+                        let document = tab.document();
+                        tab.playwright_download_media(
+                            &locator,
+                            &options,
+                            document,
+                            cancellation,
+                            language,
+                        )
+                        .await
+                    }
+                    BrowserMediaTarget::Coordinates { .. } | BrowserMediaTarget::DomNode { .. } => {
+                        let command = if matches!(target, BrowserMediaTarget::Coordinates { .. }) {
+                            "cua_download_media"
+                        } else {
+                            "dom_cua_download_media"
+                        };
+                        let info = tab.provider.info();
+                        let name = info["name"].as_str().unwrap_or("Browser");
+                        Err(failed(format!(
+                            "{name} does not support command \"{command}\"."
+                        )))
+                    }
+                }
             }
             Command::BrowserMutation {
                 handle: Handle::Tab(handle),
@@ -664,15 +960,26 @@ impl Browsers {
                 let tab = self.targets.get_mut(&handle).unwrap();
                 tab.last_turn = turn.to_owned();
                 tab.refresh_info(language).await?;
-                Ok(json!({"title":tab.info.title,"url":tab.info.url}))
+                if tab.provider.native().is_some()
+                    && tab.native_acquired
+                    && tab.native_claim.is_none()
+                {
+                    tab.authorize(None, invocation, cancellation, language)
+                        .await?;
+                }
+                if let Some(native) = &tab.info.native {
+                    Ok(native::tab_info(native))
+                } else {
+                    Ok(json!({"title":tab.info.title,"url":tab.info.url}))
+                }
             }
             Command::GetTab { reference, options } => {
                 let mut matches = Vec::new();
                 for provider in self.providers(options.browser.as_deref())? {
-                    let (generation, tabs) = inventory(provider).await?;
+                    let (generation, tabs) = provider.inventory().await?;
                     for tab in tabs {
                         let selected = match &reference {
-                            TabReference::Id(id) => tab_matches(provider, &tab, id),
+                            TabReference::Id(id) => tab_matches(&provider, &tab, id),
                             TabReference::Url { url } => &tab.url == url,
                             TabReference::Mention { .. } => {
                                 return Err(failed(
@@ -695,6 +1002,31 @@ impl Browsers {
                     }));
                 }
                 let (provider, generation, tab) = matches.pop().unwrap();
+                if provider.native().is_some()
+                    && !self.native_managed(&provider, &generation, &tab.id).await?
+                {
+                    let bound = self
+                        .claim_user_tab(provider.id(), &tab.id, invocation, cancellation, language)
+                        .await?;
+                    let Handle::Tab(handle) =
+                        serde_json::from_value(bound["handle"].clone()).map_err(failed)?
+                    else {
+                        unreachable!()
+                    };
+                    let observed = self
+                        .observe(
+                            &handle,
+                            ObservationKind::Ax,
+                            false,
+                            invocation,
+                            cancellation,
+                            language,
+                        )
+                        .await?;
+                    let mut bound = bound;
+                    bound["state"] = observed["state"].clone();
+                    return Ok(bound);
+                }
                 self.bind(
                     TabSource {
                         provider,
@@ -755,33 +1087,44 @@ impl Browsers {
             _ => Err(failed("invalid browser operation")),
         }
     }
-    fn providers(&self, id: Option<&str>) -> Result<Vec<&BrowserConnection>, ToolError> {
+    fn providers(&self, id: Option<&str>) -> Result<Vec<Provider>, ToolError> {
         let providers: Vec<_> = self
             .connections
             .iter()
-            .filter(|p| id.is_none_or(|id| p.id == id))
+            .cloned()
+            .map(Provider::Cdp)
+            .chain(self.native_providers.iter().cloned())
+            .filter(|provider| id.is_none_or(|id| provider.id() == id))
             .collect();
         if providers.is_empty() && id.is_some() {
-            return Err(failed(
-                "browser_unavailable: no matching configured CDP provider",
-            ));
+            let mut message = "browser_unavailable: no current matching provider".to_owned();
+            if id.is_some_and(|id| id.starts_with("native:")) && !self.native_errors.is_empty() {
+                message.push_str("; ");
+                message.push_str(&self.native_errors.join("; "));
+            }
+            return Err(failed(message));
         }
         Ok(providers)
     }
     async fn create(
         &mut self,
-        provider: BrowserConnection,
+        provider: Provider,
         url: Option<String>,
         initial: InitialState,
         invocation: &crate::InvocationContext<'_>,
         cancellation: &tokio_util::sync::CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        if provider.native().is_some() {
+            return self
+                .create_native(provider, url, initial, invocation, cancellation, language)
+                .await;
+        }
         let turn = invocation.turn();
-        let (generation, _) = inventory(&provider).await?;
-        let identity = BrowserIdentity::new(&provider, &generation)?;
+        let (generation, _) = provider.inventory().await?;
+        let identity = BrowserIdentity::of(&provider, &generation)?;
         check_input(cancellation)?;
-        let mut browser = Cdp::connect(&generation, &provider).await?;
+        let mut browser = Cdp::connect(&generation, provider.cdp()?).await?;
         let host = self.host().await;
         let mut host = host.lock().await;
         host.known(&identity)?;
@@ -815,7 +1158,7 @@ impl Browsers {
             generation.clone(),
         )?;
         drop(host);
-        let (current, tabs) = inventory(&provider).await?;
+        let (current, tabs) = provider.inventory().await?;
         if current != generation {
             return Err(unknown("browser restarted after tab creation"));
         }
@@ -884,26 +1227,27 @@ impl Browsers {
             generation,
             info,
         } = source;
-        let identity = BrowserIdentity::new(&provider, &generation)?.tab(&info.id);
+        let identity = BrowserIdentity::of(&provider, &generation)?.tab(&info.id);
+        let api_profile = provider.api_profile();
         self.use_tab(&identity, turn).await?;
         if self
             .clipboards
-            .get(&provider.id)
+            .get(provider.id())
             .is_none_or(|backend| backend.provider != provider || backend.generation != generation)
         {
             self.clipboards.insert(
-                provider.id.clone(),
+                provider.id().to_owned(),
                 clipboard_bridge::Backend::new(provider.clone(), generation.clone()),
             );
         }
-        let clipboard_store = self.clipboards[&provider.id].store.clone();
+        let clipboard_store = self.clipboards[provider.id()].store.clone();
         let existing = self.targets.iter().find_map(|(handle, tab)| {
             (tab.provider == provider && tab.identity().ok().as_ref() == Some(&identity))
                 .then(|| handle.clone())
         });
         let new = existing.is_none();
         let handle = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let id = format!("{}:{}", provider.id, info.id);
+        let id = provider.public_tab_id(&info.id);
         if let Some(tab) = self.targets.get_mut(&handle) {
             if tab
                 .clipboard
@@ -929,12 +1273,18 @@ impl Browsers {
                     generation,
                     info,
                     socket: None,
+                    socket_prepared: false,
+                    origin_proof: None,
+                    navigation_admission: None,
+                    native_claim: None,
+                    native_wire: None,
+                    native_host_operation: None,
+                    native_acquired: false,
                     frame: None,
                     refs: HashMap::new(),
                     ax: ax::Projection::default(),
                     frames: frames::Frames::default(),
                     previous: None,
-                    capture: None,
                     navigation: None,
                     cursor_world: None,
                     cursor_epoch: self.epoch,
@@ -943,17 +1293,21 @@ impl Browsers {
                     cursor_spec: self.cursor_spec.clone(),
                     last_turn: turn.to_owned(),
                     dialogs: None,
+                    downloads: None,
                     dialog_host: invocation.browser_host_effects(),
                     clipboard: None,
                     clipboard_store,
                     clipboard_authorization: invocation
                         .browser_authorization()
                         .and_then(|authorization| authorization.attachment()),
+                    attachment_settlement: invocation.operation_settlement(),
                 },
             );
         }
         if matches!(initial, InitialState::Deferred) {
-            return Ok(json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab"}));
+            return Ok(
+                json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab","apiProfile":api_profile}),
+            );
         }
         match self
             .observe(
@@ -967,7 +1321,7 @@ impl Browsers {
             .await
         {
             Ok(value) => Ok(
-                json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab","state":value["state"]}),
+                json!({"handle":Handle::Tab(handle),"id":id,"kind":"tab","state":value["state"],"apiProfile":api_profile}),
             ),
             Err(error) => {
                 if new {
@@ -1004,9 +1358,11 @@ impl Browsers {
         self.use_tab(&identity, turn).await?;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
-        tab.refs.clear();
-        tab.capture = None;
-        tab.frame = None;
+        let prior_frame = tab.frame.clone();
+        if !matches!(kind, ObservationKind::Screenshot) {
+            tab.refs.clear();
+            tab.frame = None;
+        }
         tab.authorize(None, invocation, cancellation, language)
             .await?;
         tab.verify(language).await?;
@@ -1018,6 +1374,13 @@ impl Browsers {
         {
             result = tab.observe_dialog(dialog, kind, diff, language);
         }
+        if result.is_ok() && matches!(kind, ObservationKind::Screenshot) && prior_frame != tab.frame
+        {
+            // Compare against the actual captured document after settling and
+            // authorization, which can themselves overlap a navigation.
+            tab.refs.clear();
+            tab.previous = None;
+        }
         if result.is_err() && tab.active_dialog().await.is_none() {
             if let Err(error) = tab.disconnect().await {
                 result = result.map_err(|original| {
@@ -1028,7 +1391,6 @@ impl Browsers {
             }
             tab.refs.clear();
             tab.frame = None;
-            tab.capture = None;
         }
         result
     }
@@ -1043,7 +1405,6 @@ impl Browsers {
     ) -> Result<Value, ToolError> {
         let turn = invocation.turn();
         let closing = matches!(&action, Action::Close);
-        let moving_cursor = matches!(&action, Action::MoveCursor { .. });
         let tab = self.targets.get(handle).ok_or_else(|| {
             failed(match language {
                 Language::En => "stale_tab: bind it again",
@@ -1056,31 +1417,81 @@ impl Browsers {
         let host = self.host().await;
         let tab = self.targets.get_mut(handle).unwrap();
         tab.last_turn = turn.to_owned();
-        if !closing {
+        if !closing || tab.provider.native().is_some() {
             let target = match &action {
                 Action::Navigate { url } => Some(url.as_str()),
                 _ => None,
             };
-            tab.authorize(target, invocation, cancellation, language)
-                .await?;
+            if matches!(action, Action::Back | Action::Forward) {
+                tab.prepare_metadata(invocation, cancellation, language)
+                    .await?;
+            } else {
+                tab.authorize(target, invocation, cancellation, language)
+                    .await?;
+            }
         }
-        tab.verify(language).await?;
+        if matches!(
+            action,
+            Action::Navigate { .. } | Action::Back | Action::Forward
+        ) {
+            tab.connect_metadata().await?;
+        } else {
+            tab.verify(language).await?;
+        }
+        if matches!(
+            &action,
+            Action::Click {
+                target: Position::Point(_),
+                ..
+            } | Action::Scroll {
+                target: Position::Point(_),
+                ..
+            } | Action::MoveCursor {
+                target: Position::Point(_)
+            } | Action::Drag { .. }
+                | Action::TypeText { index: None, .. }
+                | Action::Paste { index: None, .. }
+                | Action::PressKey { index: None, .. }
+        ) && tab.active_dialog().await.is_none()
+        {
+            let proof = tab
+                .origin_proof
+                .clone()
+                .ok_or_else(|| failed("browser input lacks its admitted current document"))?;
+            proof.check_current(tab).await?;
+            let admitted = proof.document_identity().frame_token();
+            if tab.frame.as_ref() != Some(&admitted) {
+                tab.refs.clear();
+                tab.previous = None;
+            }
+            tab.frame = Some(admitted);
+        }
         let mut result = if closing {
-            tab.cleanup_clipboard().await?;
-            let mut host = host.lock().await;
-            check_input(cancellation)?;
-            host.begin_close(&identity, self.owner, turn)?;
+            tab.cleanup_clipboard_current().await?;
+            let native_close = tab.admit_native_close(invocation, cancellation).await?;
+            // Held response cleanup uses this actual Close operation while its
+            // exact claim is still Live. Existing Pending releases keep their
+            // original future; no request is replayed under this socket.
+            tab.cleanup_downloads_current().await?;
+            {
+                let mut host = host.lock().await;
+                check_input(cancellation)?;
+                host.begin_close(&identity, self.owner, turn)?;
+            }
             tab.refs.clear();
-            tab.request("Page.close", json!({}))
-                .await
-                .map(|_| Value::Null)
+            if let Some(admission) = native_close {
+                tab.close_native_tab(invocation, admission)
+                    .await
+                    .map(|_| Value::Null)
+            } else {
+                tab.request("Page.close", json!({}))
+                    .await
+                    .map(|_| Value::Null)
+            }
         } else {
             tab.action(action, invocation, cursor, cancellation, language)
                 .await
         };
-        if !moving_cursor {
-            tab.capture = None;
-        }
         if result.is_err() && tab.active_dialog().await.is_none() {
             if let Err(error) = tab.disconnect().await {
                 result = result.map_err(|original| {
@@ -1144,7 +1555,6 @@ impl Browsers {
             tab.refs.clear();
             tab.frames = frames::Frames::default();
             tab.frame = None;
-            tab.capture = None;
             tab.previous = None;
         }
         let finished = self
@@ -1220,6 +1630,16 @@ impl Browsers {
             failures.push(error.to_string());
         }
         if failures.is_empty() {
+            host.native.retain(|(owner, _), _| *owner != self.owner);
+            drop(host);
+            self.native_providers.clear();
+            self.native_errors.clear();
+            self.native
+                .lock()
+                .await
+                .native_browsers
+                .close_owner(self.owner)
+                .await;
             Ok(())
         } else {
             Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
@@ -1269,7 +1689,24 @@ impl Tab {
         Ok(())
     }
 
+    async fn cleanup_clipboard_current(&mut self) -> Result<(), ToolError> {
+        let socket = self.socket.clone();
+        if let Some(bridge) = self.clipboard.as_mut() {
+            let socket = socket.ok_or_else(|| {
+                ToolError::CleanupUnconfirmed(
+                    "Explicit Close lost its current admitted clipboard transport".into(),
+                )
+            })?;
+            bridge.cleanup_with_socket(Some(socket)).await?;
+            self.clipboard = None;
+        }
+        Ok(())
+    }
+
     fn begin_disconnect(&self) {
+        if let Some(downloads) = &self.downloads {
+            downloads.begin_close();
+        }
         if let Some(bridge) = &self.clipboard {
             bridge.begin_close();
         }
@@ -1281,6 +1718,7 @@ impl Tab {
     async fn disconnect(&mut self) -> Result<(), ToolError> {
         self.begin_disconnect();
         self.cleanup_clipboard().await?;
+        self.cleanup_downloads().await?;
         if let Some(dialogs) = self.dialogs.as_mut() {
             dialogs.close().await?;
         }
@@ -1288,12 +1726,18 @@ impl Tab {
         self.dialog_host = None;
         self.clipboard_authorization = None;
         self.socket = None;
+        self.socket_prepared = false;
+        self.origin_proof = None;
+        self.navigation_admission = None;
+        self.native_claim = None;
+        self.native_wire = None;
+        self.native_host_operation = None;
         Ok(())
     }
 
     fn document(&self) -> crate::BrowserDocument {
         crate::BrowserDocument {
-            browser_id: self.provider.id.clone(),
+            browser_id: self.provider.id().to_owned(),
             generation: self.generation.clone(),
             tab_id: self.info.id.clone(),
             url: self.info.url.clone(),
@@ -1307,18 +1751,70 @@ impl Tab {
         cancellation: &tokio_util::sync::CancellationToken,
         language: Language,
     ) -> Result<(), ToolError> {
+        self.authorize_with_intent(
+            navigation,
+            invocation,
+            cancellation,
+            language,
+            native::ClaimIntent::Implicit,
+        )
+        .await
+    }
+
+    async fn authorize_with_intent(
+        &mut self,
+        navigation: Option<&str>,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &tokio_util::sync::CancellationToken,
+        language: Language,
+        claim_intent: native::ClaimIntent,
+    ) -> Result<(), ToolError> {
         self.refresh_info(language).await?;
-        let document = self.document();
-        let access = match navigation {
-            Some(url) => crate::BrowserAccess::Navigate {
-                document: document.clone(),
-                url: url.into(),
-            },
-            None => crate::BrowserAccess::Read {
-                document: document.clone(),
-            },
-        };
-        invocation.authorize_browser(access, cancellation).await?;
+        let mut document = self.document();
+        if let Some(url) = navigation {
+            self.navigation_admission = None;
+            validate_url(url)?;
+            // Establish only the existing transport before consent, so a same-URL
+            // document replacement during consent cannot evade the source fence.
+            self.prepare_origin_transport(invocation, cancellation, language, claim_intent)
+                .await?;
+            document = self.document();
+            let source = self.document_identity().await?;
+            invocation
+                .authorize_browser(
+                    crate::BrowserAccess::Navigate {
+                        document: document.clone(),
+                        url: url.into(),
+                    },
+                    cancellation,
+                )
+                .await?;
+            self.refresh_info(language).await?;
+            if self.document() != document {
+                return Err(failed(
+                    "document changed during browser authorization; retry the operation",
+                ));
+            }
+            if self.document_identity().await? != source {
+                return Err(failed(
+                    "document changed before navigation dispatch; retry the operation",
+                ));
+            }
+            // A grant to leave A for B never grants content preparation on A.
+            self.navigation_admission = Some(origin::NavigationAdmission::new(url, source));
+            return Ok(());
+        }
+        // An adapter may run its fixed session machinery while acquiring the
+        // transport. That has a separate current Host admission and is never
+        // authorized by a prior URL's site consent.
+        self.prepare_origin_transport(invocation, cancellation, language, claim_intent)
+            .await?;
+        document = self.document();
+        let proof = self.document_origin().await?;
+        let access = proof.access();
+        invocation
+            .authorize_browser(access.clone(), cancellation)
+            .await?;
         // Human consent may suspend this call while another actor navigates.
         // Never apply the admitted operation to that replacement document.
         self.refresh_info(language).await?;
@@ -1327,6 +1823,7 @@ impl Tab {
                 "document changed during browser authorization; retry the operation",
             ));
         }
+        proof.check_current(self).await?;
         check_input(cancellation)?;
         if self
             .clipboard
@@ -1335,10 +1832,42 @@ impl Tab {
         {
             self.cleanup_clipboard().await?;
         }
-        self.clipboard_authorization = invocation
-            .browser_authorization()
-            .and_then(|authorization| authorization.attachment());
-        self.dialog_host = invocation.browser_host_effects();
+        if self.provider.native().is_some() {
+            let wire = cua_driver_core::browser::NativeWireContext::new(
+                self.cursor_owner.to_string(),
+                invocation.turn(),
+            )
+            .map_err(failed)?;
+            if let Some(socket) = &mut self.socket {
+                socket.native_context = Some(wire.clone());
+            }
+            self.native_wire = Some(wire);
+        }
+        let before_services_frame = if self.socket.is_some() {
+            Some(self.frame().await?)
+        } else {
+            None
+        };
+        let services = invocation
+            .prepare_browser_services(access, cancellation)
+            .await?;
+        check_input(cancellation)?;
+        self.refresh_info(language).await?;
+        if self.document() != document {
+            return Err(failed(
+                "document changed during browser attachment preparation",
+            ));
+        }
+        if let Some(frame) = before_services_frame
+            && self.frame().await? != frame
+        {
+            return Err(failed(
+                "document changed during browser attachment preparation",
+            ));
+        }
+        self.clipboard_authorization = services.attachment;
+        self.dialog_host = services.effects;
+        self.attachment_settlement = services.settlement;
         if let Some(bridge) = &self.clipboard {
             bridge.update(
                 self.clipboard_authorization.clone(),
@@ -1348,11 +1877,15 @@ impl Tab {
         if let Some(controller) = &self.dialogs {
             controller.host_effects(self.dialog_host.clone());
         }
+        if self.provider.native().is_some() {
+            self.prepare_native(invocation, cancellation, language, claim_intent)
+                .await?;
+        }
         Ok(())
     }
 
     fn identity(&self) -> Result<TabIdentity, ToolError> {
-        Ok(BrowserIdentity::new(&self.provider, &self.generation)?.tab(&self.info.id))
+        Ok(BrowserIdentity::of(&self.provider, &self.generation)?.tab(&self.info.id))
     }
     async fn wait_ready(&mut self, language: Language) -> Result<(), ToolError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -1400,11 +1933,29 @@ impl Tab {
         }
     }
     async fn refresh_info(&mut self, language: Language) -> Result<(), ToolError> {
-        let (generation, tabs) = inventory(&self.provider).await?;
+        let (generation, tabs) = match self.provider.native() {
+            Some(native) => {
+                let generation = native.identity().generation.clone();
+                let tabs = if native.is_closed() || generation != self.generation {
+                    Vec::new()
+                } else {
+                    let observed = native
+                        .resolve_user_tab(&self.info.id)
+                        .await
+                        .map_err(provider::native_error)?;
+                    if native.is_closed() {
+                        Vec::new()
+                    } else {
+                        vec![provider::native_tab(observed)]
+                    }
+                };
+                (generation, tabs)
+            }
+            None => self.provider.inventory().await?,
+        };
         if generation != self.generation || !tabs.iter().any(|tab| tab.id == self.info.id) {
             self.disconnect().await?;
             self.refs.clear();
-            self.capture = None;
             self.frame = None;
             return Err(failed(match language {
                 Language::En => "stale_tab: browser restarted or tab closed; bind the current tab",
@@ -1418,27 +1969,68 @@ impl Tab {
             .expect("verified tab identity");
         Ok(())
     }
-    async fn verify(&mut self, language: Language) -> Result<(), ToolError> {
-        self.refresh_info(language).await?;
+    async fn connect_metadata(&mut self) -> Result<(), ToolError> {
         if self
             .socket
             .as_ref()
-            .is_none_or(|socket| socket.connection.is_closed())
+            .is_some_and(|socket| !socket.connection.is_closed())
         {
-            self.refs.clear();
-            self.capture = None;
-            self.frame = None;
-            let websocket = self
-                .info
-                .websocket
-                .as_deref()
-                .ok_or_else(|| failed("tab has no CDP websocket"))?;
-            let mut socket = Cdp::connect(websocket, &self.provider).await?;
+            return Ok(());
+        }
+        self.refs.clear();
+        self.frame = None;
+        self.socket_prepared = false;
+        let socket = match &self.provider {
+            Provider::Cdp(provider) => {
+                let websocket = self
+                    .info
+                    .websocket
+                    .as_deref()
+                    .ok_or_else(|| failed("tab has no CDP websocket"))?;
+                Cdp::connect(websocket, provider).await?
+            }
+            Provider::Native { connection, .. } => {
+                let claim = self.native_claim.as_ref().ok_or_else(|| {
+                    failed("native metadata requires its admitted physical claim")
+                })?;
+                Cdp {
+                    connection: connection
+                        .open_cdp_channel(claim)
+                        .await
+                        .map_err(provider::native_error)?,
+                    dialogs: None,
+                    native_context: Some(self.native_wire.clone().ok_or_else(|| {
+                        failed("native CDP requires its admitted session/turn context")
+                    })?),
+                    preparation: match connection
+                        .capabilities()
+                        .map_err(provider::native_error)?
+                        .attachment_preparation
+                    {
+                        cua_driver_core::browser::NativeAttachmentPreparation::MetadataOnly => {
+                            native::PreparationTransport::NotRequired
+                        }
+                        cua_driver_core::browser::NativeAttachmentPreparation::FullPreparation
+                        | cua_driver_core::browser::NativeAttachmentPreparation::Unknown => {
+                            native::PreparationTransport::Unadmitted
+                        }
+                    },
+                }
+            }
+        };
+        self.socket = Some(socket);
+        Ok(())
+    }
+
+    async fn verify(&mut self, language: Language) -> Result<(), ToolError> {
+        self.refresh_info(language).await?;
+        self.connect_metadata().await?;
+        if !self.socket_prepared {
+            let socket = self.socket.as_mut().expect("connected metadata channel");
             let controller = dialogs::Controller::start(socket.clone());
             controller.host_effects(self.dialog_host.clone());
             socket.dialogs = Some(controller.link.clone());
             self.dialogs = Some(controller);
-            self.socket = Some(socket);
             self.frames = frames::Frames::default();
             self.request("Page.enable", json!({})).await?;
             if self
@@ -1449,7 +2041,9 @@ impl Tab {
             {
                 self.attach_frames().await?;
             }
+            self.socket_prepared = true;
         }
+        self.ensure_downloads().await?;
         Ok(())
     }
     async fn request(&mut self, method: &str, params: Value) -> Result<Value, ToolError> {
@@ -1597,18 +2191,8 @@ impl Tab {
             let state = format!("{label} {}: {}\n{body}", self.info.id, self.info.url);
             value["state"] = json!(state);
             self.previous = Some(full);
-        } else {
-            self.previous = None;
         }
         if !matches!(kind, ObservationKind::Ax) {
-            let metrics = self.request("Page.getLayoutMetrics", json!({})).await?;
-            let viewport = &metrics["cssVisualViewport"];
-            let width = viewport["clientWidth"]
-                .as_f64()
-                .ok_or_else(|| failed("viewport dimensions unavailable"))?;
-            let height = viewport["clientHeight"]
-                .as_f64()
-                .ok_or_else(|| failed("viewport dimensions unavailable"))?;
             let image = self
                 .request(
                     "Page.captureScreenshot",
@@ -1630,14 +2214,6 @@ impl Tab {
                 return Err(failed("empty browser screenshot"));
             }
             value["image"] = json!({"type":"image","mimeType":"image/png","data":data});
-            self.capture = Some(Capture {
-                width,
-                height,
-                image_width,
-                image_height,
-                x: viewport["pageX"].as_f64().unwrap_or(0.0),
-                y: viewport["pageY"].as_f64().unwrap_or(0.0),
-            });
         }
         if self.frame().await? != frame {
             return Err(failed(match language {
@@ -1696,31 +2272,24 @@ impl Tab {
         }
         Ok(())
     }
-    async fn point(&mut self, point: [f64; 2], language: Language) -> Result<[f64; 2], ToolError> {
-        let capture = self.capture.ok_or_else(|| {
-            failed(match language {
-                Language::En => "capture_required: getScreenshot before coordinate input",
-                Language::ZhCn => "capture_required: 按坐标输入前请先调用 getScreenshot",
-                Language::ZhTw => "capture_required: 按座標輸入前請先呼叫 getScreenshot",
-            })
-        })?;
+    async fn point(&mut self, point: [f64; 2], _language: Language) -> Result<[f64; 2], ToolError> {
         let metrics = self.request("Page.getLayoutMetrics", json!({})).await?;
-        if metrics["cssVisualViewport"]["clientWidth"].as_f64() != Some(capture.width)
-            || metrics["cssVisualViewport"]["clientHeight"].as_f64() != Some(capture.height)
-            || metrics["cssVisualViewport"]["pageX"].as_f64() != Some(capture.x)
-            || metrics["cssVisualViewport"]["pageY"].as_f64() != Some(capture.y)
-            || !point.iter().all(|v| v.is_finite() && *v >= 0.0)
-            || point[0] >= capture.image_width
-            || point[1] >= capture.image_height
+        let viewport = &metrics["cssVisualViewport"];
+        let width = viewport["clientWidth"]
+            .as_f64()
+            .ok_or_else(|| failed("viewport dimensions unavailable"))?;
+        let height = viewport["clientHeight"]
+            .as_f64()
+            .ok_or_else(|| failed("viewport dimensions unavailable"))?;
+        if !point.iter().all(|value| value.is_finite() && *value >= 0.0)
+            || point[0] >= width
+            || point[1] >= height
         {
             return Err(failed(
-                "stale_capture: viewport changed or point lies outside screenshot",
+                "Coordinate is outside the active tab content viewport",
             ));
         }
-        Ok([
-            point[0] * capture.width / capture.image_width,
-            point[1] * capture.height / capture.image_height,
-        ])
+        Ok(point)
     }
     async fn before_input(
         &mut self,
@@ -1732,7 +2301,6 @@ impl Tab {
         check_input(cancellation)?;
         if self.frame.as_ref() != Some(&frame) {
             self.refs.clear();
-            self.capture = None;
             return Err(failed(match language {
                 Language::En => "stale_document: observe after navigation before acting",
                 Language::ZhCn => "stale_document: 导航后请先观察，再操作",
@@ -1818,15 +2386,9 @@ impl Tab {
             }
             Action::Navigate { url } => {
                 validate_url(&url)?;
-                let source_frame = self.frame().await?;
                 self.refs.clear();
-                self.capture = None;
                 check_input(cancellation)?;
-                if self.frame().await? != source_frame {
-                    return Err(failed(
-                        "document changed before navigation dispatch; retry the operation",
-                    ));
-                }
+                self.check_navigation(&url).await?;
                 let result = self.request("Page.navigate", json!({"url":url})).await?;
                 if let Some(error) = result.get("errorText") {
                     return Err(failed(format!("navigation failed: {error}")));
@@ -1847,6 +2409,7 @@ impl Tab {
                 self.navigation = Some(Navigation::Reload(previous));
             }
             Action::Back | Action::Forward => {
+                let history_source = self.document_identity().await?;
                 let history = self.request("Page.getNavigationHistory", json!({})).await?;
                 let index = history["currentIndex"]
                     .as_i64()
@@ -1865,6 +2428,12 @@ impl Tab {
                     .ok_or_else(|| failed("history URL unavailable"))?;
                 self.authorize(Some(target), invocation, cancellation, language)
                     .await?;
+                if self.document_identity().await? != history_source {
+                    return Err(failed(
+                        "document changed while browser navigation history was authorized",
+                    ));
+                }
+                self.check_navigation(target).await?;
                 self.refs.clear();
                 self.navigation = entry["url"].as_str().map(|url| Navigation::Url(url.into()));
                 check_input(cancellation)?;
@@ -1961,21 +2530,11 @@ impl Tab {
                 pressed?;
             }
             Action::PressKey { index, key } => {
-                let (key, code, modifiers) = key_event(&key)?;
                 self.focus(index, cancellation, language).await?;
                 self.before_element_input(selected_index, cancellation, language)
                     .await?;
-                let mut event = json!({"type":"keyDown","key":key,"windowsVirtualKeyCode":code,"modifiers":modifiers});
-                if modifiers & 7 == 0 {
-                    if key.len() == 1 {
-                        event["text"] = json!(key);
-                    } else if key == "Enter" {
-                        event["text"] = json!("\r");
-                    }
-                }
-                let pressed = self.request("Input.dispatchKeyEvent", event).await;
-                self.request("Input.dispatchKeyEvent",json!({"type":"keyUp","key":key,"windowsVirtualKeyCode":code,"modifiers":modifiers})).await.map_err(|error|ToolError::CleanupUnconfirmed(format!("key release was not acknowledged: {error}")))?;
-                pressed?;
+                self.accessibility_key(index, &key, cancellation, language, cursor)
+                    .await?;
             }
             Action::Scroll {
                 target,
@@ -2115,40 +2674,6 @@ fn convenience_url(url: &str) -> String {
         format!("https://{url}")
     }
 }
-fn key_event(key: &str) -> Result<(String, u32, u32), ToolError> {
-    let mut parts: Vec<_> = key.split('+').collect();
-    let key = parts.pop().unwrap_or_default();
-    let mut modifiers = 0;
-    for part in parts {
-        modifiers |= match part.to_ascii_lowercase().as_str() {
-            "alt" | "option" => 1,
-            "ctrl" | "control" => 2,
-            "super" | "meta" | "cmd" | "command" => 4,
-            "shift" => 8,
-            _ => return Err(failed("unsupported key modifier")),
-        };
-    }
-    let (name, code) = match key {
-        "Return" | "Enter" => ("Enter", 13),
-        "Tab" => ("Tab", 9),
-        "Escape" | "Esc" => ("Escape", 27),
-        "BackSpace" | "Backspace" => ("Backspace", 8),
-        "Delete" => ("Delete", 46),
-        "Up" | "ArrowUp" => ("ArrowUp", 38),
-        "Down" | "ArrowDown" => ("ArrowDown", 40),
-        "Left" | "ArrowLeft" => ("ArrowLeft", 37),
-        "Right" | "ArrowRight" => ("ArrowRight", 39),
-        "Home" => ("Home", 36),
-        "End" => ("End", 35),
-        "Page_Up" | "PageUp" => ("PageUp", 33),
-        "Page_Down" | "PageDown" => ("PageDown", 34),
-        key if key.len() == 1 && key.is_ascii() => {
-            (key, key.as_bytes()[0].to_ascii_uppercase() as u32)
-        }
-        _ => return Err(failed("unsupported browser key")),
-    };
-    Ok((name.into(), code, modifiers))
-}
 fn failed(error: impl std::fmt::Display) -> ToolError {
     ToolError::Failed(error.to_string())
 }
@@ -2171,6 +2696,13 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn local_cdp_error_text_cannot_fabricate_a_matched_remote_rejection() {
+        let message = "local transport failed (-32000): no matched CDP reply";
+        let error = Cdp::failure(anyhow::anyhow!("{message}"));
+        assert!(matches!(error, ToolError::OutcomeUnknown(actual) if actual == message));
+    }
 
     struct Decision {
         allow: bool,

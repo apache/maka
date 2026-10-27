@@ -6,12 +6,11 @@ follow the current Computer Use state supplied with the model request.
 In WSL it defaults to the Windows host; shell commands may still run in Linux.
 
 A fresh REPL has no bound targets. The entry points below emit API documentation
-and inventory or initial target state. Browser IDs come only from
-configured providers; when none are configured, use native browser windows through
-getApp. The API does not expose driver administration such as start_session.
+and inventory or initial target state. Browser IDs come from configured CDP providers and connected native browser
+adapters. If neither is available, use native browser windows through getApp. The API does not expose driver administration such as start_session.
 
 Entry points (selection emits initial state):
-- `await cua.getState({emit?})`: app and configured browser inventory, including inventory errors.
+- `await cua.getState({emit?})`: app and available browser inventory, including inventory errors.
 - `await cua.listApps({emit?})`, `await cua.listWindows({emit?})`.
 - `const app = await cua.getApp("Name / bundle ID / app path")` or `getApp({windowId})`.
   macOS launches a missing app. Windows getApp selects an already open window;
@@ -21,9 +20,9 @@ Entry points (selection emits initial state):
   Select an exact window when names are ambiguous. Linux requires the app to be open already.
 - `await cua.listBrowsers({emit?})`, `await cua.listTabs({browser?, emit?})`.
 - `const browser = await cua.getBrowser({id? , url?})`: select without opening a tab.
-  A prospective URL need not be open already. Select an ID when multiple providers are configured.
+  A prospective URL need not be open already. Select an ID when multiple providers are available.
 - `const tab = await cua.getTab("tab ID", {browser?})` or `getTab({url}, {browser?})`.
-- `await cua.createBrowserTab(browserId, url?)`: open in the configured profile.
+- `await cua.createBrowserTab(browserId, url?)`: open in the selected provider's profile.
   Here and in getBrowser, URLs without a scheme use HTTPS.
   Creation starts with an owned blank tab; an explicit URL then requests navigation.
   Refused navigation leaves that blank tab for turn cleanup.
@@ -33,6 +32,25 @@ Entry points (selection emits initial state):
   return data without emitting it; get/new return Tab objects without an initial AX observation.
   Call getAXState before using observed targets. `await tab.title()` and `await tab.url()`
   return current metadata without changing the accessibility observation.
+
+- Connected browser adapters also expose `await browser.user.openTabs()` and
+  `await browser.user.claimTab(tabOrId)`. The listing returns current user-tab metadata;
+  claiming returns the ordinary Tab after current permissions and attachment preparation.
+  Use a listed string ID or a listed object. Turn cleanup releases user tabs without closing
+  them; tabs created by this Session remain temporary. `browser.tabs.get(id)` remains a lazy
+  binding and performs no initial claim or AX observation. These methods do not
+  retain grants. For native adapters, `browser.tabs.list()` lists this Session's
+  managed tabs. Configured CDP providers omit `browser.user`; use their
+  `browser.tabs` methods instead.
+
+Maka exposes an AX browser profile: `tab.ax` contains `get`, `write`, `click`,
+`drag`, `paste`, `performSecondaryAction`, `pressKey`, `scroll`, `selectText`,
+`setValue` and `typeText`. Action signatures match the Tab methods below.
+`await tab.ax.get(mode = 'state', {disableDiffing?})` returns text, image bytes or
+`{state, screenshot?}` for `state`, `screenshot` or `both`, without emitting.
+`await tab.ax.write(mode = 'state', options?)` emits the available results and
+returns undefined. The existing flat Tab methods remain available.
+The AX facade and flat methods act on the same bound Tab.
 
 App and Tab observations:
 - `getAXState({emit?, disableDiffing?})` returns text. Tabs and macOS apps use a diff by default;
@@ -48,8 +66,9 @@ are delivered once. A later call may emit the same image again.
 Observations include a bounded settling window for brief UI updates (200 ms for
 tabs, 400 ms for apps). This does not wait for arbitrary asynchronous work;
 continuous animation does not extend the window. Refresh to observe later updates.
-After a screenshot-only observation, read `getAXState()` before choosing new
-indices. Native Linux/Windows retain previously observed element identities
+A successful screenshot of the same unchanged browser document preserves existing
+AX references. After navigation, document replacement or target invalidation,
+refresh `getAXState()` before reusing indices; also refresh for newly observed elements. Native Linux/Windows retain previously observed element identities
 while those exact elements remain valid.
 If a native AX observation fails while an app is busy, refresh the same bound object
 when the app responds again. Failed observations invalidate old indices and coordinates.
@@ -119,6 +138,30 @@ unsupported combinations throw before sending native keys. Successful writes cle
 only the calling locator collection's cached reads. Input results must still be
 checked in the page; an uncertain result is not automatically replayed.
 
+Downloads use a connected native adapter with download notifications and current
+Host download permission. Arm before triggering the action on the same Tab:
+`const pending = tab.playwright.waitForEvent('download', {timeoutMs:3000});`
+then perform the click or navigation and `const download = await pending`.
+`await download.path({timeoutMs?})` returns the browser-reported filename or null.
+It neither transfers a file nor proves that a path belongs to this task; it may be
+a path on another host, empty, or unavailable. It has no saveAs operation.
+`await tab.playwright.locator(selector).downloadMedia({timeoutMs?})` requests media
+for a unique matching locator. Download waits return data without emitting it;
+media triggers return undefined. The native start deadline ends at the first
+matching Started event; cancellation and Host cleanup still apply afterward.
+Read permission and download permission are separate, including for a different
+source or destination origin. A configured CDP connection alone does not provide
+native download notifications.
+Maka also exposes `tab.cua.downloadMedia({x,y,timeoutMs?})` and
+`tab.dom_cua.downloadMedia({node_id,timeoutMs?})` as narrow extensions. The selected
+native adapters currently reject these coordinate/node media commands; use the
+implemented locator route. These objects do not imply other `.cua` or `.dom_cua`
+input methods. An uncertain download result is never automatically retried.
+The returned handle retains its original Tab binding, not a grant. Keep that tab
+available: `path()` rechecks current tab metadata and Host permissions before its
+cache lookup. A stale handle cannot keep a closed tab alive. Later Turns still
+require current tab access; claiming the tab again may be necessary.
+
 `await tab.getJsDialog()` returns undefined or the current dialog object with
 `type` and `dismiss()`. Confirm dialogs also have `accept()`; prompt dialogs have
 `accept(text)`, including an empty string. Old dialog objects cannot act on a
@@ -151,7 +194,8 @@ target. Native indexed clicks support one semantic
 click; use screenshot coordinates for multiple clicks when needed.
 
 A successful input dispatch does not establish the resulting application state.
-Browser coordinates use the latest screenshot; capture again after an action.
+Browser coordinate actions use CSS viewport coordinates and require no screenshot.
+Screenshots do not scale these coordinates.
 Linux window-local coordinates can be used without taking a screenshot. Native
 Linux/Windows screenshot mappings survive input actions until another observation
 replaces them; an AX-only observation clears the image mapping. Windows coordinate

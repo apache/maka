@@ -117,6 +117,10 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 .raw_input(serde_json::to_value(target)?);
             let title = if target.capability == GrantCapability::ComputerAudio {
                 "Allow computer output audio for this session".to_owned()
+            } else if let (GrantCapability::BrowserDownload, GrantScope::BrowserOrigin { origin }) =
+                (target.capability, &target.scope)
+            {
+                format!("Allow browser file downloads from {origin} for this session")
             } else {
                 format!(
                     "Allow {} / {} for this session",
@@ -663,6 +667,51 @@ mod tests {
             answer(&record, json!({"outcome":{"outcome":"cancelled"}})).unwrap(),
             InteractionAnswer::ServiceApproval {
                 decision: Decision::Deny
+            }
+        );
+    }
+
+    #[test]
+    fn browser_file_download_request_names_the_origin_and_keeps_its_exact_scope() {
+        let InteractionRequest::ComputerApp {
+            mut target, basis, ..
+        } = computer_app(false, None).request
+        else {
+            panic!("application target");
+        };
+        target.capability = GrantCapability::BrowserDownload;
+        target.scope = GrantScope::BrowserOrigin {
+            origin: "https://download.example".into(),
+        };
+        let record = snapshot(InteractionRequest::ClientCapability {
+            tool_use_id: "download_tool".into(),
+            target: target.clone(),
+            basis: Some(basis),
+        });
+        let Callback::Permission(callback) =
+            request(&record, &acp::ClientCapabilities::default()).unwrap()
+        else {
+            panic!("permission callback");
+        };
+        assert_eq!(
+            callback.title,
+            "Allow browser file downloads from https://download.example for this session"
+        );
+        assert!(
+            callback
+                .description
+                .as_deref()
+                .unwrap()
+                .contains("browser_download")
+        );
+        assert_eq!(
+            answer(
+                &record,
+                json!({"outcome":{"outcome":"selected","optionId":"allow_session"}})
+            )
+            .unwrap(),
+            InteractionAnswer::ClientCapability {
+                decision: Decision::Allow
             }
         );
     }

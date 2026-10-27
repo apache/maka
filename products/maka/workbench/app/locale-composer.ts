@@ -49,6 +49,7 @@ export const composerMessages = {
   'Compact now': ['Compact now', '开始压缩', '開始壓縮'],
   'Search files…': ['Search files…', '搜索文件…', '搜尋檔案…'],
   'Search skills…': ['Search skills…', '搜索技能…', '搜尋技能…'],
+  Skills: ['Skills', '技能', '技能'],
   'Add to message': ['Add to message', '添加到消息', '新增至訊息'],
   'Reference a workspace file': ['Reference a workspace file', '引用工作区文件', '參照工作區檔案'],
   'Use a skill': ['Use a skill', '使用技能', '使用技能'],

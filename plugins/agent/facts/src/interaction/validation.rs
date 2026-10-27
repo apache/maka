@@ -110,7 +110,10 @@ impl GrantTarget {
             entity_id(id)?;
         }
         match (&self.capability, &self.scope) {
-            (GrantCapability::Browser, GrantScope::BrowserOrigin { origin }) => {
+            (
+                GrantCapability::Browser | GrantCapability::BrowserDownload,
+                GrantScope::BrowserOrigin { origin },
+            ) => {
                 let url = url::Url::parse(origin).map_err(|_| "Invalid browser origin")?;
                 if !matches!(url.scheme(), "http" | "https")
                     || url.origin().ascii_serialization() != *origin

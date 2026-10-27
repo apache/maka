@@ -109,6 +109,28 @@ const invoke = async (method, args = {}) => {
   if (!result.ok) throw new ErrorClass(result.error.message);
   return result.value;
 };
+class PlaywrightDownload {
+  #handle;
+  #scope;
+  #id;
+  constructor(handle, scope, id) {
+    this.#handle = handle;
+    this.#scope = scope;
+    this.#id = id;
+  }
+  async path({ timeoutMs } = {}) {
+    return (
+      (
+        await invoke('browserDownloadPath', {
+          handle: this.#handle,
+          scope: this.#scope,
+          downloadId: this.#id,
+          options: { timeoutMs },
+        })
+      ).path ?? null
+    );
+  }
+}
 const locatorBindings = new WeakMap();
 const regexSelector = (value) => {
   const expression = String(value);
@@ -370,6 +392,14 @@ const playwrightFor = (handle, identity) => {
       setChecked,
       check: (options) => setChecked(true, options),
       uncheck: (options) => setChecked(false, options),
+      downloadMedia: async ({ timeoutMs } = {}) => {
+        await invoke('browserDownloadMedia', {
+          handle,
+          target: { kind: 'locator', locator: { selector } },
+          options: { timeoutMs },
+        });
+        collection?.cache.rows.clear();
+      },
     };
     const result = Object.freeze(locatorTarget);
     locatorBindings.set(result, { identity, handle, selector });
@@ -391,6 +421,15 @@ const playwrightFor = (handle, identity) => {
     locator: (selector) => locatorFor(checkedSelector(selector)),
     frameLocator: (selector) => frameFor(checkedSelector(selector)),
     domSnapshot: () => request('', { kind: 'domSnapshot' }),
+    waitForEvent: async (event, options = {}) => {
+      if (event !== 'download')
+        throw new ErrorClass("playwright.waitForEvent only supports 'download' and 'filechooser'");
+      const result = await invoke('browserDownloadWait', {
+        handle,
+        options: { timeoutMs: options.timeoutMs },
+      });
+      return new PlaywrightDownload(handle, result.downloadScope, result.downloadId);
+    },
   };
   return Object.freeze(playwrightTarget);
 };
@@ -455,7 +494,7 @@ const bind = async (method, args) => {
   const result = await invoke(method, args);
   await documentation();
   const handle = result.handle;
-  const observe = async (kind, options = {}) => {
+  const observe = async (kind, options = {}, retainUnavailable = false) => {
     const value = await invoke('observe', { handle, kind, options });
     if (options.emit !== false) {
       if (value.state !== undefined) write(value.state);
@@ -464,13 +503,14 @@ const bind = async (method, args) => {
     const screenshot = value.image ? decode(value.image.data) : undefined;
     if (kind === 'screenshot' && screenshot === undefined)
       throw new ErrorClass('ax capture returned no screenshot data');
-    return kind === 'ax'
+    const result = kind === 'ax'
       ? value.state
       : kind === 'screenshot'
         ? screenshot
         : screenshot === undefined
           ? { state: value.state }
           : { state: value.state, screenshot };
+    return retainUnavailable ? { value: result, unavailable: value.screenshotUnavailable } : result;
   };
   const invokeAction = (kind, args) => {
     const pending = invoke('action', { handle, action: { kind, ...args } });
@@ -511,9 +551,82 @@ const bind = async (method, args) => {
       action('secondary', { index, action: actionName }),
   };
   if (result.kind === 'tab') {
+    const readAx = async (mode, options) => {
+      const kind = mode === 'state' ? 'ax' : mode === 'screenshot' ? 'screenshot' : 'both';
+      const { value, unavailable } = await observe(kind, { disableDiffing: options?.disableDiffing, emit: false }, true);
+      if (kind === 'ax' && typeof value !== 'string')
+        throw new ErrorClass('ax capture returned no accessibility state');
+      if (kind === 'both' && typeof value?.state !== 'string')
+        throw new ErrorClass('ax capture returned no accessibility state');
+      if (kind === 'both' && value.screenshot === undefined
+          && (mode !== 'both' || typeof unavailable !== 'string'))
+        throw new ErrorClass('ax capture returned no screenshot data');
+      return { kind, value };
+    };
     Object.assign(target, {
       id: result.id,
+      ...(result.apiProfile?.mode === 'ax'
+        ? {
+            ax: Object.freeze({
+              get: async (mode = 'state', options) => {
+                const { value } = await readAx(mode, options);
+                return ['state', 'screenshot', 'both'].includes(mode) ? value : undefined;
+              },
+              write: async (mode = 'state', options) => {
+                const { kind, value } = await readAx(mode, options);
+                if (kind === 'ax') write(value);
+                else if (kind === 'screenshot') await emitImage(value);
+                else {
+                  write(value.state);
+                  if (value.screenshot !== undefined) await emitImage(value.screenshot);
+                }
+              },
+              click: (position, options) => target.click(position, options),
+              drag: (from, to) => target.drag(from, to),
+              paste: (index, text, options) => target.paste(index, text, { format: options?.format }),
+              performSecondaryAction: (index, name) => target.performSecondaryAction(index, name),
+              pressKey: (index, key) => target.pressKey(index, key),
+              scroll: (position, direction, pages) => target.scroll(position, direction, pages),
+              selectText: (index, text, options) => target.selectText(index, text, {
+                prefix: options?.prefix, suffix: options?.suffix, selectionType: options?.selectionType,
+              }),
+              setValue: (index, value) => target.setValue(index, value),
+              typeText: (index, text) => target.typeText(index, text),
+            }),
+          }
+        : {}),
+      click: (position, options = {}) => action('click', {
+        target: position,
+        options: nativeClickOptions({
+          ...(options?.mouseButton === undefined ? {} : { mouseButton: options.mouseButton }),
+          ...(options?.clickCount === undefined ? {} : { clickCount: options.clickCount }),
+        }),
+      }),
       playwright: playwrightFor(handle, result.id),
+      cua: Object.freeze({
+        downloadMedia: async (input) => {
+          if (typeof input?.x !== 'number' || typeof input?.y !== 'number')
+            throw new ErrorClass('cua.downloadMedia requires x and y');
+          await invoke('browserDownloadMedia', {
+            handle,
+            target: { kind: 'coordinates', x: input.x, y: input.y },
+            options: { timeoutMs: input.timeoutMs },
+          });
+        },
+      }),
+      dom_cua: Object.freeze({
+        downloadMedia: async (input) => {
+          if (input?.node_id === undefined)
+            throw new ErrorClass('dom_cua.downloadMedia requires a node_id');
+          if (typeof input.node_id !== 'string' || input.node_id.length === 0)
+            throw new ErrorClass('dom_cua.downloadMedia requires a nonempty node_id');
+          await invoke('browserDownloadMedia', {
+            handle,
+            target: { kind: 'domNode', node_id: input.node_id },
+            options: { timeoutMs: input.timeoutMs },
+          });
+        },
+      }),
       title: () => invoke('tabMetadata', { handle }).then((info) => info.title),
       url: () => invoke('tabMetadata', { handle }).then((info) => info.url),
       clipboard: Object.freeze({
@@ -683,8 +796,21 @@ Object.defineProperty(globalThis, 'cua', {
       return Object.freeze({
         browserId: result.id,
         documentation,
+        ...(result.apiProfile?.user === true ? { user: Object.freeze({
+          openTabs: () => invoke('browserUserOpenTabs', { browserId: result.id }),
+          claimTab: (tab) => {
+            let id;
+            if (typeof tab === 'string') {
+              if (tab.length === 0)
+                throw new ErrorClass('browser.user.claimTab received an empty tab id');
+              id = tab;
+            } else if (tab && typeof tab.id === 'string') id = tab.id;
+            else throw new ErrorClass('browser.user.claimTab requires a listed tab or tab id');
+            return bind('browserUserClaimTab', { browserId: result.id, tabId: id });
+          },
+        }) } : {}),
         tabs: Object.freeze({
-          list: () => invoke('listTabs', { options: { browser: result.id } }),
+          list: () => invoke('browserManagedTabs', { browserId: result.id }),
           get: (id) =>
             bind('browserTab', {
               browserId: result.id,

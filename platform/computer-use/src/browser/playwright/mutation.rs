@@ -92,6 +92,29 @@ fn timeout(operation: &BrowserMutationOperation) -> Duration {
     Duration::from_secs_f64(operation.timeout_ms().unwrap_or(3000.0).min(maximum) / 1000.0)
 }
 
+// Raw AX names have a small preprocessing layer before the shared key layout.
+// Keep it local: locator keyboard names retain their existing behavior.
+fn accessibility_key_names(value: &str) -> String {
+    value
+        .split('+')
+        .map(|key| {
+            if key.len() == 1 {
+                return key.to_owned();
+            }
+            let lower = key.to_ascii_lowercase();
+            let modifier = lower
+                .strip_suffix("_l")
+                .or_else(|| lower.strip_suffix("_r"));
+            if let Some(base @ ("alt" | "control" | "meta" | "super" | "shift")) = modifier {
+                base.to_owned()
+            } else {
+                key.replace('_', "")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 fn check_cancelled(cancellation: &CancellationToken, dispatched: bool) -> Result<(), ToolError> {
     if cancellation.is_cancelled() && dispatched {
         return Err(ToolError::OutcomeUnknown(
@@ -102,6 +125,85 @@ fn check_cancelled(cancellation: &CancellationToken, dispatched: bool) -> Result
 }
 
 impl Tab {
+    pub(in crate::browser) async fn accessibility_key(
+        &mut self,
+        index: Option<u64>,
+        value: &str,
+        cancellation: &CancellationToken,
+        language: Language,
+        cursor: &crate::cursor::Spec,
+    ) -> Result<(), ToolError> {
+        let document = self.document();
+        let frame = match index {
+            Some(index) => self
+                .verify_element(index, language)
+                .await?
+                .frame
+                .ok_or_else(|| failed("keyboard target frame was not proven"))?,
+            None => self.main_frame().await?,
+        };
+        let mut used = vec![frame.clone()];
+        if frame.parent.is_some() {
+            let frames = self.frames().await?;
+            while let Some(parent) = used.last().and_then(|frame| frame.parent.as_deref()) {
+                let ancestor = frames
+                    .iter()
+                    .find(|frame| frame.id == parent)
+                    .ok_or_else(|| failed("keyboard target ancestor frame changed"))?;
+                if used.iter().any(|frame| frame.id == ancestor.id) {
+                    return Err(failed("keyboard target frame ancestry is invalid"));
+                }
+                used.push(ancestor.clone());
+            }
+        }
+        let resources = Resources::new();
+        let result = async {
+            let engine = self.playwright_engine(&frame, &resources).await?;
+            let object = cdp_value(self.frame_observation(
+                frame.session.as_deref(), "Runtime.callFunctionOn", json!({
+                    "objectId":engine,"functionDeclaration":"function(){return document.documentElement;}",
+                    "returnByValue":false,"objectGroup":resources.group,
+                }),
+            ).await?)?["objectId"].as_str()
+                .ok_or_else(|| failed("current browser document is unavailable"))?.to_owned();
+            let selected = Selected { object, frame: frame.clone(), used };
+            let target_macos = self.locator_target_macos(&selected, &resources).await?;
+            let chord = Self::locator_chord(&accessibility_key_names(value), target_macos)?;
+            let context = MutationContext {
+                document: &document,
+                deadline: tokio::time::Instant::now() + Duration::from_secs(3),
+                cancellation, resources: &resources, language, cursor,
+            };
+            // Recheck the same authorized document after metadata preparation.
+            let proof = self.origin_proof.clone()
+                .ok_or_else(|| failed("keyboard input lost its admitted document"))?;
+            proof.check_current(self).await?;
+            check_input(cancellation)?;
+            self.locator_document_current(&selected, &context).await?;
+            if let Some(operation) = shortcut::clipboard(&chord, target_macos) {
+                self.locator_current_clipboard(&selected, operation, &context).await
+            } else {
+                self.before_input(cancellation, language).await?;
+                self.locator_key(&chord, cancellation, Some(target_macos)).await
+            }
+        }.await;
+        // This is the same admitted operation and isolated utility object group,
+        // not another invocation or keyboard owner.
+        resources.cleanup(self).await;
+        result.map_err(|error| {
+            if cancellation.is_cancelled()
+                && resources.mutated.load(std::sync::atomic::Ordering::Relaxed)
+                && matches!(error, ToolError::Failed(_))
+            {
+                ToolError::OutcomeUnknown(format!(
+                    "{error}; cancellation followed a page effect; do not replay"
+                ))
+            } else {
+                error
+            }
+        })
+    }
+
     async fn locator_input_target(
         &self,
         selected: &Selected,
@@ -761,5 +863,36 @@ impl Tab {
             )));
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod accessibility_keyboard_tests {
+    use super::*;
+
+    #[test]
+    fn raw_ax_modifier_suffixes_and_function_keys_use_existing_layout() {
+        for (input, code) in [
+            ("Alt", "AltLeft"),
+            ("Control", "ControlLeft"),
+            ("Meta", "MetaLeft"),
+            ("Super", "MetaLeft"),
+            ("Shift", "ShiftLeft"),
+        ] {
+            for side in ['L', 'R'] {
+                let value = accessibility_key_names(&format!("{input}_{side}+F_12"));
+                let chord = Tab::locator_chord(&value, false).unwrap();
+                assert_eq!(chord.modifiers.len(), 1);
+                assert_eq!(chord.modifiers[0].code, code);
+                assert_eq!(chord.key.code, "F12");
+            }
+        }
+        assert_eq!(accessibility_key_names("ControlLeft++"), "ControlLeft++");
+        assert_eq!(accessibility_key_names("_"), "_");
+        assert_eq!(accessibility_key_names("Page_Down"), "PageDown");
+        assert!(
+            Tab::locator_chord("Control_L+F12", false).is_err(),
+            "raw AX adaptation must not silently change locator names"
+        );
     }
 }

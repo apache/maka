@@ -18,6 +18,7 @@
  */
 
 //! Private, parent-owned desktop worker. There is no listener or reconnect path.
+mod callbacks;
 mod connection;
 #[cfg(feature = "native-desktop")]
 mod epochs;
@@ -56,7 +57,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const ENTRY: &str = "__maka-cua-desktop";
-const PROTOCOL: u32 = 1;
+const PROTOCOL: u32 = 3;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -76,8 +77,24 @@ pub(crate) enum Request {
         epoch: String,
         session: String,
         turn: String,
+        #[serde(default)]
+        operation_id: Option<String>,
         browsers: Vec<BrowserConnection>,
+        #[serde(default, skip_serializing_if = "no_preparation_policy")]
+        preparation_policy: crate::BrowserPreparationPolicy,
         command: Command,
+        language: maka_agent_facts::language::Language,
+    },
+    LeaseChild {
+        owner: String,
+        epoch: String,
+        session: String,
+        turn: String,
+        operation_id: String,
+        browsers: Vec<BrowserConnection>,
+        #[serde(default, skip_serializing_if = "no_preparation_policy")]
+        preparation_policy: crate::BrowserPreparationPolicy,
+        request: crate::BrowserLeaseChildRequest,
         language: maka_agent_facts::language::Language,
     },
     CloseEpoch {
@@ -104,6 +121,10 @@ pub(crate) enum Request {
         language: maka_agent_facts::language::Language,
     },
     Shutdown,
+}
+
+fn no_preparation_policy(policy: &crate::BrowserPreparationPolicy) -> bool {
+    !policy.popup_enabled && policy.headers.is_empty()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +162,9 @@ type Response = Result<Value, Failure>;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ParentFrame {
+    BrowserCallback {
+        message: callbacks::ParentMessage,
+    },
     Request {
         id: u64,
         request: Box<Request>,
@@ -158,6 +182,9 @@ enum ParentFrame {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WorkerFrame {
+    BrowserCallback {
+        message: callbacks::WorkerMessage,
+    },
     Response {
         id: u64,
         result: Response,
@@ -171,6 +198,70 @@ enum WorkerFrame {
         authorization_id: u64,
         mode: AuthorizationMode,
         access: BrowserAccess,
+    },
+    BrowserSessionPreparationAuthorization {
+        id: u64,
+        authorization_id: u64,
+        mode: AuthorizationMode,
+        identity: callbacks::ScopeIdentity,
+        preparation: crate::BrowserSessionPreparation,
+    },
+}
+
+fn callback_identity(request: &Request) -> Option<callbacks::ScopeIdentity> {
+    match request {
+        Request::Invoke {
+            owner,
+            epoch,
+            session,
+            turn,
+            operation_id: Some(operation_id),
+            ..
+        } if !operation_id.is_empty() => Some(callbacks::ScopeIdentity {
+            owner: owner.clone(),
+            epoch: epoch.clone(),
+            session: session.clone(),
+            turn: turn.clone(),
+            operation_id: operation_id.clone(),
+        }),
+        Request::LeaseChild {
+            owner,
+            epoch,
+            session,
+            turn,
+            operation_id,
+            ..
+        } if !operation_id.is_empty() => Some(callbacks::ScopeIdentity {
+            owner: owner.clone(),
+            epoch: epoch.clone(),
+            session: session.clone(),
+            turn: turn.clone(),
+            operation_id: operation_id.clone(),
+        }),
+        _ => None,
+    }
+}
+fn seal_parent_callbacks(callbacks: &callbacks::ParentCallbacks, request: &Request) {
+    match request {
+        Request::CloseEpoch { owner, epoch } => callbacks.seal_matching(owner, Some(epoch), None),
+        Request::CloseOwner { owner } => callbacks.seal_matching(owner, None, None),
+        Request::FinishTurn {
+            owner, epoch, turn, ..
+        } => callbacks.seal_matching(owner, Some(epoch), Some(turn)),
+        Request::FinishOwnerTurn { owner, turn, .. } => {
+            callbacks.seal_matching(owner, None, Some(turn))
+        }
+        _ => {}
+    }
+}
+
+// Both purposes share one invocation's existing authorization queue. This
+// routing metadata never creates a document, a grant, or a native lease proof.
+enum BrowserAuthorizationRequest {
+    Access(BrowserAccess),
+    SessionPreparation {
+        identity: callbacks::ScopeIdentity,
+        preparation: crate::BrowserSessionPreparation,
     },
 }
 
@@ -486,7 +577,9 @@ mod tests {
             epoch: "fixture-epoch".into(),
             session: session.into(),
             turn: "fixture-turn".into(),
+            operation_id: None,
             browsers: Vec::new(),
+            preparation_policy: Default::default(),
             command: serde_json::from_value(command).unwrap(),
             language: maka_agent_facts::language::Language::En,
         }
@@ -507,7 +600,9 @@ mod tests {
                 epoch: "fixture-epoch".into(),
                 session: "same-session".into(),
                 turn: "fixture-turn".into(),
+                operation_id: None,
                 browsers: Vec::new(),
+                preparation_policy: Default::default(),
                 command: Command::Documentation,
                 language,
             };
@@ -555,7 +650,9 @@ mod tests {
                     epoch: "fixture-epoch".into(),
                     session: "same-session".into(),
                     turn: "fixture-turn".into(),
+                    operation_id: None,
                     browsers: Vec::new(),
+                    preparation_policy: Default::default(),
                     command: Command::Action {
                         handle: Handle::App("numeric-target".into()),
                         action: Action::Scroll {
@@ -768,7 +865,9 @@ mod tests {
                 epoch: "fixture-epoch".into(),
                 session: "same-session".into(),
                 turn: "fixture-turn".into(),
+                operation_id: None,
                 browsers: Vec::new(),
+                preparation_policy: Default::default(),
                 command: Command::Documentation,
                 language,
             };

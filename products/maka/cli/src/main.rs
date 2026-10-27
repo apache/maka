@@ -42,6 +42,10 @@ mod tests;
 mod windows;
 
 fn main() -> std::process::ExitCode {
+    logging::initialize_native_browser_trace_if_requested();
+    if let Some(exit) = maka_computer_use::native_browser_host::bootstrap() {
+        return exit;
+    }
     if let Some(exit) = maka_computer_use::cursor::bootstrap() {
         return exit;
     }

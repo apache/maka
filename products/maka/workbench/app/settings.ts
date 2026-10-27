@@ -293,8 +293,10 @@ export function createModelSettings(
     }
   };
   const loadProviders = async (more = false) => {
-    let offset = more ? providerNext() : 0;
-    if (!alive || !active() || loading() || offset === null || page() !== 'providers') return;
+    const initialOffset = more ? providerNext() : 0;
+    if (!alive || !active() || loading() || initialOffset === null || page() !== 'providers')
+      return;
+    let offset: number = initialOffset;
     const generation = ++read;
     loading.set(true);
     error.set('');

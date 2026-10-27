@@ -24,6 +24,8 @@ import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type {
   ModelUsage,
+  SettingsUsagePage,
+  SettingsUsageRead,
   UsageActivityCursor,
   UsageFence,
   UsageModelAttempt,
@@ -80,7 +82,7 @@ export function TurnUsage(props: {
       let checked = 0;
       let expectedTotal: number | null = null;
       for (;;) {
-        const page = await host.query('settings', 'usage', {
+        const request: SettingsUsageRead = {
           range: {
             from: 0,
             to: Number.MAX_SAFE_INTEGER,
@@ -89,8 +91,10 @@ export function TurnUsage(props: {
           },
           selection: { kind: 'model', status: null, search: '' },
           cursor,
-        });
+        };
+        const page: SettingsUsagePage = await host.query('settings', 'usage', request);
         if (!active()) return;
+        const nextCursor = page.nextCursor ?? null;
         checked += page.attempts.length;
         if (
           (through !== null &&
@@ -102,7 +106,7 @@ export function TurnUsage(props: {
           page.total < 0 ||
           (expectedTotal !== null && page.total !== expectedTotal) ||
           checked > page.total ||
-          (page.nextCursor === null
+          (nextCursor === null
             ? checked !== page.total
             : checked >= page.total || page.attempts.length === 0)
         )
@@ -127,8 +131,8 @@ export function TurnUsage(props: {
           )
             matching.push(attempt);
         }
-        if (page.nextCursor === null) break;
-        cursor = page.nextCursor;
+        if (nextCursor === null) break;
+        cursor = nextCursor;
         reading.set({ kind: 'loading', checked });
       }
       reading.set({ kind: 'ready', attempts: matching });

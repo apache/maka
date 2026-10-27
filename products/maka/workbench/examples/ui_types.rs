@@ -92,7 +92,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Keep the base config's generated globals, assets and tokens in `files`.
     let config = serde_json::json!({
         "extends": "./.nsh/tsconfig.json",
-        "compilerOptions": { "skipLibCheck": false },
+        "compilerOptions": {
+            "skipLibCheck": false,
+            "allowImportingTsExtensions": true,
+        },
         "include": sources,
     });
     let mut config = serde_json::to_vec_pretty(&config)?;

@@ -29,7 +29,7 @@ use maka_agent_facts::{
 use maka_capabilities::call::Scope;
 use maka_computer_use::{
     AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,
-    BrowserAuthorization,
+    BrowserAuthorization, BrowserDocument, BrowserSessionPreparation,
 };
 use maka_sandbox::{Destination, Network, Sandbox};
 
@@ -44,6 +44,16 @@ pub(super) struct Access {
     cell: maka_code_runtime::CellContext,
     producer: CancellationToken,
     attachment: Arc<Attachment>,
+    preparation: PreparationScope,
+}
+
+#[derive(Clone)]
+pub(super) struct PreparationScope {
+    pub epoch: Arc<sessions::Epoch>,
+    pub operation: String,
+    /// Cancelled when the actual original native future becomes terminal.
+    /// Retained already-written replies have separate settlement custody.
+    pub active: CancellationToken,
 }
 
 impl Access {
@@ -54,6 +64,7 @@ impl Access {
         cell: maka_code_runtime::CellContext,
         producer: CancellationToken,
         gate: Arc<admission::Gate>,
+        preparation: PreparationScope,
     ) -> Arc<Self> {
         let invocation = call.identity.agent().expect("checked Agent");
         let attachment = Arc::new(Attachment {
@@ -70,7 +81,12 @@ impl Access {
             cell,
             producer,
             attachment,
+            preparation,
         })
+    }
+
+    pub(super) fn popup_attachment(&self) -> Arc<Attachment> {
+        self.attachment.clone()
     }
 
     async fn current(
@@ -95,9 +111,188 @@ impl Access {
         }
         Ok((configuration, Some(target(origin))))
     }
+    async fn session_preparation(
+        &self,
+        preparation: &BrowserSessionPreparation,
+        cancellation: &CancellationToken,
+        record: bool,
+    ) -> Result<(), ToolError> {
+        if self.preparation.active.is_cancelled() {
+            return Err(failed("Browser session preparation operation has finished"));
+        }
+        if cancellation.is_cancelled() || self.producer.is_cancelled() {
+            return Err(failed("Browser session preparation cancelled"));
+        }
+        let invocation =
+            self.call.identity.agent().ok_or_else(|| {
+                failed("Browser session preparation requires an Agent invocation")
+            })?;
+        // This is the actual per-command native/journal operation captured by
+        // evaluate, distinct from the enclosing tool invocation's operation.
+        let operation = self.preparation.operation.as_str();
+        preparation.check_scope(&invocation.turn_id, operation)?;
+        // Check the original execution/tool ceiling as well as the retained
+        // attachment's current turn/global grant. Neither proves tab ownership.
+        access::granted(&self.owner, &self.call, self.basis).await?;
+        let (configuration, _) = access::current(&self.owner, &self.call, "cua_repl").await?;
+        if configuration.permission_basis() != self.basis {
+            return Err(failed("Browser permission boundary changed"));
+        }
+        self.attachment
+            .session_preparation_current(preparation, operation, cancellation)
+            .await?;
+        if self.preparation.active.is_cancelled() {
+            return Err(failed("Browser session preparation operation has finished"));
+        }
+        if record {
+            // Register potential cleanup responsibility before the native
+            // future is polled; this receipt is not a claim/effect-success proof.
+            self.preparation.epoch.record_browser_preparation(
+                self.basis,
+                &invocation.turn_id,
+                self.attachment.gate.clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    async fn download_targets(
+        &self,
+        document: &BrowserDocument,
+        source_origin: &BrowserAttachmentOrigin,
+        url: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(ResolvedConfiguration, Vec<GrantTarget>), ToolError> {
+        let (configuration, page) = self
+            .current(
+                &BrowserAccess::ReadDocument {
+                    document: document.clone(),
+                    origin: source_origin.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        let destination = BrowserAccess::Download {
+            document: document.clone(),
+            source_origin: source_origin.clone(),
+            url: url.to_owned(),
+        }
+        .origin()?
+        .ok_or_else(|| failed("Browser download requires an HTTP(S) download origin"))?;
+        network_allowed(&configuration, &destination).await?;
+        if cancellation.is_cancelled() || self.producer.is_cancelled() {
+            return Err(failed("Browser authorization cancelled"));
+        }
+        let mut targets = Vec::new();
+        if let Some(page) = page {
+            let GrantScope::BrowserOrigin { origin } = &page.scope else {
+                unreachable!("current browser authorization returns an origin target");
+            };
+            targets.push(download_target(origin.clone()));
+            targets.insert(0, page);
+        }
+        if !targets.iter().any(|target| target.capability == GrantCapability::BrowserDownload
+            && matches!(&target.scope, GrantScope::BrowserOrigin { origin } if origin == &destination)) {
+            targets.push(download_target(destination));
+        }
+        Ok((configuration, targets))
+    }
+
+    async fn check_target(&self, target: &GrantTarget) -> Result<(), ToolError> {
+        if access::browser_decision(&self.owner, &self.call, self.basis, target).await?
+            != Some(Decision::Allow)
+        {
+            return Err(failed(format!(
+                "{} access has not been granted",
+                if target.capability == GrantCapability::BrowserDownload {
+                    "Browser file download"
+                } else {
+                    "Browser site"
+                }
+            )));
+        }
+        Ok(())
+    }
+
+    async fn check_download(
+        &self,
+        document: &BrowserDocument,
+        source_origin: &BrowserAttachmentOrigin,
+        url: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        let (_, targets) = self
+            .download_targets(document, source_origin, url, cancellation)
+            .await?;
+        for target in &targets {
+            self.check_target(target).await?;
+        }
+        if cancellation.is_cancelled() || self.producer.is_cancelled() {
+            return Err(failed("Browser authorization cancelled"));
+        }
+        Ok(())
+    }
+
+    async fn approve_download(
+        &self,
+        document: &BrowserDocument,
+        source_origin: &BrowserAttachmentOrigin,
+        url: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        let (_, targets) = self
+            .download_targets(document, source_origin, url, cancellation)
+            .await?;
+        for (index, target) in targets.iter().enumerate() {
+            let (configuration, _) = self
+                .download_targets(document, source_origin, url, cancellation)
+                .await?;
+            for prior in &targets[..index] {
+                self.check_target(prior).await?;
+            }
+            access::approve_target(
+                &self.owner,
+                &self.call,
+                &configuration,
+                cancellation,
+                target.clone(),
+                Some(&self.cell),
+            )
+            .await?;
+        }
+        // A later origin prompt can span revocation of an earlier consent.
+        self.check_download(document, source_origin, url, cancellation)
+            .await
+    }
 }
 
 impl BrowserAuthorization for Access {
+    fn authorize_session_preparation(
+        &self,
+        preparation: BrowserSessionPreparation,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        let access = self.clone();
+        Box::pin(async move {
+            access
+                .session_preparation(&preparation, &cancellation, true)
+                .await
+        })
+    }
+
+    fn check_session_preparation(
+        &self,
+        preparation: BrowserSessionPreparation,
+        cancellation: CancellationToken,
+    ) -> AuthorizationFuture {
+        let access = self.clone();
+        Box::pin(async move {
+            access
+                .session_preparation(&preparation, &cancellation, false)
+                .await
+        })
+    }
+
     fn attachment(&self) -> Option<Arc<dyn BrowserAttachmentAuthorization>> {
         Some(self.attachment.clone())
     }
@@ -111,6 +306,16 @@ impl BrowserAuthorization for Access {
         Box::pin(async move {
             let child = cancellation.child_token();
             let authorization = async {
+                if let BrowserAccess::Download {
+                    document,
+                    source_origin,
+                    url,
+                } = &browser
+                {
+                    return access
+                        .approve_download(document, source_origin, url, &child)
+                        .await;
+                }
                 let (configuration, target) = access.current(&browser, &child).await?;
                 if let Some(target) = target {
                     access::approve_target(
@@ -158,6 +363,16 @@ impl BrowserAuthorization for Access {
     ) -> AuthorizationFuture {
         let access = self.clone();
         Box::pin(async move {
+            if let BrowserAccess::Download {
+                document,
+                source_origin,
+                url,
+            } = &browser
+            {
+                return access
+                    .check_download(document, source_origin, url, &cancellation)
+                    .await;
+            }
             let (_, target) = access.current(&browser, &cancellation).await?;
             if let Some(target) = target
                 && access::browser_decision(&access.owner, &access.call, access.basis, &target)
@@ -171,20 +386,9 @@ impl BrowserAuthorization for Access {
     }
 }
 
-async fn network_allowed(
-    configuration: &ResolvedConfiguration,
-    origin: &str,
-) -> Result<(), ToolError> {
-    let url = url::Url::parse(origin).map_err(failed)?;
-    let destination = Destination::new(
-        url.host_str()
-            .ok_or_else(|| failed("Browser URL has no host"))?,
-        url.port_or_known_default()
-            .ok_or_else(|| failed("Browser URL has no network port"))?,
-    )
-    .map_err(failed)?;
+async fn workspace_network(configuration: &ResolvedConfiguration) -> Result<Network, ToolError> {
     let workspace = configuration.workspace.clone();
-    let allowed = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let path = std::path::PathBuf::from(&workspace.path);
         let directory =
             maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
@@ -201,11 +405,25 @@ async fn network_allowed(
             Sandbox::Managed { network, .. } | Sandbox::External { network } => network,
             Sandbox::Disabled => Network::Allowed,
         };
-        Ok::<_, ToolError>(network.allows(&destination))
+        Ok::<_, ToolError>(network)
     })
     .await
-    .map_err(failed)??;
-    if !allowed {
+    .map_err(failed)?
+}
+
+pub(super) async fn network_allowed(
+    configuration: &ResolvedConfiguration,
+    origin: &str,
+) -> Result<(), ToolError> {
+    let url = url::Url::parse(origin).map_err(failed)?;
+    let destination = Destination::new(
+        url.host_str()
+            .ok_or_else(|| failed("Browser URL has no host"))?,
+        url.port_or_known_default()
+            .ok_or_else(|| failed("Browser URL has no network port"))?,
+    )
+    .map_err(failed)?;
+    if !workspace_network(configuration).await?.allows(&destination) {
         return Err(failed(
             "Workspace network policy does not allow this browser site",
         ));
@@ -216,7 +434,7 @@ async fn network_allowed(
 /// A Host attachment checks canonical authority without retaining an Agent Run.
 /// This is Maka admission policy, not an extra permission prompt in the original bridge.
 #[derive(Clone)]
-struct Attachment {
+pub(super) struct Attachment {
     owner: std::sync::Weak<Computer>,
     session: String,
     turn: String,
@@ -224,7 +442,20 @@ struct Attachment {
     gate: Arc<admission::Gate>,
 }
 impl Attachment {
-    fn alive(&self, cancellation: &CancellationToken) -> Result<Arc<Computer>, ToolError> {
+    pub(super) fn session(&self) -> &str {
+        &self.session
+    }
+    pub(super) fn turn(&self) -> &str {
+        &self.turn
+    }
+    pub(super) fn basis(&self) -> PermissionBasis {
+        self.basis
+    }
+
+    pub(super) fn alive(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<Arc<Computer>, ToolError> {
         self.gate.check_open()?;
         let owner = self
             .owner
@@ -236,10 +467,9 @@ impl Attachment {
         Ok(owner)
     }
 
-    async fn current(
+    pub(super) async fn current_global(
         &self,
         owner: &Computer,
-        origin: &str,
     ) -> Result<ResolvedConfiguration, ToolError> {
         let store = owner
             .store
@@ -283,6 +513,61 @@ impl Attachment {
         if grant.is_none_or(|grant| grant.basis != Some(self.basis)) {
             return Err(failed("Computer Use Session grant is missing or revoked"));
         }
+        Ok(configuration)
+    }
+
+    pub(super) async fn effect_preparation_current(
+        &self,
+        binding: &maka_computer_use::BrowserPreparationBinding,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        binding.check_turn(&self.turn)?;
+        let owner = self.alive(cancellation)?;
+        self.gate.check_open()?;
+        let configuration = self.current_global(&owner).await?;
+        if workspace_network(&configuration).await? != Network::Allowed {
+            return Err(failed(
+                "Workspace network policy cannot admit native session preparation",
+            ));
+        }
+        self.alive(cancellation)?;
+        self.gate.check_open()
+    }
+
+    pub(super) async fn session_preparation_current(
+        &self,
+        preparation: &BrowserSessionPreparation,
+        operation: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
+        preparation.check_scope(&self.turn, operation)?;
+        let owner = self.alive(cancellation)?;
+        self.gate.check_open()?;
+        let configuration = self.current_global(&owner).await?;
+        // Fixed native helpers can use the current/replacement document's
+        // favicon/session network. A prior URL cannot confine those effects.
+        // Keep the existing workspace identity and second network ceiling;
+        // a restricted ceiling cannot admit this unbounded native helper.
+        if workspace_network(&configuration).await? != Network::Allowed {
+            return Err(failed(
+                "Workspace network policy cannot admit native session preparation",
+            ));
+        }
+        self.alive(cancellation)?;
+        self.gate.check_open()
+    }
+
+    pub(super) async fn current(
+        &self,
+        owner: &Computer,
+        origin: &str,
+    ) -> Result<ResolvedConfiguration, ToolError> {
+        let configuration = self.current_global(owner).await?;
+        let store = owner
+            .store
+            .session(&self.session)
+            .await
+            .map_err(|error| ToolError::Persistence(message(error)))?;
         if store
             .browser_origin_decision(&self.session, &target(origin.to_owned()), &self.basis)
             .await
@@ -295,6 +580,16 @@ impl Attachment {
     }
 }
 impl BrowserAttachmentAuthorization for Attachment {
+    fn check_metadata(&self, cancellation: CancellationToken) -> AuthorizationFuture {
+        let attachment = self.clone();
+        Box::pin(async move {
+            let owner = attachment.alive(&cancellation)?;
+            attachment.current_global(&owner).await?;
+            attachment.alive(&cancellation)?;
+            Ok(())
+        })
+    }
+
     fn check(
         &self,
         origin: BrowserAttachmentOrigin,
@@ -324,9 +619,17 @@ impl BrowserAttachmentAuthorization for Attachment {
     }
 }
 
-fn target(origin: String) -> GrantTarget {
+pub(super) fn target(origin: String) -> GrantTarget {
     GrantTarget {
         capability: GrantCapability::Browser,
+        scope: GrantScope::BrowserOrigin { origin },
+        ..api::target()
+    }
+}
+
+fn download_target(origin: String) -> GrantTarget {
+    GrantTarget {
+        capability: GrantCapability::BrowserDownload,
         scope: GrantScope::BrowserOrigin { origin },
         ..api::target()
     }
@@ -451,6 +754,7 @@ mod tests {
                 resources: Arc::default(),
                 stopping: CancellationToken::new(),
                 tasks,
+                popup_provenance: None,
                 origin: ToolOrigin::HostSdk {
                     package_id: "fixture".into(),
                     entry_id: "computer".into(),
@@ -639,7 +943,11 @@ mod tests {
     async fn stop_and_reset_close_new_attachment_work_but_drain_the_accepted_reply() {
         let fixture = Fixture::new().await;
         fixture.check().await.unwrap();
-        let host = admission::host_effects(&fixture.owner, fixture.attachment.gate.clone());
+        let native_owner =
+            maka_computer_use::SessionOwner::new(fixture.owner.sessions.driver.clone());
+        let native = Arc::new(tokio::sync::Mutex::new(native_owner.new_epoch().unwrap()));
+        let host =
+            admission::host_effects(&fixture.owner, fixture.attachment.gate.clone(), &native);
         let started = CancellationToken::new();
         let release = CancellationToken::new();
         let replies = Arc::new(AtomicUsize::new(0));
@@ -721,6 +1029,498 @@ mod tests {
             )
             .await
             .unwrap();
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn opaque_presentation_checks_current_global_authority_without_loosening_site_or_clipboard_rules()
+     {
+        let fixture = Fixture::new().await;
+        fixture
+            .decision("site-denied", target(ORIGIN.into()), Decision::Deny, 4)
+            .await;
+        assert!(
+            fixture.check().await.is_err(),
+            "Site revocation must still reject Site presentation"
+        );
+        assert!(
+            fixture
+                .attachment
+                .check(BrowserAttachmentOrigin::Opaque, CancellationToken::new())
+                .await
+                .is_err(),
+            "opaque clipboard permission must remain refused"
+        );
+        fixture
+            .attachment
+            .check_metadata(CancellationToken::new())
+            .await
+            .unwrap();
+        let revision = fixture
+            .store
+            .get_session::<StoredSessionConfiguration>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .revision;
+        let changed = fixture
+            .store
+            .update_session_permissions::<StoredSessionConfiguration, _>(
+                "session",
+                revision,
+                5,
+                |configuration| {
+                    configuration.boundary_revision += 1;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            changed,
+            maka_event_log::sessions::SessionMutation::Committed(_)
+        ));
+        assert!(
+            matches!(fixture.attachment.check_metadata(CancellationToken::new()).await,
+            Err(ToolError::Failed(message)) if message == "Browser permission boundary changed")
+        );
+        fixture.end().await;
+        assert!(
+            matches!(fixture.attachment.check_metadata(CancellationToken::new()).await, Err(ToolError::Failed(message)) if message == "Browser attachment turn is no longer active")
+        );
+        fixture.close().await;
+    }
+    #[tokio::test]
+    async fn natural_popup_navigation_does_not_grant_destination_content_for_none_or_deny() {
+        let fixture = Fixture::new().await;
+        let destination = "https://unread-destination.example";
+        let document = BrowserDocument {
+            browser_id: "fixture".into(),
+            generation: "generation".into(),
+            tab_id: "17".into(),
+            url: "about:blank".into(),
+        };
+        let scope = super::super::browser_popup::Authorization::new(
+            Arc::new(fixture.attachment.clone()),
+            "fixture".into(),
+            format!("{destination}/popup"),
+        );
+        let navigation = BrowserAccess::Navigate {
+            document: document.clone(),
+            url: format!("{destination}/popup"),
+        };
+        let read = BrowserAccess::ReadDocument {
+            document: document.clone(),
+            origin: BrowserAttachmentOrigin::Site(destination.into()),
+        };
+        assert_eq!(
+            fixture
+                .store
+                .browser_origin_decision(
+                    "session",
+                    &target(destination.into()),
+                    &fixture.attachment.basis
+                )
+                .await
+                .unwrap(),
+            None
+        );
+        scope
+            .authorize(navigation.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(
+            scope
+                .check(read.clone(), CancellationToken::new())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .store
+                .browser_origin_decision(
+                    "session",
+                    &target(destination.into()),
+                    &fixture.attachment.basis
+                )
+                .await
+                .unwrap(),
+            None,
+            "physical page navigation must not manufacture a Site Allow"
+        );
+        fixture
+            .decision(
+                "destination-denied",
+                target(destination.into()),
+                Decision::Deny,
+                4,
+            )
+            .await;
+        scope
+            .authorize(navigation.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(scope.check(read, CancellationToken::new()).await.is_err());
+        assert_eq!(
+            fixture
+                .store
+                .browser_origin_decision(
+                    "session",
+                    &target(destination.into()),
+                    &fixture.attachment.basis
+                )
+                .await
+                .unwrap(),
+            Some(Decision::Deny)
+        );
+        scope
+            .check(
+                BrowserAccess::ReadDocument {
+                    document,
+                    origin: BrowserAttachmentOrigin::Opaque,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            scope
+                .attachment()
+                .unwrap()
+                .check(BrowserAttachmentOrigin::Opaque, CancellationToken::new())
+                .await
+                .is_err(),
+            "global opaque preparation does not grant clipboard access"
+        );
+        fixture.end().await;
+        assert!(
+            scope
+                .authorize(navigation, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn queued_popup_native_lock_observes_real_turn_end_or_source_scope_retirement() {
+        for end_turn in [true, false] {
+            let fixture = Fixture::new().await;
+            let native = Arc::new(tokio::sync::Mutex::new(maka_computer_use::Session::new(
+                fixture.owner.sessions.driver.clone(),
+            )));
+            let held = native.lock().await;
+            let cancellation = CancellationToken::new();
+            {
+                let waiting = super::super::browser_popup::wait_native_current(
+                    &fixture.owner,
+                    &native,
+                    &fixture.attachment,
+                    &fixture.attachment.gate,
+                    &cancellation,
+                );
+                tokio::pin!(waiting);
+                assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+                if end_turn {
+                    fixture.end().await;
+                } else {
+                    fixture.attachment.gate.close_admission();
+                }
+                let result = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
+                    .await
+                    .expect("canonical revocation wakes a queued service without the native lock");
+                assert!(
+                    result.is_err(),
+                    "retired source cannot acquire the native service lock"
+                );
+                assert!(
+                    native.try_lock().is_err(),
+                    "the original lock is still held; this is not a fake drain"
+                );
+            }
+            drop(held);
+            drop(native);
+            fixture.close().await;
+        }
+    }
+    fn session_preparation_request(turn: &str) -> BrowserSessionPreparation {
+        BrowserSessionPreparation {
+            native_owner: uuid::Uuid::new_v4(),
+            native_epoch: "native-observation".into(),
+            browser_id: "native-browser".into(),
+            generation: "native-generation".into(),
+            turn_id: turn.into(),
+            operation_id: "session-preparation-operation".into(),
+            target: maka_computer_use::BrowserPreparationTarget::ReservedTab {
+                tab_id: "17".into(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_session_admission_never_grants_replacement_site_or_clipboard() {
+        for denied in [false, true] {
+            let fixture = Fixture::new().await;
+            let destination = "https://replacement.example";
+            if denied {
+                fixture
+                    .decision(
+                        "replacement-denied",
+                        target(destination.into()),
+                        Decision::Deny,
+                        4,
+                    )
+                    .await;
+            }
+            let request = session_preparation_request(&fixture.invocation.turn_id);
+            let before = fixture
+                .store
+                .session_projection::<StoredSessionConfiguration>("session")
+                .await
+                .unwrap()
+                .unwrap()
+                .through_sequence;
+            fixture
+                .attachment
+                .session_preparation_current(
+                    &request,
+                    &request.operation_id,
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                fixture
+                    .attachment
+                    .check(
+                        BrowserAttachmentOrigin::Site(destination.into()),
+                        CancellationToken::new()
+                    )
+                    .await
+                    .is_err(),
+                "mechanical admission must not grant replacement content"
+            );
+            assert!(
+                fixture
+                    .attachment
+                    .check(BrowserAttachmentOrigin::Opaque, CancellationToken::new())
+                    .await
+                    .is_err(),
+                "opaque mechanical admission is not clipboard permission"
+            );
+            let after = fixture
+                .store
+                .session_projection::<StoredSessionConfiguration>("session")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                after.through_sequence, before,
+                "mechanical checks add no Allow or fake T1 facts"
+            );
+            assert!(after.pending_interactions.is_empty());
+            fixture.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_session_admission_rechecks_canonical_basis_turn_and_vm_gate() {
+        for changed in ["basis", "turn", "gate", "cancel"] {
+            let fixture = Fixture::new().await;
+            let request = session_preparation_request(&fixture.invocation.turn_id);
+            let cancellation = CancellationToken::new();
+            fixture
+                .attachment
+                .session_preparation_current(&request, &request.operation_id, &cancellation)
+                .await
+                .unwrap();
+            match changed {
+                "basis" => {
+                    let revision = fixture
+                        .store
+                        .get_session::<StoredSessionConfiguration>("session")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .revision;
+                    let result = fixture
+                        .store
+                        .update_session_permissions::<StoredSessionConfiguration, _>(
+                            "session",
+                            revision,
+                            5,
+                            |configuration| {
+                                configuration.boundary_revision += 1;
+                                Ok(())
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(
+                        result,
+                        maka_event_log::sessions::SessionMutation::Committed(_)
+                    ));
+                }
+                "turn" => fixture.end().await,
+                "gate" => fixture.attachment.gate.close_admission(),
+                "cancel" => cancellation.cancel(),
+                _ => unreachable!(),
+            }
+            assert!(
+                fixture
+                    .attachment
+                    .session_preparation_current(&request, &request.operation_id, &cancellation)
+                    .await
+                    .is_err(),
+                "{changed} must reject before further fixed preparation"
+            );
+            fixture.close().await;
+        }
+    }
+    fn effect_preparation_binding(turn: &str) -> maka_computer_use::BrowserPreparationBinding {
+        // Observations for permission testing only. This fixture deliberately
+        // grants no native ownership: production's independent ledger must do so.
+        maka_computer_use::BrowserPreparationBinding {
+            native_owner: uuid::Uuid::new_v4(),
+            native_epoch: "observation-epoch".into(),
+            browser_id: "observation-browser".into(),
+            generation: "observation-generation".into(),
+            turn_id: turn.into(),
+            tab_id: "17".into(),
+            claim_id: "observation-claim".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_host_service_ticket_mints_scoped_permission_until_its_real_future_ends() {
+        let fixture = Fixture::new().await;
+        let native_owner =
+            maka_computer_use::SessionOwner::new(fixture.owner.sessions.driver.clone());
+        let native = Arc::new(tokio::sync::Mutex::new(native_owner.new_epoch().unwrap()));
+        let effects = admission::host_effects_with_lease_children(
+            &fixture.owner,
+            fixture.attachment.gate.clone(),
+            &native,
+            Arc::new(fixture.attachment.clone()),
+        );
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let release = CancellationToken::new();
+        let worker_release = release.clone();
+        let resources = fixture.owner.resources.clone();
+        effects
+            .spawn_scoped_guarded(
+                Box::new(move |scope| {
+                    assert!(
+                        !resources.is_idle(),
+                        "the real Host ticket starts before the factory is invoked"
+                    );
+                    Box::pin(async move {
+                        sent.send(scope)
+                            .unwrap_or_else(|_| panic!("scope observer disappeared"));
+                        worker_release.cancelled().await;
+                        Ok(())
+                    })
+                }),
+                Box::new(|_| panic!("local admission unexpectedly rejected")),
+            )
+            .unwrap();
+        let scope = received.await.unwrap();
+        let binding = effect_preparation_binding(&fixture.invocation.turn_id);
+        scope
+            .check_session_preparation(binding.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .attachment
+                .check(
+                    BrowserAttachmentOrigin::Site("https://replacement.example".into()),
+                    CancellationToken::new()
+                )
+                .await
+                .is_err(),
+            "service preparation does not grant replacement content"
+        );
+        release.cancel();
+        fixture.owner.resources.settle().await.unwrap();
+        assert!(
+            matches!(scope.check_session_preparation(binding, CancellationToken::new()).await,
+            Err(ToolError::Failed(message)) if message == "Browser service effect has finished")
+        );
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn actual_host_service_revoke_blocks_new_checks_but_keeps_original_started_ticket_pending()
+     {
+        let fixture = Fixture::new().await;
+        let native_owner =
+            maka_computer_use::SessionOwner::new(fixture.owner.sessions.driver.clone());
+        let native = Arc::new(tokio::sync::Mutex::new(native_owner.new_epoch().unwrap()));
+        let effects = admission::host_effects_with_lease_children(
+            &fixture.owner,
+            fixture.attachment.gate.clone(),
+            &native,
+            Arc::new(fixture.attachment.clone()),
+        );
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let release = CancellationToken::new();
+        let worker_release = release.clone();
+        effects
+            .spawn_scoped_guarded(
+                Box::new(move |scope| {
+                    Box::pin(async move {
+                        sent.send(scope)
+                            .unwrap_or_else(|_| panic!("scope observer disappeared"));
+                        worker_release.cancelled().await;
+                        Ok(())
+                    })
+                }),
+                Box::new(|_| panic!("local admission unexpectedly rejected")),
+            )
+            .unwrap();
+        let scope = received.await.unwrap();
+        let binding = effect_preparation_binding(&fixture.invocation.turn_id);
+        scope
+            .check_session_preparation(binding.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        let revision = fixture
+            .store
+            .get_session::<StoredSessionConfiguration>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .revision;
+        assert!(matches!(
+            fixture
+                .store
+                .update_session_permissions::<StoredSessionConfiguration, _>(
+                    "session",
+                    revision,
+                    5,
+                    |configuration| {
+                        configuration.boundary_revision += 1;
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap(),
+            maka_event_log::sessions::SessionMutation::Committed(_)
+        ));
+        assert!(
+            scope
+                .check_session_preparation(binding, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        let mut settlement = Box::pin(fixture.owner.resources.settle());
+        assert!(
+            futures_util::poll!(&mut settlement).is_pending(),
+            "authority revoke is not the original future terminal"
+        );
+        release.cancel();
+        settlement.await.unwrap();
         fixture.close().await;
     }
 }

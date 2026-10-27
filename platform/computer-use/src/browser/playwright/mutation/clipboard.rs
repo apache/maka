@@ -114,6 +114,27 @@ impl Tab {
         operation: shortcut::ClipboardShortcut,
         context: &MutationContext<'_>,
     ) -> Result<(), ToolError> {
+        self.clipboard_operation(selected, operation, context, false)
+            .await
+    }
+
+    pub(super) async fn locator_current_clipboard(
+        &mut self,
+        selected: &Selected,
+        operation: shortcut::ClipboardShortcut,
+        context: &MutationContext<'_>,
+    ) -> Result<(), ToolError> {
+        self.clipboard_operation(selected, operation, context, true)
+            .await
+    }
+
+    async fn clipboard_operation(
+        &mut self,
+        selected: &Selected,
+        operation: shortcut::ClipboardShortcut,
+        context: &MutationContext<'_>,
+        current_active: bool,
+    ) -> Result<(), ToolError> {
         if matches!(operation, shortcut::ClipboardShortcut::Refuse) {
             return Err(failed(
                 "Native clipboard shortcuts are disabled; use Browser Use virtual clipboard commands instead.",
@@ -124,15 +145,19 @@ impl Tab {
             .await?;
         let store = self.clipboard_store.clone();
         let mut items = lock(&store, context).await?;
-        self.locator_current(selected, context, None).await?;
-        self.locator_element_script(
-            selected,
-            json!({"kind":"focus","requireEditable":false}),
-            context.resources,
-            Some(context.cancellation),
-        )
-        .await?;
-        self.locator_current(selected, context, Some(false)).await?;
+        if current_active {
+            self.locator_document_current(selected, context).await?;
+        } else {
+            self.locator_current(selected, context, None).await?;
+            self.locator_element_script(
+                selected,
+                json!({"kind":"focus","requireEditable":false}),
+                context.resources,
+                Some(context.cancellation),
+            )
+            .await?;
+            self.locator_current(selected, context, Some(false)).await?;
+        }
         match operation {
             shortcut::ClipboardShortcut::Paste { plain_text_only } => {
                 if items.is_empty() {
@@ -140,7 +165,7 @@ impl Tab {
                 }
                 self.locator_clipboard_script(
                     selected,
-                    json!({"kind":"paste","items":&*items,"plainTextOnly":plain_text_only}),
+                    json!({"kind":"paste","items":&*items,"plainTextOnly":plain_text_only,"currentActiveElement":current_active}),
                     None,
                     context,
                 )
@@ -151,7 +176,7 @@ impl Tab {
                 let prepared = self
                     .locator_clipboard_script(
                         selected,
-                        json!({"kind":if cut {"cut"}else{"copy"}}),
+                        json!({"kind":if cut {"cut"}else{"copy"},"currentActiveElement":current_active}),
                         None,
                         context,
                     )

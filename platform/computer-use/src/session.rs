@@ -86,6 +86,33 @@ impl Session {
         }
     }
 
+    /// Internal service path for a retained page event, never a model command.
+    pub(crate) async fn adopt_browser_lease_child(
+        &mut self,
+        request: crate::BrowserLeaseChildRequest,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        if !matches!(self.state, EpochState::Open) {
+            return Err(failed("Computer Use Session is closed"));
+        }
+        self.owner.ensure_open()?;
+        if self.id.as_deref() != Some(invocation.session())
+            || request.turn_id != invocation.turn()
+            || request.native_epoch != self.epoch.to_string()
+            || invocation.operation_id().is_none_or(str::is_empty)
+        {
+            return Err(failed(
+                "Browser lease-child service changed its actual Session/turn/epoch",
+            ));
+        }
+        let cursor = self.owner.cursor();
+        self.browsers
+            .adopt_native_popup(request, invocation, &cursor, cancellation, language)
+            .await
+    }
+
     async fn invoke_native(
         &self,
         name: &str,
@@ -214,7 +241,37 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
-        let session = invocation.session();
+        self.prepare_invoke(command, invocation, cancellation, language)
+            .await?
+            .wait()
+            .await
+    }
+
+    /// Arm deferred browser waits before the caller releases its Session lock.
+    pub async fn prepare_invoke(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<crate::InvocationCompletion, ToolError> {
+        if let Command::BrowserDownloadWait { handle, options } = command {
+            self.admit_invocation(invocation.session(), cancellation)?;
+            return self
+                .browsers
+                .prepare_download(handle, options, invocation, cancellation, language)
+                .await;
+        }
+        self.invoke_immediate(command, invocation, cancellation, language)
+            .await
+            .map(crate::InvocationCompletion::ready)
+    }
+
+    fn admit_invocation(
+        &mut self,
+        session: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ToolError> {
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before dispatch"));
         }
@@ -226,6 +283,18 @@ impl Session {
             return Err(failed("Computer Use Session identity mismatch"));
         }
         self.id.get_or_insert_with(|| session.into());
+        Ok(())
+    }
+
+    async fn invoke_immediate(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        let session = invocation.session();
+        self.admit_invocation(session, cancellation)?;
         let cursor = self.owner.cursor();
         let mut result = match command {
             Command::Documentation => Ok(json!(crate::language::documentation(language))),

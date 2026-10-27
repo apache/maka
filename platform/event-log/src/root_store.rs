@@ -29,7 +29,9 @@ use std::sync::{
 };
 
 pub(crate) mod creation;
+mod effects;
 mod execution;
+pub use effects::BrowserLeaseChildReceipt;
 mod family;
 mod gates;
 mod lifecycle;

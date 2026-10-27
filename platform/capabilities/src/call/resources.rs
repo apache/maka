@@ -102,6 +102,18 @@ impl Ticket {
     pub fn start(&mut self) {
         self.state = TicketState::Started;
     }
+    /// Record failed custody without completing this ticket or its worker.
+    /// Admission owners still fence their producers; settlement waits for the
+    /// original started ticket even after the group has observed this failure.
+    pub fn record_failure(&self, error: String) {
+        self.group
+            .state
+            .lock()
+            .expect("resource state lock poisoned")
+            .failure
+            .get_or_insert(error);
+    }
+
     /// Preserve original custody when losing an observation cannot establish
     /// actual resource cleanup. A failed group never emits a successful receipt.
     pub fn unconfirmed(mut self, error: String, custody: impl std::any::Any + Send) {
@@ -208,6 +220,27 @@ mod tests {
         live.complete(Ok(()));
         assert!(
             matches!(settlement.await, Err(ToolError::CleanupUnconfirmed(message)) if message == "original worker failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn recorded_uncertainty_keeps_the_original_started_ticket_until_its_worker_finishes() {
+        use futures_util::poll;
+        let group = Arc::new(Resources::default());
+        let mut original = group.reserve().unwrap();
+        original.start();
+        original.record_failure("actual required worker custody became unknown".into());
+        assert!(!group.is_idle());
+        let mut settlement = Box::pin(group.settle());
+        assert!(
+            poll!(&mut settlement).is_pending(),
+            "failure must not complete the original worker token"
+        );
+        assert!(group.reserve().is_err(), "settlement fenced new admission");
+        original.complete(Ok(()));
+        assert!(
+            matches!(settlement.await, Err(ToolError::CleanupUnconfirmed(message)) if message == "actual required worker custody became unknown"),
+            "a later terminal reply must not erase recorded uncertainty"
         );
     }
 }

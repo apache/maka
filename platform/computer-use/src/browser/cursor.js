@@ -24,22 +24,33 @@ async function drawCursor(input) {
   const state = () => ({
     status: 'ready',
     visible:
-      !!entry?.host.isConnected &&
-      entry.host.matches(':popover-open') &&
-      entry.host.style.display !== 'none',
+      (!!entry?.host.isConnected &&
+        entry.host.matches(':popover-open') &&
+        entry.host.style.display !== 'none') ||
+      !!(entry?.control?.isConnected && entry.control.style.display !== 'none'),
     requestedPosition: entry?.point ?? null,
   });
   if (operation === 'finalize') {
     if (entry) {
       entry.host.remove();
+      entry.control?.remove();
       registry.delete(cursor.id);
       entry = undefined;
+    }
+    return state();
+  }
+  if (operation === 'controlStop') {
+    if (entry?.ownerEpoch === ownerEpoch) {
+      if (entry.control) entry.control.style.setProperty('display', 'none', 'important');
+      entry.host.style.setProperty('display', 'none', 'important');
+      if (entry.host.matches(':popover-open')) entry.host.hidePopover();
     }
     return state();
   }
   if (operation === 'remove' || operation === 'hide') {
     if (entry?.ownerEpoch === ownerEpoch) {
       entry.host.remove();
+      entry.control?.remove();
       entry.point = null;
       // Keep the epoch watermark until the logical owner finalizes its cursor.
       if (operation === 'remove') entry.retired = true;
@@ -81,6 +92,31 @@ async function drawCursor(input) {
     entry.svg = svg;
   }
   entry.badge.textContent = cursor.label;
+  if (operation === 'control' && input.nativeControl) {
+    const control = input.nativeControl;
+    if (!entry.control) {
+      const host = document.createElement('div');
+      host.setAttribute('aria-hidden', 'true');
+      host.style.cssText =
+        'all:initial;position:fixed!important;right:12px!important;top:12px!important;pointer-events:none!important;z-index:2147483647!important;contain:layout style;';
+      const root = host.attachShadow({ mode: 'closed' });
+      const badge = document.createElement('span');
+      badge.style.cssText =
+        'display:block;padding:5px 10px;border:1px solid #ffffffcc;border-radius:10px;background:#17223be6;color:white;font:600 12px/18px system-ui;';
+      root.append(badge);
+      entry.control = host;
+      entry.controlBadge = badge;
+    }
+    if (!entry.control.isConnected) document.documentElement.append(entry.control);
+    entry.controlBadge.textContent = cursor.label;
+    entry.control.style.setProperty(
+      'display',
+      control.running && control.observed ? 'block' : 'none',
+      'important',
+    );
+    entry.controlSession = control.sessionId;
+    entry.controlTurn = control.turnId;
+  }
   const reduced = cursor.reducedMotion || matchMedia('(prefers-reduced-motion: reduce)').matches;
   entry.host.style.transition = reduced ? 'none' : 'transform 120ms ease-out';
   if (point) {
@@ -130,7 +166,9 @@ async function drawCursor(input) {
   }
   return {
     status: 'ready',
-    visible: entry.host.matches(':popover-open') && entry.host.style.display !== 'none',
+    visible:
+      (entry.host.matches(':popover-open') && entry.host.style.display !== 'none') ||
+      !!(entry.control?.isConnected && entry.control.style.display !== 'none'),
     requestedPosition: entry.point,
   };
 }

@@ -23,10 +23,11 @@ use crate::cursor::Spec;
 #[derive(Clone)]
 pub(super) struct CursorEndpoint {
     socket: Cdp,
-    provider: BrowserConnection,
+    provider: Provider,
     frame: String,
     context: u64,
     epoch: crate::desktop::NativeEpochId,
+    cursor: Spec,
 }
 
 #[derive(Clone, Copy)]
@@ -36,6 +37,40 @@ enum CursorOperation {
 }
 
 impl CursorEndpoint {
+    pub(super) async fn native_control(
+        &mut self,
+        cursor: &Spec,
+        session: &str,
+        turn: &str,
+        running: bool,
+        observed: bool,
+    ) -> Result<(), ToolError> {
+        let tree = self.socket.request("Page.getFrameTree", json!({})).await?;
+        let frame = &tree["frameTree"]["frame"];
+        let current = format!(
+            "{}:{}",
+            frame["id"]
+                .as_str()
+                .ok_or_else(|| failed("native overlay frame unavailable"))?,
+            frame["loaderId"].as_str().unwrap_or_default()
+        );
+        if current != self.frame {
+            return if running {
+                Err(failed("native overlay document changed"))
+            } else {
+                Ok(())
+            };
+        }
+        let operation = if running { "control" } else { "controlStop" };
+        let input = json!({"cursor":cursor,"ownerEpoch":self.epoch.to_string(),"point":null,"action":"idle","operation":operation,"nativeControl":{"running":running,"observed":observed,"sessionId":session,"turnId":turn},"svg":crate::cursor::theme::svg(cursor.color)});
+        let value=self.socket.request("Runtime.evaluate",json!({"expression":format!("({})({input})",include_str!("cursor.js")),"contextId":self.context,"returnByValue":true,"awaitPromise":true})).await?;
+        if value.get("exceptionDetails").is_some() {
+            return Err(ToolError::CleanupUnconfirmed(
+                "native control overlay did not acknowledge its state".into(),
+            ));
+        }
+        Ok(())
+    }
     async fn execute(
         &mut self,
         identity: &TabIdentity,
@@ -85,9 +120,12 @@ impl CursorEndpoint {
             Ok(result) => return Ok(result),
             Err(error) => error,
         };
-        match inventory(&self.provider).await {
+        if self.provider.native().is_some() {
+            return Err(ToolError::CleanupUnconfirmed(error.to_string()));
+        }
+        match self.provider.inventory().await {
             Ok((generation, tabs))
-                if BrowserIdentity::new(&self.provider, &generation)? != identity.browser
+                if BrowserIdentity::of(&self.provider, &generation)? != identity.browser
                     || !tabs.iter().any(|tab| tab.id == identity.target) =>
             {
                 Ok(None)
@@ -229,13 +267,16 @@ impl Tab {
         operation: &str,
         language: Language,
     ) -> Result<Value, ToolError> {
+        if let Some(state) = self.native_cursor_presentation(point, operation).await? {
+            return Ok(state);
+        }
         let tree = self.request("Page.getFrameTree", json!({})).await?;
         let frame = &tree["frameTree"]["frame"];
         let id = frame["id"]
             .as_str()
             .ok_or_else(|| failed("cursor frame unavailable"))?;
         let identity = format!("{}:{}", id, frame["loaderId"].as_str().unwrap_or_default());
-        if operation == "update" && self.frame.as_ref() != Some(&identity) {
+        if matches!(operation, "update" | "control") && self.frame.as_ref() != Some(&identity) {
             return Err(failed(match language {
                 Language::En => "stale_document: observe before showing its cursor",
                 Language::ZhCn => "stale_document: 请先观察，再显示光标",
@@ -258,7 +299,7 @@ impl Tab {
                 context
             }
         };
-        if operation == "update" {
+        if matches!(operation, "update" | "control") {
             // Retain cleanup before delivery can become uncertain or caches retire.
             let endpoint = CursorEndpoint {
                 socket: self
@@ -270,6 +311,7 @@ impl Tab {
                 frame: identity,
                 context,
                 epoch: self.cursor_epoch,
+                cursor: cursor.clone(),
             };
             self.cursor_host.lock().await.record_cursor(
                 self.cursor_owner,
@@ -282,7 +324,12 @@ impl Tab {
             .as_ref()
             .map(|cursor| cursor.lock().unwrap().clone());
         let cursor = current_cursor.as_ref().unwrap_or(cursor);
-        let input = json!({"cursor":cursor,"ownerEpoch":self.cursor_epoch.to_string(),"point":point,"action":action,"operation":operation,"svg":crate::cursor::theme::svg(cursor.color)});
+        let native_control = if operation == "control" {
+            self.info.native.as_ref().map(|tab|json!({"running":true,"observed":tab.active.unwrap_or(false),"sessionId":self.cursor_owner.to_string(),"turnId":self.last_turn}))
+        } else {
+            None
+        };
+        let input = json!({"cursor":cursor,"ownerEpoch":self.cursor_epoch.to_string(),"point":point,"action":action,"operation":operation,"nativeControl":native_control,"svg":crate::cursor::theme::svg(cursor.color)});
         let value = self
             .request(
                 "Runtime.evaluate",
@@ -298,7 +345,13 @@ impl Tab {
         }
         let state: crate::cursor::RenderState =
             serde_json::from_value(value["result"]["value"].clone()).map_err(failed)?;
-        Ok(json!(state))
+        let mut value = json!(state);
+        if operation == "state"
+            && let Some(diagnostic) = self.native_control_diagnostic().await
+        {
+            value["nativeControlDiagnostic"] = json!(diagnostic);
+        }
+        Ok(value)
     }
     pub(super) async fn cursor_point(
         &mut self,
@@ -313,5 +366,24 @@ impl Tab {
                     .await
             }
         }
+    }
+}
+
+impl Host {
+    pub(super) async fn finalize_native_cursor(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: &TabIdentity,
+    ) -> Result<(), ToolError> {
+        let key = (owner, identity.clone());
+        let Some(mut endpoint) = self.cursor_scopes.get(&key).cloned() else {
+            return Ok(());
+        };
+        let cursor = endpoint.cursor.clone();
+        endpoint
+            .execute(identity, &cursor, CursorOperation::Finalize)
+            .await?;
+        self.cursor_scopes.remove(&key);
+        Ok(())
     }
 }

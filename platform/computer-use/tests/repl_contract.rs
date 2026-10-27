@@ -80,7 +80,9 @@ impl ToolExecutor for Fixture {
                     };
                     json!({"kind":"app","handle":{"kind":"app","id":id},"state":"Fixture window"})
                 }
-                "getBrowser" => json!({"id":"fixture"}),
+                "getBrowser" => {
+                    json!({"id":"fixture","type":"extension","apiProfile":{"mode":"ax","user":true}})
+                }
                 "createBrowserTab" => {
                     assert_eq!(input["browserId"], "fixture");
                     let id = match input.get("url") {
@@ -90,10 +92,14 @@ impl ToolExecutor for Fixture {
                         Some(Value::String(url)) if url == "ftp://example.com" => "ftp",
                         other => panic!("unexpected convenience URL {other:?}"),
                     };
-                    json!({"kind":"tab","handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
                 }
-                "listTabs" => {
-                    assert_eq!(input["options"]["browser"], "fixture");
+                "listTabs" | "browserManagedTabs" => {
+                    if input["method"] == "listTabs" {
+                        assert_eq!(input["options"]["browser"], "fixture");
+                    } else {
+                        assert_eq!(input["browserId"], "fixture");
+                    }
                     json!([{"id":"fixture:existing","title":"Selected fixture","url":"about:blank"}])
                 }
                 "browserTab" => {
@@ -106,7 +112,7 @@ impl ToolExecutor for Fixture {
                         "new" => "new",
                         other => panic!("unexpected browser tab reference {other}"),
                     };
-                    json!({"kind":"tab","handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":id},"id":format!("fixture:{id}")})
                 }
                 "tabMetadata" => {
                     assert_eq!(input["handle"]["kind"], "tab");
@@ -172,6 +178,202 @@ impl ToolExecutor for Fixture {
             })
         })
     }
+}
+
+struct AxCommands {
+    native: bool,
+    calls: Arc<std::sync::Mutex<Vec<Value>>>,
+}
+impl ToolExecutor for AxCommands {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+    fn invoke(&self, _: String, input: Value, _: CancellationToken) -> ToolFuture {
+        let native = self.native;
+        let calls = self.calls.clone();
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .map_err(|error| ToolError::Failed(error.to_string()))?;
+            calls.lock().unwrap().push(input.clone());
+            Ok(match input["method"].as_str().unwrap() {
+                "documentation" => json!("AX fixture reference"),
+                "getBrowser" => {
+                    json!({"id":"fixture","type":if native {"extension"}else{"cdp"},"apiProfile":{"mode":"ax","user":native}})
+                }
+                "browserTab" | "browserUserClaimTab" => {
+                    json!({"kind":"tab","id":"17","handle":{"kind":"tab","id":"ax"},"apiProfile":{"mode":"ax","user":native}})
+                }
+                "observe" => {
+                    json!({"state":"AX fixture state","image":{"type":"image","mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg=="}})
+                }
+                "action" => Value::Null,
+                other => panic!("unexpected AX fixture command {other}"),
+            })
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_ax_profile_uses_real_protocol_and_keeps_get_separate_from_write() {
+    for native in [true, false] {
+        let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let context =
+            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+        let result = repl.evaluate(
+            format!(r#"
+                const browser=await cua.getBrowser({{id:'fixture'}});
+                if (('user' in browser)!=={native} || Object.keys(browser).includes('user')!=={native}) throw Error('provider profile mismatch');
+                const tab=await browser.tabs.get('17');
+                const names=['click','drag','get','paste','performSecondaryAction','pressKey','scroll','selectText','setValue','typeText','write'];
+                if (JSON.stringify(Object.keys(tab.ax).sort())!==JSON.stringify(names.sort()) || !Object.isFrozen(tab.ax)) throw Error('AX shape mismatch');
+                if (await tab.ax.get()!=='AX fixture state') throw Error('AX get result mismatch');
+                const shot=await tab.ax.get('screenshot');
+                if (!(shot instanceof Uint8Array) || shot[0]!==137) throw Error('AX screenshot bytes mismatch');
+                await tab.ax.click([8.5,9.25],{{mouseButton:'r',clickCount:2,extra:true}});
+                await tab.ax.drag([1,2],[3,4]);
+                await tab.ax.paste(null,'paste',{{format:'text',extra:true}});
+                await tab.ax.performSecondaryAction(7,'expand');
+                await tab.ax.pressKey(null,'Control_L+F12');
+                await tab.ax.scroll([5,6],'down',2.5);
+                await tab.ax.selectText(8,'chosen',{{prefix:'before',suffix:'after',selectionType:'text',extra:true}});
+                await tab.ax.setValue(9,'value');
+                await tab.ax.typeText(null,'typed');
+                if (await tab.ax.write('both',{{emit:false}})!==undefined) throw Error('AX write returned data');
+            "#),
+            Arc::new(AxCommands { native, calls: calls.clone() }), CancellationToken::new(), context.clone(), Duration::from_secs(5),
+        ).await.unwrap();
+        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+        let output = context.take_output();
+        let text: Vec<_> = output
+            .iter()
+            .filter_map(|part| match part {
+                CellOutput::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            text.iter()
+                .filter(|text| **text == "AX fixture state")
+                .count(),
+            1,
+            "{output:?}"
+        );
+        assert!(
+            matches!(output.last(), Some(CellOutput::Media { .. })),
+            "{output:?}"
+        );
+        {
+            let calls = calls.lock().unwrap();
+            let observations: Vec<_> = calls
+                .iter()
+                .filter(|call| call["method"] == "observe")
+                .collect();
+            assert_eq!(observations.len(), 3);
+            assert!(
+                observations
+                    .iter()
+                    .all(|call| call["options"]["emit"] == false)
+            );
+            let actions: Vec<_> = calls
+                .iter()
+                .filter(|call| call["method"] == "action")
+                .map(|call| call["action"].clone())
+                .collect();
+            assert_eq!(
+                actions,
+                vec![
+                    json!({"kind":"click","target":[8.5,9.25],"options":{"mouseButton":"right","clickCount":2}}),
+                    json!({"kind":"drag","from":[1,2],"to":[3,4]}),
+                    json!({"kind":"paste","index":null,"text":"paste","options":{"format":"text"}}),
+                    json!({"kind":"secondary","index":7,"action":"expand"}),
+                    json!({"kind":"pressKey","index":null,"key":"Control_L+F12"}),
+                    json!({"kind":"scroll","target":[5,6],"direction":"down","distance":2.5}),
+                    json!({"kind":"selectText","index":8,"text":"chosen","options":{"prefix":"before","suffix":"after","selectionType":"text"}}),
+                    json!({"kind":"setValue","index":9,"value":"value"}),
+                    json!({"kind":"typeText","index":null,"text":"typed"}),
+                ]
+            );
+        }
+        repl.close().await.unwrap();
+    }
+}
+
+struct UserBrowserCommands(Arc<std::sync::Mutex<Vec<Value>>>);
+impl ToolExecutor for UserBrowserCommands {
+    fn names(&self) -> Vec<String> {
+        vec!["cua".into()]
+    }
+    fn invoke(&self, name: String, input: Value, cancellation: CancellationToken) -> ToolFuture {
+        let recorded = self.0.clone();
+        Box::pin(async move {
+            serde_json::from_value::<maka_computer_use::protocol::Command>(input.clone())
+                .map_err(|error| ToolError::Failed(error.to_string()))?;
+            recorded.lock().unwrap().push(input.clone());
+            match input["method"].as_str().unwrap() {
+                "browserUserOpenTabs" => {
+                    Ok(json!([{"id":"17","title":"User fixture","url":"https://fixture.test/"}]))
+                }
+                "browserUserClaimTab" => Ok(
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":"user-handle"},"id":input["tabId"]}),
+                ),
+                "browserTab" => Ok(
+                    json!({"kind":"tab","apiProfile":{"mode":"ax","user":true},"handle":{"kind":"tab","id":"deferred"},"id":input["reference"]["id"]}),
+                ),
+                _ => Fixture::default().invoke(name, input, cancellation).await,
+            }
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_user_claim_preserves_public_ids_and_lazy_get_stays_separate() {
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let context =
+        CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+    let result = repl.evaluate(
+        "const browser = await cua.getBrowser({id:'fixture'});
+         const tabs = await browser.user.openTabs();
+         const objectClaim = await browser.user.claimTab(tabs[0]);
+         if (objectClaim.id !== '17' || typeof objectClaim.playwright.getByRole !== 'function') throw Error('claim did not return the ordinary Tab');
+         await browser.user.claimTab(' 0x11 ');
+         await browser.user.claimTab({id:''});
+         for (const value of ['', null, {}, 17, {id:17}]) {
+           let rejected = false;
+           try { await browser.user.claimTab(value); } catch { rejected = true; }
+           if (!rejected) throw Error('invalid claim argument reached the host');
+         }
+         const deferred = await browser.tabs.get('17');
+         if (deferred.id !== '17') throw Error('lazy get changed the public id');".into(),
+        Arc::new(UserBrowserCommands(recorded.clone())), CancellationToken::new(), context, Duration::from_secs(5),
+    ).await.unwrap();
+    assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+    {
+        let calls = recorded.lock().unwrap();
+        let claims: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "browserUserClaimTab")
+            .map(|call| call["tabId"].clone())
+            .collect();
+        assert_eq!(claims, vec![json!("17"), json!(" 0x11 "), json!("")]);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "browserUserOpenTabs")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "browserTab")
+                .count(),
+            1
+        );
+        assert!(!calls.iter().any(|call| call["method"] == "observe"));
+    }
+    repl.close().await.unwrap();
 }
 
 async fn evaluate(repl: &Repl, code: &str) -> Vec<CellOutput> {

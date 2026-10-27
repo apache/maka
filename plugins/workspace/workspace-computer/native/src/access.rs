@@ -253,12 +253,19 @@ pub(super) async fn approve_target(
         &context.invocation,
         context.execution.as_deref(),
     )?;
-    let browser = target.capability == maka_agent_facts::interaction::GrantCapability::Browser;
+    let browser = matches!(
+        target.capability,
+        maka_agent_facts::interaction::GrantCapability::Browser
+            | maka_agent_facts::interaction::GrantCapability::BrowserDownload
+    );
     if browser {
         match browser_decision(owner, call, configuration.permission_basis(), &target).await? {
             Some(Decision::Allow) => return Ok(()),
             Some(Decision::Deny) => {
-                return Err(failed("Browser site access was denied for this Session"));
+                return Err(failed(format!(
+                    "{} access was denied for this Session",
+                    capability_name(&target)
+                )));
             }
             None => {}
         }
@@ -357,7 +364,10 @@ pub(super) async fn approve_target(
         if browser_decision(owner, call, configuration.permission_basis(), &target).await?
             != Some(Decision::Allow)
         {
-            return Err(failed("Browser site approval is no longer current"));
+            return Err(failed(format!(
+                "{} approval is no longer current",
+                capability_name(&target)
+            )));
         }
         Ok(())
     } else {
@@ -369,6 +379,7 @@ fn capability_name(target: &maka_agent_facts::interaction::GrantTarget) -> &'sta
     match target.capability {
         maka_agent_facts::interaction::GrantCapability::ComputerAudio => "Computer audio recording",
         maka_agent_facts::interaction::GrantCapability::Browser => "Browser site",
+        maka_agent_facts::interaction::GrantCapability::BrowserDownload => "Browser file download",
         _ => "Computer Use",
     }
 }

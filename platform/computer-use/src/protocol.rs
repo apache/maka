@@ -19,6 +19,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod browser_download;
+pub use browser_download::{BrowserDownloadOptions, BrowserMediaTarget};
+
 mod browser_mutation;
 pub use browser_mutation::{
     BrowserCheckOptions, BrowserClickOptions, BrowserKeyboardModifier, BrowserMouseButton,
@@ -94,6 +97,20 @@ pub enum Command {
         browser_id: String,
         reference: BrowserTabReference,
     },
+    BrowserManagedTabs {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+    },
+    BrowserUserOpenTabs {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+    },
+    BrowserUserClaimTab {
+        #[serde(rename = "browserId")]
+        browser_id: String,
+        #[serde(rename = "tabId")]
+        tab_id: String,
+    },
     TabMetadata {
         handle: Handle,
     },
@@ -138,6 +155,25 @@ pub enum Command {
         handle: Handle,
         locator: LocatorPlan,
         operation: BrowserMutationOperation,
+    },
+    BrowserDownloadWait {
+        handle: Handle,
+        #[serde(default)]
+        options: BrowserDownloadOptions,
+    },
+    BrowserDownloadPath {
+        handle: Handle,
+        scope: String,
+        #[serde(rename = "downloadId")]
+        download_id: String,
+        #[serde(default)]
+        options: BrowserDownloadOptions,
+    },
+    BrowserDownloadMedia {
+        handle: Handle,
+        target: BrowserMediaTarget,
+        #[serde(default)]
+        options: BrowserDownloadOptions,
     },
     GetTab {
         reference: TabReference,

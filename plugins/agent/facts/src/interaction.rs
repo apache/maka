@@ -33,6 +33,8 @@ pub use validation::{MAX_SAFE_INTEGER, entity_id};
 #[serde(rename_all = "snake_case")]
 pub enum GrantCapability {
     Browser,
+    /// File download consent for a browser origin, independent of page access.
+    BrowserDownload,
     ComputerUse,
     ComputerAudio,
     DesktopMcp,
