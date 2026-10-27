@@ -165,14 +165,26 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.lineTo(14, 14);
             break;
           case 'settings':
-            cx.arc(8, 8, 5, 0, Math.PI * 2);
-            cx.moveTo(10, 8);
-            cx.arc(8, 8, 2, 0, Math.PI * 2);
+            // One closed outline with eight square-ended teeth, so the gear does
+            // not read as a sun's separate rays.
             for (let i = 0; i < 8; i++) {
               const angle = (i * Math.PI) / 4;
-              cx.moveTo(8 + Math.cos(angle) * 5, 8 + Math.sin(angle) * 5);
-              cx.lineTo(8 + Math.cos(angle) * 7, 8 + Math.sin(angle) * 7);
+              const points: [number, number][] = [
+                [5.2, angle - 0.36],
+                [7, angle - 0.2],
+                [7, angle + 0.2],
+                [5.2, angle + 0.36],
+              ];
+              for (const [index, [radius, at]] of points.entries()) {
+                const x = 8 + Math.cos(at) * radius;
+                const y = 8 + Math.sin(at) * radius;
+                if (i === 0 && index === 0) cx.moveTo(x, y);
+                else cx.lineTo(x, y);
+              }
             }
+            cx.closePath();
+            cx.moveTo(10.25, 8);
+            cx.arc(8, 8, 2.25, 0, Math.PI * 2);
             break;
           case 'folder':
             cx.moveTo(1.5, 5);

@@ -598,8 +598,21 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       >
         <Button
           accessibilityLabel={tr('Open settings')}
+          // The application menu owns ⌘, only where the app draws its own title bar.
+          tooltip={textTooltip(() =>
+            ownTitleBar ? `${tr('Settings')} · ${keymap.label('mod+,')}` : undefined,
+          )}
           onPress={inputAction(props.settings, props.selected())}
-          style={{ ...controlStyle, flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+          // Starts where New conversation's icon and label do, like the rows above it.
+          style={{
+            ...controlStyle,
+            flex: 1,
+            flexDirection: 'row',
+            justifyContent: 'flex-start',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 8,
+          }}
           hoverStyle={{ backgroundColor: C.raised }}
           focusStyle={{ backgroundColor: C.line }}
         >
