@@ -145,6 +145,28 @@ pub(crate) fn can_scroll(view: &NshView, dx: f32, dy: f32) -> bool {
         .is_some_and(|s| s.can_scroll(state.frame.size, point(Points(dx), Points(dy))))
 }
 
+/// Whether `view` is a scroll view whose content is larger than it, the
+/// views that draw an indicator.
+pub(crate) fn overflows(view: &NshView) -> bool {
+    let state = view.state();
+    state
+        .scroll
+        .as_ref()
+        .is_some_and(|s| s.thumb(state.frame.size).is_some())
+}
+
+/// Whether a scroll view is around `view`.
+pub(crate) fn nested(view: &NshView) -> bool {
+    let mut current = view.parent_view();
+    while let Some(v) = current {
+        if v.kind() == ViewKind::Scroll {
+            return true;
+        }
+        current = v.parent_view();
+    }
+    false
+}
+
 // Sticky cells.
 
 /// Calls `f` with the view of node `id` in `view` (a child, or for a list
@@ -432,7 +454,7 @@ pub(crate) fn retire_motion(surface: &Rc<Surface>, root: &NshView) {
 
 /// Draws a scroll view's indicator, over its content (inside its clip),
 /// and the refresh spinner; the context is in the view's coordinates.
-pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, state: &ViewState) {
+pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, state: &ViewState, nested: bool) {
     let Some(s) = &state.scroll else { return };
     let size = state.frame.size;
     if let Some((center, progress)) =
@@ -457,7 +479,14 @@ pub(crate) fn draw_indicator(cx: &mut DrawCx<'_>, state: &ViewState) {
     // the content under the knob is, which may be light in a dark app.
     // The desktop thumb remains draggable at rest; keep its position visible
     // without extending the shared fade timer or requesting another frame.
-    let a = s.live.alpha.max(0.3);
+    // A view inside another scroll view fades out at rest, as macOS's
+    // overlay scrollers do, so only the one being used shows beside the
+    // outer view's.
+    let a = if nested {
+        s.live.alpha
+    } else {
+        s.live.alpha.max(0.3)
+    };
     let (knob, border) = if cx.dark {
         (
             Color::rgba(255, 255, 255, (140.0 * a) as u8),
@@ -864,6 +893,45 @@ mod tests {
                 .child_origin(crate::geom::rect(0.0, 0.0, 900.0, 900.0), (0.0, 0.0)),
             (-100.0, -70.0)
         );
+    }
+
+    #[test]
+    fn nested_scroll_views_and_overflow() {
+        use nsh_core::{MountItem, ROOT_ID};
+
+        let surface = Surface::new(nsh_engine::Environment::default());
+        surface.root.state_mut().frame = crate::geom::rect(0.0, 0.0, 300.0, 400.0);
+        for (id, kind, parent) in [
+            (2, ViewKind::View, ROOT_ID),
+            (4, ViewKind::Scroll, 2),
+            (6, ViewKind::View, 4),
+            (8, ViewKind::Scroll, 6),
+        ] {
+            for item in [
+                MountItem::Create { id, kind },
+                MountItem::Frame {
+                    id,
+                    frame: crate::geom::rect(0.0, 0.0, 300.0, 400.0),
+                },
+                MountItem::Insert {
+                    parent,
+                    child: id,
+                    before: None,
+                },
+            ] {
+                surface.mounter.borrow_mut().apply(&surface, &item);
+            }
+        }
+        let (outer, inner) = (surface.view(4).unwrap(), surface.view(8).unwrap());
+        assert!(!nested(&outer));
+        assert!(nested(&inner));
+        inner.state_mut().scroll.as_mut().unwrap().content =
+            nsh_core::geometry::size(Points(300.0), Points(400.0));
+        assert!(!overflows(&inner));
+        inner.state_mut().scroll.as_mut().unwrap().content =
+            nsh_core::geometry::size(Points(300.0), Points(900.0));
+        assert!(overflows(&inner));
+        assert!(!overflows(&surface.view(6).unwrap()));
     }
 
     #[test]
