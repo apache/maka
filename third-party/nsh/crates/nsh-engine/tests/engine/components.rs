@@ -5255,3 +5255,190 @@ fn base_plot_bars_grow_and_fade_natively() {
     assert!(drawings.iter().all(|(_, d)| !grows(d)));
     assert_eq!(bar_rects(&drawings[0].1.ops).len(), 3);
 }
+
+const BASE_PLOT_BAND_REFRESH: &str = r##"import { mount, signal, Text, View } from "nsh";
+import { Bar, Plot } from "nsh/base/plot";
+function App() {
+  const height = signal(120);
+  const bands = signal(3);
+  const across = signal(true);
+  const rows = signal([{ v: 10 }, { v: 20 }, { v: 30 }]);
+  const stage = signal(0);
+  const hovered = signal<number | null>(null);
+  const events = signal(0);
+  return <View>
+    <Plot testID="plot" data={rows()} y="v"
+      xScale={across() ? { type: "linear", domain: [0, 40] } : { type: "band", bandCount: bands() }}
+      yScale={across() ? { type: "band", bandCount: bands() } : { type: "linear", domain: [0, 40] }}
+      crossLineClass="w-full h-full bg-[#0000ff]"
+      tooltipContent={<View testID="tip" style={{ width: 40, height: 16 }} />}
+      onHoverChange={index => { hovered.set(index); events.update(n => n + 1); }}
+      style={{ width: 200, height: height() }}>
+      <Bar value="v" inactiveOpacity={0.4} />
+    </Plot>
+    <Text>{`band=${stage()} events=${events()} row=${hovered()}`}</Text>
+    <View testID="height" onPress={() => { height.set(240); stage.set(1); }} />
+    <View testID="bands" onPress={() => { bands.set(4); stage.set(2); }} />
+    <View testID="axis" onPress={() => { across.set(false); stage.set(3); }} />
+    <View testID="shrink" onPress={() => { rows.set([{ v: 10 }]); stage.set(4); }} />
+  </View>;
+}
+mount(App);
+"##;
+
+#[test]
+fn base_plot_y_bands_refresh_stationary_hover_and_follow_an_axis_switch() {
+    use nsh_core::{Color, HoverEvent, TransformKind, animation::Animator, geometry::point};
+
+    let (engine, rx) = start(BASE_PLOT_BAND_REFRESH);
+    let mut all = until_drawn(&rx, |_| true);
+    all.extend(until(&rx, |_| false));
+    let plot = test_view(&all, "plot");
+    let parent = |batches: &[MountBatch], child: u32| {
+        batches
+            .iter()
+            .flat_map(|b| &b.items)
+            .filter_map(|item| match item {
+                MountItem::Insert {
+                    parent, child: id, ..
+                } if *id == child => Some(*parent),
+                _ => None,
+            })
+            .next_back()
+            .expect("mounted parent")
+    };
+    let cross = |batches: &[MountBatch]| {
+        // Axis changes replace the cross-line branch; inspect the latest part.
+        let part = batches
+            .iter()
+            .flat_map(|b| &b.items)
+            .filter_map(|item| match item {
+                MountItem::ViewStyle { id, style }
+                    if style.background_color == Color(0x0000_ffff) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .next_back()
+            .expect("cross-line part");
+        parent(batches, part)
+    };
+    let tip = test_view(&all, "tip");
+    let tip_anchor = parent(&all, parent(&all, parent(&all, tip)));
+    let animated = |batches: &[MountBatch], id: u32| {
+        let mut animator = Animator::default();
+        for item in batches.iter().flat_map(|b| &b.items) {
+            animator.apply(item);
+        }
+        let mut values = None;
+        animator.write(
+            |view| (view == id).then_some(view),
+            |_, v, _| values = Some(v),
+        );
+        values.expect("hover animation bindings")
+    };
+    let near = |value: Option<f32>, expected: f32| {
+        let value = value.expect("bound coordinate");
+        assert!((value - expected).abs() < 0.01, "{value} != {expected}");
+    };
+    let check = |batches: &[MountBatch], axis: TransformKind, span: f32, at: f32, tip_x: f32| {
+        let cross = cross(batches);
+        let style = batches
+            .iter()
+            .flat_map(|b| &b.items)
+            .filter_map(|item| match item {
+                MountItem::ViewStyle { id, style } if *id == cross => Some(style.transform),
+                _ => None,
+            })
+            .next_back()
+            .expect("cross style");
+        let ops = style.ops();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0].kind, axis);
+        assert_eq!(ops[1].kind, axis);
+        assert!((ops[0].value + span / 2.0).abs() < 0.01);
+        assert_eq!(ops[1].value, 0.0);
+        near(animated(batches, cross).transform[1], at);
+        near(animated(batches, cross).opacity, 1.0);
+        near(animated(batches, tip_anchor).transform[0], tip_x);
+    };
+    let status = |batches: &[MountBatch]| {
+        batches
+            .iter()
+            .flat_map(|b| &b.items)
+            .filter_map(|item| match item {
+                MountItem::Text { text, .. } if text.text.starts_with("band=") => {
+                    Some(text.text.clone())
+                }
+                _ => None,
+            })
+            .next_back()
+            .expect("band status")
+    };
+    engine.control().dispatch_event(
+        plot,
+        EventKind::HoverMove,
+        EventPayload::Hover(HoverEvent {
+            position: point(px(80.0), px(60.0)),
+            ..Default::default()
+        }),
+    );
+    let entered = until(&rx, |b| shows(b, "band=0 events=1 row=1"));
+    assert!(
+        plot_drawings(&entered).is_empty(),
+        "the pointer redraws no bar"
+    );
+    all.extend(entered);
+    all.extend(until(&rx, |_| false));
+    check(&all, TransformKind::TranslateY, 40.0, 60.0, 60.0);
+
+    // No more pointer events. Keep the selected row while its Y band moves,
+    // then move that same row onto the X band axis without notifying again.
+    for (action, expected, axis, span, at, tip_x) in [
+        (
+            "height",
+            "band=1 events=1 row=1",
+            TransformKind::TranslateY,
+            80.0,
+            120.0,
+            60.0,
+        ),
+        (
+            "bands",
+            "band=2 events=1 row=1",
+            TransformKind::TranslateY,
+            60.0,
+            90.0,
+            60.0,
+        ),
+        (
+            "axis",
+            "band=3 events=1 row=1",
+            TransformKind::TranslateX,
+            50.0,
+            75.0,
+            55.0,
+        ),
+    ] {
+        engine.control().dispatch_event(
+            test_view(&all, action),
+            EventKind::Press,
+            EventPayload::None,
+        );
+        all.extend(until(&rx, |b| shows(b, expected)));
+        all.extend(until(&rx, |_| false));
+        assert_eq!(status(&all), expected);
+        check(&all, axis, span, at, tip_x);
+    }
+    engine.control().dispatch_event(
+        test_view(&all, "shrink"),
+        EventKind::Press,
+        EventPayload::None,
+    );
+    all.extend(until(&rx, |b| shows(b, "band=4 events=2 row=null")));
+    all.extend(until(&rx, |_| false));
+    assert_eq!(status(&all), "band=4 events=2 row=null");
+    near(animated(&all, cross(&all)).opacity, 0.0);
+    near(animated(&all, tip_anchor).opacity, 0.0);
+}
