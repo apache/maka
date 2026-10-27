@@ -24,7 +24,7 @@ import { Icon } from '../Icon';
 import { C, controlStyle, captionTextStyle } from '../ui';
 import { controlsRight, windowDrag } from '../chrome';
 import { PluginView } from './PluginView';
-import { pluginContext } from './registry';
+import { pluginContext } from './context';
 
 export function PluginPanel(props: { docked: boolean; attach?(node: YNode): void }) {
   const plugins = pluginContext()!;

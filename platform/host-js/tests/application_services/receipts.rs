@@ -84,6 +84,7 @@ fn reader_source(configuration: Value) -> (Input, Vec<Package>) {
     };
     (
         Input {
+            ui: None,
             instances: BTreeMap::from([
                 ("receipts".into(), provider),
                 ("forwarder".into(), forwarder),

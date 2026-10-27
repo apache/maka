@@ -19,6 +19,16 @@
 
 use serde::{Deserialize, Serialize};
 
+fn deserialize_numbers<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    // Reconstruct numbers after enum buffering before decoding numeric payloads.
+    let value = serde_json::Value::deserialize(deserializer)?;
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
+}
+
 mod browser_mutation;
 pub use browser_mutation::{
     BrowserCheckOptions, BrowserClickOptions, BrowserKeyboardModifier, BrowserMouseButton,
@@ -259,7 +269,7 @@ pub struct CreateTabOptions {
 #[serde(untagged)]
 pub enum Position {
     Element(u64),
-    Point([f64; 2]),
+    Point(#[serde(deserialize_with = "deserialize_numbers")] [f64; 2]),
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -304,8 +314,11 @@ impl Direction {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Distance {
-    Pages(f64),
-    Pixels { pixels: f64 },
+    Pages(#[serde(deserialize_with = "deserialize_numbers")] f64),
+    Pixels {
+        #[serde(deserialize_with = "deserialize_numbers")]
+        pixels: f64,
+    },
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -353,7 +366,9 @@ pub enum Action {
         input: serde_json::Value,
     },
     Drag {
+        #[serde(deserialize_with = "deserialize_numbers")]
         from: [f64; 2],
+        #[serde(deserialize_with = "deserialize_numbers")]
         to: [f64; 2],
     },
     Scroll {

@@ -192,7 +192,7 @@ async fn observer_tool_history_keeps_outer_ancestry_after_outer_settlement_and_r
         .await
         .unwrap();
     materialize_all(&log, through).await;
-    let observer_rows: Vec<Value> = crate::test_store::inspect(&log, rows)
+    let observer_rows: Vec<Value> = crate::test_store::inspect_cache(&log, rows)
         .await
         .into_iter()
         .map(|(_, bytes, _)| serde_json::from_slice::<Value>(&bytes).unwrap())

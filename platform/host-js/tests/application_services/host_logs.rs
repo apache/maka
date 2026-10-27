@@ -96,6 +96,7 @@ fn sources() -> (Input, Vec<Package>) {
     )]);
     (
         Input {
+            ui: None,
             instances: BTreeMap::from([
                 ("logs".into(), node(&logs, 1, true)),
                 ("client".into(), client),

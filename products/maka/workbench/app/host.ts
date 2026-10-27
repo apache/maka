@@ -139,30 +139,19 @@ async function query<E extends Endpoint, M extends Method<E, 'query'>>(
 ): Promise<Output<E, M>> {
   return nativeHost.query(endpoint, method, input) as Promise<Output<E, M>>;
 }
-function subscribe(
-  endpoint: 'agent',
-  method: 'readFile',
-  input: Input<'agent', 'readFile'>,
-): Promise<FileSubscription>;
 function subscribe<E extends Endpoint, M extends StreamMethod<E>>(
   endpoint: E,
   method: M,
   input: Input<E, M>,
-): Promise<Subscription<Output<E, M>>>;
-async function subscribe(
-  endpoint: Endpoint,
-  method: string,
-  input: unknown,
-): Promise<FileSubscription | Subscription<unknown>> {
-  const opened = await nativeHost.subscribe(endpoint, method, input);
-  if (endpoint === 'agent' && method === 'readFile') {
-    return {
-      readFile: async () => fileView(await opened.readFile()),
-      close: () => opened.close(),
-    };
-  }
-  // Keep the original native subscription and its cleanup, without a handle table.
-  return opened;
+): Promise<Subscription<Output<E, M>>> {
+  return nativeHost.subscribe(endpoint, method, input) as Promise<Subscription<Output<E, M>>>;
+}
+async function readFile(input: Input<'agent', 'readFile'>): Promise<FileSubscription> {
+  const opened = await nativeHost.readFile(input);
+  return {
+    readFile: async () => fileView(await opened.readFile()),
+    close: () => opened.close(),
+  };
 }
 
 // Local journal methods serialize these actual Rust DTOs. Their receipt business
@@ -187,6 +176,7 @@ export const host = {
   hasService: (endpoint: string) => nativeHost.hasService(endpoint),
   refresh: () => nativeHost.refresh(),
   subscribe,
+  readFile,
   get initialSession() {
     return nativeHost.initialSession;
   },

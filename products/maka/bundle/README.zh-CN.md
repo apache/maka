@@ -21,7 +21,7 @@
 
 [English](README.md)
 
-本目录选择 Maka 分发的 Host 与 UI 插件包，并将其绑定成一个 Agent/WorkHub 来源。插件声明与实现位于 [plugins](../../../plugins/README.zh-CN.md)。
+本目录选择 Maka 分发的 Host 与 UI 插件包，并将其绑定成一个 Agent/WorkHub 来源。插件声明与实现位于 [plugins](../../../plugins/README.zh-CN.md) 和[默认工作台包](../workbench/package.ts)。
 
 - [package-inputs.json](package-inputs.json)选择参与构建的包。
 - [src/composition.ts](src/composition.ts)构造实例、绑定和安装身份。
@@ -38,7 +38,7 @@ just run --root /path/to/business-host
 
 `just run` 打开 [NSH 终端工作台](../terminal-shell/README.zh-CN.md)，默认使用 `~/.maka/application/host`。它连接已有 Host，不存在则自动启动。下文的编写命令独立生成和管理插件组合。
 
-终端和桌面 shell 运行同一个 NSH 工作台；Host 服务、UI 插件和组合节点由同一部署来源管理。已启用的 UI 插件可以贡献命令、面板、设置页和工具结果组件。安装表示用户信任，插件直接使用工作台 VM 与现有客户端能力。[更新已选插件包](../cli/README.zh-CN.md#产品更新恢复与-url-安装)会保留现有 Host 组合与原生授权。
+终端和桌面 shell 加载同一个已选 NSH 根 UI；Host 服务、UI 插件和组合节点由同一部署来源管理。UI 包可以提供完整应用的根界面、命令、面板、设置页和工具结果组件。安装表示用户信任，插件直接使用共享 VM 与现有客户端能力。[更新已选插件包](../cli/README.zh-CN.md#产品更新恢复与-url-安装)会保留现有 Host 组合、根界面选择与原生授权。
 
 UI 实例可将声明的服务导入绑定到同一来源中的 Host 提供者。`UiContext.services` 和 `operations` 使用 UI 消费者的实际会话与原始 receipt，同时保留可信代码可用的完整 `UiContext.host`。一个包可以同时分发后台与 UI，无需为每个内部服务额外发布客户端端点。
 
@@ -58,6 +58,8 @@ maka application build-ui --entry ui/index.tsx --output ui-build
 
 输出的 `manifest.json` 描述 `bundle.js`、资源文件与源文件依赖；包构建器将它们放到 `application.ui.module` 及对应的包内资源路径。
 
+默认产品选择普通 UI 包 `maka.workbench`，实例为 `workbench-ui`，在 `host.json` 中声明 `ui: { path: ["workbench-ui"], id: "root" }`。其导入绑定到产品实际选择的 Agent、设置等服务。包构建器通过所有 UI 包共用的编译器，将 `app/App.tsx` 编译为声明的 `app/App.js` 入口。
+
 ## 生成安装配置
 
 CLI 可以生成经过校验的配置和包，运行时无需 Node：
@@ -71,6 +73,8 @@ maka application compose --configuration installation.json --output product-sour
 `installation.json` 选择 `locale` 和服务配置。它使用生成的 `AgentConfiguration`；可选 `coordinator` 会在同一 Host 中加入 WorkHub 服务。可选服务和 ACP 执行器需要显式选择。支持字段见[配置](src/composition.ts)和 [SDK 类型](../../../packages/plugin-sdk/src/generated/runtime.ts)。
 
 重新生成已有安装时，保留输出的 `keys` 和 `hostDeployment`，它们标识已有所有者及数据。包修订标识内容，可以独立变化。
+
+使用其他应用时，为其 UI 包加入 `usePackage: "ui"` 的实例，并将来源的 `ui` 设为该实例路径及声明的 `root` 贡献 ID。这会选择整个应用，包括导航、布局和交互。默认 Maka 根界面只在首次编写产品来源时选择；安装、更新和启动保留已保存的选择。没有根入口的来源不提供 UI，shell 不会回退到 Maka。自定义根界面也可运行于不含 Agent 服务的自定义 Host。
 
 显式安装时，先用 `maka host init` 初始化目标 Host Root，再用 `maka application commit` 提交 `host.json`，提供部署 ID、预期修订和导出的包。通用来源命令也支持独立于默认产品的自定义插件组合。各命令的 `--help` 列出必要参数。
 

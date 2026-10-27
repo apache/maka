@@ -114,6 +114,7 @@ pub struct BrowserClickOptions {
     #[serde(default)]
     pub force: bool,
     /// A positive JavaScript integer, capped by the operation's own deadline.
+    #[serde(default, deserialize_with = "super::deserialize_numbers")]
     pub timeout_ms: Option<f64>,
 }
 
@@ -122,6 +123,7 @@ pub struct BrowserClickOptions {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserTextOptions {
     /// A positive JavaScript integer, capped by the operation's own deadline.
+    #[serde(default, deserialize_with = "super::deserialize_numbers")]
     pub timeout_ms: Option<f64>,
 }
 
@@ -133,6 +135,7 @@ pub struct BrowserCheckOptions {
     #[serde(default)]
     pub force: bool,
     /// A positive JavaScript integer, capped by the operation's own deadline.
+    #[serde(default, deserialize_with = "super::deserialize_numbers")]
     pub timeout_ms: Option<f64>,
 }
 
@@ -147,7 +150,11 @@ pub struct BrowserSelectOption {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Match a nonnegative integer option position.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "super::deserialize_numbers",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub index: Option<f64>,
 }
 

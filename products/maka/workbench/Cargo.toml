@@ -44,7 +44,7 @@ maka-workspace-api.workspace = true
 maka-settings-native.workspace = true
 maka-ui-support.workspace = true
 nsh-core.workspace = true
-nsh-engine.workspace = true
+nsh-engine = { workspace = true, features = ["net"] }
 nsh-base.workspace = true
 serde_json.workspace = true
 serde.workspace = true

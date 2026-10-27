@@ -103,6 +103,26 @@ test('WorkHub product binds independent agents and direct UI management in the a
       const { keys, hostDeployment } = read('installation');
       const host = read('host');
       assert.match(hostDeployment, /^[0-9a-f-]{36}$/);
+      assert.deepEqual(host.ui, { path: ['workbench-ui'], id: 'root' });
+      const ui = host.instances['workbench-ui'];
+      assert.equal(ui.key, keys['workbench-ui']);
+      assert.deepEqual(ui.package, { source: 'pinned', package: read('packages').workbench });
+      assert.equal(ui.usePackage, 'ui');
+      assert.deepEqual(ui.bindings.agent, [{ kind: 'instance', path: ['agent'], export: 'agent' }]);
+      assert.deepEqual(ui.bindings.coordinator, [
+        { kind: 'instance', path: ['workhub'], export: 'agent' },
+      ]);
+      assert.deepEqual(ui.bindings.coordinatorTerminal, [
+        {
+          kind: 'instance',
+          path: ['coordinator-workspace-processes'],
+          export: 'terminal',
+        },
+      ]);
+      const workbench = JSON.parse(
+        readFileSync(resolve(root, 'dist/packages/workbench/maka.extension.json'), 'utf8'),
+      );
+      assert.deepEqual(workbench.application.ui.contributions.root, { kind: 'root' });
       assert.equal(existsSync(resolve(output, 'ui.json')), false);
       assert.equal(existsSync(resolve(output, 'management-host.json')), false);
       assert.deepEqual(host.instances.workhub.bindings.worker, [

@@ -44301,6 +44301,16 @@ export const contracts = {
                       $ref: '#/$defs/CompositionNode',
                     },
                   },
+                  ui: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UiTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['instances'],
@@ -44549,6 +44559,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['path'],
+              },
+              UiTarget: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'id'],
               },
               RemoteObservation: {
                 description:
@@ -45200,6 +45226,16 @@ export const contracts = {
               source: {
                 $ref: '#/$defs/DeploymentRef',
               },
+              ui: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/UiRoot',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               instances: {
                 type: 'array',
                 items: {
@@ -45228,6 +45264,28 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['stateDomain', 'deployment', 'revision'],
+              },
+              UiRoot: {
+                type: 'object',
+                properties: {
+                  instance: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['instance', 'id'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
               },
               UiInstance: {
                 type: 'object',
@@ -45278,15 +45336,6 @@ export const contracts = {
                   'contributions',
                 ],
               },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
               PackageRef: {
                 type: 'object',
                 properties: {
@@ -45302,6 +45351,17 @@ export const contracts = {
               },
               UiContribution: {
                 oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'root',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
                   {
                     type: 'object',
                     properties: {
@@ -45557,6 +45617,16 @@ export const contracts = {
                       $ref: '#/$defs/CompositionNode',
                     },
                   },
+                  ui: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UiTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['instances'],
@@ -45805,6 +45875,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['path'],
+              },
+              UiTarget: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'id'],
               },
               RemoteObservation: {
                 description:

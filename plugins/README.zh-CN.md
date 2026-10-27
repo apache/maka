@@ -36,7 +36,7 @@
 
 修改已有插件时，从声明入手，沿所选实现查找代码。原生入口选择可执行文件提供的实现；JavaScript 入口指定打包后的本地模块。插件族目录和已链接 crate 都不会自动激活插件。
 
-包可以声明 `application.host`、`application.ui` 或组合模板。部署中的实例通过 `usePackage: host / ui / composition` 明确选择所用入口，纯 UI 插件不需要伪造 Host 服务。[终端 shell](../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../products/maka/desktop-shell/README.zh-CN.md) 运行同一个 [NSH 工作台](../products/maka/workbench/README.zh-CN.md)，共享动态 UI 模块与公共 Host 能力。安装表示用户信任，UI 插件可直接使用工作台现有能力。
+包可以声明 `application.host`、`application.ui` 或组合模板。部署中的实例通过 `usePackage: host / ui / composition` 明确选择所用入口，纯 UI 插件不需要伪造 Host 服务。[终端 shell](../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../products/maka/desktop-shell/README.zh-CN.md) 运行同一个 [NSH 工作台](../products/maka/workbench/README.zh-CN.md)，共享动态 UI 模块与公共 Host 能力。包可声明 `root` 贡献来提供整个应用，部署来源通过 `ui: { path, id }` 选择入口。Maka 默认工作台也是普通 UI 包，缺少根入口时不会自动回退到它。安装表示用户信任，UI 插件可直接使用工作台现有能力。
 
 UI 入口可以声明服务导入，并绑定到 Host 导出，包括同一个包的后台服务。`UiContext.services` 以实际 UI 消费者的会话调用这些提供者，`UiContext.operations` 恢复该实例的原始 mutation receipt。可信代码仍可使用完整的 `UiContext.host`。详见 [UI 开发指南](../skills/maka-plugin-authoring/references/ui-plugins.md)。
 

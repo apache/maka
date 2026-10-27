@@ -125,6 +125,7 @@ fn fixture() -> (Input, Packages) {
         )
         .unwrap();
     let input = Input {
+        ui: None,
         instances: BTreeMap::from([
             (
                 "a".into(),
@@ -468,7 +469,8 @@ fn actual_export_checks_use_the_full_public_contract() {
 }
 
 #[test]
-fn mixed_templates_keep_ui_instances_in_the_same_source_without_host_activations() {
+fn compositions_select_nested_or_standalone_ui_roots_without_host_execution() {
+    use crate::composition::UiTarget;
     use crate::package::{UiContribution, UiEntry, UiText};
 
     let (mut input, mut packages) = fixture();
@@ -482,15 +484,18 @@ fn mixed_templates_keep_ui_instances_in_the_same_source_without_host_activations
                     module: "ui.js".into(),
                     configuration: entry().configuration,
                     imports: BTreeMap::new(),
-                    contributions: BTreeMap::from([(
-                        "main".into(),
-                        UiContribution::Panel {
-                            title: UiText {
-                                fallback: "Details".into(),
-                                translations: BTreeMap::new(),
+                    contributions: BTreeMap::from([
+                        ("app".into(), UiContribution::Root),
+                        (
+                            "main".into(),
+                            UiContribution::Panel {
+                                title: UiText {
+                                    fallback: "Details".into(),
+                                    translations: BTreeMap::new(),
+                                },
                             },
-                        },
-                    )]),
+                        ),
+                    ]),
                 }),
                 composition: None,
             },
@@ -523,7 +528,35 @@ fn mixed_templates_keep_ui_instances_in_the_same_source_without_host_activations
     assert_eq!(ui.configuration, json!({"title":"shared configuration"}));
     assert_eq!(ui.ui_entry().unwrap().module, "ui.js");
     assert!(instance(&plan, &["a", "content"]).host_entry().is_some());
+    assert!(plan.ui().is_none());
     let ui_id = ui.identity.clone();
+    for (path, id) in [
+        (vec![], "app"),
+        (vec!["missing"], "app"),
+        (vec!["a"], "app"),
+        (vec!["a", "content"], "app"),
+        (vec!["a", "details"], "main"),
+        (vec!["a", "details"], "missing"),
+        (vec!["a", "details"], "invalid/id"),
+    ] {
+        input.ui = Some(UiTarget {
+            path: path.into_iter().map(String::from).collect(),
+            id: id.into(),
+        });
+        assert!(Plan::prepare(&input, &packages, &RemoteExports::new()).is_err());
+    }
+    input.ui = Some(UiTarget {
+        path: vec!["a".into(), "details".into()],
+        id: "app".into(),
+    });
+    let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    assert_eq!(
+        plan.ui(),
+        Some(&UiRoot {
+            instance: ui_id.clone(),
+            id: "app".into(),
+        })
+    );
     let mut runtime = crate::runtime::Runtime::<()>::new(plan);
     assert!(matches!(
         runtime.begin(&ui_id),
@@ -531,9 +564,32 @@ fn mixed_templates_keep_ui_instances_in_the_same_source_without_host_activations
     ));
 
     input.instances.get_mut("a").unwrap().disabled = true;
+    assert!(Plan::prepare(&input, &packages, &RemoteExports::new()).is_err());
+    input.ui = None;
     let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
     assert!(instance(&plan, &["a", "details"]).disabled);
     assert!(!instance(&plan, &["b", "content"]).disabled);
+
+    let mut root = node(12, ui_package, PackageUse::Ui);
+    root.configuration
+        .values
+        .insert("title".into(), json!("standalone"));
+    let input = Input {
+        instances: BTreeMap::from([("app".into(), root)]),
+        ui: Some(UiTarget {
+            path: vec!["app".into()],
+            id: "app".into(),
+        }),
+    };
+    let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    let root = plan.ui().unwrap().instance.clone();
+    let mut runtime = crate::runtime::Runtime::<()>::new(plan);
+    let consumer = runtime.begin_ui_consumer(&root).unwrap();
+    runtime.publish(&consumer, BTreeMap::new()).unwrap();
+    assert_eq!(
+        runtime.status(&consumer).unwrap().phase,
+        crate::runtime::Phase::Active
+    );
 }
 
 #[test]

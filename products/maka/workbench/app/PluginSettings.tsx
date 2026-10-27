@@ -32,6 +32,7 @@ import type { PluginSettingsOwner, PluginAction } from './pluginSettings.ts';
 import { SettingsField } from './SettingsField';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
+import { RootUiSettings } from './RootUiSettings';
 import {
   bodyTextStyle,
   captionTextStyle,
@@ -77,6 +78,7 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
               <View style={{ flex: 1, minHeight: 0 }}>
                 <If when={!owner.selected()}>
                   <View style={{ flex: 1, minHeight: 0, padding: 8, gap: 12 }}>
+                    <RootUiSettings owner={owner.rootUi} />
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr(
                         'Manage plugins for this connection. Your conversation and draft stay open.',

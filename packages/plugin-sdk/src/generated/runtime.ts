@@ -464,6 +464,9 @@ export type MethodMode = 'query' | 'mutation' | 'subscription';
 export type Availability = 'required' | 'optional';
 export type UiContribution =
   | {
+      kind: 'root';
+    }
+  | {
       kind: 'panel';
       title: UiText;
     }
@@ -4527,6 +4530,7 @@ export interface CompositionInput {
   instances: {
     [k: string]: CompositionNode | undefined;
   };
+  ui?: UiTarget | null;
 }
 export interface CompositionNode {
   key: string;
@@ -4573,6 +4577,10 @@ export interface Override {
     [k: string]: Target[] | undefined;
   };
   disabled?: boolean | null;
+}
+export interface UiTarget {
+  path: string[];
+  id: string;
 }
 export interface Deployment {
   reference: DeploymentRef;
@@ -4665,7 +4673,12 @@ export interface UiText {
 }
 export interface UiCatalog {
   source: DeploymentRef;
+  ui?: UiRoot | null;
   instances: UiInstance[];
+}
+export interface UiRoot {
+  instance: InstanceId;
+  id: string;
 }
 export interface PackageInstall {
   expectedRevision: number;

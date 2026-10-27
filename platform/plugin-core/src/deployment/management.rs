@@ -224,6 +224,8 @@ pub struct UiInstance {
 #[serde(deny_unknown_fields)]
 pub struct UiCatalog {
     pub source: DeploymentRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<crate::plan::UiRoot>,
     pub instances: Vec<UiInstance>,
 }
 

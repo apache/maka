@@ -166,10 +166,7 @@ impl Session {
         surface.set_access(access);
         surface.set_host_services_enabled(true);
         config.environment.fallback_key_bindings = true;
-        let assets = config
-            .assets
-            .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
-        surface.set_assets(Some(assets.clone()));
+        surface.set_assets(config.assets.clone());
         let sink = Sink::default();
         let environment = config.environment;
         let host = config.host.clone();
@@ -739,14 +736,19 @@ mod tests {
     }
 
     #[test]
-    fn packaged_images_load_and_paint_through_the_production_session() {
-        use nsh_engine::Assets as _;
-
-        assert_eq!(
-            maka_workbench::ApplicationAssets.read("asset:/missing.png"),
-            Err("Unknown bundled asset: asset:/missing.png".into())
-        );
-        let mut session = Session::new(config(
+    fn images_load_and_paint_through_the_production_session() {
+        struct ImageAssets;
+        impl nsh_engine::Assets for ImageAssets {
+            fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
+                match uri {
+                    "asset:/image.png" => {
+                        Ok(include_bytes!("../../../workbench/app/assets/maka.png").to_vec())
+                    }
+                    _ => Err(format!("Unknown test image: {uri}")),
+                }
+            }
+        }
+        let mut options = config(
             r#"
             import { mount, signal } from "nsh";
             import { element, prop, insert, append } from "nsh:rt";
@@ -754,7 +756,7 @@ mod tests {
             mount(() => {
                 const root = element("view");
                 const image = element("image");
-                prop(image, "src", "asset:/assets/maka.png");
+                prop(image, "src", "asset:/image.png");
                 prop(image, "style", { width: 64, height: 64, flexShrink: 0 });
                 prop(image, "onLoad", e => status.set("loaded:" + e.width + "x" + e.height));
                 prop(image, "onError", e => status.set("failed:" + e.message));
@@ -765,8 +767,9 @@ mod tests {
                 return root;
             });
         "#,
-        ))
-        .unwrap();
+        );
+        options.assets = Some(Arc::new(ImageAssets));
+        let mut session = Session::new(options).unwrap();
         let mut bytes = session.initial_frame().unwrap().bytes.unwrap_or_default();
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -787,7 +790,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "packaged image did not load:\n{screen}"
+                "fixture image did not load:\n{screen}"
             );
             thread::sleep(std::time::Duration::from_millis(1));
         }

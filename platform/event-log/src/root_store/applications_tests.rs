@@ -87,7 +87,10 @@ async fn source(store: &RootStore, deployment: Uuid, expected: u64) -> Deploymen
         .commit_application(
             deployment,
             expected,
-            Input { instances },
+            Input {
+                ui: None,
+                instances,
+            },
             vec![],
             vec![package],
         )

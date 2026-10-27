@@ -23,7 +23,7 @@ import { windowSize } from 'nsh';
 import { keymap } from 'nsh';
 import { Dialog, ResizablePanel, ResizablePanelGroup } from 'nsh/base';
 import { C } from './ui';
-import { pluginContext } from './plugins/registry';
+import { pluginContext } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { dialogTop, docked } from './chrome';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';

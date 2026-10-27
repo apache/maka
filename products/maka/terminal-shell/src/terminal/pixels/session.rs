@@ -208,9 +208,6 @@ fn run(
     platform
         .set_viewport(viewport, scale_factor)
         .map_err(|error| error.to_string())?;
-    config
-        .assets
-        .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
     let mut reloading = config
         .context
         .get::<maka_workbench::reload::UiReload>()

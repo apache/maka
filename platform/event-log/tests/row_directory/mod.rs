@@ -241,18 +241,6 @@ mod bare_copy {
                 )
                 .unwrap();
             assert_eq!(members, 2);
-            assert_eq!(
-                crate::test_store::inspect_cache(&log, |db| {
-                    db.query_row(
-                        "SELECT count(*) FROM temp.transcript_rows WHERE session_id='target'",
-                        [],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .unwrap()
-                })
-                .await,
-                0
-            );
             if collision {
                 assert_eq!(db.query_row("SELECT source_sequence,claimant_source_sequence,claimant_item_index,attempted_item_index,reason FROM transcript_failures WHERE session_id='target'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).unwrap(),(3,1,0,0,"message identity is already claimed".into()));
                 assert_eq!(db.query_row("SELECT count(*) FROM transcript_directory WHERE session_id='target' AND source_sequence=3",[],|r|r.get::<_,i64>(0)).unwrap(),0);

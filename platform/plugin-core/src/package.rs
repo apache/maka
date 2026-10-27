@@ -124,6 +124,7 @@ pub struct UiText {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiContribution {
+    Root,
     Panel { title: UiText },
     Command { title: UiText },
     ToolRenderer { presentation: String },
@@ -140,6 +141,7 @@ impl UiEntry {
         for (id, contribution) in &self.contributions {
             crate::name(id)?;
             let label = match contribution {
+                UiContribution::Root => continue,
                 UiContribution::Panel { title }
                 | UiContribution::Command { title }
                 | UiContribution::Settings { title } => &title.fallback,

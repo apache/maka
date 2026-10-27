@@ -176,7 +176,15 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         fault_consumer.use_package=PackageUse::Ui;
         fault_consumer.bindings.insert("business".into(),vec![Target::Instance {path:vec!["business".into()],export:"Counter".into()}]);
         input.instances.insert("fault-ui".into(),fault_consumer);
-        packages.extend([provider,ui,fault_ui]);
+        let empty_ui=support::counter::package("example.ui.empty",Declaration {
+            host:None,composition:None,
+            ui:Some(UiEntry {module:"index.mjs".into(),configuration:json!({"type":"object"}).into(),
+                imports:BTreeMap::new(),contributions:BTreeMap::new()}),
+        },Some("throw new Error('UI code must not run inside the Host');".into()));
+        let mut empty_consumer=support::counter::node(&empty_ui,26);
+        empty_consumer.use_package=PackageUse::Ui;
+        input.instances.insert("empty-ui".into(),empty_consumer);
+        packages.extend([provider,ui,fault_ui,empty_ui]);
         let deployment = Uuid::new_v4();
         let source = store.commit_application(deployment,0,input.clone(),vec![],packages.clone()).await.unwrap();
         let first = Arc::new(AtomicUsize::new(0));
@@ -196,6 +204,10 @@ async fn installed_ui_services_capture_calls_rebind_and_keep_original_receipts()
         let listener=LocalListener::bind(&address).unwrap();
         let serving=tokio::spawn({let host=host.clone();async move {host.serve_local(listener,CancellationToken::new()).await}});
         let mut parent=Client::connect(&address,Some(host.epoch())).await.unwrap();
+        let mut empty=parent.bind_ui(source.clone(),support::identity(26)).await.unwrap();
+        assert!(empty.ui_imports().unwrap().is_empty());
+        assert!(empty.catalogue().epochs().is_empty());
+        empty.close().await.unwrap();
         let mut bound=parent.bind_ui(source.clone(),support::identity(23)).await.unwrap();
         assert_eq!(bound.ui_imports().unwrap(),&BTreeMap::from([("counter".into(),vec!["counter".into()])]));
         assert_eq!(read(&bound,"counter","read",Value::Null).await,json!({"effects":0}));

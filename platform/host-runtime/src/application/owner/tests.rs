@@ -156,7 +156,10 @@ fn service_plan(contract: &Contract) -> (Input, Plan) {
             },
         );
     }
-    let input = Input { instances: nodes };
+    let input = Input {
+        ui: None,
+        instances: nodes,
+    };
     let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
     (input, plan)
 }
@@ -449,6 +452,7 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
     ]))
     .unwrap();
     let input = Input {
+        ui: None,
         instances: BTreeMap::from([(
             "ui".into(),
             Node {

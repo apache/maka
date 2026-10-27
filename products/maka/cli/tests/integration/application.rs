@@ -32,6 +32,7 @@ fn durable_application_commands_commit_read_cas_and_never_claim_readiness() {
     let owner = RootOwner::create(&root, &namespaces).unwrap();
     drop(owner);
     let input = Input {
+        ui: None,
         instances: BTreeMap::new(),
     };
     let path = dir.path().join("input.json");
@@ -131,6 +132,7 @@ fn url_install_commits_validated_bytes_without_changing_the_composition() {
     let deployment = uuid::Uuid::new_v4();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let input = Input {
+        ui: None,
         instances: BTreeMap::new(),
     };
     runtime.block_on(async {

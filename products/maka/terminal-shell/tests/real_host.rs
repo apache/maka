@@ -2676,7 +2676,7 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         fixture.idle(&client, &fixture.session).await;
         wait_view(&mut view, |screen| screen.contains("SECOND_TURN_FINAL")).await;
 
-        support::load_application(&mut view);
+        support::load_application(&mut view, &bindings, Some(fixture.session.clone()));
         let reloaded = wait_view(&mut view, |screen| screen.contains("SECOND_TURN_FINAL")).await;
         assert!(!reloaded.contains("Details ·") && !reloaded.contains("NATIVE_THINK_SOURCE_FIRST"));
         evidence("single-work-presentation-after-reload", &reloaded);
@@ -3711,7 +3711,7 @@ async fn a_lost_confirmation_recovers_its_original_reference_and_reload_keeps_a_
         assert!(restarted.pending_operations("agent", &fixture.session, EDITOR).await.unwrap().is_empty());
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2, "recovering a receipt must never send A or draft B again");
 
-        support::load_application(&mut view);
+        support::load_application(&mut view, &bindings, Some(fixture.session.clone()));
         wait_editable_composer(&mut view).await;
         let reloaded = wait_view(&mut view, |screen| screen.contains("Later unsent draft B survives recovery") && screen.contains("REAL_RECOVERED_PROVIDER_ANSWER")).await;
         evidence("reloaded-draft", &reloaded);

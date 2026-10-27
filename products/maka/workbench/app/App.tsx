@@ -18,10 +18,10 @@
  */
 
 import { createText, UiError, errorText, message as uiMessage } from './text';
-import { applyLanguagePreference, tr } from './locale';
+import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
-import { cleanup, effect, inputAction, mount, signal, Scroll, Text, View } from 'nsh';
-import type { YNode } from 'nsh';
+import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
+import type { YNode, JSX } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { host } from './host';
 import { keymap } from 'nsh';
@@ -45,7 +45,6 @@ import { WorkspacePicker } from './WorkspacePicker';
 import { ModelSelect } from './ModelSelect';
 import { CompactDialog } from './CompactDialog';
 import { ModelSettings, type SettingsRoute } from './ModelSettings';
-import { host as nativeHost } from 'maka/host';
 import type { ModelBackend } from './modelSelection';
 import { InteractionComposer, interactionOutcomeSummary } from './InteractionComposer';
 import { ComputerAppControls } from './ComputerAppControls';
@@ -62,8 +61,12 @@ import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser
 import { applicationMenu } from './chrome';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
-import { createPlugins, pluginContext, type PanelRoute } from './plugins/registry';
-import { PluginInstances } from './plugins/PluginView';
+import { createWorkbenchPlugins, pluginContext, type PanelRoute } from './plugins/context';
+import type {
+  UiContext,
+  UiExports,
+  UiRootProps,
+} from '../../../../packages/plugin-sdk/src/workbench.js';
 
 type OverlayTarget = {
   sessionId: string | null;
@@ -80,11 +83,13 @@ type RestoredUi = {
   settings: SettingsRoute | null;
   panel: PanelRoute | null;
 };
-function App() {
+function App(
+  props: UiRootProps<JSX.Element> & { bindReload(prepare: () => Promise<unknown>): () => void },
+) {
   initializeUiScale();
   const browsing = createBrowsing();
   const foreground = createForeground();
-  const restored = nativeHost.restored as RestoredUi | null;
+  const restored = props.restored as RestoredUi | null;
   let settingsRoute = restored?.settings ?? null;
   const selected = signal<string | null>(
     restored === null ? host.initialSession : restored.sessionId,
@@ -92,9 +97,10 @@ function App() {
   const overlay = signal<Overlay | null>(
     restored?.settings ? { kind: 'settings', sessionId: selected(), instance: 1 } : null,
   );
-  const reloading = signal(false);
+  const reloading = props.runtime.reloading;
+  effect(() => props.runtime.setLocale(currentLocale()));
   const resources = createResources({ selected, blocked: () => overlay() !== null || reloading() });
-  const plugins = createPlugins({
+  const plugins = createWorkbenchPlugins(props.runtime, props.context, {
     sessionId: selected,
     showPanel() {
       resources.hide();
@@ -102,33 +108,22 @@ function App() {
     },
     report: (reason) => report(reason),
     restorePanel: restored?.panel,
-    async reload() {
-      if (reloading()) return false;
-      reloading.set(true);
-      let accepted = false;
-      try {
-        await nativeHost.beginUiReload();
-        const owner = handle();
-        if (owner && !(await owner.flushDraft())) return false;
-        if (!alive || handle() !== owner) return false;
-        nativeHost.reloadUi({
-          sessionId: selected(),
-          settings: overlay()?.kind === 'settings' ? settingsRoute : null,
-          panel: plugins.panelRoute(),
-        });
-        accepted = true;
-        return true;
-      } finally {
-        if (!accepted && alive) {
-          try {
-            nativeHost.cancelUiReload();
-          } finally {
-            reloading.set(false);
-          }
-        }
-      }
-    },
   });
+  cleanup(
+    props.bindReload(async () => {
+      const owner = handle();
+      if (owner && !(await owner.flushDraft()))
+        throw new UiError(
+          'Draft could not be saved or restored. Its existing contents are preserved.',
+        );
+      if (!alive || handle() !== owner) throw new UiError('Conversation navigation was cancelled.');
+      return {
+        sessionId: selected(),
+        settings: overlay()?.kind === 'settings' ? settingsRoute : null,
+        panel: plugins.panelRoute(),
+      };
+    }),
+  );
   effect(() => {
     if (resources.shown()) {
       const panel = plugins.panel();
@@ -863,8 +858,7 @@ function App() {
   return (
     <pluginContext.Provider value={plugins}>
       <View style={{ flex: 1, backgroundColor: C.background }}>
-        <PluginInstances plugins={plugins} />
-        <If when={plugins.updatePending() || plugins.updateError()}>
+        <If when={plugins.updateError()}>
           <View
             style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16, alignItems: 'center' }}
           >
@@ -1208,4 +1202,24 @@ function App() {
     </pluginContext.Provider>
   );
 }
-mount(App);
+export function activate(_context: UiContext): UiExports<JSX.Element> {
+  const empty = async () => null;
+  let prepareReload: () => Promise<unknown> = empty;
+  return {
+    root: {
+      kind: 'root',
+      render: (props) => (
+        <App
+          {...props}
+          bindReload={(prepare) => {
+            prepareReload = prepare;
+            return () => {
+              if (prepareReload === prepare) prepareReload = empty;
+            };
+          }}
+        />
+      ),
+      prepareReload: () => prepareReload(),
+    },
+  };
+}

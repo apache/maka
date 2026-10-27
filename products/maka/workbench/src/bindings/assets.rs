@@ -108,14 +108,14 @@ impl Assets for HostAssets {
             }
             ImageSource::Attachment(source)
         } else {
-            return crate::ApplicationAssets.read(uri);
+            return Err(format!("Unknown application asset: {uri}"));
         };
         if source.session().is_empty() {
             return Err("Invalid image session".into());
         }
         let owner = self.0.clone();
-        // Image assets are read on NSH's image workers; bundled/font reads above
-        // stay synchronous. Track the whole read with the launcher's other IO.
+        // Image assets are read on NSH's image workers. Track the whole read
+        // with the launcher's other IO.
         let (bytes, digest) = self.0.runtime.block_on(execute(owner.clone(), async move {
             read_image(&owner, source).await
         }))?;

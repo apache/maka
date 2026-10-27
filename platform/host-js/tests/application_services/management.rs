@@ -81,6 +81,7 @@ fn sources_for(implementation: &str) -> (Input, Vec<Package>) {
     )]);
     (
         Input {
+            ui: None,
             instances: BTreeMap::from([
                 ("provider".into(), node(&provider, 1, true)),
                 ("a".into(), consumer_node),
@@ -123,6 +124,7 @@ impl Fixture {
                     Uuid::new_v4(),
                     0,
                     Input {
+                        ui: None,
                         instances: BTreeMap::new(),
                     },
                     vec![],
@@ -945,6 +947,7 @@ async fn instance_pages_freeze_source_and_nested_enabled_intents_preserve_origin
             f.managed.deployment,
             1,
             Input {
+                ui: None,
                 instances: BTreeMap::from([("product".into(), root)]),
             },
             vec![],
@@ -1126,6 +1129,7 @@ async fn execution_basis_includes_cohost_manager_target_but_not_source_revision(
     let original = f.binding.execution_basis().to_owned();
     f.app.shutdown().await.unwrap();
     let input = Input {
+        ui: None,
         instances: BTreeMap::new(),
     };
     let same = f
@@ -1257,6 +1261,7 @@ async fn settings_forms_preserve_exact_numbers_unedited_sources_and_original_cas
             f.managed.deployment,
             1,
             Input {
+                ui: None,
                 instances: BTreeMap::from([
                     ("settings".into(), root.clone()),
                     ("product".into(), product),
@@ -1463,6 +1468,7 @@ async fn composition_choices_and_atomic_edits_preserve_source_bindings_and_origi
             f.managed.deployment,
             1,
             Input {
+                ui: None,
                 instances: BTreeMap::from([
                     ("apps".into(), catalog_node),
                     ("provider".into(), node(&provider, 81, true)),

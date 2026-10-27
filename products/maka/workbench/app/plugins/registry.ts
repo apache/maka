@@ -17,28 +17,32 @@
  * under the License.
  */
 
-import { batch, cleanup, computed, context, importModule, signal, type JSX } from 'nsh';
+import { batch, cleanup, computed, importModule, signal, type JSX } from 'nsh';
 import { host as nativeHost } from 'maka/host';
-import type { ServiceMethods } from '../../../../../packages/plugin-sdk/src/index.js';
+import type {
+  UiCatalog,
+  UiInstance,
+} from '../../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type {
   UiContext,
+  UiContributionRef,
+  UiContributionProps,
   UiExports,
   UiModule,
+  UiRuntime,
   UiService,
   UiOperation,
   UiMutation,
   UiOperations,
   UiSubscription,
+  UiCommandContext,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
-import type { CommandEntry } from '../composerCommands';
-import { host } from '../host';
-import { UiError, errorText, renderText } from '../text';
-import { currentLocale, displayText } from '../locale';
+import { UiError } from '../text';
+import { currentLocale } from '../locale';
 import { sameValue } from '../../../../../plugins/shared/value';
+import { renderContribution } from './RuntimeView';
 
-type Catalog = ServiceMethods['deploymentManager']['readUi']['output'];
-export type UiInstance = Catalog['instances'][number];
-type Declaration = UiInstance['contributions'][string];
+type Catalog = UiCatalog;
 type Loaded = UiModule<JSX.Element>;
 type Exports = UiExports<JSX.Element>;
 type Bindings = Awaited<ReturnType<typeof nativeHost.bindUi>>;
@@ -54,14 +58,7 @@ type State =
   | { kind: 'active'; module: Loaded; exports: Exports; context: UiContext }
   | { kind: 'failed'; reason: unknown };
 
-export type Contribution = {
-  key: string;
-  id: string;
-  entry: PluginEntry;
-  declaration: Declaration;
-};
-export type Panel = { contribution: Contribution; input?: unknown; instance: number };
-export type PanelRoute = { instance: UiInstance['instance']; id: string; input?: unknown };
+export type Contribution = UiContributionRef & { entry: PluginEntry };
 export type PluginEntry = {
   key: string;
   identity: string;
@@ -70,40 +67,37 @@ export type PluginEntry = {
   state: ReturnType<typeof signal<State>>;
   live: boolean;
 };
+type RootIdentity = { instance: UiInstance['instance']; id: string; packageId: string };
+type RestoredRoot = { root: RootIdentity; state: unknown };
 
-export const contributionTitle = (item: Contribution) =>
-  item.declaration.kind === 'tool_renderer' ? '' : displayText(item.declaration.title);
-
-export const pluginContext = context<Plugins | null>(null);
-
-export function createPlugins(options: {
-  sessionId(): string | null;
-  showPanel(): void;
-  report(reason: unknown): void;
-  reload(): Promise<boolean>;
-  restorePanel?: PanelRoute | null;
-}) {
+export function createPlugins() {
   const entries = signal<PluginEntry[]>([]);
-  const panel = signal<Panel | null>(null);
+  const catalog = signal<Catalog | null>(null);
   const ready = signal(false);
-  const updatePending = signal(false);
+  const reloading = signal(false);
   const updateError = signal<unknown | null>(null);
   const importedPackages = new Set<string>();
-  let restorePanel = options.restorePanel;
+  const restored = nativeHost.restored as RestoredRoot | null;
   let alive = true;
   let nextInstance = 0;
   let watchGeneration = 0;
-  let subscription: { close(): Promise<void> } | undefined;
-  const contributions = computed(() =>
+  let subscription: UiSubscription | undefined;
+  let desired: Catalog | null = null;
+  let processing = false;
+  let acceptedReload = false;
+  let panelHandler: ((contribution: UiContributionRef, input?: unknown) => void) | undefined;
+  const contributions = computed<Contribution[]>(() =>
     entries().flatMap((entry) =>
       Object.entries(entry.instance.contributions).map(([id, declaration]) => ({
         key: `${entry.key}/${id}`,
         id,
         entry,
+        instance: entry.instance,
         declaration,
       })),
     ),
   );
+  const byKey = computed(() => new Map(contributions().map((item) => [item.key, item])));
   const panels = computed(() =>
     contributions().filter((item) => item.declaration.kind === 'panel'),
   );
@@ -113,14 +107,21 @@ export function createPlugins(options: {
   const renderers = computed(
     () =>
       new Map(
-        contributions()
-          .filter((item) => item.declaration.kind === 'tool_renderer')
-          .map((item) => [
-            item.declaration.kind === 'tool_renderer' ? item.declaration.presentation : '',
-            item,
-          ]),
+        contributions().flatMap((item) =>
+          item.declaration.kind === 'tool_renderer'
+            ? [[item.declaration.presentation, item] as const]
+            : [],
+        ),
       ),
   );
+  const rootContribution = computed(() => {
+    const selected = catalog()?.ui;
+    return selected
+      ? (contributions().find(
+          (item) => item.id === selected.id && sameValue(item.instance.instance, selected.instance),
+        ) ?? null)
+      : null;
+  });
   const current = (item: Contribution) => alive && item.entry.live;
   const fail = (entry: PluginEntry, reason: unknown) => {
     if (!entry.live) return;
@@ -130,7 +131,7 @@ export function createPlugins(options: {
   };
   const closeBindings = (bindings: Bindings) => {
     void bindings.close().catch((reason) => {
-      if (alive) options.report(reason);
+      if (alive) updateError.set(reason);
       else console.error(reason);
     });
   };
@@ -141,10 +142,9 @@ export function createPlugins(options: {
       state.reject(new UiError('Plugin was disabled or replaced.'));
     if (state.kind === 'loaded') closeBindings(state.bindings);
   };
-  const adopt = (catalog: Catalog) => {
-    const old = new Map(entries().map((entry) => [entry.identity, entry]));
+  const validate = (value: Catalog) => {
     const presentation = new Set<string>();
-    for (const instance of catalog.instances) {
+    for (const instance of value.instances) {
       for (const declaration of Object.values(instance.contributions)) {
         if (declaration.kind !== 'tool_renderer') continue;
         if (presentation.has(declaration.presentation))
@@ -154,12 +154,15 @@ export function createPlugins(options: {
         presentation.add(declaration.presentation);
       }
     }
-    const next = catalog.instances.map((instance) => {
+  };
+  const adopt = (value: Catalog) => {
+    const old = new Map(entries().map((entry) => [entry.identity, entry]));
+    const next = value.instances.map((instance) => {
       const identity = JSON.stringify(instance.instance);
       const existing = old.get(identity);
       old.delete(identity);
       if (existing && existing.instance.bindingBasis === instance.bindingBasis) {
-        existing.source = catalog.source;
+        existing.source = value.source;
         existing.instance = instance;
         return existing;
       }
@@ -167,7 +170,7 @@ export function createPlugins(options: {
       return {
         key: `ui-${++nextInstance}`,
         identity,
-        source: catalog.source,
+        source: value.source,
         instance,
         state: signal<State>({ kind: 'idle' }),
         live: true,
@@ -176,101 +179,106 @@ export function createPlugins(options: {
     batch(() => {
       old.forEach(retire);
       entries.set(next);
+      catalog.set(value);
       ready.set(true);
-      updatePending.set(false);
       updateError.set(null);
-      const previousPanel = panel();
-      if (previousPanel && !previousPanel.contribution.entry.live) {
-        const original = previousPanel.contribution;
-        const entry = next.find((item) =>
-          sameValue(item.instance.instance, original.entry.instance.instance),
-        );
-        const declaration = entry?.instance.contributions[original.id];
-        panel.set(
-          entry && declaration?.kind === 'panel'
-            ? {
-                contribution: {
-                  key: `${entry.key}/${original.id}`,
-                  id: original.id,
-                  entry,
-                  declaration,
-                },
-                input: previousPanel.input,
-                instance: ++nextInstance,
-              }
-            : null,
-        );
-      }
-      if (restorePanel) {
-        const route = restorePanel;
-        restorePanel = null;
-        const entry = next.find((item) => sameValue(item.instance.instance, route.instance));
-        const declaration = entry?.instance.contributions[route.id];
-        if (entry && declaration?.kind === 'panel')
-          panel.set({
-            contribution: { key: `${entry.key}/${route.id}`, id: route.id, entry, declaration },
-            input: route.input,
-            instance: ++nextInstance,
-          });
-      }
     });
   };
-  const publish = async (catalog: Catalog): Promise<boolean> => {
-    const next = new Set(catalog.instances.map((instance) => instance.package.revision));
-    if ([...importedPackages].some((revision) => !next.has(revision))) {
-      try {
-        if (await options.reload()) return false;
-      } catch (reason) {
-        options.report(reason);
-      }
-      if (alive) updatePending.set(true);
-      return true;
+  const needsReload = (value: Catalog) => {
+    const previous = catalog();
+    if (!previous) return false;
+    if (!sameValue(previous.ui ?? null, value.ui ?? null)) return true;
+    const root = rootContribution();
+    if (root) {
+      const next = value.instances.find((instance) =>
+        sameValue(instance.instance, root.instance.instance),
+      );
+      if (!next || next.bindingBasis !== root.instance.bindingBasis) return true;
     }
+    const packages = new Set(value.instances.map((instance) => instance.package.revision));
+    return [...importedPackages].some((revision) => !packages.has(revision));
+  };
+  const identityFor = (item: Contribution): RootIdentity => ({
+    instance: item.instance.instance,
+    id: item.id,
+    packageId: item.instance.package.id,
+  });
+  const reconcile = async () => {
+    if (processing || acceptedReload || !alive || !desired) return;
+    processing = true;
+    let paused = false;
     try {
-      adopt(catalog);
+      validate(desired);
+      if (needsReload(desired)) {
+        reloading.set(true);
+        paused = true;
+        await nativeHost.beginUiReload();
+        if (!alive) return;
+        const original = rootContribution();
+        const state = original?.entry.state();
+        const implementation = state?.kind === 'active' ? state.exports[original!.id] : null;
+        const snapshot =
+          implementation?.kind === 'root'
+            ? ((await implementation.prepareReload?.()) ?? null)
+            : null;
+        if (!alive) return;
+        validate(desired!);
+        if (needsReload(desired!)) {
+          nativeHost.reloadUi(original ? { root: identityFor(original), state: snapshot } : null);
+          acceptedReload = true;
+          return;
+        }
+        nativeHost.cancelUiReload();
+        paused = false;
+      }
+      const next = desired!;
+      desired = null;
+      adopt(next);
     } catch (reason) {
       if (alive) updateError.set(reason);
+    } finally {
+      processing = false;
+      if (!acceptedReload && alive) {
+        if (paused) {
+          try {
+            nativeHost.cancelUiReload();
+          } catch (reason) {
+            updateError.set(reason);
+          }
+        }
+        reloading.set(false);
+      }
     }
-    return true;
+  };
+  const publish = (value: Catalog) => {
+    desired = value;
+    void reconcile();
   };
   const refresh = async () => {
     const generation = ++watchGeneration;
     await subscription?.close();
     subscription = undefined;
-    if (!(await host.hasService('management'))) {
-      if (alive && generation === watchGeneration)
-        batch(() => {
-          entries().forEach(retire);
-          entries.set([]);
-          panel.set(null);
-          ready.set(true);
-          updateError.set(null);
-        });
-      return;
-    }
-    const first = await host.query('management', 'readUi', {});
+    const first = (await nativeHost.readUi({})) as Catalog;
     if (!alive || generation !== watchGeneration) return;
-    const stream = await host.subscribe('management', 'watch', { source: first.source });
+    const stream = (await nativeHost.subscribe('management', 'watch', {
+      source: first.source,
+    })) as UiSubscription<Catalog['source']>;
     if (!alive || generation !== watchGeneration) {
       await stream.close();
       return;
     }
     subscription = stream;
-    const project = async (source: Catalog['source']) => {
-      try {
-        const catalog = await host.query('management', 'readUi', { source });
-        if (!alive || generation !== watchGeneration) return false;
-        return await publish(catalog);
-      } catch (reason) {
-        if (alive && generation === watchGeneration) updateError.set(reason);
-        return true;
-      }
-    };
-    if (!(await publish(first))) return;
+    publish(first);
     for (;;) {
       const source = await stream.next();
       if (!alive || generation !== watchGeneration || source === null) return;
-      if (!(await project(source))) return;
+      try {
+        const next = (await nativeHost.readUi({ source })) as Catalog;
+        if (!alive || generation !== watchGeneration) return;
+        publish(next);
+      } catch (reason) {
+        if (alive && generation === watchGeneration) updateError.set(reason);
+      }
     }
   };
   const load = (entry: PluginEntry): Promise<Exports> => {
@@ -308,8 +316,8 @@ export function createPlugins(options: {
   };
   const openPanel = (contribution: Contribution, input?: unknown) => {
     if (!current(contribution) || contribution.declaration.kind !== 'panel') return;
-    options.showPanel();
-    panel.set({ contribution, input, instance: ++nextInstance });
+    if (!panelHandler) throw new UiError('The selected root UI does not handle panels.');
+    panelHandler(contribution, input);
   };
   const contextFor = (entry: PluginEntry): UiContext => {
     const state = entry.state();
@@ -387,7 +395,10 @@ export function createPlugins(options: {
           implementation.kind !== declaration.kind ||
           (implementation.kind === 'command'
             ? typeof implementation.run !== 'function'
-            : typeof implementation.render !== 'function')
+            : typeof implementation.render !== 'function') ||
+          (implementation.kind === 'root' &&
+            implementation.prepareReload !== undefined &&
+            typeof implementation.prepareReload !== 'function')
         )
           throw new UiError('Plugin contribution does not match its declaration: {contribution}', {
             contribution: id,
@@ -404,34 +415,65 @@ export function createPlugins(options: {
       fail(entry, reason);
     }
   };
-  const invoke = async (contribution: Contribution, sessionId: string | null) => {
-    try {
-      const exports = await load(contribution.entry);
-      if (!current(contribution) || options.sessionId() !== sessionId) return false;
-      const implementation = exports[contribution.id];
-      if (implementation.kind !== 'command') return false;
-      await implementation.run({ sessionId });
-      return true;
-    } catch (reason) {
-      if (alive && contribution.entry.live) options.report(reason);
-      return false;
-    }
+  const invoke = async (
+    reference: UiContributionRef,
+    context: UiCommandContext,
+    isCurrent: () => boolean = () => true,
+  ) => {
+    const contribution = byKey().get(reference.key);
+    if (!contribution || !isCurrent()) return false;
+    const exports = await load(contribution.entry);
+    if (!current(contribution) || !isCurrent()) return false;
+    const implementation = exports[contribution.id];
+    if (implementation.kind !== 'command') return false;
+    await implementation.run(context);
+    return true;
   };
-  const commands = (sessionId = options.sessionId()): CommandEntry[] =>
-    contributions().flatMap<CommandEntry>((contribution) => {
-      const declaration = contribution.declaration;
-      if (declaration.kind === 'command')
-        return [
-          {
-            id: contribution.key,
-            title: displayText(declaration.title),
-            detail: contribution.entry.instance.path.join(' / '),
-            trigger: `plugin:${contribution.entry.instance.path.join(':')}:${contribution.id}`,
-            run: () => invoke(contribution, sessionId),
-          },
-        ];
-      return [];
-    });
+  const retry = (entry: PluginEntry) => {
+    if (entry.live) entry.state.set({ kind: 'idle' });
+  };
+  const restore = (item: Contribution) =>
+    restored && sameValue(restored.root, identityFor(item)) ? restored.state : null;
+  const runtime: UiRuntime<JSX.Element> = {
+    source: () => catalog()?.source ?? null,
+    root: () => catalog()?.ui ?? null,
+    ready,
+    contributions,
+    panels,
+    settings,
+    renderer: (presentation) => (presentation == null ? undefined : renderers().get(presentation)),
+    render(reference: UiContributionRef, props: UiContributionProps) {
+      return renderContribution(manager, reference, props);
+    },
+    invoke,
+    handlePanels(handler) {
+      panelHandler = handler;
+      return () => {
+        if (panelHandler === handler) panelHandler = undefined;
+      };
+    },
+    locale: currentLocale,
+    setLocale: (locale) => currentLocale.set(locale),
+    reloading,
+    updateError,
+    retryUpdates() {
+      void refresh().catch((reason) => {
+        if (alive) updateError.set(reason);
+      });
+    },
+  };
+  const manager = {
+    runtime,
+    entries,
+    rootContribution,
+    byKey,
+    load,
+    activate,
+    fail,
+    retry,
+    restore,
+    contextFor,
+  };
   cleanup(() => {
     alive = false;
     ++watchGeneration;
@@ -441,44 +483,6 @@ export function createPlugins(options: {
   void refresh().catch((reason) => {
     if (alive) updateError.set(reason);
   });
-  return {
-    entries,
-    ready,
-    panel,
-    updatePending,
-    updateError: () => (updateError() === null ? '' : renderText(errorText(updateError()))),
-    retryUpdates: () =>
-      void refresh().catch((reason) => {
-        if (alive) updateError.set(reason);
-      }),
-    panelRoute(): PanelRoute | null {
-      const current = panel();
-      return current
-        ? {
-            instance: current.contribution.entry.instance.instance,
-            id: current.contribution.id,
-            input: current.input,
-          }
-        : null;
-    },
-    panels,
-    settings,
-    contributions,
-    commands,
-    current,
-    contextFor,
-    sessionId: options.sessionId,
-    load,
-    activate,
-    fail,
-    renderer: (presentation: string | null | undefined) =>
-      presentation == null ? undefined : renderers().get(presentation),
-    closePanel(instance: number) {
-      if (panel()?.instance === instance) panel.set(null);
-    },
-    retry(entry: PluginEntry) {
-      if (entry.live) entry.state.set({ kind: 'idle' });
-    },
-  };
+  return manager;
 }
 export type Plugins = ReturnType<typeof createPlugins>;

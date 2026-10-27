@@ -22,20 +22,19 @@ import { Button } from 'nsh/base';
 
 export function activate(context) {
   const count = signal(0);
+  function Counter() {
+    return (
+      <View style={{ padding: 16, gap: 12 }}>
+        <Text>Count {count()}</Text>
+        <Button onPress={() => count.set(count() + 1)}>
+          <Text>Increment</Text>
+        </Button>
+      </View>
+    );
+  }
   return {
-    counter: {
-      kind: 'panel',
-      render() {
-        return (
-          <View style={{ padding: 16, gap: 12 }}>
-            <Text>Count {count()}</Text>
-            <Button onPress={() => count.set(count() + 1)}>
-              <Text>Increment</Text>
-            </Button>
-          </View>
-        );
-      },
-    },
+    root: { kind: 'root', render: Counter },
+    counter: { kind: 'panel', render: Counter },
     openCounter: {
       kind: 'command',
       run() {

@@ -125,6 +125,7 @@ impl Fixture {
         Self {
             packages,
             input: Input {
+                ui: None,
                 instances: BTreeMap::from([
                     ("p".into(), node("provider", 1, true)),
                     ("a".into(), node("consumer", 2, false)),
@@ -455,8 +456,8 @@ fn structural_routing_does_not_turn_a_child_dependency_into_whole_product_retire
 }
 
 #[test]
-fn ui_only_template_upgrade_preserves_host_work_but_host_package_upgrade_retires_it() {
-    use crate::composition::Override;
+fn ui_root_switch_and_ui_only_upgrade_preserve_host_work_but_host_upgrade_retires_it() {
+    use crate::composition::{Override, UiTarget};
     use crate::package::{UiContribution, UiEntry, UiText};
 
     let mut fixture = Fixture::new();
@@ -476,15 +477,18 @@ fn ui_only_template_upgrade_preserves_host_work_but_host_package_upgrade_retires
                         module: module.into(),
                         configuration: json!({"type":"object"}).into(),
                         imports: BTreeMap::new(),
-                        contributions: BTreeMap::from([(
-                            "details".into(),
-                            UiContribution::Panel {
-                                title: UiText {
-                                    fallback: "Details".into(),
-                                    translations: BTreeMap::new(),
+                        contributions: BTreeMap::from([
+                            ("app".into(), UiContribution::Root),
+                            (
+                                "details".into(),
+                                UiContribution::Panel {
+                                    title: UiText {
+                                        fallback: "Details".into(),
+                                        translations: BTreeMap::new(),
+                                    },
                                 },
-                            },
-                        )]),
+                            ),
+                        ]),
                     }),
                     composition: None,
                 },
@@ -528,6 +532,10 @@ fn ui_only_template_upgrade_preserves_host_work_but_host_package_upgrade_retires
     let mut root = node("product", 100, true);
     root.use_package = PackageUse::Composition;
     fixture.input.instances.insert("product".into(), root);
+    fixture.input.ui = Some(UiTarget {
+        path: vec!["product".into(), "details".into()],
+        id: "app".into(),
+    });
     let steady = fixture.id("steady");
     let plan = fixture.plan();
     let steady_basis = plan.binding_basis(&steady).unwrap();
@@ -540,6 +548,18 @@ fn ui_only_template_upgrade_preserves_host_work_but_host_package_upgrade_retires
     let resource = runtime
         .own_resource(&provider, "live provider resource")
         .unwrap();
+
+    fixture.input.ui = Some(UiTarget {
+        path: vec!["product".into(), "steady".into()],
+        id: "app".into(),
+    });
+    let next = fixture.plan();
+    assert_eq!(next.binding_basis(&steady).unwrap(), steady_basis);
+    assert!(runtime.install(next).is_empty());
+    assert_eq!(runtime.desired().ui().unwrap().instance, steady);
+    assert_eq!(runtime.status(&provider).unwrap().calls, 1);
+    assert_eq!(runtime.status(&provider).unwrap().resources, 1);
+    assert_eq!(*running.value(), "retained host state");
 
     fixture.input.instances.get_mut("product").unwrap().package = product_v2.into();
     let next = fixture.plan();
