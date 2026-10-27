@@ -104,6 +104,37 @@ describe('safe compaction prefix selection', () => {
     const boundary = selectSafeCompactionPrefix(events, { reserveTailEvents: 1 });
     assert.deepEqual(boundary, { ok: false, reason: 'no_safe_completed_span' });
   });
+
+  test('crosses only the exact abandoned call while preserving live call/result boundaries', () => {
+    const events = [
+      user('anchor', 'turn-0'),
+      call('abandoned', 'old-call', 'turn-0'),
+      call('c1', 'call-1', 'turn-1'),
+      result('r1', 'call-1', 'turn-1'),
+      call('c2', 'call-2', 'turn-1'),
+      result('r2', 'call-2', 'turn-1'),
+    ];
+    assert.deepEqual(
+      selectSafeCompactionPrefix(events, {
+        reserveTailEvents: 1,
+        undispatchedToolCallEventIds: new Set(['abandoned']),
+      }),
+      { ok: true, coveredCount: 4 },
+    );
+    assert.deepEqual(
+      selectSafeCompactionPrefix(events, {
+        reserveTailEvents: 1,
+        undispatchedToolCallEventIds: new Set(['old-call']),
+      }),
+      { ok: true, coveredCount: 1 },
+    );
+    assert.deepEqual(
+      selectSafeCompactionPrefix([...events, call('live', 'live-call', 'turn-1')], {
+        undispatchedToolCallEventIds: new Set(['abandoned']),
+      }),
+      { ok: true, coveredCount: 6 },
+    );
+  });
 });
 
 describe('plan context compaction', () => {
@@ -141,6 +172,35 @@ describe('plan context compaction', () => {
   test('compacts whenever the caller has emitted a compaction command', async () => {
     const result = await planHistoryCompaction(planInput());
     assert.equal(result.decision, 'compacted');
+  });
+
+  test('pins live steering in the resumed turn while folding the original task history', async () => {
+    const oldSteering: RuntimeEvent = {
+      ...user('old-steering', 'turn-1'),
+      content: { kind: 'text', text: 'Earlier instruction', steering: true },
+    };
+    const liveSteering: RuntimeEvent = {
+      ...user('live-steering', 'turn-2'),
+      content: { kind: 'text', text: 'Latest instruction', steering: true },
+    };
+    const events = [
+      user('anchor', 'turn-1'),
+      model('source-step', 'turn-1'),
+      oldSteering,
+      model('resumed-step', 'turn-2'),
+      liveSteering,
+      model('tail', 'turn-2'),
+    ];
+    const outcome = await planHistoryCompaction(
+      planInput({ orderedEvents: events, activeTurnId: 'turn-2' }),
+    );
+    assert.equal(outcome.decision, 'compacted');
+    if (outcome.decision !== 'compacted') return;
+    assert.equal(outcome.checkpoint.coverage.through.runtimeEventId, 'resumed-step');
+    assert.deepEqual(
+      outcome.replacementEvents.slice(1).map((event) => event.id),
+      ['anchor', 'live-steering', 'tail'],
+    );
   });
 
   test('compacts a safe prefix, keeps the head anchor verbatim, and continues with the tail', async () => {

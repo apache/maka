@@ -119,6 +119,7 @@ import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { z } from 'zod';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import { renderPlanModePrompt, selectCollaborationTools } from '../plan-mode.js';
+import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import {
   BackendRegistry,
   SessionConfigurationRevisionConflictError,
@@ -143,6 +144,9 @@ import type { MakaTool } from '../tool-runtime.js';
 import type { ShellRunProcessManager } from '../shell-run-manager.js';
 import {
   buildHistoryCompactCheckpoint,
+  isHistoryCompactContentEvent,
+  matchHistoryCompactCheckpointPrefix,
+  projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
 } from '../history-compact-checkpoint.js';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
@@ -174,6 +178,348 @@ import {
   fingerprintAgentGraphRunnableIntent,
 } from '../stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
+
+describe('automatic compaction after abort', () => {
+  for (const priorHistory of [
+    'empty',
+    'prior_task',
+    'prior_checkpoint',
+    'trimmed_suffix',
+  ] as const) {
+    for (const scenario of [
+      'new_message',
+      'continue',
+      'continue_twice',
+      'continue_overflow',
+    ] as const) {
+      test(`honors the declared 10k window on ${scenario} with ${priorHistory}`, {
+        timeout: 15_000,
+      }, async () => {
+        const store = new MemorySessionStore();
+        const runStore = new MemoryAgentRunStore();
+        const backends = new BackendRegistry();
+        const newId = nextId();
+        const checkpoints: HistoryCompactCheckpoint[] = [];
+        const sends: BackendSendInput[] = [];
+        const executedTools: string[] = [];
+        const requests: { stage: number; step: number; prompt: string; checkpoints: number }[] = [];
+        let stage = 0;
+        let step = 0;
+        let waiting = makeGate();
+        const model = new MockLanguageModelV4({
+          doStream: async (options) => {
+            step += 1;
+            requests.push({
+              stage,
+              step,
+              prompt: JSON.stringify(options.prompt),
+              checkpoints: checkpoints.length,
+            });
+            if (scenario === 'continue_overflow' && stage === 1 && step === 1) {
+              throw Object.assign(new Error('prompt is too long: 213462 tokens > 200000 maximum'), {
+                name: 'AI_APICallError',
+                statusCode: 400,
+              });
+            }
+            const shouldStop = stage === 0 || (scenario === 'continue_twice' && stage === 1);
+            if (shouldStop && step === 3) {
+              waiting.release();
+              await new Promise<never>((_, reject) => {
+                const abort = () => reject(new DOMException('Stopped by user', 'AbortError'));
+                options.abortSignal!.addEventListener('abort', abort, { once: true });
+                if (options.abortSignal!.aborted) abort();
+              });
+            }
+            const done =
+              !shouldStop &&
+              step === (stage === -1 && priorHistory === 'prior_checkpoint' ? 10 : 2);
+            const inputTokens =
+              (stage > 0 && step === 1) ||
+              (stage === -1 && priorHistory === 'prior_checkpoint' && step === 9)
+                ? 12_000
+                : 100;
+            const chunks: LanguageModelV4StreamPart[] = [
+              { type: 'stream-start', warnings: [] },
+              ...(done && stage === -1
+                ? []
+                : done
+                  ? ([
+                      { type: 'text-start', id: 'answer' },
+                      { type: 'text-delta', id: 'answer', delta: 'Finished' },
+                      { type: 'text-end', id: 'answer' },
+                    ] satisfies LanguageModelV4StreamPart[])
+                  : ([
+                      {
+                        type: 'tool-call',
+                        toolCallId: `read-${stage}-${step}`,
+                        toolName: 'Read',
+                        input: JSON.stringify({ path: `file-${stage}-${step}.txt` }),
+                      },
+                    ] satisfies LanguageModelV4StreamPart[])),
+              {
+                type: 'finish',
+                finishReason: {
+                  unified: done ? 'stop' : 'tool-calls',
+                  raw: done ? 'stop' : 'tool_calls',
+                },
+                usage: {
+                  inputTokens: {
+                    total: inputTokens,
+                    noCache: inputTokens,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                  },
+                  outputTokens: { total: 100, text: 100, reasoning: 0 },
+                },
+              },
+            ];
+            return {
+              stream: simulateReadableStream({
+                initialDelayInMs: null,
+                chunkDelayInMs: null,
+                chunks,
+              }),
+            };
+          },
+        });
+        backends.register('ai-sdk', (ctx) => {
+          const backend = createTestAiSdkBackend({
+            sessionId: ctx.sessionId,
+            header: ctx.header,
+            connection: {
+              slug: 'mock-main',
+              providerType: 'anthropic',
+              defaultModel: 'mock-model-id',
+              models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+              modelOverrides: { 'mock-model-id': { compactionThreshold: 10_000 } },
+            },
+            apiKey: 'mock-key',
+            modelId: 'mock-model-id',
+            modelFactory: () => model,
+            tools: [
+              {
+                name: 'Read',
+                description: 'Read a fixture',
+                parameters: z.object({ path: z.string() }),
+                impl: async ({ path }) => {
+                  executedTools.push(path);
+                  return { body: `Facts from ${path}. `.repeat(80) };
+                },
+              },
+            ],
+            contextBudget: buildDefaultContextBudgetPolicy(),
+            allowMidTurnHistoryCompaction: true,
+            loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents,
+            loadHistoryCompactCheckpoint: ctx.loadHistoryCompactCheckpoint,
+            recordHistoryCompactCheckpoint: async (checkpoint, turnId) => {
+              await ctx.recordHistoryCompactCheckpoint!(checkpoint, turnId);
+              checkpoints.push(checkpoint);
+            },
+            summarizeHistoryCompact: async () =>
+              '## Goal\nRead the requested fixtures.\n\n## Progress\n- Read prior facts.\n\n## Next Steps\n1. Continue reading.\n\n## Critical Context\n- Preserve user intent.',
+            newId,
+            now: nextNow(1_000),
+          });
+          const send = backend.send.bind(backend);
+          backend.send = (input) => {
+            sends.push(input);
+            return send(input);
+          };
+          return backend;
+        });
+        const manager = new SessionManager({
+          store,
+          runStore,
+          runtimeEventStore: runStore,
+          backends,
+          safeBoundaryResumeEnabled: true,
+          inspectContinuationSafety: async () => ({
+            workspaceIdentity: 'workspace-1',
+            backgroundOperationsSettled: true,
+            availableToolNames: ['Read'],
+          }),
+          newId,
+          now: nextNow(10_000),
+        });
+        const session = await manager.createSession(
+          makeInput({
+            llmConnectionId: 'mock-connection',
+            llmConnectionSlug: 'mock-main',
+            model: 'mock-model-id',
+            permissionMode: 'bypass',
+          }),
+        );
+        if (priorHistory === 'prior_task' || priorHistory === 'prior_checkpoint') {
+          stage = -1;
+          await collectSessionEvents(
+            manager.sendMessage(session.id, {
+              turnId: 'older-turn',
+              text: 'Earlier independent task.',
+            }),
+          );
+          assert.equal(checkpoints.length, priorHistory === 'prior_checkpoint' ? 1 : 0);
+          stage = 0;
+          step = 0;
+        }
+        const source = collectSessionEvents(
+          manager.sendMessage(session.id, {
+            turnId: 'source-turn',
+            text: 'Read the fixture and keep working.',
+          }),
+        );
+        await waiting.promise;
+        if (priorHistory === 'trimmed_suffix') {
+          const sourceInput = sends.at(-1)!;
+          await runStore.appendRuntimeEvent(session.id, sourceInput.runId!, {
+            id: 'completed-source-suffix',
+            sessionId: session.id,
+            invocationId: sourceInput.invocationId!,
+            runId: sourceInput.runId!,
+            turnId: sourceInput.turnId,
+            ts: 5_000,
+            partial: false,
+            role: 'model',
+            author: 'agent',
+            content: { kind: 'text', text: 'I will inspect another file next.' },
+          });
+        }
+        await manager.stopSession(session.id, { source: 'stop_button' });
+        assert.ok((await source).some((event) => event.type === 'abort'));
+        const originalAnchor = sends.find((input) => input.turnId === 'source-turn')!
+          .headAnchorRuntimeEvent!;
+        assert.ok(originalAnchor);
+
+        const resumes = scenario === 'continue_twice' ? 2 : 1;
+        for (stage = 1; stage <= resumes; stage += 1) {
+          step = 0;
+          waiting = makeGate();
+          const before = checkpoints.length;
+          let stream: AsyncIterable<SessionEvent>;
+          if (scenario === 'new_message') {
+            stream = manager.sendMessage(session.id, {
+              turnId: 'fresh-turn',
+              text: 'Continue the task.',
+            });
+          } else {
+            const plan = await manager.planLatestAuthoritativeSafeBoundaryContinuation(session.id);
+            assert.equal(plan.disposition, 'continue');
+            assert.ok(plan.continuation);
+            if (priorHistory === 'trimmed_suffix') {
+              assert.equal(
+                plan.continuation.runtimeContext.some(
+                  (event) => event.id === 'completed-source-suffix',
+                ),
+                false,
+              );
+            }
+            stream = manager.resumeSafeBoundaryContinuation(plan.continuation);
+          }
+          const pending = collectSessionEvents(stream);
+          if (stage < resumes) {
+            await waiting.promise;
+            await manager.stopSession(session.id, { source: 'stop_button' });
+          }
+          const events = await pending;
+          if (stage === resumes) {
+            assert.equal(
+              [...events].reverse().find((event) => event.type === 'complete')?.stopReason,
+              'end_turn',
+            );
+          } else {
+            assert.ok(events.some((event) => event.type === 'abort'));
+          }
+          assert.ok(
+            checkpoints.length > before,
+            'Continue must still compact at the declared 10k threshold',
+          );
+          const current = sends.at(-1)!;
+          const anchor =
+            scenario === 'new_message' ? current.headAnchorRuntimeEvent! : originalAnchor;
+          assert.deepEqual(current.headAnchorRuntimeEvent, anchor);
+          const checkpoint = checkpoints.at(-1)!;
+          if (before > 0) {
+            assert.equal(checkpoint.previousCheckpointId, checkpoints[before - 1]!.checkpointId);
+          }
+          assert.deepEqual(checkpoint.headAnchor, {
+            runtimeEventId: anchor.id,
+            turnId: anchor.turnId,
+          });
+          const invocations = await runStore.listSessionInvocations(session.id);
+          const raw = (
+            await Promise.all(
+              invocations.map((invocation) =>
+                runStore.readRuntimeEvents(session.id, invocation.runId),
+              ),
+            )
+          )
+            .flat()
+            .filter(isHistoryCompactContentEvent);
+          const match = matchHistoryCompactCheckpointPrefix(checkpoint, raw);
+          assert.equal(match.reason, undefined);
+          const replay = projectHistoryCompactCheckpointReplay(
+            checkpoint,
+            match.coveredRuntimeEvents,
+            match.successorRuntimeEvents,
+          );
+          assert.deepEqual(
+            replay.filter((event) => event.id === anchor.id),
+            [anchor],
+          );
+          const lastRequest = [...requests].reverse().find((request) => request.stage === stage)!;
+          const latestResult =
+            scenario === 'continue_overflow'
+              ? priorHistory === 'trimmed_suffix'
+                ? 'I will inspect another file next.'
+                : 'Facts from file-0-2.txt'
+              : `Facts from file-${stage}-1.txt`;
+          assert.ok(
+            lastRequest.prompt.includes(latestResult),
+            'latest completed result is retained',
+          );
+          assert.ok(anchor.content?.kind === 'text');
+          assert.equal(lastRequest.prompt.split(anchor.content.text).length - 1, 1);
+          assert.equal(
+            lastRequest.prompt.includes('Facts from file-0-1.txt'),
+            false,
+            'the covered raw prefix is replaced by the checkpoint',
+          );
+          if (scenario === 'continue_overflow') {
+            assert.ok(
+              lastRequest.checkpoints > before,
+              'first-request overflow retries with compacted task history',
+            );
+          }
+        }
+        assert.equal(
+          new Set(executedTools).size,
+          executedTools.length,
+          'completed tools must not run again',
+        );
+        stage = 99;
+        step = 0;
+        await collectSessionEvents(
+          manager.sendMessage(session.id, {
+            turnId: 'followup-turn',
+            text: 'Follow up.',
+          }),
+        );
+        const followup = requests.find((request) => request.stage === 99)!;
+        assert.ok(followup.prompt.includes('maka_history_compact_checkpoint'));
+        assert.equal(
+          followup.prompt.includes('Facts from file-0-1.txt'),
+          false,
+          'the next ordinary message must keep the folded history compacted',
+        );
+        const messages = await manager.getMessages(session.id);
+        assert.equal(
+          messages.filter((message) => message.type === 'user').length,
+          (scenario === 'new_message' ? 3 : 2) +
+            (priorHistory === 'prior_task' || priorHistory === 'prior_checkpoint' ? 1 : 0),
+        );
+      });
+    }
+  }
+});
 
 test('sendMessage rejects removed Automation as a live trigger', async () => {
   const runStore = new MemoryAgentRunStore();

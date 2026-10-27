@@ -28,7 +28,7 @@
  * host callbacks.
  */
 
-import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { isTerminalRuntimeEvent, type RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type {
   BackendCompactHistoryInput,
@@ -52,6 +52,7 @@ import {
   type ContextBudgetPolicy,
   type ToolResultPruneStats,
 } from './context-budget.js';
+import { matchesHistoryCompactHeadAnchor } from './history-compact-head-anchor.js';
 import {
   canContinueHistoryCompactCheckpointForModel,
   canReplayHistoryCompactCheckpointForModel,
@@ -100,6 +101,7 @@ import { toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import { planHistoryCompaction } from './history-compaction.js';
+import { resolveRuntimeRecovery } from './recovery-resolver.js';
 import { resolveDeclaredContextWindow } from './context-budget-policy.js';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
@@ -753,9 +755,9 @@ export class AiSdkCompaction {
    * Mid-turn capacity compaction eligibility (issue #882 PR 1). Explicit
    * opt-in via `historyCompact.midTurn.enabled`; requires the checkpoint
    * writer seams plus the durable turn-ledger read, the persisted head anchor
-   * for this turn. A model that declares no context window still gets this
-   * state: reactive recovery runs off a real provider rejection and needs no
-   * window at all.
+   * for this task (possibly from an earlier, continued turn). A model that
+   * declares no context window still gets this state: reactive recovery runs
+   * off a real provider rejection and needs no window at all.
    */
   public buildMidTurnCapacityCompactState(
     input: BackendSendInput,
@@ -777,27 +779,30 @@ export class AiSdkCompaction {
     }
     const headAnchor = input.headAnchorRuntimeEvent;
     if (
+      (input.continuation && !input.historyCompactContext) ||
       !headAnchor ||
       headAnchor.sessionId !== this.sessionId ||
-      headAnchor.turnId !== input.turnId ||
+      (headAnchor.turnId !== input.turnId && !input.continuation) ||
       headAnchor.role !== 'user' ||
       (headAnchor.author !== 'user' && headAnchor.author !== 'host') ||
       !isHistoryCompactContentEvent(headAnchor)
     ) {
       return undefined;
     }
-    // Handoff replay is an authenticated predecessor prefix, including the
-    // current logical Turn. The live reader remains physical-run scoped.
-    const handoff = input.continuation?.sourceTurnId === input.turnId;
-    const priorContentEvents = (input.runtimeContext ?? [])
-      .filter((event) => handoff || event.turnId !== input.turnId)
-      .filter(isHistoryCompactContentEvent);
+    // Checkpoints cover the canonical session prefix, not the continuation's
+    // trimmed lineage replay. Handoff predecessors share the logical turn;
+    // the snapshot and live reader partition history by physical run.
+    const priorEvents = (input.historyCompactContext?.events ?? input.runtimeContext ?? []).filter(
+      (event) => input.continuation || event.turnId !== input.turnId,
+    );
+    const priorContentEvents = priorEvents.filter(isHistoryCompactContentEvent);
     const state = new MidTurnCapacityCompactState(
       headAnchor,
       priorContentEvents,
-      input.runtimeContextInvocations ?? [],
+      input.historyCompactContext?.invocations ?? input.runtimeContextInvocations ?? [],
       resolveDeclaredContextWindow(this.input.connection, this.input.modelId) ??
         policy.historyCompact.midTurn.fallbackThresholdTokens,
+      collectUndispatchedToolCallEventIds(priorEvents, input.runId),
     );
     // Seed the turn's FIRST request with the last request the provider
     // actually counted, so step 0 is judged by the same real number as every
@@ -1060,20 +1065,49 @@ export class AiSdkCompaction {
       .filter((event) => event.turnId === turnId)
       .filter(isHistoryCompactContentEvent);
     const orderedEvents = [...state.priorContentEvents, ...currentTurnEvents];
-    // A fresh anchor belongs to the live ledger; after handoff it belongs to
-    // the authenticated predecessor prefix. Neither path manufactures it.
-    if (!orderedEvents.some((event) => event.id === state.headAnchor.id)) {
+    // A fresh anchor is in the current ledger; a continuation's anchor is in
+    // the admitted durable history. Never manufacture a replacement user event.
+    if (
+      !matchesHistoryCompactHeadAnchor(orderedEvents, {
+        runtimeEventId: state.headAnchor.id,
+        turnId: state.headAnchor.turnId,
+      })
+    ) {
       return {
         decision: 'fail',
         diagnosticReason: 'head_anchor_not_durable',
       };
     }
     const memoryDecision = input.memoryCompactionDecision?.();
+    // A continuation may not have projected the session checkpoint into its
+    // narrower replay. Still roll it forward against canonical coverage; the
+    // planner verifies both raw identity and effective-history currency.
+    let previousCheckpoint = state.previousCheckpoint;
+    if (!previousCheckpoint) {
+      try {
+        const loaded = await this.input.loadHistoryCompactCheckpoint?.();
+        if (
+          loaded &&
+          canContinueHistoryCompactCheckpointForModel(
+            loaded,
+            this.input.connection,
+            this.targetConnectionId,
+            this.input.modelId,
+          )
+        ) {
+          previousCheckpoint = loaded;
+        }
+      } catch {
+        // A missing seed does not prevent a new fold from canonical history.
+      }
+    }
     const plan = await planHistoryCompaction({
       sessionId: this.sessionId,
       phase: input.phase ?? 'mid_turn',
       orderedEvents,
-      headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
+      undispatchedToolCallEventIds: state.undispatchedToolCallEventIds,
+      headAnchor: { runtimeEventId: state.headAnchor.id, turnId: state.headAnchor.turnId },
+      activeTurnId: turnId,
       invocations: state.priorInvocations,
       acceptedRoute: {
         modelId: this.input.modelId,
@@ -1085,7 +1119,7 @@ export class AiSdkCompaction {
       ...(compactPolicy.highWaterName !== undefined
         ? { highWaterName: compactPolicy.highWaterName }
         : {}),
-      ...(state.previousCheckpoint ? { previousCheckpoint: state.previousCheckpoint } : {}),
+      ...(previousCheckpoint ? { previousCheckpoint } : {}),
       ...(memoryDecision && orderedEvents.at(-1)
         ? {
             memoryExtractionBoundary: {
@@ -1454,6 +1488,8 @@ export class MidTurnCapacityCompactState {
      * and then no proactive fold ever runs — the provider decides (#4559).
      */
     readonly capacity: number | undefined,
+    /** Sealed prior calls proved never dispatched; they cannot acquire a result. */
+    readonly undispatchedToolCallEventIds: ReadonlySet<string> = new Set(),
   ) {}
 
   compactionPhase(stepNumber: number): 'pre_turn' | 'mid_turn' {
@@ -1462,6 +1498,35 @@ export class MidTurnCapacityCompactState {
       ? 'pre_turn'
       : 'mid_turn';
   }
+}
+
+/** Keep raw coverage intact while distinguishing abandoned calls from live open spans. */
+function collectUndispatchedToolCallEventIds(
+  events: readonly RuntimeEvent[],
+  currentRunId: string | undefined,
+): ReadonlySet<string> {
+  const runs = new Map<string, RuntimeEvent[]>();
+  for (const event of events) {
+    if (event.runId === currentRunId) continue;
+    const run = runs.get(event.runId) ?? [];
+    run.push(event);
+    runs.set(event.runId, run);
+  }
+  const ids = new Set<string>();
+  for (const run of runs.values()) {
+    const terminal = run.at(-1);
+    if (!terminal || terminal.partial === true || !isTerminalRuntimeEvent(terminal)) continue;
+    // Recovery needs the full physical ledger, including its protocol marker
+    // and dispatch facts. A missing response alone is never proof of no effect.
+    const recovery = resolveRuntimeRecovery(run);
+    if (recovery.hasCorruption) continue;
+    for (const decision of recovery.decisions) {
+      if (decision.status === 'definitely_not_dispatched' && decision.callRuntimeEventId) {
+        ids.add(decision.callRuntimeEventId);
+      }
+    }
+  }
+  return ids;
 }
 
 /**

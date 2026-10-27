@@ -29,6 +29,7 @@ import {
 } from './model-projection-transition-ledger.js';
 import type { ModelMessage } from './model-protocol.js';
 import { stableStringify } from './request-shape.js';
+import { matchesHistoryCompactHeadAnchor } from './history-compact-head-anchor.js';
 import {
   findCheckpointSummaryDefect,
   SECTIONED_SUMMARY_FORMAT,
@@ -76,9 +77,9 @@ export interface HistoryCompactCheckpointCoverage {
 /**
  * Compaction phase. Absent on legacy data and defaults to `pre_turn`, the
  * turn-boundary compaction the V2 checkpoint protocol was introduced for. A
- * `mid_turn` checkpoint folds a prefix that reaches into the current turn's
+ * `mid_turn` checkpoint folds a prefix that reaches into the current task's
  * completed steps, so its projection re-renders the covered head anchor (the
- * current turn's user message) verbatim after the compact block.
+ * original user message, even across continuations) verbatim after the compact block.
  */
 export type HistoryCompactCheckpointPhase = 'pre_turn' | 'mid_turn';
 
@@ -259,19 +260,9 @@ export function buildHistoryCompactCheckpoint(
         'Mid-turn history compact checkpoint head anchor must be a covered RuntimeEvent',
       );
     }
-    // The anchor is re-rendered verbatim as the compacted turn's user message.
-    // The compacted turn is the one the coverage reaches into — the LAST
-    // covered event's turn — so the anchor must be that turn's user event. A
-    // self-consistent anchor resolving to some other covered user event (e.g.
-    // a prior turn's prompt) would silently drop the real current prompt from
-    // the replay, so the protocol fails closed at build time.
-    const lastCovered = input.coveredRuntimeEvents.at(-1)!;
-    if (
-      anchored.turnId !== input.headAnchor.turnId ||
-      anchored.turnId !== lastCovered.turnId ||
-      anchored.role !== 'user' ||
-      (anchored.author !== 'user' && anchored.author !== 'host')
-    ) {
+    // Continuations have new turn IDs but no new user message. Preserve the
+    // latest task opening, never an older task's prompt or a steering message.
+    if (!matchesHistoryCompactHeadAnchor(input.coveredRuntimeEvents, input.headAnchor)) {
       throw new Error(
         "Mid-turn history compact checkpoint head anchor must be the compacted turn's user event",
       );
@@ -647,20 +638,10 @@ function matchHistoryCompactCheckpointPrefixExactly(
   // A mid_turn checkpoint's replay re-renders the head anchor verbatim, so a
   // corrupted anchor reference must fail the match closed here — otherwise the
   // projection would silently drop the compacted turn's user message.
-  // The compacted turn is the coverage's `through` turn, so the anchor must be
-  // THAT turn's user event — not merely any self-consistent covered user event
-  // (e.g. a prior turn's prompt).
+  // The anchor must open the latest covered task. Its turn can precede the
+  // coverage's `through` turn when that task has been continued.
   if (checkpoint.phase === 'mid_turn') {
-    const anchor = coveredRuntimeEvents.find(
-      (event) => event.id === checkpoint.headAnchor!.runtimeEventId,
-    );
-    if (
-      !anchor ||
-      anchor.turnId !== checkpoint.headAnchor!.turnId ||
-      anchor.turnId !== checkpoint.coverage.through.turnId ||
-      anchor.role !== 'user' ||
-      (anchor.author !== 'user' && anchor.author !== 'host')
-    ) {
+    if (!matchesHistoryCompactHeadAnchor(coveredRuntimeEvents, checkpoint.headAnchor!)) {
       return {
         coveredEventCount: 0,
         coveredRuntimeEvents: [],

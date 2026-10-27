@@ -66,6 +66,11 @@ import {
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
 import { testInvocationOpening } from './invocation-fixture.js';
+import { buildImmutableRuntimePrefix } from '@maka/core/runtime-boundary';
+import { buildContinuationReplaySegment } from '../continuation-replay.js';
+import { PROVIDER_REPLAY_PROJECTION_VERSION } from '../model-history.js';
+import { AiSdkCompaction } from '../ai-sdk-compaction.js';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const RAW_SPAN_TWO = 'RAW_SPAN_TWO_'.repeat(160);
@@ -299,6 +304,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }, call)
         : doneChunks(call);
     }
+    if (toolSteps === 0) return doneChunks(call);
     if (call === 1) {
       const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' }, call);
       if (!options.assistantTextInFirstStep) return first;
@@ -2258,6 +2264,233 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     await runFixtureTurn(fixture);
 
     assert.equal(fixture.recorded.length, 0);
+  });
+
+  test('a continuation above the declared window folds task history on its first request', async () => {
+    const fixture = buildFixture({
+      contextWindow: 10_000,
+      priorChars: 2_000,
+      toolSteps: 0,
+      extraPriorEvents: [
+        runtimeTextEvent('source-tail', 'turn-0', 'model', 'Keep the latest completed result'),
+        priorUsageEvent({ inputTokens: 12_000, outputTokens: 100 }),
+      ],
+      priorInvocations: [priorRunInvocation()],
+    });
+    // The resumed run has no new user event; its anchor lives in the admitted
+    // source history. A durable matching usage sample supplies the baseline.
+    fixture.ledger.length = 0;
+    const anchor = fixture.priorEvents[0]!;
+    for await (const event of fixture.backend.send({
+      runId: 'run-1',
+      turnId: 'turn-1',
+      text: '',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+      runtimeContext: fixture.priorEvents,
+      runtimeContextInvocations: fixture.priorInvocations,
+      historyCompactContext: {
+        events: fixture.priorEvents,
+        invocations: fixture.priorInvocations ?? [],
+      },
+      continuation: {
+        sourceInvocationId: 'run-0',
+        sourceRunId: 'run-0',
+        sourceTurnId: 'turn-0',
+        sourceRuntimeEventHighWater: 4,
+      },
+    })) {
+      fixture.persist(event);
+      fixture.events.push(event);
+    }
+    assert.equal(fixture.model.doStreamCalls.length, 1);
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]!.phase, 'mid_turn');
+    assert.deepEqual(fixture.recorded[0]!.headAnchor, {
+      runtimeEventId: anchor.id,
+      turnId: anchor.turnId,
+    });
+    assert.match(promptJson(fixture, 0), /maka_history_compact_checkpoint/);
+    assert.match(promptJson(fixture, 0), /Keep the latest completed result/);
+  });
+
+  test('a continuation compacts past an undispatched call after two Read steps cross 10k', async () => {
+    const fixture = buildFixture({
+      withoutPriorTurns: true,
+      contextWindow: 10_000,
+      usageByCall: { 1: { input: 8_000, output: 100 }, 2: { input: 12_000, output: 100 } },
+    });
+    const invocation = priorRunInvocation();
+    const anchor: RuntimeEvent = {
+      ...runtimeTextEvent('source-anchor', 'turn-0', 'user', ANCHOR_TEXT),
+      runId: invocation.runId,
+      invocationId: invocation.invocationId,
+      actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
+    };
+    const undispatched: RuntimeEvent = {
+      ...anchor,
+      id: 'source-undispatched',
+      role: 'model',
+      author: 'agent',
+      actions: undefined,
+      content: {
+        kind: 'function_call',
+        id: 'never-executed',
+        name: 'Read',
+        args: { path: 'never.md' },
+      },
+    };
+    const terminal: RuntimeEvent = { ...invocation.terminalEvent!, status: 'cancelled' };
+    invocation.terminalEvent = terminal;
+    const canonicalHistory = [anchor, undispatched, terminal];
+    const replay = buildContinuationReplaySegment({
+      prefix: buildImmutableRuntimePrefix(
+        {
+          sessionId: anchor.sessionId,
+          runId: anchor.runId,
+          invocationId: anchor.invocationId,
+          turnId: anchor.turnId,
+        },
+        canonicalHistory.map((event, index) => ({
+          eventSeq: index + 1,
+          event,
+        })),
+      ),
+      providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    });
+    assert.equal(replay.kind, 'replayable');
+    if (replay.kind !== 'replayable') return;
+    assert.deepEqual(replay.plan.segment.trimmedSuffixEventIds, [undispatched.id]);
+    fixture.ledger.length = 0;
+    for await (const event of fixture.backend.send({
+      runId: 'run-1',
+      turnId: 'turn-1',
+      text: '',
+      context: [],
+      headAnchorRuntimeEvent: anchor,
+      runtimeContext: [...replay.plan.segment.replayRuntimeEvents],
+      runtimeContextInvocations: [invocation],
+      historyCompactContext: { events: canonicalHistory, invocations: [invocation] },
+      continuation: {
+        sourceInvocationId: invocation.invocationId,
+        sourceRunId: invocation.runId,
+        sourceTurnId: invocation.turnId,
+        sourceRuntimeEventHighWater: canonicalHistory.length,
+      },
+    })) {
+      fixture.persist(event);
+      fixture.events.push(event);
+    }
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(
+      fixture.recorded.length,
+      1,
+      '12k usage must trigger a fold past the abandoned call',
+    );
+    assert.match(promptJson(fixture, 2), /maka_history_compact_checkpoint/);
+    assert.doesNotMatch(promptJson(fixture, 2), /never-executed/);
+    assert.equal(fixture.recorded[0]!.coverage.through.runId, 'run-1');
+    const checkpoint = fixture.recorded[0]!;
+    const restored = applyRuntimeEventContextBudget([...canonicalHistory, ...fixture.ledger], {
+      historyCompact: { enabled: true, checkpoint },
+    });
+    assert.ok(restored);
+    assert.equal(restored.events[0]!.id, `history-compact:${checkpoint.checkpointId}`);
+    assert.deepEqual(restored.events[1], anchor);
+    assert.doesNotMatch(JSON.stringify(restored.events), /never-executed|RAW_SPAN_ONE_/);
+    assert.match(JSON.stringify(restored.events), /RAW_SPAN_TWO_/);
+    assert.equal(fixture.recordedBeforeThirdRequest(), true);
+    assert.equal(fixture.events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('only sealed, recovery-proven undispatched calls release a compaction boundary', () => {
+    const compaction = new AiSdkCompaction({
+      sessionId: 'session-1',
+      targetConnectionId: undefined,
+      targetProviderStateIdentity: undefined,
+      now: () => 0,
+      createProviderRequestTracker: () => undefined,
+      materializeRuntimeReplayPlan: async () => [],
+      canReplayProviderNative: () => true,
+      input: {
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => new MockLanguageModelV4(),
+        contextBudget: { historyCompact: { enabled: true, midTurn: { enabled: true } } },
+        allowMidTurnHistoryCompaction: true,
+        summarizeHistoryCompact: async () => undefined,
+        recordHistoryCompactCheckpoint: () => {},
+        loadTurnRuntimeEvents: async () => [],
+      },
+    });
+    const anchor: RuntimeEvent = {
+      ...runtimeTextEvent('old-anchor', 'turn-0', 'user', ANCHOR_TEXT),
+      runId: 'run-0',
+      invocationId: 'run-0',
+      actions: { runtimeProtocol: { toolBoundary: 't1_after_preflight_v1' } },
+    };
+    const call: RuntimeEvent = {
+      ...anchor,
+      id: 'old-call',
+      role: 'model',
+      author: 'agent',
+      actions: undefined,
+      content: { kind: 'function_call', id: 'old-tool', name: 'Read', args: {} },
+    };
+    const terminal = priorRunInvocation().terminalEvent!;
+    const dispatch: RuntimeEvent = {
+      ...terminal,
+      id: 'old-dispatch',
+      status: undefined,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: 'old-operation',
+          providerToolCallId: 'old-tool',
+          toolName: 'Read',
+          canonicalArgsHash: canonicalToolArgsHash('Read', {}),
+          recoveryMode: 'never_auto_retry',
+        },
+      },
+      refs: { operationId: 'old-operation', toolCallId: 'old-tool' },
+    };
+    const cases: Array<{ name: string; events: RuntimeEvent[]; expected: string[] }> = [
+      { name: 'sealed before dispatch', events: [anchor, call, terminal], expected: [call.id] },
+      {
+        name: 'legacy missing dispatch proof',
+        events: [{ ...anchor, actions: undefined }, call, terminal],
+        expected: [],
+      },
+      { name: 'unsealed run', events: [anchor, call], expected: [] },
+      {
+        name: 'partial terminal',
+        events: [anchor, call, { ...terminal, partial: true }],
+        expected: [],
+      },
+      {
+        name: 'dispatched without response',
+        events: [anchor, call, dispatch, terminal],
+        expected: [],
+      },
+      {
+        name: 'corrupt duplicate call',
+        events: [anchor, call, { ...call, id: 'duplicate' }, terminal],
+        expected: [],
+      },
+    ];
+    for (const scenario of cases) {
+      const state = compaction.buildMidTurnCapacityCompactState({
+        runId: 'run-1',
+        turnId: 'turn-1',
+        text: ANCHOR_TEXT,
+        headAnchorRuntimeEvent: runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
+        runtimeContext: scenario.events,
+      });
+      assert.ok(state, scenario.name);
+      assert.deepEqual([...state.undispatchedToolCallEventIds], scenario.expected, scenario.name);
+    }
   });
 
   test('the reserve is twice the last real reply, bounded, not the model output limit', async () => {
