@@ -22,6 +22,7 @@ use crate::EventLog;
 use maka_agent_facts::{
     event::{EventWrite, Fact, Invocation, InvocationOutcome},
     input::InvocationInput,
+    model::ModelEvent,
 };
 use sqlx::Connection;
 
@@ -147,7 +148,7 @@ async fn projection_faults_roll_back_canonical_and_prior_batch_events_before_reo
             db.query_row("SELECT COUNT(*) FROM context_source_prefixes", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            12
+            8
         );
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM context_semantic_frontiers", [], |r| r
@@ -172,11 +173,37 @@ async fn explicit_import_sequence_is_captured_before_projection_inserts() {
         let prefix: i64 = sqlx::query_scalar("SELECT MAX(sequence) FROM context_source_prefixes WHERE kind='invocation' AND owner='imported'").fetch_one(&mut *tx).await?;
         assert_eq!(prefix, 42, "each import event publishes its proof before the next event");
         tx.commit().await?;
+        let mut earlier_invocation = opening("imported");
+        earlier_invocation.id = "earlier-invocation".into();
+        earlier_invocation.invocation.session_id = "other-session".into();
+        earlier_invocation.fact = Fact::ModelObserved {
+            step_id: "earlier-step".into(),
+            event: ModelEvent::PartDelta {
+                id: "part".into(),
+                text: "a".into(),
+                provider_options: None,
+            },
+        };
+        for earlier in [opening("earlier-session"), earlier_invocation] {
+            let mut tx = db.begin().await?;
+            let error = insert(
+                &mut tx,
+                &earlier,
+                serde_json::to_string(&earlier)?,
+                Position::Imported(Some(40)),
+            )
+            .await
+            .expect_err("imports cannot append behind either owner prefix");
+            assert!(matches!(error, StoreError::Sqlite(rusqlite::Error::InvalidParameterName(ref reason))
+                if reason == "source append is not monotonic"));
+            tx.rollback().await?;
+        }
+        let sequences: Vec<i64> = sqlx::query_scalar("SELECT sequence FROM event_log ORDER BY sequence")
+            .fetch_all(&mut *db).await?;
+        assert_eq!(sequences, [41, 42], "rejected imports retain no canonical event");
         Ok(())
     })).await.unwrap();
     log.close().await.unwrap();
     let reopened = EventLog::open(&path).await.unwrap();
     reopened.close().await.unwrap();
-    let db = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(db.query_row("SELECT through_sequence FROM context_semantic_frontiers WHERE invocation_id='imported'", [], |row| row.get::<_, i64>(0)).unwrap(), 42);
 }

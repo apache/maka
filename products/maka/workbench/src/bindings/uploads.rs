@@ -25,10 +25,11 @@ use maka_ui_runtime::{
     budget::Kind,
     file::{FileSnapshot, read_selected},
 };
-use nsh_base::{Button, ButtonEvent, ButtonProps};
+use nsh_base::{Button, ButtonEvent, ButtonProps, input};
+use nsh_core::prelude::*;
 use nsh_core::{
     JsonValue,
-    ui::{self, Arg, JsHost, JsIn, JsOwned, JsValue, PropError, Ret, TsTypes, prelude::*},
+    element::{self, Arg, JsHost, JsIn, JsOwned, JsValue, PropError, Ret, TsTypes},
 };
 use std::{rc::Rc, sync::Arc};
 use tokio::sync::{Mutex, mpsc, watch};
@@ -161,11 +162,11 @@ pub(super) enum AttachmentPickerEvent {
 #[component]
 pub(super) fn AttachmentPicker(
     props: AttachmentPickerProps,
-    cx: ui::Scope<AttachmentPickerEvent>,
+    cx: element::Scope<AttachmentPickerEvent>,
 ) -> impl IntoElement {
     let path = signal(String::new());
     let busy = signal(false);
-    let observer_owner = ui::Owner::current();
+    let observer_owner = element::Owner::current();
     let begin: Rc<dyn Fn()> = Rc::new(move || {
         if busy.get_untracked() || props.disabled.get_untracked() || !props.visible.get_untracked()
         {
@@ -186,7 +187,7 @@ pub(super) fn AttachmentPicker(
         let intake = UploadIntake::files(scope, files);
         // Inner views may hide while IO continues. Observe under the component root.
         observer_owner.run(|| {
-            ui::ambient::spawn(async move {
+            element::ambient::spawn(async move {
                 while let Some(update) = intake.next_update().await {
                     cx.emit(AttachmentPickerEvent::Status(update));
                 }

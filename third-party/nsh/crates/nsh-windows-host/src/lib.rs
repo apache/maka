@@ -12,7 +12,7 @@
 //! - `--data-dir <dir>` keeps the apps' data there instead of the system's
 //!   data directory (`nsh test --target` gives each app a fresh one).
 //! - `--app-id <id>` sets the application id (`com.example.app`); `nsh run`
-//!   passes the app's (`nsh.json` `"id"`). The app's data (`nsh/storage`)
+//!   passes the app's (`nsh.json` `"id"`). The app's data (`Storage` of `nsh`)
 //!   is kept under the id its bundle carries, in the system's data
 //!   directory.
 //!

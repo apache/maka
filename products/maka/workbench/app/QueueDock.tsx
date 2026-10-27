@@ -17,24 +17,15 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
-import {
-  cleanup,
-  computed,
-  effect,
-  Input,
-  inputAction,
-  Scroll,
-  signal,
-  Text,
-  View,
-  List,
-} from 'nsh';
+import { cleanup, computed, effect, inputAction, Scroll, signal, Text, View, List } from 'nsh';
+import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
-import { Clipboard } from 'nsh/clipboard';
-import { platform, windowSize } from 'nsh/device';
+import { keymap } from 'nsh';
+import { Clipboard } from 'nsh';
+import { platform, windowSize } from 'nsh';
 import type {
   AgentQueue,
   AgentQueueAction,
@@ -260,7 +251,7 @@ export function QueueDock(props: { session: QueueSession }) {
         <If when={items().length > 1}>
           <Button
             accessibilityLabel={tr('Queued messages')}
-            tooltip={tr('Messages waiting for a turn')}
+            tooltip={textTooltip(() => tr('Messages waiting for a turn'))}
             selected={expanded()}
             disabled={editing() !== null || busy() !== null}
             onPress={inputAction(() => collapsed.set(!collapsed()), null)}
@@ -313,7 +304,7 @@ export function QueueDock(props: { session: QueueSession }) {
                   </Text>
                   <Button
                     accessibilityLabel={tr('Edit queued message {number}', { number: number() })}
-                    tooltip={tr('Edit message')}
+                    tooltip={textTooltip(() => tr('Edit message'))}
                     disabled={busy() !== null || editing() !== null}
                     onPress={inputAction(act, request('edit'))}
                     style={actionStyle}
@@ -324,7 +315,7 @@ export function QueueDock(props: { session: QueueSession }) {
                   </Button>
                   <Button
                     accessibilityLabel={tr('Remove queued message {number}', { number: number() })}
-                    tooltip={tr('Remove message')}
+                    tooltip={textTooltip(() => tr('Remove message'))}
                     disabled={busy() !== null || editing() !== null}
                     onPress={inputAction(act, request('retract'))}
                     style={actionStyle}
@@ -337,11 +328,11 @@ export function QueueDock(props: { session: QueueSession }) {
                     accessibilityLabel={tr('Steer queued message {number} now', {
                       number: number(),
                     })}
-                    tooltip={
+                    tooltip={textTooltip(() =>
                       row().kind === 'steering'
                         ? tr('Waiting for the next step')
-                        : tr('Steer now · use in the current turn')
-                    }
+                        : tr('Steer now · use in the current turn'),
+                    )}
                     disabled={
                       busy() !== null ||
                       editing() !== null ||

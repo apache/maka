@@ -1,7 +1,7 @@
 //! Host filesystem services for platforms with virtual app storage.
 use std::{future::Future, pin::Pin};
 
-use crate::ui::JsError;
+use crate::element::JsError;
 
 /// A host filesystem confined to one app's private data root.
 /// Requests contain normalized relative paths; implementations must not

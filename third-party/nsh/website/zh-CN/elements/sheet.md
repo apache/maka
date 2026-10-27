@@ -12,7 +12,7 @@ Sheet 是位于屏幕一侧边缘的面板，背后的背景层覆盖其余部�
 
 ```rust tabs
 use nsh_base::{SheetEvent, sheet};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn filters(open: Signal<bool>) -> impl IntoElement {
     sheet()

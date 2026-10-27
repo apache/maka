@@ -5,7 +5,8 @@
 // the toasts and their lifecycle, a `ToastStack` lays them out, a `Toast`
 // is each one's root.
 import { Overlay, signal, Text, View } from "nsh";
-import { safeArea, Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+import { Toast, type ToastEntry, ToastManager, ToastStack } from "nsh/base";
+import { safeArea } from "nsh";
 import { colors, desktop, finish, radius } from "./ui";
 
 /** What a toast shows. */

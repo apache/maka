@@ -1,7 +1,7 @@
 import { Canvas, mount, signal, Text, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
-import { platform, windowSize } from "nsh/device";
-import { tint, ui } from "./palette";
+import { createAnimatedValue, Easing } from "nsh";
+import { platform, windowSize } from "nsh";
+import { button, buttonText, tint, ui } from "./palette";
 
 const TAU = Math.PI * 2;
 
@@ -11,12 +11,8 @@ const months = "JFMAMJJASOND";
 
 function Button(props: { label: string; onPress: () => void }) {
   return (
-    <View
-      onPress={props.onPress}
-      activeStyle={{ opacity: 0.6 }}
-      style={{ ...ui().raised, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 10, alignItems: "center" }}
-    >
-      <Text style={{ color: ui().text, fontWeight: "600" }}>{props.label}</Text>
+    <View onPress={props.onPress} {...button()}>
+      <Text style={buttonText()}>{props.label}</Text>
     </View>
   );
 }

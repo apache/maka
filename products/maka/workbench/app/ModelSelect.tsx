@@ -17,12 +17,12 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import {
   batch,
   cleanup,
   computed,
   effect,
-  Input,
   inputAction,
   Scroll,
   signal,
@@ -30,14 +30,17 @@ import {
   View,
   List,
 } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import type {
   ModelSelection,
+  SettingsModelCursor,
+  SettingsConnectionSummary,
   ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { Button, Popover } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
-import { platform, windowSize } from 'nsh/device';
+import { keymap } from 'nsh';
+import { platform, windowSize } from 'nsh';
 import { host } from './host';
 import { tr } from './locale';
 import { createText, errorText, UiError } from './text';
@@ -58,7 +61,7 @@ import {
   shortcut,
 } from './ui';
 
-type Pane = 'root' | 'models' | 'effort';
+type Pane = 'root' | 'models' | 'connections' | 'effort';
 type SelectionAction = {
   instance: number;
   sessionId: string;
@@ -68,7 +71,7 @@ type SelectionAction = {
 type EffortAction = SelectionAction & { level: ThinkingLevel };
 type ModelsPage = {
   revision: number;
-  next: { query: string; connection: number; model: number } | null;
+  next: SettingsModelCursor | null;
   choices: ModelChoice[];
 };
 
@@ -125,7 +128,9 @@ export function ModelSelect(props: {
       trigger={
         <Button
           accessibilityLabel={tr('Choose model and effort')}
-          tooltip={`${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`}
+          tooltip={textTooltip(
+            () => `${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`,
+          )}
           onPress={inputAction(props.toggle, {
             sessionId: owner.sessionId,
             instance: props.instance(),
@@ -220,6 +225,10 @@ function ModelMenu(props: {
   const owner = props.owner;
   const pane = signal<Pane>(owner.backend() ? 'root' : 'models');
   const query = signal('');
+  const connection = signal<{ id: string; name: string; slug: string } | null>(null);
+  const connections = signal<SettingsConnectionSummary[]>([]);
+  const connectionPage = signal<{ revision: number; next: number | null } | null>(null);
+  const connectionsLoading = signal(false);
   const page = signal<ModelsPage | null>(null);
   const choices = () => page()?.choices ?? [];
   const selected = signal(0);
@@ -312,7 +321,11 @@ function ModelMenu(props: {
   const back = () => {
     if (!active() || pending()) return;
     if (pane() === 'root') props.close(props.instance);
-    else {
+    else if (pane() === 'connections') {
+      pane.set('models');
+      error.set('');
+      void loadModels(true);
+    } else {
       focusIntent = pane() === 'models' ? 'model' : 'effort';
       pane.set('root');
       error.set('');
@@ -325,6 +338,49 @@ function ModelMenu(props: {
     error.set('');
     pane.set(to);
     if (to === 'models') void loadModels(true);
+    if (to === 'connections' && !connectionPage()) void loadConnections();
+  };
+  const loadConnections = async () => {
+    if (!active() || connectionsLoading() || connectionPage()?.next === null) return;
+    connectionsLoading.set(true);
+    error.set('');
+    let changed = false;
+    try {
+      for (;;) {
+        const previous = connectionPage();
+        const result = await host.query(
+          'settings',
+          'connections',
+          previous && previous.next !== null
+            ? { kind: 'continue', revision: previous.revision, offset: previous.next }
+            : { kind: 'start' },
+        );
+        if (!active()) return;
+        if (result.kind === 'changed') {
+          if (changed)
+            throw new UiError(
+              'The model catalog keeps changing. Retry to read the current choices.',
+            );
+          changed = true;
+          connections.set([]);
+          connectionPage.set(null);
+          continue;
+        }
+        connections.set([...(previous ? connections() : []), ...result.connections]);
+        connectionPage.set({ revision: result.revision, next: result.next });
+        break;
+      }
+    } catch (reason) {
+      if (active()) error.set(errorText(reason));
+    } finally {
+      if (alive) connectionsLoading.set(false);
+    }
+  };
+  const filterConnection = (next: { id: string; name: string; slug: string } | null) => {
+    if (!active() || pending() || pane() !== 'connections') return;
+    connection.set(next);
+    pane.set('models');
+    void loadModels(true);
   };
   const loadModels = async (restart = false) => {
     if (!active() || pane() !== 'models' || (!restart && !page()?.next)) return;
@@ -357,7 +413,7 @@ function ModelMenu(props: {
               'models',
               previousPage?.next
                 ? { kind: 'continue', revision: previousPage.revision, cursor: previousPage.next }
-                : { kind: 'start', query: search },
+                : { kind: 'start', query: search, connectionId: connection()?.id ?? null },
             );
             if (!active() || pane() !== 'models' || reading !== generation) break;
             if (result.kind === 'changed') {
@@ -391,6 +447,7 @@ function ModelMenu(props: {
   const retry = ({ instance, from }: { instance: number; from: Pane }) => {
     if (!active() || pending() || instance !== props.instance || pane() !== from) return;
     if (from === 'models') void loadModels(true);
+    else if (from === 'connections') void loadConnections();
     else void owner.refreshModel();
   };
   const index = () => Math.min(selected(), Math.max(0, choices().length - 1));
@@ -455,19 +512,25 @@ function ModelMenu(props: {
             paddingHorizontal: 8,
           }}
         >
-          {tr('Models')}
+          {pane() === 'connections' ? tr('Filter by connection') : tr('Models')}
         </Text>
         <Button
           disabled={pending()}
           accessibilityLabel={
-            pane() === 'root' ? tr('Close model selection') : tr('Back to model settings')
+            pane() === 'root'
+              ? tr('Close model selection')
+              : pane() === 'connections'
+                ? tr('Back to models')
+                : tr('Back to model settings')
           }
           onPress={
-            pane() === 'root'
-              ? inputAction(close, { instance: props.instance, from: pane() })
-              : inputAction(changePane, { instance: props.instance, from: pane(), to: 'root' })
+            pane() === 'connections'
+              ? back
+              : pane() === 'root'
+                ? inputAction(close, { instance: props.instance, from: pane() })
+                : inputAction(changePane, { instance: props.instance, from: pane(), to: 'root' })
           }
-          tooltip={pane() === 'root' ? tr('Close') : tr('Back')}
+          tooltip={textTooltip(() => (pane() === 'root' ? tr('Close') : tr('Back')))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
@@ -560,13 +623,99 @@ function ModelMenu(props: {
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.secondary, flex: 1 }}>
-              {`${tr('Code Mode')} · ${tr('Apply Patch')}`}
+              {tr('Model settings')}
             </Text>
             <Icon name="right" color={C.muted} />
           </Button>
         </If>
       </If>
+      <If when={pane() === 'connections'}>
+        <Scroll style={{ minHeight: 0, flexShrink: 1 }}>
+          <View style={{ gap: 4 }}>
+            <Button
+              ref={(node) => node.focus()}
+              disabled={pending()}
+              accessibilityLabel={tr('All connections')}
+              selected={connection() === null}
+              onPress={inputAction(filterConnection, null)}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle}
+              focusStyle={controlFocusStyle}
+            >
+              <Text style={{ ...captionTextStyle, color: C.text }}>{tr('All connections')}</Text>
+            </Button>
+            <Each
+              of={connections()}
+              key={(item: SettingsConnectionSummary) => item.basis.connectionId}
+            >
+              {(item) => (
+                <Button
+                  disabled={pending()}
+                  accessibilityLabel={item().name}
+                  selected={connection()?.id === item().basis.connectionId}
+                  onPress={inputAction(filterConnection, {
+                    id: item().basis.connectionId,
+                    name: item().name,
+                    slug: item().slug,
+                  })}
+                  style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                  hoverStyle={controlHoverStyle}
+                  focusStyle={controlFocusStyle}
+                >
+                  <View pointerEvents="none" style={{ flex: 1, minWidth: 0 }}>
+                    <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.text }}>
+                      {item().name}
+                    </Text>
+                    <Text numberOfLines={1} style={{ ...captionTextStyle, color: C.muted }}>
+                      {item().slug}
+                    </Text>
+                  </View>
+                  <ChoiceIndicator
+                    kind="radio"
+                    checked={connection()?.id === item().basis.connectionId}
+                  />
+                </Button>
+              )}
+            </Each>
+            <If when={!connectionPage() || connectionPage()?.next !== null}>
+              <Button
+                disabled={connectionsLoading()}
+                onPress={loadConnections}
+                style={controlStyle}
+                hoverStyle={controlHoverStyle}
+                focusStyle={controlFocusStyle}
+              >
+                <Text style={{ ...captionTextStyle, color: C.accent }}>
+                  {connectionsLoading() ? tr('Loading…') : tr('Load more connections')}
+                </Text>
+              </Button>
+            </If>
+          </View>
+        </Scroll>
+      </If>
       <If when={pane() === 'models'}>
+        <Button
+          disabled={pending()}
+          accessibilityLabel={tr('Filter by connection')}
+          onPress={inputAction(changePane, {
+            instance: props.instance,
+            from: 'models',
+            to: 'connections',
+          })}
+          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+          hoverStyle={controlHoverStyle}
+          focusStyle={controlFocusStyle}
+          disabledStyle={controlDisabledStyle}
+        >
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Connection')}</Text>
+          <Text
+            numberOfLines={1}
+            style={{ ...captionTextStyle, color: C.text, flex: 1, textAlign: 'right' }}
+          >
+            {connection() ? `${connection()!.name} · ${connection()!.slug}` : tr('All connections')}
+          </Text>
+          <Icon name="down" color={C.muted} />
+        </Button>
         <Input
           ref={(node) => {
             removeSearchKeys();
@@ -670,6 +819,11 @@ function ModelMenu(props: {
             </Each>
           )}
         </List>
+        <If when={!loading() && !error() && choices().length === 0}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {tr('No models match this search and connection.')}
+          </Text>
+        </If>
         <Text style={{ ...captionTextStyle, color: C.muted }}>
           {loading()
             ? tr('Loading…')
@@ -754,7 +908,11 @@ function ModelMenu(props: {
           </Each>
         </Scroll>
       </If>
-      <If when={pane() !== 'models' && owner.modelDetails().kind !== 'ready'}>
+      <If
+        when={
+          pane() !== 'models' && pane() !== 'connections' && owner.modelDetails().kind !== 'ready'
+        }
+      >
         <Text style={{ ...captionTextStyle, color: C.muted }}>
           {owner.modelDetails().kind === 'loading'
             ? tr('Loading model policy…')
@@ -794,7 +952,7 @@ function ModelMenu(props: {
             {error()}
           </Text>
         </Scroll>
-        <If when={pane() === 'models'}>
+        <If when={pane() === 'models' || pane() === 'connections'}>
           <Button
             disabled={pending()}
             onPress={inputAction(retry, { instance: props.instance, from: pane() })}

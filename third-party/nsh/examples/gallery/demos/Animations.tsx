@@ -1,18 +1,5 @@
 import { type Bounds, Canvas, type CanvasRenderingContext2D, cleanup, Scroll, signal, Text, View } from "nsh";
-import {
-  Animated,
-  type AnimatedNode,
-  type CompositeAnimation,
-  createAnimatedValue,
-  createMotion,
-  Easing,
-  LayoutAnimation,
-  type LayoutAnimationConfig,
-  type MotionName,
-  type MotionPreset,
-  type MotionSpec,
-  motions,
-} from "nsh/animated";
+import { Animated, type AnimatedNode, type CompositeAnimation, createAnimatedValue, createMotion, Easing, LayoutAnimation, type LayoutAnimationConfig, type MotionName, type MotionPreset, type MotionSpec, motions } from "nsh";
 import { Button as BaseButton, Tab, Tabs } from "nsh/base";
 import { Icon } from "../icons";
 import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, isDark, Legend, mono, type Palette, radius, Segmented, tabPress, tints } from "../ui";

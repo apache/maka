@@ -8,7 +8,8 @@ use std::{f32::consts::TAU, rc::Rc};
 use nsh_core::{
     Bounds, PanActivation, Points,
     canvas::{CanvasGradient, CanvasTextAlign, CanvasTextBaseline, LineJoin},
-    ui::{AnimatedNode, prelude::*},
+    element::AnimatedNode,
+    prelude::*,
 };
 
 use super::{

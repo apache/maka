@@ -11,7 +11,7 @@ demo: guide-tailwind
 NSH 的样式遵循 Tailwind CSS 4。在 Rust 中，Tailwind 的工具类是名称和取值都相同的类型化样式方法（`.p_4()` 即 `p-4`，`.rounded_2xl()` 即 `rounded-2xl`，`ZINC.shade(900)` 即 `zinc-900`）；在 TSX 中，每个元素都可以直接在 `class` 中写这些类，它们会以 Tailwind 4 的默认主题为准，在原生层解析。下面每个示例先给出类型化方法，再给出类名：
 
 ```rust tabs
-use nsh_core::ui::palette::ZINC;
+use nsh_core::element::palette::ZINC;
 
 view()
     .flex_row()
@@ -70,7 +70,7 @@ view()
 3. **`style` 优先于类名。**
 4. `!` 让一个类变为 important：`!p-0`。
 
-Rust 组件（`SafeAreaView`、`KeyboardAvoidingView` 以及应用自己 crate 中的组件）在 TSX 中同样接受 `class` 和 `classList`；你的类会合并在组件自身样式之后，同等优先级时以你的为准。
+Rust 组件（`nsh/base` 的以及应用自己 crate 中的组件）在 TSX 中同样接受 `class` 和 `classList`；你的类会合并在组件自身样式之后，同等优先级时以你的为准。
 
 ## 变体
 
@@ -162,7 +162,7 @@ view()
 - **在 NSH 中属于属性的设置，以类的形式也可用**：`line-clamp-*`、`truncate`、`whitespace-nowrap`、`pointer-events-*`、`object-*`（图片缩放模式）、`select-text`、`caret-*` 和 `placeholder:text-*` 都能使用；若同时设置了对应的显式属性（`numberOfLines`、`pointerEvents`、`resizeMode` 等），以属性为准。在 Rust 中它们是元素的方法（`.number_of_lines(..)`、`.resize_mode(..)` 等）。
 - **支持的范围**：Tailwind 4 中在原生层有意义的工具类和变体。`peer-*` 变体、伪元素（`before:`、`after:`）和任意属性（`[mask-type:luminance]`）会报告为未知类；NSH 在原生层没有对应含义的工具类也都是未知类，因此一个类不会有与浏览器不同的含义。渲染提示类（`antialiased`、`will-change-transform`、`appearance-none`、`box-border` 等）会被接受，但不改变任何东西。
 
-其余部分都与 Tailwind 4 文档一致：调色板、透明度修饰符（`bg-black/40`）、任意值（`bg-[#34c759]`、`w-[72px]`、`grid-cols-[1fr_2fr]`）、分数（`w-1/2`、`translate-x-1/2`）、阴影和 ring、渐变（`bg-linear-to-r`、`bg-radial`、`bg-conic` 配合 `from-` / `via-` / `to-`）、滤镜、`backdrop-blur-*`、`mix-blend-*`、变换、`transition-*` 和 `duration-*`、`animate-spin` / `ping` / `pulse` / `bounce`，以及网格，每一项在 Rust 中都有对应的类型化方法。[滤镜与混合](./styling.md#滤镜与混合) 的平台限制对类名同样适用。
+其余部分都与 Tailwind 4 文档一致：调色板、透明度修饰符（`bg-black/40`）、任意值（`bg-[#34c759]`、`w-[72px]`、`grid-cols-[1fr_2fr]`；`p`、`px`、`py`、`pt`、`pr`、`pb`、`pl` 和 `m` 系列工具类还接受环境变量，`pt-[env(safe-area-inset-top)]`、`pb-[calc(env(keyboard-inset-height)+49px)]`，见[安全区域](../elements/safe-area.md)和[键盘](../elements/keyboard.md)）、分数（`w-1/2`、`translate-x-1/2`）、阴影和 ring、渐变（`bg-linear-to-r`、`bg-radial`、`bg-conic` 配合 `from-` / `via-` / `to-`）、滤镜、`backdrop-blur-*`、`mix-blend-*`、变换、`transition-*` 和 `duration-*`、`animate-spin` / `ping` / `pulse` / `bounce`，以及网格，每一项在 Rust 中都有对应的类型化方法。[滤镜与混合](./styling.md#滤镜与混合) 的平台限制对类名同样适用。
 
 ## 主题
 

@@ -1,7 +1,7 @@
 // Native iOS regression fixture: use real XCTest edge swipes, not the test
 // agent's in-process touches (docs/dev/pitfalls.md, "iOS, the test agent's input").
 import { mount, signal, Text, View } from "nsh";
-import { Button, createNavStack, NavPage, NavStack, SafeAreaView } from "nsh/base";
+import { Button, createNavStack, NavPage, NavStack } from "nsh/base";
 
 type Route = "root" | "swipe" | "locked" | "prevented";
 
@@ -14,7 +14,7 @@ function App() {
     </Button>
   );
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: "white" }}>
+    <View style={{ flex: 1, backgroundColor: "white", paddingTop: "env(safe-area-inset-top)", paddingRight: "env(safe-area-inset-right)", paddingBottom: "env(safe-area-inset-bottom)", paddingLeft: "env(safe-area-inset-left)" }}>
       <NavStack state={nav} style={{ flex: 1 }}>
         {(route) => (
           <NavPage
@@ -38,7 +38,7 @@ function App() {
           </NavPage>
         )}
       </NavStack>
-    </SafeAreaView>
+    </View>
   );
 }
 

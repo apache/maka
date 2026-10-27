@@ -294,7 +294,9 @@ test("a column's classes style its titles and cells, by the value's sign", async
   // text-red-600 and text-green-600.
   expect(app.spanStyle("text:-3").color).toBe("#e7000bff");
   expect(app.spanStyle("text:40").color).toBe("#00a63eff");
-  expect(app.spanStyle("text:/^0$/").color).toBe("#0a0a0aff");
+  // An unclassified value inherits the parent's color, rather than a
+  // component-owned theme color (this fixture uses the core's black).
+  expect(app.spanStyle("text:/^0$/").color).toBe("#000000ff");
   expect(app.shows("Who")).toBe(true);
   expect(app.shows("Numbers")).toBe(true);
 });

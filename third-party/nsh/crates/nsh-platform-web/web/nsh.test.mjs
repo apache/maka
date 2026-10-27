@@ -182,3 +182,112 @@ test("a browser-cancelled pan reports cancellation rather than a release", () =>
     assert.equal(player.pointers.size, 0);
   }
 });
+
+test("run stages static source and bytecode chunks before starting the entry", () => {
+  const { player } = fakePlayer();
+  const calls = [];
+  const text = (ptr, len) => new TextDecoder().decode(new Uint8Array(player.wasm.memory.buffer, ptr, len));
+  player.reset = () => [800, 600];
+  player.begin = () => calls.push(["start"]);
+  player.wasm.nsh_bundle_options = () => calls.push(["options"]);
+  player.wasm.nsh_bundle_chunk = (np, nl, cp, cl, bytecode) => {
+    calls.push([text(np, nl), bytecode, [...new Uint8Array(player.wasm.memory.buffer, cp, cl)]]);
+  };
+  player.run("entry", {
+    chunkBase: "https://example.test/",
+    preloadedChunks: {
+      "source.js": "export {}",
+      "bytecode.js": new Uint8Array([1, 2, 3]).buffer,
+    },
+  });
+  assert.deepEqual(calls, [
+    ["options"],
+    ["source.js", 0, [...new TextEncoder().encode("export {}")]],
+    ["bytecode.js", 1, [1, 2, 3]],
+    ["start"],
+  ]);
+});
+
+/** A view element as `updateFocusable` and `keyDown` see it. */
+function focusView(pressable, props) {
+  const attrs = new Map();
+  return {
+    _pressable: pressable,
+    _props: props,
+    _events: new Set(pressable ? ["onPress"] : []),
+    _tracked: 0,
+    listeners: [],
+    set tabIndex(v) {
+      attrs.set("tabindex", String(v));
+    },
+    get tabIndex() {
+      return Number(attrs.get("tabindex") ?? -1);
+    },
+    hasAttribute: (name) => attrs.has(name),
+    removeAttribute: (name) => attrs.delete(name),
+    addEventListener(type) {
+      this.listeners.push(type);
+    },
+    closest: () => null,
+    blur() {
+      this.blurred = true;
+    },
+  };
+}
+
+test("Tab stops are the pressables and the focusable views, pressable or not", () => {
+  const { player } = fakePlayer();
+  player.updateAria = () => {};
+  globalThis.document = { activeElement: null };
+  const stop = (pressable, props) => {
+    const el = focusView(pressable, props);
+    player.updateFocusable(el);
+    return el.hasAttribute("tabindex") ? el.tabIndex : null;
+  };
+  assert.equal(stop(true, {}), 0, "a pressable");
+  assert.equal(stop(false, { focusable: true }), 0, "focusable without presses");
+  assert.equal(stop(false, {}), null, "neither");
+  assert.equal(stop(false, undefined), null, "no props yet");
+  assert.equal(stop(true, { focusable: false }), null, "kept out");
+  assert.equal(stop(false, { focusable: true, disabled: true }), null, "disabled");
+  assert.equal(stop(false, { focusable: true, hidden: true }), null, "hidden");
+  // Its focus and blur follow the keyboard focus, as a pressable's do.
+  const chart = focusView(false, { focusable: true });
+  player.updateFocusable(chart);
+  assert.deepEqual(chart.listeners, ["focus", "blur"]);
+  // No longer a stop with the focus on it: it gives the focus up.
+  document.activeElement = chart;
+  chart._props = {};
+  player.updateFocusable(chart);
+  assert.equal(chart.hasAttribute("tabindex"), false);
+  assert.equal(chart.blurred, true);
+  delete globalThis.document;
+});
+
+test("Return presses a focused pressable, not a focused stop that takes no presses", () => {
+  const { player } = fakePlayer();
+  player.wasm.nsh_key = () => -1;
+  player.modifiersChanged = () => {};
+  player.takesKeys = () => true;
+  player.selectionKey = () => false;
+  player.scrollKey = () => false;
+  player.back = () => false;
+  player.ancestors = () => [];
+  const pressed = [];
+  player.pressIn = (p) => pressed.push(p.press);
+  player.pressOut = () => {};
+  player.root = { contains: () => true };
+  const key = (focus) => {
+    globalThis.document = { activeElement: focus };
+    let prevented = false;
+    player.keyDown({ key: "Enter", preventDefault: () => (prevented = true), stopPropagation() {} });
+    delete globalThis.document;
+    return prevented;
+  };
+  const button = focusView(true, {});
+  const chart = focusView(false, { focusable: true });
+  assert.equal(key(button), true);
+  assert.deepEqual(pressed, [button]);
+  assert.equal(key(chart), false);
+  assert.deepEqual(pressed, [button]);
+});

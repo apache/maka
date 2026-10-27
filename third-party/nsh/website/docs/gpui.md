@@ -138,13 +138,13 @@ so only load it from your own app's files.
   [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps: `CacheOptions { location,
   images }`, `CacheLocation::System` (the default), `Dir(path)` or `Off`, `CachePolicy::Default` (256 MiB),
   `MaxSize(ByteSize::mib(n))` or `Off`.
-- `AppView::host()` is the view's channel with the apps it runs ([`nsh/host`](../modules/nsh-host.md)), a
+- `AppView::host()` is the view's channel with the apps it runs ([`host`](../modules/nsh.md#host)), a
   `HostChannel` any thread may use: `set_params(map)` before loading gives the app its launch parameters
   (`host.params`), `send(name, data)` an event (`host.on`), and `handle(name, |call| …)` answers its
   `host.call(name, data)` and hears its `host.post` (`call.resolve(json)`, `call.reject(message)`, at once or later
   from any thread). Handlers run on the engine thread: hand the call to your GPUI entities (a channel that a
   `cx.spawn` task reads) and answer from there. The macOS, Windows and Linux `AppView`s have the same `host()`.
-  Its `handle_open_url(|request| …)` sees the URLs the app opens ([`openUrl`](../modules/nsh-device.md#openurl))
+  Its `handle_open_url(|request| …)` sees the URLs the app opens ([`openUrl`](../modules/nsh.md#openurl))
   before the system does: `request.handled()` when your app routed the URL itself, `request.decline()` (or dropping
   the request) for the system to open it with GPUI's `open_url`.
 - `AppOptions::limits` (or `AppView::set_limits`, for the apps loaded next) sets the VM limits: the JS heap, the
@@ -163,7 +163,7 @@ so only load it from your own app's files.
   from `verify_package` or `load_package`; `accept_package` records it once your app decided it is healthy.
 - `set_ui_sets(sets)` sets the UI sets every engine serves: NSH's (`nsh_base::registry()`) and your crates'
   (`my_app::registry()`, which `#[native_module]` makes; [Building with Rust](./rust.md)), and gives your app's own sets: an app reaches the functions and classes of one by name with
-  [`nativeModule`](../modules/nsh-native.md#nativemodule) and is built with the stock `nsh build`. The repository's
+  [`nativeModule`](../modules/nsh.md#nativemodule) and is built with the stock `nsh build`. The repository's
   `examples/embed-gpui` keeps a trading desk in the host this way, which two embedded order tickets and the host's
   own widgets share.
 

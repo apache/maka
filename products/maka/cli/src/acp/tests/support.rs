@@ -134,22 +134,19 @@ impl Fixture {
 
     pub async fn intent_count(&self) -> i64 {
         use sqlx::Connection;
-        let mut total = 0;
-        for path in self.runtime_databases().await {
-            let mut connection = sqlx::SqliteConnection::connect_with(
-                &sqlx::sqlite::SqliteConnectOptions::new()
-                    .filename(&path)
-                    .read_only(true),
-            )
+        let mut connection = sqlx::SqliteConnection::connect_with(
+            &sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&self.database)
+                .read_only(true),
+        )
+        .await
+        .unwrap();
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM application_intents")
+            .fetch_one(&mut connection)
             .await
             .unwrap();
-            total += sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM application_intents")
-                .fetch_one(&mut connection)
-                .await
-                .unwrap();
-            connection.close().await.unwrap();
-        }
-        total
+        connection.close().await.unwrap();
+        count
     }
     pub async fn open() -> Self {
         let directory = tempfile::tempdir().unwrap();

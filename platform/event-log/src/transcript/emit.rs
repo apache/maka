@@ -75,6 +75,11 @@ pub(super) async fn source_on_worker(
     let (invocation, step, kind) = candidate;
     let projection = if kind == "context_checkpoint_recorded" {
         Projection::Compaction
+    } else if matches!(
+        kind.as_str(),
+        "tool_dispatched" | "tool_rejected" | "tool_settled"
+    ) {
+        Projection::Tool
     } else {
         Projection::Evidence(
             evidence::selected_on_worker(connection, &invocation, step.as_deref(), sequence, true)
@@ -110,6 +115,11 @@ pub(super) fn source_on_handle(
     };
     let projection = if kind == "context_checkpoint_recorded" {
         Projection::Compaction
+    } else if matches!(
+        kind.as_str(),
+        "tool_dispatched" | "tool_rejected" | "tool_settled"
+    ) {
+        Projection::Tool
     } else {
         Projection::Evidence(evidence::selected_on_handle(
             db,
@@ -124,6 +134,7 @@ pub(super) fn source_on_handle(
 
 enum Projection {
     Compaction,
+    Tool,
     Evidence(Vec<i64>),
 }
 
@@ -135,6 +146,16 @@ fn project_source(
 ) -> Result<Vec<Row>, StoreError> {
     let ids = match projection {
         Projection::Compaction => return Ok(vec![super::compaction::project(db, source)?]),
+        Projection::Tool => {
+            let stored = evidence::fact_on_handle(db, source)?;
+            let mut rows = super::tools::project(db, &stored)?;
+            if stored.event.invocation.session_id != session {
+                for row in &mut rows {
+                    owned_references(db, session, &mut row.message)?;
+                }
+            }
+            return Ok(rows);
+        }
         Projection::Evidence(ids) => ids,
     };
     let mut view = InvocationView::new();

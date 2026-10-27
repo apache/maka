@@ -29,6 +29,64 @@ impl ConfigurationStore {
             .await
     }
 
+    /// Reads model choices for one connection and preserves the global default model.
+    pub async fn model_catalog(
+        &self,
+        connection_id: Option<&str>,
+    ) -> Result<ConnectionCatalogSnapshot> {
+        let Some(connection_id) = connection_id else {
+            return self.catalog().await;
+        };
+        let connection_id = connection_id.to_owned();
+        self.transaction(TransactionMode::Deferred, move |tx| {
+            Box::pin(async move {
+                let (revision, default): (i64, Option<String>) = sqlx::query_as(
+                    "SELECT revision, default_target FROM connection_catalog WHERE singleton = 1",
+                )
+                .fetch_one(&mut *tx)
+                .await?;
+                let default_target: Option<ConnectionTarget> = default
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()?;
+                let rows: Vec<String> = sqlx::query_scalar(
+                    "SELECT document FROM connections WHERE connection_id = ?",
+                )
+                .bind(&connection_id)
+                .fetch_all(&mut *tx)
+                .await?;
+                let mut connections = rows.iter().map(|row| decode_entry(row)).collect::<Result<Vec<_>>>()?;
+                if let Some(target) = &default_target
+                    && target.connection_id != connection_id
+                {
+                    let document: Option<String> = sqlx::query_scalar(
+                        "SELECT CASE WHEN json_type(projected, '$.modelOverrides') = 'null'
+                            THEN json_remove(projected, '$.modelOverrides') ELSE projected END
+                         FROM (SELECT json_set(document,
+                            '$.models', (SELECT json_group_array(json(value)) FROM json_each(document, '$.models') WHERE json_extract(value, '$.id') = ?),
+                            '$.enabledModelIds', (SELECT json_group_array(value) FROM json_each(document, '$.enabledModelIds') WHERE value = ?),
+                            '$.modelOverrides', json(NULLIF((SELECT json_group_object(key, json(value)) FROM json_each(document, '$.modelOverrides') WHERE key = ?), '{}'))) AS projected
+                         FROM connections WHERE connection_id = ?)",
+                    )
+                    .bind(&target.model_id)
+                    .bind(&target.model_id)
+                    .bind(&target.model_id)
+                    .bind(&target.connection_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    if let Some(document) = document {
+                        connections.push(decode_entry(&document)?);
+                    }
+                }
+                Ok(ConnectionCatalogSnapshot {
+                    revision: crate::database::unsigned(revision)?,
+                    default_target,
+                    connections,
+                })
+            })
+        })
+        .await
+    }
+
     pub async fn create_connection(
         &self,
         input: CreateCatalogConnectionInput,

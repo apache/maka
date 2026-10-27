@@ -1,18 +1,7 @@
 import { Canvas, computed, signal, Text, View } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
 import { Icon } from "../icons";
-import {
-  addPhase,
-  type Bezier,
-  type EasingName,
-  easingLabel,
-  easings,
-  type Phase,
-  phases,
-  selectedPhase,
-  setBezier,
-  setEasing,
-} from "../store";
+import { addPhase, type Bezier, type EasingName, easingLabel, easings, type Phase, phases, selectedPhase, setBezier, setEasing } from "../store";
 import { color, mono, radius } from "../theme";
 import { Action, Panel, track } from "../ui";
 

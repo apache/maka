@@ -1,5 +1,6 @@
-import { Input, type JSX, mount, signal, Text, View, type YNode } from "nsh";
-import { Inspector, Panel, size, Stage, ui, wide } from "./palette";
+import { type JSX, mount, signal, Text, View, type YNode } from "nsh";
+import { Input } from "nsh/base";
+import { button, buttonText, field, Inspector, Panel, Stage, ui, wide } from "./palette";
 
 function App() {
   const name = signal("");
@@ -8,15 +9,9 @@ function App() {
   const submitted = signal("");
   let passwordInput!: YNode;
   const signIn = () => submitted.set(`Signed in as ${name() || "nobody"}`);
-  // Touch fields on a phone; compact ones, 32 points high, in a desktop layout.
-  const field = () =>
-    wide()
-      ? { ...ui().inset, fontSize: 14, color: ui().text, placeholderColor: ui().faint, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 }
-      : { ...ui().inset, fontSize: 16, color: ui().text, placeholderColor: ui().faint, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10 };
-
   const nameField = () => (
     <Input
-      style={field()}
+      {...field()}
       value={name()}
       onChange={(text) => name.set(text)}
       placeholder="Ada Lovelace"
@@ -30,7 +25,7 @@ function App() {
   const passwordField = () => (
     <Input
       ref={passwordInput}
-      style={field()}
+      {...field()}
       value={password()}
       onChange={(text) => password.set(text)}
       masked
@@ -41,26 +36,16 @@ function App() {
   );
   const notesField = () => (
     <Input
-      style={{ ...field(), height: wide() ? 80 : 100 }}
+      {...field({ style: { height: wide() ? 80 : 100 } })}
       multiline
       value={notes()}
       onChange={(text) => notes.set(text)}
       placeholder="Anything else?"
     />
   );
-  const button = () => (
-    <View
-      onPress={signIn}
-      activeStyle={{ opacity: 0.7 }}
-      disabled={password().length === 0}
-      class="disabled:opacity-40"
-      style={
-        wide()
-          ? { ...ui().primary, alignSelf: "flex-start", borderRadius: 8, height: size.control, paddingHorizontal: 14, justifyContent: "center", marginTop: 4 }
-          : { ...ui().primary, borderRadius: 10, padding: 14, alignItems: "center", marginTop: 6 }
-      }
-    >
-      <Text style={{ color: ui().onPrimary, fontSize: wide() ? 13 : 16, fontWeight: "600" }}>Sign in</Text>
+  const signInButton = () => (
+    <View onPress={signIn} disabled={password().length === 0} {...button("primary", { style: { marginTop: 4 } })}>
+      <Text style={buttonText("primary")}>Sign in</Text>
     </View>
   );
   /** A label above its field, and what describes it below. */
@@ -84,7 +69,7 @@ function App() {
                 {group("Name (controlled, maxLength 20)", nameField(), count())}
                 {group("Password", passwordField())}
                 {group("Notes (multiline)", notesField())}
-                {button()}
+                {signInButton()}
               </Stage>
               <Inspector>
                 <Panel title="value">
@@ -112,7 +97,7 @@ function App() {
             <Text style={{ color: ui().muted }}>Notes (multiline)</Text>
             {notesField()}
 
-            {button()}
+            {signInButton()}
             <Text style={{ color: ui().up }}>{submitted()}</Text>
           </View>
         )

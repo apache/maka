@@ -17,11 +17,12 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText, errorText, renderText, UiError, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, Scroll, signal, Text, View, Image, List } from 'nsh';
-import { Button, SelectionArea } from 'nsh/base';
-import { Clipboard } from 'nsh/clipboard';
+import { Button } from 'nsh/base';
+import { Clipboard } from 'nsh';
 import { host, type FileView } from './host';
 import type { AgentFileChange } from '../../../../packages/plugin-sdk/src/index.js';
 import type { WorkspaceFileTarget } from './workspaceFileState';
@@ -348,15 +349,15 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
           accessibilityLabel={tr('Copy captured file')}
           disabled={textCapture() === null}
           onPress={copyAction()}
-          tooltip={
+          tooltip={textTooltip(() =>
             copying()
               ? tr('Copying captured file…')
               : copied()
                 ? copied()!.failed
                   ? renderText(copied()!.message)
                   : tr('File copied')
-                : tr('Copy captured file')
-          }
+                : tr('Copy captured file'),
+          )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
@@ -371,9 +372,9 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
           disabled={model.state().kind === 'loading'}
           accessibilityLabel={tr('Refresh current file')}
           onPress={inputAction(model.refresh, null)}
-          tooltip={
-            model.state().kind === 'error' ? tr('Retry current file') : tr('Refresh current file')
-          }
+          tooltip={textTooltip(() =>
+            model.state().kind === 'error' ? tr('Retry current file') : tr('Refresh current file'),
+          )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}
@@ -396,7 +397,7 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
               selectable
               numberOfLines={1}
               accessibilityLabel={tr('Captured version {version}', { version: version() })}
-              tooltip={tr('Captured version {version}', { version: version() })}
+              tooltip={textTooltip(() => tr('Captured version {version}', { version: version() }))}
               style={{ ...captionTextStyle, flex: 1, minWidth: 0, color: C.muted }}
             >
               {tr('Captured version {version}', { version: version() })}
@@ -407,7 +408,9 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
               accessibilityLabel={
                 copied()!.failed ? renderText(copied()!.message) : tr('File copied')
               }
-              tooltip={copied()!.failed ? renderText(copied()!.message) : tr('File copied')}
+              tooltip={textTooltip(() =>
+                copied()!.failed ? renderText(copied()!.message) : tr('File copied'),
+              )}
               style={{
                 ...captionTextStyle,
                 flexShrink: 0,
@@ -546,7 +549,7 @@ function FileRows(props: { model: CurrentFileModel; view: Extract<FileView, { ki
     mounted = false;
   });
   return (
-    <SelectionArea style={{ flex: 1, minHeight: 0 }}>
+    <View selectable style={{ flex: 1, minHeight: 0 }}>
       <List
         each={props.view.rows}
         keyExtractor={(row) => String(row.offset)}
@@ -593,7 +596,7 @@ function FileRows(props: { model: CurrentFileModel; view: Extract<FileView, { ki
           </View>
         )}
       </List>
-    </SelectionArea>
+    </View>
   );
 }
 

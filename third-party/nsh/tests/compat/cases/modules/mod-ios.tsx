@@ -1,13 +1,14 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh/ios` on
-// the headless runtime, which is iOS: `isAvailable` is true, and an
-// `InputAccessoryView` takes no room where it is placed. Its script checks each.
-import { Input, Text, View } from "nsh";
-import { InputAccessoryView, isAvailable } from "nsh/ios";
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh/mobile`'s
+// `InputAccessoryView` on the headless runtime, which is iOS: it takes no
+// room where it is placed. Its script checks each.
+import { Text, View, platform } from "nsh";
+import { Input } from "nsh/base";
+import { InputAccessoryView } from "nsh/mobile";
 
 function App() {
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
-      <Text>{`iOS: ${isAvailable}`}</Text>
+      <Text>{`iOS: ${platform.os === "ios"}`}</Text>
       <View testID="column">
         <View testID="above" style={{ height: 30 }} />
         <InputAccessoryView nativeID="bar">

@@ -1555,6 +1555,7 @@ mod tests {
         state: std::cell::RefCell<ScrollState>,
         size: std::cell::Cell<Size<Points>>,
         moved: std::cell::RefCell<Vec<Point<Points>>>,
+        pulls: std::cell::RefCell<Vec<Points>>,
         reports: std::cell::RefCell<Vec<(Point<Points>, u32)>>,
         ticks: std::cell::Cell<usize>,
     }
@@ -1569,6 +1570,7 @@ mod tests {
                 }),
                 size: std::cell::Cell::new(sz(300.0, 400.0)),
                 moved: Default::default(),
+                pulls: Default::default(),
                 reports: Default::default(),
                 ticks: Default::default(),
             }
@@ -1598,7 +1600,7 @@ mod tests {
             self.moved.borrow_mut().push(offset);
         }
         fn pulled(&self, distance: Points) {
-            assert_eq!(distance, Points::ZERO);
+            self.pulls.borrow_mut().push(distance);
         }
         fn relayout(&self) {}
         fn redraw(&self) {}
@@ -1667,6 +1669,7 @@ mod tests {
         config(&host, true, false, false);
         frame(&host, 150.0);
         assert_eq!(host.state.borrow().origin(), pt(225.0, 70.0));
+        assert!(host.pulls.borrow().is_empty());
 
         // No ScrollContent follows this configuration change.
         config(&host, false, false, false);
@@ -1738,6 +1741,7 @@ mod tests {
         assert_eq!(host.state.borrow().origin(), pt(0.0, 100.0));
         assert_eq!(host.moved.borrow().last(), Some(&pt(0.0, 100.0)));
         assert_eq!(host.reports.borrow().last(), Some(&(pt(0.0, 100.0), 1)));
+        assert!(host.pulls.borrow().is_empty());
 
         // Retargeting the end keeps the original rubber-band bounce smooth.
         let host = ExtentHost::new(0.0, -40.0);
@@ -1752,8 +1756,10 @@ mod tests {
         );
         frame(&host, 150.0);
         assert_eq!(host.state.borrow().origin(), pt(0.0, -5.0));
+        assert_eq!(*host.pulls.borrow(), vec![Points(5.0)]);
         frame(&host, 300.0);
         assert_eq!(host.state.borrow().origin(), pt(0.0, 0.0));
+        assert_eq!(*host.pulls.borrow(), vec![Points(5.0), Points::ZERO]);
     }
 
     #[test]

@@ -227,7 +227,7 @@ const width = signal(0);
 </View>
 ```
 
-frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个窗口的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh/device`](../modules/nsh-device.md) 的 `windowSize()`；两者都跟随旋转和窗口缩放变化，读取它们的样式会随窗口改变：
+frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个窗口的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`；两者都跟随旋转和窗口缩放变化，读取它们的样式会随窗口改变：
 
 ```rust tabs
 view().style_when(|| window().width > px(600.0), |s| s.flex_row())
@@ -235,7 +235,7 @@ view().style_when(|| window().width > px(600.0), |s| s.flex_row())
 
 ```tsx tabs
 import { View } from "nsh";
-import { windowSize } from "nsh/device";
+import { windowSize } from "nsh";
 
 <View style={{ flexDirection: windowSize().width > 600 ? "row" : "column" }} />
 ```
@@ -244,7 +244,7 @@ Tailwind 的断点（`sm:`、`md:` 等）以及 `portrait:` / `landscape:` 不�
 
 ## 安全区域
 
-根视图覆盖整个屏幕，包括状态栏和主屏幕指示条下方的区域。把页面包在 `nsh_base` 的 [`SafeAreaView`](../modules/nsh-base.md#safeareaview) 中（Rust 中为 `safe_area_view()`，TSX 中从 `nsh/base` 导入），它会按安全区域的 inset 为内容加内边距；也可以在 Rust 中用 `safe_area()`、在 TSX 中用 `safeArea()` / `safeAreaInsets()` 读取 inset 自行处理。[导航栈](./navigation.md)中的页面本身已经位于标题栏下方。
+根视图覆盖整个屏幕，包括状态栏和主屏幕指示条下方的区域。用 CSS 的 `env()` 按安全区域的 inset 为页面加内边距（`paddingTop: "env(safe-area-inset-top)"`、Tailwind `pt-[env(safe-area-inset-top)]`、Rust 中 `.p_safe_area()`；见[安全区域](../elements/safe-area.md)）；也可以在 Rust 中用 `safe_area()`、在 TSX 中用 `safeArea()` / `safeAreaInsets()` 读取 inset 自行处理。[导航栈](./navigation.md)中的页面本身已经位于标题栏下方。
 
 ## 从右到左
 

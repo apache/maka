@@ -122,7 +122,7 @@ impl EventLog {
                 "SELECT EXISTS(SELECT 1 FROM session_control WHERE id=?1
                     UNION ALL SELECT 1 FROM session_retirements WHERE session_id=?1
                     UNION ALL SELECT 1 FROM session_history_copies WHERE session_id=?1
-                    UNION ALL SELECT 1 FROM event_log WHERE event_session=?1)"
+                    UNION ALL SELECT 1 FROM context_source_prefixes WHERE kind='session' AND owner=?1)"
             ).bind(&owner.session_id).fetch_one(&mut *tx).await?;
             if occupied { return Err(StoreError::SessionConflict); }
             // Published retries above verify the original records before any new

@@ -17,24 +17,15 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { createText, errorText, message, UiError } from './text';
 import { tr } from './locale';
-import {
-  batch,
-  cleanup,
-  computed,
-  effect,
-  Input,
-  inputAction,
-  signal,
-  Text,
-  View,
-  List,
-} from 'nsh';
+import { batch, cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
+import { Input } from 'nsh/base';
 import type { Signal, YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
-import { windowSize } from 'nsh/device';
+import { keymap } from 'nsh';
+import { windowSize } from 'nsh';
 import { host } from './host';
 import type {
   AgentDirectory,
@@ -383,7 +374,7 @@ export function WorkspacePicker(props: {
                 </Text>
                 <Button
                   accessibilityLabel={tr('Close workspace picker')}
-                  tooltip={tr('Close · Esc')}
+                  tooltip={textTooltip(() => tr('Close · Esc'))}
                   onPress={inputAction(props.close, props.instance)}
                   style={{
                     ...controlStyle,
@@ -404,7 +395,7 @@ export function WorkspacePicker(props: {
                 <Button
                   disabled={!read.trail.length}
                   accessibilityLabel={tr('Parent workspace folder')}
-                  tooltip={shortcut(tr('Parent folder'), 'alt+up')}
+                  tooltip={textTooltip(() => shortcut(tr('Parent folder'), 'alt+up'))}
                   onPress={inputAction(back, { location: read.id })}
                   style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
                   hoverStyle={controlHoverStyle}
@@ -527,7 +518,7 @@ export function WorkspacePicker(props: {
                   <Button
                     disabled={!!error()}
                     accessibilityLabel={tr('Browse folder {name}', { name: entry().name })}
-                    tooltip={entry().path}
+                    tooltip={textTooltip(() => entry().path)}
                     selected={isSelected(entry())}
                     onPress={inputAction(browse, {
                       location: read.id,
@@ -566,7 +557,7 @@ export function WorkspacePicker(props: {
                 <Button
                   disabled={!currentDirectory(read) || !!error()}
                   accessibilityLabel={tr('Use this workspace folder')}
-                  tooltip={shortcut(tr('Use this folder'), 'mod+enter')}
+                  tooltip={textTooltip(() => shortcut(tr('Use this folder'), 'mod+enter'))}
                   onPress={
                     currentDirectory(read)
                       ? inputAction(choose, {

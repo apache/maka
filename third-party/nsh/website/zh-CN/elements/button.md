@@ -12,7 +12,7 @@ demo: el-button
 
 ```rust tabs
 use nsh_base::button;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn counter() -> impl IntoElement {
     let count = signal(0_u32);
@@ -96,7 +96,7 @@ button()
 
 ```rust tabs
 use nsh_base::button;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// A filled button, darker while pressed.
 fn primary(label: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {

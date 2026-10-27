@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 function App() {
   const result = signal("(none)");

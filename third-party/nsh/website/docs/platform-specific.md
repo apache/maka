@@ -1,6 +1,6 @@
 ---
 title: Platform-specific code
-description: Writing one app for phones, desktops and browsers - platform-only props in ios={{}} / android={{}} / desktop={{}} / web={{}}, the nsh/ios and nsh/android modules, platform.os and platform.select, and platform Tailwind variants.
+description: Writing one app for phones, desktops and browsers - platform-only props in ios={{}} / android={{}} / desktop={{}} / web={{}}, the nsh/mobile and nsh/desktop modules, platform.os and platform.select, and platform Tailwind variants.
 order: 17
 group: platforms
 ---
@@ -12,7 +12,7 @@ One NSH bundle runs on iOS, Android, macOS, Windows and Linux (and in Mac Cataly
 | Rust | TSX | For |
 |---|---|---|
 | [Builder methods (`.ripple(..)`, `.input_accessory(..)`)](#platform-only-props) | [`ios={{…}}`, `android={{…}}`, `desktop={{…}}`, `web={{…}}`](#platform-only-props) | Props only one platform has. |
-| [`toast`, `on_back_press`, `nsh_core::ui::desktop`](#platform-modules) | [`nsh/ios`, `nsh/android`, `nsh/desktop`](#platform-modules) | APIs only one platform has. |
+| [`on_back_press`, `nsh_core::element::desktop`](#platform-modules) | [`nsh/mobile`, `nsh/desktop`](#platform-modules) | APIs only mobile platforms or only desktops have. |
 | [`os()`, `idiom()`, `is_desktop()`](#platformos-and-platformselect) | [`platform.os`, `platform.select`](#platformos-and-platformselect) | Choosing values or code per platform. |
 | [`.when(os() == Os::Ios, ..)`](#platform-variants-in-tailwind) | [`ios:` / `android:` / `web:` classes](#platform-variants-in-tailwind) | Styles per platform. |
 
@@ -24,7 +24,7 @@ In Rust, a prop one platform has is a builder method like any other (`.ripple(..
 use nsh_base::dialog;
 use nsh_core::{
     Ripple,
-    ui::{AutoFill, Orientation, prelude::*},
+    element::{AutoFill, Orientation}, prelude::*,
 };
 
 view()
@@ -94,28 +94,21 @@ Something two or more platforms do is a top-level prop (in Rust a method of the 
 
 ## Platform modules
 
-In Rust, the APIs only one platform has are functions of `nsh_core::ui::prelude` (`toast`, `on_back_press`, `input_accessory_view`) and of `nsh_core::ui::desktop` (`set_title_bar`, `title_bar`, `close_window`); elsewhere they do nothing. In TSX, `nsh/ios` and `nsh/android` hold the APIs only one platform has, `nsh/desktop` those only desktops have. All can be imported on every platform, so one bundle runs everywhere: elsewhere their functions do nothing and their components render nothing. Each exports `isAvailable`, which is `true` only on its own platforms.
+In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`on_back_press`, `input_accessory_view`) and of `nsh_core::element::desktop` (`set_title_bar`, `title_bar`, `close_window`); elsewhere they do nothing. In TSX, `nsh/mobile` holds the APIs of iOS and Android (some of them one platform's), `nsh/desktop` those of the desktops. Both can be imported on every platform, so one bundle runs everywhere: on other platforms their functions return at once and their components take no room. Each exports `isAvailable`, which is `true` on its own platforms; `platform.os` tells them apart.
 
-### nsh/android
+### nsh/mobile
+
+`isAvailable` is `true` on iOS (with Mac Catalyst) and Android. Both platforms have [`TabBar`](../modules/nsh-mobile.md#tabbar), the system's tab bar.
+
+#### BackHandler (Android)
 
 | Rust | TSX | Description |
 |---|---|---|
-| `toast(message, ToastDuration::Short)` | `Toast.show(message, duration?)` | A toast at the bottom of the screen; `"short"` (default) or `"long"`. |
 | `on_back_press(listener)` | `BackHandler.onBackPress(listener)` | Listens to the back button after dialogs, before stacks; return `true` when handled. The listener goes with the component (or effect) that added it; in TSX the call also returns a function that stops it earlier. |
 | | `BackHandler.exitApp()` | Leaves the app. |
-| `os() == Os::Android` | `isAvailable` | `true` on Android. |
 
 ```rust tabs
-use nsh_base::alert_dialog;
-use nsh_core::ui::{Os, prelude::*};
-
-fn saved() {
-    if os() == Os::Android {
-        toast("Saved", ToastDuration::Short);
-    } else {
-        spawn(alert_dialog().title("Saved").action("OK").show());
-    }
-}
+use nsh_core::prelude::*;
 
 fn player() -> impl IntoElement {
     let full_screen = signal(false);
@@ -133,14 +126,7 @@ fn player() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { BackHandler, Toast } from "nsh/android";
-import { platform } from "nsh/device";
-import { AlertDialog } from "nsh/base";
-
-function saved() {
-  if (platform.os === "android") Toast.show("Saved");
-  else AlertDialog.show({ title: "Saved", actions: [{ label: "OK" }] });
-}
+import { BackHandler } from "nsh/mobile";
 
 function Player() {
   // Back leaves full screen before it leaves the page. The listener goes
@@ -156,18 +142,17 @@ function Player() {
 
 The back button is handled by the top dialog first, then the back listeners (most recent first), then the top navigation stack, and the app exits when nothing handled it. See [Navigation](./navigation.md#the-android-back-button).
 
-### nsh/ios
+#### InputAccessoryView (iOS)
 
 | Rust | TSX | Description |
 |---|---|---|
 | `input_accessory_view(native_id)` | `InputAccessoryView` | A bar over the keyboard of the inputs naming its native id (`.input_accessory(..)`, `ios={{ inputAccessoryViewID }}`). |
-| `os() == Os::Ios` | `isAvailable` | `true` on iOS and Mac Catalyst. |
 
 See [Forms and the keyboard](./forms-and-keyboard.md#a-bar-over-the-keyboard-ios-inputaccessoryview).
 
 ### nsh/desktop
 
-Rust apps draw their own title bars with `nsh_core::ui::desktop` ([Building with Rust](./rust.md#desktop-title-bars)). TSX's module:
+Rust apps draw their own title bars with `nsh_core::element::desktop` ([Building with Rust](./rust.md#desktop-title-bars)). TSX's module:
 
 | Export | Description |
 |---|---|
@@ -184,7 +169,7 @@ On both platforms the status bar belongs to the page or dialog on top, as in UIK
 
 ```rust tabs
 use nsh_base::nav_page;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn photo_viewer() -> impl IntoElement {
     nav_page()
@@ -211,10 +196,10 @@ In an app embedded in a native one, the host app's view controller decides the s
 
 ## platform.os and platform.select
 
-`os()` in Rust and the `platform` constant from `nsh/device` in TSX tell you where the app runs: `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web`, and `platform.os` `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"` (Mac Catalyst is `"ios"`, with `platform.catalyst`; the [macOS backend](./macos.md) is `"macos"`, the [Linux backend](./linux.md) `"linux"` and the [Windows backend](./windows.md) `"windows"`, and their elements apply their `desktop` props; [browsers](./web.md) are `"web"`, and apply `desktop` props too when the idiom is `"desktop"`). See [Device and environment](./device-and-environment.md#the-platform) for the version, the idiom and the rest.
+`os()` in Rust and the `platform` constant from `nsh` in TSX tell you where the app runs: `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web`, and `platform.os` `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"` (Mac Catalyst is `"ios"`, with `platform.catalyst`; the [macOS backend](./macos.md) is `"macos"`, the [Linux backend](./linux.md) `"linux"` and the [Windows backend](./windows.md) `"windows"`, and their elements apply their `desktop` props; [browsers](./web.md) are `"web"`, and apply `desktop` props too when the idiom is `"desktop"`). See [Device and environment](./device-and-environment.md#the-platform) for the version, the idiom and the rest.
 
 ```rust tabs
-use nsh_core::ui::{Os, prelude::*};
+use nsh_core::{element::Os, prelude::*};
 
 if os() == Os::Android {
     // …
@@ -222,7 +207,7 @@ if os() == Os::Android {
 ```
 
 ```tsx tabs
-import { platform } from "nsh/device";
+import { platform } from "nsh";
 
 if (platform.os === "android") {
   // …
@@ -236,7 +221,7 @@ In Rust a `match os()` chooses the value, with `is_desktop()` for the desktops. 
 Terminal surfaces report `platform.renderer === "terminal"` and `platform.isTerminal === true`, with the host OS in `platform.os`. They select `terminal`, then the host OS, then `native`, then `default`. Graphical desktop surfaces apply `desktop={{…}}` props.
 
 ```rust tabs
-use nsh_core::ui::{Os, prelude::*};
+use nsh_core::{element::Os, prelude::*};
 
 fn card() -> View {
     let card = view().rounded(px(12.0)).bg(white());
@@ -326,7 +311,7 @@ Before reaching for a platform check, consider whether the difference matters to
 
 ## Related
 
-- [`nsh/ios`](../modules/nsh-ios.md) and [`nsh/android`](../modules/nsh-android.md): the references.
-- [`nsh/device`](../modules/nsh-device.md): `platform`.
+- [`InputAccessoryView`](../modules/nsh-mobile.md#inputaccessoryview) and [`BackHandler`](../modules/nsh-mobile.md#backhandler): the references.
+- [`nsh`'s device API](../modules/nsh.md#device): `platform`.
 - [Native components](./native-components.md): using views your host app provides on each platform.
 - [Tailwind](./tailwind.md): every variant.

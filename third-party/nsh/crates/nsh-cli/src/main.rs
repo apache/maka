@@ -35,7 +35,7 @@ use std::{
 
 use anyhow::Context as _;
 use clap::{Args, Parser, Subcommand};
-use nsh_core::ui::{Registry, description::SetDescription};
+use nsh_core::element::{Registry, description::SetDescription};
 
 /// The UI sets this command line links: `nsh/base`.
 pub(crate) fn own_sets() -> &'static [Registry] {
@@ -55,7 +55,7 @@ pub(crate) fn ui_sets() -> Arc<[SetDescription]> {
     }
     let sets: Arc<[SetDescription]> = own_sets()
         .iter()
-        .flat_map(nsh_core::ui::Registry::sets)
+        .flat_map(nsh_core::element::Registry::sets)
         .map(SetDescription::from)
         .collect();
     *UI_SETS.write().unwrap_or_else(|e| e.into_inner()) = Some(sets.clone());
@@ -67,7 +67,7 @@ pub(crate) fn ui_sets() -> Arc<[SetDescription]> {
 pub(crate) fn set_app_sets(app: Vec<SetDescription>) {
     let sets: Arc<[SetDescription]> = own_sets()
         .iter()
-        .flat_map(nsh_core::ui::Registry::sets)
+        .flat_map(nsh_core::element::Registry::sets)
         .map(SetDescription::from)
         .chain(app)
         .collect();
@@ -178,6 +178,14 @@ enum Command {
         /// `nsh/host` calls of each app the tests open and sends its events.
         #[arg(long, value_name = "JS")]
         web_host: Option<PathBuf>,
+        /// With `--target macos`: the display the apps' windows open on,
+        /// centered: 1 is the primary display (the one with the menu bar),
+        /// 2 the next, and so on; the main one when there is no such
+        /// display. Default: the first display besides the primary one
+        /// (not a mirror of it), so that a run keeps off the screen in use;
+        /// the primary one when there is no other.
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        display: Option<u32>,
     },
     /// Type check an app with TypeScript's native compiler (TypeScript 7,
     /// downloaded once from the npm registry; no Node needed); an app with
@@ -276,6 +284,11 @@ enum Command {
         /// `windows`, `gpui`).
         #[arg(long = "window-size", value_name = "WIDTHxHEIGHT")]
         size: Option<String>,
+        /// The display the window opens on, centered: 1 is the primary
+        /// display (the one with the menu bar), 2 the next, and so on; the
+        /// main one when there is no such display (`--target macos` only).
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+        display: Option<u32>,
     },
     /// Create a signing key: `<name>.secret` (keep it offline for a root)
     /// and `<name>.pub` (what apps trust, for a root).
@@ -621,6 +634,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             target,
             browser,
             web_host,
+            display,
         } => test::test(
             &path,
             &entry,
@@ -631,6 +645,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             target,
             browser.as_deref(),
             web_host,
+            display.map(|n| n as usize),
         ),
         Command::Dev {
             entry,
@@ -713,6 +728,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
             device,
             name,
             size,
+            display,
         } => {
             no_limits_for_rust(&entry, limits)?;
             run::run(
@@ -725,6 +741,7 @@ fn dispatch(command: Command) -> anyhow::Result<()> {
                 run::HostWindow {
                     name: name.as_deref(),
                     size: size.as_deref(),
+                    display: display.map(|n| n as usize),
                 },
             )
         }

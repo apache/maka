@@ -3,7 +3,10 @@
 
 use std::rc::Rc;
 
-use nsh_core::ui::{JsHost, JsIn, JsOwned, PropError, Style, StyleRefinement, TsTypes, prelude::*};
+use nsh_core::{
+    element::{JsHost, JsIn, JsOwned, PropError, Style, StyleRefinement, TsTypes},
+    prelude::*,
+};
 
 /// Declares the parts once: the classes' object, the styles' object and
 /// [`Part`], each field documented alike.

@@ -188,8 +188,9 @@ pub async fn run(
         .await?;
     let _ = admitted.send(());
     let result = async {
+        let mut inspected_through = 0;
         if !prior_unknown {
-            prune::run(&inner, &input, &cancellation).await?;
+            prune::run(&inner, &input, &cancellation, &mut inspected_through).await?;
         }
         if let Some(work) = model_work {
             steps::run(
@@ -201,6 +202,7 @@ pub async fn run(
                 continuation_base,
                 handoff.as_ref().expect("model Runs own a handoff gate"),
                 prior_unknown,
+                inspected_through,
             )
             .await
             .map(|outcome| (outcome, None))

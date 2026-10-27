@@ -26,7 +26,7 @@ user-facing page is `website/elements/editor.md`; how each module works inside i
 | `movement.rs` | Graphemes, words and their parts (camelCase, snake_case), paragraphs, smart Home / End, vertical moves keeping their x, matching and enclosing brackets |
 | `commands.rs` | `Command`, `Editing`: every editing command at every selection, typing (auto-close, step-over, outdent), paste, copy, cut; `commands/selecting.rs` (the previous occurrence, splitting into lines) and `commands/transforms.rs` (sorting lines, case, trailing whitespace, block comments) |
 | `select.rs` | The selection history (`undoSelection`), expanding and shrinking selections, block selections, the scope of a search in the selection |
-| `keymap.rs` | The default key bindings as data, in `nsh/keymap`'s keystroke syntax, Apple's and the others' |
+| `keymap.rs` | The default key bindings as data, in `nsh`'s keystroke syntax, Apple's and the others' |
 | `language.rs` | `LanguageConfig`: per-language comments, brackets, auto-close pairs, word characters, indentation, tab size and the syntax hint; the lookup by name, alias, extension or file name |
 | `display.rs` | `DisplayMap`: tabs, measured widths, soft wrap and folds as display rows |
 | `fold.rs` | Where folds can start, by indentation |
@@ -90,8 +90,9 @@ hides as none. An edit lays out only the lines of its `LineSpan` and shifts the 
 ### Rendering and virtualization
 
 The view is a vertical `Scroll` of a row of the gutter and the text area (a horizontal `Scroll` without soft wrap).
-The scroll views hold only the hit layer: empty boxes of the rows' size that take the wheel, the scroll bars, touches,
-presses and the pointer's cursor. What shows is the paint layer, drawn over the scroll views (`pointer_events(None)`)
+The scroll views hold the hit layer: boxes of the rows' size that take the wheel, the scroll bars, touches,
+presses and the pointer's cursor. The active-line backgrounds are drawn in these boxes, below the scroll indicators.
+The text and foreground decorations are the paint layer, drawn over the scroll views (`pointer_events(None)`)
 and moved by the offsets they report (`top(-scroll_y)`, `left(-scroll_x)`): the rows the offset needs and the offset
 itself come in the same commit, so a scroll bar dragged across a long file or a paste of many lines never shows a
 frame where the platform moved the content before the rows it needs were made. The paint layer's views keep the hit
@@ -101,7 +102,7 @@ height before the viewport is known. That window (`window.rs`'s `RowWindow`, whi
 while it covers the rows in view with half a viewport to spare, so most scroll frames change no rows and commit
 nothing; the row list is a memo of the window, and `each` keeps the views of rows that stay in it. Each row is an absolutely placed view holding one `Text` whose spans are
 the row's runs of one token and one set of decorations (`State::row_content`). The rows' box draws, from back to
-front: the active lines' backgrounds, the rulers, indent guides, search matches, selections, the matching brackets,
+front: the rulers, indent guides, search matches, selections, the matching brackets,
 the rows, the whitespace marks, diagnostics' marks, the placeholder, the carets and the composition. Each layer is a
 `dynamic` over the revisions it depends on.
 
@@ -276,7 +277,7 @@ first time a language needs them. Without feature `highlight` the built-in langu
 highlighters still run.
 
 The app's highlighters and languages (`highlighter.rs`, `languages.rs`) are kept per engine, in a value of the
-surface (`nsh_core::ui::global`), never process-wide. `register_language` adds an `EditorLanguage` (a
+surface (`nsh_core::element::global`), never process-wide. `register_language` adds an `EditorLanguage` (a
 `LanguageConfig` built with `const` methods, so a `static`); `register_highlighter` binds a factory of
 `EditorHighlighter`s to a language name (resolved when registered: `"rs"` binds Rust). `languages::resolve` finds a
 name among the registered languages (latest first: name, alias, extension, then as a path) before the built-in table,
@@ -417,7 +418,7 @@ The sink carries `accessibilityLabel`; the rows are real texts, read in order.
 | `CompletionHighlighter` (`highlight_prefix`, `highlight_characters`, ...) | One subsequence match, in Rust, highlighted as `completionMatch` |
 | `lsp` providers (hover, definition, code actions) | `onHover` / `onHoverEnd`, `onTextPress`, `caretBounds` / `rangeBounds`: the app asks its language server and draws the popups |
 | `DefinitionProvider`, `HoverDefinition` (the Cmd-hover underline), `GoToDefinition`, `ToggleCodeActions` | `onDefinitionRequest` (`hover`, `press`, `key`) / `presentDefinitionLink` / `hideDefinitionLink`, the `definitionLink` part, `goToDefinition` (F12), `showCodeActions` (Mod+.) / `onCodeActionRequest`: the editor underlines, the app finds the definitions and shows the actions |
-| Key bindings as GPUI actions | `keymap.rs` data on `nsh/keymap`, bound while focused; `run(command)` |
+| Key bindings as GPUI actions | `keymap.rs` data on `nsh`'s `keymap`, bound while focused; `run(command)` |
 | `show_whitespaces`, `auto_grow(min, max)`, `scroll_beyond_last_line(rows)`, `cursor_surrounding_lines`, `AutoScroll` | `showWhitespaces`, `minRows` / `maxRows`, `scrollBeyondLastLine` (also `true` / `false`), `cursorSurroundingLines`; dragging scrolls past the edges the same way (`layout.rs`) |
 
 ## Limits

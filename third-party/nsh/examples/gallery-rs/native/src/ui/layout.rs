@@ -2,7 +2,7 @@
 //! `desktop`, `paneWidth` and `columnsFor`): wide windows show a sidebar of
 //! the demos and the open one beside it, in columns.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// The width of the desktop layout's sidebar.
 pub(crate) const SIDEBAR: f32 = 264.0;

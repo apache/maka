@@ -155,7 +155,11 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.background, fontWeight: '500' }}>
-            {owner.busy() ? tr('Saving…') : tr('Save connection')}
+            {owner.discovery() === 'fetching'
+              ? tr('Fetching models…')
+              : owner.busy()
+                ? tr('Saving…')
+                : tr('Save connection')}
           </Text>
         </Button>
         <If when={form().baseline}>
@@ -186,10 +190,31 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
                 focusStyle={controlFocusStyle}
                 disabledStyle={controlDisabledStyle}
               >
-                <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Fetch models')}</Text>
+                <Text style={{ ...captionTextStyle, color: C.accent }}>
+                  {owner.discovery() === 'fetching'
+                    ? tr('Fetching models…')
+                    : owner.discovery() === 'failed'
+                      ? tr('Retry fetching models')
+                      : tr('Fetch models')}
+                </Text>
               </Button>
             </If>
           </View>
+          <If when={owner.discovery() === 'fetching'}>
+            <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Fetching models…')}</Text>
+          </If>
+          <If when={owner.discovery() === 'failed'}>
+            <Text style={{ ...bodyTextStyle, color: C.danger }}>
+              {tr(
+                'Model fetch failed. The connection remains saved. Retry fetching models or add a model manually.',
+              )}
+            </Text>
+          </If>
+          <If when={owner.discovery() === 'ready'}>
+            <Text style={{ ...captionTextStyle, color: C.muted }}>
+              {tr('Models fetched and enabled.')}
+            </Text>
+          </If>
           <If when={!models().length}>
             <Text style={{ ...bodyTextStyle, color: C.muted }}>
               {tr('Fetch the provider’s catalog or add its exact model ID.')}

@@ -4,6 +4,7 @@ use super::*;
 use crate::{
     Color, EventKind, IMAGE_SCALES, ImageScales, StyleValue,
     animation::{AnimationOp, AnimationProp},
+    element::{input, modal, screen, stack},
     geometry::{point, px},
 };
 
@@ -89,7 +90,7 @@ impl TextEngine for FakeEngine {
 /// calls' results as the native events JS once heard (`$children`,
 /// `$return` with `{ c, v }` or `{ c, e }`), their data as JSON.
 fn js_events<M: TextEngine>(c: &mut Core<M>) -> Vec<(NodeId, EventKind, EventPayload)> {
-    use crate::ui::{JsEvent, json_host};
+    use crate::element::{JsEvent, json_host};
     let mut events = Vec::new();
     c.take_events(&mut events);
     let native = |id, name: &str, data| {
@@ -147,8 +148,11 @@ fn js_events<M: TextEngine>(c: &mut Core<M>) -> Vec<(NodeId, EventKind, EventPay
 
 /// Prop `name` of a Rust component of props `P`, from JS value `value`
 /// (converted as JS's assignment does).
-fn rust_prop<P: crate::ui::Props>(name: &'static str, value: Option<crate::JsonValue>) -> Prop {
-    let specs = P::spec(&mut crate::ui::TsTypes::default());
+fn rust_prop<P: crate::element::Props>(
+    name: &'static str,
+    value: Option<crate::JsonValue>,
+) -> Prop {
+    let specs = P::spec(&mut crate::element::TsTypes::default());
     let decode = specs
         .iter()
         .find(|p| p.name == name)
@@ -156,13 +160,13 @@ fn rust_prop<P: crate::ui::Props>(name: &'static str, value: Option<crate::JsonV
         .expect("a value prop");
     Prop::RustProp(
         name,
-        value.map(|v| crate::ui::json_host::decode(decode, v).expect("the value converts")),
+        value.map(|v| crate::element::json_host::decode(decode, v).expect("the value converts")),
     )
 }
 
 #[test]
 fn calls_into_rust_settle_their_promises_whatever_happens() {
-    use crate::ui::{RustCall, RustOp, ToJs};
+    use crate::element::{RustCall, RustOp, ToJs};
     let op = |call, run| Op::Rust(RustOp { call, run });
     let mut c = core();
     // Run: its value.
@@ -217,7 +221,7 @@ fn calls_into_rust_settle_their_promises_whatever_happens() {
 
 #[test]
 fn values_of_calls_into_rust_that_panic_as_they_drop_stay_in_the_core() {
-    use crate::ui::{JsHost, JsOwned, JsValue, PropError, RustCall, RustOp, ToJs, TsTypes};
+    use crate::element::{JsHost, JsOwned, JsValue, PropError, RustCall, RustOp, ToJs, TsTypes};
     /// Panics as it drops.
     struct Grenade;
     impl Drop for Grenade {
@@ -229,7 +233,7 @@ fn values_of_calls_into_rust_that_panic_as_they_drop_stay_in_the_core() {
         fn ts_type(_: &mut TsTypes) -> String {
             "null".into()
         }
-        fn from_js(_: crate::ui::JsIn<'_>) -> Result<Self, PropError> {
+        fn from_js(_: crate::element::JsIn<'_>) -> Result<Self, PropError> {
             Ok(Grenade)
         }
         fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
@@ -270,7 +274,7 @@ fn values_of_calls_into_rust_that_panic_as_they_drop_stay_in_the_core() {
 
 fn core() -> Core<FakeEngine> {
     let mut c = Core::new(FakeEngine::default(), size_pt(320.0, 480.0));
-    c.set_tokens(crate::ui::tokens::sample());
+    c.set_tokens(crate::element::tokens::sample());
     c
 }
 
@@ -335,8 +339,8 @@ fn pan_permission_filters_native_values_and_events_without_losing_them() {
 /// The tokens of a theme file of the tests' own format, `{ "key":
 /// "#rrggbb", … }` over the sample's (`None`: the sample's): the core reads
 /// `uiTheme` with what a UI set brings.
-fn test_tokens(json: Option<&str>) -> Result<crate::ui::Tokens, String> {
-    let mut tokens = crate::ui::tokens::sample();
+fn test_tokens(json: Option<&str>) -> Result<crate::element::Tokens, String> {
+    let mut tokens = crate::element::tokens::sample();
     let Some(json) = json else {
         return Ok(tokens);
     };
@@ -349,8 +353,8 @@ fn test_tokens(json: Option<&str>) -> Result<crate::ui::Tokens, String> {
 }
 
 /// Tokens with just `colors`.
-fn tokens_with(colors: &[(&str, crate::ui::AdaptiveColor)]) -> crate::ui::Tokens {
-    let mut tokens = crate::ui::Tokens::default();
+fn tokens_with(colors: &[(&str, crate::element::AdaptiveColor)]) -> crate::element::Tokens {
+    let mut tokens = crate::element::Tokens::default();
     for (key, color) in colors {
         tokens.set_color(key, *color);
     }
@@ -358,8 +362,8 @@ fn tokens_with(colors: &[(&str, crate::ui::AdaptiveColor)]) -> crate::ui::Tokens
 }
 
 /// Color token `key` of the tokens apps have.
-fn token(key: &str) -> crate::ui::AdaptiveColor {
-    crate::ui::tokens::sample().color(key).unwrap()
+fn token(key: &str) -> crate::element::AdaptiveColor {
+    crate::element::tokens::sample().color(key).unwrap()
 }
 
 fn style(props: &[(&str, StyleValue<'_>)]) -> Box<Style> {
@@ -6947,14 +6951,15 @@ mod components {
     use super::*;
     use crate::{
         Prop,
-        ui::{Children, Event, Props, Registry, Slot, prelude::*},
+        element::{Children, Event, Props, Registry, Slot},
+        prelude::*,
     };
 
     /// Counts taps; shows `label` and the count; holds its JSX children.
     #[derive(Clone, PartialEq, Props)]
     struct TallyProps {
         #[prop(default = "Taps".into())]
-        label: crate::ui::Prop<SharedString>,
+        label: crate::element::Prop<SharedString>,
         children: Children,
     }
 
@@ -7000,10 +7005,10 @@ mod components {
 
     #[derive(Clone, Copy)]
     struct KnobApi {
-        at: crate::ui::Signal<i32>,
+        at: crate::element::Signal<i32>,
     }
 
-    #[crate::ui::methods]
+    #[crate::element::methods]
     impl KnobApi {
         /// Turns it by `by`; where it is.
         pub(crate) fn turn(&self, by: i32) -> i32 {
@@ -7019,10 +7024,10 @@ mod components {
 
     impl Component for Knob {
         type Props = KnobProps;
-        type Event = crate::ui::NoEvent;
-        const METHODS: crate::ui::Methods = crate::ui::Methods::of::<KnobApi>();
+        type Event = crate::element::NoEvent;
+        const METHODS: crate::element::Methods = crate::element::Methods::of::<KnobApi>();
 
-        fn view(_: KnobProps, cx: Scope<crate::ui::NoEvent>) -> impl IntoElement {
+        fn view(_: KnobProps, cx: Scope<crate::element::NoEvent>) -> impl IntoElement {
             let at = signal(0);
             cx.methods(KnobApi { at });
             text(move || format!("at {}", at.get()))
@@ -7031,7 +7036,7 @@ mod components {
 
     #[test]
     fn methods_take_their_arguments_typed_and_answer_in_the_events() {
-        use crate::ui::{RustCall, RustOp, json_host::JsonHost};
+        use crate::element::{RustCall, RustOp, json_host::JsonHost};
         let mut c = core();
         let mut registry = Registry::new();
         registry.register::<Knob>();
@@ -7055,7 +7060,7 @@ mod components {
             ],
         );
         assert_eq!(texts(&c.commit().unwrap()), ["at 0"]);
-        let methods = <KnobApi as crate::ui::Api>::METHODS;
+        let methods = <KnobApi as crate::element::Api>::METHODS;
         // Converted in the JS call: a value of another type fails there.
         let call = |method: usize, args| {
             let host = JsonHost::with_args(args);
@@ -7109,14 +7114,14 @@ mod components {
     #[derive(Clone, PartialEq, Props)]
     struct EchoProps {
         #[prop(default)]
-        label: crate::ui::Prop<SharedString>,
+        label: crate::element::Prop<SharedString>,
     }
 
     impl Component for Echo {
         type Props = EchoProps;
-        type Event = crate::ui::NoEvent;
+        type Event = crate::element::NoEvent;
 
-        fn view(props: EchoProps, _: Scope<crate::ui::NoEvent>) -> impl IntoElement {
+        fn view(props: EchoProps, _: Scope<crate::element::NoEvent>) -> impl IntoElement {
             text(move || {
                 ECHOES.with(|e| e.set(e.get() + 1));
                 props.label.get()
@@ -7176,7 +7181,7 @@ mod components {
     #[test]
     fn a_rust_root_mounts_renders_and_handles_events() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Tally>(|| TallyProps {
+        c.mount_root(&crate::element::Root::new::<Tally>(|| TallyProps {
             label: "Root".into(),
             children: Children::default(),
         }));
@@ -7294,19 +7299,19 @@ mod components {
         // A value of the wrong type does not convert (JS warns and sends
         // nothing); one decoded for another type is refused (and logged),
         // nothing changes.
-        let specs = <TallyProps as Props>::spec(&mut crate::ui::TsTypes::default());
+        let specs = <TallyProps as Props>::spec(&mut crate::element::TsTypes::default());
         let decode = specs
             .iter()
             .find(|p| p.name == "label")
             .unwrap()
             .decode
             .unwrap();
-        assert!(crate::ui::json_host::decode(decode, json!(3)).is_err());
+        assert!(crate::element::json_host::decode(decode, json!(3)).is_err());
         apply(
             &mut c,
             vec![Op::SetProp {
                 id: 2,
-                prop: Prop::RustProp("label", Some(crate::ui::AnyValue::new(3.0f64))),
+                prop: Prop::RustProp("label", Some(crate::element::AnyValue::new(3.0f64))),
             }],
         );
         assert!(c.commit().is_none());
@@ -7342,7 +7347,7 @@ mod components {
     /// A header slot above its children.
     #[derive(Clone, Copy, PartialEq, Props)]
     struct CardProps {
-        header: crate::ui::Prop<Option<Slot>>,
+        header: crate::element::Prop<Option<Slot>>,
         children: Children,
     }
 
@@ -7360,7 +7365,7 @@ mod components {
     /// Children above a footer slot.
     #[derive(Clone, Copy, PartialEq, Props)]
     struct PanelProps {
-        footer: crate::ui::Prop<Option<Slot>>,
+        footer: crate::element::Prop<Option<Slot>>,
         children: Children,
     }
 
@@ -7637,8 +7642,9 @@ mod components {
             .child(when(shown, || view().h(px(10.0))))
     }
 
-    /// What a view gives a slot's node (its handlers) stays while the node
-    /// is its slot, also once a region of the view runs again.
+    /// What a view gives a slot (its handlers) stays while the node is its
+    /// slot, also once a region of the view runs again. They are on the
+    /// app's element in the slot's node (node 6, in holder 4).
     #[test]
     fn a_slots_handlers_outlive_the_views_regions() {
         let mut c = mount_host::<Toggler>();
@@ -7646,7 +7652,7 @@ mod components {
         c.commit().unwrap();
         assert_eq!(child_ids(&c, 2), [4]);
         let press = |c: &mut Core<FakeEngine>| {
-            c.component_event(4, EventKind::Press, &EventPayload::None);
+            c.component_event(6, EventKind::Press, &EventPayload::None);
             let _ = c.commit();
         };
         press(&mut c);
@@ -7656,6 +7662,440 @@ mod components {
         assert_eq!(child_ids(&c, 2), [4], "the note is gone");
         press(&mut c);
         assert_eq!(child_ids(&c, 2).len(), 2, "and shows again");
+    }
+
+    /// A trigger the app passes, made a disclosure button: its role, focus,
+    /// `disabled` and expanded state, and presses that flip it; the slot's
+    /// node padded.
+    #[derive(Clone, Copy, PartialEq, Props)]
+    struct DisclosureProps {
+        #[prop(default)]
+        disabled: crate::element::Prop<bool>,
+        trigger: crate::element::Prop<Option<Slot>>,
+    }
+
+    #[component]
+    fn Disclosure(props: DisclosureProps) -> impl IntoElement {
+        let open = signal(false);
+        view().child(props.trigger.place(move |t| {
+            t.px_2()
+                .role(crate::AccessibilityRole::Button)
+                .focusable(true)
+                .disabled(props.disabled)
+                .accessibility_state(move || crate::AccessibilityState {
+                    expanded: Some(open.get()),
+                    ..crate::AccessibilityState::default()
+                })
+                .on_press(move |_: &()| open.update(|o| *o = !*o))
+        }))
+    }
+
+    /// Fills host 2's trigger: holder 4 holding the app's element 6 (with
+    /// classes, a label, a selected state and a press listener of JS's), as
+    /// the JS face does (the holder's content first).
+    fn fill_trigger() -> Vec<Op> {
+        use crate::{AccessibilityProp as A, AccessibilityState};
+        vec![
+            Op::Create {
+                id: 4,
+                tag: Tag::View,
+            },
+            Op::SetProp {
+                id: 4,
+                prop: Prop::ComponentSlot("trigger".into()),
+            },
+            Op::Create {
+                id: 6,
+                tag: Tag::View,
+            },
+            class_op(
+                6,
+                "w-[40px] h-[20px] bg-white active:bg-black disabled:opacity-50",
+            ),
+            Op::SetProp {
+                id: 6,
+                prop: Prop::Accessibility(A::Label(Some("Open".into()))),
+            },
+            Op::SetProp {
+                id: 6,
+                prop: Prop::Accessibility(A::State(AccessibilityState {
+                    selected: true,
+                    ..AccessibilityState::default()
+                })),
+            },
+            Op::Listen {
+                id: 6,
+                event: EventKind::Press,
+                enabled: true,
+            },
+            Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            },
+            Op::Insert {
+                parent: 2,
+                child: 4,
+                before: None,
+            },
+        ]
+    }
+
+    /// The core's view props of node `id`.
+    fn props_of(c: &Core<FakeEngine>, id: NodeId) -> crate::ViewProps {
+        let key = c.key(id).unwrap();
+        c.nodes[key as usize]
+            .props
+            .as_deref()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The events node `id` listens to.
+    fn events_of(c: &Core<FakeEngine>, id: NodeId) -> EventMask {
+        c.nodes[c.key(id).unwrap() as usize].events
+    }
+
+    /// In a TSX app a slot's node is JS's holder of the app's JSX: the
+    /// slot's styles stay on it, and its props, listeners and bindings go
+    /// to the app's one element in it, combined with the app's own; its
+    /// bindings stay live (they were read once: an expanded state that
+    /// never followed the trigger's presses).
+    #[test]
+    fn a_slots_props_go_live_to_the_apps_element() {
+        use crate::AccessibilityRole;
+        let mut c = mount_host::<Disclosure>();
+        apply(&mut c, fill_trigger());
+        c.commit().unwrap();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(trigger.accessibility.state.expanded, Some(false));
+        assert!(
+            trigger.accessibility.state.selected,
+            "the app's state stays"
+        );
+        assert_eq!(trigger.accessibility.label.as_deref(), Some("Open"));
+        assert_eq!(trigger.focusable, Some(true));
+        assert!(events_of(&c, 6).contains(EventKind::Press));
+        // The holder: the padding, nothing else.
+        let holder = props_of(&c, 4);
+        assert_eq!(holder.accessibility.role, AccessibilityRole::None);
+        assert_eq!(holder.accessibility.state.expanded, None);
+        assert_eq!(holder.focusable, None);
+        assert!(!events_of(&c, 4).contains(EventKind::Press));
+        let frame = c.nodes[c.key(6).unwrap() as usize].frame;
+        assert_eq!((frame.origin.x, frame.size.width), (px(8.0), px(40.0)));
+
+        // A press on the app's element runs the component's listener (and
+        // goes on to JS's: an id of JS's), and the expanded state follows.
+        let press = |c: &mut Core<FakeEngine>| {
+            assert!(!c.component_event(6, EventKind::Press, &EventPayload::None));
+            c.commit();
+        };
+        press(&mut c);
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+        assert!(props_of(&c, 6).accessibility.state.selected);
+        press(&mut c);
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(false));
+        press(&mut c);
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+    }
+
+    /// On the app's element the component's props win and the app's fill
+    /// in the rest; `disabled` holds when either sets it, and the element's
+    /// own `disabled:` and `active:` classes follow it; both sides'
+    /// listeners stay. When the element leaves the slot, the app's own
+    /// props and listeners are back on it and the holder takes the
+    /// component's.
+    #[test]
+    fn the_apps_element_combines_its_props_with_the_slots() {
+        use crate::{AccessibilityProp as A, AccessibilityRole, AccessibilityState};
+        let mut c = mount_host::<Disclosure>();
+        apply(&mut c, fill_trigger());
+        c.commit().unwrap();
+
+        // JS changes the element: its label shows, its role and listener
+        // join the component's (which win), its state combines.
+        apply(
+            &mut c,
+            vec![
+                Op::SetProp {
+                    id: 6,
+                    prop: Prop::Accessibility(A::Label(Some("Close".into()))),
+                },
+                Op::SetProp {
+                    id: 6,
+                    prop: Prop::Accessibility(A::Role(AccessibilityRole::Link)),
+                },
+                Op::SetProp {
+                    id: 6,
+                    prop: Prop::Accessibility(A::State(AccessibilityState {
+                        selected: true,
+                        expanded: Some(true),
+                        ..AccessibilityState::default()
+                    })),
+                },
+                Op::Listen {
+                    id: 6,
+                    event: EventKind::Press,
+                    enabled: false,
+                },
+            ],
+        );
+        c.commit();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.label.as_deref(), Some("Close"));
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(trigger.accessibility.state.expanded, Some(false));
+        assert!(trigger.accessibility.state.selected);
+        assert!(
+            events_of(&c, 6).contains(EventKind::Press),
+            "the component still listens"
+        );
+
+        // Pressed: the element's own `active:`.
+        c.set_states(6, crate::tailwind::state::PRESSED);
+        let batch = c.commit().unwrap();
+        assert_eq!(
+            view_style_of(&batch, 6).unwrap().background_color,
+            Color(0x0000_00ff)
+        );
+        c.set_states(6, 0);
+        c.commit();
+
+        // The component disables it: its `disabled:` classes, no presses
+        // mounted, disabled for screen readers.
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 2,
+                prop: rust_prop::<DisclosureProps>("disabled", Some(json!(true))),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        assert_eq!(view_style_of(&batch, 6).unwrap().opacity, 0.5);
+        assert!(batch.items.iter().any(|i| matches!(
+            i,
+            MountItem::Events { id: 6, events } if !events.contains(EventKind::Press)
+        )));
+        assert!(props_of(&c, 6).accessibility.state.disabled);
+        apply(
+            &mut c,
+            vec![Op::SetProp {
+                id: 2,
+                prop: rust_prop::<DisclosureProps>("disabled", Some(json!(false))),
+            }],
+        );
+        let batch = c.commit().unwrap();
+        assert_eq!(view_style_of(&batch, 6).unwrap().opacity, 1.0);
+
+        // Another element joins it: the slot's node holds two, so the
+        // holder takes the component's part, and the app's element has its
+        // own props and listeners back.
+        apply(
+            &mut c,
+            vec![
+                Op::Create {
+                    id: 8,
+                    tag: Tag::View,
+                },
+                Op::Insert {
+                    parent: 4,
+                    child: 8,
+                    before: None,
+                },
+            ],
+        );
+        c.commit();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Link);
+        assert_eq!(trigger.accessibility.state.expanded, Some(true));
+        assert_eq!(trigger.focusable, None);
+        assert!(!events_of(&c, 6).contains(EventKind::Press));
+        let holder = props_of(&c, 4);
+        assert_eq!(holder.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(holder.focusable, Some(true));
+        assert!(events_of(&c, 4).contains(EventKind::Press));
+        assert!(!c.component_event(6, EventKind::Press, &EventPayload::None));
+        c.component_event(4, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 4).accessibility.state.expanded, Some(true));
+
+        // It leaves: the component's part is on the app's element again,
+        // live.
+        apply(
+            &mut c,
+            vec![Op::Remove {
+                parent: 4,
+                child: 8,
+            }],
+        );
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+        assert_eq!(
+            props_of(&c, 6).accessibility.role,
+            AccessibilityRole::Button
+        );
+        assert_eq!(props_of(&c, 4).accessibility.role, AccessibilityRole::None);
+        assert!(!events_of(&c, 4).contains(EventKind::Press));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(false));
+
+        // The app empties the slot: its element keeps its own props alone.
+        apply(
+            &mut c,
+            vec![Op::Remove {
+                parent: 4,
+                child: 6,
+            }],
+        );
+        c.commit();
+        let trigger = props_of(&c, 6);
+        assert_eq!(trigger.accessibility.role, AccessibilityRole::Link);
+        assert_eq!(trigger.accessibility.state.expanded, Some(true));
+        assert_eq!(trigger.focusable, None);
+        assert!(!events_of(&c, 6).contains(EventKind::Press));
+        assert_eq!(props_of(&c, 4).accessibility.role, AccessibilityRole::None);
+        assert!(!c.component_event(6, EventKind::Press, &EventPayload::None));
+    }
+
+    /// Reports the actual node named by its trigger's element ref when pressed.
+    #[component]
+    fn ListSlotProbe(props: DisclosureProps) -> impl IntoElement {
+        let anchor = element_ref();
+        let observed = signal(String::new());
+        view()
+            .child(props.trigger.place(move |trigger| {
+                trigger
+                    .px_2()
+                    .role(crate::AccessibilityRole::Button)
+                    .focusable(true)
+                    .disabled(props.disabled)
+                    .element_ref(&anchor)
+                    .on_press(move |_: &()| {
+                        observed.set(format!("anchor {:?}", anchor.node()));
+                    })
+            }))
+            .child(text(move || observed.get()))
+    }
+
+    #[test]
+    fn a_sole_raw_list_keeps_slot_props_listener_and_ref_on_the_holder() {
+        use crate::{AccessibilityProp, AccessibilityRole};
+
+        let mut c = mount_host::<ListSlotProbe>();
+        // The actual JS shape: a View componentSlot holder, containing a
+        // raw List node, not a Rust component host or an Items-slot holder.
+        let mut ops = fill_trigger();
+        for op in &mut ops {
+            if let Op::Create { id: 6, tag } = op {
+                *tag = Tag::List;
+            }
+        }
+        ops.extend([
+            Op::SetProp {
+                id: 6,
+                prop: Prop::Accessibility(AccessibilityProp::Role(AccessibilityRole::List)),
+            },
+            Op::Listen {
+                id: 6,
+                event: EventKind::Press,
+                enabled: false,
+            },
+        ]);
+        apply(&mut c, ops);
+        c.commit().unwrap();
+
+        let holder = props_of(&c, 4);
+        assert_eq!(holder.accessibility.role, AccessibilityRole::Button);
+        assert_eq!(holder.focusable, Some(true));
+        assert!(events_of(&c, 4).contains_listener(EventKind::Press));
+        let list = props_of(&c, 6);
+        assert_eq!(list.accessibility.role, AccessibilityRole::List);
+        assert_eq!(list.accessibility.label.as_deref(), Some("Open"));
+        assert_eq!(list.focusable, None);
+        assert!(!events_of(&c, 6).contains_listener(EventKind::Press));
+        let frame = c.nodes[c.key(6).unwrap() as usize].frame;
+        assert_eq!((frame.origin.x, frame.size.width), (px(8.0), px(40.0)));
+
+        // The holder still owns its padded hit area, and the component's
+        // real ref resolves to that same holder, not the List scroll view.
+        c.component_event(4, EventKind::Press, &EventPayload::None);
+        let pressed = c.commit().expect("the holder's listener ran");
+        assert_eq!(texts(&pressed), ["anchor Some(4)"]);
+    }
+
+    #[test]
+    fn adopted_slot_ownership_does_not_follow_released_or_reused_node_ids() {
+        use crate::AccessibilityRole;
+
+        let mut c = mount_host::<Disclosure>();
+        apply(&mut c, fill_trigger());
+        c.commit().unwrap();
+        assert_eq!(c.components.adopted.get(&6), Some(&4));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(true));
+
+        // Release without a preceding Remove follows the same production
+        // interception as JS teardown. A fresh allocation of the id outside
+        // the slot must not inherit the old component handler or props.
+        apply(
+            &mut c,
+            vec![
+                Op::Release { id: 6 },
+                Op::Create {
+                    id: 6,
+                    tag: Tag::View,
+                },
+                Op::Insert {
+                    parent: ROOT_ID,
+                    child: 6,
+                    before: None,
+                },
+            ],
+        );
+        c.commit();
+        assert!(!c.components.adopted.contains_key(&6));
+        assert_eq!(props_of(&c, 6).accessibility.role, AccessibilityRole::None);
+        assert!(!events_of(&c, 6).contains_listener(EventKind::Press));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 4).accessibility.state.expanded, Some(true));
+
+        // The replacement is adopted only after a real insertion into this
+        // holder. Its listener toggles the existing component exactly once.
+        apply(
+            &mut c,
+            vec![Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            }],
+        );
+        c.commit();
+        assert_eq!(c.components.adopted.get(&6), Some(&4));
+        assert!(events_of(&c, 6).contains_listener(EventKind::Press));
+        c.component_event(6, EventKind::Press, &EventPayload::None);
+        c.commit();
+        assert_eq!(props_of(&c, 6).accessibility.state.expanded, Some(false));
+
+        apply(
+            &mut c,
+            vec![
+                Op::Remove {
+                    parent: ROOT_ID,
+                    child: 2,
+                },
+                Op::Release { id: 2 },
+            ],
+        );
+        c.commit();
+        assert!(!c.components.adopted.contains_key(&6));
+        assert!(!c.components.slot_targets.contains_key(&4));
+        assert_eq!(props_of(&c, 6).accessibility.role, AccessibilityRole::None);
+        assert!(!events_of(&c, 6).contains_listener(EventKind::Press));
     }
 
     #[test]
@@ -7960,9 +8400,9 @@ mod components {
     #[derive(Clone, PartialEq, Props)]
     struct PillProps {
         #[prop(default)]
-        selected: crate::ui::Prop<bool>,
+        selected: crate::element::Prop<bool>,
         #[prop(default)]
-        selected_style: crate::ui::Prop<crate::ui::Style>,
+        selected_style: crate::element::Prop<crate::element::Style>,
     }
 
     #[component]
@@ -8197,7 +8637,7 @@ mod components {
             }],
         );
         view_with_classes(&mut c, 2, "w-10 h-10 bg-chart-up");
-        c.set_host_tokens(Some(crate::ui::tokens::sample()));
+        c.set_host_tokens(Some(crate::element::tokens::sample()));
         let batch = c.commit().unwrap();
         assert_eq!(
             view_style_of(&batch, 2).unwrap().background_color,
@@ -8357,7 +8797,7 @@ mod components {
     #[derive(Clone, Copy, PartialEq, Props)]
     struct ClockProps {
         #[prop(default)]
-        start: crate::ui::Prop<u32>,
+        start: crate::element::Prop<u32>,
     }
 
     #[derive(Event)]
@@ -8425,7 +8865,7 @@ mod components {
         let id = signal(Some(1u32));
         let profile = resource(
             move || id.get(),
-            |id, info: crate::ui::ResourceInfo| async move {
+            |id, info: crate::element::ResourceInfo| async move {
                 // The first load is slow: the second overtakes it.
                 let ms = if id == 1 { 80 } else { 5 };
                 timer(std::time::Duration::from_millis(ms)).await;
@@ -8589,11 +9029,11 @@ mod components {
 
         // What a binding read of the environment updates it; the rest does
         // not.
-        let env = crate::ui::Environment {
+        let env = crate::element::Environment {
             window: size_pt(390.0, 844.0),
             ..Default::default()
         };
-        c.set_environment(crate::ui::Environment {
+        c.set_environment(crate::element::Environment {
             keyboard_height: px(300.0),
             ..env
         });
@@ -9075,7 +9515,7 @@ mod components {
     #[component]
     fn Outlived() -> impl IntoElement {
         let (owner, (fade, field)) =
-            crate::ui::create_root(|| (animated_value(1.0), element_ref()));
+            crate::element::create_root(|| (animated_value(1.0), element_ref()));
         let _ = fade.timing(0.0, 300.0, Easing::Linear);
         let shown = signal(String::new());
         view()
@@ -9430,7 +9870,7 @@ mod components {
     #[test]
     fn virtual_lists_drop_rows_that_are_gone() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Clearable>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Clearable>(|| ()));
         let batch = c.commit().unwrap();
         assert!(
             texts(&batch).contains(&"row 2".to_owned()),
@@ -9488,7 +9928,7 @@ mod components {
     #[test]
     fn virtual_lists_follow_their_end() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Chat>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Chat>(|| ()));
         let batch = c.commit().unwrap();
         let created = |kind: ViewKind| {
             batch.items.iter().find_map(|i| match i {
@@ -9539,7 +9979,7 @@ mod components {
     #[derive(Clone, Copy, PartialEq, Props)]
     struct DrawerProps {
         #[prop(default)]
-        open: crate::ui::Prop<bool>,
+        open: crate::element::Prop<bool>,
         #[prop(lazy)]
         children: Children,
     }
@@ -9575,7 +10015,7 @@ mod components {
     #[test]
     fn lazy_children_a_component_passes_are_made_while_placed() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Shelf>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Shelf>(|| ()));
         let batch = c.commit().unwrap();
         let button = batch
             .items
@@ -9623,7 +10063,7 @@ mod components {
     #[test]
     fn components_read_the_clipboard() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Paster>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Paster>(|| ()));
         let batch = c.commit().unwrap();
         let button = batch
             .items
@@ -9669,7 +10109,7 @@ mod components {
         let clipboard = std::sync::Arc::new(MemoryClipboard::new(Some("hello".into())));
         let mut c = core();
         c.set_clipboard(Some(clipboard.clone()));
-        c.mount_root(&crate::ui::Root::new::<Paster>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Paster>(|| ()));
         let batch = c.commit().unwrap();
         let button = batch
             .items
@@ -9721,7 +10161,7 @@ mod components {
     #[test]
     fn components_read_images_and_files_from_the_clipboard() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<ImagePaster>(|| ()));
+        c.mount_root(&crate::element::Root::new::<ImagePaster>(|| ()));
         let batch = c.commit().unwrap();
         let button = batch
             .items
@@ -9794,7 +10234,7 @@ mod components {
             declared: crate::access::Capabilities::from_json(&serde_json::json!({})).unwrap(),
             granted: None,
         }));
-        c.mount_root(&crate::ui::Root::new::<ImagePaster>(|| ()));
+        c.mount_root(&crate::element::Root::new::<ImagePaster>(|| ()));
         let batch = c.commit().unwrap();
         let button = batch
             .items
@@ -9851,7 +10291,7 @@ mod components {
     }
 
     fn press_picker(c: &mut Core<FakeEngine>) -> Vec<MountItem> {
-        c.mount_root(&crate::ui::Root::new::<PhotoPicker>(|| ()));
+        c.mount_root(&crate::element::Root::new::<PhotoPicker>(|| ()));
         let batch = c.commit().unwrap();
         let button = batch
             .items
@@ -9950,7 +10390,7 @@ mod components {
     /// again.
     #[component]
     fn Boundary(props: WithChildren) -> impl IntoElement {
-        let retry = stored(None::<crate::ui::Reset>);
+        let retry = stored(None::<crate::element::Reset>);
         view()
             .on_press(move |_: &()| {
                 if let Some(reset) = retry.replace(None) {
@@ -9970,7 +10410,7 @@ mod components {
     #[derive(Clone, Copy, PartialEq, Props)]
     struct FaultyProps {
         #[prop(default)]
-        explode: crate::ui::Prop<bool>,
+        explode: crate::element::Prop<bool>,
     }
 
     #[component]
@@ -10073,7 +10513,7 @@ mod components {
     #[test]
     fn rust_texts_nest_spans_links_and_inline_views() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Sentence>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Sentence>(|| ()));
         let batch = c.commit().unwrap();
         let text = |batch: &MountBatch| {
             batch.items.iter().find_map(|i| match i {
@@ -10166,7 +10606,8 @@ mod touch {
     use super::*;
     use crate::{
         TouchEvent, TouchPhase, TouchPoint,
-        ui::{ClaimRequest, ResponderEvent, TouchClaim, prelude::*},
+        element::{ClaimRequest, ResponderEvent, TouchClaim},
+        prelude::*,
     };
 
     #[derive(Clone, PartialEq, Props)]
@@ -10252,7 +10693,7 @@ mod touch {
     /// listen to touches).
     fn mount_pad(keep: bool) -> (Core<FakeEngine>, NodeId, NodeId) {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Pad>(move || PadProps { keep }));
+        c.mount_root(&crate::element::Root::new::<Pad>(move || PadProps { keep }));
         let batch = c.commit().unwrap();
         let listening: Vec<NodeId> = batch
             .items
@@ -10494,7 +10935,7 @@ mod touch {
     #[test]
     fn a_pan_claim_waits_for_the_platform_to_activate_it() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Scrub>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Scrub>(|| ()));
         let batch = c.commit().unwrap();
         let (id, activation) = batch
             .items
@@ -10546,7 +10987,7 @@ mod touch {
     #[test]
     fn the_responder_stays_pressed_until_its_touches_end() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Band>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Band>(|| ()));
         let batch = c.commit().unwrap();
         let id = batch
             .items
@@ -10602,7 +11043,7 @@ mod touch {
     #[test]
     fn pinches_and_rotations_drive_animated_values() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Card>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Card>(|| ()));
         let batch = c.commit().unwrap();
         let values = batch
             .items
@@ -10631,7 +11072,7 @@ mod painter {
     use crate::{
         canvas::{CanvasGradient, CanvasOp, FillRule, GradientShape, Num, Paint, svg_path},
         geometry::{bounds, percentage, point, px, radians, size},
-        ui::prelude::*,
+        prelude::*,
     };
 
     #[test]
@@ -10681,11 +11122,11 @@ mod painter {
             .line_dash_from_view()
             .fill_rect(0.0, 0.0, 10.0, 10.0);
         view()
-            .inline_style(crate::ui::Style::from_decls([set(
+            .inline_style(crate::element::Style::from_decls([set(
                 StyleKey::Color,
                 "#00ff00",
             )]))
-            .child(canvas(p).inline_style(crate::ui::Style::from_decls([
+            .child(canvas(p).inline_style(crate::element::Style::from_decls([
                 set(StyleKey::Stroke, "#ff0000"),
                 set(StyleKey::StrokeWidth, "3"),
                 set(StyleKey::StrokeDasharray, "2 1"),
@@ -10702,7 +11143,7 @@ mod painter {
     #[test]
     fn drawings_paint_with_their_views_style() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<ViewPainted>(|| ()));
+        c.mount_root(&crate::element::Root::new::<ViewPainted>(|| ()));
         let batch = c.commit().unwrap();
         let drawings: Vec<_> = batch
             .items
@@ -10733,12 +11174,111 @@ mod painter {
         assert_eq!(plain.ops[2], CanvasOp::LineWidth(Num::Const(1.0)));
         assert_eq!(plain.ops[3], CanvasOp::LineDash([].into()));
     }
+
+    /// A canvas filling a shape with its view's background: a color and a
+    /// gradient, which the view does not draw behind it.
+    #[component]
+    fn BackgroundFilled() -> impl IntoElement {
+        use crate::{PatchValue, StyleDecl, StyleKey};
+        let set = |key, value: &str| StyleDecl::Set(key, PatchValue::Str(value.into()));
+        let area = bounds(point(px(0.0), px(0.0)), size(px(40.0), px(20.0)));
+        let p = Painter::new()
+            .begin_path()
+            .rect(area)
+            .fill_background_from_view(area);
+        canvas(p).inline_style(crate::element::Style::from_decls([
+            set(StyleKey::BackgroundColor, "#00ff00"),
+            set(
+                StyleKey::BackgroundImage,
+                "linear-gradient(to bottom, #ff0000, #0000ff)",
+            ),
+        ]))
+    }
+
+    #[test]
+    fn drawings_fill_with_their_views_background() {
+        let mut c = core();
+        c.mount_root(&crate::element::Root::new::<BackgroundFilled>(|| ()));
+        let batch = c.commit().unwrap();
+        let (canvas, drawing) = batch
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::Canvas { id, drawing } => Some((*id, drawing.clone())),
+                _ => None,
+            })
+            .unwrap();
+        // The fill: the color, then the gradient over the area, top to
+        // bottom.
+        let fills: Vec<_> = drawing
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                CanvasOp::FillStyle(paint) => Some(paint.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills[0], Paint::Color(crate::style::Color(0x00ff_00ff)));
+        let Paint::Gradient(g) = &fills[1] else {
+            panic!("{fills:?}")
+        };
+        assert_eq!(
+            g.shape,
+            crate::canvas::GradientShape::Linear {
+                start: point(px(20.0), px(0.0)),
+                end: point(px(20.0), px(20.0)),
+            }
+        );
+        // The view draws no background of its own.
+        let style = batch
+            .items
+            .iter()
+            .find_map(|i| match i {
+                MountItem::ViewStyle { id, style } if *id == canvas => Some(style.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(style.background_color.is_transparent());
+        assert!(
+            style
+                .effects
+                .as_deref()
+                .is_none_or(|e| e.background_images.is_empty())
+        );
+    }
+    /// A canvas that has drawn nothing and records an empty drawing (a
+    /// component's canvas before its first layout) sends nothing; one
+    /// that has drawn sends what it draws.
+    #[component]
+    fn EmptyAndDrawn() -> impl IntoElement {
+        view()
+            .child(canvas(Painter::new()))
+            .child(canvas(Painter::new().fill_rect(0.0, 0.0, 10.0, 10.0)))
+    }
+
+    #[test]
+    fn an_empty_first_drawing_sends_nothing() {
+        let mut c = core();
+        c.mount_root(&crate::element::Root::new::<EmptyAndDrawn>(|| ()));
+        let batch = c.commit().unwrap();
+        let drawings: Vec<_> = batch
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                MountItem::Canvas { drawing, .. } => Some(drawing.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(drawings.len(), 1, "{drawings:?}");
+        assert!(!drawings[0].ops.is_empty());
+    }
+
     /// A label placed by its measured width, gradients, a stroked SVG path
     /// and an operation built by hand reading an animated value.
     #[component]
     fn Label() -> impl IntoElement {
         let offset = animated_value(3.0);
-        let width = crate::ui::prelude::measure_text("600 20px system-ui", "100%");
+        let width = crate::prelude::measure_text("600 20px system-ui", "100%");
         let mut p = Painter::new()
             .stroke_style(
                 CanvasGradient::conic(radians(0.0), point(px(50.0), px(50.0)))
@@ -10762,7 +11302,7 @@ mod painter {
     #[test]
     fn rust_drawings_measure_text_and_use_every_paint() {
         let mut c = core();
-        c.mount_root(&crate::ui::Root::new::<Label>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Label>(|| ()));
         let batch = c.commit().unwrap();
         let drawing = batch
             .items
@@ -11199,6 +11739,114 @@ fn focusable_is_a_view_prop() {
     );
 }
 
+/// The keyboard focus's stops, decided from what is mounted: views that
+/// take presses, unless `focusable={false}`, and any view that is
+/// `focusable={true}`, without taking presses (a chart in a pressable
+/// card); never a disabled one. Tab goes through them in tree order.
+#[test]
+fn focusable_views_are_stops_without_taking_presses() {
+    let mut c = core();
+    let view = |id: NodeId, parent: NodeId| {
+        [
+            Op::Create { id, tag: Tag::View },
+            Op::Insert {
+                parent,
+                child: id,
+                before: None,
+            },
+        ]
+    };
+    let listen = |id: NodeId, event: EventKind| Op::Listen {
+        id,
+        event,
+        enabled: true,
+    };
+    let focusable = |id: NodeId, on: bool| Op::SetProp {
+        id,
+        prop: Prop::Focusable(Some(on)),
+    };
+    let (card, chart, plain, backdrop, button, off) = (2, 4, 6, 8, 10, 12);
+    let mut ops = Vec::new();
+    ops.extend(view(card, crate::ROOT_ID));
+    ops.push(listen(card, EventKind::Press));
+    ops.extend(view(chart, card));
+    ops.push(focusable(chart, true));
+    ops.push(listen(chart, EventKind::Focus));
+    ops.push(listen(chart, EventKind::Blur));
+    ops.extend(view(plain, crate::ROOT_ID));
+    ops.extend(view(backdrop, crate::ROOT_ID));
+    ops.push(listen(backdrop, EventKind::Press));
+    ops.push(focusable(backdrop, false));
+    ops.extend(view(button, crate::ROOT_ID));
+    ops.push(listen(button, EventKind::Press));
+    ops.extend(view(off, crate::ROOT_ID));
+    ops.push(focusable(off, true));
+    ops.push(Op::SetProp {
+        id: off,
+        prop: Prop::Native(NativeProp::Disabled(true)),
+    });
+    apply(&mut c, ops);
+    let batch = c.commit().unwrap();
+    let props = |id: NodeId| {
+        batch
+            .items
+            .iter()
+            .rev()
+            .find_map(|i| match i {
+                MountItem::ViewProps { id: i, props } if *i == id => Some(props.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    let events = |id: NodeId| {
+        batch
+            .items
+            .iter()
+            .rev()
+            .find_map(|i| match i {
+                MountItem::Events { id: i, events } if *i == id => Some(*events),
+                _ => None,
+            })
+            .unwrap_or_default()
+    };
+    // Focusable takes no presses: the card around it keeps them.
+    assert!(!events(chart).contains(EventKind::Press));
+    assert!(events(chart).contains(EventKind::Focus));
+    let order = [card, chart, plain, backdrop, button, off];
+    let stops: Vec<NodeId> = order
+        .into_iter()
+        .filter(|&id| props(id).focus_stop(events(id).contains(EventKind::Press)))
+        .collect();
+    assert_eq!(stops, [card, chart, button]);
+    // Tab from nowhere, then on and around.
+    let mut at = None;
+    let mut visited = Vec::new();
+    for _ in 0..4 {
+        at = crate::input::tab_stop(at, stops.len(), false, true);
+        visited.push(stops[at.unwrap()]);
+    }
+    assert_eq!(visited, [card, chart, button, card]);
+    // Unset again: the chart takes no presses, so it is no stop.
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: chart,
+            prop: Prop::Focusable(None),
+        }],
+    );
+    let batch = c.commit().unwrap();
+    let props = batch
+        .items
+        .iter()
+        .find_map(|i| match i {
+            MountItem::ViewProps { id, props } if *id == chart => Some(props.clone()),
+            _ => None,
+        })
+        .expect("the chart's props, sent again");
+    assert!(!props.focus_stop(false));
+    assert!(props.focus_stop(true));
+}
+
 /// Components that run once: their views mounted with bindings.
 mod views {
     use std::{cell::Cell, rc::Rc};
@@ -11208,7 +11856,8 @@ mod views {
     use super::*;
     use crate::{
         Prop,
-        ui::{Component, Props, Registry, Root, Scope, prelude::*},
+        element::{Component, Props, Registry, Root, Scope},
+        prelude::*,
     };
 
     fn texts(batch: &MountBatch) -> Vec<String> {
@@ -11263,7 +11912,7 @@ mod views {
     #[derive(Clone, PartialEq, Props)]
     struct CounterProps {
         #[prop(default = "Taps".into())]
-        label: crate::ui::Prop<SharedString>,
+        label: crate::element::Prop<SharedString>,
     }
 
     #[derive(Event)]
@@ -11861,7 +12510,7 @@ mod views {
         let batch = c.commit().unwrap();
         let shown = texts(&batch);
         assert!(shown[0].starts_with("light 0 "), "{shown:?}");
-        c.set_environment(crate::ui::Environment {
+        c.set_environment(crate::element::Environment {
             dark: true,
             ..Default::default()
         });
@@ -11999,7 +12648,7 @@ mod views {
                 0xeeeeeeff, 0x00ff00ff
             ]))
         );
-        c.set_environment(crate::ui::Environment {
+        c.set_environment(crate::element::Environment {
             dark: true,
             ..Default::default()
         });
@@ -12059,7 +12708,7 @@ mod views {
         let mut c = core();
         c.mount_root(&Root::new::<SharedLight>(|| ()));
         assert_eq!(outputs(&c.commit().unwrap()), vec![colors(0x000000ff); 3]);
-        c.set_environment(crate::ui::Environment {
+        c.set_environment(crate::element::Environment {
             dark: true,
             ..Default::default()
         });
@@ -12121,7 +12770,7 @@ mod views {
     #[derive(Clone, PartialEq, Props)]
     struct MailboxProps {
         #[prop(default)]
-        rows: crate::ui::Prop<u32>,
+        rows: crate::element::Prop<u32>,
     }
 
     impl Component for Mailbox {
@@ -12522,7 +13171,7 @@ mod views {
     #[derive(Clone, PartialEq, Props)]
     struct PocketProps {
         #[prop(default)]
-        open: crate::ui::Prop<bool>,
+        open: crate::element::Prop<bool>,
         #[prop(lazy)]
         children: Children,
     }
@@ -12892,7 +13541,7 @@ mod views {
 
     #[derive(Clone, PartialEq, Props)]
     struct ShyProps {
-        children: crate::ui::Prop<Children>,
+        children: crate::element::Prop<Children>,
     }
 
     impl Component for Shy {
@@ -13047,7 +13696,7 @@ mod views {
     #[derive(Clone, PartialEq, Props)]
     struct KeyProps {
         #[prop(default)]
-        selected: crate::ui::Prop<bool>,
+        selected: crate::element::Prop<bool>,
     }
 
     impl Component for Key {
@@ -13267,7 +13916,7 @@ mod views {
         type Event = NoEvent;
 
         fn view(_: NativeHostProps, _: Scope<NoEvent>) -> impl IntoElement {
-            crate::ui::native("test.native")
+            crate::element::native("test.native")
                 .prop("items", serde_json::json!([1]))
                 .flex_1()
         }
@@ -13294,6 +13943,52 @@ mod views {
             if props.iter().any(|(k, _)| &**k == "items"))
         });
         assert!(props, "its props reach it");
+    }
+
+    /// A Rust component that binds a native component's prop.
+    #[derive(Default)]
+    struct AnimatedNativeHost;
+
+    #[derive(Clone, PartialEq, Props)]
+    struct AnimatedNativeHostProps {}
+
+    impl Component for AnimatedNativeHost {
+        type Props = AnimatedNativeHostProps;
+        type Event = NoEvent;
+
+        fn view(_: AnimatedNativeHostProps, _: Scope<NoEvent>) -> impl IntoElement {
+            let v = animated_value(0.5);
+            crate::element::native("test.native")
+                .bind_animated_prop("progress", &v)
+                .flex_1()
+        }
+    }
+
+    #[test]
+    fn native_view_binds_animated_prop() {
+        let mut c = core();
+        c.mount_root(&Root::new::<AnimatedNativeHost>(|| {
+            AnimatedNativeHostProps {}
+        }));
+        let batch = c.commit().unwrap();
+        assert!(
+            batch.items.iter().any(|i| matches!(
+                i,
+                MountItem::ComponentPropSlots { names, .. } if names.len() == 1 && &*names[0] == "progress"
+            )),
+            "{:#?}",
+            batch.items
+        );
+        assert!(batch.items.iter().any(|i| matches!(
+            i,
+            MountItem::AnimationBindings { bindings, .. }
+                if bindings.iter().any(|(p, _)| *p == crate::animation::AnimationProp::ComponentSlot(0))
+        )));
+        // The value lives with the element, though the view let go of it.
+        assert!(!batch.items.iter().any(|i| matches!(
+            i,
+            MountItem::Animation(crate::animation::AnimationOp::Release { .. })
+        )));
     }
 
     /// A holder of its children as its view's root.
@@ -13445,7 +14140,7 @@ mod views {
     struct CornerProps {
         #[prop(default)]
         framed: bool,
-        corner: crate::ui::Prop<Option<Slot>>,
+        corner: crate::element::Prop<Option<Slot>>,
     }
 
     impl Component for Corner {
@@ -13563,7 +14258,7 @@ mod views {
 
     #[derive(Clone, PartialEq, Props)]
     struct MidProps {
-        corner: crate::ui::Prop<Option<Slot>>,
+        corner: crate::element::Prop<Option<Slot>>,
     }
 
     /// Passes its corner slot on to a corner's.
@@ -13857,7 +14552,7 @@ mod views {
         fn view(_: LightingProps, _: Scope<NoEvent>) -> impl IntoElement {
             let v = animated_value(0.5);
             let wide = signal(false);
-            let red = crate::ui::Style::default().with(
+            let red = crate::element::Style::default().with(
                 crate::StyleKey::BackgroundColor,
                 crate::PatchValue::Str("#ff0000".into()),
             );
@@ -13922,10 +14617,10 @@ mod views {
 
     #[derive(Clone, Copy)]
     struct DialApi {
-        at: crate::ui::Signal<i32>,
+        at: crate::element::Signal<i32>,
     }
 
-    #[crate::ui::methods]
+    #[crate::element::methods]
     impl DialApi {
         /// Where it is.
         pub(crate) fn at(&self) -> i32 {
@@ -13936,7 +14631,7 @@ mod views {
     impl Component for Dial {
         type Props = ();
         type Event = NoEvent;
-        const METHODS: crate::ui::Methods = crate::ui::Methods::of::<DialApi>();
+        const METHODS: crate::element::Methods = crate::element::Methods::of::<DialApi>();
 
         fn view(_: (), cx: Scope<NoEvent>) -> impl IntoElement {
             let at = signal(7);
@@ -13946,7 +14641,7 @@ mod views {
     }
 
     thread_local! {
-        static DIAL: Cell<Option<crate::ui::ComponentRef<Dial>>> = const { Cell::new(None) };
+        static DIAL: Cell<Option<crate::element::ComponentRef<Dial>>> = const { Cell::new(None) };
     }
 
     #[derive(Clone, PartialEq, Props)]
@@ -14418,7 +15113,7 @@ mod views {
 
     #[derive(Clone, Copy, PartialEq, Props)]
     struct ShownProps {
-        value: crate::ui::Prop<SharedString>,
+        value: crate::element::Prop<SharedString>,
     }
 
     /// Shows its prop.
@@ -14441,10 +15136,10 @@ mod views {
                 n.update(|n| *n += 1);
             })
             .child(dynamic(move || {
-                let value: crate::ui::Prop<SharedString> = if fixed.get() {
+                let value: crate::element::Prop<SharedString> = if fixed.get() {
                     "fixed".into()
                 } else {
-                    crate::ui::Prop::bind(move || format!("n {}", n.get()).into())
+                    crate::element::Prop::bind(move || format!("n {}", n.get()).into())
                 };
                 shown().value(value)
             }))
@@ -14526,7 +15221,7 @@ mod views {
         };
         assert_eq!(*js_id, 1);
         let ours = *ours;
-        assert!(ours >= crate::ui::keys::FIRST_ID);
+        assert!(ours >= crate::element::keys::FIRST_ID);
         // JS's table joins it: JS's first, then the views'.
         apply(
             &mut c,
@@ -14599,7 +15294,7 @@ mod views {
             panic!("{table:?}");
         };
         assert_eq!(*js, 1);
-        assert!(*ours >= crate::ui::keys::FIRST_ID);
+        assert!(*ours >= crate::element::keys::FIRST_ID);
         assert!(listening(&c));
         // The view's binding goes; JS's stays, still listened to.
         assert!(c.component_event(host, EventKind::Press, &EventPayload::None));
@@ -14729,12 +15424,12 @@ mod rust_desktop {
     use super::*;
     use crate::{
         desktop::{DesktopCommand, TitleBarStyle},
-        geometry::{Edges, Points},
-        ui::{
+        element::{
             Root,
             desktop::{close_window, set_title_bar, title_bar},
-            prelude::*,
         },
+        geometry::{Edges, Points},
+        prelude::*,
     };
 
     thread_local! {
@@ -14765,7 +15460,7 @@ mod rust_desktop {
     fn rust_title_bar_commands_and_reactive_drag_props_reach_the_platform() {
         let mut c = core();
         READS.set(0);
-        c.set_environment(crate::ui::Environment {
+        c.set_environment(crate::element::Environment {
             title_bar: Edges {
                 top: Points(42.0),
                 left: Points(78.0),
@@ -14813,7 +15508,7 @@ mod rust_desktop {
                 .any(|item| matches!(item, MountItem::Create { .. }))
         );
         let reads = READS.get();
-        c.set_environment(crate::ui::Environment {
+        c.set_environment(crate::element::Environment {
             dark: true,
             title_bar: Edges {
                 top: Points(42.0),
@@ -14829,7 +15524,7 @@ mod rust_desktop {
             reads,
             "other environment changes do not rerun title_bar readers"
         );
-        c.set_environment(crate::ui::Environment {
+        c.set_environment(crate::element::Environment {
             title_bar: Edges {
                 top: Points(42.0),
                 left: Points(0.0),
@@ -14845,7 +15540,7 @@ mod rust_desktop {
                 .iter()
                 .any(|item| matches!(item, MountItem::Text {text, ..} if text.text == "42 0 138"))
         );
-        c.set_environment(crate::ui::Environment::default());
+        c.set_environment(crate::element::Environment::default());
         let batch = c.commit().unwrap();
         assert!(
             batch
@@ -14861,7 +15556,7 @@ mod rust_desktop {
 
 #[test]
 fn file_drop_callbacks_keep_urls_and_disabled_targets_unmount_their_events() {
-    use crate::ui::prelude::*;
+    use crate::prelude::*;
     #[component]
     fn DropView() -> impl IntoElement {
         let received = signal(String::new());
@@ -14871,13 +15566,13 @@ fn file_drop_callbacks_keep_urls_and_disabled_targets_unmount_their_events() {
             .on_press(move |_: &()| disabled.set(true))
             .on_file_drag_enter(|_: &()| {})
             .on_file_drag_leave(|_: &()| {})
-            .on_file_drop(move |event: &crate::ui::FileDropEvent| {
+            .on_file_drop(move |event: &crate::element::FileDropEvent| {
                 received.set(event.uris.join("\n"))
             })
             .child(text(move || received.get()))
     }
     let mut c = core();
-    c.mount_root(&crate::ui::Root::of::<DropView>());
+    c.mount_root(&crate::element::Root::of::<DropView>());
     let batch = c.commit().unwrap();
     let host = batch
         .items
@@ -14920,7 +15615,7 @@ fn file_drop_callbacks_keep_urls_and_disabled_targets_unmount_their_events() {
 
 #[test]
 fn hover_moves_reach_rust_listeners_with_their_positions_and_modifiers() {
-    use crate::ui::prelude::*;
+    use crate::prelude::*;
     #[component]
     fn Crosshair() -> impl IntoElement {
         let at = signal(String::new());
@@ -14938,7 +15633,7 @@ fn hover_moves_reach_rust_listeners_with_their_positions_and_modifiers() {
             .child(text(move || at.get()))
     }
     let mut c = core();
-    c.mount_root(&crate::ui::Root::of::<Crosshair>());
+    c.mount_root(&crate::element::Root::of::<Crosshair>());
     let batch = c.commit().unwrap();
     let host = batch
         .items
@@ -14970,7 +15665,7 @@ fn hover_moves_reach_rust_listeners_with_their_positions_and_modifiers() {
 
 #[test]
 fn context_menus_reach_rust_listeners_with_their_positions() {
-    use crate::ui::prelude::*;
+    use crate::prelude::*;
     #[component]
     fn Row() -> impl IntoElement {
         let at = signal(String::new());
@@ -14984,7 +15679,7 @@ fn context_menus_reach_rust_listeners_with_their_positions() {
             .child(text(move || at.get()))
     }
     let mut c = core();
-    c.mount_root(&crate::ui::Root::of::<Row>());
+    c.mount_root(&crate::element::Root::of::<Row>());
     let batch = c.commit().unwrap();
     let host = batch
         .items
@@ -15270,7 +15965,10 @@ fn start_and_end_follow_the_writing_direction() {
 /// `Option`, a `Vec`, an array or an iterator.
 mod builders {
     use super::*;
-    use crate::ui::{Listener, Root, prelude::*};
+    use crate::{
+        element::{Listener, Root},
+        prelude::*,
+    };
 
     /// The mount items of `C`'s first frame and of the frames after a press
     /// on each text of `taps`, in order.
@@ -15465,7 +16163,8 @@ mod renders {
     use super::*;
     use crate::{
         Prop,
-        ui::{AnyValue, Props, Registry, Rendered, Renderer, Root, dynamic, prelude::*},
+        element::{AnyValue, Props, Registry, Rendered, Renderer, Root, dynamic},
+        prelude::*,
     };
 
     /// Renders each item (`key:label`) with the app's function, keyed by
@@ -15473,10 +16172,10 @@ mod renders {
     #[derive(Clone, PartialEq, Props)]
     struct ShelfProps {
         #[prop(default)]
-        items: crate::ui::Prop<Vec<String>>,
+        items: crate::element::Prop<Vec<String>>,
         #[prop(default)]
         inline: bool,
-        render_item: crate::ui::Prop<Option<Renderer<String>>>,
+        render_item: crate::element::Prop<Option<Renderer<String>>>,
     }
 
     fn split(item: &str) -> (String, String) {
@@ -15752,14 +16451,14 @@ mod renders {
     #[derive(Clone, PartialEq, Props)]
     struct CardProps {
         #[prop(default)]
-        heading_class: crate::ui::Prop<Option<SharedString>>,
+        heading_class: crate::element::Prop<Option<SharedString>>,
     }
 
     #[component]
     fn Card(props: CardProps) -> impl IntoElement {
         view().child(
             view()
-                .bg(crate::ui::palette::RED.shade(500))
+                .bg(crate::element::palette::RED.shade(500))
                 .border_2()
                 .app_class(props.heading_class),
         )
@@ -15844,16 +16543,16 @@ mod renders {
         let batch = c.commit().unwrap();
         assert_eq!(
             view_style_of(&batch, id).unwrap().background_color,
-            Color::from(crate::ui::palette::RED.shade(500))
+            Color::from(crate::element::palette::RED.shade(500))
         );
     }
 }
 
-mod rust_selection_area {
+mod rust_selectable_view {
     use std::cell::Cell;
 
     use super::*;
-    use crate::ui::{Root, prelude::*};
+    use crate::{element::Root, prelude::*};
 
     thread_local! {
         static AREA: Cell<Option<Signal<bool>>> = const { Cell::new(None) };
@@ -15864,18 +16563,14 @@ mod rust_selection_area {
         let area = signal(true);
         AREA.set(Some(area));
         view()
-            .child(
-                view()
-                    .selection_area(move || area.get())
-                    .child(text("inside")),
-            )
+            .child(view().selectable(move || area.get()).child(text("inside")))
             .child(view().child(text("outside")))
     }
 
-    /// `Element::selection_area` reaches the platform in the view's props,
+    /// `Element::selectable` reaches the platform in the view's props,
     /// follows its signal, and views without it get no props for it.
     #[test]
-    fn a_selection_area_is_a_view_prop() {
+    fn a_selectable_view_is_a_view_prop() {
         let mut c = core();
         c.mount_root(&Root::of::<Area>());
         let batch = c.commit().unwrap();
@@ -15883,14 +16578,14 @@ mod rust_selection_area {
             .items
             .iter()
             .filter_map(|item| match item {
-                MountItem::ViewProps { id, props } if props.selection_area => Some(*id),
+                MountItem::ViewProps { id, props } if props.selectable_view => Some(*id),
                 _ => None,
             })
             .collect();
         assert_eq!(areas.len(), 1, "{:?}", batch.items);
         assert!(
             !batch.items.iter().any(
-                |item| matches!(item, MountItem::ViewProps { props, .. } if !props.selection_area)
+                |item| matches!(item, MountItem::ViewProps { props, .. } if !props.selectable_view)
             ),
             "views without the flag get no props: {:?}",
             batch.items
@@ -15901,7 +16596,7 @@ mod rust_selection_area {
         }
         let batch = c.commit().unwrap();
         assert!(batch.items.iter().any(
-            |item| matches!(item, MountItem::ViewProps { id, props } if *id == areas[0] && !props.selection_area)
+            |item| matches!(item, MountItem::ViewProps { id, props } if *id == areas[0] && !props.selectable_view)
         ));
     }
 }
@@ -17152,10 +17847,10 @@ fn overlays_hear_presses_outside_and_cancel_from_the_top() {
 #[test]
 fn nested_overlays_report_outside_presses_from_the_native_touch_path() {
     let mut c = core();
-    c.set_environment(crate::ui::Environment {
+    c.set_environment(crate::element::Environment {
         os: crate::platform::Os::Linux,
         idiom: crate::platform::Idiom::Desktop,
-        ..crate::ui::Environment::default()
+        ..crate::element::Environment::default()
     });
     add(
         &mut c,
@@ -17342,10 +18037,10 @@ fn tooltips_show_after_the_pointer_rests_and_hide_when_it_leaves_or_presses() {
     let clock = crate::time::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
     let _clock = clock.enter();
     let mut c = core();
-    c.set_environment(crate::ui::Environment {
+    c.set_environment(crate::element::Environment {
         os: crate::platform::Os::Linux,
         idiom: crate::platform::Idiom::Desktop,
-        ..crate::ui::Environment::default()
+        ..crate::element::Environment::default()
     });
     add(
         &mut c,
@@ -17360,10 +18055,25 @@ fn tooltips_show_after_the_pointer_rests_and_hide_when_it_leaves_or_presses() {
     );
     apply(
         &mut c,
-        vec![Op::SetProp {
-            id: 2,
-            prop: Prop::Tooltip(crate::overlay::TooltipContent::Text("Saves it".into())),
-        }],
+        vec![
+            Op::Create {
+                id: 600,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 602,
+                text: "Saves it".into(),
+            },
+            Op::Insert {
+                parent: 600,
+                child: 602,
+                before: None,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Tooltip(crate::overlay::TooltipContent::Node(600)),
+            },
+        ],
     );
     let batch = c.commit().unwrap();
     // The element follows the pointer; the tooltip waits out of the view.
@@ -17473,14 +18183,6 @@ fn tooltips_show_after_the_pointer_rests_and_hide_when_it_leaves_or_presses() {
         .expect("the tooltip's overlay in the root view");
     let frame = frame_of(&batch, overlay).unwrap();
     assert_eq!(frame.bottom(), px(96.0));
-    // A bubble of the theme's `popover` tokens.
-    let style = batch.items.iter().find_map(|i| match i {
-        MountItem::ViewStyle { id, style } if *id == overlay => Some(style.clone()),
-        _ => None,
-    });
-    assert!(
-        style.is_some_and(|s| s.background_color != Color::default() && s.border_radius.0 > 0.0)
-    );
     let overlay_key = c.key(overlay).unwrap();
     let text_id = batch
         .items
@@ -17625,7 +18327,7 @@ fn observed_hints_never_gain_callbacks_from_new_subscriptions_or_a_pending_timer
     let clock = crate::time::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
     let _clock = clock.enter();
     let mut c = core();
-    c.set_environment(crate::ui::Environment {
+    c.set_environment(crate::element::Environment {
         os: crate::platform::Os::Linux,
         idiom: crate::platform::Idiom::Desktop,
         ..Default::default()
@@ -17633,10 +18335,25 @@ fn observed_hints_never_gain_callbacks_from_new_subscriptions_or_a_pending_timer
     add(&mut c, 2, Tag::View, ROOT_ID, &[("height", Number(40.0))]);
     apply(
         &mut c,
-        vec![Op::SetProp {
-            id: 2,
-            prop: Prop::Tooltip(crate::overlay::TooltipContent::Text("Native hint".into())),
-        }],
+        vec![
+            Op::Create {
+                id: 600,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 602,
+                text: "Native hint".into(),
+            },
+            Op::Insert {
+                parent: 600,
+                child: 602,
+                before: None,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Tooltip(crate::overlay::TooltipContent::Node(600)),
+            },
+        ],
     );
     c.commit().unwrap();
     let hint = c.overlay_state.tooltips[&2].overlay;
@@ -17721,7 +18438,7 @@ fn observed_hints_keep_their_original_anchor_and_hint_lifetimes() {
     let clock = crate::time::Clock::manual(std::time::SystemTime::UNIX_EPOCH);
     let _clock = clock.enter();
     let mut c = core();
-    c.set_environment(crate::ui::Environment {
+    c.set_environment(crate::element::Environment {
         os: crate::platform::Os::Linux,
         idiom: crate::platform::Idiom::Desktop,
         ..Default::default()
@@ -17880,10 +18597,26 @@ fn tooltips_wait_for_nothing_on_touch_screens() {
     add(&mut c, 2, Tag::View, ROOT_ID, &[("height", Number(40.0))]);
     apply(
         &mut c,
-        vec![Op::SetProp {
-            id: 2,
-            prop: Prop::Tooltip(crate::overlay::TooltipContent::Text("Saves it".into())),
-        }],
+        vec![
+            // The app's element, out of the tree.
+            Op::Create {
+                id: 4,
+                tag: Tag::Text,
+            },
+            Op::CreateText {
+                id: 6,
+                text: "Saves it".into(),
+            },
+            Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Tooltip(crate::overlay::TooltipContent::Node(4)),
+            },
+        ],
     );
     let batch = c.commit().unwrap();
     assert_eq!(mounts_listening(&batch, 2, EventKind::HoverIn), None);
@@ -17918,13 +18651,19 @@ fn a_tooltip_element_is_shown_as_it_is() {
     let overlay = c.nodes[key as usize].parent;
     assert_eq!(c.nodes[overlay as usize].kind, Kind::Overlay);
     assert_eq!(c.nodes[c.nodes[overlay as usize].parent as usize].id, 2);
-    // A text in place of the element: it leaves (still JS's).
+    // Another element in its place: the first leaves (still JS's).
     apply(
         &mut c,
-        vec![Op::SetProp {
-            id: 2,
-            prop: Prop::Tooltip(crate::overlay::TooltipContent::Text("Hi".into())),
-        }],
+        vec![
+            Op::Create {
+                id: 8,
+                tag: Tag::View,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Tooltip(crate::overlay::TooltipContent::Node(8)),
+            },
+        ],
     );
     c.commit();
     assert_eq!(c.nodes[c.key(4).unwrap() as usize].parent, NO_KEY);
@@ -17978,10 +18717,16 @@ fn a_tooltip_element_that_is_a_hint_overlay_is_the_tooltip_itself() {
     // Another tooltip: it leaves the element, still JS's.
     apply(
         &mut c,
-        vec![Op::SetProp {
-            id: 2,
-            prop: Prop::Tooltip(crate::overlay::TooltipContent::Text("Hi".into())),
-        }],
+        vec![
+            Op::Create {
+                id: 8,
+                tag: Tag::View,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Tooltip(crate::overlay::TooltipContent::Node(8)),
+            },
+        ],
     );
     c.commit();
     assert_eq!(c.nodes[c.key(4).unwrap() as usize].parent, NO_KEY);
@@ -17992,7 +18737,7 @@ fn a_tooltip_element_that_is_a_hint_overlay_is_the_tooltip_itself() {
 fn native_focus_hints_keep_passive_input_routes_and_the_original_overlay() {
     use crate::{OverlayProp, PointerEvents, tailwind::state::FOCUSED};
     let mut c = core();
-    c.set_environment(crate::ui::Environment {
+    c.set_environment(crate::element::Environment {
         os: crate::platform::Os::Linux,
         idiom: crate::platform::Idiom::Desktop,
         ..Default::default()
@@ -18123,7 +18868,7 @@ fn image_uris(batch: &MountBatch, id: NodeId) -> Option<(Option<String>, Option<
 }
 
 fn at_ratio(c: &mut Core<FakeEngine>, pixel_ratio: f32) {
-    c.set_environment(crate::ui::Environment {
+    c.set_environment(crate::element::Environment {
         pixel_ratio,
         ..Default::default()
     });
@@ -18391,7 +19136,7 @@ fn image_scales_change_nothing_without_scales() {
 /// is picked as an imported one.
 mod asset_variants {
     use super::*;
-    use crate::ui::{ImageAsset, prelude::*};
+    use crate::{element::ImageAsset, prelude::*};
 
     const FLAG: ImageAsset = ImageAsset {
         url: "asset:/@demo/flag.png",
@@ -18415,7 +19160,7 @@ mod asset_variants {
     fn shown(pixel_ratio: f32) -> Vec<(Option<String>, Option<String>)> {
         let mut c = core();
         at_ratio(&mut c, pixel_ratio);
-        c.mount_root(&crate::ui::Root::new::<Flags>(|| ()));
+        c.mount_root(&crate::element::Root::new::<Flags>(|| ()));
         let batch = c.commit().unwrap();
         batch
             .items
@@ -18467,9 +19212,9 @@ mod asset_variants {
                 )
             ]
         );
-        let src: crate::ui::ImageSrc = PLAIN.into();
+        let src: crate::element::ImageSrc = PLAIN.into();
         assert!(src.scales.is_empty());
-        let src: crate::ui::ImageSrc = FLAG.into();
+        let src: crate::element::ImageSrc = FLAG.into();
         assert_eq!(src.scales.iter().collect::<Vec<_>>(), [1.0, 2.0, 3.0]);
         assert_eq!(src.size, Some((17.0, 12.0)));
     }
@@ -18477,7 +19222,7 @@ mod asset_variants {
 
 mod rust_lazy_context {
     use super::*;
-    use crate::ui::{Root, prelude::*};
+    use crate::{element::Root, prelude::*};
 
     #[derive(Clone, PartialEq, Props)]
     struct ProviderProps {
@@ -18562,8 +19307,8 @@ fn text_takes_the_tokens_sans_font() {
     );
     let text = text_item(&c.commit().unwrap()).unwrap();
     assert_eq!(text.spans[0].style.font_family, None);
-    let mut tokens = crate::ui::tokens::sample();
-    tokens.set_font(crate::ui::FONT_SANS, "Inter");
+    let mut tokens = crate::element::tokens::sample();
+    tokens.set_font(crate::element::FONT_SANS, "Inter");
     c.set_tokens(tokens);
     let text = text_item(&c.commit().unwrap()).unwrap();
     assert_eq!(
@@ -21432,4 +22177,419 @@ fn span_test_ids_reuse_fitted_and_hidden_layouts() {
             counts
         );
     }
+}
+
+/// What a node's `env()` terms came to: its padding and margin insets.
+fn env_applied(c: &Core<FakeEngine>, id: NodeId) -> [EdgeInsets; 2] {
+    let key = c.key(id).unwrap();
+    c.nodes[key as usize]
+        .env
+        .as_deref()
+        .map(|(_, applied)| *applied)
+        .unwrap_or_default()
+}
+
+fn env_with_keyboard(height: f32, duration: f32) -> crate::element::Environment {
+    crate::element::Environment {
+        window: size_pt(320.0, 480.0),
+        keyboard_height: px(height),
+        keyboard_duration: duration,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn keyboard_inset_height_pads_and_animates_with_the_keyboard() {
+    let mut c = core();
+    c.set_environment(env_with_keyboard(0.0, 0.25));
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::View,
+            },
+            style_op(
+                2,
+                &[
+                    ("height", StyleValue::Number(100.0)),
+                    (
+                        "paddingBottom",
+                        StyleValue::Str("env(keyboard-inset-height)"),
+                    ),
+                ],
+            ),
+            Op::Create {
+                id: 3,
+                tag: Tag::View,
+            },
+            style_op(3, &[("flex", StyleValue::Number(1.0))]),
+            Op::Insert {
+                parent: 2,
+                child: 3,
+                before: None,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ],
+    );
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 3).map(|f| f.size.height.0), Some(100.0));
+    assert!(!matches!(batch.items[0], MountItem::LayoutAnimation(_)));
+
+    // The keyboard shows: the padding follows, animated with its curve.
+    c.set_environment(env_with_keyboard(40.0, 0.25));
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 3).map(|f| f.size.height.0), Some(60.0));
+    assert!(
+        matches!(
+            &batch.items[0],
+            MountItem::LayoutAnimation(crate::LayoutAnimation {
+                update: Some(t),
+                ..
+            }) if t.curve == crate::LayoutCurve::Keyboard && t.duration_ms == 250.0
+        ),
+        "{:?}",
+        batch.items
+    );
+    assert_eq!(env_applied(&c, 2)[0].bottom, px(40.0));
+
+    // Without a duration it moves at once.
+    c.set_environment(env_with_keyboard(0.0, 0.0));
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 3).map(|f| f.size.height.0), Some(100.0));
+    assert!(!matches!(batch.items[0], MountItem::LayoutAnimation(_)));
+
+    // A plain value replaces the term: the keyboard no longer moves it.
+    apply(
+        &mut c,
+        vec![style_op(
+            2,
+            &[
+                ("height", StyleValue::Number(100.0)),
+                ("paddingBottom", StyleValue::Number(10.0)),
+            ],
+        )],
+    );
+    c.commit();
+    assert!(c.env_styled.is_empty());
+    c.set_environment(env_with_keyboard(40.0, 0.25));
+    assert!(c.commit().is_none());
+}
+
+#[test]
+fn calc_adds_a_length_to_the_keyboard_inset() {
+    let mut c = core();
+    c.set_environment(env_with_keyboard(0.0, 0.0));
+    view_with_classes(
+        &mut c,
+        2,
+        "h-[100px] mb-[calc(env(keyboard-inset-height)+8px)]",
+    );
+    view_with_classes(&mut c, 4, "h-[10px]");
+    let batch = c.commit().unwrap();
+    // Hidden: only the length, between it and the view below.
+    assert_eq!(frame_of(&batch, 4).map(|f| f.origin.y.0), Some(108.0));
+    c.set_environment(env_with_keyboard(300.0, 0.0));
+    let batch = c.commit().unwrap();
+    assert_eq!(frame_of(&batch, 4).map(|f| f.origin.y.0), Some(408.0));
+}
+
+#[test]
+fn safe_area_insets_are_those_of_the_root_view_a_node_renders_in() {
+    let mut c = core();
+    c.set_environment(crate::element::Environment {
+        window: size_pt(320.0, 480.0),
+        safe_area: EdgeInsets {
+            top: px(20.0),
+            bottom: px(34.0),
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let padded = [
+        (
+            "paddingTop",
+            StyleValue::Str("calc(env(safe-area-inset-top) + 8px)"),
+        ),
+        (
+            "paddingBottom",
+            StyleValue::Str("env(safe-area-inset-bottom)"),
+        ),
+    ];
+    apply(
+        &mut c,
+        vec![
+            // On the surface.
+            Op::Create {
+                id: 2,
+                tag: Tag::View,
+            },
+            style_op(2, &padded),
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            // On a page, whose header covers the top.
+            Op::Create {
+                id: 4,
+                tag: Tag::Stack,
+            },
+            Op::Create {
+                id: 6,
+                tag: Tag::Screen,
+            },
+            Op::Create {
+                id: 8,
+                tag: Tag::View,
+            },
+            style_op(8, &padded),
+            Op::Insert {
+                parent: 6,
+                child: 8,
+                before: None,
+            },
+            Op::Insert {
+                parent: 4,
+                child: 6,
+                before: None,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 4,
+                before: None,
+            },
+        ],
+    );
+    c.commit();
+    assert_eq!(
+        env_applied(&c, 2)[0],
+        EdgeInsets {
+            top: px(20.0),
+            bottom: px(34.0),
+            ..Default::default()
+        }
+    );
+    assert_eq!(
+        env_applied(&c, 8)[0],
+        EdgeInsets {
+            bottom: px(34.0),
+            ..Default::default()
+        }
+    );
+    // The page reports its insets: its node follows, the surface's does
+    // not.
+    c.component_event(
+        6,
+        EventKind::Insets,
+        &EventPayload::Map(vec![
+            ("top", PayloadValue::Number(64.0)),
+            ("bottom", PayloadValue::Number(0.0)),
+        ]),
+    );
+    c.commit();
+    assert_eq!(
+        env_applied(&c, 8)[0],
+        EdgeInsets {
+            top: px(64.0),
+            ..Default::default()
+        }
+    );
+    assert_eq!(env_applied(&c, 2)[0].top, px(20.0));
+}
+
+/// A native element with `component` and, optionally, a bound `progress`.
+fn native_with_animated_prop(c: &mut Core<FakeEngine>, node: Option<crate::animation::NodeId>) {
+    let mut ops = vec![
+        Op::Create {
+            id: 2,
+            tag: Tag::Native,
+        },
+        Op::SetProp {
+            id: 2,
+            prop: Prop::Component("com.example.thing".into()),
+        },
+        Op::Insert {
+            parent: ROOT_ID,
+            child: 2,
+            before: None,
+        },
+    ];
+    if let Some(node) = node {
+        ops.push(Op::SetProp {
+            id: 2,
+            prop: Prop::ComponentPropBinding("progress".into(), Some(node)),
+        });
+    }
+    apply(c, ops);
+}
+
+fn component_prop_op(name: &str, value: Option<crate::JsonValue>) -> Op {
+    Op::SetProp {
+        id: 2,
+        prop: Prop::ComponentProp(name.into(), value),
+    }
+}
+
+fn animated_prop_op(name: &str, node: Option<crate::animation::NodeId>) -> Op {
+    Op::SetProp {
+        id: 2,
+        prop: Prop::ComponentPropBinding(name.into(), node),
+    }
+}
+
+fn component_props_of(
+    batch: &crate::mount::MountBatch,
+) -> Vec<(Arc<str>, Option<crate::JsonValue>)> {
+    batch
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            MountItem::ComponentProps { id: 2, props } => Some(props.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+fn component_bindings_of(batch: &crate::mount::MountBatch) -> Option<Vec<Arc<str>>> {
+    batch.items.iter().rev().find_map(|i| match i {
+        MountItem::ComponentPropSlots { id: 2, names } => Some(names.clone()),
+        _ => None,
+    })
+}
+
+fn animation_bindings_of(
+    batch: &crate::mount::MountBatch,
+) -> Option<Vec<(AnimationProp, crate::animation::NodeId)>> {
+    batch.items.iter().rev().find_map(|i| match i {
+        MountItem::AnimationBindings { id: 2, bindings } => Some(bindings.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn component_prop_binds_to_animated_node() {
+    let mut c = core();
+    native_with_animated_prop(&mut c, Some(7));
+    let batch = c.commit().unwrap();
+    let names = batch
+        .items
+        .iter()
+        .position(|i| matches!(i, MountItem::ComponentPropSlots { id: 2, .. }))
+        .unwrap();
+    let bindings = batch
+        .items
+        .iter()
+        .position(|i| matches!(i, MountItem::AnimationBindings { id: 2, .. }))
+        .unwrap();
+    assert!(names < bindings);
+    assert_eq!(component_bindings_of(&batch), Some(vec!["progress".into()]));
+    assert_eq!(
+        animation_bindings_of(&batch),
+        Some(vec![(AnimationProp::ComponentSlot(0), 7)])
+    );
+    assert!(
+        component_props_of(&batch)
+            .iter()
+            .all(|(k, _)| &**k != "progress")
+    );
+}
+
+#[test]
+fn static_value_hidden_while_bound() {
+    let mut c = core();
+    native_with_animated_prop(&mut c, None);
+    apply(
+        &mut c,
+        vec![component_prop_op("progress", Some(serde_json::json!(0.5)))],
+    );
+    c.commit().unwrap();
+    apply(&mut c, vec![animated_prop_op("progress", Some(7))]);
+    c.commit().unwrap();
+    // Set while bound: kept, not sent.
+    apply(
+        &mut c,
+        vec![component_prop_op("progress", Some(serde_json::json!(0.7)))],
+    );
+    // Nothing to send at all.
+    if let Some(batch) = c.commit() {
+        assert!(
+            component_props_of(&batch)
+                .iter()
+                .all(|(k, _)| &**k != "progress")
+        );
+    }
+    // Unbound: the kept value comes back.
+    apply(&mut c, vec![animated_prop_op("progress", None)]);
+    let batch = c.commit().unwrap();
+    assert_eq!(
+        component_props_of(&batch),
+        vec![("progress".into(), Some(serde_json::json!(0.7)))]
+    );
+    assert_eq!(animation_bindings_of(&batch), Some(vec![]));
+}
+
+#[test]
+fn unbind_without_static_sends_none() {
+    let mut c = core();
+    native_with_animated_prop(&mut c, Some(7));
+    c.commit().unwrap();
+    apply(&mut c, vec![animated_prop_op("progress", None)]);
+    let batch = c.commit().unwrap();
+    assert_eq!(component_props_of(&batch), vec![("progress".into(), None)]);
+    assert_eq!(animation_bindings_of(&batch), Some(vec![]));
+}
+
+#[test]
+fn rebinding_reuses_the_slot() {
+    let mut c = core();
+    native_with_animated_prop(&mut c, Some(7));
+    c.commit().unwrap();
+    apply(&mut c, vec![animated_prop_op("progress", Some(8))]);
+    let batch = c.commit().unwrap();
+    // Same table, no new names.
+    assert_eq!(component_bindings_of(&batch), None);
+    assert_eq!(
+        animation_bindings_of(&batch),
+        Some(vec![(AnimationProp::ComponentSlot(0), 8)])
+    );
+}
+
+#[test]
+fn late_named_component_gets_bindings() {
+    let mut c = core();
+    apply(
+        &mut c,
+        vec![
+            Op::Create {
+                id: 2,
+                tag: Tag::Native,
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+            animated_prop_op("progress", Some(7)),
+        ],
+    );
+    c.commit().unwrap();
+    apply(
+        &mut c,
+        vec![Op::SetProp {
+            id: 2,
+            prop: Prop::Component("com.example.thing".into()),
+        }],
+    );
+    let batch = c.commit().unwrap();
+    let at = |pred: &dyn Fn(&MountItem) -> bool| batch.items.iter().position(pred).unwrap();
+    let component = at(&|i| matches!(i, MountItem::Component { id: 2, .. }));
+    let names = at(&|i| matches!(i, MountItem::ComponentPropSlots { id: 2, .. }));
+    let bindings = at(&|i| matches!(i, MountItem::AnimationBindings { id: 2, .. }));
+    assert!(component < names && names < bindings);
 }

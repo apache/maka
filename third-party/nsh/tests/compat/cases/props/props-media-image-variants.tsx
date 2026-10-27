@@ -4,7 +4,7 @@
 // placeholder, and lays out at the imported file's size in points. Its
 // script checks each at three ratios.
 import { View } from "nsh";
-import { Image } from "nsh/image";
+import { Image } from "nsh";
 import flag from "./images/flag.png";
 
 function App() {

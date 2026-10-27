@@ -8,12 +8,11 @@ use anyhow::{Context as _, bail};
 use crate::ui;
 
 const APP: &str = r##"import { mount, signal, Text, View } from "nsh";
-import { SafeAreaView } from "nsh/base";
 
 function App() {
   const count = signal(0);
   return (
-    <SafeAreaView class="flex-1 items-center justify-center gap-4 bg-background">
+    <View class="flex-1 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] items-center justify-center gap-4 bg-background">
       <Text class="text-3xl font-semibold text-foreground">{count()}</Text>
       <View
         onPress={() => count.update((c) => c + 1)}
@@ -22,7 +21,7 @@ function App() {
       >
         <Text class="text-lg text-primary-foreground">Tap</Text>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -351,7 +350,7 @@ pub(crate) fn write_types(dir: &Path) {
     let types = dir.join(".nsh/types");
     // The app's sets, and `nsh/test` for its test files.
     let mut sets = crate::ui_sets().to_vec();
-    sets.push(nsh_core::ui::description::SetDescription::from(
+    sets.push(nsh_core::element::description::SetDescription::from(
         &nsh_testing::registry(),
     ));
     let mut definitions = nsh_js::type_definitions(&sets);
@@ -388,7 +387,7 @@ pub(crate) fn write_types(dir: &Path) {
 
 /// Warns of the exports of `sets` (an app's crates') without a doc comment:
 /// TSX sees them undocumented in the declarations and the editor.
-fn warn_undocumented(sets: &[nsh_core::ui::description::SetDescription]) {
+fn warn_undocumented(sets: &[nsh_core::element::description::SetDescription]) {
     for set in sets {
         let missing = &set.undocumented;
         if missing.is_empty() {

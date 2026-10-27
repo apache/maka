@@ -1,5 +1,5 @@
 import { Canvas, cleanup, computed, effect, Scroll, signal, Text, untracked, View } from "nsh";
-import { createAnimatedValue, Easing, LayoutAnimation } from "nsh/animated";
+import { createAnimatedValue, Easing, LayoutAnimation } from "nsh";
 import { Icon } from "../icons";
 import { nav } from "../nav";
 import { colors, desktop, finish, motion, paneWidth, Press, Segmented } from "../ui";

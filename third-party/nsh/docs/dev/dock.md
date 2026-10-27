@@ -63,7 +63,7 @@ leaves for good (a moved one never hears it), `onZoomChange` with the displayed 
 
 ## Panels' content: render keys
 
-The content of a panel is the app's, rendered by `renderPanel` (a `Renderer<DockPanel>`, `nsh_core::ui::renderer`)
+The content of a panel is the app's, rendered by `renderPanel` (a `Renderer<DockPanel>`, `nsh_core::element::renderer`)
 keyed by the panel's key. Each group's content frame places a placeholder for every panel of the group with the
 panel's key, shows the displayed one and hides the others, and the core shows JS's holder for a key in the last
 placeholder placing it (`crates/nsh-core/src/core/renders.rs`). A panel that moves to another tab group, another

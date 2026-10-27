@@ -1,4 +1,4 @@
-//! Derive macros of nsh's Rust components (`nsh_core::ui`):
+//! Derive macros of nsh's Rust components (`nsh_core::element`):
 //!
 //! - `#[derive(Props)]` on a component's props struct: decoding the props JS
 //!   sends (`$title`), defaults, slots and children, and the TypeScript
@@ -27,7 +27,7 @@
 //! heading: a `# Rust` section (or `# Panics`, `# Examples`) is for Rust
 //! callers only.
 //!
-//! The code they generate names `::nsh_core::ui`. `style_helpers!` is
+//! The code they generate names `::nsh_core::element`. `style_helpers!` is
 //! internal to `nsh-core`: the spacing and sizing methods of `Styled`.
 
 mod assets;
@@ -46,7 +46,7 @@ use syn::{
 };
 
 /// `text` as declaration text in generated code: left out of builds
-/// without declarations (`nsh_core::ui::DECLARATIONS`).
+/// without declarations (`nsh_core::element::DECLARATIONS`).
 fn decl(text: &str) -> TokenStream2 {
     quote!(::nsh_core::decl!(#text))
 }
@@ -201,7 +201,7 @@ fn is_number(ty: &Type) -> bool {
     )
 }
 
-/// Whether `ty` is a style (`nsh_core::ui::Style`), whose setter takes the
+/// Whether `ty` is a style (`nsh_core::element::Style`), whose setter takes the
 /// typed styles' closure.
 fn is_style(ty: &Type) -> bool {
     matches!(last_segment(ty), Some((id, None)) if id == "Style")
@@ -270,7 +270,7 @@ fn strip_args(sig: &mut syn::Signature) {
 /// arguments named when `#[args(..)]` names them (`attrs`), checked at
 /// compile time to name each.
 fn param_ts(ty: &Type, attrs: &[Attribute]) -> syn::Result<TokenStream2> {
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let private = quote!(#ui::__private);
     Ok(match args_attr(attrs)? {
         None => quote!(#private::arg_ts::<#ty>()),
@@ -417,7 +417,7 @@ fn props(input: DeriveInput) -> syn::Result<TokenStream2> {
     let Fields::Named(fields) = &data.fields else {
         return Err(syn::Error::new(input.span(), "`Props` needs named fields"));
     };
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let mut specs = Vec::new();
     let mut initial = Vec::new();
     let mut set_arms = Vec::new();
@@ -945,7 +945,7 @@ fn prop_enum(input: DeriveInput) -> syn::Result<TokenStream2> {
             "`PropEnum` is derived for enums",
         ));
     };
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let mut names = Vec::new();
     let mut idents = Vec::new();
     // Every name a variant is read from (its own, then its aliases).
@@ -1066,7 +1066,7 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
             "`Event` is derived for enums",
         ));
     };
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let mut specs = Vec::new();
     let mut name_arms = Vec::new();
     let mut data_arms = Vec::new();
@@ -1454,7 +1454,7 @@ pub fn component(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn component_fn(item: ItemFn, methods: Option<syn::Path>) -> syn::Result<TokenStream2> {
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let sig = &item.sig;
     if !sig.generics.params.is_empty() || sig.asyncness.is_some() {
         return Err(syn::Error::new(
@@ -1524,7 +1524,7 @@ fn component_fn(item: ItemFn, methods: Option<syn::Path>) -> syn::Result<TokenSt
          (`.on_press(..)`), styles ([`Styled`]({ui_path}::Styled), the states' with \
          [`ComponentBuilder`]({ui_path}::ComponentBuilder)) and content \
          ([`ParentElement`]({ui_path}::ParentElement)).",
-        ui_path = "::nsh_core::ui",
+        ui_path = "::nsh_core::element",
     );
     let constructor_doc = format!(
         " A [`{name}`], each prop at its default: its element's setters set them \
@@ -1662,8 +1662,8 @@ pub fn style_helpers(input: TokenStream) -> TokenStream {
         let Helper { doc, name, keys } = h;
         out.extend(quote! {
             #[doc = #doc]
-            fn #name(mut self, length: impl crate::ui::IntoReactive<crate::ui::Length>) -> Self {
-                self.style().bind_value(length, |s, length: crate::ui::Length| {
+            fn #name(mut self, length: impl crate::element::IntoReactive<crate::element::Length>) -> Self {
+                self.style().bind_value(length, |s, length: crate::element::Length| {
                     s.lengths(&[#(crate::style::StyleKey::#keys),*], length);
                 });
                 self
@@ -1716,7 +1716,7 @@ pub fn methods(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 fn methods_impl(mut item: ItemImpl) -> syn::Result<TokenStream2> {
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let private = quote!(#ui::__private);
     let self_ty = item.self_ty.clone();
     let generics = item.generics.clone();
@@ -1753,6 +1753,15 @@ fn methods_impl(mut item: ItemImpl) -> syn::Result<TokenStream2> {
                 FnArg::Receiver(r) => Err(syn::Error::new(r.span(), "one receiver")),
             })
             .collect::<syn::Result<_>>()?;
+        // An `Option` parameter is optional in TypeScript when every one
+        // after it is too (JS decodes a missing argument as `None`).
+        let mut optional = vec![false; typed.len()];
+        for i in (0..typed.len()).rev() {
+            if !matches!(last_segment(&typed[i].ty), Some((id, _)) if id == "Option") {
+                break;
+            }
+            optional[i] = true;
+        }
         for (i, arg) in typed.iter().enumerate() {
             let ty = &arg.ty;
             let Pat::Ident(name) = &*arg.pat else {
@@ -1764,7 +1773,8 @@ fn methods_impl(mut item: ItemImpl) -> syn::Result<TokenStream2> {
             let name = camel(&name.ident.to_string());
             let local = format_ident!("__arg{}", i);
             let ts = param_ts(ty, &arg.attrs)?;
-            params.push(quote!((#name, #ts)));
+            let is_optional = optional[i];
+            params.push(quote!((#name, #ts, #is_optional)));
             refs.push(quote!(#private::arg_classes::<#ty>(__out);));
             decode.push(quote! {
                 let #local: #ty = #private::arg::<#ty>(host, #i, #what, #name)?;
@@ -1863,7 +1873,7 @@ fn js_object(input: DeriveInput) -> syn::Result<TokenStream2> {
             "`JsObject` needs named fields",
         ));
     };
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let mut exact = false;
     for attr in input.attrs.iter().filter(|a| a.path().is_ident("prop")) {
         attr.parse_nested_meta(|meta| {
@@ -2094,7 +2104,7 @@ fn module_struct(item: syn::ItemStruct) -> syn::Result<TokenStream2> {
             "a module has no generic parameters",
         ));
     }
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let name = &item.ident;
     let doc = decl(&docs(&item.attrs));
     Ok(quote! {
@@ -2286,7 +2296,7 @@ fn module_impl(mut item: ItemImpl, options: ModuleOptions) -> syn::Result<TokenS
         default,
         name,
     } = options;
-    let ui = quote!(::nsh_core::ui);
+    let ui = quote!(::nsh_core::element);
     let private = quote!(#ui::__private);
     let self_ty = &item.self_ty.clone();
     let Some((type_name, _)) = last_segment(self_ty) else {
@@ -2591,7 +2601,7 @@ fn module_impl(mut item: ItemImpl, options: ModuleOptions) -> syn::Result<TokenS
 /// types whose TypeScript types make the declaration (a trailing `Option`
 /// is optional; the result is a promise when the function's is).
 fn overloads(f: &ImplItemFn) -> syn::Result<(Vec<TokenStream2>, Vec<TokenStream2>)> {
-    let private = quote!(::nsh_core::ui::__private);
+    let private = quote!(::nsh_core::element::__private);
     let mut overloads = Vec::new();
     let mut refs = Vec::new();
     for attr in f.attrs.iter().filter(|a| a.path().is_ident("overload")) {
@@ -2634,7 +2644,7 @@ fn overloads(f: &ImplItemFn) -> syn::Result<(Vec<TokenStream2>, Vec<TokenStream2
             }
         };
         overloads.push(quote! {
-            ::nsh_core::ui::Overload { params: &[#(#specs),*], returns: #returns }
+            ::nsh_core::element::Overload { params: &[#(#specs),*], returns: #returns }
         });
     }
     Ok((overloads, refs))

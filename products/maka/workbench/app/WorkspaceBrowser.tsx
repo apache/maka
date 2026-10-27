@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { message, renderText, type UiText } from './text';
 import { tr } from './locale';
 import {
@@ -35,7 +36,7 @@ import {
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
 import logo from './assets/maka.png';
-import { keymap } from 'nsh/keymap';
+import { keymap } from 'nsh';
 import {
   C,
   compact,
@@ -297,7 +298,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       </Button>
       <Button
         accessibilityLabel={tr('Search conversations')}
-        tooltip={`${tr('Search conversations')} · ${keymap.label('mod+o')}`}
+        tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
         onPress={inputAction(props.search, props.selected())}
         style={{
           ...controlStyle,

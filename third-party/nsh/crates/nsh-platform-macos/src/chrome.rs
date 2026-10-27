@@ -772,8 +772,12 @@ pub(crate) fn close_open_menu() -> Result<(), String> {
 fn popup(surface: &Rc<Surface>, items: &Arc<[MenuItem]>, at: Option<(f32, f32)>) {
     let root = surface.root.ns();
     let menu = menu(surface, "", items);
-    let location = match at {
-        // The root view is flipped: y goes down, as the app's.
+    // The root view is flipped: y goes down, as the app's. Without a
+    // place, where the root's pointer events put the mouse: the hardware
+    // cursor's place only when they put it nowhere, as synthesized input
+    // (the test agent's) leaves the cursor where it is, on another display
+    // when the window is on a secondary one.
+    let location = match at.or_else(|| crate::input::pointer_location(surface)) {
         Some((x, y)) => NSPoint::new(x as f64, y as f64),
         None => {
             let Some(window) = root.window() else { return };

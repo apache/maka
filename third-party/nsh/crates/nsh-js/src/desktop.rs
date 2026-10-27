@@ -150,9 +150,9 @@ fn string(cx: *mut JsContext, object: JsValue, key: &CStr) -> Option<String> {
 /// The role named `name`, as `MenuRole`'s conversion reads it.
 fn menu_role(cx: *mut JsContext, name: &str) -> Option<MenuRole> {
     let host = crate::classes::host_outside_calls(cx);
-    let value = nsh_core::ui::JsHost::new_string(&host, name).ok()?;
-    let value = nsh_core::ui::JsOwned::new(&host, value);
-    let role = <MenuRole as nsh_core::ui::JsValue>::from_js(value.get()).ok();
+    let value = nsh_core::element::JsHost::new_string(&host, name).ok()?;
+    let value = nsh_core::element::JsOwned::new(&host, value);
+    let role = <MenuRole as nsh_core::element::JsValue>::from_js(value.get()).ok();
     host.clear_pending();
     role
 }
@@ -593,7 +593,7 @@ export interface MenuModule {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::{desktop::MenuRole, ui::JsValue as _};
+    use nsh_core::{desktop::MenuRole, element::JsValue as _};
 
     /// `MenuRole`'s declaration (written here, with the docs of each role)
     /// names the roles the Rust type reads.

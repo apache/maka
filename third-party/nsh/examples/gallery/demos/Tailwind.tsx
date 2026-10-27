@@ -1,4 +1,5 @@
-import { Image, Input, type JSX, signal, Text, View } from "nsh";
+import { Image, type JSX, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 import logo from "../logo@2x.png";
 import { Icon, type IconName } from "../icons";
 import { colors, DemoPage } from "../ui";

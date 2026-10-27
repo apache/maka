@@ -3,10 +3,8 @@
 //! behavior, prepending and taps with the keyboard up (as the TSX
 //! gallery's `demos/Scrolling.tsx`).
 
-use nsh_core::{
-    Bounds, Points,
-    ui::{View, prelude::*},
-};
+use nsh_base::input;
+use nsh_core::{Bounds, Points, element::View, prelude::*};
 
 use crate::ui::{
     Badge, Button, ButtonVariant, DemoPage, Figure, Finish, Finished, IconName, Meter, Section,

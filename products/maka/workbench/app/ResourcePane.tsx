@@ -17,11 +17,12 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View, Image } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap } from 'nsh/keymap';
+import { keymap } from 'nsh';
 import { Terminal } from './Terminal';
 import { Terminals } from './Terminals';
 import { WorkspaceFiles } from './WorkspaceFiles';
@@ -173,7 +174,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       instance: tab().instance,
                     })}
                     accessibilityLabel={tr('Preview {name}', { name: tab().title })}
-                    tooltip={tab().title}
+                    tooltip={textTooltip(() => tab().title)}
                     style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
                     hoverStyle={controlHoverStyle}
                     focusStyle={controlFocusStyle}
@@ -207,7 +208,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       instance: tab().instance,
                     })}
                     accessibilityLabel={tr('Close {name}', { name: tab().title })}
-                    tooltip={tr('Close {name}', { name: tab().title })}
+                    tooltip={textTooltip(() => tr('Close {name}', { name: tab().title }))}
                     style={{
                       ...controlStyle,
                       width: 28,
@@ -229,7 +230,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         <Button
           accessibilityLabel={tr('Close workspace preview')}
           onPress={inputAction(resources.close, closeTarget)}
-          tooltip={tr('Close workspace preview · Esc')}
+          tooltip={textTooltip(() => tr('Close workspace preview · Esc'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={controlHoverStyle}
           focusStyle={controlFocusStyle}

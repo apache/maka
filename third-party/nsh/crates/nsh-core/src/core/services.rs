@@ -1,5 +1,5 @@
 //! The core's side of the platform services Rust components ask for
-//! ([`crate::ui::ambient`]'s functions) beyond commands for the
+//! ([`crate::element::ambient`]'s functions) beyond commands for the
 //! platform: display frames and the layout direction.
 //!
 //! The surface's direction follows the user's language: its root's
@@ -9,7 +9,7 @@
 //! language changes. A view's `direction` style sets its own subtree's.
 
 use super::Core;
-use crate::{Op, Prop, ROOT_ID, TextEngine, time::Instant, ui::AnswerSlot};
+use crate::{Op, Prop, ROOT_ID, TextEngine, element::AnswerSlot, time::Instant};
 
 /// What the core keeps for the services.
 #[derive(Default)]
@@ -73,7 +73,7 @@ impl<M: TextEngine> Core<M> {
     /// runs again.
     pub(super) fn root_direction_changed(&mut self, rtl: bool) {
         if self.components.environment.rtl != rtl {
-            let environment = crate::ui::Environment {
+            let environment = crate::element::Environment {
                 rtl,
                 ..self.components.environment
             };

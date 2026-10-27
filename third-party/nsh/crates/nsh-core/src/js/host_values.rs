@@ -9,12 +9,12 @@ use crate::{
     AccessibilityProp, AccessibilityRole, AccessibilityState, AutoFill, CellSlot, EdgeInsets,
     ImageScales, ImageSource, KeyboardTaps, ListContentStyle, ModalProp, Prop, ScrollProp,
     StatusBarSetting, StatusBarStyle, Viewability,
+    element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Bounds, Points, point, size},
     mount::ModalConfig,
     ops::OverlayProp,
     overlay::{OverlayAnchor, TooltipContent},
     props::{AccessibilityActionDef, AccessibilityValue, Checked, PanActivation, Ripple},
-    ui::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
 };
 
 fn number<I: HostInput>(input: &I, key: &str) -> Option<f32> {
@@ -588,11 +588,9 @@ pub(crate) fn hint_delay<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Over
 
 /// `tooltip`: a string, an element (a node JS made), or nothing.
 pub(crate) fn tooltip<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop> {
-    let content = match (input.node(), input.as_string()) {
-        (Some(id), _) => TooltipContent::Node(id),
-        (None, Some(text)) if !text.is_empty() => TooltipContent::Text(text.into()),
-        _ => TooltipContent::None,
-    };
+    let content = input
+        .node()
+        .map_or(TooltipContent::None, TooltipContent::Node);
     Some(Prop::Tooltip(content))
 }
 
@@ -743,7 +741,7 @@ mod content_style_tests {
     use serde_json::json;
 
     use super::*;
-    use crate::ui::json_host::JsonHost;
+    use crate::element::json_host::JsonHost;
 
     #[test]
     fn component_content_style_uses_list_shorthands_and_rejects_non_numeric_lengths() {

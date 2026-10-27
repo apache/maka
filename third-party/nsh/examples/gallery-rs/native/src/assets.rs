@@ -2,7 +2,7 @@
 //! them): `asset!` reads each at compile time, the registry ships them all
 //! ([`crate::registry`]).
 
-use nsh_core::ui::{FontAsset, ImageAsset, asset};
+use nsh_core::element::{FontAsset, ImageAsset, asset};
 
 /// The gallery's logo (`logo@2x.png`: 2 pixels per point).
 pub(crate) const LOGO: ImageAsset = asset!("logo@2x.png");
@@ -18,7 +18,7 @@ pub(crate) const PACIFICO: FontAsset = asset!("fonts/Pacifico-Regular.ttf");
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::ui::{px, size};
+    use nsh_core::element::{px, size};
 
     use super::*;
 

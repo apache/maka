@@ -27,7 +27,7 @@ pub(crate) mod gc;
 #[path = "semantic/tests.rs"]
 mod tests;
 mod write;
-pub(crate) use write::register;
+pub(crate) use write::{copy_member, record};
 
 use crate::{EventLog, StoreError};
 use futures_util::TryStreamExt;
@@ -419,43 +419,161 @@ pub(crate) async fn changes(
     })
 }
 
+type NeighborKey = (i64, i64, i64, i64, i64);
+
+async fn neighbor_row(
+    connection: &mut SqliteConnection,
+    session: &str,
+    key: NeighborKey,
+) -> Result<SemanticRow, StoreError> {
+    let json: String = sqlx::query_scalar("SELECT row_json FROM context_semantic_rows WHERE owner_session_id=? AND source_sequence=? AND source_index=? AND revision=?")
+        .bind(session).bind(key.2).bind(key.3).bind(key.4)
+        .fetch_one(connection).await?;
+    serde_json::from_str(&json).map_err(StoreError::from)
+}
+
 pub(crate) async fn neighbor(
     connection: &mut SqliteConnection,
     selection: &SemanticSelection,
     group: u64,
     before: bool,
 ) -> Result<Option<SemanticRow>, StoreError> {
+    // Race ordered seeks against a source-window scan. Dense windows finish
+    // from the order index; compacted gaps finish from the source primary key.
+    // Neither path can force every neighbor to scan the entire other range.
+    const PAGE: usize = 64;
     let (comparison, direction) = if before { ("<", "DESC") } else { (">", "ASC") };
-    let query=format!("SELECT r.row_json FROM context_semantic_rows r INDEXED BY context_semantic_row_order WHERE r.owner_session_id=?1
-        AND (r.source_sequence>?2 OR r.source_sequence=?9) AND r.source_sequence<=?3
+    let predicate = format!(
+        "(r.source_sequence>?2 OR r.source_sequence=?9) AND r.source_sequence<=?3
         AND {} AND {} AND r.visible=1 AND (?8=1 OR (r.kind!='unknown_tool' AND r.unknown_only=0))
         AND r.order_sequence {comparison} ?10
         AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n WHERE n.owner_session_id=r.owner_session_id
-            AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision AND {})
-        ORDER BY r.order_sequence {direction},r.order_index {direction},r.source_sequence {direction},r.source_index {direction} LIMIT 1",
-        eligible("r"),replay_predicate("r","?7"),eligible("n"));
-    let value: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(query))
-        .bind(&selection.session)
-        .bind(selection.after as i64)
-        .bind(selection.through as i64)
-        .bind(selection.captured_through as i64)
-        .bind(selection.before.min(i64::MAX as u64) as i64)
-        .bind(&selection.lineage)
-        .bind(
-            selection
-                .replay
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?,
+            AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision AND {})",
+        eligible("r"), replay_predicate("r", "?7"), eligible("n")
+    );
+    let columns = format!(
+        "r.order_sequence,r.order_index,r.source_sequence,r.source_index,r.revision,
+        CASE WHEN {predicate} THEN 1 ELSE 0 END AS selected"
+    );
+    let order_query = format!("SELECT {columns} FROM context_semantic_rows r INDEXED BY context_semantic_row_order
+        WHERE r.owner_session_id=?1
+        AND (r.order_sequence,r.order_index,r.source_sequence,r.source_index,r.revision) {comparison} (?11,?12,?13,?14,?15)
+        ORDER BY r.order_sequence {direction},r.order_index {direction},r.source_sequence {direction},r.source_index {direction},r.revision {direction} LIMIT ?16");
+    let replay = selection
+        .replay
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let mut ordered: NeighborKey = if before {
+        (group as i64, 0, 0, 0, 0)
+    } else {
+        (group as i64, i64::MAX, i64::MAX, i64::MAX, i64::MAX)
+    };
+    let mut anchor = selection
+        .anchor_sequence
+        .is_some_and(|value| value <= selection.after && value <= selection.through);
+    let mut source = if anchor {
+        (
+            selection.anchor_sequence.expect("anchor selected") as i64,
+            -1,
+            -1,
         )
-        .bind(selection.prior_unknown)
-        .bind(selection.anchor_sequence.map(|value| value as i64))
-        .bind(group as i64)
-        .fetch_optional(connection)
-        .await?;
-    value
-        .map(|json| serde_json::from_str(&json).map_err(StoreError::from))
-        .transpose()
+    } else {
+        (selection.after.saturating_add(1) as i64, -1, -1)
+    };
+    let mut best: Option<NeighborKey> = None;
+    let mut order_limit = 1;
+    loop {
+        let records = sqlx::query(sqlx::AssertSqlSafe(order_query.as_str()))
+            .bind(&selection.session)
+            .bind(selection.after as i64)
+            .bind(selection.through as i64)
+            .bind(selection.captured_through as i64)
+            .bind(selection.before.min(i64::MAX as u64) as i64)
+            .bind(&selection.lineage)
+            .bind(&replay)
+            .bind(selection.prior_unknown)
+            .bind(selection.anchor_sequence.map(|value| value as i64))
+            .bind(group as i64)
+            .bind(ordered.0)
+            .bind(ordered.1)
+            .bind(ordered.2)
+            .bind(ordered.3)
+            .bind(ordered.4)
+            .bind(order_limit as i64)
+            .fetch_all(&mut *connection)
+            .await?;
+        for record in &records {
+            ordered = neighbor_key(record)?;
+            if record.try_get::<bool, _>("selected")? {
+                return neighbor_row(connection, &selection.session, ordered)
+                    .await
+                    .map(Some);
+            }
+        }
+        if records.len() < order_limit {
+            return Ok(None);
+        }
+        order_limit = PAGE;
+        let lower = if anchor {
+            "r.source_sequence=?9 AND r.source_sequence<=?2 AND r.source_sequence<=?3
+             AND (r.source_index,r.revision)>(?12,?13)"
+        } else {
+            "(r.source_sequence,r.source_index,r.revision)>(?11,?12,?13) AND r.source_sequence<=?3"
+        };
+        let source_query = format!(
+            "SELECT {columns} FROM context_semantic_rows r WHERE r.owner_session_id=?1 AND {lower}
+            ORDER BY r.source_sequence,r.source_index,r.revision LIMIT {PAGE}"
+        );
+        let records = sqlx::query(sqlx::AssertSqlSafe(source_query))
+            .bind(&selection.session)
+            .bind(selection.after as i64)
+            .bind(selection.through as i64)
+            .bind(selection.captured_through as i64)
+            .bind(selection.before.min(i64::MAX as u64) as i64)
+            .bind(&selection.lineage)
+            .bind(&replay)
+            .bind(selection.prior_unknown)
+            .bind(selection.anchor_sequence.map(|value| value as i64))
+            .bind(group as i64)
+            .bind(source.0)
+            .bind(source.1)
+            .bind(source.2)
+            .fetch_all(&mut *connection)
+            .await?;
+        for record in &records {
+            let key = neighbor_key(record)?;
+            source = (key.2, key.3, key.4);
+            if record.try_get::<bool, _>("selected")?
+                && best.is_none_or(|current| if before { key > current } else { key < current })
+            {
+                best = Some(key);
+            }
+        }
+        if records.len() < PAGE {
+            if anchor {
+                anchor = false;
+                source = (selection.after.saturating_add(1) as i64, -1, -1);
+            } else {
+                return match best {
+                    Some(key) => neighbor_row(connection, &selection.session, key)
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                };
+            }
+        }
+    }
+}
+
+fn neighbor_key(record: &sqlx::sqlite::SqliteRow) -> Result<NeighborKey, StoreError> {
+    Ok((
+        record.try_get("order_sequence")?,
+        record.try_get("order_index")?,
+        record.try_get("source_sequence")?,
+        record.try_get("source_index")?,
+        record.try_get("revision")?,
+    ))
 }
 
 pub(crate) async fn meaningful_history(

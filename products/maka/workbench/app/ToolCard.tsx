@@ -17,9 +17,10 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { displayText, tr } from './locale';
 import { computed, inputAction, Scroll, Text, View } from 'nsh';
-import { Button, SelectionArea } from 'nsh/base';
+import { Button } from 'nsh/base';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
@@ -168,9 +169,9 @@ function Field(props: {
         />
       }
     >
-      <SelectionArea>
+      <View selectable>
         <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
-      </SelectionArea>
+      </View>
     </If>
   );
 }
@@ -257,7 +258,7 @@ export function ToolCard(props: {
           accessibilityLabel={tr('Toggle tool {name}', {
             name: tool()?.call?.name ?? tr('Tool details'),
           })}
-          tooltip={title()}
+          tooltip={textTooltip(() => title())}
           onPress={inputAction(props.expand, {
             sessionId: props.sessionId,
             key: props.ownerKey(),
@@ -311,9 +312,9 @@ export function ToolCard(props: {
         <If when={props.expanded()}>
           <Button
             accessibilityLabel={tr('Toggle original tool details')}
-            tooltip={
-              props.original() ? tr('Show readable tool details') : tr('Show original tool data')
-            }
+            tooltip={textTooltip(() =>
+              props.original() ? tr('Show readable tool details') : tr('Show original tool data'),
+            )}
             selected={props.original()}
             onPress={inputAction(props.showOriginal, {
               sessionId: props.sessionId,

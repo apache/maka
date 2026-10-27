@@ -38,3 +38,12 @@ serde_json = "1"
 opt-level = 3
 [profile.dev.package.taffy]
 opt-level = 3
+
+# Keep this owning example on Maka's existing GPUI input-admission and wake contracts.
+[patch.crates-io]
+gpui-fast = { path = "../../../gpui-fast/crates/gpui" }
+gpui-fast-macos = { path = "../../../gpui-fast/crates/gpui_macos" }
+gpui-fast-windows = { path = "../../../gpui-fast/crates/gpui_windows" }
+gpui-fast-linux = { path = "../../../gpui-fast/crates/gpui_linux" }
+gpui-pre-scheduler = { path = "../../../gpui-fast/crates/scheduler" }
+async-io = { path = "../../../async-io" }

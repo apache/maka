@@ -3,10 +3,7 @@
 //! not a timer of the app's clock).
 
 use nsh_base::sheet;
-use nsh_core::{
-    Size,
-    ui::{Root, prelude::*},
-};
+use nsh_core::{Size, element::Root, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 

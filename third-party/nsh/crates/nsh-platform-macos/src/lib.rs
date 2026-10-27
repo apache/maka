@@ -43,7 +43,7 @@ mod navigation;
 mod net;
 mod picker;
 mod scroll;
-mod selection_area;
+mod selectable_view;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -65,7 +65,7 @@ pub use objc2_foundation;
 #[cfg(feature = "dev")]
 pub use crate::app::set_root;
 pub use crate::{
-    app::{AppOptions, AppSource, AppView, quit_app, run_app, set_ui_sets},
+    app::{AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, set_ui_sets},
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
     text::CoreTextEngine,

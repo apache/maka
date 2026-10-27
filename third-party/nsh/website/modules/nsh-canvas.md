@@ -7,7 +7,7 @@ demo: mod-canvas
 
 # Canvas
 
-`Canvas` draws with an HTML Canvas 2D–style context. Your `draw` function **records** the drawing; the platform replays it natively (Core Graphics on iOS, `android.graphics.Canvas` on Android) at the screen's resolution. Numbers and colors in a drawing may be [animated values](./nsh-animated.md): when they animate, the platform redraws on its own, without running `draw` again.
+`Canvas` draws with an HTML Canvas 2D–style context. Your `draw` function **records** the drawing; the platform replays it natively (Core Graphics on iOS, `android.graphics.Canvas` on Android) at the screen's resolution. Numbers and colors in a drawing may be [animated values](./nsh.md#animation): when they animate, the platform redraws on its own, without running `draw` again.
 
 ```ts
 import { Canvas, CanvasGradient, CanvasRenderingContext2D, Path2D } from "nsh";
@@ -71,7 +71,7 @@ mount(App);
 Any argument typed `CanvasNumber` and any paint (`fillStyle`, `strokeStyle`) accepts a `AnimatedNode`. The canvas then reads the node while it draws, and redraws natively on every frame of its animation:
 
 ```tsx
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
 import { Canvas } from "nsh";
 
 const progress = createAnimatedValue(0);

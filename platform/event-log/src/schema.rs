@@ -67,6 +67,24 @@ pub(crate) async fn initialize_connection_with_control(
             return Err(StoreError::UnsupportedDatabase);
         }
     }
+    // Root partitions cannot own caller journals. Reject before migrations or
+    // derived-index initialization can write to this original database.
+    if control.is_some() {
+        let has_intents: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE name='application_intents' AND type='table')",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        if has_intents
+            && sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM main.application_intents)",
+            )
+            .fetch_one(&mut *connection)
+            .await?
+        {
+            return Err(StoreError::UnsupportedDatabase);
+        }
+    }
     // A fresh file needs pointer-map pages before SQLx creates its first table.
     // Reclamation can then return space in small steps without a full VACUUM.
     if tables == 0 {

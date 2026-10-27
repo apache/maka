@@ -17,7 +17,7 @@ each section is the app's too: it shows the one its value names, next to the lis
 
 ```rust tabs
 use nsh_base::{tab, tabs, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn sections() -> impl IntoElement {
     let section = signal("overview");

@@ -62,7 +62,7 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   rows)` for its assigned region and routes `handle_event(Event)` using mouse coordinates local to that region.
   Each view owns its engine and native component registry; [`run_app`](tui.md#public-embedding-api) provides the
   standalone terminal lifecycle. See [Terminal backend](tui.md) for embedding contracts and public APIs.
-- **Native components** (`nsh/native`; `component.rs`, `ComponentBox.java`): the embedding app registers its own native
+- **Native components** (`nsh`; `component.rs`, `ComponentBox.java`): the embedding app registers its own native
   views by name — Swift `NshAppView.register(component:) { context in … }` (`NshComponent`: `view`, `setProp`,
   `command`), Java `NshView.registerComponent(name, factory)` (`NshComponent`), Rust `AppView::register_component`
   (`NativeComponent`) — one registry per view, no globals. Names under `nsh/` are NSH's own
@@ -79,13 +79,26 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   `NshComponent.destroy()` on every component still alive (`Mounter.destroyComponents`). `ref.command(name, args)` → `Command::Native`. Unknown names render an empty box (warned once). Props and events
   cross the C ABI / JNI as JSON text (Swift `JSONSerialization`, Java `org.json` as maps and lists). Registered
   components are the embedding app's own code: capabilities do not apply to them.
+  An own prop given an animated value (JS: an `AnimatedNode` as the prop; Rust: `NativeView::bind_animated_prop`) is bound
+  instead of sent: `Prop::ComponentPropBinding`, a slot per name (`AnimationProp::ComponentSlot(n)` among the view's
+  `AnimationBindings`, the names in `MountItem::ComponentPropSlots`, sent before the bindings that use new slots). The
+  platform evaluates it with its graph and hands the component the value on the frames it changed, on the main / UI
+  thread with no JS: `setAnimatedNumber(name, double)` / `setAnimatedColor(name, argb)` (Java, Swift; `set_animated_number`
+  / `set_animated_color` on the Rust traits), whose defaults call `setProp` with the number. De-duplicated per (view,
+  slot): Android in `ComponentBox` (the outputs, codes `70000 + n` for a number and `140000 + n` for a color, come every
+  frame), iOS in `ComponentHost`, the desktops in `Animator::write_components`; a component attached after its bindings
+  gets the values then, and bindings that change are handed over again. While bound, a static value of the same name is
+  kept but not sent; unbinding (JS: the prop is a plain value again) sends it, or `None`. The C ABI takes the callbacks
+  through `nsh_app_register_component_with_animation` (`NshComponentAnimationCallbacks`); `nsh_app_register_component` is
+  unchanged and its components get the values as `set_prop` JSON. GPUI delivers them with the next frame, as props;
+  the web has no registered components and ignores them.
   On the GPUI backend (`nsh-platform-gpui`, `native.rs`) a component renders a GPUI element
   (`NativeComponent::render(window, cx) -> Option<AnyElement>`, any GPUI / GPUI Kit element or `Entity` view): the
   surface element's prepaint lays it out at the box's window bounds and prepaints it (`prepaint_as_root`, clipped to the
   clipping ancestors), the tree paints it where it draws the box (NSH content drawn later covers it), and a `BlockMouse`
   hitbox under it keeps NSH's input away; keys go to it first while focus is inside it (GPUI dispatches its key
   bindings, then its key listeners, then the surface's), and the keys it lets through reach the window's shortcuts,
-  then the app's `nsh/keymap` bindings (as while a text field is focused, so a binding whose `when` is `auto` leaves
+  then the app's `keymap` bindings (as while a text field is focused, so a binding whose `when` is `auto` leaves
   typing keys to the component) and the menu's shortcuts, and nothing else of NSH's (`input::component_key`); one that returns its widget's
   handle from `NativeComponent::focus_handle` is a Tab stop among the text fields (in tree order, in the newest modal's
   scope). Props and commands reach it with the next frame, before `render`, with the window and `App` (`set_prop(name,
@@ -93,7 +106,7 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   the box is empty, so a component can size itself. Content masks are
   rectangles: rounded corners do not cut a component (videos follow them).
   `crates/gpui/nsh-platform-gpui/examples/embed.rs` runs `examples/embedded` with its badge as a GPUI element.
-- **Native modules** (`nsh/native`'s `nativeModule`; `platform_modules.rs`, `modules::host_module`): an embedding app
+- **Native modules** (`nsh`'s `nativeModule`; `platform_modules.rs`, `modules::host_module`): an embedding app
   written in Rust gives its engines a UI set of its own (`Registry::ui_set("host/trading")` with its `#[module]`s,
   `#[class]`es, Rust components and host-owned `Registry::value` factories) next to NSH's (`set_ui_sets` of the
   platform crate, `EngineConfig::ui_sets`), and
@@ -104,7 +117,7 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   from the app's Rust crates (`rust_app.rs`, `tooling.md`); the CLI reads it as data. Calls keep the typed machinery (`rust-classes.md`): plain functions
   answer in the call, `cx` functions are ops, `async` ones tasks. Where the host gave no set under the specifier, it
   throws a `ReferenceError` naming it.
-- **The host channel** (`nsh/host`; `nsh_engine::HostChannel`, `nsh_core::host_channel`, `nsh-js`
+- **The host channel** (`nsh`'s `host`; `nsh_engine::HostChannel`, `nsh_core::host_channel`, `nsh-js`
   `host_channel.rs`): the embedding app and the app talk without a view in between and without Rust of the
   embedding app's. Every view keeps one channel for every app it loads (Rust `AppView::host()` on iOS, macOS,
   Linux, Windows and GPUI, `AppOptions::host` / `SurfaceOptions::host` to bring one's own; Swift `NshAppView.params`,
@@ -141,11 +154,11 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
     `destroy`, then joins the engine with the Java lock released. Data crosses the C ABI and JNI as JSON text
     (Swift `JSONSerialization`, Java
     `org.json` as maps and lists), the VM as JSON values converted natively.
-  - A Rust app (`App::Rust`) has no `nsh/host`: events reach no one; its own Rust reaches the embedding app's
+  - A Rust app (`App::Rust`) has no `host`: events reach no one; its own Rust reaches the embedding app's
     directly ("Native modules", below). The host grants the native functions the app may call through `capabilities.host`.
   - *The URL handler* (`HostChannel::handle_open_url`; Swift `NshAppView.onOpenURL`, C
     `nsh_app_set_open_url_handler`; Java `NshView.setOpenUrlHandler`, `NshView.OpenUrlHandler`): the URLs the app
-    opens (`openUrl` of `nsh/device`, `nsh_core::ui::open_url`, a `TextView` with `links="open"`;
+    opens (`openUrl` of `nsh`, `nsh_core::element::open_url`, a `TextView` with `links="open"`;
     `nsh_core::open_url`) reach it before the platform, so a host routes its own links through its router. It is a
     typed hook of the channel, not a named message: the channel is already the view's one object for the host's side,
     threaded to every engine and through both SDKs' main-thread glue, and a hook of its own takes only what passed
@@ -165,7 +178,7 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   host's own UI reads and changes the same channel, so a change from the host, or from any app, reaches all of
   them; the task ends with the engine (its callbacks are dropped with the VM). `examples/embed-gpui` keeps its
   selected symbol and orders this way (`src/trading.rs`); the engine's `host_modules` tests run it with two engines.
-- **Each engine's own part of the host** (`nsh_core::ui::EngineContext`): a host serving several engines (windows,
+- **Each engine's own part of the host** (`nsh_core::element::EngineContext`): a host serving several engines (windows,
   panels) gives each one typed values when it builds it (`EngineConfig::context`; GPUI `AppOptions::context`):
   `EngineContext::default().with(MyLink { .. })`, at most one value per type, `Send + Sync`. The set's Rust code
   reads the context of the engine running it with `engine_context::<MyLink>()` (`Option<Arc<MyLink>>`): plain
@@ -187,8 +200,8 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   (C `nsh_app_set_locale` / `nsh_app_set_font_scale`), Java `NshView.setLocale` / `setFontScale`. Each platform writes
   them over the system's values where it builds the environment (`Surface::set_environment` on the desktops, the root
   view's `environment()` on iOS, `publishEnvironment` in Java), so they reach the engine as a system change would and
-  are in the first frame of every app loaded later; the platform's own drawing that reads the environment (alerts,
-  toasts) follows too. `None` / `nil` / `null` / 0 follows the system's again (its settings are read again). The text
+  are in the first frame of every app loaded later; the platform's own drawing that reads the environment (alerts)
+  follows too. `None` / `nil` / `null` / 0 follows the system's again (its settings are read again). The text
   size scales what allows font scaling (`Core::set_font_scale`): texts, inputs, the components' labels; lengths, `rem`
   in classes included, stay as they are. The layout direction stays the system's language's.
 - **The host's theme overrides**: a host that embeds one app in several branded host apps overrides the app's theme
@@ -293,7 +306,7 @@ NSH draws (`src/layers.rs`).
   view runs, as `NshAppView.limits` and `NshView.setLimits` on iOS and Android: `Limits::default()` (an app embedded
   in another app) unless set; the development host `nsh-gpui-host` runs apps on its own, with `Limits::standalone()`
   (`sandbox.md`).
-- **Storage.** Each app keeps `nsh/storage` in `<data dir>/<app id>/storage.json`, which the engine picks
+- **Storage.** Each app keeps its `Storage` in `<data dir>/<app id>/storage.json`, which the engine picks
   (`EngineConfig::data_dir`, `app_dir_name(App::app_id())`, `default` without a valid id): the id travels with the app
   (`app.json` next to a bundle, written by `nsh build` / `nsh package`; the dev server's bundle message; a verified
   package's id; `Root::app_id` in Rust apps' generated code). Platforms only give the data dir: the system's

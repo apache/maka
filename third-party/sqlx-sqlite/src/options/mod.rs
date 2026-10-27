@@ -65,6 +65,7 @@ pub struct SqliteConnectOptions {
     pub(crate) read_only: bool,
     pub(crate) create_if_missing: bool,
     pub(crate) shared_cache: bool,
+    pub(crate) query_planner_stability: bool,
     pub(crate) statement_cache_capacity: usize,
     pub(crate) busy_timeout: Duration,
     pub(crate) log_settings: LogSettings,
@@ -199,6 +200,7 @@ impl SqliteConnectOptions {
             read_only: false,
             create_if_missing: false,
             shared_cache: false,
+            query_planner_stability: false,
             statement_cache_capacity: 100,
             busy_timeout: Duration::from_secs(5),
             log_settings: Default::default(),
@@ -231,6 +233,17 @@ impl SqliteConnectOptions {
     /// Gets the current name of the database file.
     pub fn get_filename(&self) -> &Path {
         &self.filename
+    }
+
+    /// Enable SQLite's Query Planner Stability Guarantee.
+    ///
+    /// Disabled by default. Stable plans ignore bound parameter values, avoiding
+    /// parameter-sensitive recompilation. Bound LIKE/GLOB patterns cannot provide
+    /// index prefix ranges in this mode; use explicit bounds for those lookups.
+    /// Schema changes still invalidate cached statements.
+    pub fn query_planner_stability(mut self, enabled: bool) -> Self {
+        self.query_planner_stability = enabled;
+        self
     }
 
     /// Set the enforcement of [foreign key constraints](https://www.sqlite.org/pragma.html#pragma_foreign_keys).

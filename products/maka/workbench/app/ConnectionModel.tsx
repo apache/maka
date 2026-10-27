@@ -19,7 +19,7 @@
 
 import { inputAction, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import { thinkingLevels, type ModelSettingsOwner } from './settings';
+import { modelLimitFields, thinkingLevels, type ModelSettingsOwner } from './settings';
 import { SettingsField } from './SettingsField';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { tr } from './locale';
@@ -57,6 +57,32 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
           change={(label) => owner.changeModel({ label })}
           hint={tr('Optional. Empty uses the provider’s name.')}
         />
+        <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
+          {tr('Context & output')}
+        </Text>
+        <Each of={modelLimitFields} key={(field) => field.key}>
+          {(field) => (
+            <SettingsField
+              label={tr(field().label)}
+              value={model().limits[field().key]}
+              disabled={disabled()}
+              change={(value) =>
+                owner.changeModel({ limits: { ...model().limits, [field().key]: value } })
+              }
+              hint={tr(field().hint)}
+            />
+          )}
+        </Each>
+        <If when={model().effective?.limits}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>
+            {tr('Effective context: {context} · input: {input} · provider output limit: {output}', {
+              context: model().effective!.limits!.contextWindow ?? tr('Provider controlled'),
+              input: model().effective!.limits!.inputLimit ?? tr('Provider controlled'),
+              output: model().effective!.limits!.maxOutputTokens ?? tr('Provider controlled'),
+            })}
+          </Text>
+        </If>
+        <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>{tr('Tools')}</Text>
         <Each
           of={
             [

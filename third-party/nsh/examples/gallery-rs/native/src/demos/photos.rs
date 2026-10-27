@@ -6,7 +6,7 @@
 
 use std::{rc::Rc, time::Duration};
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use crate::ui::{
     Badge, Button, ButtonVariant, Finish, Finished, IconName, Stat, Tone, bind_refresh, colors,

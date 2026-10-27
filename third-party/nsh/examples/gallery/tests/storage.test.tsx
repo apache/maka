@@ -1,5 +1,5 @@
 // The Storage demo with storage set up by the test: `open`'s `storage` is
-// what `nsh/storage` holds when the app starts, `app.storage()` what it
+// what `nsh` holds when the app starts, `app.storage()` what it
 // holds now.
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";

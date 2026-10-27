@@ -17,8 +17,8 @@ The dialog owns its behavior and leaves its look to the app: its styles style th
 children), and in TSX `backdropClass` / `backdropStyle` add a backdrop behind it.
 
 ```rust tabs
-use nsh_base::{button, dialog, safe_area_view};
-use nsh_core::ui::prelude::*;
+use nsh_base::{button, dialog};
+use nsh_core::prelude::*;
 
 /// A blue button with a white label.
 fn primary(label: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {
@@ -47,9 +47,11 @@ fn example() -> impl IntoElement {
                 .flex_1()
                 .bg(white())
                 .child(
-                    safe_area_view()
+                    view()
                         .flex_1()
-                        .p_5()
+                        .px_5()
+                        .pt_safe_area_plus(px(20.0))
+                        .pb_safe_area_plus(px(20.0))
                         .gap_3()
                         .child(text("A sheet").text_2xl().font_weight(FontWeight::BOLD))
                         .child(primary("Close", move || open.set(false))),
@@ -60,7 +62,7 @@ fn example() -> impl IntoElement {
 
 ```tsx tabs
 import { signal, Text, View } from "nsh";
-import { Button, Dialog, SafeAreaView } from "nsh/base";
+import { Button, Dialog } from "nsh/base";
 
 function Example() {
   const open = signal(false);
@@ -70,12 +72,20 @@ function Example() {
         <Text class="font-semibold text-white">Open</Text>
       </Button>
       <Dialog open={open()} presentation="pageSheet" onOpenChange={(next) => open.set(next)} class="flex-1 bg-white">
-        <SafeAreaView style={{ flex: 1, padding: 20, gap: 12 }}>
+        <View
+          style={{
+            flex: 1,
+            gap: 12,
+            paddingHorizontal: 20,
+            paddingTop: "calc(env(safe-area-inset-top) + 20px)",
+            paddingBottom: "calc(env(safe-area-inset-bottom) + 20px)",
+          }}
+        >
           <Text style={{ fontSize: 24, fontWeight: "700" }}>A sheet</Text>
           <Button onPress={() => open.set(false)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
             <Text class="font-semibold text-white">Close</Text>
           </Button>
-        </SafeAreaView>
+        </View>
       </Dialog>
     </View>
   );
@@ -84,10 +94,10 @@ function Example() {
 
 In TSX, the dialog is shown while `open` is not `false` and closed when it becomes `false`. In Rust, it is presented
 while it is in the view and dismissed when it leaves it, so `when` holds it. Either way it gives its content the dialog's
-safe-area insets, which [`SafeAreaView`](./safe-area-view.md) and `safeAreaInsets()` (`cx.insets()` in a Rust
+safe-area insets, which the [`env(safe-area-inset-*)`](./safe-area.md) variables and `safeAreaInsets()` (`cx.insets()` in a Rust
 component) inside it read. [`Button`](./button.md), also from `nsh/base`, is a press target styled by the app.
 
-`nsh_core::ui::prelude` also has an older, deprecated `dialog` function: import `nsh_base::dialog` by name, as above,
+`nsh_core::prelude` also has an older, deprecated `dialog` function: import `nsh_base::dialog` by name, as above,
 and the explicit import takes its place. For the system's alert or action sheet, use
 [`AlertDialog`](./alert-dialog.md).
 

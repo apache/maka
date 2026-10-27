@@ -17,10 +17,11 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import { Clipboard } from 'nsh/clipboard';
+import { Clipboard } from 'nsh';
 import type { ToolSource } from './ToolSource';
 import type { ToolChange, ToolProcess, ToolProjection, ToolRead, ToolSection } from './toolCards';
 import { C, bodyTextStyle, captionTextStyle, codeTextStyle, controlStyle } from './ui';
@@ -64,7 +65,7 @@ function Copy(props: { text(): string; label: string; source: ToolSource }) {
         </Text>
         <Button
           accessibilityLabel={props.label}
-          tooltip={copied() ? tr('Copied') : props.label}
+          tooltip={textTooltip(() => (copied() ? tr('Copied') : props.label))}
           onPress={action()}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
           hoverStyle={{ backgroundColor: C.line }}

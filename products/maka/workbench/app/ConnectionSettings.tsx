@@ -17,7 +17,9 @@
  * under the License.
  */
 
-import { Input, inputAction, Text, View, List } from 'nsh';
+import { textTooltip } from './ui';
+import { inputAction, Text, View, List } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
 import type { ModelSettingsOwner } from './settings';
@@ -364,7 +366,7 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
                   <Button
                     disabled={disabled() || !owner.editor()?.enabled}
                     accessibilityLabel={tr('Set default {id}', { id: id() })}
-                    tooltip={tr('Set default {id}', { id: id() })}
+                    tooltip={textTooltip(() => tr('Set default {id}', { id: id() }))}
                     selected={isDefault()}
                     onPress={inputAction(owner.setDefault, { ...owner.action(), id: id() })}
                     style={{

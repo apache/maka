@@ -6,7 +6,8 @@
 // `caret`, `defaultValue` (the initial text, then the user's) and
 // `value` (the text, controlled: what the app sets it to). Its script checks
 // each.
-import { Input, Text, View, signal } from "nsh";
+import { Text, View, signal } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   const name = signal("Ada");

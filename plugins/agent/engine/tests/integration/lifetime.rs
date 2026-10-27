@@ -30,9 +30,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ToolOutcome;
-use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
-use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
 use maka_code_runtime::CellLimits;
@@ -45,15 +43,26 @@ use maka_tools::{
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Notify;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Effect {
-    entered: Arc<Notify>,
-    cancelled: Arc<Notify>,
-    release: Arc<Notify>,
+    entered: Arc<Semaphore>,
+    cancelled: Arc<Semaphore>,
+    release: Arc<Semaphore>,
     count: Arc<AtomicUsize>,
+}
+
+impl Default for Effect {
+    fn default() -> Self {
+        Self {
+            entered: Arc::new(Semaphore::new(0)),
+            cancelled: Arc::new(Semaphore::new(0)),
+            release: Arc::new(Semaphore::new(0)),
+            count: Arc::new(AtomicUsize::new(0)),
+        }
+    }
 }
 
 impl ToolExecutor for Effect {
@@ -65,11 +74,11 @@ impl ToolExecutor for Effect {
         let effect = self.clone();
         Box::pin(async move {
             effect.count.fetch_add(1, Ordering::SeqCst);
-            effect.entered.notify_one();
+            effect.entered.add_permits(1);
             cancellation.cancelled().await;
-            effect.cancelled.notify_one();
+            effect.cancelled.add_permits(1);
             // This dispatched native effect must finish even after cancellation.
-            effect.release.notified().await;
+            effect.release.acquire().await.unwrap().forget();
             Ok(input)
         })
     }
@@ -172,10 +181,10 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
             let running_store = log.store();
             let caller =
                 tokio::spawn(async move { running_engine.run(running_store, running_input, running_token).await });
-            effect.entered.notified().await;
+            effect.entered.acquire_many(2).await.unwrap().forget();
             caller.abort();
             assert!(caller.await.unwrap_err().is_cancelled());
-            effect.cancelled.notified().await;
+            effect.cancelled.acquire_many(2).await.unwrap().forget();
             assert!(
                 !caller_token.is_cancelled(),
                 "dropping a run must only cancel its child token"
@@ -198,7 +207,7 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
                 "rejected admission and caller abort must not seal a live effect"
             );
 
-            effect.release.notify_one();
+            effect.release.add_permits(2);
             // The detached worker has no join handle exposed by Engine. Retry
             // admission with cooperative yields until its drain has completed.
             loop {
@@ -234,43 +243,26 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
                 );
             }
             let aborted = boundaries;
-            assert_eq!(
-                aborted
-                    .iter()
-                    .map(|stored| stored.event.fact.kind())
-                    .collect::<Vec<_>>().join(","),
-                "invocation_opened,model_requested,model_completed,tool_dispatched,tool_settled,tool_rejected,invocation_ended"
-            );
-            let Fact::ToolDispatched { operation_id, call, .. } = &aborted[3].event.fact else {
-                unreachable!()
-            };
-            let ToolOrigin::Provider { step_id } = &call.origin else {
-                panic!("direct tool calls must preserve their provider step")
-            };
-            assert!(matches!(&aborted[4].event.fact,
-                Fact::ToolSettled { operation_id: settled, outcome: ToolOutcome::Succeeded { .. } } if settled == operation_id));
-            assert_eq!(log.resolve_tool_result(&aborted[4].event.invocation.session_id, &aborted[4].event.id).await.unwrap().into_json(), json!({"value":42}));
-            assert_eq!(aborted[5].event.fact, Fact::ToolRejected {
-                operation_id: format!("{step_id}:call-2"),
-                call: ToolCallIdentity::provider(step_id.clone(), "call-2".into()),
-                name: "echo".into(),
-                input: json!({"value":43}).into(),
-                reason: ToolRejection::Cancelled,
+            assert_eq!(aborted.iter().map(|stored| stored.event.fact.kind()).collect::<Vec<_>>(),
+                ["invocation_opened", "model_requested", "model_completed", "tool_dispatched", "tool_dispatched", "tool_settled", "tool_settled", "invocation_ended"]);
+            for dispatch in &aborted[3..5] {
+                let Fact::ToolDispatched { operation_id, call, input, .. } = &dispatch.event.fact else {
+                    unreachable!()
+                };
+                assert!(matches!(call.origin, ToolOrigin::Provider { .. }));
+                let settlement = aborted[5..7].iter().find(|stored| matches!(&stored.event.fact,
+                    Fact::ToolSettled { operation_id: settled, outcome: ToolOutcome::Succeeded { .. } } if settled == operation_id)).unwrap();
+                assert_eq!(log.resolve_tool_result(&settlement.event.invocation.session_id, &settlement.event.id).await.unwrap().into_json(), *input);
+            }
+            assert_eq!(aborted[7].event.fact, Fact::InvocationEnded {
+                outcome: InvocationOutcome::Cancelled { source: "runtime_cancellation".into() }
             });
-            assert_eq!(
-                aborted[6].event.fact,
-                Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Cancelled {
-                        source: "runtime_cancellation".into()
-                    }
-                }
-            );
             let next_opening = settled
                 .events
                 .iter()
                 .find(|stored| stored.event.invocation.invocation_id == "invocation-next")
                 .unwrap();
-            assert!(aborted[6].sequence < next_opening.sequence);
+            assert!(aborted[7].sequence < next_opening.sequence);
             engine.drain().await;
             drop(engine);
             Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
@@ -289,7 +281,7 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
         }
         assert_eq!(
             effect.count.load(Ordering::SeqCst),
-            1,
+            2,
             "committed effect must never be replayed"
         );
         let requests = server.await.unwrap();
@@ -306,7 +298,7 @@ async fn aborted_caller_cancels_worker_but_retains_admission_until_effect_is_dur
             assert_eq!(results.len(), 2);
             assert_eq!(results[0]["tool_call_id"], "call-1");
             assert_eq!(results[1]["tool_call_id"], "call-2");
-            assert!(results[1]["content"].as_str().unwrap().contains(&ToolRejection::Cancelled.to_string()));
+            assert_eq!(serde_json::from_str::<Value>(results[1]["content"].as_str().unwrap()).unwrap(), json!({"value":43}));
             assert_eq!(
                 serde_json::from_str::<Value>(results[0]["content"].as_str().unwrap()).unwrap(),
                 json!({"value":42})

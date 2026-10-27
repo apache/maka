@@ -17,9 +17,10 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
-import { windowSize } from 'nsh/device';
+import { windowSize } from 'nsh';
 import type { AgentWorkspaceAccess } from '../../../../packages/plugin-sdk/src/index.js';
 import type { SessionPermissions } from './sessionPermissions';
 import { ChoiceIndicator } from './ChoiceIndicator';
@@ -59,7 +60,7 @@ export function SessionPermissionsSelect(props: { owner: SessionPermissions | nu
         <Button
           disabled
           accessibilityLabel={tr('Sandbox and approvals')}
-          tooltip={tr('Choose a conversation to change sandbox settings.')}
+          tooltip={textTooltip(() => tr('Choose a conversation to change sandbox settings.'))}
           style={controlStyle}
           disabledStyle={controlDisabledStyle}
         >
@@ -117,7 +118,9 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
         <Button
           disabled={disabled()}
           accessibilityLabel={tr('Sandbox and approvals')}
-          tooltip={owner.snapshot() ? tr('Sandbox and approvals') : tr('Loading sandbox settings…')}
+          tooltip={textTooltip(() =>
+            owner.snapshot() ? tr('Sandbox and approvals') : tr('Loading sandbox settings…'),
+          )}
           onPress={inputAction(changeOpen, !open())}
           style={{
             ...controlStyle,
@@ -153,7 +156,7 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
             <Button
               disabled={owner.pending()}
               accessibilityLabel={tr('Close sandbox settings')}
-              tooltip={tr('Close')}
+              tooltip={textTooltip(() => tr('Close'))}
               onPress={inputAction(changeOpen, false)}
               style={{ ...controlStyle, width: 32, alignItems: 'center' }}
               hoverStyle={controlHoverStyle}

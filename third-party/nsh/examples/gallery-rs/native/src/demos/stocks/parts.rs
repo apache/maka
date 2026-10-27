@@ -6,7 +6,8 @@
 use nsh_core::{
     Bounds, Points,
     animation::{Curve, EaseMode},
-    ui::{AnyElement, prelude::*},
+    element::AnyElement,
+    prelude::*,
 };
 
 use super::live;

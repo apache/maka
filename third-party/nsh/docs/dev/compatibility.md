@@ -7,7 +7,7 @@ starting after an NSH update is a bug in NSH, never in the app.
 
 This page is the contract and how it is enforced. It holds from the first release recorded in
 `nsh-compat` ("Releasing") on, and for good, whatever the version number says; earlier versions made no promises.
-The first release recorded is 0.3.0: earlier ones are not recorded.
+No release is recorded yet, 0.3.0 included: the first one recorded starts the contract.
 
 ## What apps depend on
 
@@ -134,7 +134,7 @@ existing record, an app whose script fails, a `covers` claim that does not hold 
 checks (`[<module>] <name>`, `[globals] <name>`, `[props] <name>`, `[events] <name>`, `[styles] <name>`; a
 component's own props and events as `[props] <Component>.<name>`, `[events] <Component>.<name>`; platform props as
 `ios.<name>`, ...). Commit the record in `nsh-compat` and open a pull request there; once it is merged, the release
-is frozen. The first release recorded, 0.3.0, starts the contract.
+is frozen. The first release recorded starts the contract.
 
 Before the first record, two things land in NSH:
 

@@ -18,7 +18,7 @@
  */
 
 import { Canvas, Text } from 'nsh';
-import { platform } from 'nsh/device';
+import { platform } from 'nsh';
 
 const glyphs = {
   back: '‹',

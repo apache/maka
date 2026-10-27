@@ -8,8 +8,8 @@ import android.view.View;
  * A selection handle: the theme's drawable in a popup window over the app
  * (like TextView's, so it is not clipped and takes its own touches),
  * hanging from the line's bottom at one end of a selection. A selectable
- * text's own selection ({@link TextBox}) and a selection area's
- * ({@link SelectionArea}) both use it; its owner moves the selection.
+ * text's own selection ({@link TextBox}) and a selectable view's
+ * ({@link SelectableView}) both use it; its owner moves the selection.
  */
 @SuppressLint("ViewConstructor")
 final class SelectionHandle extends View {

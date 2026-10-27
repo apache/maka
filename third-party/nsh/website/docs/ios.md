@@ -206,14 +206,14 @@ The complete sample, a UIKit app that shows an NSH app below its own native head
 | `locale: Locale?` | The app's language and region in place of the user's: `Intl`, `locale()` and the components follow it at once, and the apps loaded later start in it. `nil` follows the system's. |
 | `fontScale: CGFloat?` | The text size in place of Dynamic Type's (1 is the default): texts and inputs are laid out again at it and `fontScale()` reads it, at once and for the apps loaded later; lengths keep their size. `nil` follows the system's. |
 | `setThemeOverrides(_ json: String?) throws` | The host's brand over the app's [theme](./tailwind.md#theme-tokens): a theme file in the format of `nsh.json`'s `"theme"`. Its tokens win over the app's of the same names, in light and dark mode, and the app's others stay. Applies at once and to the apps loaded later; `nil` gives the app its own theme back. Throws `NshError` for a file that does not parse. |
-| `storageDirectory: URL?` | Where the apps loaded from now on keep their [storage](../modules/nsh-storage.md); `nil`: `Library/Application Support/nsh/<app id>`, by the app's own id. |
+| `storageDirectory: URL?` | Where the apps loaded from now on keep their [storage](../modules/nsh.md#storage); `nil`: `Library/Application Support/nsh/<app id>`, by the app's own id. |
 | `cacheOptions: NshCacheOptions` | Where the apps loaded from now on keep their caches, the [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps: `location` `.system` (`Library/Caches/nsh`, each app in `<app id>`), `.directory(URL)` or `.off`; `images` `.default` (256 MB), `.maxSize(megabytes:)` or `.off`. |
 | `loadBundle(at url: URL) throws` | Runs a bundle written by `nsh build`. Assets come from `assets/` next to it; `bundle.js.map` and `capabilities.json` next to it are read too. |
 | `run(_ package: NshPackage)` | Runs a verified signed package (see below). A package runs once. |
 | `loadPackage(at:trust:) async throws -> NshPackage.Info` | Verifies the package at a URL off the main thread, then runs it. Throws why it was refused; the running app stays. |
 | `connectDevServer(_ url: URL) throws` | Development: loads from a `nsh dev` server and reloads on every change. Throws with `NativeShell.xcframework`, which has no development support. |
 | `register(component:_:)` | Registers a [native component](./native-components.md). |
-| `params: [String: Any]` | The launch parameters of the apps loaded from now on: the app reads them at start as `host.params` ([`nsh/host`](../modules/nsh-host.md)). |
+| `params: [String: Any]` | The launch parameters of the apps loaded from now on: the app reads them at start as `host.params` ([`host`](../modules/nsh.md#host)). |
 | `send(_ name: String, _ data: Any? = nil)` | Sends an event to the app (`host.on(name, …)`); kept until it listens, or for the next app while none runs. |
 | `handle(_ name: String, _ handler:)` | Handles the app's calls (`host.call`) and posts (`host.post`) of `name` on the main thread: `{ data, reply in … }`, or an `async throws` function `{ data in … }` whose result answers the call. |
 | `removeHandler(_ name: String)` | Removes the handler of `name`: the app's calls of it fail at once. |
@@ -237,7 +237,7 @@ try app.loadBundle(at: url)
 
 ## Talking to the app
 
-The view and the app it runs talk through a channel of their own ([`nsh/host`](../modules/nsh-host.md)): launch
+The view and the app it runs talk through a channel of their own ([`host`](../modules/nsh.md#host)): launch
 parameters the app reads at start, events from the host app, and calls and posts from the app, with JSON data
 (Foundation objects on this side). It needs no view in the app and no native component.
 
@@ -294,7 +294,7 @@ loaded later starts with the overrides in its first frame. `setThemeOverrides(ni
 
 ## Links the app opens
 
-The URLs the app opens ([`openUrl`](../modules/nsh-device.md#openurl), a `TextView`'s links with `links="open"`)
+The URLs the app opens ([`openUrl`](../modules/nsh.md#openurl), a `TextView`'s links with `links="open"`)
 reach `onOpenURL` first, on the main thread: return `true` when the host app handled the URL, such as by routing it
 through its own router, and `false` for the system to open it with `UIApplication.open`. Without `onOpenURL` the
 system opens every URL. URLs reach it after the app's `openUrl` capability allowed them.
@@ -409,8 +409,8 @@ updates the app in place, logs appear in the `nsh dev` terminal, and errors show
   The JS engine runs on its own thread; the main thread never waits for it.
 - **Status bar.** The embedded app's pages and dialogs (`statusBar`) change what `NshAppView.preferredStatusBarStyle` and friends return;
   the hosting view controller must forward them, as in the example above.
-- **Safe area.** Apps use `safe_area()` in Rust, `SafeAreaView` or `safeAreaInsets()` from
-  [`nsh/base`](../modules/nsh-base.md#safeareaview) in TSX, as usual. An `NshAppView` placed below your own header gets the insets that apply to it, not the window's.
+- **Safe area.** Apps use `safe_area()` in Rust, and `env(safe-area-inset-*)` in padding or
+  `safeAreaInsets()` from [`nsh`](../modules/nsh.md#safe-area-and-keyboard) in TSX, as usual. An `NshAppView` placed below your own header gets the insets that apply to it, not the window's.
 - **Mac Catalyst.** The same framework works in Catalyst apps.
 
 ## See also

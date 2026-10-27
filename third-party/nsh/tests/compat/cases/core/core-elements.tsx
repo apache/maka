@@ -4,12 +4,14 @@
 // its style puts it; `nativeModule` reading a UI set the engine has and one
 // it has not; `PanResponder`'s handlers spread on a view. Its script checks
 // each.
-import { Input, Scroll, Text, View } from "nsh";
-import { PanResponder } from "nsh/gesture";
-import { Image } from "nsh/image";
-import { nativeComponent, nativeModule } from "nsh/native";
-import { Video } from "nsh/video";
-import { WebView } from "nsh/webview";
+import { Scroll, Text, View } from "nsh";
+import { Input } from "nsh/base";
+import { createAnimatedValue } from "nsh";
+import { PanResponder } from "nsh";
+import { Image } from "nsh";
+import { nativeComponent, nativeModule } from "nsh";
+import { Video } from "nsh";
+import { WebView } from "nsh";
 
 const Map = nativeComponent<{ zoom: number }, { regionChange: { zoom: number } }>("CompatMap", {
   props: ["zoom"],
@@ -45,6 +47,8 @@ function App() {
       <Video testID="video" src="https://example.com/compat.mp4" paused style={{ width: 160, height: 90 }} />
       <WebView testID="web" html="<p>compat</p>" style={{ width: 180, height: 60 }} />
       <Map testID="map" zoom={3} style={{ width: 100, height: 50 }} />
+      {/* An own prop bound to an animated value: pushed natively, not sent as JSON. */}
+      <Map testID="map-animated" zoom={createAnimatedValue(2).interpolate({ inputRange: [0, 4], outputRange: [1, 5] })} style={{ width: 100, height: 50 }} />
       <View testID="pan" {...pan.panHandlers} style={{ width: 50, height: 50 }} />
       <Text>Missing module: {missingModule()}</Text>
       <Text>Base module: {typeof base === "object" && base !== null ? "object" : typeof base}</Text>

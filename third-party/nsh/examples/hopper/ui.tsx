@@ -1,5 +1,6 @@
 import { effect, type GestureResponderEvent, type JSX, signal, Text, View, type YNode } from "nsh";
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { createAnimatedValue, Easing } from "nsh";
+import { Button, Tab, Tabs } from "nsh/base";
 import { Icon, type IconName } from "./icons";
 import { color, mono, radius } from "./theme";
 
@@ -286,44 +287,29 @@ export function Switch(props: { value: boolean; onChange: (v: boolean) => void; 
   );
 }
 
-/** A segmented control on a bordered track. */
-export function Tabs<T extends string>(props: { options: readonly T[]; value: T; onChange: (v: T) => void }) {
+/** A segmented control on a bordered track: `Tabs` of `Tab`s, the selected
+ * one raised. The classes spell `color` (theme.ts) out as arbitrary values,
+ * because a state variant (`selected:`) takes classes. */
+export function Segmented<T extends string>(props: { options: readonly T[]; value: T; onChange: (v: T) => void }) {
   return (
-    <View
-      style={{
-        flexDirection: "row",
-        padding: 3,
-        borderRadius: radius.control,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: color.line,
-        backgroundColor: color.card,
-      }}
+    <Tabs
+      class="flex-row rounded-[12px] border border-[#242b34] bg-[#151a20] p-[3px]"
+      style={{ borderCurve: "continuous" }}
     >
       <Each of={props.options}>
-        {(option) => {
-          const on = () => props.value === option();
-          return (
-            <View
-              onPress={() => props.onChange(option())}
-              role="tab"
-              accessibilityState={{ selected: on() }}
-              style={{
-                flex: 1,
-                alignItems: "center",
-                paddingVertical: 9,
-                borderRadius: radius.control - 3,
-                borderWidth: 1,
-                borderColor: on() ? color.lineStrong : "transparent",
-                backgroundColor: on() ? color.raised : "transparent",
-              }}
-            >
-              <Text style={{ fontSize: 14, fontWeight: on() ? "600" : "400", color: on() ? color.text : color.muted }}>{option()}</Text>
-            </View>
-          );
-        }}
+        {(option) => (
+          <Tab
+            selected={props.value === option()}
+            onPress={() => props.onChange(option())}
+            class="group flex-1 items-center rounded-[9px] border border-transparent py-[9px] selected:border-[#323b46] selected:bg-[#1d232b]"
+          >
+            <Text class="text-[14px] font-normal text-[#8794a3] group-selected:font-semibold group-selected:text-[#e8edf2]">
+              {option()}
+            </Text>
+          </Tab>
+        )}
       </Each>
-    </View>
+    </Tabs>
   );
 }
 
@@ -493,12 +479,11 @@ export function Slider(props: {
 /** A full-width button; `primary` is filled with the accent. */
 export function Action(props: { label: string; primary?: boolean; disabled?: boolean; onPress: () => void }) {
   return (
-    <View
+    <Button
       onPress={props.onPress}
       disabled={props.disabled}
       activeStyle={{ opacity: 0.7 }}
-      role="button"
-      accessibilityState={{ disabled: props.disabled }}
+      disabledStyle={{ opacity: 0.5 }}
       style={{
         flex: 1,
         height: 50,
@@ -509,10 +494,9 @@ export function Action(props: { label: string; primary?: boolean; disabled?: boo
         backgroundColor: props.primary ? color.accent : color.raised,
         alignItems: "center",
         justifyContent: "center",
-        opacity: props.disabled ? 0.5 : 1,
       }}
     >
       <Text style={{ fontSize: 16, fontWeight: "600", color: props.primary ? color.ink : color.text }}>{props.label}</Text>
-    </View>
+    </Button>
   );
 }

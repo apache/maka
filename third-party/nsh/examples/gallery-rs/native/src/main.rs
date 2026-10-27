@@ -42,7 +42,7 @@ compile_error!(
 
 // Registered asset URIs keep the layout the development hosts serve them in.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn asset_directory(registry: &nsh_core::ui::Registry) -> std::io::Result<std::path::PathBuf> {
+fn asset_directory(registry: &nsh_core::element::Registry) -> std::io::Result<std::path::PathBuf> {
     let executable = std::env::current_exe()?;
     let base = executable
         .parent()

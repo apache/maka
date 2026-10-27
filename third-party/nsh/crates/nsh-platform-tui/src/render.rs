@@ -387,7 +387,7 @@ impl Surface {
             }
             if let Some((text, layout, content)) = &node.text {
                 let content = relative_frame(frame, node.frame, *content);
-                let area_range = self.selection_area_range(id);
+                let area_range = self.selectable_view_range(id);
                 let focused_link = text.links.iter().find(|link| {
                     area_range.is_none()
                         && self.dialog.is_none()
@@ -843,7 +843,7 @@ impl Surface {
         if let Some((text, layout, content)) = &node.text {
             let content = relative_frame(local, node.frame, *content);
             let mut selection = Vec::new();
-            let area_range = self.selection_area_range(id);
+            let area_range = self.selectable_view_range(id);
             let focused_link = text.links.iter().find(|link| {
                 area_range.is_none()
                     && self.dialog.is_none()

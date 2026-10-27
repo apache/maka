@@ -169,13 +169,13 @@ again replaces the running app. The complete sample is
 | `setLocale(Locale locale)` | The app's language and region in place of the user's: `Intl`, `locale()` and the components follow it at once, and the apps loaded later start in it. `null` follows the system's. |
 | `setFontScale(float scale)` | The text size in place of the system's font size (1 is the default): texts and inputs are laid out again at it and `fontScale()` reads it, at once and for the apps loaded later; lengths keep their size. `0` follows the system's. |
 | `setThemeOverrides(String json)` | The host's brand over the app's [theme](./tailwind.md#theme-tokens): a theme file in the format of `nsh.json`'s `"theme"`. Its tokens win over the app's of the same names, in light and dark mode, and the app's others stay. Applies at once and to the apps loaded later; `null` gives the app its own theme back. Throws `IllegalArgumentException` for a file that does not parse. |
-| `setStorageDirectory(File dir)` | Where the apps loaded next keep their [storage](../modules/nsh-storage.md); `null`: `files/nsh/<app id>` in the app's private directory, by the app's own id. |
+| `setStorageDirectory(File dir)` | Where the apps loaded next keep their [storage](../modules/nsh.md#storage); `null`: `files/nsh/<app id>` in the app's private directory, by the app's own id. |
 | `setCacheOptions(NshCacheOptions options)` | Where the apps loaded next keep their caches, the [images they download](./images-and-assets.md#kept-on-disk), and how much each keeps. Build one with `NshCacheOptions.builder()`: `location(File)`, `systemLocation()` (the default: `nsh` in the cache directory, each app in `<app id>`) or `noDiskCache()`; `imagesMaxMegabytes(int)` (256 by default) or `imagesOff()`. |
 | `loadAssetBundle(String dir)` | Runs `dir/bundle.nshc` from the APK's assets; app assets come from `dir/assets/`. Returns `false` if it cannot be read (also reported to the error listener). |
 | `loadBundleFile(File file)` | Runs a `bundle.js` file; assets come from `assets/` next to it. Refuses `.nshc` files. |
 | `runPackage(NshPackage pkg)` | Runs a verified signed package, replacing the running app. A package runs once. |
 | `registerComponent(String name, NshComponent.Factory factory)` | Registers a [native component](./native-components.md). |
-| `setParams(Object params)` | The launch parameters of the apps loaded next (a `Map` or `JSONObject`): the app reads them at start as `host.params` ([`nsh/host`](../modules/nsh-host.md)). Returns `false` when they are not a JSON object. |
+| `setParams(Object params)` | The launch parameters of the apps loaded next (a `Map` or `JSONObject`): the app reads them at start as `host.params` ([`host`](../modules/nsh.md#host)). Returns `false` when they are not a JSON object. |
 | `send(String name, Object data)` | Sends an event to the app (`host.on(name, …)`); kept until it listens, or for the next app while none runs. Any thread; returns `false` after `destroy()`. |
 | `handle(String name, HostHandler handler)` | Handles the app's calls (`host.call`) and posts (`host.post`) of `name` on the UI thread; `null` removes the handler. The handler answers through its `NshHostReply`, once, from any thread. |
 | `connectDevServer(String url)` | Development: loads from a `nsh dev` server and reloads on every change. Returns `false` with the release AAR. |
@@ -198,7 +198,7 @@ nsh.loadAssetBundle("orders");
 
 ## Talking to the app
 
-The view and the app it runs talk through a channel of their own ([`nsh/host`](../modules/nsh-host.md)): launch
+The view and the app it runs talk through a channel of their own ([`host`](../modules/nsh.md#host)): launch
 parameters the app reads at start, events from the host app, and calls and posts from the app, with JSON data (maps,
 lists, strings, numbers and booleans on this side). It needs no view in the app and no native component.
 
@@ -258,7 +258,7 @@ loaded later starts with the overrides in its first frame. `setThemeOverrides(nu
 
 ## Links the app opens
 
-The URLs the app opens ([`openUrl`](../modules/nsh-device.md#openurl), a `TextView`'s links with `links="open"`)
+The URLs the app opens ([`openUrl`](../modules/nsh.md#openurl), a `TextView`'s links with `links="open"`)
 reach the view's `OpenUrlHandler` first, on the UI thread: return `true` when the host app handled the URL, such as by
 routing it through its own router, and `false` for the system to open it with an `ACTION_VIEW` intent. Without a
 handler the system opens every URL. URLs reach it after the app's `openUrl` capability allowed them.
@@ -362,7 +362,7 @@ config of the app may override it). The release `nsh.aar` does not.
   or use `adjustResize`; with `adjustPan` the system moves the whole window instead.
 - **Safe area.** The view reports as insets only the parts of the system bars and the keyboard that overlap it, so an
   `NshView` below a toolbar gets no top inset. For edge-to-edge content, draw behind the system bars and let the app use
-  `SafeAreaView` / `safeAreaInsets()` (`safe_area()` in Rust).
+  `env(safe-area-inset-*)` padding / `safeAreaInsets()` (`safe_area()` in Rust).
 - **Configuration changes.** An activity recreated on rotation or a theme change destroys the view, and the app starts
   again from scratch. To keep it running, declare the changes the activity handles itself; packaged NSH apps use:
 

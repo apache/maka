@@ -67,6 +67,9 @@ use tokio::{
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use uuid::Uuid;
 
+mod gateway;
+pub use gateway::GatewayActivations;
+
 pub const EDITOR: &str = "composer";
 pub const PROVIDER_KEY: &str = "nsh-real-provider-key";
 
@@ -113,6 +116,13 @@ enum InitialCatalog {
     Empty,
 }
 
+enum AdditionalServices {
+    None,
+    #[cfg(unix)]
+    Terminals,
+    ObservedGateway(gateway::Publications),
+}
+
 impl Fixture {
     pub async fn oauth(authentication: Arc<dyn Handler>) -> Self {
         Self::open_with_services(
@@ -122,7 +132,7 @@ impl Fixture {
             false,
             Some(authentication),
             None,
-            false,
+            AdditionalServices::None,
         )
         .await
     }
@@ -133,6 +143,20 @@ impl Fixture {
             InitialCatalog::Configured { reasoning: false },
         )
         .await
+    }
+    pub async fn workspace_locations() -> (Self, GatewayActivations) {
+        let (published, activations) = GatewayActivations::new();
+        let fixture = Self::open_with_services(
+            false,
+            false,
+            InitialCatalog::Configured { reasoning: false },
+            false,
+            None,
+            None,
+            AdditionalServices::ObservedGateway(published),
+        )
+        .await;
+        (fixture, activations)
     }
     pub async fn reasoning_models() -> Self {
         Self::open_with_options(false, false, InitialCatalog::Configured { reasoning: true }).await
@@ -164,7 +188,7 @@ impl Fixture {
             true,
             None,
             None,
-            false,
+            AdditionalServices::None,
         )
         .await
     }
@@ -180,7 +204,7 @@ impl Fixture {
                 "import":"files", "method":method, "result":"json", "confirmation":"preapproved",
                 "presentation":format!("maka.workspace.Files@1/{method}")
             })),
-            false,
+            AdditionalServices::None,
         )
         .await
     }
@@ -193,12 +217,21 @@ impl Fixture {
             false,
             None,
             None,
-            true,
+            AdditionalServices::Terminals,
         )
         .await
     }
     async fn open_with_options(registered: bool, images: bool, catalog: InitialCatalog) -> Self {
-        Self::open_with_services(registered, images, catalog, false, None, None, false).await
+        Self::open_with_services(
+            registered,
+            images,
+            catalog,
+            false,
+            None,
+            None,
+            AdditionalServices::None,
+        )
+        .await
     }
     async fn open_with_services(
         registered: bool,
@@ -207,8 +240,14 @@ impl Fixture {
         plugins: bool,
         login_handler: Option<Arc<dyn Handler>>,
         file_tool: Option<Value>,
-        terminals: bool,
+        services: AdditionalServices,
     ) -> Self {
+        let (terminals, gateway_publications) = match services {
+            AdditionalServices::None => (false, None),
+            #[cfg(unix)]
+            AdditionalServices::Terminals => (true, None),
+            AdditionalServices::ObservedGateway(published) => (false, Some(published)),
+        };
         let has_files = images || file_tool.is_some();
         let directory = tempfile::tempdir().unwrap();
         private_directory(directory.path()).unwrap();
@@ -345,7 +384,11 @@ impl Fixture {
         }
         let gateway = package(
             "test.nsh.gateway",
-            "maka.application.gateway",
+            if gateway_publications.is_some() {
+                gateway::IMPLEMENTATION
+            } else {
+                "maka.application.gateway"
+            },
             empty,
             gateway_imports,
             json!({}),
@@ -458,6 +501,9 @@ impl Fixture {
             .await
             .unwrap();
         let mut native = NativeRegistry::default();
+        if let Some(publications) = gateway_publications {
+            gateway::provide(&mut native, publications);
+        }
         let public_catalog = Arc::new(maka_product_native::catalog::Catalog::new(
             maka_product_native::catalog::Snapshot::bundled().unwrap(),
         ));
@@ -802,7 +848,7 @@ impl Fixture {
             std::fs::create_dir_all(&directory).unwrap();
             std::fs::write(
                 directory.join("host.d.ts"),
-                nsh_core::ui::declarations(&registry, &[]),
+                nsh_core::element::declarations(&registry, &[]),
             )
             .unwrap();
         }

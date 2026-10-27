@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { AlertDialog, Button } from "nsh/base";
-import { desktop, Inspector, Panel, size, Stage, ui, wide } from "./palette";
+import { button, buttonText, desktop, focusRing, hoverFill, Inspector, Panel, size, Stage, ui, wide } from "./palette";
 
 type Options = Parameters<typeof AlertDialog.show>[0];
 
@@ -76,12 +76,8 @@ function App() {
                       {i() > 0 ? <View style={{ height: 1, marginLeft: 12, backgroundColor: ui().line }} /> : null}
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, height: size.row + 4, paddingHorizontal: 12 }}>
                         <Text style={{ flex: 1, fontSize: 13, color: ui().muted }}>{a().detail}</Text>
-                        <Button
-                          onPress={() => show(a().options)}
-                          style={{ ...ui().raised, borderRadius: 8, height: size.control, paddingHorizontal: 12, justifyContent: "center" }}
-                          activeStyle={{ opacity: 0.7 }}
-                        >
-                          <Text style={{ fontSize: 13, fontWeight: "600", color: a().danger ? ui().down : ui().text }}>{a().label}</Text>
+                        <Button onPress={() => show(a().options)} {...button()}>
+                          <Text style={{ ...buttonText(), color: a().danger ? ui().down : ui().text }}>{a().label}</Text>
                         </Button>
                       </View>
                     </>
@@ -100,7 +96,7 @@ function App() {
           <View style={{ gap: 10 }}>
             <Each of={alerts}>
               {(a) => (
-                <Button onPress={() => show(a().options)} style={row()} activeStyle={{ opacity: 0.7 }}>
+                <Button onPress={() => show(a().options)} style={row()} activeStyle={{ opacity: 0.7 }} hoverStyle={hoverFill()} focusStyle={focusRing()}>
                   <Text style={{ color: a().danger ? ui().down : ui().text, fontSize: 16, fontWeight: "600" }}>{a().label}</Text>
                   <Text style={{ color: ui().muted, fontSize: 13 }}>{a().detail}</Text>
                 </Button>

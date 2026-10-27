@@ -22,7 +22,7 @@ Native Shell provides eleven standard modules for TSX, imported by their bare na
 
 ## From Rust
 
-Rust code does the same work with Rust's standard library and crates.io, in the app's own native code: blocking calls run on the runtime's threads with `blocking(…)` and async ones with `background(…)` (`nsh_core::ui::prelude`), and their results come back to the component in a task. The `capabilities` of `nsh.json` govern the app's TSX and NSH's services (`fetch`, the clipboard); the app's own Rust code runs with the permissions of the app's process. In browser apps, Rust code reaches the network with `fetch` and keeps data with `nsh_core::storage::Storage`.
+Rust code does the same work with Rust's standard library and crates.io, in the app's own native code: blocking calls run on the runtime's threads with `blocking(…)` and async ones with `background(…)` (`nsh_core::prelude`), and their results come back to the component in a task. The `capabilities` of `nsh.json` govern the app's TSX and NSH's services (`fetch`, the clipboard); the app's own Rust code runs with the permissions of the app's process. In browser apps, Rust code reaches the network with `fetch` and keeps data with `nsh_core::storage::Storage`.
 
 | Module | Rust |
 |---|---|

@@ -313,3 +313,82 @@ async fn cancelled_partial_assembly_releases_disk_frontier_and_staging() {
     assert_eq!(remaining, (0, 0, 0, 0, 0));
     log.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn startup_releases_schema_programs_and_preserves_wire_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("startup.sqlite");
+    let message = Message::user("startup wire 中🙂");
+    let expected = serde_json::to_vec(&("ordinary", &message)).unwrap();
+    let values = BTreeMap::from([("1".into(), vec![message])]);
+    for reopened in [false, true] {
+        let log = EventLog::open(&path).await.unwrap();
+        let cold = log.sqlite_resource_stats().await.unwrap();
+        assert!(
+            cold.readers.iter().all(Option::is_none),
+            "cold observations must not start readers"
+        );
+        let schema_program = |sql: &str| {
+            let sql = sql.to_ascii_uppercase();
+            [
+                "CREATE TABLE PREPARED_CACHE.",
+                "CREATE INDEX PREPARED_CACHE.",
+                "CREATE UNIQUE INDEX PREPARED_CACHE.",
+                "CREATE TRIGGER PREPARED_CACHE.",
+            ]
+            .iter()
+            .any(|prefix| sql.contains(prefix))
+        };
+        assert!(
+            !cold
+                .writer
+                .statements
+                .iter()
+                .filter_map(|statement| statement.sql.as_deref())
+                .any(schema_program),
+            "startup schema programs must be released before accepting work"
+        );
+        if !reopened {
+            seed(&log, 1, 1, false).await;
+        }
+        let build = log
+            .prepare_model_view(selection(1), "startup")
+            .await
+            .unwrap();
+        assert_eq!(render(&log, &build, &values).await, 1);
+        let view = log.finish_prepared(&build).await.unwrap();
+        let (wire, encoded) = encode(&log, &view, WireFormat::Responses, &values).await;
+        assert_eq!(encoded, 1);
+        assert_eq!(bytes(&log, &wire).await, expected);
+        let used = log.sqlite_resource_stats().await.unwrap();
+        assert_eq!(
+            used.writer.connection_id, cold.writer.connection_id,
+            "clearing setup statements keeps the original physical owner"
+        );
+        assert!(
+            !used
+                .writer
+                .statements
+                .iter()
+                .filter_map(|statement| statement.sql.as_deref())
+                .any(schema_program)
+        );
+        assert!(
+            used.writer.statements.iter().any(|statement| cold
+                .writer
+                .statements
+                .iter()
+                .all(|cold| cold.statement_id != statement.statement_id)),
+            "real wire preparation owns its new statements after startup cleanup"
+        );
+        eprintln!(
+            "startup statements reopened={reopened}: cold handles={} bytes={}, used handles={} bytes={}",
+            cold.writer.statements.len(),
+            cold.writer.statement_bytes,
+            used.writer.statements.len(),
+            used.writer.statement_bytes
+        );
+        drop((wire, view, build));
+        log.close().await.unwrap();
+    }
+}

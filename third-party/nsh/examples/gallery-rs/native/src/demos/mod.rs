@@ -24,7 +24,10 @@ mod typed_styles;
 use std::rc::Rc;
 
 use nsh_base::nav_page;
-use nsh_core::ui::{AnyElement, Screen, prelude::*};
+use nsh_core::{
+    element::{AnyElement, Screen},
+    prelude::*,
+};
 
 use crate::{
     nav::{self, Route},

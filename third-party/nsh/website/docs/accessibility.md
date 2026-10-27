@@ -61,7 +61,7 @@ Give every icon-only control a label: a screen reader cannot read a glyph or an 
 
 ### Roles
 
-The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts).
+The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts), `"listbox"` and `"option"` (a list of options to choose from, such as a select's popup, and its options, the chosen one marked by `accessibilityState.selected`).
 
 The most useful ones:
 
@@ -87,7 +87,7 @@ text("Settings")
 For an on / off control in an app, use [`Switch`](../elements/switch.md) from `nsh/base`, which sets the role and state itself. The example shows what a role and state on a view do.
 
 ```rust tabs
-use nsh_core::{Checked, ui::prelude::*};
+use nsh_core::{Checked, prelude::*};
 
 // A toggle drawn with views.
 view()
@@ -213,7 +213,7 @@ Hide what adds nothing: decorative images, dividers, an icon next to a text that
 
 ## The screen reader and the user's settings
 
-In Rust, the prelude reports the user's settings and talks to the screen reader: `screen_reader()` and `reduce_motion()` are reactive, `announce_for_accessibility(message)` has the screen reader read a message, and an element's `element_ref()` moves the screen reader's focus to it with `set_accessibility_focus()`. In TSX, `nsh/accessibility` reports the user's settings and lets you talk to the screen reader.
+In Rust, the prelude reports the user's settings and talks to the screen reader: `screen_reader()` and `reduce_motion()` are reactive, `announce_for_accessibility(message)` has the screen reader read a message, and an element's `element_ref()` moves the screen reader's focus to it with `set_accessibility_focus()`. In TSX, `nsh`'s accessibility API reports the user's settings and lets you talk to the screen reader.
 
 | Member | Description |
 |---|---|
@@ -225,7 +225,7 @@ In Rust, the prelude reports the user's settings and talks to the screen reader:
 The settings are accessors: read them in a binding or an effect, and what reads them updates when the user changes the setting, with no cleanup.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn upload() -> impl IntoElement {
     let done = signal(false);
@@ -248,7 +248,7 @@ fn upload() -> impl IntoElement {
 
 ```tsx tabs
 import { signal, Text, View, type YNode } from "nsh";
-import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh/accessibility";
+import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 
 function Upload() {
   const done = signal(false);
@@ -278,7 +278,7 @@ Text and inputs follow the system text size (Dynamic Type on iOS, font size on A
 
 - Let text wrap: avoid fixed heights on views that contain text.
 - Cap very large headings with `.max_font_size_multiplier(..)` / `maxFontSizeMultiplier` instead of disabling scaling.
-- Switch layouts when the text is large: read `font_scale()` (Rust) or `fontScale()` from `nsh/device` (TSX) (for example, stack a label and its value vertically above 1.3).
+- Switch layouts when the text is large: read `font_scale()` (Rust) or `fontScale()` from `nsh` (TSX) (for example, stack a label and its value vertically above 1.3).
 
 See [Device and environment](./device-and-environment.md#text-size).
 
@@ -287,7 +287,7 @@ See [Device and environment](./device-and-environment.md#text-size).
 `reduce_motion()` (Rust) and `reduceMotion()` (TSX) are `true` when the user turned on iOS's Reduce Motion or Android's remove animations setting. Your animations run as you write them, so use it, or the `motion-reduce:` and `motion-safe:` Tailwind variants, to replace large movement with a fade or an instant change:
 
 ```rust tabs
-use nsh_core::ui::{LayoutAnimation, prelude::*};
+use nsh_core::{element::LayoutAnimation, prelude::*};
 
 let toggle = move || {
     if !reduce_motion() {
@@ -303,8 +303,8 @@ view()
 
 ```tsx tabs
 import { View } from "nsh";
-import { reduceMotion } from "nsh/accessibility";
-import { LayoutAnimation } from "nsh/animated";
+import { reduceMotion } from "nsh";
+import { LayoutAnimation } from "nsh";
 
 const toggle = () => {
   if (!reduceMotion()) LayoutAnimation.configureNext(LayoutAnimation.Presets.spring);
@@ -328,6 +328,6 @@ Make pressable elements at least 44 × 44 points. When a control must look small
 
 ## Related
 
-- [`nsh/accessibility`](../modules/nsh-accessibility.md): the reference.
+- [`nsh`'s accessibility API](../modules/nsh.md#accessibility): the reference.
 - [`View`](../elements/view.md): every accessibility prop.
 - [Animation](./animation.md#reduced-motion) and [Device and environment](./device-and-environment.md).

@@ -6,8 +6,8 @@ use std::time::Duration;
 use crossbeam_channel::Receiver;
 use nsh_base::{nav_page, nav_stack};
 use nsh_core::{
-    ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, Size,
-    ui::{Root, prelude::*},
+    ApproxTextEngine, EventKind, EventPayload, MountBatch, MountItem, Size, element::Root,
+    prelude::*,
 };
 use nsh_engine::{App, Engine, EngineConfig, Environment};
 

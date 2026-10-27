@@ -134,3 +134,57 @@ async fn durable_boundaries_match_prefixes_across_reopen_and_reject_unselected_c
         .unwrap();
     log.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn root_prefix_digest_binds_original_json_bytes_across_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("raw.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    const RAW: &str = r#"{ "id": "00000000-0000-4000-8000-000000000001", "recorded_at": {"secs_since_epoch":0,"nanos_since_epoch":0}, "invocation": {"session_id":"session","turn_id":"turn","run_id":"run","invocation_id":"invocation"}, "fact": {"kind":"invocation_opened","input":{"kind":"message","content":{"text":"漢\u0000","display_text":null},"request_fingerprint":null}} }"#;
+    let event: RuntimeEvent = serde_json::from_str(RAW).unwrap();
+    let native = EventLog::open(&directory.path().join("native.sqlite"))
+        .await
+        .unwrap();
+    native
+        .append(&EventWrite::plain(event.clone()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        native.prefix(1, usize::MAX).await.unwrap().digest,
+        "sha256:6d03cfa9106d73c04b1925dbf09ef1f27d8f817e808c2c76e0b740204e919d56"
+    );
+    native.close().await.unwrap();
+    let imported = event.clone();
+    log.connection
+        .run(move |connection| {
+            Box::pin(async move {
+                let mut tx = connection.begin().await?;
+                let sequence = crate::append::ingress::insert(
+                    &mut tx,
+                    &imported,
+                    RAW.to_owned(),
+                    crate::append::ingress::Position::Imported(Some(1)),
+                )
+                .await?;
+                assert_eq!(sequence, 1);
+                tx.commit().await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let prefix = log.prefix(1, RAW.len()).await.unwrap();
+    assert_eq!(prefix.high_water, 1);
+    assert_eq!(prefix.events[0].event, event);
+    assert_eq!(
+        prefix.digest,
+        "sha256:4ccf3a65b84a69545cd75d9c28dc8d02a878ca23207b129c7340eb606a1aa111"
+    );
+    log.close().await.unwrap();
+    let reopened = EventLog::open(&path).await.unwrap();
+    assert_eq!(
+        reopened.prefix(1, RAW.len()).await.unwrap().digest,
+        prefix.digest
+    );
+    reopened.close().await.unwrap();
+}

@@ -533,7 +533,7 @@ define_class!(
             // A click outside a field that edits leaves the focus in it, as
             // desktop apps do (`blur()` and Escape still hand it over).
             let view = NshView(self.retain());
-            (view.id() == ROOT_ID || crate::input::is_key_control(&view))
+            (view.id() == ROOT_ID || crate::input::is_key_stop(&view))
                 && self.keyboard_surface().is_some_and(|s| {
                     !(crate::text_input::editing(&s) && clicking(self.mtm()))
                 })
@@ -546,7 +546,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, true);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Focus, nsh_core::EventPayload::None);
                 }
@@ -561,7 +561,7 @@ define_class!(
             if accepted && let Some(surface) = self.keyboard_surface() {
                 let view = NshView(self.retain());
                 crate::input::set_state(&surface, &view, nsh_core::tailwind::state::FOCUSED, false);
-                // Pressables reached by Tab report it, as inputs do.
+                // The stops Tab reaches report it, as inputs do.
                 if view.id() != ROOT_ID {
                     surface.event(view.id(), nsh_core::EventKind::Blur, nsh_core::EventPayload::None);
                 }
@@ -671,7 +671,7 @@ define_class!(
         }
 
         /// The Edit menu's Select All (Cmd+A): a selectable text's or a
-        /// selection area's.
+        /// selectable view's.
         #[unsafe(method(selectAll:))]
         fn select_all(&self, _sender: Option<&AnyObject>) {
             if let Some(surface) = self.surface() {
@@ -768,7 +768,7 @@ define_class!(
 );
 
 impl ViewObj {
-    // Only the root stores a surface. A focused pressable child uses its
+    // Only the root stores a surface. A focused child (a Tab stop) uses its
     // ancestors for keyboard handling; drawing and pointer hooks stay root-only.
     fn keyboard_surface(&self) -> Option<std::rc::Rc<Surface>> {
         if let Some(surface) = self.surface() {
@@ -1261,7 +1261,11 @@ impl NshView {
     }
 
     /// Whether any of it can be seen: in a window, not hidden, and not
-    /// entirely outside what its ancestors show (a list row out of sight).
+    /// entirely clipped away by its ancestors (a list row out of sight).
+    /// Only ancestors that clip their children (`overflow: hidden`, scroll
+    /// views, stacks, ...) and the root (the window shows only it) cut it
+    /// off: what overflows any other ancestor shows, as in CSS (a label
+    /// centered on a zero-width anchor).
     pub(crate) fn shown(&self) -> bool {
         let ns = self.ns();
         if ns.window().is_none() || ns.isHiddenOrHasHiddenAncestor() {
@@ -1277,8 +1281,14 @@ impl NshView {
         // Placed frames (`ns().frame()`: a sticky shift and mirroring
         // applied), not the logical ones, for the view and its ancestors
         // alike: the clip spaces are the ancestors' containers'.
-        let ancestors = std::iter::successors(self.parent_view(), NshView::parent_view)
-            .map(|p| (placed(p.ns().frame()), crate::scroll::bounds_origin(&p)));
+        let ancestors = std::iter::successors(self.parent_view(), NshView::parent_view).map(|p| {
+            let clips = p.state().clips() || p.state().id == ROOT_ID;
+            (
+                placed(p.ns().frame()),
+                crate::scroll::bounds_origin(&p),
+                clips,
+            )
+        });
         clip_shows(placed(ns.frame()), ancestors)
     }
 
@@ -1474,18 +1484,21 @@ fn placed(f: NSRect) -> Span {
 
 /// Whether `rect` (in its parent's content space) is not clipped away by
 /// `ancestors`, innermost first: each one's placed frame (in its own
-/// parent's content space) and the origin its content shows from (a
-/// scroll view's offset, (0, 0) otherwise).
-fn clip_shows(rect: Span, ancestors: impl IntoIterator<Item = (Span, (f32, f32))>) -> bool {
+/// parent's content space), the origin its content shows from (a scroll
+/// view's offset, (0, 0) otherwise) and whether it clips its children (an
+/// ancestor that does not only moves `rect` into its parent's space).
+fn clip_shows(rect: Span, ancestors: impl IntoIterator<Item = (Span, (f32, f32), bool)>) -> bool {
     let (mut x0, mut y0, mut x1, mut y1) = rect;
-    for (frame, (ox, oy)) in ancestors {
-        let (w, h) = (frame.2 - frame.0, frame.3 - frame.1);
-        x0 = x0.max(ox);
-        y0 = y0.max(oy);
-        x1 = x1.min(ox + w);
-        y1 = y1.min(oy + h);
-        if x1 <= x0 || y1 <= y0 {
-            return false;
+    for (frame, (ox, oy), clips) in ancestors {
+        if clips {
+            let (w, h) = (frame.2 - frame.0, frame.3 - frame.1);
+            x0 = x0.max(ox);
+            y0 = y0.max(oy);
+            x1 = x1.min(ox + w);
+            y1 = y1.min(oy + h);
+            if x1 <= x0 || y1 <= y0 {
+                return false;
+            }
         }
         // Into the grandparent's content space: the offset origin shows
         // at the frame's origin.
@@ -1503,9 +1516,9 @@ mod tests {
 
     #[test]
     fn a_row_shows_through_the_scroll_offset() {
-        let screen = ((0.0, 0.0, 400.0, 800.0), (0.0, 0.0));
+        let screen = ((0.0, 0.0, 400.0, 800.0), (0.0, 0.0), true);
         let row = (0.0, 0.0, 400.0, 40.0);
-        let list = |y| ((0.0, 0.0, 400.0, 600.0), (0.0, y));
+        let list = |y| ((0.0, 0.0, 400.0, 600.0), (0.0, y), true);
         assert!(clip_shows(row, [list(0.0), screen]));
         assert!(!clip_shows(row, [list(1000.0), screen]));
     }
@@ -1515,10 +1528,10 @@ mod tests {
         // The header's logical frame is at the top of the content; scrolled
         // 1000 points, it is placed (shifted) at 1000, where the list shows.
         let text = (8.0, 8.0, 200.0, 32.0);
-        let header = ((0.0, 1000.0, 400.0, 1040.0), (0.0, 0.0));
-        let list = ((0.0, 0.0, 400.0, 600.0), (0.0, 1000.0));
+        let header = ((0.0, 1000.0, 400.0, 1040.0), (0.0, 0.0), false);
+        let list = ((0.0, 0.0, 400.0, 600.0), (0.0, 1000.0), true);
         assert!(clip_shows(text, [header, list]));
-        let logical = ((0.0, 0.0, 400.0, 40.0), (0.0, 0.0));
+        let logical = ((0.0, 0.0, 400.0, 40.0), (0.0, 0.0), false);
         assert!(!clip_shows(text, [logical, list]));
     }
 
@@ -1527,11 +1540,29 @@ mod tests {
         // A 400-point mirrored list scrolled 500 points: its bounds origin is
         // -500, and the cell at logical x 600 is placed at 400 - 600 - 90.
         let text = (10.0, 10.0, 80.0, 70.0);
-        let list = ((0.0, 0.0, 400.0, 80.0), (-500.0, 0.0));
-        let cell = ((-290.0, 0.0, -200.0, 80.0), (0.0, 0.0));
+        let list = ((0.0, 0.0, 400.0, 80.0), (-500.0, 0.0), true);
+        let cell = ((-290.0, 0.0, -200.0, 80.0), (0.0, 0.0), false);
         assert!(clip_shows(text, [cell, list]));
-        let logical = ((600.0, 0.0, 690.0, 80.0), (0.0, 0.0));
+        let logical = ((600.0, 0.0, 690.0, 80.0), (0.0, 0.0), false);
         assert!(!clip_shows(text, [logical, list]));
+    }
+
+    #[test]
+    fn a_text_overflowing_an_ancestor_that_does_not_clip_shows() {
+        // A label centered on a zero-width anchor (`position: absolute`,
+        // `width: 0`): its box overflows the anchor on both sides, as in
+        // CSS, and shows, unless an ancestor clips it away.
+        let text = (4.0, 4.0, 40.0, 20.0);
+        let label = ((-22.0, 0.0, 22.0, 24.0), (0.0, 0.0), false);
+        let anchor = |clips| ((50.0, 0.0, 50.0, 24.0), (0.0, 0.0), clips);
+        let row = ((16.0, 60.0, 316.0, 120.0), (0.0, 0.0), false);
+        let screen = ((0.0, 0.0, 400.0, 800.0), (0.0, 0.0), true);
+        assert!(clip_shows(text, [label, anchor(false), row, screen]));
+        // `overflow: hidden` on the anchor still clips it away.
+        assert!(!clip_shows(text, [label, anchor(true), row, screen]));
+        // Moved out of the window, it no longer shows.
+        let below = ((16.0, 900.0, 316.0, 960.0), (0.0, 0.0), false);
+        assert!(!clip_shows(text, [label, anchor(false), below, screen]));
     }
 
     #[test]

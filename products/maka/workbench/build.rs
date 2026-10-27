@@ -23,7 +23,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../../plugins/shared/locale-messages.ts");
     println!("cargo:rerun-if-changed=../../../plugins/shared/tui-messages.ts");
     // Describe the runtime export without constructing a Host client at build time.
-    let mut host = nsh_core::ui::Registry::ui_set("maka/host");
+    let mut host = nsh_core::element::Registry::ui_set("maka/host");
     host.native_values(&["host", "AttachmentPicker", "TerminalGrid"]);
     let ui_sets = vec![nsh_base::registry().into(), host.into()];
     let module = nsh_bundler::bundle(&nsh_bundler::BundleOptions {

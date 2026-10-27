@@ -10,7 +10,7 @@ use nsh_core::{
     Bounds, ModalPresentation, Points,
     animation::{Curve, EaseMode},
     canvas::{CanvasTextAlign, CanvasTextBaseline, LineCap},
-    ui::prelude::*,
+    prelude::*,
 };
 
 use super::{

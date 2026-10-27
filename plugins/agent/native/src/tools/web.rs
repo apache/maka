@@ -21,7 +21,7 @@ use super::*;
 use maka_tools::request::{BindingRequest, BoundTool, RequestBinding};
 use std::collections::BTreeMap;
 pub(super) struct Binding {
-    pub service: Service,
+    pub services: Vec<Service>,
     pub workers: tokio_util::task::TaskTracker,
 }
 impl RequestBinding for Binding {
@@ -30,7 +30,16 @@ impl RequestBinding for Binding {
         input: BindingRequest,
     ) -> futures_util::future::BoxFuture<'static, Result<BTreeMap<String, BoundTool>, ToolError>>
     {
-        let service = self.service.clone();
+        let services: Vec<_> = self
+            .services
+            .iter()
+            .filter(|service| input.tools.contains(&service.selection.name))
+            .cloned()
+            .collect();
+        let service = services
+            .first()
+            .expect("selected request binding group")
+            .clone();
         let workers = self.workers.clone();
         Box::pin(async move {
             let request = service
@@ -79,26 +88,32 @@ impl RequestBinding for Binding {
             }
             let capture: maka_web_api::contract::Capture = serde_json::from_value(capture)
                 .map_err(|_| ToolError::Failed("Web capture invalid".into()))?;
-            let name = service.selection.name.clone();
-            let projection = if !capture.available {
-                BoundTool::Unavailable
-            } else if service.selection.method == "search"
-                && capture.source == maka_web_api::settings::Source::Model
-            {
-                input
-                    .model
-                    .as_ref()
-                    .and_then(maka_web::search::native)
-                    .map_or(BoundTool::Unavailable, BoundTool::Provider)
-            } else if service.selection.method == "search" && !capture.credential_configured {
-                BoundTool::Unavailable
-            } else {
-                BoundTool::Prepared(Arc::new(Service {
-                    web_basis: Some(capture.basis),
-                    ..service
-                }))
-            };
-            Ok(BTreeMap::from([(name, projection)]))
+            Ok(services
+                .into_iter()
+                .map(|service| {
+                    let name = service.selection.name.clone();
+                    let projection = if !capture.available {
+                        BoundTool::Unavailable
+                    } else if service.selection.method == "search"
+                        && capture.source == maka_web_api::settings::Source::Model
+                    {
+                        input
+                            .model
+                            .as_ref()
+                            .and_then(maka_web::search::native)
+                            .map_or(BoundTool::Unavailable, BoundTool::Provider)
+                    } else if service.selection.method == "search" && !capture.credential_configured
+                    {
+                        BoundTool::Unavailable
+                    } else {
+                        BoundTool::Prepared(Arc::new(Service {
+                            web_basis: Some(capture.basis.clone()),
+                            ..service
+                        }))
+                    };
+                    (name, projection)
+                })
+                .collect())
         })
     }
 }

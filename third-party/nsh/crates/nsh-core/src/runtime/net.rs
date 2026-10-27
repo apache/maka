@@ -3,7 +3,7 @@
 //! JS call (a `TypeError` or `RangeError` there); the connection and its
 //! reads and writes are tasks of the core, on its tokio runtime.
 
-use crate::ui::{JsError, Later, System, class, module};
+use crate::element::{JsError, Later, System, class, module};
 
 /// The most one read returns and one write sends.
 const IO_LIMIT: usize = 1024 * 1024;
@@ -13,7 +13,7 @@ const IO_LIMIT: usize = 1024 * 1024;
 const PENDING_WRITE_LIMIT: usize = 4 * IO_LIMIT;
 /// Sockets open or connecting at once in one VM, like WebSockets.
 const MAX_SOCKETS: usize = 32;
-/// The [`crate::ui::Quotas`] kind sockets count under.
+/// The [`crate::element::Quotas`] kind sockets count under.
 const SOCKETS: &str = "net.sockets";
 /// How long resolving and connecting, a read and a write may take.
 #[cfg(not(target_arch = "wasm32"))]
@@ -105,12 +105,12 @@ impl Socket {
 
 impl Socket {
     #[cfg(not(target_arch = "wasm32"))]
-    async fn open(host: String, port: u16, held: crate::ui::Held) -> Result<Socket, JsError> {
+    async fn open(host: String, port: u16, held: crate::element::Held) -> Result<Socket, JsError> {
         native::connect(&host, port, held).await
     }
 
     #[cfg(target_arch = "wasm32")]
-    async fn open(_: String, _: u16, _: crate::ui::Held) -> Result<Socket, JsError> {
+    async fn open(_: String, _: u16, _: crate::element::Held) -> Result<Socket, JsError> {
         Err(JsError::Type("TCP sockets require a native host".into()))
     }
 }
@@ -129,7 +129,7 @@ mod native {
     };
 
     use super::{Socket, TIMEOUT};
-    use crate::ui::{Held, JsError, io_code};
+    use crate::element::{Held, JsError, io_code};
 
     /// An error with Node's properties: `code` (from `error` when it has
     /// one, else `fallback`) and `syscall`, keeping `message`.

@@ -6,7 +6,7 @@ use std::{fmt, sync::Arc};
 
 /// Re-export of the Markdown syntax tree plugins read (`markdown-rs`'s).
 pub use markdown::mdast;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use super::document::{Block, CustomNode, Document, Inline};
 

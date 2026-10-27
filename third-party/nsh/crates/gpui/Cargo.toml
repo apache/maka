@@ -8,7 +8,7 @@ resolver = "3"
 members = ["nsh-platform-gpui", "nsh-gpui-host", "nsh-gpui-terminal"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "Apache-2.0"
 homepage = "https://nsh.dev"
@@ -27,14 +27,14 @@ private_interfaces = "deny"
 
 [workspace.dependencies]
 # nsh's crates, from the main workspace.
-nsh-core = { version = "0.2.0", path = "../nsh-core" }
-nsh-dev = { version = "0.2.0", path = "../nsh-dev" }
-nsh-testing = { version = "0.2.0", path = "../nsh-testing", default-features = false }
-nsh-engine = { version = "0.2.0", path = "../nsh-engine", default-features = false }
-nsh-base = { version = "0.2.0", path = "../nsh-base", default-features = false }
+nsh-core = { version = "0.3.0", path = "../nsh-core" }
+nsh-dev = { version = "0.3.0", path = "../nsh-dev" }
+nsh-testing = { version = "0.3.0", path = "../nsh-testing", default-features = false }
+nsh-engine = { version = "0.3.0", path = "../nsh-engine", default-features = false }
+nsh-base = { version = "0.3.0", path = "../nsh-base", default-features = false }
 # The JSX compiler alone (tests compile their apps).
-nsh-bundler = { version = "0.2.0", path = "../nsh-bundler", default-features = false }
-nsh-platform-gpui = { version = "0.2.0", path = "nsh-platform-gpui", default-features = false }
+nsh-bundler = { version = "0.3.0", path = "../nsh-bundler", default-features = false }
+nsh-platform-gpui = { version = "0.3.0", path = "nsh-platform-gpui", default-features = false }
 
 # The same versions as the main workspace's.
 anyhow = "1"
@@ -113,6 +113,14 @@ opt-level = 3
 
 # The terminal renderer exposes its own production API, without a core fork.
 [patch.crates-io]
+# Match Maka's existing GPUI input-admission and cancellation-wake contracts.
+# A nested workspace does not inherit the root workspace's patches.
+gpui-fast = { path = "../../../gpui-fast/crates/gpui" }
+gpui-fast-macos = { path = "../../../gpui-fast/crates/gpui_macos" }
+gpui-fast-windows = { path = "../../../gpui-fast/crates/gpui_windows" }
+gpui-fast-linux = { path = "../../../gpui-fast/crates/gpui_linux" }
+gpui-pre-scheduler = { path = "../../../gpui-fast/crates/scheduler" }
+async-io = { path = "../../../async-io" }
 gpui-fast-wgpu = { path = "../../third-party/gpui-wgpu" }
 # Same codec as ratatui-image; only its output sink is made fallible.
 icy_sixel = { path = "../../third-party/icy_sixel" }

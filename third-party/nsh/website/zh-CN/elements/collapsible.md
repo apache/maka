@@ -13,7 +13,7 @@ Collapsible 是内容可展开和收起的区域：摘要下面的详情、“�
 
 ```rust tabs
 use nsh_base::{collapsible, theme};
-use nsh_core::{AccessibilityState, ui::prelude::*};
+use nsh_core::{AccessibilityState, prelude::*};
 
 fn storage() -> impl IntoElement {
     let open = signal(false);

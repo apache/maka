@@ -8,10 +8,7 @@
 //! highlights it and offers Copy.
 
 use nsh_base::{MarkdownOptions, TextViewCodeAction, TextViewPart, TextViewParts, text_view};
-use nsh_core::{
-    ListContentStyle,
-    ui::{StyleRefinement, prelude::*},
-};
+use nsh_core::{ListContentStyle, element::StyleRefinement, prelude::*};
 
 use super::parts::caret;
 use crate::ui::colors;

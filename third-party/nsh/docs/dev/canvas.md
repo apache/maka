@@ -24,7 +24,7 @@
   platform redraws on its own while they animate, without JS (only what they change on iOS and macOS: "Partial
   redraws" below). Deriving a node again (`interpolate`, `mul`, ... in a `draw`
   that runs again) gets the live node made by the same operation (`nsh-js` `animated.rs` `derived`, keyed by the
-  decoded `AnimationOp`, as `nsh_core::ui` does for Rust components): a redraw sends no new graph nodes and keeps its slots. A drawing travels in its own op (`Op::Draw`), recorded into
+  decoded `AnimationOp`, as `nsh_core::element` does for Rust components): a redraw sends no new graph nodes and keeps its slots. A drawing travels in its own op (`Op::Draw`), recorded into
   a Rust list of its own (`nsh-js` `canvas.rs`): creating animated values while drawing pushes ops of its own. Each
   operation is one variant of `CanvasOp` / `PathOp` with `#[derive(JsOps)]` (`nsh_core::js::ops`): `#[op(code = CV_…)]` reads its fields in order
   (`OpArg`: numbers or animated values, paints, `Path2D` lists, string unions; an invalid color or font drops the
@@ -68,12 +68,16 @@ included, with tiny-skia into a pixmap in device pixels: `nsh-platform-gpui` `ca
 whole canvas. Numbers:
 `docs/dev/performance.md`.
 
-Rust components record drawings with `ui::Painter` (the same operations; `docs/dev/components.md`), paint with the
+Rust components record drawings with `element::Painter` (the same operations; `docs/dev/components.md`), paint with the
 canvas view's paint properties (`Painter::fill_style_from_view` and the like: `Drawing::view_paints` names the
 operations whose value is the view's `fill` / `stroke` / `strokeWidth` / `strokeDasharray`, which the core resolves,
 inherited from the views around as CSS inherits them and `currentColor` the view's text color, and sets into the
 drawing it mounts, `Drawing::painted`; a change of those properties, the canvas's or a view's around it, sends the
-drawing again, so no platform knows of it), measure text
+drawing again, so no platform knows of it), fill a shape with the canvas view's background
+(`Painter::fill_background_from_view(area)`: its `backgroundColor` and `backgroundImage` gradients, the app's `bg-*` /
+`bg-linear-*` classes, positioned over `area` as over a box of that size and shown only where the path fills, as
+CSS's `clip-path` shows a box's background; the core expands it into fills with `CanvasGradient::from_css` and mounts
+the view without its background, so the background is drawn once, inside the shape), measure text
 with `measure_text(font, text)` and `text_metrics(font, text)` (its width and the font's ascent, descent and line
 height, from the first line the core's text engine lays it out in: `canvas::line_metrics`), and hit-test what a painter recorded with the same
 `point_in_path` / `point_in_stroke` (`Painter::is_point_in_path` / `is_point_in_stroke` for the current path,

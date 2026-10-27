@@ -1,5 +1,5 @@
 //! The JS face of Rust components and modules, made from their specs
-//! (`nsh_core::ui`).
+//! (`nsh_core::element`).
 //!
 //! A component is a host view naming it (`component`), its own props
 //! converted into their Rust types when they change (one render effect
@@ -26,7 +26,9 @@ use std::{
 
 use nsh_core::{
     Command, EventKind, Op, Prop,
-    ui::{ComponentSpec, FunctionCall, JsEvent, JsIn, JsResult, ModuleSpec, PropKind, RustCall},
+    element::{
+        ComponentSpec, FunctionCall, JsEvent, JsIn, JsResult, ModuleSpec, PropKind, RustCall,
+    },
 };
 use rquickjs::qjs;
 use rustc_hash::FxHashMap;
@@ -314,7 +316,7 @@ fn component_event_with(
 }
 
 /// Settles call `call` with `result`: resolved with the value (converted
-/// now), or rejected with its error (a [`nsh_core::ui::JsError`]'s class
+/// now), or rejected with its error (a [`nsh_core::element::JsError`]'s class
 /// and properties; an `Error` of the message when the value does not
 /// convert, or its conversion panics).
 fn settle(cx: *mut JsContext, call: u32, result: JsResult) -> Result<(), JsValue> {
@@ -339,7 +341,7 @@ fn settle(cx: *mut JsContext, call: u32, result: JsResult) -> Result<(), JsValue
             value
                 .to_js_value(&host)
                 .map(|v| V::own(cx, crate::classes::from_raw(v.into_raw())))
-                .map_err(|e| nsh_core::ui::Thrown::Error(e.0))
+                .map_err(|e| nsh_core::element::Thrown::Error(e.0))
         })
     }))
     .unwrap_or_else(|payload| Err(crate::classes::panic_message(payload).into()));
@@ -389,7 +391,9 @@ pub(crate) fn module_function(cx: *mut JsContext, module: &ModuleSpec, function:
 }
 
 /// The conversion of a module function with a context.
-type MakeOp = fn(&dyn nsh_core::ui::JsHost) -> Result<nsh_core::ui::OpCall, nsh_core::ui::Thrown>;
+type MakeOp = fn(
+    &dyn nsh_core::element::JsHost,
+) -> Result<nsh_core::element::OpCall, nsh_core::element::Thrown>;
 
 unsafe extern "C" fn call_op(
     cx: *mut JsContext,
@@ -424,7 +428,7 @@ unsafe extern "C" fn call_task(
     // QuickJS passes `argc` live arguments.
     let (start, args) = unsafe {
         (
-            std::mem::transmute::<*const (), nsh_core::ui::AsyncCall>(opaque as *const ()),
+            std::mem::transmute::<*const (), nsh_core::element::AsyncCall>(opaque as *const ()),
             crate::web::js::Args::new(argc, argv),
         )
     };
@@ -445,7 +449,7 @@ unsafe extern "C" fn call_start(
     // QuickJS passes `argc` live arguments.
     let (start, args) = unsafe {
         (
-            std::mem::transmute::<*const (), nsh_core::ui::AsyncCall>(opaque as *const ()),
+            std::mem::transmute::<*const (), nsh_core::element::AsyncCall>(opaque as *const ()),
             crate::web::js::Args::new(argc, argv),
         )
     };
@@ -486,7 +490,7 @@ pub(crate) fn add_functions(cx: *mut JsContext, obj: JsValue, module: &ModuleSpe
         unsafe { qjs::JS_SetPropertyStr(cx, obj, name.as_ptr(), func) };
     }
     for constant in &module.constants {
-        use nsh_core::ui::ConstantValue;
+        use nsh_core::element::ConstantValue;
         let value = match constant.value {
             ConstantValue::Undefined => UNDEFINED,
             ConstantValue::String(value) => new_string(cx, value),
@@ -927,7 +931,7 @@ fn set_rust_prop(
     node: JsValue,
     spec: &ComponentSpec,
     key: &'static str,
-    decode: nsh_core::ui::PropDecode,
+    decode: nsh_core::element::PropDecode,
     value: JsValue,
 ) -> Result<(), JsValue> {
     let Some(id) = dom::node_id(cx, node) else {
@@ -941,7 +945,7 @@ fn set_rust_prop(
         // The app's conversion: a panic in it throws, as in a call.
         // A render function is this component's.
         let decoded = catch_unwind(AssertUnwindSafe(|| {
-            nsh_core::ui::__decoding_props_of(id, || {
+            nsh_core::element::__decoding_props_of(id, || {
                 decode(JsIn::new(&host, crate::classes::to_raw(value)))
             })
         }));
@@ -1003,8 +1007,8 @@ unsafe extern "C" fn call_method(
         make(host)
             .map(|call| RustCall::Method(id, call))
             .map_err(|e| match e {
-                nsh_core::ui::Thrown::Type(m) => {
-                    nsh_core::ui::Thrown::Type(format!("{}.{m}", spec.export))
+                nsh_core::element::Thrown::Type(m) => {
+                    nsh_core::element::Thrown::Type(format!("{}.{m}", spec.export))
                 }
                 other => other,
             })

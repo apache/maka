@@ -771,7 +771,7 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
         // gives the focus back to it: skip the views around `from`.
         if next.isDescendantOf(&scope)
             && (!crate::view::is_ours(&next)
-                || NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_control(&view)))
+                || NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_stop(&view)))
             && !from.isDescendantOf(&next)
         {
             return window.makeFirstResponder(Some(&next));

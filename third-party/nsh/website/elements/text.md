@@ -13,7 +13,7 @@ paragraph is typeset natively (CoreText on iOS and Mac Catalyst, `StaticLayout` 
 thread, so the main thread only draws it. Rust makes one with `text(content)`, TSX with `<Text>` from `nsh`.
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 text("Read the ")
     .text_base()
@@ -234,5 +234,5 @@ None of its own.
   Translate, Share), Android a floating toolbar (Copy, Select all, Share).
 - Text decorations other than a solid single line (`double`, `dotted`, `dashed`, `wavy`) are drawn by NSH on iOS.
 - iOS texts draw solid backgrounds and outer shadows.
-- `fontScale()` from [`nsh/device`](../modules/nsh-device.md) (`font_scale()` in Rust) reports the current system text
+- `fontScale()` from [`nsh`](../modules/nsh.md#device) (`font_scale()` in Rust) reports the current system text
   scale.

@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use crate::{
+    element::PropEnum,
     geometry::{Edges, Points, px},
     js::host::HostProps,
-    ui::PropEnum,
 };
 
 /// Edge insets in points.
@@ -104,6 +104,11 @@ pub enum AccessibilityRole {
     /// A group of a table's rows: its header, body or footer.
     #[prop(rename = "rowgroup")]
     RowGroup,
+    /// A list of options to choose from: a select's or combo box's popup.
+    Listbox,
+    /// An option of a listbox; `accessibilityState.selected` marks the chosen
+    /// one.
+    Option,
 }
 
 /// Whether a checkable element is checked (`accessibilityState.checked`).
@@ -277,8 +282,11 @@ pub struct ViewProps {
     /// `windowDrag` (desktops): pressing the view drags the window; `None`
     /// leaves it to the views around it.
     pub window_drag: Option<bool>,
-    /// `focusable`: `Some(false)` keeps a view that takes presses out of
-    /// the keyboard focus's stops (Tab); `None` is the default, a stop.
+    /// `focusable`: whether the view is a stop of the keyboard focus (Tab):
+    /// `Some(true)` makes any view one, whether or not it takes presses (a
+    /// chart, a slider, a list that moves its selection with the arrow
+    /// keys); `Some(false)` keeps a view that takes presses out; `None`, the
+    /// default, leaves it to the presses ([`ViewProps::focus_stop`]).
     pub focusable: Option<bool>,
     /// The logical parent of a popup's native focus-return scope: another
     /// popup, or the surface/modal root. Overlays have native siblings even when
@@ -287,11 +295,31 @@ pub struct ViewProps {
     /// the real opener before a batch, focus popup controls after it, and
     /// restore a still-valid opener when their popup closes.
     pub focus_return_parent: Option<crate::NodeId>,
-    /// The view is a selection area (`SelectionArea` of `nsh/base`): the
+    /// The view is a selectable view (`View` with `selectable`): the
     /// texts in its subtree that are not `selectable={false}` share one
     /// selection, from text to text ([`crate::selection`]); an area inside
     /// another is part of the outer one. Texts outside areas select alone.
-    pub selection_area: bool,
+    pub selectable_view: bool,
+}
+
+impl ViewProps {
+    /// Whether a view with these props is a stop of the keyboard focus
+    /// (Tab and Shift+Tab reach it; it hears `onFocus` / `onBlur` and takes
+    /// the `focus:` styles), given whether it `takes_presses` (listens for
+    /// `onPress`): `focusable` decides when it is set, else taking presses
+    /// does; a disabled view is never one.
+    ///
+    /// Focus and presses are separate: a stop that takes no presses is not
+    /// pressed by Return or Space (its keys reach it through the app's
+    /// keymap while it has the focus), and a view needs no press handler to
+    /// be focusable, which would take the presses of a pressable around it
+    /// (a chart in a card that opens a page). The platforms that move the
+    /// keyboard focus between views (macOS, the web, the headless driver)
+    /// all decide with this; inputs that edit are stops by their own rule,
+    /// and each platform adds what it knows of visibility.
+    pub fn focus_stop(&self, takes_presses: bool) -> bool {
+        self.focusable.unwrap_or(takes_presses) && !self.accessibility.state.disabled
+    }
 }
 
 /// When a pan on a view activates (`panActivation`; react-native-gesture-

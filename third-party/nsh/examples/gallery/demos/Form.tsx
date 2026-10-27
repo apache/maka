@@ -1,6 +1,7 @@
-import { effect, Input, type InputProps, type JSX, Scroll, signal, split, Text, View, type YNode } from "nsh";
-import { Animated, createAnimatedValue, LayoutAnimation } from "nsh/animated";
-import { Keyboard, keyboardFrame, Dialog, KeyboardAvoidingView, NavPage, SafeAreaView, safeAreaInsets } from "nsh/base";
+import { effect, type JSX, Scroll, signal, split, Text, View, type YNode } from "nsh";
+import { Animated, createAnimatedValue, LayoutAnimation } from "nsh";
+import { Dialog, Input, type InputProps, NavPage } from "nsh/base";
+import { Keyboard, keyboardFrame, safeAreaInsets } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
 import { Appear, Badge, Button, Caption, Card, colors, DemoPage, finish, header, hint, IconTile, Inset, Meter, mono, PageHeader, Press, radius, RoundButton, Section, Segmented, tints, type Tone, toneColor } from "../ui";
@@ -388,14 +389,23 @@ export function Form() {
           <Card title="More keyboards" subtitle="Sheets and bars that ride on the keyboard" flush>
             <Inset padding={0} gap={0}>
               <LinkRow first icon="components" title="Inputs in a sheet" note='presentation="pageSheet"' onPress={() => sheet.set(true)} />
-              <LinkRow icon="text" title="A message bar at the bottom" note="KeyboardAvoidingView" onPress={() => nav.push({ name: "page", page: MessageBar })} />
+              <LinkRow icon="text" title="A message bar at the bottom" note="env(keyboard-inset-height)" onPress={() => nav.push({ name: "page", page: MessageBar })} />
             </Inset>
           </Card>
         ),
       ]}
     >
       <Dialog open={sheet()} presentation="pageSheet" onOpenChange={(open) => sheet.set(open)} style={{ flex: 1 }}>
-        <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: colors.background,
+            paddingTop: "env(safe-area-inset-top)",
+            paddingRight: "env(safe-area-inset-right)",
+            paddingBottom: "env(safe-area-inset-bottom)",
+            paddingLeft: "env(safe-area-inset-left)",
+          }}
+        >
           <Scroll style={{ flex: 1 }} keyboardDismissMode="interactive">
             <View style={{ padding: 16, paddingBottom: 40, gap: 16 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingTop: 8, paddingLeft: 4 }}>
@@ -412,7 +422,7 @@ export function Form() {
               </Inset>
             </View>
           </Scroll>
-        </SafeAreaView>
+        </View>
       </Dialog>
     </DemoPage>
   );
@@ -444,7 +454,7 @@ function MessageBar() {
   const insets = safeAreaInsets();
   const messages = signal<Message[]>([
     { mine: false, text: "The bar below sits outside the scroll view." },
-    { mine: false, text: "KeyboardAvoidingView lifts it with the keyboard. Say something." },
+    { mine: false, text: "Bottom padding of env(keyboard-inset-height) lifts it with the keyboard. Say something." },
   ]);
   const draft = signal("");
   const send = () => {
@@ -454,7 +464,7 @@ function MessageBar() {
   };
   return (
     <NavPage title="Message bar" {...header} header={<PageHeader title="Message bar" />}>
-      <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }}>
+      <View style={{ flex: 1, backgroundColor: colors.background, paddingBottom: "env(keyboard-inset-height)" }}>
         <Scroll style={{ flex: 1 }} keyboardDismissMode="interactive">
           <View style={{ padding: 16, gap: 8 }}>
             <Text style={{ alignSelf: "center", fontSize: 12, fontWeight: "500", color: colors.faint, paddingBottom: 8 }}>Today</Text>
@@ -520,7 +530,7 @@ function MessageBar() {
           />
           <RoundButton icon="arrow-up" label="Send" onPress={send} />
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </NavPage>
   );
 }

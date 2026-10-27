@@ -21,7 +21,7 @@
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
 import { effect, signal } from 'nsh';
-import { platform, setColorScheme } from 'nsh/device';
+import { platform, setColorScheme } from 'nsh';
 import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 

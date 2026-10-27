@@ -15,7 +15,7 @@ Every label comes from the app, so an alert says what your app says, in its lang
 
 ```rust tabs
 use nsh_base::{alert_dialog, button};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn app() -> impl IntoElement {
     let answer = signal(SharedString::from("–"));
@@ -105,7 +105,7 @@ An action sheet takes the same options with the `"actionSheet"` presentation:
 
 ```rust tabs
 use nsh_base::alert_dialog;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn share() {
     spawn(async move {

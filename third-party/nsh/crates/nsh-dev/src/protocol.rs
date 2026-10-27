@@ -10,6 +10,13 @@
 //! server's hello asks for a test session, and each [`ServerMessage::Step`]
 //! (a [`TestStep`] with an id) gets one [`ClientMessage::StepDone`] with
 //! that id, from the host's test agent (`nsh_testing::agent`).
+//!
+//! Every float field decodes through `float` (`deserialize_with`): the
+//! messages are internally tagged enums, which serde buffers before it
+//! decodes their fields, and a serde_json built with `arbitrary_precision`
+//! (which feature unification turns on in a binary that also links a crate
+//! asking for it, rolldown's) buffers a number with a fraction as a map,
+//! which a plain `f32` / `f64` field rejects.
 
 use serde::{Deserialize, Serialize};
 
@@ -134,13 +141,21 @@ pub struct TestEnvironment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reduced_motion: Option<bool>,
     /// The safe area insets in points: top, right, bottom, left.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "float::option_f32x4"
+    )]
     pub safe_area: Option<[f32; 4]>,
     /// The app runs on a manual clock standing at this wall time, in
     /// milliseconds since the Unix epoch: its time moves only as the test
     /// moves it ([`TestStep::Clock`]) and by a frame's time with each frame
     /// the platform shows, as a headless app's does.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "float::option_f64"
+    )]
     pub clock: Option<f64>,
     /// The launch parameters the app reads as `host.params` (`nsh/host`):
     /// the embedding app's, which the test plays.
@@ -169,6 +184,7 @@ pub enum ClockChange {
     /// (`clock.setSystemTime`).
     SetSystemTime {
         /// Milliseconds since the Unix epoch.
+        #[serde(deserialize_with = "float::f64")]
         unix_ms: f64,
     },
 }
@@ -349,6 +365,7 @@ pub enum TestStep {
         /// The scroll view.
         selector: String,
         /// Points; negative scrolls back.
+        #[serde(deserialize_with = "float::f32")]
         distance: f32,
     },
     /// Drags the view: a finger (or the mouse) on its middle moves by
@@ -357,8 +374,10 @@ pub enum TestStep {
         /// The view.
         selector: String,
         /// Points rightwards.
+        #[serde(deserialize_with = "float::f32")]
         x: f32,
         /// Points downwards.
+        #[serde(deserialize_with = "float::f32")]
         y: f32,
     },
     /// Moves the mouse over the view (`app.hover`).
@@ -480,8 +499,10 @@ pub enum TestStep {
     /// Makes the window `width` × `height` points (`app.setViewport`).
     SetViewport {
         /// Points.
+        #[serde(deserialize_with = "float::f32")]
         width: f32,
         /// Points.
+        #[serde(deserialize_with = "float::f32")]
         height: f32,
     },
     /// Switches the system's appearance as the app sees it
@@ -567,8 +588,10 @@ pub enum SceneQuery {
     /// scroll view brings in, is not on screen.
     SetViewport {
         /// Width in points.
+        #[serde(deserialize_with = "float::f32")]
         width: f32,
         /// Height in points.
+        #[serde(deserialize_with = "float::f32")]
         height: f32,
     },
     /// View `id`'s bounds on screen, in points from the viewport's top left.
@@ -696,6 +719,90 @@ mod base64_bytes {
     }
 }
 
+/// Float fields, decoded whatever serde_json's features: as a number, or
+/// as the map a serde_json with `arbitrary_precision` buffers a number with
+/// a fraction as inside an internally tagged enum
+/// (`{"$serde_json::private::Number": "390.5"}`). Encoding is serde's own:
+/// a plain JSON number.
+mod float {
+    use std::fmt;
+
+    use serde::{
+        Deserialize, Deserializer,
+        de::{self, MapAccess, Visitor},
+    };
+
+    /// The key of serde_json's buffered arbitrary-precision number.
+    const NUMBER_TOKEN: &str = "$serde_json::private::Number";
+
+    /// A number in either form.
+    struct Float(f64);
+
+    impl<'de> Deserialize<'de> for Float {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Float, D::Error> {
+            // `deserialize_any`: a buffered map reaches the visitor only
+            // this way (serde's `deserialize_f64` of buffered content
+            // rejects anything but a number).
+            d.deserialize_any(FloatVisitor)
+        }
+    }
+
+    struct FloatVisitor;
+
+    impl<'de> Visitor<'de> for FloatVisitor {
+        type Value = Float;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a number")
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Float, E> {
+            Ok(Float(v))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Float, E> {
+            Ok(Float(v as f64))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Float, E> {
+            Ok(Float(v as f64))
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Float, A::Error> {
+            let key: Option<String> = map.next_key()?;
+            if key.as_deref() != Some(NUMBER_TOKEN) {
+                return Err(de::Error::invalid_type(de::Unexpected::Map, &self));
+            }
+            let text: String = map.next_value()?;
+            let number = text
+                .parse()
+                .map_err(|_| de::Error::invalid_value(de::Unexpected::Str(&text), &self))?;
+            if map.next_key::<de::IgnoredAny>()?.is_some() {
+                return Err(de::Error::invalid_type(de::Unexpected::Map, &self));
+            }
+            Ok(Float(number))
+        }
+    }
+
+    pub(super) fn f64<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        Float::deserialize(d).map(|f| f.0)
+    }
+
+    pub(super) fn f32<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+        Float::deserialize(d).map(|f| f.0 as f32)
+    }
+
+    pub(super) fn option_f64<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+        Option::<Float>::deserialize(d).map(|f| f.map(|f| f.0))
+    }
+
+    pub(super) fn option_f32x4<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<[f32; 4]>, D::Error> {
+        Option::<[Float; 4]>::deserialize(d).map(|f| f.map(|f| f.map(|f| f.0 as f32)))
+    }
+}
+
 /// What a step acts on, which decides the view a selector names
 /// ([`SceneQuery::Pick`]).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -813,5 +920,98 @@ mod tests {
                 ..
             } if sets == ["app/native", "app/charts"]
         ));
+    }
+
+    /// The messages with float fields, each with fractions.
+    fn messages_with_floats() -> Vec<ServerMessage> {
+        let step = |step| ServerMessage::Step { id: 7, step };
+        vec![
+            ServerMessage::TestSetup {
+                storage: vec![],
+                trace: false,
+                environment: TestEnvironment {
+                    safe_area: Some([47.5, 0.0, 34.25, 0.1]),
+                    clock: Some(1_761_475_200_000.5),
+                    ..TestEnvironment::default()
+                },
+            },
+            step(TestStep::Scroll {
+                selector: "id:list".into(),
+                distance: -120.5,
+            }),
+            step(TestStep::Drag {
+                selector: "id:knob".into(),
+                x: 12.25,
+                y: -0.1,
+            }),
+            step(TestStep::SetViewport {
+                width: 390.5,
+                height: 844.0,
+            }),
+            step(TestStep::Clock {
+                change: ClockChange::SetSystemTime {
+                    unix_ms: 1_761_475_200_000.75,
+                },
+            }),
+            step(TestStep::Scene {
+                query: SceneQuery::SetViewport {
+                    width: 1200.5,
+                    height: 800.25,
+                },
+            }),
+        ]
+    }
+
+    #[test]
+    fn floats_round_trip() {
+        for msg in messages_with_floats() {
+            let text = serde_json::to_string(&msg).unwrap();
+            let back: ServerMessage = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("{text} does not decode: {e}"));
+            assert_eq!(back, msg, "{text}");
+        }
+        // Encoded as plain numbers.
+        let msg = ServerMessage::Step {
+            id: 1,
+            step: TestStep::SetViewport {
+                width: 390.5,
+                height: 844.0,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&msg).unwrap(),
+            r#"{"type":"step","id":1,"step":{"step":"set_viewport","width":390.5,"height":844.0}}"#
+        );
+    }
+
+    /// A serde_json with `arbitrary_precision` (a host's, when feature
+    /// unification turns it on) buffers a number with a fraction inside an
+    /// internally tagged enum as this map: the fields take it too, whatever
+    /// this build's serde_json.
+    #[test]
+    fn floats_decode_as_arbitrary_precision_buffers_them() {
+        fn buffered(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Number(n) if !n.is_u64() && !n.is_i64() => {
+                    *value = serde_json::json!({ "$serde_json::private::Number": n.to_string() });
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(buffered),
+                serde_json::Value::Object(map) => map.values_mut().for_each(buffered),
+                _ => {}
+            }
+        }
+        for msg in messages_with_floats() {
+            let mut value = serde_json::to_value(&msg).unwrap();
+            buffered(&mut value);
+            let text = value.to_string();
+            assert!(text.contains("$serde_json::private::Number"), "{text}");
+            let back: ServerMessage = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("{text} does not decode: {e}"));
+            assert_eq!(back, msg, "{text}");
+        }
+        // Another map is still no number.
+        let odd =
+            r#"{"type":"step","id":1,"step":{"step":"set_viewport","width":{"w":1},"height":2}}"#;
+        assert!(serde_json::from_str::<ServerMessage>(odd).is_err());
     }
 }

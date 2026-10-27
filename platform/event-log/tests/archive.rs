@@ -1049,6 +1049,76 @@ async fn read_prefixes_keep_literal_archive_ids_and_session_scope() {
 }
 
 #[tokio::test]
+async fn inspected_prune_results_are_skipped_without_hiding_later_results() {
+    use maka_event_log::archive::PruneCursor;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("prune-progress.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    open(&log, "writer", false).await;
+    for step in ["small-first", "small-second"] {
+        tool(&log, "writer", step, "small retained output".into()).await;
+    }
+    let inspected = log
+        .prepare_prune_candidates("session", Some("writer"), 128, 1024 * 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(inspected.candidates.len(), 2);
+    assert!(inspected.next.is_none());
+    for candidate in inspected.candidates {
+        assert!(
+            ArchivedPlaceholder::prepare(
+                candidate.event_id,
+                candidate.tool_call_id,
+                candidate.tool_name,
+                &candidate.projection
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+    let progress = PruneCursor::After(inspected.through);
+    let empty = log
+        .prepare_prune_candidates("session", Some("writer"), 128, 1024 * 1024, Some(&progress))
+        .await
+        .unwrap();
+    assert!(empty.candidates.is_empty());
+    let large = tool(
+        &log,
+        "writer",
+        "large-later",
+        "large output ".repeat(10_000),
+    )
+    .await;
+    let later = log
+        .prepare_prune_candidates("session", Some("writer"), 128, 1024 * 1024, Some(&progress))
+        .await
+        .unwrap();
+    assert_eq!(later.candidates.len(), 1);
+    assert_eq!(later.candidates[0].event_id, large.event().id);
+    log.append(&archive("writer", &large)).await.unwrap();
+    let done = PruneCursor::After(later.through);
+    assert!(
+        log.prepare_prune_candidates("session", Some("writer"), 128, 1024 * 1024, Some(&done))
+            .await
+            .unwrap()
+            .candidates
+            .is_empty()
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    let restarted = log
+        .prepare_prune_candidates("session", Some("writer"), 128, 1024 * 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted.candidates.len(),
+        2,
+        "a new owner may inspect retained small results again"
+    );
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn oversized_tool_result_archives_alone_and_remains_readable() {
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("large.sqlite"))
@@ -1100,4 +1170,83 @@ async fn oversized_tool_result_archives_alone_and_remains_readable() {
         .unwrap();
     assert_eq!(resource.serialized_result.as_bytes(), body);
     log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn tool_result_prefixes_respect_frozen_copy_membership() {
+    use maka_agent_facts::read::ResourceAddress::ToolResult;
+    use maka_event_log::sessions::{SessionCopy, SessionCopyResult};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("copied-prefix.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    log.create_session("session", "create", &json!({}), 1)
+        .await
+        .unwrap();
+    open(&log, "old", false).await;
+    tool(&log, "old", "shared", "copied response".into()).await;
+    end(&log, "old").await;
+    let revision = log
+        .get_session::<serde_json::Value>("session")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    assert!(matches!(
+        log.copy_session(
+            SessionCopy {
+                source_session_id: "session".into(),
+                target_session_id: "branch".into(),
+                expected_source_revision: revision,
+                purpose: maka_agent_facts::session::CopyPurpose::Branch {
+                    turn_id: None,
+                    side_conversation: false,
+                },
+            },
+            &json!({}),
+            2
+        )
+        .await
+        .unwrap(),
+        SessionCopyResult::Committed(_)
+    ));
+    open(&log, "later", false).await;
+    tool(&log, "later", "shared-long", "after fork".into()).await;
+    end(&log, "later").await;
+    log.close().await.unwrap();
+    let reopened = EventLog::open(&path).await.unwrap();
+    assert_eq!(
+        reopened
+            .resolve_read_resource("branch", ToolResult("result-shar".into()))
+            .await
+            .unwrap(),
+        Some(ToolResult("result-shared".into()))
+    );
+    assert_eq!(
+        reopened
+            .resolve_read_resource("branch", ToolResult("result-shared-long".into()))
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(matches!(
+        reopened
+            .resolve_read_resource("session", ToolResult("result-shar".into()))
+            .await,
+        Err(StoreError::AmbiguousReadResource)
+    ));
+    assert_eq!(
+        reopened
+            .resolve_read_resource("session", ToolResult("result-shared".into()))
+            .await
+            .unwrap(),
+        Some(ToolResult("result-shared".into()))
+    );
+    assert_eq!(
+        reopened
+            .resolve_read_resource("other", ToolResult("result-shar".into()))
+            .await
+            .unwrap(),
+        None
+    );
+    reopened.close().await.unwrap();
 }

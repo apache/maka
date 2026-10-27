@@ -14,7 +14,7 @@ mod patch;
 mod review;
 mod view;
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 pub use parts::{DiffViewClasses, DiffViewPart, DiffViewStyles};
 
 use self::controller::Dv;

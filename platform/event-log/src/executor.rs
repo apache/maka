@@ -104,3 +104,6 @@ pub(crate) async fn validate(
 fn invalid(reason: &str) -> StoreError {
     StoreError::InvalidTransition(reason.into())
 }
+
+#[cfg(test)]
+mod tests;

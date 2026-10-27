@@ -13,7 +13,7 @@ Text entry is the input element, `input()` in Rust and `<Input>` in TSX: a UITex
 An input takes styles like any view (typed style methods in Rust, styles and Tailwind classes in TSX), so the fields of a form have your app's own look. A labeled field is a short component of your own:
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn field(label: &'static str, value: Signal<String>, masked: bool) -> impl IntoElement {
     let focused = signal(false);
@@ -38,7 +38,8 @@ fn field(label: &'static str, value: Signal<String>, masked: bool) -> impl IntoE
 ```
 
 ```tsx tabs
-import { Input, signal, Text, View } from "nsh";
+import { signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 function Field(props: { label: string; value: string; onChange: (text: string) => void; masked?: boolean }) {
   const focused = signal(false);
@@ -64,7 +65,7 @@ function Field(props: { label: string; value: string; onChange: (text: string) =
 An input is **controlled** when you pass its value (`.value(..)`, TSX `value`): it shows what your signal holds, and you update the signal from the change event (`.on_change(..)`, TSX `onChange`).
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[component]
 pub fn App() -> impl IntoElement {
@@ -93,7 +94,8 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Input, mount, signal, Text, View } from "nsh";
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 
 function App() {
   const name = signal("");
@@ -249,7 +251,7 @@ On iOS, `.keyboard_appearance(KeyboardAppearance::Dark)` (TSX `ios={{ keyboardAp
 Autofill (`.auto_fill(AutoFill::Email)`, TSX `autoComplete`) tells the system what the field holds, so it can offer saved names, addresses, passwords and one-time codes from messages. Rust's `AutoFill` has a variant per kind (`Name`, `GivenName`, `FamilyName`, `Email`, `Tel`, `Username`, `Password`, `NewPassword`, `OneTimeCode`, `StreetAddress`, `PostalCode`, `Country`, `CreditCardNumber`, `Url`, `Birthdate`, ..., and `Off`). TSX takes these values: `"name"`, `"given-name"`, `"family-name"`, `"email"`, `"tel"`, `"username"`, `"current-password"`, `"new-password"`, `"one-time-code"`, `"street-address"`, `"postal-code"`, `"country"`, `"cc-number"`, `"cc-exp"`, `"cc-csc"`, `"url"`, `"birthdate-full"` and others, or `"off"`; iOS's own names (`"emailAddress"`, `"oneTimeCode"`, ...) are accepted too, in `autoComplete` or `ios={{ textContentType }}`.
 
 ```rust tabs
-use nsh_core::ui::AutoFill;
+use nsh_core::element::AutoFill;
 
 input()
     .keyboard_type(KeyboardType::Email)
@@ -286,7 +288,7 @@ A multiline input with `"submit"` or `"blurAndSubmit"` sends on return, as chat 
 To move to the next field, keep refs to the inputs (`element_ref()` and `.element_ref(&r)` in Rust, `ref` in TSX) and call `focus()`:
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn sign_in() -> impl IntoElement {
     let email = signal(String::new());
@@ -320,7 +322,8 @@ pub fn sign_in() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Input, mount, signal, View, type YNode } from "nsh";
+import { mount, signal, View, type YNode } from "nsh";
+import { Input } from "nsh/base";
 
 function SignIn() {
   const email = signal("");
@@ -346,7 +349,7 @@ function SignIn() {
 mount(SignIn);
 ```
 
-Submitting without blurring (`SubmitBehavior::Submit`, `submitBehavior="submit"`) on the first field keeps the keyboard up while focus moves, so it does not drop and rise again. A chat input that sends on return and stays focused submits the same way (see the composer [below](#content-outside-scroll-views-keyboardavoidingview)).
+Submitting without blurring (`SubmitBehavior::Submit`, `submitBehavior="submit"`) on the first field keeps the keyboard up while focus moves, so it does not drop and rise again. A chat input that sends on return and stays focused submits the same way (see the composer [below](#content-outside-scroll-views)).
 
 Both the maximum length and the submit behavior are enforced natively: the platform asks "may this character be added?" and "should return end editing?" as the user types, and NSH answers from the props without waiting for JS.
 
@@ -360,15 +363,14 @@ An input's ref has:
 | `blur()` | `blur()` | Unfocuses it. |
 | `set_selection(start, end)` | `setSelection(start, end?)` | Selects `start..end` (UTF-16 units); a caret when they are equal (TSX: without `end`). |
 
-`dismiss_keyboard()` in Rust and `Keyboard.dismiss()` from `nsh/base` in TSX unfocus whichever input has focus:
+`dismiss_keyboard()` in Rust and `Keyboard.dismiss()` from `nsh` in TSX unfocus whichever input has focus:
 
 ```rust tabs
 view().on_press(|| dismiss_keyboard())
 ```
 
 ```tsx tabs
-import { View } from "nsh";
-import { Keyboard } from "nsh/base";
+import { View, Keyboard } from "nsh";
 
 <View onPress={() => Keyboard.dismiss()}>…</View>
 ```
@@ -471,7 +473,8 @@ view()
 ```
 
 ```tsx tabs
-import { type Bounds, Input, Overlay, Text, View, signal } from "nsh";
+import { type Bounds, Overlay, Text, View, signal } from "nsh";
+import { Input } from "nsh/base";
 
 const draft = signal("");
 const end = signal(0);
@@ -529,7 +532,8 @@ input()
 ```
 
 ```tsx tabs
-import { Input, signal } from "nsh";
+import { signal } from "nsh";
+import { Input } from "nsh/base";
 
 const attachments = signal<File[]>([]);
 
@@ -605,13 +609,12 @@ scroll()
 
 The dismiss mode (`.keyboard_dismiss_mode(..)`, TSX `keyboardDismissMode`: none, on drag, interactive) lets dragging the form hide the keyboard; handled taps (`.keyboard_taps(KeyboardTaps::Handled)`, TSX `keyboardShouldPersistTaps="handled"`) let a tap on a button go through while the keyboard is up instead of only dismissing it. See [Scrolling](./scrolling.md#scroll-views-and-the-keyboard).
 
-### Content outside scroll views: KeyboardAvoidingView
+### Content outside scroll views
 
-A message bar pinned to the bottom of a screen is not in a scroll view, so nothing moves it. Wrap the screen in `KeyboardAvoidingView` from `nsh_base` (TSX: `nsh/base`): it makes room at the bottom as tall as the keyboard, animated with the keyboard.
+A message bar pinned to the bottom of a screen is not in a scroll view, so nothing moves it. Pad the screen's bottom by CSS's `env(keyboard-inset-height)` (`paddingBottom: "env(keyboard-inset-height)"`, Tailwind `pb-[env(keyboard-inset-height)]`, Rust `.pb_keyboard()`): it makes room at the bottom as tall as the keyboard, animated natively with the keyboard.
 
 ```rust tabs
-use nsh_base::keyboard_avoiding_view;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn chat_screen() -> impl IntoElement {
     let draft = signal(String::new());
@@ -622,8 +625,9 @@ pub fn chat_screen() -> impl IntoElement {
         }
         draft.set(String::new());
     };
-    keyboard_avoiding_view()
+    view()
         .flex_1()
+        .pb_keyboard()
         .child(scroll().flex_1().keyboard_dismiss_mode(KeyboardDismissMode::Interactive) /* messages */)
         .child(
             view()
@@ -650,8 +654,8 @@ pub fn chat_screen() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Input, Scroll, signal, View } from "nsh";
-import { keyboardFrame, KeyboardAvoidingView, safeAreaInsets } from "nsh/base";
+import { Scroll, signal, View, keyboardFrame, safeAreaInsets } from "nsh";
+import { Input } from "nsh/base";
 
 function ChatScreen() {
   const insets = safeAreaInsets();
@@ -661,7 +665,7 @@ function ChatScreen() {
     draft.set("");
   };
   return (
-    <KeyboardAvoidingView style={{ flex: 1 }}>
+    <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
       <Scroll style={{ flex: 1 }} keyboardDismissMode="interactive">
         {/* messages */}
       </Scroll>
@@ -684,24 +688,18 @@ function ChatScreen() {
           style={{ flex: 1, maxHeight: 120 }}
         />
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 ```
 
-In Rust each prop is a setter of `keyboard_avoiding_view()` (`.behavior(AvoidBehavior::Height)`, `.offset(px(49.0))`, `.enabled(move || ..)`):
+Padding (`.pb_keyboard()`) shrinks the content above while the background reaches the bottom of the screen; a bottom margin (`marginBottom: "env(keyboard-inset-height)"`, `.mb_keyboard()`) ends the whole view at the top of the keyboard. `calc(env(keyboard-inset-height) + <length>)` (Rust `.pb_keyboard_plus(..)`, `.mb_keyboard_plus(..)`) adds a length, such as minus the height of a tab bar below the view.
 
-| Prop | Type | Default | Description |
-|---|---|---|---|
-| `behavior` | `"padding" \| "height"` | `"padding"` | `padding` pads the bottom by the keyboard's height; `height` shrinks the view (its background ends at the keyboard). |
-| `enabled` | `boolean` | `true` | Avoid the keyboard. |
-| `offset` | `number` | `0` | Added to the keyboard's height while it shows (a tab bar below the view, say). |
-
-It assumes it reaches the bottom of the surface, as a screen's content does. On an Android host whose window resizes for the keyboard, the window itself shrinks and `KeyboardAvoidingView` has nothing to do. See [KeyboardAvoidingView](../modules/nsh-base.md#keyboardavoidingview).
+The full height suits a view that reaches the bottom of the surface, as a screen's content does. On an Android host whose window resizes for the keyboard, the window itself shrinks and the variable is 0. See [Keyboard](../elements/keyboard.md).
 
 ### The keyboard accessor
 
-`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh/base` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in seconds. Read them for anything custom: hide a floating button while typing, or size a panel. A layout that changes with them moves with the keyboard when it animates on the keyboard's curve: `LayoutAnimation.configureNext({ duration: keyboardFrame().duration * 1000, update: { type: "keyboard" } })` (Rust: `LayoutCurve::Keyboard`), as `KeyboardAvoidingView` does.
+`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in seconds. Read them for anything custom: hide a floating button while typing, or size a panel. A layout that changes with them moves with the keyboard when it animates on the keyboard's curve: `LayoutAnimation.configureNext({ duration: keyboardFrame().duration * 1000, update: { type: "keyboard" } })` (Rust: `LayoutCurve::Keyboard`), as `env(keyboard-inset-height)` does.
 
 ```rust tabs
 view().child(when(
@@ -711,8 +709,7 @@ view().child(when(
 ```
 
 ```tsx tabs
-import { View } from "nsh";
-import { keyboardFrame } from "nsh/base";
+import { View, keyboardFrame } from "nsh";
 
 <If when={keyboardFrame().height === 0}>
   <View style={{ position: "absolute", right: 16, bottom: 16 }}>…</View>
@@ -721,10 +718,10 @@ import { keyboardFrame } from "nsh/base";
 
 ## A bar over the keyboard (iOS): InputAccessoryView
 
-`input_accessory_view(id)` in Rust and `InputAccessoryView` from `nsh/ios` in TSX show a bar attached to the top of the keyboard while an input that names it has focus: iOS's `inputAccessoryView`. It moves with the keyboard natively, including during interactive dismissal. It takes no room where it is placed in the tree; inputs refer to it by its id (`.input_accessory(id)`, TSX `ios={{ inputAccessoryViewID }}` and `nativeID`):
+`input_accessory_view(id)` in Rust and `InputAccessoryView` from `nsh/mobile` in TSX show a bar attached to the top of the keyboard while an input that names it has focus: iOS's `inputAccessoryView`. It moves with the keyboard natively, including during interactive dismissal. It takes no room where it is placed in the tree; inputs refer to it by its id (`.input_accessory(id)`, TSX `ios={{ inputAccessoryViewID }}` and `nativeID`):
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 pub fn note() -> impl IntoElement {
     let content = signal(String::new());
@@ -762,8 +759,9 @@ pub fn note() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Input, signal, Text, View, type YNode } from "nsh";
-import { InputAccessoryView } from "nsh/ios";
+import { signal, Text, View, type YNode } from "nsh";
+import { Input } from "nsh/base";
+import { InputAccessoryView } from "nsh/mobile";
 
 function Note() {
   const text = signal("");
@@ -788,11 +786,11 @@ function Note() {
 }
 ```
 
-The bar is as wide as the window and as tall as its content. Input accessories are iOS's: on Android the bar is an empty hidden view (`isAvailable` from `nsh/ios` is `false`), so place those controls elsewhere there, for example above the input (`os() == Os::Android` in Rust, `platform.os === "android"` in TSX).
+The bar is as wide as the window and as tall as its content. Input accessories are iOS's: on Android the bar is an empty hidden view, so place those controls elsewhere there, for example above the input (`os() == Os::Android` in Rust, `platform.os === "android"` in TSX).
 
 ## Related
 
 - [`Input`](../elements/input.md): the element reference.
-- [`KeyboardAvoidingView`](../modules/nsh-base.md#keyboardavoidingview) and [`Keyboard`](../modules/nsh-base.md#keyboard).
-- [`nsh/ios`](../modules/nsh-ios.md): `InputAccessoryView`.
+- [Keyboard](../elements/keyboard.md) and [`Keyboard`](../modules/nsh.md#keyboard-and-keyboardframe).
+- [`InputAccessoryView`](../modules/nsh-mobile.md#inputaccessoryview): `InputAccessoryView`.
 - [Scrolling](./scrolling.md#scroll-views-and-the-keyboard): keyboard dismissal and taps in scroll views.

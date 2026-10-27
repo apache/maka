@@ -20,7 +20,7 @@ use nsh_base::{
     dock::{DockAreaLayout, DockLayout, DockPanel, DockPlacement, DockRegion, DockTab},
     dock_area, theme,
 };
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn workspace() -> impl IntoElement {
     let layout = signal(
@@ -269,7 +269,7 @@ the same methods in snake case.
 
 ## Saving and restoring
 
-A reported layout is plain data, so saving it is `JSON.stringify(layout)` into [storage](../modules/nsh-storage.md),
+A reported layout is plain data, so saving it is `JSON.stringify(layout)` into [storage](../modules/nsh.md#storage),
 and restoring it is passing the parsed value as `layout`. `onLayoutChange` reports every change, a resize and a tab
 selection included, so write to storage once the changes settle (a short timer reset on each report).
 

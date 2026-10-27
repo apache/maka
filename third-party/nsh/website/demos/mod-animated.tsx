@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
-import { Animated, createAnimatedValue, Easing } from "nsh/animated";
-import { desktop, Panel, Split, ui, wide } from "./palette";
+import { Animated, createAnimatedValue, Easing } from "nsh";
+import { button, buttonText, desktop, Panel, Split, ui, wide } from "./palette";
 
 const TRACK = 240;
 const curves: [string, Easing][] = [
@@ -14,25 +14,9 @@ const curves: [string, Easing][] = [
 
 function Button(props: { label: string; onPress: () => void }) {
   return (
-    <Text
-      onPress={props.onPress}
-      activeStyle={{ opacity: 0.6 }}
-      style={
-        desktop
-          ? { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, overflow: "hidden", ...ui().raised, color: ui().text, fontSize: 13, fontWeight: "600" }
-          : {
-              paddingHorizontal: 14,
-              paddingVertical: 8,
-              borderRadius: 10,
-              overflow: "hidden",
-              ...ui().raised,
-              color: ui().text,
-              fontWeight: "600",
-            }
-      }
-    >
-      {props.label}
-    </Text>
+    <View onPress={props.onPress} {...button()}>
+      <Text style={buttonText()}>{props.label}</Text>
+    </View>
   );
 }
 

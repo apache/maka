@@ -540,7 +540,6 @@ CREATE TABLE context_archive_copy_prefixes (
 
 CREATE TABLE context_semantic_heads (
     session_id TEXT PRIMARY KEY,
-    through_sequence INTEGER NOT NULL,
     unavailable_at INTEGER,
     unavailable_reason TEXT
 ) WITHOUT ROWID;
@@ -769,8 +768,6 @@ CREATE UNIQUE INDEX pending_root_invocation ON message_admissions (
 CREATE INDEX event_material_owner ON event_log(event_session, sequence)
     WHERE event_json IS NOT NULL;
 
-CREATE INDEX event_proof_owner ON event_log(event_session, sequence);
-
 CREATE UNIQUE INDEX session_revision_family ON session_history_copies(
     CAST(json_extract(lineage_json, '$.root_session_id') AS TEXT),
     CAST(json_extract(lineage_json, '$.index') AS INTEGER)
@@ -926,7 +923,7 @@ WHERE kind = 'invocation_ended' AND event_json IS NOT NULL;
 
 CREATE INDEX catalog_model_boundaries ON event_log(invocation_id, kind, sequence)
 WHERE kind = 'model_requested' OR kind = 'model_completed'
-   OR kind = 'model_interrupted' OR kind = 'executor_started';
+   OR kind = 'model_interrupted' OR kind = 'executor_started' OR kind = 'executor_completed';
 
 CREATE INDEX model_step_terminals ON event_log(invocation_id, operation_id, sequence)
 WHERE kind IN ('model_completed', 'model_interrupted') AND event_json IS NOT NULL;
@@ -978,7 +975,7 @@ CREATE INDEX project_identity_owner ON project_identities(project_id, id);
 
 CREATE INDEX artifacts_session_order ON artifacts(session_id, created_at DESC, id);
 
-CREATE UNIQUE INDEX context_source_ordinals ON context_source_prefixes(kind,owner,ordinal);
+CREATE UNIQUE INDEX context_source_ordinals ON context_source_prefixes(owner,ordinal) WHERE kind='invocation';
 
 CREATE INDEX context_run_opening ON event_log(
     json_extract(event_json,'$.invocation.session_id'),
@@ -1217,11 +1214,6 @@ BEGIN
     ON CONFLICT(owner) DO NOTHING;
 END;
 
-CREATE TRIGGER context_semantic_copy_member AFTER INSERT ON session_history_members
-BEGIN
-    SELECT context_semantic_copy(NEW.session_id,NEW.sequence,NEW.archive_sequence);
-END;
-
 CREATE TRIGGER context_obligations_append AFTER INSERT ON event_log
 WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL AND (
     NEW.kind IN ('invocation_opened','invocation_ended','tool_dispatched','tool_rejected','tool_settled','model_requested','model_completed','model_interrupted')
@@ -1358,6 +1350,16 @@ END;
 CREATE TRIGGER context_execution_append AFTER INSERT ON event_log
 WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL
   AND NEW.kind IN ('model_requested','model_observed','model_completed','model_interrupted','tool_dispatched','tool_rejected','tool_settled')
+  AND (NEW.kind != 'model_observed'
+    OR json_extract(NEW.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result')
+    OR EXISTS(SELECT 1 FROM context_execution_steps
+      WHERE invocation_id=NEW.invocation_id
+        AND operation_id=CAST(json_extract(NEW.event_json,'$.fact.step_id') AS TEXT)
+        AND (observed_at IS NULL OR terminal_kind='model_interrupted'
+          OR (barrier_at IS NULL AND (json_extract(NEW.event_json,'$.fact.event.kind')='finished'
+            OR (json_extract(NEW.event_json,'$.fact.event.data.provider_options') IS NOT NULL
+              AND json_extract(NEW.event_json,'$.fact.event.data.provider_options')!='{}')))
+          OR (accepted_at IS NULL AND json_extract(NEW.event_json,'$.fact.event.kind') IN ('source','part_finished')))))
 BEGIN
     INSERT INTO context_execution_steps(invocation_id,operation_id,requested_at,purpose,item_acceptance)
     SELECT NEW.invocation_id,NEW.operation_id,NEW.sequence,json_extract(NEW.event_json,'$.fact.purpose'),

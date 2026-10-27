@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
-import { reduceMotion } from "nsh/accessibility";
-import { colorScheme, locale, platform, windowSize } from "nsh/device";
+import { reduceMotion } from "nsh";
+import { colorScheme, locale, platform, windowSize } from "nsh";
 
 function App() {
   const result = signal("none");

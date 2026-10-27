@@ -1,6 +1,6 @@
 ---
 title: nsh/base
-description: "Unstyled base components for an app's UI: buttons, checkboxes, radios, switches, tabs, resizable panels, dockable workspaces, Markdown and HTML documents, a code editor, diffs, selections across texts, navigation stacks and dialogs, safe areas, system alert dialogs, the software keyboard and the status bar of pages and dialogs."
+description: "Unstyled base components for an app's UI: buttons, checkboxes, radios, switches, tabs, resizable panels, dockable workspaces, Markdown and HTML documents, a code editor, diffs, text inputs, navigation stacks and dialogs, system alert dialogs and the status bar of pages and dialogs."
 order: 2.5
 demo: ui-navigation
 ---
@@ -8,41 +8,127 @@ demo: ui-navigation
 # nsh/base
 
 `nsh/base` is the base component layer of an app's UI: unstyled components that own behavior, state, focus and
-accessibility, on every platform. It sits between the primitives (`nsh` and the `nsh/<module>` modules) and the
+accessibility, on every platform. It sits between the primitives (`nsh`, `nsh/mobile` and `nsh/desktop`) and the
 app's own component library, as `gpui-base` sits between `gpui` and a styled library in GPUI Kit (see
-[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), workspaces the user arranges (`ResizablePanel`s in a
-`ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), documents of Markdown or HTML (`TextView`), a code editor (`Editor`) the changes between texts (`DiffView`) and tables of rows and columns (`Table` and its parts, `DataTable`), selections across texts
-(`SelectionArea`), popups shown on top of everything (`Popover`, `Menu` and `ContextMenu` with their `MenuItem`,
+[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), the parts charts are built from (`Plot` with `Line`, `Area`, `Grid`, `Pie` and `Arc`, in `nsh/base/plot`), workspaces the user arranges (`ResizablePanel`s in a
+`ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), documents of Markdown or HTML (`TextView`), a code editor (`Editor`) the changes between texts (`DiffView`) and tables of rows and columns (`Table` and its parts, `DataTable`), text inputs
+(`Input`), popups shown on top of everything (`Popover`, `Menu` and `ContextMenu` with their `MenuItem`,
 `MenuSeparator` and `Submenu`, `Tooltip`, `Sheet`), toasts (`Toast` in a `ToastStack`, their lifecycle in a `ToastManager`), navigation (a `NavStack` of `NavPage`s driven
-by the state you create with `createNavStack`, and `Dialog` for content presented over everything else), safe areas
-(`SafeAreaView`, `safeArea()` and `safeAreaInsets()`), the system's alert dialogs (`AlertDialog`), the software
-keyboard (`Keyboard`, `keyboardFrame()` and `KeyboardAvoidingView`). Pages and dialogs also decide the status bar
+by the state you create with `createNavStack`, and `Dialog` for content presented over everything else) and the system's
+alert dialogs (`AlertDialog`). Pages and dialogs also decide the status bar
 (`statusBar`).
 
 The look is the app's: what goes inside a page, a dialog or a header is your own JSX, drawn from the primitives with
 styles, [Tailwind](../docs/tailwind.md) classes and your theme, Rust components from [your own crate](../docs/rust.md),
 or a component library the community builds on `nsh/base`. Every host serves `nsh/base`; Rust apps use the same API
-from the `nsh-base` crate (`nsh_base::{button, safe_area_view, …}`).
+from the `nsh-base` crate (`nsh_base::{button, dialog, …}`).
 
 ```rust tabs
 use nsh_base::{
-    AvoidBehavior, Edge, MarkdownExtension, MarkdownOptions, alert_dialog, button, checkbox, dialog, diff_view, dock_area, editor,
-    h_resizable, keyboard_avoiding_view, nav_page, nav_stack, radio, radio_group, resizable_panel, safe_area_view,
-    selection_area, switch, tab, tabs, text_view, theme, toast, toast_stack, v_resizable,
+    MarkdownExtension, MarkdownOptions, alert_dialog, button, checkbox, dialog, diff_view, dock_area, editor,
+    h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, switch, tab, tabs, text_view, theme, toast, toast_stack, v_resizable,
 };
 ```
 
 ```tsx tabs
 import {
-  AlertDialog, Button, Checkbox, Collapsible, ContextMenu, createNavStack, DataTable, Dialog, DiffView, DockArea, Editor, Keyboard, keyboardFrame, KeyboardAvoidingView, Menu, Progress,
-  MenuItem, MenuSeparator, NavPage, NavStack, Popover, Radio, RadioGroup, ResizablePanel, ResizablePanelGroup, SafeAreaView, safeArea, safeAreaInsets, SelectionArea, Sheet,
-  Submenu, Switch, Tab, Table, TableBody, TableCaption, TableCell, TableFooter, TableHead, TableHeader, TableRow, Tabs, TextView, Toast, ToastManager, ToastStack, Tooltip,
+  AlertDialog,
+  Button,
+  Checkbox,
+  Collapsible,
+  ContextMenu,
+  createNavStack,
+  DataTable,
+  Dialog,
+  DiffView,
+  DockArea,
+  Editor,
+  Menu,
+  Progress,
+  MenuItem,
+  MenuSeparator,
+  NavPage,
+  NavStack,
+  Popover,
+  Radio,
+  RadioGroup,
+  ResizablePanel,
+  ResizablePanelGroup,
+  Sheet,
+  Submenu,
+  Switch,
+  Tab,
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableFooter,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Tabs,
+  TextView,
+  Toast,
+  ToastManager,
+  ToastStack,
+  Tooltip,
 } from "nsh/base";
 import type {
-  AlertDialogAction, AlertDialogOptions, AlertDialogPresentation, AlertDialogRole, AvoidBehavior, ButtonProps,
-  CheckboxProps, CollapsibleProps, DialogChangeReason, DataTableColumn, DataTableProps, DataTableRef, DataTableSelection, DataTableSort, DialogProps, DiffAnnotation, DiffFile, DiffHunk, DiffLineRange, DiffSeparator, DiffStats, DiffViewProps, DiffViewRef, DockAreaLayout, DockNode, DockRegion, EditorDecoration, EditorDiagnostic, EditorProps, EditorRef, EditorSearch, EditorSearchResult, EditorSelection, Edge, Edges, HeaderStyle, NavPageProps, NavStackProps, NavStackState, ProgressProps, StatusBar,
-  RadioGroupProps, RadioProps, SelectionAreaProps, StatusBarForeground, SwitchProps, TabProps, TabsProps, TextViewProps, TextViewDocument, MarkdownExtension, MarkdownOptions,
-  ToastEntry, ToastMotion, ToastOptions, ToastProps, ToastStackProps, ToastTransitionStatus,
+  AlertDialogAction,
+  AlertDialogOptions,
+  AlertDialogPresentation,
+  AlertDialogRole,
+  ButtonProps,
+  CheckboxProps,
+  CollapsibleProps,
+  DialogChangeReason,
+  DataTableColumn,
+  DataTableProps,
+  DataTableRef,
+  DataTableSelection,
+  DataTableSort,
+  DialogProps,
+  DiffAnnotation,
+  DiffFile,
+  DiffHunk,
+  DiffLineRange,
+  DiffSeparator,
+  DiffStats,
+  DiffViewProps,
+  DiffViewRef,
+  DockAreaLayout,
+  DockNode,
+  DockRegion,
+  EditorDecoration,
+  EditorDiagnostic,
+  EditorProps,
+  EditorRef,
+  EditorSearch,
+  EditorSearchResult,
+  EditorSelection,
+  Edges,
+  HeaderStyle,
+  NavPageProps,
+  NavStackProps,
+  NavStackState,
+  ProgressProps,
+  StatusBar,
+  RadioGroupProps,
+  RadioProps,
+  StatusBarForeground,
+  SwitchProps,
+  TabProps,
+  TabsProps,
+  TextViewProps,
+  TextViewDocument,
+  MarkdownExtension,
+  MarkdownOptions,
+  ToastEntry,
+  ToastMotion,
+  ToastOptions,
+  ToastProps,
+  ToastStackProps,
+  ToastTransitionStatus,
 } from "nsh/base";
 ```
 
@@ -62,17 +148,13 @@ walkthroughs, see the [Navigation guide](../docs/navigation.md) and [Forms and k
 | [`DockArea`](../elements/dock.md) | `dock_area()` | A workspace of splits, tab groups and edge docks the user arranges; its layout is the app's data. |
 | [`NavStack`, `NavPage`, `createNavStack`](../elements/nav-stack.md) | `nav_stack()`, `nav_page()` | A native navigation stack and its pages. |
 | [`Dialog`](../elements/dialog.md) | `dialog()` | Content presented over everything else: sheets, full-screen flows, dialogs. |
-| [`SafeAreaView`](../elements/safe-area-view.md) | `safe_area_view()` | A view padded clear of system UI and headers. |
-| [`safeArea()`, `safeAreaInsets()`](../elements/safe-area-view.md#safearea-and-safeareainsets) | `safe_area()`, `cx.insets()` | The insets themselves, reactive. |
-| [`KeyboardAvoidingView`](../elements/keyboard-avoiding-view.md) | `keyboard_avoiding_view()` | A view that keeps its content above the software keyboard. |
-| [`Keyboard.dismiss()`, `keyboardFrame()`](../elements/keyboard-avoiding-view.md#hiding-the-keyboard) | `dismiss_keyboard()`, `keyboard_height()` | Hides the keyboard; its height over the surface. |
 | [`AlertDialog`](../elements/alert-dialog.md) | `alert_dialog()` | The platform's alert or action sheet. |
 | [`TextView`](../elements/text-view.md) | `text_view()` | A document of Markdown, HTML or blocks, drawn with texts and views, for streamed AI replies. |
 | [`Editor`](../elements/editor.md) | `editor()` | A code editor: syntax highlighting, several carets, folding, find and replace, diagnostics. |
 | [`DiffView`](../elements/diff-view.md) | `diff_view()` | The changes between two texts or of a patch, side by side or unified, with per-change actions. |
 | [`Table`, `TableHeader`, `TableBody`, `TableFooter`, `TableRow`, `TableHead`, `TableCell`, `TableCaption`](../elements/table.md) | `table()`, `table_row()`, ... | A table of the app's own rows and cells, with a table's roles for screen readers. |
 | [`DataTable`](../elements/data-table.md) | `data_table()` | A table of any number of rows and columns: selection, sorting, fixed, resizable and movable columns, rows served a page at a time. |
-| [`SelectionArea`](../elements/selection-area.md) | `selection_area()` | One selection across the texts inside it. |
+| [`Input`](../elements/input.md) | `nsh_base::input()` | The platform's native text input, one line or several. |
 | [`Popover`](../elements/popover.md) | `popover()` | Content anchored to a trigger, on top of everything. |
 | [`Menu`, `ContextMenu`, `MenuItem`, `MenuSeparator`, `Submenu`](../elements/menu.md) | `menu()`, ... | Menus: popups with cascading submenus on desktops, sheets on phones. |
 | [`Tooltip`](../elements/tooltip.md) | `tooltip()` | A hint next to its trigger. |
@@ -136,6 +218,20 @@ width. The app owns `value` (0 to 100) and `indeterminate`; screen readers get t
 value, and no value while indeterminate, when the indicator's width and motion are the app's. See
 [Progress](../elements/progress.md).
 
+### Plot (`nsh/base/plot`)
+
+The parts charts are built from, as `gpui-base`'s `plot`, in a module of their own: `import { Plot, Line, Area, Grid }
+from "nsh/base/plot"`. A `Plot` holds the app's rows (`data`, generic over their type, so `x` and `y` are checked
+keys or functions of a row), the `point` or `linear` scales of its axes, the row under the pointer (`onHoverChange`)
+and its motion (`motion`: the appear, the hover's fade and glide); its marks draw natively from the rows, with no JS
+per point, and paint with the SVG paint properties (`stroke-*`, `fill-*`), `currentColor` where none is set; an
+`Area` shows a background (a gradient, `bg-linear-*`) inside its shape. The hover's cross line, dots (each mark's own
+with `hoverDotClass`) and tooltip (`tooltipPlacement`, kept inside the plot) are parts the app styles and fills, moved
+natively; axis labels are the app's own elements. A `Pie` splits the turn into a slice per row (a donut with an
+`innerRadius`), each painted with its own classes (`sliceClass`, a function of its row), and an `Arc` draws one sector
+between two angles (a gauge's track and value); over a pie the plot reports the slice under the pointer, which lifts
+(`hoverLift`) while the others fade (`hoverDim`). See [Plot](../elements/plot.md).
+
 ## Workspaces
 
 ### ResizablePanelGroup and ResizablePanel
@@ -188,13 +284,6 @@ rows, column headers and cells. Every part takes the app's look. See [Table](../
 columns or cells select; columns resize, move, stay fixed and sort (the app sorts); the app serves rows a page at a time
 and can draw cells and titles. See [DataTable](../elements/data-table.md).
 
-## Selection
-
-### SelectionArea
-
-`SelectionArea` makes the texts inside it select together, as a web page's do: one selection runs across views,
-`Text` elements and `TextView`s, in reading order. See [SelectionArea](../elements/selection-area.md).
-
 ## Navigation
 
 A `NavStack` of `NavPage`s is `UINavigationController` on iOS and a stack with a toolbar and predictive back on
@@ -206,19 +295,6 @@ Android; on the desktops and the web each page shows the app's own `header`. See
 `Dialog` presents content over everything else, including the stack's header, in its own native window layer. Its
 popup and backdrop are styled by the app. See [Dialog](../elements/dialog.md).
 
-## Safe areas
-
-### SafeAreaView
-
-`SafeAreaView` pads its content by the insets where it renders: the nearest page's (below its header), the nearest
-dialog's, or else the surface's safe area. See [SafeAreaView](../elements/safe-area-view.md).
-
-### safeArea and safeAreaInsets
-
-`safeArea()` is the surface's safe area; `safeAreaInsets()` the insets where a component renders. Both are reactive
-`Edges` (`{ top, right, bottom, left }` in points). See
-[safeArea and safeAreaInsets](../elements/safe-area-view.md#safearea-and-safeareainsets).
-
 ## Alert dialogs
 
 ### AlertDialog
@@ -226,16 +302,10 @@ dialog's, or else the surface's safe area. See [SafeAreaView](../elements/safe-a
 `AlertDialog.show(options)` shows the platform's own alert or action sheet and resolves with the action the user
 chose. See [AlertDialog](../elements/alert-dialog.md).
 
-## Keyboard
+## Input
 
-`Keyboard.dismiss()` hides the software keyboard and `keyboardFrame()` tells you how much of the screen it covers. See
-[Hiding the keyboard](../elements/keyboard-avoiding-view.md#hiding-the-keyboard) and
-[The keyboard's height](../elements/keyboard-avoiding-view.md#the-keyboards-height).
-
-### KeyboardAvoidingView
-
-`KeyboardAvoidingView` keeps its content above the software keyboard, moving with it. See
-[KeyboardAvoidingView](../elements/keyboard-avoiding-view.md).
+`Input` is the platform's native text input: a single-line or multiline field whose typing, caret, selection,
+autocorrection and autofill the platform handles. The app owns its value and its look. Its props are the type `InputProps` (with `IOSInputProps` for `ios={{…}}`), exported beside it. See [Input](../elements/input.md).
 
 ## Status bar
 
@@ -246,7 +316,7 @@ The status bar belongs to what is on screen, as in UIKit, where each view contro
 
 ```rust tabs
 use nsh_base::nav_page;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn photo_viewer() -> Screen {
     nav_page().header_visible(false).status_bar(
@@ -348,10 +418,9 @@ launch screen.
 
 - [Navigation guide](../docs/navigation.md).
 - [Forms and keyboard](../docs/forms-and-keyboard.md).
-- [Button](../elements/button.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Collapsible](../elements/collapsible.md), [Progress](../elements/progress.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md),
-  [SafeAreaView](../elements/safe-area-view.md), [KeyboardAvoidingView](../elements/keyboard-avoiding-view.md),
+- [Button](../elements/button.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Collapsible](../elements/collapsible.md), [Progress](../elements/progress.md), [Plot](../elements/plot.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md),
   [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md), [Editor](../elements/editor.md), [DiffView](../elements/diff-view.md), [Table](../elements/table.md), [DataTable](../elements/data-table.md),
-  [SelectionArea](../elements/selection-area.md), [Text](../elements/text.md) and
+  [Text](../elements/text.md) and
   [Input](../elements/input.md).
 - [Device and environment](../docs/device-and-environment.md).
-- [nsh/android](./nsh-android.md): `BackHandler`, `Toast.show` for short messages and other Android-only APIs.
+- [`BackHandler`](./nsh-mobile.md#backhandler): `BackHandler` and other Android-only APIs.

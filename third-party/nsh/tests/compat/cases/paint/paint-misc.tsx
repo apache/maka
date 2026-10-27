@@ -4,7 +4,7 @@
 // in keywords, percentages, lengths and a list, and backface visibility.
 //
 import { Text, View } from "nsh";
-import { Image } from "nsh/image";
+import { Image } from "nsh";
 
 const CURSORS = [
   "auto",

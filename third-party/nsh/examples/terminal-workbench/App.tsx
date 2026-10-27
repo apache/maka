@@ -1,8 +1,9 @@
-import { computed, Input, mount, signal, View } from "nsh";
+import { computed, mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
 import { Dialog } from "nsh/base";
-import { Canvas } from "nsh/canvas";
-import { windowSize } from "nsh/device";
-import { List } from "nsh/list";
+import { Canvas } from "nsh";
+import { windowSize } from "nsh";
+import { List } from "nsh";
 import { initialActivity, sections, services, type Activity, type Filter, type Section } from "./data";
 import { Action, Label, Metric, palette as p, Progress, Sparkline } from "./ui";
 import { EffectsInspector, RunbookInspector } from "./inspectors";

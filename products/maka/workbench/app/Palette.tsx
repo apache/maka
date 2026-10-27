@@ -17,12 +17,14 @@
  * under the License.
  */
 
+import { textTooltip } from './ui';
 import { tr } from './locale';
-import { cleanup, computed, Input, inputAction, signal, Text, View, List } from 'nsh';
+import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
+import { Input } from 'nsh/base';
 import type { YNode } from 'nsh';
-import { keymap } from 'nsh/keymap';
+import { keymap } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { windowSize } from 'nsh/device';
+import { windowSize } from 'nsh';
 import { Icon } from './Icon';
 import type { CommandEntry } from './composerCommands';
 import {
@@ -106,7 +108,7 @@ export function Palette(props: {
           </Text>
           <Button
             accessibilityLabel={tr('Close commands')}
-            tooltip={tr('Close · Esc')}
+            tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={inputAction(props.close, props.instance)}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
             hoverStyle={controlHoverStyle}

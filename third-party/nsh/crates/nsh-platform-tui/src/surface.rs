@@ -13,7 +13,7 @@ use nsh_core::{
     Points, ROOT_ID, ScreenConfig, ScrollBehavior, Size, StickyCell, TextLayout, Transform,
     ViewKind, ViewProps, ViewStyle,
     access::Access,
-    animation::{AnimationProp, AnimationValue, Graph},
+    animation::{AnimatedPropValue, AnimationProp, AnimationValue, Graph},
     geometry::{point, px},
     keymap::Keymap,
     overlay::HintObservation,
@@ -131,6 +131,7 @@ pub(crate) struct Node {
     pub(crate) gestures: GestureValues,
     pub(crate) canvas_args: Vec<(u16, AnimationValue)>,
     pub(crate) native: Option<Box<dyn crate::native::NativeComponent>>,
+    component_slots: Vec<(Arc<str>, Option<AnimatedPropValue>)>,
     pub(crate) media: Option<Box<crate::media::MediaState>>,
     native_size: Option<Size<Points>>,
     pub(crate) motion: Option<Box<crate::motion::NodeMotion>>,
@@ -165,6 +166,7 @@ impl Node {
             gestures: GestureValues::default(),
             canvas_args: Vec::new(),
             native: None,
+            component_slots: Vec::new(),
             media: None,
             native_size: None,
             motion: None,
@@ -205,7 +207,7 @@ pub struct Surface {
     pub(crate) hovered_path: Vec<NodeId>,
     pub(crate) autofocus_seen: Vec<NodeId>,
     pub(crate) drag_input: Option<NodeId>,
-    pub(crate) area_selection: Option<crate::selection_area::SelectionArea>,
+    pub(crate) area_selection: Option<crate::selectable_view::SelectableView>,
     pub(crate) pointer: Option<crate::input::Pointer>,
     pub(crate) focus_history: Vec<NodeId>,
     pub(crate) focus_returns: Vec<crate::input::FocusReturn>,
@@ -784,6 +786,9 @@ impl Surface {
                     }
                 }
                 MountItem::Delete { id } => {
+                    if let Some(node) = self.node_mut(id) {
+                        node.component_slots.clear();
+                    }
                     if self.navigation_is_parked(id) {
                         self.navigation_deleted(id);
                     }
@@ -1067,8 +1072,32 @@ impl Surface {
                 MountItem::Animation(op) => {
                     self.animation.apply(op, &mut finished);
                 }
+                MountItem::ComponentPropSlots { id, names } => {
+                    if let Some(node) = self.node_mut(id) {
+                        node.component_slots = names
+                            .into_iter()
+                            .enumerate()
+                            .map(|(slot, name)| {
+                                let previous = node
+                                    .component_slots
+                                    .get(slot)
+                                    .filter(|(old, _)| *old == name)
+                                    .and_then(|(_, value)| *value);
+                                (name, previous)
+                            })
+                            .collect();
+                    }
+                }
                 MountItem::AnimationBindings { id, bindings } => {
                     if let Some(node) = self.node_mut(id) {
+                        for (slot, (_, value)) in node.component_slots.iter_mut().enumerate() {
+                            if !bindings
+                                .iter()
+                                .any(|(prop, _)| *prop == AnimationProp::ComponentSlot(slot as u16))
+                            {
+                                *value = None;
+                            }
+                        }
                         node.bindings = bindings;
                     }
                 }
@@ -1109,6 +1138,9 @@ impl Surface {
                     let native = self.components.create(&name);
                     if let Some(node) = self.node_mut(id) {
                         node.native = native;
+                        for (_, value) in &mut node.component_slots {
+                            *value = None;
+                        }
                     }
                     self.component_size(id);
                 }
@@ -1204,7 +1236,8 @@ impl Surface {
         for id in tracked {
             self.refresh_input_states(id);
         }
-        self.selection_area_sync();
+        self.selectable_view_sync();
+        self.update_component_props();
         self.update_canvas_args();
         self.schedule_graphics();
     }
@@ -1247,9 +1280,6 @@ impl Surface {
             Command::Dialog(dialog) => {
                 self.dialog = Some(*dialog);
                 self.dialog_selection = 0;
-            }
-            Command::Toast { text, long } => {
-                self.toast = Some((text, self.now + if long { 5.0 } else { 2.5 }))
             }
             Command::Announce(text) => self.announce(text),
             Command::SetClipboard(text) => self.write_clipboard(text),
@@ -1345,6 +1375,7 @@ impl Surface {
             changed = true;
         }
         changed |= self.tick_images();
+        changed |= self.update_component_props();
         self.update_canvas_args();
         self.schedule_graphics();
         changed
@@ -1685,6 +1716,41 @@ impl Surface {
         if self.node(id).is_some_and(|n| n.drawing.is_some()) && !self.canvas_dirty.contains(&id) {
             self.canvas_dirty.push(id);
         }
+    }
+
+    fn update_component_props(&mut self) -> bool {
+        let mut responses = Vec::new();
+        for (id, node) in self.nodes.iter_mut().enumerate() {
+            let Some(node) = node else { continue };
+            let Some(component) = node.native.as_mut() else {
+                continue;
+            };
+            for &(prop, value_node) in &node.bindings {
+                let AnimationProp::ComponentSlot(slot) = prop else {
+                    continue;
+                };
+                let Some((name, previous)) = node.component_slots.get_mut(usize::from(slot)) else {
+                    continue;
+                };
+                let value = AnimatedPropValue::from(self.animation.eval(value_node));
+                if *previous == Some(value) {
+                    continue;
+                }
+                let response = match value {
+                    AnimatedPropValue::Number(value) => component.set_animated_number(name, value),
+                    AnimatedPropValue::Color(argb) => component.set_animated_color(name, argb),
+                    _ => continue,
+                };
+                *previous = Some(value);
+                responses.push((id as NodeId, response));
+            }
+        }
+        let changed = !responses.is_empty();
+        for (id, response) in responses {
+            self.component_response(id, response);
+            self.component_size(id);
+        }
+        changed
     }
 
     fn update_canvas_args(&mut self) {

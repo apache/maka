@@ -280,9 +280,9 @@ fn fetch_stays_within_the_capabilities() {
 
 /// A Rust component whose task fetches: the echo's text shows, and the slow
 /// request is cancelled with the task that waited for it.
-#[nsh_core::ui::component]
-fn Fetcher() -> impl nsh_core::ui::IntoElement {
-    use nsh_core::ui::prelude::*;
+#[nsh_core::element::component]
+fn Fetcher() -> impl nsh_core::element::IntoElement {
+    use nsh_core::prelude::*;
     let shown = signal(SharedString::from("loading"));
     spawn(async move {
         let slow = spawn(fetch("https://example.com/slow"));
@@ -302,7 +302,7 @@ fn rust_components_fetch_through_the_platform_network() {
     let cancelled = network.cancelled.clone();
     let (tx, rx) = mpsc::channel();
     let config = EngineConfig {
-        app: nsh_engine::App::Rust(nsh_core::ui::Root::of::<Fetcher>()),
+        app: nsh_engine::App::Rust(nsh_core::element::Root::of::<Fetcher>()),
         viewport: Size::new(px(320.0), px(480.0)),
         trace: false,
         network: Some(network),

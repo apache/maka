@@ -1,6 +1,6 @@
 import { Image, mount, signal, Text, View } from "nsh";
-import { windowSize } from "nsh/device";
-import { ui } from "./palette";
+import { windowSize } from "nsh";
+import { button, buttonText, focusRing, ui } from "./palette";
 
 // The pictures are SVG `data:` URIs, so the demo needs no network. An app
 // would import a file next to it (`import hills from "./hills.png"`) or pass
@@ -63,6 +63,9 @@ function Segments<T extends string>(props: { options: readonly T[]; value: T; on
                 backgroundImage: on() ? ui().raised.backgroundImage : "none",
                 boxShadow: on() ? ui().raised.boxShadow : "none",
               }}
+              hoverStyle={{ opacity: 0.88 }}
+              focusStyle={focusRing()}
+              activeStyle={{ opacity: 0.7 }}
             >
               <Text style={{ fontWeight: "600", color: on() ? ui().text : ui().muted }}>{option()}</Text>
             </View>
@@ -103,12 +106,8 @@ function App() {
           <Text style={{ color: ui().muted }}>resizeMode</Text>
           <Segments options={modes} value={mode()} onChange={(m) => mode.set(m)} />
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-            <View
-              onPress={() => blur.set(!blur())}
-              activeStyle={{ opacity: 0.6 }}
-              style={{ ...(blur() ? ui().accentFill : ui().raised), paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 }}
-            >
-              <Text style={{ fontWeight: "600", color: blur() ? ui().onAccent : ui().text }}>blurRadius {blur() ? 12 : 0}</Text>
+            <View onPress={() => blur.set(!blur())} {...button("secondary", { on: blur })}>
+              <Text style={buttonText("secondary", { on: blur })}>blurRadius {blur() ? 12 : 0}</Text>
             </View>
             <Text style={{ color: ui().muted }}>tintColor</Text>
             <Image src={star} style={{ width: 24, height: 24, tintColor: ui().accent }} />

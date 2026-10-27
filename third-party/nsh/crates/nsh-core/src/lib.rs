@@ -20,6 +20,7 @@ mod css;
 mod css_named;
 pub mod desktop;
 mod effects;
+pub mod element;
 mod fenwick;
 pub mod filesystem;
 pub mod geometry;
@@ -38,6 +39,7 @@ mod ops;
 pub mod overlay;
 pub mod picker;
 pub mod platform;
+pub mod prelude;
 mod props;
 pub mod reactive;
 pub mod resource;
@@ -56,7 +58,6 @@ mod text_source;
 pub mod time;
 mod transform;
 pub mod transition;
-pub mod ui;
 pub mod websocket;
 
 // The derive macros name `::nsh_core`, also in this crate's own tests.

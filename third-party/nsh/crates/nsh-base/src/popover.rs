@@ -1,8 +1,9 @@
 //! `Popover`: content anchored to a trigger, in an overlay.
 
 use nsh_core::{
+    element::{NodeRef, Style},
     overlay::OverlayAnchor,
-    ui::{NodeRef, Style, prelude::*},
+    prelude::*,
 };
 
 use crate::popup::{OpenChangeReason, OpenState, lifecycle};

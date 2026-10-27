@@ -10,7 +10,7 @@ group: platforms
 NSH 应用也能作为原生 Mac 应用运行。macOS 后端用 AppKit 视图和 Core Animation 渲染应用，用 CoreText 排版文字；核心、响应式图、
 渲染器、Taffy 布局以及原生模块与 iOS、Android 上完全相同，因此同一个应用可以在所有平台上运行。在 macOS 上，
 `os()` 为 `Os::MacOs`（TSX 中 `platform.os` 为 `"macos"`），并会应用 TSX 的 `desktop={{…}}` 属性。窗口标题、自定义标题栏、
-菜单栏和右键菜单在 Rust 中由 `nsh_core::ui::desktop` 提供（[桌面标题栏](./rust.md#桌面标题栏)），在 TSX 中由
+菜单栏和右键菜单在 Rust 中由 `nsh_core::element::desktop` 提供（[桌面标题栏](./rust.md#桌面标题栏)），在 TSX 中由
 [`nsh/desktop`](../modules/nsh-desktop.md) 提供。
 
 macOS 后端的行为是桌面应用：鼠标、触控板和键盘输入，可调整大小的窗口，覆盖窗口的对话框和菜单栏。
@@ -48,9 +48,9 @@ nsh build my-app --release -o build
 dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1200x800   # 源码仓库中：target/debug/nsh-macos-host
 ```
 
-`--window-size` 是窗口的初始尺寸（TSX 应用）；窗口可以调整大小。
+`--window-size` 是窗口的初始尺寸（TSX 应用）；窗口可以调整大小。`--display <n>`（`nsh run` / `nsh test --target macos --display <n>`）让窗口在第 `n` 个显示器上居中打开：`1` 是主显示器，即带菜单栏的那个。
 
-`nsh test --target macos` 在 macOS 窗口中运行 TSX 应用的测试：测试打开的每个应用都有自己的窗口，步骤用系统的输入在选择器指向的视图上点击、输入和滚动（[测试](./testing-and-trace.md#在真实平台上运行)）。
+`nsh test --target macos` 在 macOS 窗口中运行 TSX 应用的测试，有副显示器时窗口开在副显示器上（主屏留给你用；`--display <n>` 可以另选）：测试打开的每个应用都有自己的窗口，尺寸就是测试要求的尺寸，显示器比窗口矮时也一样；步骤用系统的输入在选择器指向的视图上点击、输入和滚动（[测试](./testing-and-trace.md#在真实平台上运行)）。
 
 ### 性能监视器
 
@@ -149,7 +149,7 @@ view.load(Bundle::source(code).into());
 设置 `AppOptions { keep_alive_on_close: true, ..Default::default() }` 可以在关闭窗口后保留独立应用的会话。
 关闭操作会隐藏窗口，从 Dock 重开时会显示同一个窗口和引擎。明确退出或更新重启时，可以从任意线程调用
 `nsh_platform_macos::quit_app()`；它会关闭保留的窗口、停止引擎，并从 `run_app` 返回。
-`nsh_core::ui::desktop::close_window()` 遵循所选的窗口关闭策略。
+`nsh_core::element::desktop::close_window()` 遵循所选的窗口关闭策略。
 
 ## macOS 上的差异
 
@@ -178,7 +178,7 @@ Return 的默认操作）；更多操作以及操作表的操作按顺序竖排�
 | Cmd+W、Cmd+M、Ctrl+Cmd+F、Cmd+H、Option+Cmd+H、Cmd+Q | 关闭、最小化、全屏、隐藏、隐藏其他、退出（`nsh package` 和 `nsh run` 应用的菜单） |
 | Cmd+R | 重新加载最新的构建（`nsh run`） |
 
-应用自己的快捷键（[`nsh/keymap`](../modules/nsh-keymap.md)）先于以上按键处理，但聚焦的可按压视图优先接收其激活键；退出、隐藏、最小化和全屏不能被绑定。
+应用自己的快捷键（[`keymap`](../modules/nsh.md#keymap)）先于以上按键处理，但聚焦的可按压视图优先接收其激活键；退出、隐藏、最小化和全屏不能被绑定。
 
 快捷键在任何键盘布局下都可用（在西里尔或希腊字母布局下，Cmd+C 是美式布局中输入 C 的那个键）。确认输入法组字（中文、日文等）的
 Return 不会提交。`onKeyPress` 报告的内容与 React Native 一致：输入的文本、`"Enter"`、`"Backspace"` 以及 `"Escape"`。

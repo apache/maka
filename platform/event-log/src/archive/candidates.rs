@@ -51,7 +51,7 @@ impl EventLog {
                 safety::settled_boundary(&mut tx, id, i64::MAX as u64).await?;
             }
             safety::require_safe(&mut tx, &session, current.as_deref()).await?;
-            let mut output = PruneCandidates { candidates: Vec::new(), next: None };
+            let mut output = PruneCandidates { candidates: Vec::new(), next: None, through: 0 };
             // The admission preflight checks safety without materializing history.
             if max_candidates > 0 {
                 let selection = if let Some(id) = &current {
@@ -65,12 +65,16 @@ impl EventLog {
                 let baseline = read::latest_selected(&mut tx, &selection, i64::MAX as u64).await?;
                 let covered = baseline.as_ref().map_or(0, |b| b.checkpoint.covered_through);
                 let through = selection.high_water(&mut tx, i64::MAX as u64).await?;
-                let mut cursor = cursor.unwrap_or(PruneCursor { through, after_sequence: covered });
-                if cursor.after_sequence > cursor.through || cursor.through > through {
+                let (fence, after) = match cursor {
+                    None => (through, covered),
+                    Some(PruneCursor::After(after)) => (through, after),
+                    Some(PruneCursor::Page { through, after_sequence }) => (through, after_sequence),
+                };
+                if after > fence || fence > through {
                     return Err(StoreError::InvalidTransition("invalid prune scan fence".into()));
                 }
-                cursor.after_sequence = cursor.after_sequence.max(covered);
-                scan(&mut tx, &selection, cursor, max_candidates, max_bytes, &mut output).await?;
+                output.through = fence;
+                scan(&mut tx, &selection, fence, after.max(covered), max_candidates, max_bytes, &mut output).await?;
             }
             tx.commit().await?;
             Ok(output)
@@ -81,7 +85,8 @@ impl EventLog {
 async fn scan(
     connection: &mut SqliteConnection,
     selection: &Selection,
-    cursor: PruneCursor,
+    through: u64,
+    after_sequence: u64,
     max_candidates: usize,
     max_bytes: usize,
     output: &mut PruneCandidates,
@@ -106,14 +111,14 @@ async fn scan(
         "{} ORDER BY sequence LIMIT ?5",
         branches.join(" UNION ALL ")
     );
-    let mut after = cursor.after_sequence as i64;
+    let mut after = after_sequence as i64;
     let mut used = 0_usize;
     // Merge the indexed branches into bounded metadata, stopping at the page.
     // Keep the cursor at the last admitted result.
     let rows: Vec<(i64, String, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(query))
         .bind(after)
         .bind(session)
-        .bind(cursor.through as i64)
+        .bind(through as i64)
         .bind(&selection.lineage)
         .bind((max_candidates + 1) as i64)
         .fetch_all(&mut *connection)
@@ -122,8 +127,8 @@ async fn scan(
         if output.candidates.len() >= max_candidates
             || (!output.candidates.is_empty() && bytes as usize > max_bytes.saturating_sub(used))
         {
-            output.next = Some(PruneCursor {
-                through: cursor.through,
+            output.next = Some(PruneCursor::Page {
+                through,
                 after_sequence: after as u64,
             });
             break;
@@ -148,8 +153,8 @@ async fn scan(
         // A batch budget must not prevent an individual large result from ever
         // being archived. Admit it alone and resume the scan on the next call.
         if !output.candidates.is_empty() && measured > max_bytes.saturating_sub(used) {
-            output.next = Some(PruneCursor {
-                through: cursor.through,
+            output.next = Some(PruneCursor::Page {
+                through,
                 after_sequence: after as u64,
             });
             break;

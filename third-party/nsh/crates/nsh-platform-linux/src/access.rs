@@ -492,6 +492,8 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Gtk {
         Role::Cell => Gtk::Cell,
         Role::ColumnHeader => Gtk::ColumnHeader,
         Role::RowGroup => Gtk::RowGroup,
+        Role::Listbox => Gtk::ListBox,
+        Role::Option => Gtk::Option,
     }
 }
 
@@ -585,6 +587,8 @@ mod tests {
             (Role::Search, Gtk::SearchBox),
             (Role::Progressbar, Gtk::ProgressBar),
             (Role::List, Gtk::List),
+            (Role::Listbox, Gtk::ListBox),
+            (Role::Option, Gtk::Option),
         ] {
             assert_eq!(
                 role_for(&with_role(role), ViewKind::View, false),

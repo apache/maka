@@ -17,7 +17,7 @@ checkbox.
 
 ```rust tabs
 use nsh_base::{checkbox, theme};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn notify() -> impl IntoElement {
     let on = signal(false);

@@ -1,5 +1,5 @@
-//! System: the environment, the status bar, alerts and action sheets, a
-//! toast, display frames and timers, the network and logs (as the TSX
+//! System: the environment, the status bar, alerts and action sheets,
+//! display frames and timers, the network and logs (as the TSX
 //! gallery's `demos/System.tsx`).
 
 use std::time::Duration;
@@ -7,9 +7,10 @@ use std::time::Duration;
 use nsh_base::{AlertDialogOptions, alert_dialog, dialog};
 use nsh_core::{
     animation::{Curve, EaseMode},
+    element::AnyElement,
     keymap::When,
+    prelude::*,
     time::Instant,
-    ui::{AnyElement, prelude::*},
 };
 
 use crate::ui::{
@@ -324,7 +325,7 @@ fn action_row(
         .into_element()
 }
 
-/// System dialogs and a toast; the last answer pops in.
+/// System dialogs; the last answer pops in.
 #[component]
 fn Dialogs() -> impl IntoElement {
     // What the last dialog answered.
@@ -433,7 +434,7 @@ fn Dialogs() -> impl IntoElement {
     Card::new()
         .icon(IconName::Bell)
         .title("Alerts and sheets")
-        .subtitle("Alert · ActionSheet · Toast")
+        .subtitle("Alert · ActionSheet")
         .flush()
         .child(
             Inset::new()
@@ -470,14 +471,6 @@ fn Dialogs() -> impl IntoElement {
                     "Action sheet",
                     "Title, cancel and destructive options",
                     sheet,
-                ))
-                .child(action_row(
-                    false,
-                    IconName::Spark,
-                    colors::WARN,
-                    "Toast",
-                    "Android only",
-                    |_: &()| toast("Hello from a toast", ToastDuration::Long),
                 )),
         )
         .child(

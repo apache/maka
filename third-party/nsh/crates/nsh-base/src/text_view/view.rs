@@ -10,11 +10,12 @@ use std::{
 use nsh_core::{
     ListContentStyle, ListSourceRows, ListViewport, ResizeMode,
     color::Hsla,
-    geometry::{DefiniteLength, Length},
-    ui::{
+    element::{
         Arg, CallCx, Instance, JsHost, JsIn, JsOwned, JsValue, Owner, PropError, Renderer, Ret,
-        Style, StyleRefinement, TsTypes, prelude::*,
+        Style, StyleRefinement, TsTypes,
     },
+    geometry::{DefiniteLength, Length},
+    prelude::*,
 };
 
 use super::{
@@ -64,7 +65,7 @@ pub struct TextViewProps {
     #[prop(default = default_content_style())]
     pub content_style: Prop<ListContentStyle>,
     /// Its mounted texts share one selection for copying (a long press,
-    /// or a drag with a pointer), joined by a surrounding SelectionArea.
+    /// or a drag with a pointer), joined by a surrounding selectable View.
     #[prop(default)]
     pub selectable: Prop<bool>,
     /// What a press on a link does: `"report"` (the default) reports it
@@ -216,7 +217,7 @@ pub enum TextViewLinks {
     Report,
     /// It is reported, then a URL of another app or site (with a scheme:
     /// `https:`, `mailto:`, ...) opens outside the app
-    /// ([`nsh_core::ui::open_url`]); an anchor in the document (`#…`) is
+    /// ([`nsh_core::element::open_url`]); an anchor in the document (`#…`) is
     /// only reported.
     Open,
 }
@@ -438,7 +439,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
         .text_color(move || theme().foreground)
         // Parent mode contributes these mounted texts to the surrounding
         // reader and selection area; it owns no independent scroll offset.
-        .selection_area(props.selectable)
+        .selectable(props.selectable)
         .map(|mut el| {
             if let Some(parts) = use_context::<TextViewParts>() {
                 let style = std::mem::take(el.style());
@@ -2039,7 +2040,7 @@ impl Cx {
                 .filter(|s| s.width > px(0.0) && s.height > px(0.0))
                 .map(|s| s.width / s.height)
         };
-        let el = nsh_core::ui::image(image.src.clone())
+        let el = nsh_core::element::image(image.src.clone())
             .resize_mode(ResizeMode::Contain)
             .label(SharedString::from(image.alt.clone()))
             .when_some(image.title.clone(), |el, title| el.hint(title));
@@ -2611,7 +2612,7 @@ mod tests {
 
     #[test]
     fn a_same_value_link_after_source_replacement_has_a_new_live_focus_capability() {
-        use nsh_core::{Size, ui::Root};
+        use nsh_core::{Size, element::Root};
         use nsh_testing::Headless;
         let mut app = Headless::start(nsh_engine::EngineConfig {
             viewport: Size::new(px(500.0), px(400.0)),
@@ -2703,7 +2704,7 @@ mod tests {
 
     #[test]
     fn document_viewport_recycles_link_owners_and_retains_source_choices() {
-        use nsh_core::{Size, ui::Root};
+        use nsh_core::{Size, element::Root};
         use nsh_testing::Headless;
         let mut app = Headless::start(nsh_engine::EngineConfig {
             viewport: Size::new(px(500.0), px(500.0)),

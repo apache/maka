@@ -10,13 +10,10 @@ order: 17
 
 每个工具类设置的值都与 Tailwind CSS 4 为它生成的完全相同，含义与浏览器中一致。本页列出支持的内容。入门介绍见 [Tailwind](../docs/tailwind.md)；工具类最终设置的样式键见 [样式参考](./style-reference.md)。
 
-Rust 组件不使用 class 字符串：它们用 `Styled`（`nsh_core::ui::prelude`）的类型化方法为元素设置样式，这些方法以本页的工具类命名，解析到相同的值，包括 Tailwind 的默认刻度（`px-4` 即 `.px_4()`，`rounded-2xl` 即 `.rounded_2xl()`，`shadow-md` 即 `.shadow_md()`，`bg-linear-to-br` 即 `.bg_linear_to_br()`）。颜色是值：主题颜色，或 `nsh_core::ui::palette` 中的 Tailwind 调色板（`ZINC.shade(800)` 即 `zinc-800`）。变体是接受样式闭包的方法：`.active(|s| …)`、`.hover(…)`、`.focus(…)`、`.disabled_style(…)`、`.dark(…)`、`.group_active(…)`，其余用 `.style_when(condition, …)`。[样式参考](./style-reference.md) 给出了每个样式键对应的方法。
+Rust 组件不使用 class 字符串：它们用 `Styled`（`nsh_core::prelude`）的类型化方法为元素设置样式，这些方法以本页的工具类命名，解析到相同的值，包括 Tailwind 的默认刻度（`px-4` 即 `.px_4()`，`rounded-2xl` 即 `.rounded_2xl()`，`shadow-md` 即 `.shadow_md()`，`bg-linear-to-br` 即 `.bg_linear_to_br()`）。颜色是值：主题颜色，或 `nsh_core::element::palette` 中的 Tailwind 调色板（`ZINC.shade(800)` 即 `zinc-800`）。变体是接受样式闭包的方法：`.active(|s| …)`、`.hover(…)`、`.focus(…)`、`.disabled_style(…)`、`.dark(…)`、`.group_active(…)`，其余用 `.style_when(condition, …)`。[样式参考](./style-reference.md) 给出了每个样式键对应的方法。
 
 ```rust tabs
-use nsh_core::ui::{
-    palette::{RED, ZINC},
-    prelude::*,
-};
+use nsh_core::{element::palette::{RED, ZINC}, prelude::*};
 
 view()
     .flex_row()

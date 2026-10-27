@@ -52,7 +52,7 @@ fn terminal_fixture() {
         "cargo:rerun-if-changed={}",
         source.join("../workbench/app").display()
     );
-    let mut host = nsh_core::ui::Registry::ui_set("maka/host");
+    let mut host = nsh_core::element::Registry::ui_set("maka/host");
     host.native_values(&["host", "AttachmentPicker", "TerminalGrid"]);
     let module = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
         entry: fixture,

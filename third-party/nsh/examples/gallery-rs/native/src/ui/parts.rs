@@ -4,7 +4,10 @@
 //! with a root to place (a card in a row) take [`Styled`] methods for it.
 
 use nsh_base::nav_page;
-use nsh_core::ui::{AnyElement, Os, Screen, StyleRefinement, prelude::*};
+use nsh_core::{
+    element::{AnyElement, Os, Screen, StyleRefinement},
+    prelude::*,
+};
 
 /// A text a builder shows: a value, a signal or a closure.
 type Label = Reactive<SharedString>;

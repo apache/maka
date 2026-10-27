@@ -1,7 +1,7 @@
 //! What the popups of `nsh/base` share (`Popover`, `Menu`, `ContextMenu`,
 //! `Tooltip`, `Sheet`): their open state, controlled or not, and why it
 //! changed. They show their content in the core's overlays
-//! (`nsh_core::ui::overlay`), which place it and report presses outside,
+//! (`nsh_core::element::overlay`), which place it and report presses outside,
 //! Escape and the back button; deciding to close is theirs.
 //!
 //! How a popup presents itself follows the device (`auto`, the only
@@ -13,7 +13,7 @@
 //! (a transparent backdrop takes it). A popover stays anchored to its
 //! trigger everywhere: what it shows belongs next to it.
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// Why a popup opened or closed (`onOpenChange`'s `reason`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]

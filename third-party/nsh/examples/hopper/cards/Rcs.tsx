@@ -1,4 +1,5 @@
 import { Canvas, type CanvasRenderingContext2D, Path2D, signal, Text, View } from "nsh";
+import { Button } from "nsh/base";
 import { nitrogenTank, quads } from "../store";
 import { color, mono } from "../theme";
 import { Gauge, Inset, Line, Panel, Pill, track } from "../ui";
@@ -129,11 +130,7 @@ export function Rcs() {
       <View>
         <Each of={quads}>
           {(q, i) => (
-            <View
-              onPress={() => selected.set(selected() === q().id ? null : q().id)}
-              role="button"
-              accessibilityState={{ selected: selected() === q().id }}
-            >
+            <Button onPress={() => selected.set(selected() === q().id ? null : q().id)} selected={selected() === q().id}>
               <Line first={i() === 0} selected={selected() === q().id}>
                 <Pill label={q().id} tone={q().delta < 0 ? "alert" : selected() === q().id ? "accent" : "neutral"} width={44} />
                 <Text style={{ flex: 1, fontSize: 15, color: color.text }}>{q().name}</Text>
@@ -142,7 +139,7 @@ export function Rcs() {
                 </If>
                 <Text style={{ fontFamily: mono, fontSize: 13, color: color.text }}>{q().used.toFixed(1)} N·s</Text>
               </Line>
-            </View>
+            </Button>
           )}
         </Each>
       </View>

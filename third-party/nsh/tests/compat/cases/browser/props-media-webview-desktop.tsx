@@ -2,7 +2,7 @@
 // desktop props, run as on macOS (`platform macos`): the swipes back and
 // forward from `desktop={{…}}`, not the ones `ios={{…}}` turns off. Its script checks it.
 import { View } from "nsh";
-import { WebView } from "nsh/webview";
+import { WebView } from "nsh";
 
 function App() {
   return (

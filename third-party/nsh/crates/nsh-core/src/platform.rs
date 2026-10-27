@@ -30,7 +30,7 @@ pub enum ColorScheme {
 
 /// The appearance an app asks for (`nsh.json` `"appearance"`, TS
 /// `setColorScheme`): one of its own, or the system's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::ui::PropEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, crate::element::PropEnum)]
 pub enum Appearance {
     /// The system appearance (default).
     #[default]
@@ -377,7 +377,7 @@ impl std::fmt::Display for Locale {
 }
 
 /// An HTTP request for the platform's network stack (made by JS `fetch`
-/// and by Rust components' [`crate::ui::ambient::fetch`]).
+/// and by Rust components' [`crate::element::ambient::fetch`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     /// Upper-case method (`GET`, `POST`, ...).

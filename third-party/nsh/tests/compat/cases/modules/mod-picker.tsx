@@ -1,10 +1,10 @@
 // A case of the API's test suite (docs/dev/compatibility.md):
-// `nsh/picker` on the headless runtime, where no system picker answers:
+// `nsh` on the headless runtime, where no system picker answers:
 // options out of range throw in the call, and a pick is a promise (pending
 // there; a picker the user cancels resolves it with no images). Its script
 // checks each.
 import { Text, View, signal } from "nsh";
-import { Picker, type PickedImage } from "nsh/picker";
+import { Picker, type PickedImage } from "nsh";
 
 function App() {
   const result = signal("not picked");

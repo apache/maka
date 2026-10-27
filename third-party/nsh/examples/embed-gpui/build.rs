@@ -31,7 +31,7 @@ fn main() {
 
 fn build(entry: &Path, out: &Path, release: bool) -> Result<(), String> {
     // `nsh/base` as the toolchain takes it: data (`SetDescription`).
-    let ui_sets = vec![nsh_core::ui::description::SetDescription::from(
+    let ui_sets = vec![nsh_core::element::description::SetDescription::from(
         nsh_base::registry(),
     )];
     let bundle = nsh_bundler::bundle(&BundleOptions {

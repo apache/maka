@@ -1,11 +1,9 @@
-//! Surface-wide commands and the environment: dialogs, toasts,
-//! announcements, the clipboard, exiting; the system's settings followed
-//! into [`Environment`].
+//! Surface-wide commands and the environment: dialogs, announcements,
+//! the clipboard, exiting; the system's settings followed into
+//! [`Environment`].
 //!
 //! Dialogs are `NSAlert`s shown as sheets on the surface's window (they
-//! never block the main thread); toasts are drawn inside the surface, as a
-//! view the root hosts over the app's views (hosted views stay above the
-//! app's), which fades in and out and lets clicks through.
+//! never block the main thread).
 //!
 //! The environment follows:
 //! - the color scheme: the app's appearance (`nsh.json` `"appearance"`,
@@ -37,16 +35,13 @@ use std::{
     cell::{Cell, RefCell},
     ptr::NonNull,
     rc::{Rc, Weak},
-    time::Duration,
 };
 
 use block2::RcBlock;
-use dispatch2::{DispatchQueue, DispatchTime};
+use dispatch2::DispatchQueue;
 use nsh_core::{
-    Bounds, Command, Dialog, DialogButtonStyle, EventKind, EventPayload, NodeId, PayloadValue,
-    Points, ROOT_ID,
-    geometry::{Point, Size, px},
-    platform::clipboard,
+    Command, Dialog, DialogButtonStyle, EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
+    geometry::px, platform::clipboard,
 };
 use nsh_engine::{ColorScheme, Edges, Environment, Idiom, Locale, Os};
 use objc2::{
@@ -57,37 +52,17 @@ use objc2::{
 use objc2_app_kit::{
     NSAccessibilityPriorityLevel, NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAppearance,
     NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
-    NSBitmapImageFileType, NSBitmapImageRep, NSColor, NSFont, NSModalResponse, NSPasteboard,
-    NSPasteboardTypeString, NSResponder, NSScreen, NSTextAlignment, NSTextField, NSView,
-    NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
+    NSBitmapImageFileType, NSBitmapImageRep, NSModalResponse, NSPasteboard, NSPasteboardTypeString,
+    NSScreen, NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
-use objc2_core_foundation::{CGPoint, CGSize};
 use objc2_foundation::{
     NSCurrentLocaleDidChangeNotification, NSData, NSDictionary, NSKeyValueObservingOptions,
     NSLocale, NSLocaleLanguageDirection, NSNotification, NSNotificationCenter, NSObject,
-    NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSOperationQueue, NSPoint,
-    NSProcessInfo, NSString, NSURL, ns_string,
+    NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSOperationQueue, NSProcessInfo,
+    NSString, NSURL, ns_string,
 };
 
-use crate::{surface::Surface, view::NshView};
-
-/// How long a toast shows (Android's short and long durations).
-const TOAST_SHORT: Duration = Duration::from_millis(2000);
-const TOAST_LONG: Duration = Duration::from_millis(3500);
-/// Fades of toasts, in seconds.
-const FADE_IN: f64 = 0.15;
-const FADE_OUT: f64 = 0.12;
-
-/// A toast over a surface.
-struct Toast {
-    /// Tells it from later toasts (its timer may outlive it).
-    serial: u64,
-    /// The surface's root view, which hosts it.
-    root: NshView,
-    /// The rounded box.
-    view: Retained<NSView>,
-    label: Retained<NSTextField>,
-}
+use crate::surface::Surface;
 
 /// A dialog shown on a surface's window.
 struct Shown {
@@ -104,8 +79,6 @@ struct System {
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
     /// Observes `NSWorkspace.voiceOverEnabled`.
     voice_over: Option<Retained<Observer>>,
-    toasts: Vec<Toast>,
-    next_toast: u64,
     dialogs: Vec<Shown>,
 }
 
@@ -132,28 +105,6 @@ define_class!(
             _context: *mut std::ffi::c_void,
         ) {
             system_changed();
-        }
-    }
-);
-
-define_class!(
-    /// A view the pointer passes through (toasts).
-    #[unsafe(super(NSView, NSResponder, NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "NshPassThroughView"]
-    struct PassThrough;
-
-    unsafe impl NSObjectProtocol for PassThrough {}
-
-    impl PassThrough {
-        #[unsafe(method(isFlipped))]
-        fn is_flipped(&self) -> bool {
-            true
-        }
-
-        #[unsafe(method_id(hitTest:))]
-        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
-            None
         }
     }
 );
@@ -369,7 +320,6 @@ fn os_version() -> (u16, u16) {
 pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     match command {
         Command::Dialog(dialog) => show_dialog(surface, dialog),
-        Command::Toast { text, long } => show_toast(surface, text, *long),
         Command::Desktop(command) => crate::chrome::command(surface, command),
         Command::Announce(text) => crate::access::announce(
             surface.root.ns(),
@@ -422,29 +372,15 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
     }
 }
 
-/// A batch was applied. Hosted views (toasts) stay above the app's views
-/// by themselves ([`NshView::insert_before`]).
+/// A batch was applied.
 pub(crate) fn end_batch(surface: &Surface) {
     follow_background(surface);
 }
 
-/// The surface is `width` × `height`: toasts follow.
-pub(crate) fn surface_resized(surface: &Surface, width: f32, height: f32) {
-    SYSTEM.with(|s| {
-        for toast in s.borrow().toasts.iter().filter(|t| t.root == surface.root) {
-            place_toast(toast, width, height);
-        }
-    });
-}
-
-/// The app stopped: its dialogs and toasts go too, unanswered.
+/// The app stopped: its dialogs go too, unanswered.
 pub(crate) fn clear(surface: &Surface) {
-    let (toasts, dialogs) = SYSTEM.with(|s| {
+    let dialogs = SYSTEM.with(|s| {
         let mut s = s.borrow_mut();
-        let (toasts, kept) = std::mem::take(&mut s.toasts)
-            .into_iter()
-            .partition(|t| t.root == surface.root);
-        s.toasts = kept;
         let (dialogs, kept): (Vec<Shown>, Vec<Shown>) =
             std::mem::take(&mut s.dialogs).into_iter().partition(|d| {
                 d.surface
@@ -452,11 +388,8 @@ pub(crate) fn clear(surface: &Surface) {
                     .is_none_or(|s| std::ptr::eq(&*s, surface))
             });
         s.dialogs = kept;
-        (toasts, dialogs)
+        dialogs
     });
-    for toast in toasts {
-        toast.root.remove_native(&toast.view);
-    }
     for dialog in dialogs {
         dialog.answer.answered.set(true);
         let sheet = dialog.alert.window();
@@ -653,161 +586,6 @@ pub(crate) fn answer_dialog(surface: &Rc<Surface>, button: Option<&str>) -> Resu
         }
     }
     Ok(())
-}
-
-/// Shows `text` at the bottom of the surface for a while (one at a time:
-/// a new toast replaces the one showing).
-fn show_toast(surface: &Rc<Surface>, text: &str, long: bool) {
-    let showing: Vec<u64> = SYSTEM.with(|s| {
-        s.borrow()
-            .toasts
-            .iter()
-            .filter(|t| t.root == surface.root)
-            .map(|t| t.serial)
-            .collect()
-    });
-    for serial in showing {
-        hide_toast(surface, serial);
-    }
-    let mtm = surface.mtm;
-    let dark = surface.environment.get().color_scheme == ColorScheme::Dark;
-    let (background, foreground) = if dark {
-        (
-            nsh_core::Color::rgba(250, 250, 250, 235),
-            nsh_core::Color::rgba(10, 10, 10, 255),
-        )
-    } else {
-        (
-            nsh_core::Color::rgba(23, 23, 23, 235),
-            nsh_core::Color::rgba(250, 250, 250, 255),
-        )
-    };
-    // SAFETY: NSView's designated initializer.
-    let view: Retained<PassThrough> = unsafe {
-        msg_send![PassThrough::alloc(mtm), initWithFrame: crate::view::ns_rect(0.0, 0.0, 0.0, 0.0)]
-    };
-    let view: Retained<NSView> = Retained::into_super(view);
-    view.setWantsLayer(true);
-    if let Some(layer) = view.layer() {
-        layer.setAnchorPoint(CGPoint::new(0.0, 0.0));
-        layer.setCornerRadius(18.0);
-        layer.setBackgroundColor(Some(&crate::text::cg_color(background)));
-        layer.setOpacity(0.0);
-    }
-    let label = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
-    label.setFont(Some(&NSFont::systemFontOfSize(14.0)));
-    let (r, g, b, a) = foreground.to_f64();
-    label.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-        r, g, b, a,
-    )));
-    label.setAlignment(NSTextAlignment::Center);
-    label.setDrawsBackground(false);
-    label.setSelectable(false);
-    view.addSubview(&label);
-    let serial = SYSTEM.with(|s| {
-        let mut s = s.borrow_mut();
-        s.next_toast += 1;
-        s.next_toast
-    });
-    let toast = Toast {
-        serial,
-        root: surface.root.clone(),
-        view: view.clone(),
-        label,
-    };
-    let env = surface.environment.get();
-    place_toast(&toast, env.window.width.0, env.window.height.0);
-    SYSTEM.with(|s| s.borrow_mut().toasts.push(toast));
-    let fade_in = if env.reduce_motion { 0.0 } else { FADE_IN };
-    fade(surface, &view, 1.0, fade_in, || {});
-    crate::access::announce(surface.root.ns(), text, NSAccessibilityPriorityLevel::Low);
-    let key = surface.key();
-    let duration = if long { TOAST_LONG } else { TOAST_SHORT };
-    if let Ok(when) = DispatchTime::try_from(duration) {
-        let _ = DispatchQueue::main().after(when, move || {
-            if let Some(surface) = Surface::with_key(key) {
-                hide_toast(&surface, serial);
-            }
-        });
-    }
-}
-
-/// Fades toast `serial` out and removes it.
-fn hide_toast(surface: &Rc<Surface>, serial: u64) {
-    let found = SYSTEM.with(|s| {
-        let mut s = s.borrow_mut();
-        let i = s.toasts.iter().position(|t| t.serial == serial)?;
-        Some(s.toasts.remove(i))
-    });
-    let Some(toast) = found else { return };
-    let view = toast.view.clone();
-    let root = toast.root;
-    fade(surface, &toast.view, 0.0, FADE_OUT, move || {
-        root.remove_native(&view)
-    });
-}
-
-/// Places a toast at the bottom of a `width` × `height` surface.
-fn place_toast(toast: &Toast, width: f32, height: f32) {
-    let max = (width - 48.0 - 32.0).max(0.0);
-    let label = &toast.label;
-    let size = label.cell().map_or(CGSize::ZERO, |cell| {
-        cell.cellSizeForBounds(crate::view::ns_rect(0.0, 0.0, max, 10_000.0))
-    });
-    let (w, h) = (
-        (size.width as f32).min(max).ceil(),
-        (size.height as f32).ceil(),
-    );
-    label.setFrame(crate::view::ns_rect(16.0, 9.0, w, h));
-    let (bw, bh) = (w + 32.0, h + 18.0);
-    toast.root.set_native(
-        &toast.view,
-        Bounds {
-            origin: Point {
-                x: Points(((width - bw) / 2.0).round()),
-                y: Points(height - 64.0 - bh),
-            },
-            size: Size {
-                width: Points(bw),
-                height: Points(bh),
-            },
-        },
-    );
-}
-
-/// Animates `view`'s layer opacity to `to` over `seconds` on the display
-/// link, then calls `done`.
-fn fade(
-    surface: &Rc<Surface>,
-    view: &NSView,
-    to: f32,
-    seconds: f64,
-    done: impl FnOnce() + 'static,
-) {
-    let Some(layer) = view.layer() else {
-        return done();
-    };
-    if seconds <= 0.0 {
-        crate::surface::quiet(|| layer.setOpacity(to));
-        return done();
-    }
-    let from = layer.opacity();
-    let mut start = None;
-    let mut done = Some(done);
-    surface.add_frame_callback(move |_, now| {
-        let t0 = *start.get_or_insert(now);
-        let t = ((now - t0) / seconds).min(1.0) as f32;
-        // Ease out.
-        let eased = 1.0 - (1.0 - t) * (1.0 - t);
-        layer.setOpacity(from + (to - from) * eased);
-        if t < 1.0 {
-            return true;
-        }
-        if let Some(done) = done.take() {
-            done();
-        }
-        false
-    });
 }
 
 /// The pasteboard types of images NSH reads and writes, by MIME type, in

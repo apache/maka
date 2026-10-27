@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use nsh_core::{
     JsonValue,
+    element::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes},
     geometry::{DefiniteLength, Percentage, Points},
-    ui::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes},
 };
 use serde::{Deserialize, Serialize};
 

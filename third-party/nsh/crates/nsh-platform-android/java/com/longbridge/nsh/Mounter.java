@@ -63,6 +63,7 @@ final class Mounter {
     private static final int APPEARANCE = 33;
     private static final int RETIRE_LIST_CELL = 34;
     private static final int PROJECT_ROOT = 35;
+    private static final int COMPONENT_PROP_SLOTS = 36;
     /** The surface lays out right to left: native widgets mirror. */
     boolean rtl;
     /** The app's appearance (`nsh_core::platform::Appearance`): 0 the system's, 1 light, 2 dark. */
@@ -135,10 +136,10 @@ final class Mounter {
     final java.util.ArrayList<TouchTracker> touchTrackers = new java.util.ArrayList<>();
     /** The text with a selection (one at a time, as in TextView). */
     TextBox selectedText;
-    /** The selection area with a selection (one per surface, a text's or an area's). */
-    SelectionArea selectedArea;
-    /** Selection areas (`ViewProps.selection_area`), by view. */
-    private final SparseArray<SelectionArea> selectionAreas = new SparseArray<>();
+    /** The selectable view with a selection (one per surface, a text's or an area's). */
+    SelectableView selectedArea;
+    /** Selectable views (`ViewProps.selectable_view`), by view. */
+    private final SparseArray<SelectableView> selectableViews = new SparseArray<>();
 
     /** A finger went down at the screen point: a selection elsewhere ends. */
     void touchDown(float rawX, float rawY) {
@@ -146,13 +147,13 @@ final class Mounter {
         if (selectedArea != null && !selectedArea.selectionContains(rawX, rawY)) selectedArea.clear();
     }
 
-    /** The outermost selection area {@code text} is in (an area inside another is part of it), or null. */
-    SelectionArea selectionAreaOf(TextBox text) {
-        if (selectionAreas.size() == 0) return null;
-        SelectionArea outer = null;
+    /** The outermost selectable view {@code text} is in (an area inside another is part of it), or null. */
+    SelectableView selectableViewOf(TextBox text) {
+        if (selectableViews.size() == 0) return null;
+        SelectableView outer = null;
         for (Object v = text; v instanceof View; v = ((View) v).getParent()) {
             if (!(v instanceof Node)) continue;
-            SelectionArea area = selectionAreas.get(((Node) v).nodeId());
+            SelectableView area = selectableViews.get(((Node) v).nodeId());
             if (area != null && area.view == v) outer = area;
         }
         return outer;
@@ -451,6 +452,8 @@ final class Mounter {
                     View v = views.get(id);
                     Dynamic d = statics.get(id);
                     if (v != null && d != null) applyDynamic(v, d);
+                    // Its props bound again are handed over again.
+                    if (v instanceof ComponentBox) ((ComponentBox) v).forgetAnimated();
                     break;
                 }
                 case GESTURES: {
@@ -531,6 +534,13 @@ final class Mounter {
                 case COMPONENT: {
                     int id = b.getInt();
                     component(id, string(objects, b.getInt()));
+                    break;
+                }
+                case COMPONENT_PROP_SLOTS: {
+                    View v = views.get(b.getInt());
+                    String[] names = new String[b.getInt()];
+                    for (int i = 0; i < names.length; i++) names[i] = string(objects, b.getInt());
+                    if (v instanceof ComponentBox) ((ComponentBox) v).slots = names;
                     break;
                 }
                 case COMPONENT_PROPS: {
@@ -943,10 +953,10 @@ final class Mounter {
         }
         View v = views.get(id);
         if (v instanceof StackBox) stacks.remove(v);
-        SelectionArea area = selectionAreas.get(id);
+        SelectableView area = selectableViews.get(id);
         if (area != null) {
             area.clear();
-            selectionAreas.remove(id);
+            selectableViews.remove(id);
         }
         screenOptions.remove(id);
         Animator running = layoutAnimators.get(id);
@@ -1544,15 +1554,15 @@ final class Mounter {
         } else {
             panActivations.remove(id);
         }
-        boolean selectionArea = b.getInt() != 0;
+        boolean selectableView = b.getInt() != 0;
         if (v == null) return;
-        SelectionArea area = selectionAreas.get(id);
-        if (selectionArea && (area == null || area.view != v)) {
+        SelectableView area = selectableViews.get(id);
+        if (selectableView && (area == null || area.view != v)) {
             if (area != null) area.clear();
-            selectionAreas.put(id, new SelectionArea(this, v));
-        } else if (!selectionArea && area != null) {
+            selectableViews.put(id, new SelectableView(this, v));
+        } else if (!selectableView && area != null) {
             area.clear();
-            selectionAreas.remove(id);
+            selectableViews.remove(id);
         }
         Feedback f = feedback.get(id);
         if (f == null) feedback.put(id, f = new Feedback());
@@ -1598,6 +1608,8 @@ final class Mounter {
 
     /** Canvas animated value slot `n` arrives as property `CANVAS_ARG + n` (`animation.rs`). */
     private static final int CANVAS_ARG = 1000;
+    /** A native component's animated prop slot `n`: a number as `COMPONENT_NUMBER + n`, a color (ARGB bits) as `COMPONENT_COLOR + n` (`animation.rs`). */
+    private static final int COMPONENT_NUMBER = 70000, COMPONENT_COLOR = 140000;
 
     /** How much further each sticky cell sticks (px; an animated `StickyCell::offset`). */
     private final java.util.HashMap<Integer, Float> stickyOffsets = new java.util.HashMap<>();
@@ -1622,6 +1634,13 @@ final class Mounter {
             if (v == null) continue;
             float value = out[i + 2];
             int prop = (int) out[i + 1];
+            if (prop >= COMPONENT_NUMBER) {
+                if (v instanceof ComponentBox) {
+                    boolean color = prop >= COMPONENT_COLOR;
+                    ((ComponentBox) v).setAnimated(prop - (color ? COMPONENT_COLOR : COMPONENT_NUMBER), color, value);
+                }
+                continue;
+            }
             if (prop >= CANVAS_ARG) {
                 if (v instanceof CanvasBox) ((CanvasBox) v).setSlot(prop - CANVAS_ARG, value);
                 continue;
@@ -2101,11 +2120,6 @@ final class Mounter {
                     styles[i] = b.getInt();
                 }
                 SystemUi.dialog(this, dialog, title, message, cancelable, sheet, texts, styles);
-                break;
-            }
-            case 13: {
-                String text = (String) objects[b.getInt()];
-                SystemUi.toast(context, text, b.getInt() != 0);
                 break;
             }
             case 14: {

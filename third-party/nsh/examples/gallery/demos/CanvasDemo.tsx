@@ -1,5 +1,5 @@
 import { Canvas, type CanvasRenderingContext2D, cleanup, type GestureResponderEvent, Path2D, signal, Text, View } from "nsh";
-import { Animated, createAnimatedValue, Easing, type AnimatedValue } from "nsh/animated";
+import { Animated, createAnimatedValue, Easing, type AnimatedValue } from "nsh";
 import logo from "../logo@2x.png";
 import { alpha, Button, Caption, Card, colors, DemoPage, Figure, finish, hint, isDark, Legend, type Palette, Segmented, Stat } from "../ui";
 

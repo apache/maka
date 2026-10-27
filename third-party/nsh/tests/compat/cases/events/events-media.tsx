@@ -7,9 +7,9 @@
 // text. Its
 // script checks each.
 import { Text, View, signal } from "nsh";
-import { Image } from "nsh/image";
-import { Video } from "nsh/video";
-import { WebView } from "nsh/webview";
+import { Image } from "nsh";
+import { Video } from "nsh";
+import { WebView } from "nsh";
 
 type Navigation = { url: string; title: string; loading: boolean; canGoBack: boolean; canGoForward: boolean };
 

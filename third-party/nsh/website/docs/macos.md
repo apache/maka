@@ -11,7 +11,7 @@ NSH apps also run as native Mac apps. The macOS backend renders them with AppKit
 text with CoreText; the core, the reactive graph, the renderer, Taffy layout and the native modules are the
 same as on iOS and Android, so one app runs everywhere. On macOS, `os()` is `Os::MacOs` (`platform.os` is `"macos"`
 in TSX) and TSX's `desktop={{…}}` props apply. The window's title, a title bar of the app's own, the menu bar and
-context menus come from `nsh_core::ui::desktop` in Rust ([Desktop title bars](./rust.md#desktop-title-bars)) and
+context menus come from `nsh_core::element::desktop` in Rust ([Desktop title bars](./rust.md#desktop-title-bars)) and
 [`nsh/desktop`](../modules/nsh-desktop.md) in TSX.
 
 The macOS backend behaves like a desktop app: mouse, trackpad and keyboard input, resizable windows, dialogs
@@ -54,9 +54,12 @@ nsh build my-app --release -o build
 dist/nsh/runtime/macos/nsh-macos-host --bundle build/bundle.nshc --window-size 1200x800   # in a checkout: target/debug/nsh-macos-host
 ```
 
-`--window-size` is the window's initial size (TSX apps); the window can be resized.
+`--window-size` is the window's initial size (TSX apps); the window can be resized. `--display <n>` (`nsh run` / `nsh test
+--target macos --display <n>`) centers it on display `n`: `1` is the primary display, the one with the menu bar.
 
-`nsh test --target macos` runs a TSX app's tests in macOS windows: each app a test opens gets a window of its own, and
+`nsh test --target macos` runs a TSX app's tests in macOS windows, on a secondary display when there is one (the main
+screen stays yours; `--display <n>` picks another): each app a test opens gets a window of its own, at the size the
+test asks for even on a display shorter than it, and
 the steps click, type and scroll with the system's input at the views their selectors name
 ([Testing](./testing-and-trace.md#on-a-real-platform)).
 
@@ -155,7 +158,7 @@ standalone session alive when its window closes. Closing hides the window;
 reopening from the Dock shows that same window and engine. For an explicit Exit
 or update relaunch, call `nsh_platform_macos::quit_app()` from any thread. It
 closes the retained window, stops the engine and returns from `run_app`.
-`nsh_core::ui::desktop::close_window()` follows the chosen window-close policy.
+`nsh_core::element::desktop::close_window()` follows the chosen window-close policy.
 
 
 `AppOptions::cache` (or `AppView::set_cache`, for the apps loaded next) sets where the apps keep their caches, the
@@ -207,7 +210,7 @@ their order with the cancel action last and no default; Escape chooses the cance
 | Cmd+W, Cmd+M, Ctrl+Cmd+F, Cmd+H, Option+Cmd+H, Cmd+Q | Close, minimize, full screen, hide, hide others, quit (`nsh package` and `nsh run` apps' menus) |
 | Cmd+R | Reloads the latest build (`nsh run`) |
 
-The app's own shortcuts ([`nsh/keymap`](../modules/nsh-keymap.md)) come before these, except activation keys addressed to a focused pressable view, Quit, Hide,
+The app's own shortcuts ([`keymap`](../modules/nsh.md#keymap)) come before these, except activation keys addressed to a focused pressable view, Quit, Hide,
 Minimize and Full Screen, which cannot be bound.
 
 Shortcuts work with any keyboard layout (on a Cyrillic or Greek one, Cmd+C is the key that types C on a US layout).

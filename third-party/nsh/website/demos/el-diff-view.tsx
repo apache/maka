@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { DiffView, type DiffViewRef } from "nsh/base";
-import { desktop, Log, Panel, Segmented, Split, size, ui, wide } from "./palette";
+import { button, buttonText, desktop, Log, Panel, Segmented, size, Split, ui, wide } from "./palette";
 
 const OLD = `fn greet(name: &str) -> String {
     format!("Hello, {}", name)
@@ -43,14 +43,8 @@ function App() {
   };
 
   const action = (label: string, onPress: () => void, primary?: boolean) => (
-    <View
-      onPress={onPress}
-      role="button"
-      accessibilityLabel={label}
-      activeStyle={{ opacity: 0.6 }}
-      style={{ height: 22, paddingHorizontal: 8, borderRadius: 6, justifyContent: "center", ...(primary ? { backgroundColor: ui().accent } : ui().raised) }}
-    >
-      <Text style={{ fontSize: 11, fontWeight: "600", color: primary ? ui().onAccent : ui().text }}>{label}</Text>
+    <View onPress={onPress} role="button" accessibilityLabel={label} {...button(primary ? "accent" : "secondary", { size: "sm" })}>
+      <Text style={buttonText(primary ? "accent" : "secondary")}>{label}</Text>
     </View>
   );
 
@@ -78,10 +72,9 @@ function App() {
                     setTimeout(count, 0);
                   }}
                   role="button"
-                  activeStyle={{ opacity: 0.6 }}
-                  style={{ height: size.controlSm, paddingHorizontal: 12, borderRadius: 8, justifyContent: "center", ...ui().raised }}
+                  {...button("secondary", { size: "sm" })}
                 >
-                  <Text style={{ fontSize: 13, fontWeight: "500", color: ui().text }}>Reset</Text>
+                  <Text style={buttonText()}>Reset</Text>
                 </View>
               </View>
             </Panel>

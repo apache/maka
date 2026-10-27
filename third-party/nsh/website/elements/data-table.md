@@ -14,14 +14,13 @@ columns or cells select, with the pointer and the keyboard; columns have fixed w
 edge, move with a drag of their title, stay at the left while the others scroll, and sort. Titles can sit under group
 labels, and a cell or a title can be drawn by the app.
 
-`DataTable` owns behavior and comes with a look of its own built from the theme's tokens: titles on `muted`, a
-`border` line between rows, a hover tint and a selection tint on `primary`. Each part takes the app's styles over these
-defaults (`classes` and `styles`). Rust makes one with `nsh_base::data_table()`, TSX with `<DataTable>` from
-`nsh/base`.
+`DataTable` supplies layout, alignment, virtualization and interaction. The app gives its parts their padding,
+colors, borders and selection feedback through `classes` and `styles`. Rust makes one with
+`nsh_base::data_table()`, TSX with `<DataTable>` from `nsh/base`.
 
 ```rust tabs
 use nsh_base::{DataTableColumn, data_table};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn column(key: &str, title: &str) -> DataTableColumn {
     let mut column = DataTableColumn::default();
@@ -74,7 +73,7 @@ booleans and strings show as text. A column is a `DataTableColumn`:
 | `title` | The text of its title. Default its `key`. |
 | `width` | Its width, in points. Default `120`. |
 | `minWidth`, `maxWidth` | The narrowest and widest a drag or a fit makes it. Default `20` and `1200`. |
-| `fitPadding` | What the app's drawing of a cell (`renderCell`) adds to its text's width (an icon, a badge), counted when a fit sizes the column. |
+| `fitPadding` | Extra room for the app's padding, icons or badges, added to the widest title or cell text when fitting the column. |
 | `align` | `"start"` (the default), `"center"` or `"end"`, for numbers. Cells and title alike. |
 | `sortable` | Its title has a sort button that asks for a sort (see [Sorting](#sorting)). |
 | `fixed` | It stays at the left while the other columns scroll under it. Fixed columns lead the others, in their order. |
@@ -279,7 +278,7 @@ columns.
 ## Styling the parts
 
 `class` and `style` style the table's box. `classes` takes Tailwind classes by part and `styles` inline styles by part;
-a part's classes come after its own default styles, so they win, and its `styles` win over its classes.
+parts provide the table's structure and alignment; their classes supply the appearance, and `styles` win over classes.
 
 ```tsx
 <DataTable
@@ -288,7 +287,13 @@ a part's classes come after its own default styles, so they win, and its `styles
   stripe
   class="flex-1 rounded-lg border border-border"
   classes={{
-    headerCell: "bg-secondary",
+    header: "bg-secondary",
+    headerCell: "pl-2 pr-1",
+    headerContent: "gap-1",
+    cell: "px-2",
+    resizeHandle: "bg-border group-hover:bg-primary",
+    sortAscending: "text-muted-foreground opacity-60 selected:text-foreground selected:opacity-100",
+    sortDescending: "text-muted-foreground opacity-60 selected:text-foreground selected:opacity-100",
     rowSelected: "bg-primary/10",
     rowHover: "bg-muted/50",
     fixedEdge: "bg-border",
@@ -302,9 +307,12 @@ a part's classes come after its own default styles, so they win, and its `styles
 | `header` | The header across the table, its rows of group labels and titles |
 | `groupCell` | A group label above the columns it spans |
 | `headerCell` | Every column's title cell |
+| `headerContent` | The label and sort button's layout row; set their gap here |
+| `headerCellDragging` | The dragged title, after `headerCell` |
 | `headerCellSorted` | The title of the column the table is sorted by, after `headerCell` |
 | `headerCellSelected` | The title of the selected column, after `headerCell` |
-| `sortIndicator` | The sort button of a sortable column: up and down chevrons, the sorted direction's in the text color |
+| `sortIndicator` | The sort button of a sortable column |
+| `sortAscending`, `sortDescending` | Its two chevrons; `selected:` applies to the sorted direction |
 | `resizeHandle` | The line at a column's trailing edge that a drag resizes |
 | `moveIndicator` | The line where a dragged column will drop |
 | `row` | Every body row |
@@ -348,7 +356,7 @@ a part's classes come after its own default styles, so they win, and its `styles
 | `loading` | `.loading(..)` | `boolean` | `false` | The table is loading: `onLoadMore` waits and `loadingView` shows. |
 | `hasMore` | `.has_more(..)` | `boolean` | `false` | There are more rows to load. |
 | `loadMoreThreshold` | `.load_more_threshold(..)` | `number` | `20` | How many rows from the last make `onLoadMore` fire. |
-| `fontFamily` | `.font_family(..)` | `string` | the theme's `font-sans` | The font of the cells. |
+| `fontFamily` | `.font_family(..)` | `string` | inherited | The font of the cells. |
 | `fontSize` | `.font_size(..)` | `number` | `14` | The font size of the cells, in points. |
 | `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll bars. |
 | `verticalScrollbar`, `horizontalScrollbar` | `.vertical_scrollbar(..)`, `.horizontal_scrollbar(..)` | `boolean` | `scrollbar` | One axis's scroll bar (the horizontal one is the desktops' bar under the table). |

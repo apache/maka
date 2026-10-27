@@ -15,7 +15,7 @@
 
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 use super::{
     EditorContextMenuEvent, EditorEvent, EditorPart,

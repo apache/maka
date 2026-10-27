@@ -1,7 +1,7 @@
 import type { JSX, ViewStyle } from "nsh";
 import { effect, signal, Text, View } from "nsh";
-import { colorScheme } from "nsh/device";
-import { createAnimatedValue, Easing } from "nsh/animated";
+import { colorScheme } from "nsh";
+import { createAnimatedValue, Easing } from "nsh";
 import { Icon, type IconName } from "./icons";
 
 /** Whether the gallery shows its dark palette (reactive: reading it subscribes). */
@@ -296,7 +296,7 @@ export function Press(props: {
   style?: ViewStyle;
   role?: "button" | "tab" | "switch" | "link";
   accessibilityLabel?: string;
-  accessibilityState?: { selected?: boolean; checked?: boolean; disabled?: boolean };
+  accessibilityState?: { selected?: boolean; checked?: boolean; disabled?: boolean; expanded?: boolean };
   hitSlop?: number;
   children: JSX.Element;
 }) {

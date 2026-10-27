@@ -39,7 +39,7 @@ pub use types::{TSCONFIG, TSCONFIG_BASE, tokens_declaration, type_definitions};
 pub fn compile_module(
     name: &str,
     source: &str,
-    ui_sets: &[nsh_core::ui::description::SetDescription],
+    ui_sets: &[nsh_core::element::description::SetDescription],
 ) -> Result<String, String> {
     let path = std::path::Path::new(name);
     let source_type = oxc::span::SourceType::from_path(path).map_err(|e| e.to_string())?;
@@ -60,9 +60,9 @@ mod tests {
         let code = super::compile_module(
             "App.tsx",
             "import { mount, signal, View } from \"nsh\";\n\
-             import { SafeAreaView } from \"nsh/base\";\n\
+             import { Button } from \"nsh/base\";\n\
              const n: number = 1;\n\
-             function App() { const c = signal(n); return <SafeAreaView><View onPress={() => c.set(2)} /></SafeAreaView>; }\n\
+             function App() { const c = signal(n); return <Button><View onPress={() => c.set(2)} /></Button>; }\n\
              mount(App);\n",
             &[nsh_base::registry().into()],
         )

@@ -7,6 +7,10 @@ import android.content.Context;
 @SuppressLint("ViewConstructor")
 final class ComponentBox extends Box {
     NshComponent component;
+    /** The names of its animated prop slots ({@code MountItem::ComponentPropSlots}). */
+    String[] slots;
+    /** Slot -> the bits of the value last handed to the component. */
+    private final android.util.SparseIntArray handed = new android.util.SparseIntArray();
 
     ComponentBox(Context context, Mounter mounter, int id) {
         super(context, mounter, id);
@@ -14,8 +18,26 @@ final class ComponentBox extends Box {
 
     void attach(NshComponent component) {
         this.component = component;
+        handed.clear();
         // Its own child, at the box's size (the core places no children here).
         addView(component.view());
+    }
+
+    /** Hands animated slot {@code slot} to the component when it changed (outputs come on every frame). */
+    void setAnimated(int slot, boolean color, float value) {
+        NshComponent c = component;
+        if (c == null || slots == null || slot < 0 || slot >= slots.length) return;
+        int bits = Float.floatToRawIntBits(value);
+        int at = handed.indexOfKey(slot);
+        if (at >= 0 && handed.valueAt(at) == bits) return;
+        handed.put(slot, bits);
+        if (color) c.setAnimatedColor(slots[slot], bits);
+        else c.setAnimatedNumber(slots[slot], value);
+    }
+
+    /** Its bindings changed: what is bound is handed over again. */
+    void forgetAnimated() {
+        handed.clear();
     }
 
     /** The element is gone, or its app stopped: tells the component once. */

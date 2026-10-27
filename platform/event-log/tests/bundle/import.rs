@@ -306,9 +306,8 @@ pub(super) async fn roundtrip(bytes: &[u8]) {
     .unwrap();
 
     // A new publication cannot append imported history after a canonical local owner.
-    let collision = EventLog::open(&dir.path().join("collision.sqlite"))
-        .await
-        .unwrap();
+    let collision_path = dir.path().join("collision.sqlite");
+    let collision = EventLog::open(&collision_path).await.unwrap();
     collision
         .create_session(&root, "local-owner", &json!({}), 1)
         .await
@@ -340,6 +339,57 @@ pub(super) async fn roundtrip(bytes: &[u8]) {
     assert_eq!(
         serde_json::to_vec(&collision.prefix(10, 16_384).await.unwrap()).unwrap(),
         serde_json::to_vec(&before_collision).unwrap()
+    );
+    collision.close().await.unwrap();
+    let inspect = rusqlite::Connection::open(&collision_path).unwrap();
+    inspect
+        .execute_batch(
+            "UPDATE event_log SET retained_json=event_json,body_digest='fixture',event_json=NULL",
+        )
+        .unwrap();
+    let collision = EventLog::open(&collision_path).await.unwrap();
+    let inventory = collision.preview_bundle(&root).await.unwrap();
+    assert!(matches!(
+        collision
+            .export_bundle(&root, &inventory.subtree_digest, Vec::new())
+            .await,
+        Err(BundleError::Store(StoreError::MaterialCollected)),
+    ));
+    collision.close().await.unwrap();
+    inspect
+        .execute("DELETE FROM session_control WHERE id=?", [&root])
+        .unwrap();
+    let collision = EventLog::open(&collision_path).await.unwrap();
+    assert!(
+        collision
+            .get_session::<Value>(&root)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(
+        collision
+            .import_bundle(
+                StagedBundle::read(bytes).await.unwrap(),
+                &binding,
+                bindings.clone(),
+            )
+            .await,
+        Err(BundleError::Store(StoreError::SessionConflict)),
+    ));
+    assert_eq!(
+        inspect
+            .query_row("SELECT COUNT(*) FROM event_log", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        inspect
+            .query_row("SELECT COUNT(*) FROM session_bundle_imports", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
     collision.close().await.unwrap();
 

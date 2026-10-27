@@ -299,9 +299,9 @@ impl NshView {
         *self.ivars().control.borrow_mut() = Some(control.clone());
     }
 
-    /// The view is a selection area (`ViewProps::selection_area`).
-    pub(crate) fn is_selection_area(&self) -> bool {
-        self.ivars().props.borrow().selection_area
+    /// The view is a selectable view (`ViewProps::selectable_view`).
+    pub(crate) fn is_selectable_view(&self) -> bool {
+        self.ivars().props.borrow().selectable_view
     }
 
     /// The area descendants cover outside the bounds, in the view's
@@ -371,7 +371,10 @@ fn traits(props: &ViewProps) -> UIAccessibilityTraits {
             | AccessibilityRole::Radio
             | AccessibilityRole::Switch
             | AccessibilityRole::Tab
-            | AccessibilityRole::Menuitem => UIAccessibilityTraitButton,
+            | AccessibilityRole::Menuitem
+            // UIKit has no option trait: an option is chosen by activating
+            // it, and the selected one carries the Selected trait below.
+            | AccessibilityRole::Option => UIAccessibilityTraitButton,
             AccessibilityRole::Link => UIAccessibilityTraitLink,
             AccessibilityRole::Search => UIAccessibilityTraitSearchField,
             AccessibilityRole::Image => UIAccessibilityTraitImage,

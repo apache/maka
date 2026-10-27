@@ -451,19 +451,27 @@ impl Handler for Settings {
                 "models" => {
                     let input: ModelsRead =
                         serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
+                    let connection_id = match &input {
+                        ModelsRead::Start { connection_id, .. } => connection_id.as_deref(),
+                        ModelsRead::Continue { cursor, .. } => cursor.connection_id.as_deref(),
+                    };
                     let public_guard = public_catalog.snapshot.read().await;
                     let snapshot = public_guard
                         .as_ref()
                         .map_err(|_| "settings_store_unavailable")?
                         .clone();
                     let catalog = store
-                        .catalog()
+                        .model_catalog(connection_id)
                         .await
                         .map_err(|_| "settings_store_unavailable")?;
                     drop(public_guard);
                     let start = match input {
-                        ModelsRead::Start { query } => ModelCursor {
+                        ModelsRead::Start {
                             query,
+                            connection_id,
+                        } => ModelCursor {
+                            query,
+                            connection_id,
                             connection: 0,
                             model: 0,
                         },
@@ -498,7 +506,12 @@ impl Handler for Settings {
                         .enumerate()
                         .skip(start.connection)
                     {
-                        if !selectable(row, snapshot.clone()) {
+                        if start
+                            .connection_id
+                            .as_ref()
+                            .is_some_and(|id| *id != row.connection_id)
+                            || !selectable(row, snapshot.clone())
+                        {
                             continue;
                         }
                         for (at, model) in row.enabled_model_ids.iter().enumerate().skip(
@@ -511,6 +524,7 @@ impl Handler for Settings {
                             if choices.len() == 16 {
                                 next = Some(ModelCursor {
                                     query: start.query.clone(),
+                                    connection_id: start.connection_id.clone(),
                                     connection: index,
                                     model: at,
                                 });

@@ -36,16 +36,16 @@ trusted: every limit and check is enforced in Rust, never in JS.
 - **Capabilities** (`nsh_core::access`): an app declares what it may reach in `nsh.json` `"capabilities"` — `network`
   (`hosts`: `*`, `*.example.com` or a host; `http`: a host narrowed by methods, schemes, a port, paths and path prefixes),
   `webview` (`hosts` a web view may show and navigate to), `statusBar`, `process` (`execute`: exact executable names or absolute paths; `exit`: host exit requests; `env`: additional
-  visible environment names), `fs` (`read` / `write`: trusted path roots), `clipboard` (`nsh/clipboard`: reading and
+  visible environment names), `fs` (`read` / `write`: trusted path roots), `clipboard` (`nsh`'s `Clipboard`: reading and
   writing the system clipboard; the copy menu of selectable text is the user's own act and needs none), `picker`
-  (`nsh/picker`: showing the system's picker, whose picked files reach the app; denied, a pick resolves `[]`), `host`
-  (`nsh/host`: the embedding app's functions `host.call` may call, names or prefixes ending in `*`, `true` for all;
+  (`nsh`'s `Picker`: showing the system's picker, whose picked files reach the app; denied, a pick resolves `[]`), `host`
+  (`nsh`'s `host`: the embedding app's functions `host.call` may call, names or prefixes ending in `*`, `true` for all;
   names and grants are 1 to 128 of `[A-Za-z0-9_.:-]` without `..` (`access::valid_host_name`), and the core refuses
   the call of any other name before it reads the grants, since hosts may put names in paths or URLs;
   never granted without it, also in apps without a declaration (`Capabilities::all` leaves it empty), and the bundler
-  warns of an app importing `nsh/host` without it (`bundle.rs` `ungranted_host`); the host's events need none, the
+  warns of an app importing `host` from `nsh` without it (`bundle.rs` `ungranted_host`); the host's events need none, the
   host sends them), `openUrl`
-  (`openUrl` of `nsh/device`: `true`, or `{ "schemes": [...] }` for the schemes listed). `nsh/storage`
+  (`openUrl` of `nsh`: `true`, or `{ "schemes": [...] }` for the schemes listed). `nsh`'s `Storage`
   is no capability: an app's storage holds only its own data, and the host decides where it is kept. Everything not listed is denied and unknown keys
   are build errors (`Capabilities::from_json`); a signed package's declaration is read with `from_json_lenient`, as a
   newer signer may have written it: an unknown capability is not granted, an unknown key inside one drops that
@@ -121,7 +121,7 @@ eleven bare specifiers and nothing else: `node:` prefixes and other Node modules
 `events`, ...) do not import, so no module reaches files, processes or sockets around these checks. See
 `website/modules/standard-modules.md` for the public surface.
 
-Opening URLs (`openUrl` of `nsh/device`, `TextView`'s `links="open"`; `nsh_core::open_url`) is checked in Rust
+Opening URLs (`openUrl` of `nsh`, `TextView`'s `links="open"`; `nsh_core::open_url`) is checked in Rust
 twice before anything leaves the app: the URL (`check_url`: absolute, at most 16 KiB, no whitespace or control
 characters, never `javascript:`, `vbscript:`, `data:`, `blob:`, `file:`, `about:` or `asset:`, which run code or
 reach the app's own data rather than another app; a web address needs a host) and the `openUrl` capability
@@ -129,7 +129,7 @@ reach the app's own data rather than another app; a web address needs a host) an
 module's call (a `TypeError`) and again in the core for Rust callers (`false`, logged once). The embedding app's URL
 handler sees only URLs that passed both (`embedding.md` "The host channel").
 
-`nsh/host`'s native SDK transport (`embedding.md` "The host channel") checks `capabilities.host` for calls and
+`nsh`'s native SDK transport (`embedding.md` "The host channel") checks `capabilities.host` for calls and
 posts before invoking embedding code, using the same name rules and grants as the platform transport. Its bounds are checked in Rust (`nsh_core::host_channel`, `nsh-js` `host_channel.rs`): event names of 1 to 256 bytes,
 data as `protocol::to_json` bounds it (64 levels, 2^20 entries), 1024 calls waiting for answers per VM (`RangeError`
 past it) and 256 events kept for listeners not there yet (the oldest dropped), in the VM and in the channel while no

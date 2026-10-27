@@ -78,6 +78,22 @@ impl SqliteConnection {
     /// fails, the caller still owns the connection and must await real close.
     /// This is the same configuration used by `ConnectOptions::connect`.
     pub async fn configure(&mut self, options: &SqliteConnectOptions) -> Result<(), Error> {
+        {
+            let mut locked = self.lock_handle().await?;
+            locked.guard.handle.call_with_result(|handle| {
+                // SAFETY: the locked original connection excludes worker access.
+                // This option takes an int and an optional output pointer; no
+                // pointer or borrowed SQLite state escapes configuration.
+                unsafe {
+                    libsqlite3_sys::sqlite3_db_config(
+                        handle,
+                        libsqlite3_sys::SQLITE_DBCONFIG_ENABLE_QPSG,
+                        i32::from(options.query_planner_stability),
+                        std::ptr::null_mut::<std::ffi::c_int>(),
+                    )
+                }
+            })?;
+        }
         // Execute PRAGMAs
         self.execute(AssertSqlSafe(options.pragma_string())).await?;
 

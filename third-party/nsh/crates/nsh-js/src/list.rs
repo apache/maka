@@ -1563,7 +1563,7 @@ mod tests {
             r#"
             import { mount, signal, cleanup } from "nsh";
             import { each, text } from "nsh:rt";
-            import { List } from "nsh/list";
+            import { List } from "nsh";
             const rows = signal(["summary", "final"]);
             let finalMade = 0, finalCleaned = 0;
             globalThis.expand = () => rows.set(["summary", "process", "final"]);
@@ -1627,7 +1627,7 @@ mod tests {
             r#"
             import { mount, signal, cleanup } from "nsh";
             import { each, text } from "nsh:rt";
-            import { List } from "nsh/list";
+            import { List } from "nsh";
             const rows = signal(["A", "B"]);
             let made = 0, cleaned = 0, select;
             globalThis.prepend = value => rows.set([value, ...rows()]);
@@ -1691,7 +1691,7 @@ mod tests {
             r#"
             import { mount, signal, cleanup } from "nsh";
             import { cond, text } from "nsh:rt";
-            import { List } from "nsh/list";
+            import { List } from "nsh";
             const shown = signal(true);
             let made = 0, cleaned = 0, visible;
             function snapshot(prefix) {
@@ -1807,7 +1807,7 @@ mod tests {
             let host = Host::new().unwrap();
             let error = host
                 .eval_source(&format!(
-                    "import {{ mount }} from 'nsh'; import {{ List }} from 'nsh/list';\n\
+                    "import {{ mount }} from 'nsh'; import {{ List }} from 'nsh';\n\
                      mount(() => List({{ each: {source}, children: (item) => () => item() }}));"
                 ))
                 .unwrap_err();
@@ -1826,7 +1826,7 @@ mod tests {
         host.eval_source(
             r#"
             import { mount } from "nsh";
-            import { List } from "nsh/list";
+            import { List } from "nsh";
             mount(() => List({
                 each: { length: 3, at(index) {
                     if (index === 1) throw Error("source item failed");
@@ -1892,7 +1892,7 @@ mod tests {
     const REACTIVE_SLOTS: &str = r#"
         import { mount, signal, cleanup } from "nsh";
         import { component, cond, text } from "nsh:rt";
-        import { List } from "nsh/list";
+        import { List } from "nsh";
         const active = signal(true);
         const shown = signal(true);
         let made = 0, cleaned = 0, rows = 0;
@@ -2077,7 +2077,7 @@ mod tests {
         host.eval_source(
             "import { mount } from \"nsh\";\n\
              import { text } from \"nsh:rt\";\n\
-             import { List } from \"nsh/list\";\n\
+             import { List } from \"nsh\";\n\
              mount(() => List({\n\
                each: [1, 2],\n\
                children: (n) => text(`Row ${n()}`),\n\

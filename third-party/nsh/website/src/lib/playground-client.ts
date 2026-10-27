@@ -9,6 +9,7 @@ import { javascript } from '@codemirror/lang-javascript';
 import { syntaxHighlighting } from '@codemirror/language';
 import { classHighlighter } from '@lezer/highlight';
 import { onThemeChange, siteTheme } from './demo-client';
+import { inlineGalleryUi } from './inline-gallery-ui';
 
 // Each demo's source, loaded when picked.
 const DEMOS = import.meta.glob('/demos/*.tsx', { query: '?raw', import: 'default' }) as Record<
@@ -16,17 +17,22 @@ const DEMOS = import.meta.glob('/demos/*.tsx', { query: '?raw', import: 'default
   () => Promise<string>
 >;
 
-// The demos' shared palette (demos/palette.ts). The player compiles one
-// file, so a demo that imports it gets it inlined in place of the import.
+// The player compiles one file. Include the internal shared example UI
+// behind each demo's palette adapter, with module scopes kept separate.
 import paletteSource from '/demos/palette.ts?raw';
-
-const PALETTE_IMPORT = /^import\s*\{[^}]*\}\s*from\s*["']\.\/palette["'];?[ \t]*$/m;
+const gallerySources = import.meta.glob([
+  '../../../examples/nsh-gallery-ui/**/*.{ts,tsx,json}',
+  '!../../../examples/nsh-gallery-ui/tests/**',
+], {
+  query: '?raw', import: 'default', eager: true,
+}) as Record<string, string>;
+const sharedUiSources = {
+  ...Object.fromEntries(Object.entries(gallerySources).map(([path, text]) => [path.replace('../../../', ''), text])),
+  'website/demos/palette.ts': paletteSource,
+};
 
 function withPalette(source: string): string {
-  const match = PALETTE_IMPORT.exec(source);
-  if (!match) return source;
-  const palette = paletteSource.replace(/^export /gm, '');
-  return source.slice(0, match.index) + palette + source.slice(match.index + match[0].length);
+  return inlineGalleryUi(source, sharedUiSources);
 }
 
 const STORAGE_KEY = 'nsh-playground-code';

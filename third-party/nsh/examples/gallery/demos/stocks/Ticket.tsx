@@ -1,5 +1,5 @@
 import { effect, signal, Text, untracked, View } from "nsh";
-import { Animated, createAnimatedValue, Easing, LayoutAnimation } from "nsh/animated";
+import { Animated, createAnimatedValue, Easing, LayoutAnimation } from "nsh";
 import { Icon } from "../../icons";
 import { Button, colors, finish, isDark, Press, radius, Segmented, tints } from "../../ui";
 import { grouped, type Stock, price } from "./market";

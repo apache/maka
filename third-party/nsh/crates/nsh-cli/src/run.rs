@@ -81,13 +81,15 @@ pub(crate) struct HostFlags {
 }
 
 /// The host window's own options: the desktop hosts take the size
-/// ([`HostWindow::check`]), the macOS host the name too.
+/// ([`HostWindow::check`]), the macOS host the name and the display too.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct HostWindow<'a> {
     /// The app's name in the host (the menu bar, the window title).
     pub(crate) name: Option<&'a str>,
     /// The window's initial size, `WxH` in points.
     pub(crate) size: Option<&'a str>,
+    /// The display the window opens on, from 1 (the primary display).
+    pub(crate) display: Option<usize>,
 }
 
 impl HostWindow<'_> {
@@ -111,6 +113,11 @@ impl HostWindow<'_> {
                 "--name needs --target macos and a TSX entry (the other hosts do not take it yet)"
             );
         }
+        if self.display.is_some() && (target != Target::Macos || rust_root) {
+            bail!(
+                "--display needs --target macos and a TSX entry (the other hosts do not take it yet)"
+            );
+        }
         if self.size.is_some() && (!desktop || rust_root) {
             bail!(
                 "--window-size needs a desktop host (--target macos, linux, windows or gpui) and a TSX entry"
@@ -119,12 +126,16 @@ impl HostWindow<'_> {
         Ok(())
     }
 
-    /// The arguments of the size, for a desktop host.
-    fn args(&self) -> Vec<&str> {
+    /// The arguments of the size and the display, for a desktop host.
+    fn args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if let Some(size) = self.size {
             // `WxH` in points; the host opens the window at this size.
-            args.extend(["--window-size", size]);
+            args.extend(["--window-size".to_owned(), size.to_owned()]);
+        }
+        if let Some(display) = self.display {
+            // One-based, as the host counts them.
+            args.extend(["--display".to_owned(), display.to_string()]);
         }
         args
     }
@@ -1019,6 +1030,21 @@ mod tests {
         assert!(named.check(Target::Macos, false).is_ok());
         assert!(named.check(Target::Linux, false).is_err());
         assert!(named.check(Target::Tui, false).is_err());
+    }
+
+    /// `--display` reaches the macOS host only, for a TSX entry.
+    #[test]
+    fn the_macos_host_takes_a_display() {
+        let placed = HostWindow {
+            display: Some(2),
+            ..HostWindow::default()
+        };
+        assert!(placed.check(Target::Macos, false).is_ok());
+        assert!(placed.check(Target::Macos, true).is_err());
+        for target in [Target::Linux, Target::Windows, Target::Gpui, Target::Ios] {
+            assert!(placed.check(target, false).is_err(), "{target:?}");
+        }
+        assert_eq!(placed.args(), ["--display", "2"]);
     }
 
     /// The desktop hosts get each app's own id, so each keeps its own data.

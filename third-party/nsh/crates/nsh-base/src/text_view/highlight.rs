@@ -25,7 +25,7 @@ pub(super) use self::syntect_highlighter::built_in;
 
 /// No built-in highlighter without the feature: code blocks are plain.
 #[cfg(not(feature = "highlight"))]
-pub(super) fn built_in(_: &super::CodeBlock) -> Option<Vec<nsh_core::ui::AnyElement>> {
+pub(super) fn built_in(_: &super::CodeBlock) -> Option<Vec<nsh_core::element::AnyElement>> {
     None
 }
 
@@ -36,7 +36,7 @@ mod syntect_highlighter {
         sync::{Mutex, MutexGuard},
     };
 
-    use nsh_core::{time::Instant, ui::prelude::*};
+    use nsh_core::{prelude::*, time::Instant};
     use syntect::{
         parsing::{ParseState, ScopeStack, SyntaxReference},
         util::LinesWithEndings,

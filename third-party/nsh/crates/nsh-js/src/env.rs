@@ -15,8 +15,8 @@ use std::{
 };
 
 use nsh_core::{
+    element::{ThemeTokens, Token, Tokens},
     platform::{Appearance, ColorScheme, Environment, Idiom, Os, Renderer},
-    ui::{Token, Tokens},
 };
 use rquickjs::qjs;
 
@@ -65,6 +65,9 @@ pub(crate) struct Env {
     /// a token follows a new theme.
     tokens_signal: Cell<JsValue>,
     tokens_version: Cell<u32>,
+    /// The tokens the app's theme file gives ([`set_theme_tokens`]), taken
+    /// in when the entry hands the theme to the renderer ([`take_theme`]).
+    theme: RefCell<ThemeTokens>,
 }
 
 impl Default for Env {
@@ -78,6 +81,7 @@ impl Default for Env {
             tokens: RefCell::new(Arc::default()),
             tokens_signal: Cell::new(UNDEFINED),
             tokens_version: Cell::new(0),
+            theme: RefCell::new(ThemeTokens::default()),
         }
     }
 }
@@ -134,6 +138,23 @@ pub(crate) fn set_tokens(cx: *mut JsContext, tokens: Arc<Tokens>) {
     let version = e.tokens_version.get().wrapping_add(1);
     e.tokens_version.set(version);
     reactive::set_signal(cx, e.tokens_signal.get(), number(version as f32));
+}
+
+/// Sets how the app's theme file makes the tokens it is drawn with
+/// ([`nsh_core::Core::theme_tokens`]).
+pub(crate) fn set_theme_tokens(cx: *mut JsContext, theme: ThemeTokens) {
+    env(cx).theme.replace(theme);
+}
+
+/// Takes in the tokens of the app's theme file `json` (`nsh:rt`'s `setup`,
+/// the entry's first statement): the core has them only once the theme's
+/// op reaches it, after the turn of the first render, which reads them
+/// already.
+pub(crate) fn take_theme(cx: *mut JsContext, json: &str) {
+    let tokens = env(cx).theme.borrow().of(json);
+    if let Some(tokens) = tokens {
+        set_tokens(cx, Arc::new(tokens));
+    }
 }
 
 /// `token(name)`: the design token `name` in the appearance shown (a
@@ -447,11 +468,24 @@ pub(crate) const REEXPORTS: &[Item] = &[
     ),
 ];
 
+/// The host elements a UI set exports (`Registry::native_values`):
+/// `nsh/base`'s `Input`, a base component the platforms make natively.
+pub(crate) const ELEMENTS: &[Item] = &[(
+    "Input",
+    Export::Value(|cx| crate::dom::host_component(cx, "input", true)),
+    Ts::function(
+        "A native text input (UITextField / UITextView, EditText); `ref` has\n`focus()`, `blur()` and `setSelection(start, end)`.",
+        &["(props: InputProps): YNode"],
+    ),
+)];
+
 /// Value `name` a registry re-exports or names as native
-/// (`Registry::native_values`): [`REEXPORTS`] and navigation's.
+/// (`Registry::native_values`): [`REEXPORTS`], [`ELEMENTS`] and
+/// navigation's.
 pub(crate) fn reexport(cx: *mut JsContext, name: &str) -> JsValue {
     let item = REEXPORTS
         .iter()
+        .chain(ELEMENTS)
         .chain(crate::navigation::EXPORTS)
         .find(|(n, ..)| *n == name);
     match item {

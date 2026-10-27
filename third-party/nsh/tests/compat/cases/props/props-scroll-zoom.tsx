@@ -5,7 +5,7 @@
 // animated value fed with its offset. Its script
 // checks each.
 import { Scroll, Text, View, signal } from "nsh";
-import { createAnimatedValue } from "nsh/animated";
+import { createAnimatedValue } from "nsh";
 
 function App() {
   const zoom = signal(2);

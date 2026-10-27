@@ -162,7 +162,8 @@ async fn run(protocol: &str, kind: ProviderKind) {
                     .collect::<String>();
                 assert!(
                     text.contains("cobalt-tool-receipt-73"),
-                    "{protocol}: tool result was not replayed"
+                    "{protocol}: final model text omitted expected tool-result marker; finish_reason={:?}; text={text:?}",
+                    step.finish_reason,
                 );
                 assert_eq!(
                     step.tool_calls().count(),

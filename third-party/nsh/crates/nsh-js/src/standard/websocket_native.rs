@@ -41,7 +41,7 @@ impl std::future::Future for YieldNow {
 const QUEUE: usize = 8;
 /// A place among the VM's WebSockets (shared with the `websocket` module),
 /// or the `RangeError` saying there is none.
-fn acquire_slot(cx: &Ctx<'_>) -> Result<nsh_core::ui::Held> {
+fn acquire_slot(cx: &Ctx<'_>) -> Result<nsh_core::element::Held> {
     use nsh_core::runtime::{MAX_WEBSOCKETS, WEBSOCKETS};
     crate::dom::shared(cx.as_raw().as_ptr())
         .system_quotas

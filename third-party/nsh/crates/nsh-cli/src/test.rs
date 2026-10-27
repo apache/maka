@@ -30,7 +30,7 @@ use std::{
 
 use anyhow::{Context as _, bail};
 use nsh_bundler::BundleOptions;
-use nsh_core::ui::description::SetDescription;
+use nsh_core::element::description::SetDescription;
 use nsh_engine::Bundle;
 use nsh_testing::{
     Built, Entry, Reply, RunnerMessage, TestRequest, TestResult, TestRun, TestStatus,
@@ -65,6 +65,7 @@ pub(crate) fn test(
     target: Option<crate::run::Target>,
     browser: Option<&Path>,
     web_host: Option<PathBuf>,
+    display: Option<usize>,
 ) -> anyhow::Result<()> {
     let app_dir = entry.parent().unwrap_or(Path::new(".")).to_path_buf();
     let work_dir = app_dir.join(".nsh/test");
@@ -112,6 +113,9 @@ pub(crate) fn test(
     if browser.is_some() && target.is_none() {
         bail!("--browser goes with --target web");
     }
+    if display.is_some() && target != Some(crate::run::Target::Macos) {
+        bail!("--display goes with --target macos");
+    }
     if web_host.is_some() && target.is_some() {
         bail!(
             "--web-host goes with headless runs: --target web takes nsh.json's web.host, the other targets have no page host"
@@ -142,7 +146,7 @@ pub(crate) fn test(
     }
     let host = target
         .filter(|_| !files.is_empty())
-        .map(|target| crate::test_host::starter(target, browser, &work_dir, fps))
+        .map(|target| crate::test_host::starter(target, browser, &work_dir, fps, display))
         .transpose()?;
     // On a real platform the apps run in hosts built with the app's crates:
     // the test files run here, whatever the app is.
@@ -457,7 +461,7 @@ fn test_file_bytecode(entry: &Path) -> anyhow::Result<Compiled> {
     sets.extend(
         nsh_testing::test_sets()
             .iter()
-            .flat_map(nsh_core::ui::Registry::sets)
+            .flat_map(nsh_core::element::Registry::sets)
             .map(SetDescription::from),
     );
     bytecode_of(entry, &sets, false)

@@ -17,9 +17,10 @@
  * under the License.
  */
 
-import { cleanup, Input, inputAction, List, signal, Text, View } from 'nsh';
+import { cleanup, inputAction, List, signal, Text, View } from 'nsh';
+import { Input } from 'nsh/base';
 import { Button } from 'nsh/base';
-import { windowSize } from 'nsh/device';
+import { windowSize } from 'nsh';
 import type {
   DirectoryRootSpec,
   ServiceMethods,

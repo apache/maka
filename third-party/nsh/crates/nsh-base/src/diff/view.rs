@@ -7,7 +7,10 @@
 //! wrapped lines and the annotations under them. Only the rows in view
 //! (and a few around them) are made.
 
-use nsh_core::ui::{EventKind, EventPayload, Style, prelude::*};
+use nsh_core::{
+    element::{EventKind, EventPayload, Style},
+    prelude::*,
+};
 
 use super::{
     DiffAnnotation, DiffExpand, DiffIndicators, DiffLayout, DiffSeparator, DiffSide, DiffViewPart,
@@ -625,7 +628,7 @@ fn line_row(
 /// The highlight of the code's selected text: the lines' selection color.
 fn selection_color() -> Hsla {
     let color = theme().selection();
-    if nsh_core::ui::ambient::dark() {
+    if nsh_core::element::ambient::dark() {
         color.dark
     } else {
         color.light

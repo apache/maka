@@ -27,7 +27,7 @@ group: ui
 Rust crate 发布其 `assets/` 目录中的文件：在 `#[native_module]` 函数中调用 `registry.assets(assets!())` 会发布全部文件，`asset!("fonts/Pacifico-Regular.ttf")` 是一个 `FontAsset`，它的 `family` 是字体的字体族名，在 crate 编译时从文件中读取。在 TSX 中，导入一个 `.ttf` 或 `.otf` 文件，导入的值就是字体的字体族名。两种方式下字体都会在第一帧之前注册，文字首次渲染时即可使用：
 
 ```rust tabs
-use nsh_core::ui::{FontAsset, prelude::*};
+use nsh_core::{element::FontAsset, prelude::*};
 
 const PACIFICO: FontAsset = asset!("fonts/Pacifico-Regular.ttf");
 
@@ -109,7 +109,7 @@ const body = { fontFamily: Inter, fontSize: 16 } as const;
 ```
 
 ```rust tabs
-use nsh_core::ui::palette::VIOLET;
+use nsh_core::element::palette::VIOLET;
 
 text("Custom fonts").font_family(PACIFICO.family).text_3xl().text_color(VIOLET.shade(600))
 text("Bold Inter").font_family(INTER.family).font_weight(FontWeight::BOLD)

@@ -7,12 +7,12 @@ group: ui
 
 # Networking
 
-NSH apps make HTTP requests with `fetch`: in Rust the function of `nsh_core::ui::prelude`, awaited in a task, and in TSX the standard global. Both run on the platform's network stack (NSURLSession on iOS, HttpURLConnection on Android, the browser's [on the web](./web.md#apps-with-rust-components)), so requests use the system's TLS, proxies and HTTP/2, and both pass the same [capability checks](#capabilities-which-hosts-an-app-may-reach). Rust's `fetch` takes a URL or an `HttpRequest` and gives the whole response (`HttpResponse`: `status()`, `ok()`, `header(name)`, `text()`, `body`). TSX's streams both ways: a response body arrives as a stream as the stack delivers it, and a request body can be a stream sent as you produce it. TSX has the Fetch API's companions too: `Headers`, `Request`, `Response`, `AbortController`, `FormData`, `Blob`, `File`, `URL`, `URLSearchParams`, `TextEncoder` / `TextDecoder` and Web Streams.
+NSH apps make HTTP requests with `fetch`: in Rust the function of `nsh_core::prelude`, awaited in a task, and in TSX the standard global. Both run on the platform's network stack (NSURLSession on iOS, HttpURLConnection on Android, the browser's [on the web](./web.md#apps-with-rust-components)), so requests use the system's TLS, proxies and HTTP/2, and both pass the same [capability checks](#capabilities-which-hosts-an-app-may-reach). Rust's `fetch` takes a URL or an `HttpRequest` and gives the whole response (`HttpResponse`: `status()`, `ok()`, `header(name)`, `text()`, `body`). TSX's streams both ways: a response body arrives as a stream as the stack delivers it, and a request body can be a stream sent as you produce it. TSX has the Fetch API's companions too: `Headers`, `Request`, `Response`, `AbortController`, `FormData`, `Blob`, `File`, `URL`, `URLSearchParams`, `TextEncoder` / `TextDecoder` and Web Streams.
 
 ## Getting JSON
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 #[derive(Clone, PartialEq)]
 struct Post {
@@ -95,7 +95,7 @@ In TSX, a `Response` reads its body once, as `json()`, `text()`, `arrayBuffer()`
 ## Sending data
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 // JSON
 let body = serde_json::json!({ "title": "Groceries", "items": ["milk", "eggs"] });
@@ -154,13 +154,13 @@ const response = await fetch("https://api.example.com/photos", { method: "POST",
 
 ### Uploading a photo the user picks
 
-[`nsh/picker`](../modules/nsh-picker.md) gives the photos the user picks as files whose bytes stay native, scaled down
+[`Picker`](../modules/nsh.md#picker) gives the photos the user picks as files whose bytes stay native, scaled down
 and in a format servers take; Rust sends their bytes, TSX appends the `File` to a `FormData`:
 
 ```rust tabs
 use nsh_core::geometry::DevicePixels;
 use nsh_core::picker::PickRequest;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 let mut request = PickRequest::new(false, 1);
 request.max_dimension = Some(DevicePixels(2048));
@@ -175,7 +175,7 @@ spawn(async move {
 ```
 
 ```tsx tabs
-import { Picker } from "nsh/picker";
+import { Picker } from "nsh";
 
 const [photo] = await Picker.pickImages({ maxDimension: 2048 });
 if (photo) {
@@ -278,7 +278,7 @@ const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
 A component that loads data should cancel when it goes away: a Rust task does on its own, and TSX aborts in [`cleanup`](./reactivity.md):
 
 ```rust tabs
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn weather(city: String) -> impl IntoElement {
     let data = signal(String::new());

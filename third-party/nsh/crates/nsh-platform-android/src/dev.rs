@@ -59,7 +59,7 @@ impl DevSession {
             bytecode_version: BYTECODE_VERSION.to_owned(),
             ui_sets: crate::ui_sets()
                 .iter()
-                .flat_map(nsh_core::ui::Registry::sets)
+                .flat_map(nsh_core::element::Registry::sets)
                 .filter_map(|set| set.specifier().map(str::to_owned))
                 .collect(),
             tests: true,

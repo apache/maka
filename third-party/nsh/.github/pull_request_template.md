@@ -16,7 +16,7 @@ Please keep **1 PR to solve 1 problem**, and keep **small improvements small** t
 
 List every public item this pull request adds, changes or removes, grouped by crate or module, with its signature and one line on what it is for: Rust items, JS exports, elements, props, style keys, Tailwind utilities, `nsh.json` keys, CLI commands and SDK APIs. If none, remove this section.
 
-- `nsh/list`: `List` prop `example?: boolean` — what it does.
+- `nsh`: `List` prop `example?: boolean` — what it does.
 
 ## Breaking Changes
 

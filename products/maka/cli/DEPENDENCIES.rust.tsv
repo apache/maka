@@ -684,16 +684,16 @@ nonmax@0.5.5		X										X
 notify-rust@4.18.2		X										X						
 notify-types@2.1.0		X										X						
 notify@8.2.1								X										
-nsh-base@0.2.0		X																
-nsh-bundler@0.2.0		X																
-nsh-core@0.2.0		X																
-nsh-engine@0.2.0		X																
-nsh-gpui-terminal@0.2.0		X																
-nsh-js@0.2.0		X																
-nsh-macros@0.2.0		X																
-nsh-package@0.2.0		X																
-nsh-platform-gpui@0.2.0		X																
-nsh-platform-tui@0.2.0		X																
+nsh-base@0.3.0		X																
+nsh-bundler@0.3.0		X																
+nsh-core@0.3.0		X																
+nsh-engine@0.3.0		X																
+nsh-gpui-terminal@0.3.0		X																
+nsh-js@0.3.0		X																
+nsh-macros@0.3.0		X																
+nsh-package@0.3.0		X																
+nsh-platform-gpui@0.3.0		X																
+nsh-platform-tui@0.3.0		X																
 nu-ansi-term@0.50.3												X						
 num_cpus@1.17.0		X										X						
 num-bigint-dig@0.9.1		X										X						

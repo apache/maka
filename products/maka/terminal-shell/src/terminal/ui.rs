@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn background_host_reply_frame_and_timer_reach_unicode_output_without_input() {
-        use nsh_core::ui::prelude::*;
+        use nsh_core::prelude::*;
 
         struct HostReply(Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
         #[component]
@@ -508,7 +508,7 @@ mod tests {
         }
         let (reply, response) = tokio::sync::oneshot::channel();
         let mut options = config("");
-        options.app = App::Rust(nsh_core::ui::Root::of::<BackgroundReply>());
+        options.app = App::Rust(nsh_core::element::Root::of::<BackgroundReply>());
         options.context = options.context.with(HostReply(Mutex::new(Some(response))));
         let (flushed, output) = mpsc::channel();
         let (started, start) = mpsc::sync_channel(1);
@@ -608,7 +608,7 @@ mod tests {
         let mut options = config(
             r#"
             import { mount } from "nsh";
-            import { windowSize } from "nsh/device";
+            import { windowSize } from "nsh";
             import { element, insert } from "nsh:rt";
             mount(() => {
                 const label = element("text");
@@ -1239,7 +1239,7 @@ mod tests {
     fn a_reading_click_owns_escape_before_another_frame_is_drawn() {
         const APP: &str = r#"
             import { mount, signal } from "nsh";
-            import { keymap } from "nsh/keymap";
+            import { keymap } from "nsh";
             import { element, prop, insert, append } from "nsh:rt";
             const phase = signal("before"), returned = signal(0), stopped = signal(0);
             const useText = USE_TEXT;

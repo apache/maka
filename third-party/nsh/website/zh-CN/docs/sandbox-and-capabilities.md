@@ -163,32 +163,32 @@ web view 内的顶层导航也会在加载前由平台的导航代理检查。�
 
 ### `clipboard`
 
-`"clipboard": true` 允许应用读写系统剪贴板（[`nsh/clipboard`](../modules/nsh-clipboard.md)）。从可选文本的编辑菜单复制是用户自己的操作，不需要这项能力。
+`"clipboard": true` 允许应用读写系统剪贴板（[`Clipboard`](../modules/nsh.md#clipboard)）。从可选文本的编辑菜单复制是用户自己的操作，不需要这项能力。
 
 ### `picker`
 
-`"picker": true` 允许应用显示系统的照片选择器（[`nsh/picker`](../modules/nsh-picker.md)）：由用户决定哪些内容交给应用。
+`"picker": true` 允许应用显示系统的照片选择器（[`Picker`](../modules/nsh.md#picker)）：由用户决定哪些内容交给应用。
 
 ### `openUrl`
 
-允许应用在应用之外打开 URL（[`openUrl`](../modules/nsh-device.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme。scheme 未被授予的 URL 会抛出 `TypeError`。会执行代码或访问应用自身数据的 URL（`javascript:`、`data:`、`file:` 等）无论能力如何都不会打开。
+允许应用在应用之外打开 URL（[`openUrl`](../modules/nsh.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme。scheme 未被授予的 URL 会抛出 `TypeError`。会执行代码或访问应用自身数据的 URL（`javascript:`、`data:`、`file:` 等）无论能力如何都不会打开。
 
 ### 存储
 
-每个应用都可以用 [`nsh/storage`](../modules/nsh-storage.md) 在设备上保存自己的数据，无需任何能力：存储里只有该应用自己的数据，保存位置由宿主应用决定。
+每个应用都可以用 [`Storage`](../modules/nsh.md#storage) 在设备上保存自己的数据，无需任何能力：存储里只有该应用自己的数据，保存位置由宿主应用决定。
 
 ### `host`
 
-`host` 列出 `nsh/host` 的 `host.call(name, args)` 可以调用的、嵌入 NSH 的宿主应用的函数：确切的函数名
+`host` 列出 `nsh` 的 `host.call(name, args)` 可以调用的、嵌入 NSH 的宿主应用的函数：确切的函数名
 （`"getUserInfo"`），或以 `*` 结尾的前缀（`"bridge.*"` 匹配 `bridge.call` 和 `bridge.share`）。`"host": true`
-允许所有函数。没有列出的函数会被拒绝，没有 `"capabilities"` 的应用也一样：宿主的函数从不默认授予；构建导入了
-`nsh/host` 却没有声明 `host` 的应用时会警告每次调用都会被拒绝。函数名由 `A`–`Z`、`a`–`z`、`0`–`9`、`_`、`.`、`:`、`-`
+允许所有函数。没有列出的函数会被拒绝，没有 `"capabilities"` 的应用也一样：宿主的函数从不默认授予；构建从 `nsh` 导入了
+`host` 却没有声明 `host` 的应用时会警告每次调用都会被拒绝。函数名由 `A`–`Z`、`a`–`z`、`0`–`9`、`_`、`.`、`:`、`-`
 组成，长度 1 到 128，不含 `..`；其他名字的调用在检查授权之前就被拒绝。前缀以分隔符结尾（`"bridge.*"`）：`"bridge*"`
 也会匹配 `bridgeAdmin`。宿主发来的事件（`host.on(event, listener)`）在宿主发送时
 送到应用的监听函数。
 
 ```ts
-import { host } from "nsh/host";
+import { host } from "nsh";
 
 if (host.available()) {
   const user = await host.call("getUserInfo");

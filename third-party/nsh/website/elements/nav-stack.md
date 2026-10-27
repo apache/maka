@@ -18,7 +18,7 @@ covered); the pages' content and the desktop header are the app's own.
 
 ```rust tabs
 use nsh_base::{button, nav_page, nav_stack};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 /// A button with the app's look.
 fn action(title: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {
@@ -252,7 +252,7 @@ go into the system header on iOS and Android.
 
 ```rust tabs
 use nsh_base::nav_page;
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn profile(edit: impl Fn() + 'static) -> Screen {
     nav_page()
@@ -277,7 +277,7 @@ fn profile(edit: impl Fn() + 'static) -> Screen {
 
 The page's content starts below the header: below an opaque system header on iOS and Android, below `header` on the
 desktops and the web. With `headerTransparent`, `headerLargeTitle` or `headerVisible={false}`, it starts at the top of
-the page on iOS and Android; use [SafeAreaView](./safe-area-view.md) or `safeAreaInsets()` to keep it clear of the
+the page on iOS and Android; use [`env(safe-area-inset-top)`](./safe-area.md) or `safeAreaInsets()` to keep it clear of the
 header and the status bar.
 
 On iOS, `headerVisible={false}` keeps swipe back enabled while `popOnSwipe` and `popOnBack` are true.
@@ -304,7 +304,7 @@ back is off and the back buttons and keys call `onBackPress` without popping. As
 
 ```rust tabs
 use nsh_base::{alert_dialog, nav_page};
-use nsh_core::ui::prelude::*;
+use nsh_core::prelude::*;
 
 fn edit_note(routes: Signal<Vec<u32>>) -> Screen {
     let note = signal(String::new());
@@ -341,8 +341,8 @@ fn edit_note(routes: Signal<Vec<u32>>) -> Screen {
 ```
 
 ```tsx tabs
-import { Input, signal } from "nsh";
-import { AlertDialog, NavPage } from "nsh/base";
+import { signal } from "nsh";
+import { AlertDialog, NavPage, Input } from "nsh/base";
 
 function EditNote() {
   const text = signal("");
@@ -379,7 +379,7 @@ To turn off only the swipe gesture and keep the back buttons, use `popOnSwipe={f
   large title. Stack changes that arrive during a running transition are applied when it ends.
 - **Android**: a stack with a toolbar. The system back button pops the top page, with predictive back on Android
   versions that have it; the up arrow's description for screen readers is the lower page's `headerBackTitle`, or the
-  system's. See `BackHandler` in [nsh/android](../modules/nsh-android.md) to handle the back button yourself.
+  system's. See `BackHandler` in [`BackHandler`](../modules/nsh-mobile.md#backhandler) to handle the back button yourself.
 - **Mac Catalyst**: as on iOS.
 - **Desktops (macOS, Windows, Linux, GPUI) and the web**: each page shows its `header` at the top and its content
   below it. Escape, Alt+Left and a mouse's back button go back on the desktops, the browser's back button on the web.

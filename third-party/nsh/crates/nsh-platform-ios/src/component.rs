@@ -34,6 +34,20 @@ pub trait NativeComponent {
     fn command(&mut self, name: &str, args: &JsonValue) {
         let _ = (name, args);
     }
+
+    /// Prop `name`, bound to an animated value, moved to `value` (on the
+    /// frames it changes, without JS). By default, [`Self::set_prop`] with
+    /// a JSON number.
+    fn set_animated_number(&mut self, name: &str, value: f64) {
+        let json = serde_json::Number::from_f64(value).map_or(JsonValue::Null, JsonValue::Number);
+        self.set_prop(name, Some(&json));
+    }
+
+    /// Prop `name`, bound to an animated color, moved to `argb`
+    /// (`0xAARRGGBB`). By default, [`Self::set_prop`] with a JSON number.
+    fn set_animated_color(&mut self, name: &str, argb: u32) {
+        self.set_prop(name, Some(&JsonValue::from(argb)));
+    }
 }
 
 /// What a component can tell its app. Cheap to clone; usable from any
@@ -160,9 +174,63 @@ impl Components {
 pub(crate) struct ComponentHost {
     pub(crate) container: objc2::rc::Retained<crate::native_view::NshView>,
     pub(crate) component: Option<Box<dyn NativeComponent>>,
+    /// The names of its animated prop slots (`MountItem::ComponentPropSlots`).
+    pub(crate) slots: Vec<std::sync::Arc<str>>,
+    /// Slot -> the value last handed to the component.
+    handed: Vec<(u16, nsh_core::animation::AnimatedPropValue)>,
 }
 
 impl ComponentHost {
+    pub(crate) fn new(container: objc2::rc::Retained<crate::native_view::NshView>) -> Self {
+        ComponentHost {
+            container,
+            component: None,
+            slots: Vec::new(),
+            handed: Vec::new(),
+        }
+    }
+
+    /// Hands the component the bound props' values that changed since
+    /// they were last handed over.
+    pub(crate) fn push(
+        &mut self,
+        bindings: &[(
+            nsh_core::animation::AnimationProp,
+            nsh_core::animation::NodeId,
+        )],
+        animator: &crate::animation::Animator,
+    ) {
+        use nsh_core::animation::{AnimatedPropValue, AnimationProp};
+        let Some(component) = self.component.as_mut() else {
+            return;
+        };
+        for &(prop, node) in bindings {
+            let AnimationProp::ComponentSlot(slot) = prop else {
+                continue;
+            };
+            let Some(name) = self.slots.get(slot as usize) else {
+                continue;
+            };
+            let value = AnimatedPropValue::from(animator.eval(node));
+            match self.handed.iter_mut().find(|(s, _)| *s == slot) {
+                Some((_, v)) if *v == value => continue,
+                Some((_, v)) => *v = value,
+                None => self.handed.push((slot, value)),
+            }
+            match value {
+                AnimatedPropValue::Color(argb) => component.set_animated_color(name, argb),
+                AnimatedPropValue::Number(n) => component.set_animated_number(name, n),
+                _ => {}
+            }
+        }
+    }
+
+    /// Its bindings changed or its component is new: what is bound is
+    /// handed over again.
+    pub(crate) fn forget(&mut self) {
+        self.handed.clear();
+    }
+
     /// Puts `component` in the container, filling it.
     pub(crate) fn attach(&mut self, component: Box<dyn NativeComponent>) {
         let view = component.view();

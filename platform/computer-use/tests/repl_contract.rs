@@ -82,7 +82,7 @@ async fn evaluate(repl: &Repl, code: &str) -> Vec<CellOutput> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inventory_failures_remain_visible_and_auto_explicit_screenshot_output_is_once_per_call() {
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     let output = evaluate(
         &repl,
         "const state=await cua.getState({emit:false}); nodeRepl.write(state.apps);",
@@ -219,7 +219,7 @@ async fn persistent_repl_uses_each_evaluations_language_without_rewriting_user_o
             Language::En,
         )
         .unwrap();
-    let repl = Repl::new(facade(), CellLimits::default());
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
     for (language, recovery) in [
         (Language::ZhCn, "重新绑定目标"),
         (Language::ZhTw, "重新綁定目標"),

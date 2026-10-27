@@ -432,11 +432,21 @@ public protocol NshComponent: AnyObject {
     func setProp(_ name: String, _ value: Any?)
     /// JS called `ref.command(name, args)`.
     func command(_ name: String, _ args: Any?)
+    /// Prop `name`, bound to an animated value, moved to `value` (on the
+    /// frames it changes, without JS).
+    func setAnimatedNumber(_ name: String, _ value: Double)
+    /// Prop `name`, bound to an animated color, moved to `argb`
+    /// (0xAARRGGBB).
+    func setAnimatedColor(_ name: String, _ argb: UInt32)
 }
 
 extension NshComponent {
     /// Ignores commands.
     public func command(_ name: String, _ args: Any?) {}
+    /// `setProp` with the number, an `NSNumber` as JSON props have.
+    public func setAnimatedNumber(_ name: String, _ value: Double) { setProp(name, NSNumber(value: value)) }
+    /// `setProp` with the color (0xAARRGGBB), an `NSNumber`.
+    public func setAnimatedColor(_ name: String, _ argb: UInt32) { setProp(name, NSNumber(value: argb)) }
 }
 
 /// What a component tells its app: its events and its own size.
@@ -681,6 +691,18 @@ extension NshAppView {
                 Unmanaged<ComponentFactoryBox>.fromOpaque(factory!).release()
             }
         )
-        nsh_app_register_component(app, name, factory, &callbacks)
+        var animated = NshComponentAnimationCallbacks(
+            set_number: { component, name, value in
+                let box = Unmanaged<ComponentBox>.fromOpaque(component).takeUnretainedValue()
+                let name = String(cString: name)
+                MainActor.assumeIsolated { box.component.setAnimatedNumber(name, value) }
+            },
+            set_color: { component, name, argb in
+                let box = Unmanaged<ComponentBox>.fromOpaque(component).takeUnretainedValue()
+                let name = String(cString: name)
+                MainActor.assumeIsolated { box.component.setAnimatedColor(name, argb) }
+            }
+        )
+        nsh_app_register_component_with_animation(app, name, factory, &callbacks, &animated)
     }
 }

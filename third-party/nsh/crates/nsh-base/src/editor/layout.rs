@@ -5,8 +5,9 @@
 //! selects past the viewport's edge.
 
 use nsh_core::{
+    element::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes},
     geometry::{Point, Points, px},
-    ui::{JsHost, JsIn, JsOwned, JsValue, PropError, TsTypes, prelude::Spawned},
+    prelude::Spawned,
 };
 
 /// How often a drag past the viewport's edge scrolls (about a frame).
