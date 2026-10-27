@@ -158,7 +158,7 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
                 flex: 1,
                 justifyContent: 'center',
                 alignItems: 'center',
-                backgroundColor: '#00000099',
+                backgroundColor: C.scrim,
               }}
             >
               <View

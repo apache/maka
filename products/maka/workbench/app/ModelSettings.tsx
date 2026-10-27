@@ -147,7 +147,7 @@ export function ModelSettings(props: { close(): void; changed(): void; model?: M
         alignItems: 'center',
         padding: 16,
         paddingTop: dialogTop(16),
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
       }}
     >
       <View

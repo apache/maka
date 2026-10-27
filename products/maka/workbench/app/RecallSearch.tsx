@@ -286,7 +286,7 @@ export function RecallSearch(props: {
         flex: 1,
         justifyContent: 'flex-start',
         alignItems: 'center',
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
         paddingHorizontal: 16,
         paddingTop: compact() ? 16 : windowSize().height / 8,
         paddingBottom: 16,

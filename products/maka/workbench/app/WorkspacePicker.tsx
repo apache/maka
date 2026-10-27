@@ -258,7 +258,7 @@ export function WorkspacePicker(props: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
         padding: 16,
         paddingTop: dialogTop(16),
       }}

@@ -83,7 +83,7 @@ export function CompactDialog(props: {
         justifyContent: 'center',
         alignItems: 'center',
         padding: 16,
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
       }}
     >
       <View

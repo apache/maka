@@ -1042,7 +1042,7 @@ function App() {
                 onOpenChange={() => closeOverlay(current.instance)}
                 style={{
                   flex: 1,
-                  backgroundColor: '#00000099',
+                  backgroundColor: C.scrim,
                 }}
               >
                 <View style={{ backgroundColor: C.background }}>

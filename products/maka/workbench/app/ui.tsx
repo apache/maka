@@ -56,6 +56,8 @@ const DARK = {
   success: '#9bd5a5',
   added: '#203527',
   removed: '#382528',
+  /** Behind a dialog. */
+  scrim: '#00000099',
 };
 const LIGHT: typeof DARK = {
   background: '#ffffff',
@@ -72,6 +74,7 @@ const LIGHT: typeof DARK = {
   success: '#1f7a3a',
   added: '#e3f3e7',
   removed: '#fbe8e9',
+  scrim: '#00000040',
 };
 /** Whether the interface is dark: the window's appearance in effect (`setColorScheme`);
  * terminals keep the dark colors. */

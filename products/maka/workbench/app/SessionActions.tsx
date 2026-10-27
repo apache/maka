@@ -277,7 +277,7 @@ export function SessionActions(props: {
             alignItems: 'center',
             padding: 16,
             paddingTop: dialogTop(16),
-            backgroundColor: '#00000099',
+            backgroundColor: C.scrim,
           }}
         >
           <View
