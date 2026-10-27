@@ -311,6 +311,24 @@ impl Tab {
         language: Language,
         intent: super::native::ClaimIntent,
     ) -> Result<(), ToolError> {
+        self.prepare_origin_transport_with_budget(
+            invocation,
+            cancellation,
+            language,
+            intent,
+            &mut None,
+        )
+        .await
+    }
+
+    pub(super) async fn prepare_origin_transport_with_budget(
+        &mut self,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &tokio_util::sync::CancellationToken,
+        language: Language,
+        intent: super::native::ClaimIntent,
+        budget: &mut Option<super::ReadBudget>,
+    ) -> Result<(), ToolError> {
         match self.provider.native() {
             Some(native) => {
                 let capabilities = native
@@ -321,12 +339,22 @@ impl Tab {
                         // Original numeric CDP can re-enter fixed preparation on
                         // an existing claim too. A prior admission is not current
                         // authority for a later turn/replacement document.
-                        self.prepare_native_session(invocation, cancellation, language, intent)
-                            .await
+                        super::read_step_for(
+                            budget,
+                            cancellation,
+                            super::ReadEffect::NativePreparation,
+                            self.prepare_native_session(invocation, cancellation, language, intent),
+                        )
+                        .await
                     }
                     cua_driver_core::browser::NativeAttachmentPreparation::MetadataOnly => {
-                        self.prepare_metadata(invocation, cancellation, language)
-                            .await
+                        self.prepare_metadata_with_budget(
+                            invocation,
+                            cancellation,
+                            language,
+                            budget,
+                        )
+                        .await
                     }
                     cua_driver_core::browser::NativeAttachmentPreparation::Unknown => Err(failed(
                         "selected native adapter has not classified its attachment preparation",
@@ -334,7 +362,7 @@ impl Tab {
                 }
             }
             None => {
-                self.prepare_metadata(invocation, cancellation, language)
+                self.prepare_metadata_with_budget(invocation, cancellation, language, budget)
                     .await
             }
         }
@@ -348,7 +376,18 @@ impl Tab {
         cancellation: &tokio_util::sync::CancellationToken,
         language: Language,
     ) -> Result<(), ToolError> {
-        self.refresh_info(language).await?;
+        self.prepare_metadata_with_budget(invocation, cancellation, language, &mut None)
+            .await
+    }
+
+    async fn prepare_metadata_with_budget(
+        &mut self,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &tokio_util::sync::CancellationToken,
+        language: Language,
+        budget: &mut Option<super::ReadBudget>,
+    ) -> Result<(), ToolError> {
+        super::read_step(budget, cancellation, self.refresh_info(language)).await?;
         let document = self.document();
         invocation
             .authorize_browser(
@@ -358,16 +397,21 @@ impl Tab {
                 cancellation,
             )
             .await?;
-        self.refresh_info(language).await?;
+        super::read_step(budget, cancellation, self.refresh_info(language)).await?;
         if self.document() != document {
             return Err(failed("document changed during browser metadata admission"));
         }
         check_input(cancellation)?;
         if self.provider.native().is_some() {
-            self.attach_native_metadata(invocation, cancellation)
-                .await?;
+            super::read_step_for(
+                budget,
+                cancellation,
+                super::ReadEffect::NativePreparation,
+                self.attach_native_metadata(invocation, cancellation),
+            )
+            .await?;
         }
-        self.connect_metadata().await?;
+        super::read_step(budget, cancellation, self.connect_metadata()).await?;
         check_input(cancellation)
     }
 }

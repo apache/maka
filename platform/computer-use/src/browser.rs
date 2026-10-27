@@ -121,6 +121,97 @@ struct Tab {
     clipboard_authorization: Option<std::sync::Arc<dyn crate::BrowserAttachmentAuthorization>>,
     attachment_settlement: Option<std::sync::Arc<dyn crate::OperationSettlement>>,
 }
+// A read spends one mechanical-I/O budget across its lazy authorization and
+// selector work. Host consent waits are deliberately outside these steps.
+struct ReadBudget {
+    remaining: Duration,
+}
+impl ReadBudget {
+    fn new(options: &BrowserReadOptions) -> Self {
+        Self {
+            remaining: Duration::from_millis(options.timeout_ms.unwrap_or(3000).min(3000)),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum ReadEffect {
+    Observation,
+    NativePreparation,
+}
+impl ReadEffect {
+    fn interrupted(self, message: &str) -> ToolError {
+        match self {
+            Self::Observation => failed(message),
+            Self::NativePreparation => unknown(format!(
+                "{message}; native preparation may still be pending"
+            )),
+        }
+    }
+    fn read_failure(self, error: ToolError) -> ToolError {
+        match (self, error) {
+            (Self::Observation, ToolError::OutcomeUnknown(message)) => failed(message),
+            (_, error) => error,
+        }
+    }
+    fn uncertain(self, error: &ToolError) -> bool {
+        matches!(self, Self::NativePreparation)
+            && matches!(
+                error,
+                ToolError::OutcomeUnknown(_)
+                    | ToolError::CleanupUnconfirmed(_)
+                    | ToolError::Persistence(_)
+                    | ToolError::OperationUnknown { .. }
+                    | ToolError::OperationCleanupUnconfirmed { .. }
+            )
+    }
+}
+async fn read_step<T>(
+    budget: &mut Option<ReadBudget>,
+    cancellation: &CancellationToken,
+    future: impl std::future::Future<Output = Result<T, ToolError>>,
+) -> Result<T, ToolError> {
+    read_step_for(budget, cancellation, ReadEffect::Observation, future).await
+}
+async fn read_step_for<T>(
+    budget: &mut Option<ReadBudget>,
+    cancellation: &CancellationToken,
+    effect: ReadEffect,
+    future: impl std::future::Future<Output = Result<T, ToolError>>,
+) -> Result<T, ToolError> {
+    let Some(budget) = budget else {
+        return future.await;
+    };
+    if cancellation.is_cancelled() {
+        return Err(failed("Browser read cancelled"));
+    }
+    if budget.remaining.is_zero() {
+        return Err(failed("Playwright selector deadline exceeded"));
+    }
+    let began = tokio::time::Instant::now();
+    let mut polled = false;
+    let result = {
+        let mut future = std::pin::pin!(future);
+        let tracked = std::future::poll_fn(|context| {
+            polled = true;
+            future.as_mut().poll(context)
+        });
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err("Browser read cancelled"),
+            result = tokio::time::timeout(budget.remaining, tracked) => {
+                result.map_err(|_| "Playwright selector deadline exceeded")
+            }
+        }
+    };
+    budget.remaining = budget.remaining.saturating_sub(began.elapsed());
+    match result {
+        Ok(result) => result,
+        // Polling proves only that this observer started, never that Native
+        // dispatch or an external effect occurred. Its original custody stays.
+        Err(message) if polled => Err(effect.interrupted(message)),
+        Err(message) => Err(failed(message)),
+    }
+}
 enum Navigation {
     Loader(String),
     Reload(String),
@@ -880,13 +971,21 @@ impl Browsers {
                 self.use_tab(&identity, turn).await?;
                 let tab = self.targets.get_mut(&handle).unwrap();
                 tab.last_turn = turn.to_owned();
-                tab.authorize(None, invocation, cancellation, language)
-                    .await?;
+                let mut budget = Some(ReadBudget::new(&options));
+                tab.authorize_with_budget(
+                    None,
+                    invocation,
+                    cancellation,
+                    language,
+                    native::ClaimIntent::Implicit,
+                    &mut budget,
+                )
+                .await?;
                 let document = tab.document();
                 tab.playwright_read(
                     &locator,
                     operation,
-                    options,
+                    budget.expect("read budget remains owned by this call"),
                     document,
                     cancellation,
                     language,
@@ -1740,6 +1839,21 @@ impl Tab {
         }
     }
 
+    fn read_effect(&self) -> Result<ReadEffect, ToolError> {
+        Ok(match self.provider.native() {
+            Some(native)
+                if native
+                    .capabilities()
+                    .map_err(provider::native_error)?
+                    .attachment_preparation
+                    == cua_driver_core::browser::NativeAttachmentPreparation::FullPreparation =>
+            {
+                ReadEffect::NativePreparation
+            }
+            _ => ReadEffect::Observation,
+        })
+    }
+
     async fn authorize(
         &mut self,
         navigation: Option<&str>,
@@ -1765,16 +1879,48 @@ impl Tab {
         language: Language,
         claim_intent: native::ClaimIntent,
     ) -> Result<(), ToolError> {
-        self.refresh_info(language).await?;
+        self.authorize_with_budget(
+            navigation,
+            invocation,
+            cancellation,
+            language,
+            claim_intent,
+            &mut None,
+        )
+        .await
+    }
+
+    async fn authorize_with_budget(
+        &mut self,
+        navigation: Option<&str>,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &tokio_util::sync::CancellationToken,
+        language: Language,
+        claim_intent: native::ClaimIntent,
+        budget: &mut Option<ReadBudget>,
+    ) -> Result<(), ToolError> {
+        let effect = if budget.is_some() {
+            self.read_effect()?
+        } else {
+            ReadEffect::Observation
+        };
+        read_step_for(budget, cancellation, effect, self.refresh_info(language)).await?;
         if let Some(url) = navigation {
             self.navigation_admission = None;
             validate_url(url)?;
             // Establish only the existing transport before consent, so a same-URL
             // document replacement during consent cannot evade the source fence.
-            self.prepare_origin_transport(invocation, cancellation, language, claim_intent)
-                .await?;
+            self.prepare_origin_transport_with_budget(
+                invocation,
+                cancellation,
+                language,
+                claim_intent,
+                budget,
+            )
+            .await?;
             let document = self.document();
-            let source = self.document_identity().await?;
+            let source =
+                read_step_for(budget, cancellation, effect, self.document_identity()).await?;
             invocation
                 .authorize_browser(
                     crate::BrowserAccess::Navigate {
@@ -1784,13 +1930,15 @@ impl Tab {
                     cancellation,
                 )
                 .await?;
-            self.refresh_info(language).await?;
+            read_step_for(budget, cancellation, effect, self.refresh_info(language)).await?;
             if self.document() != document {
                 return Err(failed(
                     "document changed during browser authorization; retry the operation",
                 ));
             }
-            if self.document_identity().await? != source {
+            if read_step_for(budget, cancellation, effect, self.document_identity()).await?
+                != source
+            {
                 return Err(failed(
                     "document changed before navigation dispatch; retry the operation",
                 ));
@@ -1802,30 +1950,36 @@ impl Tab {
         // An adapter may run its fixed session machinery while acquiring the
         // transport. That has a separate current Host admission and is never
         // authorized by a prior URL's site consent.
-        self.prepare_origin_transport(invocation, cancellation, language, claim_intent)
-            .await?;
+        self.prepare_origin_transport_with_budget(
+            invocation,
+            cancellation,
+            language,
+            claim_intent,
+            budget,
+        )
+        .await?;
         let document = self.document();
-        let proof = self.document_origin().await?;
+        let proof = read_step_for(budget, cancellation, effect, self.document_origin()).await?;
         let access = proof.access();
         invocation
             .authorize_browser(access.clone(), cancellation)
             .await?;
         // Human consent may suspend this call while another actor navigates.
         // Never apply the admitted operation to that replacement document.
-        self.refresh_info(language).await?;
+        read_step_for(budget, cancellation, effect, self.refresh_info(language)).await?;
         if self.document() != document {
             return Err(failed(
                 "document changed during browser authorization; retry the operation",
             ));
         }
-        proof.check_current(self).await?;
+        read_step_for(budget, cancellation, effect, proof.check_current(self)).await?;
         check_input(cancellation)?;
         if self
             .clipboard
             .as_ref()
             .is_some_and(|bridge| bridge.turn() != invocation.turn())
         {
-            self.cleanup_clipboard().await?;
+            read_step_for(budget, cancellation, effect, self.cleanup_clipboard()).await?;
         }
         if self.provider.native().is_some() {
             let wire = cua_driver_core::browser::NativeWireContext::new(
@@ -1839,22 +1993,26 @@ impl Tab {
             self.native_wire = Some(wire);
         }
         let before_services_frame = if self.socket.is_some() {
-            Some(self.frame().await?)
+            Some(read_step_for(budget, cancellation, effect, self.frame()).await?)
         } else {
             None
         };
-        let services = invocation
-            .prepare_browser_services(access, cancellation)
-            .await?;
+        let services = read_step_for(
+            budget,
+            cancellation,
+            effect,
+            invocation.prepare_browser_services(access, cancellation),
+        )
+        .await?;
         check_input(cancellation)?;
-        self.refresh_info(language).await?;
+        read_step_for(budget, cancellation, effect, self.refresh_info(language)).await?;
         if self.document() != document {
             return Err(failed(
                 "document changed during browser attachment preparation",
             ));
         }
         if let Some(frame) = before_services_frame
-            && self.frame().await? != frame
+            && read_step_for(budget, cancellation, effect, self.frame()).await? != frame
         {
             return Err(failed(
                 "document changed during browser attachment preparation",
@@ -1873,8 +2031,14 @@ impl Tab {
             controller.host_effects(self.dialog_host.clone());
         }
         if self.provider.native().is_some() {
-            self.prepare_native(invocation, cancellation, language, claim_intent)
-                .await?;
+            self.prepare_native_with_budget(
+                invocation,
+                cancellation,
+                language,
+                claim_intent,
+                budget,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -2786,6 +2950,7 @@ mod tests {
 
     struct Decision {
         allow: bool,
+        delay: Duration,
         accesses: Arc<Mutex<Vec<crate::BrowserAccess>>>,
     }
     impl crate::BrowserAuthorization for Decision {
@@ -2796,7 +2961,11 @@ mod tests {
         ) -> crate::AuthorizationFuture {
             self.accesses.lock().unwrap().push(access);
             let allow = self.allow;
+            let delay = self.delay;
             Box::pin(async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
                 if allow {
                     Ok(())
                 } else {
@@ -2819,11 +2988,22 @@ mod tests {
         crate::InvocationContext<'static>,
         Arc<Mutex<Vec<crate::BrowserAccess>>>,
     ) {
+        decision_context_with_delay(allow, Duration::ZERO)
+    }
+
+    fn decision_context_with_delay(
+        allow: bool,
+        delay: Duration,
+    ) -> (
+        crate::InvocationContext<'static>,
+        Arc<Mutex<Vec<crate::BrowserAccess>>>,
+    ) {
         let accesses = Arc::new(Mutex::new(Vec::new()));
         (
             crate::InvocationContext::new("fixture", "turn").with_browser_authorization(Arc::new(
                 Decision {
                     allow,
+                    delay,
                     accesses: accesses.clone(),
                 },
             )),
@@ -3063,39 +3243,97 @@ mod tests {
             if message == "download source URL or target changed during path authorization; retry the lookup"));
         {
             let accesses = accesses.lock().unwrap();
-            assert_eq!(
-                accesses.len(),
-                3,
-                "no final approval/check for replacement URL"
+            assert!(
+                matches!(accesses.as_slice(), [
+                crate::BrowserAccess::Metadata { document: metadata },
+                crate::BrowserAccess::Read { document: source },
+            ] if metadata.url == "https://source.example/"
+                && source == metadata),
+                "only the original source was admitted: {accesses:?}"
             );
             assert!(
-                matches!(&accesses[2], crate::BrowserAccess::Read { document }
-                if document.url == "https://source.example/")
+                accesses
+                    .iter()
+                    .all(|access| access.document().url != "https://replacement.example/"),
+                "the replacement must not borrow the original source's consent"
             );
         }
         assert_eq!(server.await.unwrap().len(), 6);
     }
 
+    async fn metadata_reply(
+        socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        expected: &str,
+        result: Value,
+    ) -> Value {
+        use futures_util::{SinkExt, StreamExt};
+        let request: Value =
+            serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(request["method"], expected);
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                json!({"id":request["id"],"result":result})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        request
+    }
+
+    fn source_frame(loader: &str) -> Value {
+        json!({"frameTree":{"frame":{
+            "id":"main", "loaderId":loader, "url":"https://source.example/",
+        }}})
+    }
+
     #[tokio::test]
     async fn host_authorization_revalidates_the_current_url_after_consent() {
+        use futures_util::StreamExt;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let address = listener.local_addr().unwrap();
+        let (context, accesses) = decision_context(true);
+        let approved = accesses.clone();
         let server = tokio::spawn(async move {
-            let before = [
-                json!({"id":"page","title":"Before","url":"https://source.example/","type":"page"}),
-            ];
-            let after = [
-                json!({"id":"page","title":"After","url":"https://replacement.example/","type":"page"}),
-            ];
-            let mut paths = serve_inventory(&listener, &before).await;
-            paths.extend(serve_inventory(&listener, &before).await);
-            paths.extend(serve_inventory(&listener, &after).await);
+            let before = [json!({
+                "id":"page", "title":"Before", "url":"https://source.example/", "type":"page",
+                "webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page"),
+            })];
+            let after = [json!({
+                "id":"page", "title":"After", "url":"https://replacement.example/", "type":"page",
+                "webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page"),
+            })];
+            let mut paths = Vec::new();
+            for _ in 0..4 {
+                paths.extend(serve_inventory(&listener, &before).await);
+            }
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
             assert!(
-                tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                    .await
-                    .is_err(),
-                "a changed URL received a CDP connection"
+                matches!(
+                    approved.lock().unwrap().as_slice(),
+                    [crate::BrowserAccess::Metadata { .. }]
+                ),
+                "only metadata transport is admitted before the source snapshot"
             );
+            metadata_reply(&mut socket, "Page.getFrameTree", source_frame("source")).await;
+            // This inventory starts only after the actual Navigate approval.
+            paths.extend(serve_inventory(&listener, &after).await);
+            assert!(matches!(
+                approved.lock().unwrap().as_slice(),
+                [
+                    crate::BrowserAccess::Metadata { .. },
+                    crate::BrowserAccess::Navigate { .. },
+                ]
+            ));
+            if let Ok(Some(Ok(message))) =
+                tokio::time::timeout(Duration::from_millis(100), socket.next()).await
+            {
+                assert!(
+                    message.is_close(),
+                    "replacement received a page command after consent: {message:?}"
+                );
+            }
             paths
         });
         let mut browsers = Browsers::default();
@@ -3103,14 +3341,13 @@ mod tests {
             .configure(
                 vec![BrowserConnection {
                     id: "fixture".into(),
-                    endpoint,
+                    endpoint: format!("http://{address}"),
                 }],
                 Language::En,
             )
             .unwrap();
         let cursor = crate::cursor::Spec::default();
         let cancellation = CancellationToken::new();
-        let (context, accesses) = decision_context(true);
         let bound = browsers
             .invoke(
                 Command::BrowserTab {
@@ -3138,98 +3375,96 @@ mod tests {
                 Language::En,
             )
             .await;
-        assert!(
-            matches!(result,Err(ToolError::Failed(message)) if message == "document changed during browser authorization; retry the operation")
-        );
+        assert!(matches!(result, Err(ToolError::Failed(message))
+            if message == "document changed during browser authorization; retry the operation"));
         {
             let accesses = accesses.lock().unwrap();
-            assert_eq!(accesses.len(), 1);
-            assert_eq!(accesses[0].document().url, "https://source.example/");
-            assert_eq!(
-                accesses[0].origin().unwrap().as_deref(),
-                Some("https://destination.example")
+            assert!(
+                matches!(accesses.as_slice(), [
+                crate::BrowserAccess::Metadata { document: metadata },
+                crate::BrowserAccess::Navigate { document: source, url },
+            ] if source == metadata && source.url == "https://source.example/"
+                && url == "https://destination.example/path"),
+                "replacement content must not receive the source's navigation consent: {accesses:?}"
             );
         }
-        assert_eq!(server.await.unwrap().len(), 6);
+        assert_eq!(server.await.unwrap().len(), 10);
     }
 
     #[tokio::test]
-    async fn navigation_captures_its_source_after_consent_and_rechecks_before_dispatch() {
-        use futures_util::{SinkExt, StreamExt};
-        for replaced in [false, true] {
+    async fn navigation_binds_its_source_across_consent_and_rechecks_before_dispatch() {
+        use futures_util::StreamExt;
+        for replacement in [None, Some("during-consent"), Some("before-dispatch")] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
-            let endpoint = format!("http://{address}");
             let (context, accesses) = decision_context(true);
             let approved = accesses.clone();
             let server = tokio::spawn(async move {
-                let tab = [
-                    json!({"id":"page","title":"Same URL","url":"https://source.example/","type":"page","webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page")}),
-                ];
+                let tab = [json!({
+                    "id":"page", "title":"Same URL", "url":"https://source.example/", "type":"page",
+                    "webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page"),
+                })];
                 let mut paths = Vec::new();
                 for _ in 0..4 {
                     paths.extend(serve_inventory(&listener, &tab).await);
                 }
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                assert_eq!(
-                    approved.lock().unwrap().len(),
-                    1,
-                    "frame snapshot preceded site consent"
-                );
-                for expected in ["Page.enable", "Target.setAutoAttach"] {
-                    let request: Value = serde_json::from_str(
-                        socket.next().await.unwrap().unwrap().to_text().unwrap(),
-                    )
-                    .unwrap();
-                    assert_eq!(request["method"], expected);
-                    socket
-                        .send(tokio_tungstenite::tungstenite::Message::Text(
-                            json!({"id":request["id"],"result":{}}).to_string().into(),
-                        ))
-                        .await
-                        .unwrap();
-                }
+                assert!(matches!(
+                    approved.lock().unwrap().as_slice(),
+                    [crate::BrowserAccess::Metadata { .. }]
+                ));
                 let mut methods = Vec::new();
-                for loader in [
-                    "current-after-consent",
-                    if replaced {
-                        "replacement-after-snapshot"
+                metadata_reply(&mut socket, "Page.getFrameTree", source_frame("source")).await;
+                methods.push("Page.getFrameTree");
+                paths.extend(serve_inventory(&listener, &tab).await);
+                assert!(
+                    matches!(
+                        approved.lock().unwrap().as_slice(),
+                        [
+                            crate::BrowserAccess::Metadata { .. },
+                            crate::BrowserAccess::Navigate { .. },
+                        ]
+                    ),
+                    "source metadata must never require content consent"
+                );
+                metadata_reply(
+                    &mut socket,
+                    "Page.getFrameTree",
+                    source_frame(if replacement == Some("during-consent") {
+                        "replacement"
                     } else {
-                        "current-after-consent"
-                    },
-                ] {
-                    let request: Value = serde_json::from_str(
-                        socket.next().await.unwrap().unwrap().to_text().unwrap(),
+                        "source"
+                    }),
+                )
+                .await;
+                methods.push("Page.getFrameTree");
+                if replacement != Some("during-consent") {
+                    metadata_reply(
+                        &mut socket,
+                        "Page.getFrameTree",
+                        source_frame(if replacement == Some("before-dispatch") {
+                            "replacement"
+                        } else {
+                            "source"
+                        }),
                     )
-                    .unwrap();
-                    assert_eq!(request["method"], "Page.getFrameTree");
-                    methods.push(request["method"].as_str().unwrap().to_owned());
-                    socket.send(tokio_tungstenite::tungstenite::Message::Text(json!({"id":request["id"],"result":{"frameTree":{"frame":{"id":"main","loaderId":loader}}}}).to_string().into())).await.unwrap();
-                }
-                if !replaced {
-                    let request: Value = serde_json::from_str(
-                        socket.next().await.unwrap().unwrap().to_text().unwrap(),
-                    )
-                    .unwrap();
-                    assert_eq!(request["method"], "Page.navigate");
-                    assert_eq!(request["params"]["url"], "https://destination.example/path");
-                    methods.push("Page.navigate".into());
-                    socket
-                        .send(tokio_tungstenite::tungstenite::Message::Text(
-                            json!({"id":request["id"],"result":{"frameId":"main"}})
-                                .to_string()
-                                .into(),
-                        ))
-                        .await
-                        .unwrap();
+                    .await;
+                    methods.push("Page.getFrameTree");
+                    if replacement.is_none() {
+                        let request =
+                            metadata_reply(&mut socket, "Page.navigate", json!({"frameId":"main"}))
+                                .await;
+                        assert_eq!(request["params"]["url"], "https://destination.example/path");
+                        methods.push("Page.navigate");
+                    }
                 }
                 if let Ok(Some(Ok(message))) =
                     tokio::time::timeout(Duration::from_millis(100), socket.next()).await
                 {
                     assert!(
                         message.is_close(),
-                        "navigation was dispatched or replayed after a source replacement: {message:?}"
+                        "navigation or a content command escaped the source fence: {message:?}"
                     );
                 }
                 (paths, methods)
@@ -3239,7 +3474,7 @@ mod tests {
                 .configure(
                     vec![BrowserConnection {
                         id: "fixture".into(),
-                        endpoint,
+                        endpoint: format!("http://{address}"),
                     }],
                     Language::En,
                 )
@@ -3273,16 +3508,30 @@ mod tests {
                     Language::En,
                 )
                 .await;
-            if replaced {
-                assert!(
-                    matches!(result,Err(ToolError::Failed(message)) if message == "document changed before navigation dispatch; retry the operation")
-                );
+            if replacement.is_some() {
+                assert!(matches!(result, Err(ToolError::Failed(message))
+                    if message == "document changed before navigation dispatch; retry the operation"));
             } else {
                 assert!(result.is_ok(), "{result:?}");
             }
             let (paths, methods) = server.await.unwrap();
-            assert_eq!(paths.len(), 8);
-            assert_eq!(methods.len(), if replaced { 2 } else { 3 });
+            assert_eq!(paths.len(), 10);
+            assert_eq!(
+                methods.len(),
+                match replacement {
+                    None => 4,
+                    Some("during-consent") => 2,
+                    Some("before-dispatch") => 3,
+                    _ => unreachable!(),
+                }
+            );
+            assert!(
+                !accesses.lock().unwrap().iter().any(|access| matches!(
+                    access,
+                    crate::BrowserAccess::Read { .. } | crate::BrowserAccess::ReadDocument { .. }
+                )),
+                "navigation must not authorize reading the source or replacement content"
+            );
         }
     }
 
@@ -3333,7 +3582,13 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(value, json!({"id":"fixture"}));
+            assert_eq!(
+                value,
+                json!({
+                    "id":"fixture", "name":"fixture", "type":"cdp",
+                    "apiProfile":{"mode":"ax","user":false},
+                })
+            );
             assert_eq!(server.await.unwrap(), ["/json/version", "/json/list"]);
             assert!(browsers.targets.is_empty());
         }
@@ -3415,8 +3670,9 @@ mod tests {
                 let tabs = [
                     json!({"id":"page","title":"Fixture","url":"https://example.com/","type":"page","webSocketDebuggerUrl":format!("ws://{address}/devtools/page/page")}),
                 ];
-                // Binding, pre/post-consent inventory, and the read's own
-                // document proof precede its first lazy debugger connection.
+                // Binding and the metadata admission's inventories precede
+                // the lazy connection. Site consent requires its fixed Origin
+                // proof and has not happened at this stalled handshake.
                 for _ in 0..4 {
                     serve_inventory(&listener, &tabs).await;
                 }
@@ -3443,7 +3699,9 @@ mod tests {
                 )
                 .unwrap();
             let cursor = crate::cursor::Spec::default();
-            let (context, _) = decision_context(true);
+            // The real authorization future may outlast the selector budget.
+            // Its wait must not consume the lazy connection's remaining time.
+            let (context, _) = decision_context_with_delay(true, Duration::from_millis(300));
             let bound = browsers
                 .invoke(
                     Command::BrowserTab {
@@ -3487,7 +3745,10 @@ mod tests {
             }
             assert!(began.elapsed() < Duration::from_secs(1));
             settle.cancel();
-            server.await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), server)
+                .await
+                .expect("the fixture must observe a lazy handshake after Host consent")
+                .unwrap();
         }
     }
 
@@ -3992,6 +4253,7 @@ mod tests {
             if host {
                 context = context.with_browser_authorization(Arc::new(Decision {
                     allow: false,
+                    delay: Duration::ZERO,
                     accesses: accesses.clone(),
                 }));
             }

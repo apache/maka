@@ -3728,18 +3728,30 @@ impl Tab {
         cancellation: &CancellationToken,
         scope: &CallScope,
         claim: &NativePhysicalClaim,
+        budget: &mut Option<super::ReadBudget>,
     ) -> Result<(), ToolError> {
-        let origin = self.document_origin().await?;
+        let origin = super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            self.document_origin(),
+        )
+        .await?;
         invocation
             .authorize_browser(origin.access(), cancellation)
             .await?;
-        origin.check_current(self).await?;
-        let services = invocation
-            .prepare_browser_services(origin.access(), cancellation)
-            .await?;
-        origin.check_current(self).await?;
-        let lease_children = if invocation.browser_preparation_policy().effective_popup() {
-            Some(
+        super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            async {
+                origin.check_current(self).await?;
+                let services = invocation
+                    .prepare_browser_services(origin.access(), cancellation)
+                    .await?;
+                origin.check_current(self).await?;
+                let lease_children = if invocation.browser_preparation_policy().effective_popup() {
+                    Some(
                 services
                     .effects
                     .filter(|effects| effects.supports_lease_children())
@@ -3747,178 +3759,188 @@ impl Tab {
                         failed("native popup preparation requires fresh Host lease-child custody")
                     })?,
             )
-        } else {
-            None
-        };
-        let identity = origin.document_identity();
-        let document = NativePreparationDocument {
-            frame_id: identity.frame_id().to_owned(),
-            loader_id: identity.loader_id().to_owned(),
-            url: identity.url().to_owned(),
-        };
-        let headers = preparation_headers(invocation);
-        let policy = Arc::new(NativePreparationPolicy {
-            popup_enabled: invocation.browser_preparation_policy().effective_popup(),
-            header_enabled: !headers.is_empty(),
-            headers,
-        });
-        let wire = NativeWireContext::new(self.cursor_owner.to_string(), invocation.turn())
-            .map_err(failed)?;
-        let operation = operation(invocation)?;
-        let identity = self.identity()?;
-        let host = self.cursor_host.clone();
-        let preparation = scope
-            .authorize_preparation(
-                &host,
-                invocation,
-                crate::BrowserPreparationTarget::ClaimedTab {
-                    tab_id: self.info.id.clone(),
-                    claim_id: claim.claim_id().to_owned(),
-                },
-                cancellation,
-            )
-            .await?;
-        // Consent and all fallible metadata checks precede the Pending marker.
-        // Once marked there is no await before polling the required mutation.
-        origin.check_current(self).await?;
-        scope
-            .check_preparation(&host, invocation, &preparation, cancellation)
-            .await?;
-        check_input(cancellation)?;
-        {
-            let mut ledger = host.lock().await;
-            check_input(cancellation)?;
-            ledger.native_preparation_current(scope, &preparation)?;
-            let lease = ledger
-                .tabs
-                .get_mut(&identity)
-                .ok_or_else(|| unknown("native preparation lost reserved custody"))?;
-            if lease.creator.owner != self.cursor_owner
-                || !matches!(lease.disposition, Disposition::Live)
-            {
-                return Err(unknown(
-                    "native preparation lost its live Host source lease",
-                ));
-            }
-            let state = lease
-                .native
-                .as_mut()
-                .ok_or_else(|| unknown("native preparation lost physical custody"))?;
-            if state
-                .claim
-                .as_ref()
-                .is_none_or(|owned| owned.claim_id() != claim.claim_id())
-            {
-                return Err(unknown("native preparation changed its physical claim"));
-            }
-            if let Some(effects) = lease_children {
-                state.lease_children = Some(LeaseChildScope {
-                    effects,
-                    turn: invocation.turn().to_owned(),
-                    epoch: self.cursor_epoch,
+                } else {
+                    None
+                };
+                let identity = origin.document_identity();
+                let document = NativePreparationDocument {
+                    frame_id: identity.frame_id().to_owned(),
+                    loader_id: identity.loader_id().to_owned(),
+                    url: identity.url().to_owned(),
+                };
+                let headers = preparation_headers(invocation);
+                let policy = Arc::new(NativePreparationPolicy {
+                    popup_enabled: invocation.browser_preparation_policy().effective_popup(),
+                    header_enabled: !headers.is_empty(),
+                    headers,
                 });
-            }
-            let previous = match &state.claim_preparation {
-                ClaimPreparation::Pending(_) => {
-                    return Err(unknown(
-                        "same-claim preparation remains pending; it was not replayed",
-                    ));
-                }
-                ClaimPreparation::Unknown { reason, .. } => return Err(unknown(reason)),
-                ClaimPreparation::Acknowledged(ack)
-                    if ack.proof.document() == &document
-                        && ack.proof.wire_context() == &wire
-                        && ack.policy.as_ref() == policy.as_ref()
-                        && !ack.proof.is_cleanup_only() =>
+                let wire = NativeWireContext::new(self.cursor_owner.to_string(), invocation.turn())
+                    .map_err(failed)?;
+                let operation = operation(invocation)?;
+                let identity = self.identity()?;
+                let host = self.cursor_host.clone();
+                let preparation = scope
+                    .authorize_preparation(
+                        &host,
+                        invocation,
+                        crate::BrowserPreparationTarget::ClaimedTab {
+                            tab_id: self.info.id.clone(),
+                            claim_id: claim.claim_id().to_owned(),
+                        },
+                        cancellation,
+                    )
+                    .await?;
+                // Consent and all fallible metadata checks precede the Pending marker.
+                // Once marked there is no await before polling the required mutation.
+                origin.check_current(self).await?;
+                scope
+                    .check_preparation(&host, invocation, &preparation, cancellation)
+                    .await?;
+                check_input(cancellation)?;
                 {
-                    return Ok(());
+                    let mut ledger = host.lock().await;
+                    check_input(cancellation)?;
+                    ledger.native_preparation_current(scope, &preparation)?;
+                    let lease = ledger
+                        .tabs
+                        .get_mut(&identity)
+                        .ok_or_else(|| unknown("native preparation lost reserved custody"))?;
+                    if lease.creator.owner != self.cursor_owner
+                        || !matches!(lease.disposition, Disposition::Live)
+                    {
+                        return Err(unknown(
+                            "native preparation lost its live Host source lease",
+                        ));
+                    }
+                    let state = lease
+                        .native
+                        .as_mut()
+                        .ok_or_else(|| unknown("native preparation lost physical custody"))?;
+                    if state
+                        .claim
+                        .as_ref()
+                        .is_none_or(|owned| owned.claim_id() != claim.claim_id())
+                    {
+                        return Err(unknown("native preparation changed its physical claim"));
+                    }
+                    if let Some(effects) = lease_children {
+                        state.lease_children = Some(LeaseChildScope {
+                            effects,
+                            turn: invocation.turn().to_owned(),
+                            epoch: self.cursor_epoch,
+                        });
+                    }
+                    let previous = match &state.claim_preparation {
+                        ClaimPreparation::Pending(_) => {
+                            return Err(unknown(
+                                "same-claim preparation remains pending; it was not replayed",
+                            ));
+                        }
+                        ClaimPreparation::Unknown { reason, .. } => return Err(unknown(reason)),
+                        ClaimPreparation::Acknowledged(ack)
+                            if ack.proof.document() == &document
+                                && ack.proof.wire_context() == &wire
+                                && ack.policy.as_ref() == policy.as_ref()
+                                && !ack.proof.is_cleanup_only() =>
+                        {
+                            return Ok(());
+                        }
+                        ClaimPreparation::Acknowledged(ack) => Some(ack.clone()),
+                        ClaimPreparation::NotAttempted => None,
+                    };
+                    let effects = state
+                        .preparation_effects
+                        .begin(&wire, policy.header_enabled);
+                    state.claim_preparation =
+                        ClaimPreparation::Pending(Arc::new(PreparationAttempt {
+                            document: document.clone(),
+                            policy: policy.clone(),
+                            wire,
+                            operation: operation.clone(),
+                            previous,
+                            effects,
+                        }));
                 }
-                ClaimPreparation::Acknowledged(ack) => Some(ack.clone()),
-                ClaimPreparation::NotAttempted => None,
-            };
-            let effects = state
-                .preparation_effects
-                .begin(&wire, policy.header_enabled);
-            state.claim_preparation = ClaimPreparation::Pending(Arc::new(PreparationAttempt {
-                document: document.clone(),
-                policy: policy.clone(),
-                wire,
-                operation: operation.clone(),
-                previous,
-                effects,
-            }));
-        }
-        let prepared = scope
-            .dispatch(scope.control.prepare_claim(claim, &document, &policy))
-            .await;
-        let mut ledger = host.lock().await;
-        match &prepared {
-            Ok(proof) => ledger.apply_claim_preparation(
-                self.cursor_owner,
-                &self.provider,
-                Some(&operation),
-                proof.clone(),
-            )?,
-            Err(cua_driver_core::browser::NativeProviderError::Refused { .. }) => {
-                if let Some(state) = ledger
+                let prepared = scope
+                    .dispatch(scope.control.prepare_claim(claim, &document, &policy))
+                    .await;
+                let mut ledger = host.lock().await;
+                match &prepared {
+                    Ok(proof) => ledger.apply_claim_preparation(
+                        self.cursor_owner,
+                        &self.provider,
+                        Some(&operation),
+                        proof.clone(),
+                    )?,
+                    Err(cua_driver_core::browser::NativeProviderError::Refused { .. }) => {
+                        if let Some(state) = ledger
+                            .tabs
+                            .get_mut(&identity)
+                            .and_then(|lease| lease.native.as_mut())
+                        {
+                            state.finish_preparation_error(
+                                Some(&operation),
+                                true,
+                                "native preparation was not dispatched",
+                            );
+                        }
+                    }
+                    Err(_) => {}
+                }
+                ledger
+                    .reconcile_provider(self.cursor_owner, &self.provider)
+                    .await?;
+                let lease = ledger
                     .tabs
                     .get_mut(&identity)
-                    .and_then(|lease| lease.native.as_mut())
-                {
-                    state.finish_preparation_error(
-                        Some(&operation),
-                        true,
-                        "native preparation was not dispatched",
-                    );
-                }
-            }
-            Err(_) => {}
-        }
-        ledger
-            .reconcile_provider(self.cursor_owner, &self.provider)
-            .await?;
-        let lease = ledger
-            .tabs
-            .get_mut(&identity)
-            .ok_or_else(|| unknown("native preparation result lost its lease"))?;
-        let state = lease
-            .native
-            .as_mut()
-            .ok_or_else(|| unknown("native preparation result lost physical custody"))?;
-        let active_ack = matches!(&state.claim_preparation,
+                    .ok_or_else(|| unknown("native preparation result lost its lease"))?;
+                let state = lease
+                    .native
+                    .as_mut()
+                    .ok_or_else(|| unknown("native preparation result lost physical custody"))?;
+                let active_ack = matches!(&state.claim_preparation,
             ClaimPreparation::Acknowledged(ack)
                 if ack.proof.document() == &document
                     && ack.proof.wire_context().host_turn_id() == invocation.turn()
                     && ack.policy.as_ref() == policy.as_ref() && !ack.proof.is_cleanup_only());
-        let result = if active_ack {
-            Ok(())
-        } else {
-            match prepared {
-                Ok(_) => Err(unknown(
-                    "native preparation ACK is not active in Host custody",
-                )),
-                Err(error) => {
-                    if !matches!(
-                        &error,
-                        cua_driver_core::browser::NativeProviderError::Refused { .. }
-                    ) {
-                        state.finish_preparation_error(Some(&operation), false, &error.to_string());
-                        lease.disposition = Disposition::Closing;
+                let result = if active_ack {
+                    Ok(())
+                } else {
+                    match prepared {
+                        Ok(_) => Err(unknown(
+                            "native preparation ACK is not active in Host custody",
+                        )),
+                        Err(error) => {
+                            if !matches!(
+                                &error,
+                                cua_driver_core::browser::NativeProviderError::Refused { .. }
+                            ) {
+                                state.finish_preparation_error(
+                                    Some(&operation),
+                                    false,
+                                    &error.to_string(),
+                                );
+                                lease.disposition = Disposition::Closing;
+                            }
+                            Err(provider::native_error(error))
+                        }
                     }
-                    Err(provider::native_error(error))
-                }
-            }
-        };
-        drop(ledger);
-        result?;
-        check_input(cancellation)?;
-        invocation
-            .browser_authorization()
-            .ok_or_else(|| failed("native preparation requires the current Host authorization"))?
-            .check(origin.access(), cancellation.clone())
-            .await?;
-        origin.check_current(self).await?;
-        check_input(cancellation)
+                };
+                drop(ledger);
+                result?;
+                check_input(cancellation)?;
+                invocation
+                    .browser_authorization()
+                    .ok_or_else(|| {
+                        failed("native preparation requires the current Host authorization")
+                    })?
+                    .check(origin.access(), cancellation.clone())
+                    .await?;
+                origin.check_current(self).await?;
+                check_input(cancellation)
+            },
+        )
+        .await
     }
 
     pub(super) async fn authorize_native_download_path(
@@ -4381,247 +4403,293 @@ impl Tab {
         check_input(cancellation)
     }
 
-    pub(super) async fn prepare_native(
+    pub(super) async fn prepare_native_with_budget(
         &mut self,
         invocation: &crate::InvocationContext<'_>,
         cancellation: &CancellationToken,
         language: Language,
         intent: ClaimIntent,
+        budget: &mut Option<super::ReadBudget>,
     ) -> Result<(), ToolError> {
-        self.prepare_native_session(invocation, cancellation, language, intent)
-            .await?;
+        super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            self.prepare_native_session(invocation, cancellation, language, intent),
+        )
+        .await?;
         let Some(native) = self.provider.native().cloned() else {
             return Ok(());
         };
-        let actual_origin = self.document_origin().await?;
+        let actual_origin = super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            self.document_origin(),
+        )
+        .await?;
         invocation
             .authorize_browser(actual_origin.access(), cancellation)
             .await?;
-        actual_origin.check_current(self).await?;
-        let services = invocation
-            .prepare_browser_services(actual_origin.access(), cancellation)
-            .await?;
-        actual_origin.check_current(self).await?;
-        self.clipboard_authorization = services.attachment;
-        self.dialog_host = services.effects;
-        self.attachment_settlement = services.settlement;
-        if let Some(bridge) = &self.clipboard {
-            bridge.update(
-                self.clipboard_authorization.clone(),
-                self.dialog_host.clone(),
-            );
-        }
-        if let Some(controller) = &self.dialogs {
-            controller.host_effects(self.dialog_host.clone());
-        }
-        let host = self.cursor_host.clone();
-        let identity = self.identity()?;
-        let scope = host.lock().await.native_context(
-            self.cursor_owner,
-            &self.provider,
-            operation(invocation)?,
-            self.cursor_epoch,
-            CallTarget {
-                origin: Origin::UserClaimed,
-                tab: Some(self.info.id.clone()),
+        super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            actual_origin.check_current(self),
+        )
+        .await?;
+        let services = super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            invocation.prepare_browser_services(actual_origin.access(), cancellation),
+        )
+        .await?;
+        super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            actual_origin.check_current(self),
+        )
+        .await?;
+        let (host, identity, scope, claim, capabilities) = super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            async {
+                self.clipboard_authorization = services.attachment;
+                self.dialog_host = services.effects;
+                self.attachment_settlement = services.settlement;
+                if let Some(bridge) = &self.clipboard {
+                    bridge.update(
+                        self.clipboard_authorization.clone(),
+                        self.dialog_host.clone(),
+                    );
+                }
+                if let Some(controller) = &self.dialogs {
+                    controller.host_effects(self.dialog_host.clone());
+                }
+                let host = self.cursor_host.clone();
+                let identity = self.identity()?;
+                let scope = host.lock().await.native_context(
+                    self.cursor_owner,
+                    &self.provider,
+                    operation(invocation)?,
+                    self.cursor_epoch,
+                    CallTarget {
+                        origin: Origin::UserClaimed,
+                        tab: Some(self.info.id.clone()),
+                    },
+                    true,
+                )?;
+                let claim = self
+                    .native_claim
+                    .clone()
+                    .ok_or_else(|| unknown("native content preparation lost its physical claim"))?;
+                let capabilities = native.capabilities().map_err(provider::native_error)?;
+                Ok((host, identity, scope, claim, capabilities))
             },
-            true,
-        )?;
-        let claim = self
-            .native_claim
-            .clone()
-            .ok_or_else(|| unknown("native content preparation lost its physical claim"))?;
-        let capabilities = native.capabilities().map_err(provider::native_error)?;
+        )
+        .await?;
         if capabilities.explicit_claim_preparation {
-            self.prepare_claim_native(invocation, cancellation, &scope, &claim)
+            self.prepare_claim_native(invocation, cancellation, &scope, &claim, budget)
                 .await?;
         }
-        let headers = preparation_headers(invocation);
-        if !capabilities.explicit_claim_preparation
-            && capabilities.header_scope == NativeHeaderPolicyScope::Claim
-            && !headers.is_empty()
-        {
-            let active = host
-                .lock()
-                .await
-                .tabs
-                .get(&identity)
-                .and_then(|lease| lease.native.as_ref())
-                .is_some_and(|state| state.headers_active);
-            if !active {
-                let preparation = scope
-                    .authorize_preparation(
-                        &host,
-                        invocation,
-                        crate::BrowserPreparationTarget::ClaimedTab {
-                            tab_id: self.info.id.clone(),
-                            claim_id: claim.claim_id().to_owned(),
-                        },
-                        cancellation,
-                    )
-                    .await?;
-                scope
-                    .check_preparation(&host, invocation, &preparation, cancellation)
-                    .await?;
-                let applied = scope
-                    .dispatch(scope.control.set_scoped_headers(
-                        &claim,
-                        &self.cursor_owner.to_string(),
-                        Some(&headers),
-                    ))
-                    .await;
-                host.lock()
+        super::read_step_for(
+            budget,
+            cancellation,
+            super::ReadEffect::NativePreparation,
+            async {
+                let headers = preparation_headers(invocation);
+                if !capabilities.explicit_claim_preparation
+                    && capabilities.header_scope == NativeHeaderPolicyScope::Claim
+                    && !headers.is_empty()
+                {
+                    let active = host
+                        .lock()
+                        .await
+                        .tabs
+                        .get(&identity)
+                        .and_then(|lease| lease.native.as_ref())
+                        .is_some_and(|state| state.headers_active);
+                    if !active {
+                        let preparation = scope
+                            .authorize_preparation(
+                                &host,
+                                invocation,
+                                crate::BrowserPreparationTarget::ClaimedTab {
+                                    tab_id: self.info.id.clone(),
+                                    claim_id: claim.claim_id().to_owned(),
+                                },
+                                cancellation,
+                            )
+                            .await?;
+                        scope
+                            .check_preparation(&host, invocation, &preparation, cancellation)
+                            .await?;
+                        let applied = scope
+                            .dispatch(scope.control.set_scoped_headers(
+                                &claim,
+                                &self.cursor_owner.to_string(),
+                                Some(&headers),
+                            ))
+                            .await;
+                        host.lock()
+                            .await
+                            .reconcile_provider(self.cursor_owner, &self.provider)
+                            .await?;
+                        applied.map_err(provider::native_error)?;
+                    }
+                }
+                self.verify(language).await?;
+                actual_origin.check_current(self).await?;
+                let authorization = self.clipboard_authorization.clone().ok_or_else(|| {
+                    failed("native browser lost its current attachment authorization")
+                })?;
+                let effects = self
+                    .dialog_host
+                    .clone()
+                    .ok_or_else(|| failed("native browser lost Host effect custody"))?;
+                let before = self.frame().await?;
+                let readiness = host
+                    .lock()
                     .await
-                    .reconcile_provider(self.cursor_owner, &self.provider)
-                    .await?;
-                applied.map_err(provider::native_error)?;
-            }
-        }
-        self.verify(language).await?;
-        actual_origin.check_current(self).await?;
-        let authorization = self
-            .clipboard_authorization
-            .clone()
-            .ok_or_else(|| failed("native browser lost its current attachment authorization"))?;
-        let effects = self
-            .dialog_host
-            .clone()
-            .ok_or_else(|| failed("native browser lost Host effect custody"))?;
-        let before = self.frame().await?;
-        let readiness = host
-            .lock()
-            .await
-            .tabs
-            .get(&identity)
-            .and_then(|lease| lease.native.as_ref())
-            .ok_or_else(|| unknown("focus readiness lost custody"))?
-            .focus_readiness
-            .clone();
-        match readiness {
-            FocusReadiness::Pending => {
-                return Err(ToolError::CleanupUnconfirmed(
-                    "the same physical claim has an unsettled focus-readiness request".into(),
-                ));
-            }
-            FocusReadiness::Unknown(reason) => return Err(unknown(reason)),
-            FocusReadiness::Completed => {}
-            FocusReadiness::NotAttempted => {
-                // Record before polling the required call. Cancellation or a
-                // lost reply cannot cause this setter to be replayed on the
-                // same physical attachment.
+                    .tabs
+                    .get(&identity)
+                    .and_then(|lease| lease.native.as_ref())
+                    .ok_or_else(|| unknown("focus readiness lost custody"))?
+                    .focus_readiness
+                    .clone();
+                match readiness {
+                    FocusReadiness::Pending => {
+                        return Err(ToolError::CleanupUnconfirmed(
+                            "the same physical claim has an unsettled focus-readiness request"
+                                .into(),
+                        ));
+                    }
+                    FocusReadiness::Unknown(reason) => return Err(unknown(reason)),
+                    FocusReadiness::Completed => {}
+                    FocusReadiness::NotAttempted => {
+                        // Record before polling the required call. Cancellation or a
+                        // lost reply cannot cause this setter to be replayed on the
+                        // same physical attachment.
+                        host.lock()
+                            .await
+                            .tabs
+                            .get_mut(&identity)
+                            .and_then(|lease| lease.native.as_mut())
+                            .ok_or_else(|| unknown("focus readiness lost its claim"))?
+                            .focus_readiness = FocusReadiness::Pending;
+                        let focus = self
+                            .request(
+                                "Emulation.setFocusEmulationEnabled",
+                                json!({"enabled":true}),
+                            )
+                            .await;
+                        match focus {
+                            Ok(_) => {
+                                host.lock()
+                                    .await
+                                    .tabs
+                                    .get_mut(&identity)
+                                    .and_then(|lease| lease.native.as_mut())
+                                    .ok_or_else(|| unknown("focus result lost its claim"))?
+                                    .focus_readiness = FocusReadiness::Completed;
+                            }
+                            Err(ToolError::Failed(message)) => {
+                                host.lock()
+                                    .await
+                                    .tabs
+                                    .get_mut(&identity)
+                                    .and_then(|lease| lease.native.as_mut())
+                                    .ok_or_else(|| unknown("focus result lost its claim"))?
+                                    .focus_readiness = FocusReadiness::Completed;
+                                if message.to_ascii_lowercase().contains("deadline")
+                                    || message.to_ascii_lowercase().contains("timed out")
+                                {
+                                    return Err(ToolError::Failed(message));
+                                }
+                            }
+                            Err(error) => {
+                                let mut ledger = host.lock().await;
+                                if let Some(lease) = ledger.tabs.get_mut(&identity) {
+                                    if let Some(state) = &mut lease.native {
+                                        state.focus_readiness =
+                                            FocusReadiness::Unknown(error.to_string());
+                                        state.unknown = Some(error.to_string());
+                                    }
+                                    lease.disposition = Disposition::Closing;
+                                }
+                                return Err(error);
+                            }
+                        }
+                    }
+                }
+                if self.frame().await? != before {
+                    return Err(failed("document changed while native focus was prepared"));
+                }
+                check_input(cancellation)?;
+                self.frame = Some(before.clone());
                 host.lock()
                     .await
                     .tabs
                     .get_mut(&identity)
                     .and_then(|lease| lease.native.as_mut())
-                    .ok_or_else(|| unknown("focus readiness lost its claim"))?
-                    .focus_readiness = FocusReadiness::Pending;
-                let focus = self
-                    .request(
-                        "Emulation.setFocusEmulationEnabled",
-                        json!({"enabled":true}),
-                    )
-                    .await;
-                match focus {
-                    Ok(_) => {
-                        host.lock()
-                            .await
-                            .tabs
-                            .get_mut(&identity)
-                            .and_then(|lease| lease.native.as_mut())
-                            .ok_or_else(|| unknown("focus result lost its claim"))?
-                            .focus_readiness = FocusReadiness::Completed;
-                    }
-                    Err(ToolError::Failed(message)) => {
-                        host.lock()
-                            .await
-                            .tabs
-                            .get_mut(&identity)
-                            .and_then(|lease| lease.native.as_mut())
-                            .ok_or_else(|| unknown("focus result lost its claim"))?
-                            .focus_readiness = FocusReadiness::Completed;
-                        if message.to_ascii_lowercase().contains("deadline")
-                            || message.to_ascii_lowercase().contains("timed out")
-                        {
-                            return Err(ToolError::Failed(message));
-                        }
-                    }
-                    Err(error) => {
-                        let mut ledger = host.lock().await;
-                        if let Some(lease) = ledger.tabs.get_mut(&identity) {
-                            if let Some(state) = &mut lease.native {
-                                state.focus_readiness = FocusReadiness::Unknown(error.to_string());
-                                state.unknown = Some(error.to_string());
-                            }
-                            lease.disposition = Disposition::Closing;
-                        }
-                        return Err(error);
-                    }
+                    .ok_or_else(|| unknown("native content preparation lost its claim"))?
+                    .metadata_attached = false;
+                if capabilities.cursor_presentation_owner == NativeEffectOwner::Provider {
+                    // The provider already owns the claim's overlay/lifecycle. Keep the
+                    // Host admission and frame proof without installing another renderer.
+                    return Ok(());
                 }
-            }
-        }
-        if self.frame().await? != before {
-            return Err(failed("document changed while native focus was prepared"));
-        }
-        check_input(cancellation)?;
-        self.frame = Some(before.clone());
-        host.lock()
-            .await
-            .tabs
-            .get_mut(&identity)
-            .and_then(|lease| lease.native.as_mut())
-            .ok_or_else(|| unknown("native content preparation lost its claim"))?
-            .metadata_attached = false;
-        if capabilities.cursor_presentation_owner == NativeEffectOwner::Provider {
-            // The provider already owns the claim's overlay/lifecycle. Keep the
-            // Host admission and frame proof without installing another renderer.
-            return Ok(());
-        }
-        let cursor = self
-            .cursor_spec
-            .as_ref()
-            .map(|cursor| cursor.lock().unwrap().clone())
-            .unwrap_or_default();
-        self.draw_cursor(&cursor, None, "idle", "control", language)
-            .await?;
-        let tree = self.request("Page.getFrameTree", json!({})).await?;
-        let frame = &tree["frameTree"]["frame"];
-        let actual = format!(
-            "{}:{}",
-            frame["id"].as_str().unwrap_or_default(),
-            frame["loaderId"].as_str().unwrap_or_default()
-        );
-        if actual != before {
-            return Err(failed("native overlay document changed during preparation"));
-        }
-        actual_origin.check_current(self).await?;
-        let origin = actual_origin.origin();
-        let mut ledger = host.lock().await;
-        let endpoint = ledger
-            .cursor_scopes
-            .get(&(self.cursor_owner, identity.clone()))
-            .cloned()
-            .ok_or_else(|| unknown("native overlay cleanup endpoint was not retained"))?;
-        let state = ledger
-            .tabs
-            .get_mut(&identity)
-            .and_then(|lease| lease.native.as_mut())
-            .ok_or_else(|| unknown("native custody disappeared during preparation"))?;
-        if state.revoked {
-            return Err(failed("native browser control was revoked while preparing"));
-        }
-        state.overlay = Some(OverlayScope {
-            endpoint,
-            authorization,
-            effects,
-            cursor,
-            turn: invocation.turn().into(),
-            epoch: self.cursor_epoch,
-            origin,
-            provider: self.provider.clone(),
-            context: operation(invocation)?,
-        });
-        Ok(())
+                let cursor = self
+                    .cursor_spec
+                    .as_ref()
+                    .map(|cursor| cursor.lock().unwrap().clone())
+                    .unwrap_or_default();
+                self.draw_cursor(&cursor, None, "idle", "control", language)
+                    .await?;
+                let tree = self.request("Page.getFrameTree", json!({})).await?;
+                let frame = &tree["frameTree"]["frame"];
+                let actual = format!(
+                    "{}:{}",
+                    frame["id"].as_str().unwrap_or_default(),
+                    frame["loaderId"].as_str().unwrap_or_default()
+                );
+                if actual != before {
+                    return Err(failed("native overlay document changed during preparation"));
+                }
+                actual_origin.check_current(self).await?;
+                let origin = actual_origin.origin();
+                let mut ledger = host.lock().await;
+                let endpoint = ledger
+                    .cursor_scopes
+                    .get(&(self.cursor_owner, identity.clone()))
+                    .cloned()
+                    .ok_or_else(|| unknown("native overlay cleanup endpoint was not retained"))?;
+                let state = ledger
+                    .tabs
+                    .get_mut(&identity)
+                    .and_then(|lease| lease.native.as_mut())
+                    .ok_or_else(|| unknown("native custody disappeared during preparation"))?;
+                if state.revoked {
+                    return Err(failed("native browser control was revoked while preparing"));
+                }
+                state.overlay = Some(OverlayScope {
+                    endpoint,
+                    authorization,
+                    effects,
+                    cursor,
+                    turn: invocation.turn().into(),
+                    epoch: self.cursor_epoch,
+                    origin,
+                    provider: self.provider.clone(),
+                    context: operation(invocation)?,
+                });
+                Ok(())
+            },
+        )
+        .await
     }
     pub(super) async fn admit_native_close(
         &self,
