@@ -58,7 +58,7 @@ import { createBrowsing } from './browsing';
 import type { BrowserWorkspace } from './browsing';
 import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
-import { applicationMenu } from './chrome';
+import { applicationMenu, ownTitleBar } from './chrome';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
 
@@ -609,6 +609,10 @@ function App() {
   }
   keymap.bind('mod+p', () => open({ kind: 'commands', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+o', () => open({ kind: 'search', sessionId: selected() }), { when: 'always' });
+  // The desktop Edit menu's Search conversations, the same search as Command-O. Not in
+  // terminals, where Control-F moves the cursor.
+  if (ownTitleBar)
+    keymap.bind('mod+f', () => open({ kind: 'search', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+g', () => open({ kind: 'models', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+n', () => newConversation(selected()), { when: 'always' });
   const jumpLatest = () => {
@@ -628,6 +632,7 @@ function App() {
     newConversation: () => newConversation(selected()),
     chooseWorkspace: () => open({ kind: 'workspaces', sessionId: selected() }),
     sessions: () => open({ kind: 'sessions', sessionId: selected() }),
+    search: () => open({ kind: 'search', sessionId: selected() }),
     commands: () => open({ kind: 'commands', sessionId: selected() }),
     models: () => open({ kind: 'models', sessionId: selected() }),
     latest: jumpLatest,

@@ -54,6 +54,7 @@ export interface MenuActions {
   newConversation(): void;
   chooseWorkspace(): void;
   sessions(): void;
+  search(): void;
   commands(): void;
   models(): void;
   latest(): void;
@@ -90,7 +91,7 @@ export function applicationMenu(actions: MenuActions) {
         submenu: [
           { label: tr('New conversation'), shortcut: 'mod+n', onSelect: actions.newConversation },
           { label: `${tr('Choose workspace')}…`, onSelect: actions.chooseWorkspace },
-          { label: tr('Browse sessions'), shortcut: 'mod+o', onSelect: actions.sessions },
+          { label: tr('Browse sessions'), onSelect: actions.sessions },
           { type: 'separator' },
           { role: 'close' },
           !mac && settings,
@@ -108,6 +109,8 @@ export function applicationMenu(actions: MenuActions) {
           { role: 'copy' },
           { role: 'paste' },
           { role: 'selectAll' },
+          { type: 'separator' },
+          { label: `${tr('Search conversations')}…`, shortcut: 'mod+f', onSelect: actions.search },
         ],
       },
       {
