@@ -101,10 +101,10 @@ export function registerClarification(
   const clarificationNotice =
     'Coordinator clarification, not new user authorization. Reassess against the original request; normal completion review still applies.';
   // The store bounds the whole composed envelope (8000 chars), not the answer field alone.
-  const envelopeText = (row: { id: string; question: string }, answer: string) =>
+  const envelopeText = (requestId: string, question: string, answer: string) =>
     JSON.stringify({
-      requestId: row.id,
-      question: row.question,
+      requestId,
+      question,
       answer,
       notice: clarificationNotice,
     });
@@ -129,10 +129,11 @@ export function registerClarification(
       }
       const m = store.get(String(row.matter)).matter;
       if (['completed', 'cancelled'].includes(m.status)) throw Error('Task has ended');
-      const text = envelopeText(row, input.answer);
+      const question = String(row.question ?? '');
+      const text = envelopeText(String(row.id), question, input.answer);
       if (text.length > 8000)
         throw Error(
-          `Clarification envelope exceeds the 8000-char event budget (question ${row.question.length} + answer ${input.answer.length} + fixed overhead); shorten the answer.`,
+          `Clarification envelope exceeds the 8000-char event budget (question ${question.length} + answer ${input.answer.length} + fixed overhead); shorten the answer.`,
         );
       store.ingest(m.id, {
         key: `bot-clarification:${row.id}`,
