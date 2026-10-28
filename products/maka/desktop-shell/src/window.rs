@@ -36,7 +36,7 @@ use crate::{
     placement::Placement,
 };
 use maka_workbench::bindings::Bindings;
-use nsh_engine::{EngineConfig, Limits};
+use nsh_engine::{EngineConfig, HostCall, JsonValue, Limits};
 use nsh_platform_gpui::{
     AppOptions, AppView,
     gpui::{self, App, AppContext as _, Focusable as _, WindowHandle},
@@ -78,7 +78,12 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
     let (exit, mut exits) = tokio::sync::mpsc::unbounded_channel();
-    let shell = Shell { foreground, exit };
+    let (folder, mut folders) = tokio::sync::mpsc::unbounded_channel::<HostCall>();
+    let shell = Shell {
+        foreground,
+        exit,
+        folder,
+    };
     let mut start = Some((config, Placement::new(&directory), endpoint, epoch, root));
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
     // apps as their last window closes, giving the detach no more than its
@@ -116,6 +121,34 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
                     closing.save(window, cx);
                     window.remove_window();
                 });
+            }
+        })
+        .detach();
+        // The workbench's folder choices open the system's folder dialog, one
+        // at a time; a cancelled dialog answers null.
+        cx.spawn(async move |cx| {
+            while let Some(call) = folders.recv().await {
+                let paths = cx.update(|cx| {
+                    cx.prompt_for_paths(gpui::PathPromptOptions {
+                        files: false,
+                        directories: true,
+                        multiple: false,
+                        prompt: None,
+                    })
+                });
+                let path = paths
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten()
+                    .and_then(|paths| paths.into_iter().next());
+                match path {
+                    Some(path) => match path.to_str() {
+                        Some(path) => call.resolve(JsonValue::from(path)),
+                        None => call.reject("the folder's path is not valid UTF-8"),
+                    },
+                    None => call.resolve(JsonValue::Null),
+                }
             }
         })
         .detach();
@@ -340,6 +373,8 @@ struct Shell {
     foreground: watch::Receiver<bool>,
     /// Closes the window.
     exit: tokio::sync::mpsc::UnboundedSender<()>,
+    /// Asks for a folder with the system's dialog.
+    folder: tokio::sync::mpsc::UnboundedSender<HostCall>,
 }
 
 impl Shell {
@@ -352,6 +387,12 @@ impl Shell {
         let exit = self.exit.clone();
         config.host.handle("terminal.exit", move |_| {
             let _ = exit.send(());
+        });
+        let folder = self.folder.clone();
+        config.host.handle("workspace.chooseFolder", move |call| {
+            if let Err(error) = folder.send(call) {
+                error.0.reject("the window is closing");
+            }
         });
         config
     }
