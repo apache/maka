@@ -61,15 +61,14 @@ pub(super) async fn mutate(
         return Err("Terminal action belongs to another session".into());
     }
     execute(scope.owner.clone(), async move {
+        let client = scope.client.resolve(&scope.owner).await?;
         require_contract(
             "terminal",
             &method,
-            &scope.owner.client.describe("terminal").await?.contract,
+            &client.describe("terminal").await?.contract,
         )?;
         let id = Uuid::new_v4();
-        let mutation = scope
-            .owner
-            .client
+        let mutation = client
             .mutation(
                 id,
                 "terminal",
@@ -107,7 +106,8 @@ pub(super) async fn mutate(
 /// Unknown originals survive a view or launcher restart; never repeat their input.
 pub(super) async fn pending(scope: Arc<Scope>) -> Result<JsonValue, String> {
     execute(scope.owner.clone(), async move {
-        serde_json::to_value(scope.owner.client.pending_terminals(&scope.session).await?)
+        let client = scope.client.resolve(&scope.owner).await?;
+        serde_json::to_value(client.pending_terminals(&scope.session).await?)
             .map_err(|error| error.to_string())
     })
     .await
@@ -117,11 +117,11 @@ pub(super) async fn pending(scope: Arc<Scope>) -> Result<JsonValue, String> {
 pub(super) async fn recover(scope: Arc<Scope>, operation_id: String) -> Result<JsonValue, String> {
     let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
     execute(scope.owner.clone(), async move {
-        if !owns(&scope.owner.client.operation(id).await?, &scope.session) {
+        let client = scope.client.resolve(&scope.owner).await?;
+        if !owns(&client.operation(id).await?, &scope.session) {
             return Err("Original terminal action belongs to another owner".into());
         }
-        serde_json::to_value(scope.owner.client.recover(id).await?)
-            .map_err(|error| error.to_string())
+        serde_json::to_value(client.recover(id).await?).map_err(|error| error.to_string())
     })
     .await
 }
@@ -130,10 +130,11 @@ pub(super) async fn recover(scope: Arc<Scope>, operation_id: String) -> Result<J
 pub(super) async fn abandon(scope: Arc<Scope>, operation_id: String) -> Result<JsonValue, String> {
     let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
     execute(scope.owner.clone(), async move {
-        if !owns(&scope.owner.client.operation(id).await?, &scope.session) {
+        let client = scope.client.resolve(&scope.owner).await?;
+        if !owns(&client.operation(id).await?, &scope.session) {
             return Err("Original terminal action belongs to another owner".into());
         }
-        serde_json::to_value(scope.owner.client.abandon_unprepared(id).await?)
+        serde_json::to_value(client.abandon_unprepared(id).await?)
             .map_err(|error| error.to_string())
     })
     .await

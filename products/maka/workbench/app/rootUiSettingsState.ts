@@ -44,6 +44,14 @@ export function createRootUiSettings(
 ) {
   const query = signal('');
   const busy = signal(false);
+  const idle = new Set<() => void>();
+  const whenIdle = () =>
+    busy() ? new Promise<void>((resolve) => idle.add(resolve)) : Promise.resolve();
+  const complete = () => {
+    if (alive) busy.set(false);
+    for (const resolve of idle) resolve();
+    idle.clear();
+  };
   const error = createText();
   const notice = createText();
   const pending = signal<ClientOperation[]>([]);
@@ -83,7 +91,7 @@ export function createRootUiSettings(
       report(reason);
     } finally {
       await refreshPending().catch(report);
-      if (alive) busy.set(false);
+      complete();
     }
   };
   const choices = computed(() =>
@@ -128,6 +136,7 @@ export function createRootUiSettings(
   return {
     query,
     busy,
+    whenIdle,
     error,
     notice,
     pending,

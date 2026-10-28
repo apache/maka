@@ -18,14 +18,13 @@
  */
 
 //! Native transport validation for a current file. No filesystem reads or resource cache.
-use super::Owner;
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use maka_agent_api::contract::{FileContent, FileRead, FileReadPart, WorkspacePath};
 use maka_agent_facts::artifact::content_digest;
-use maka_app_client::{Subscription, SubscriptionEvent};
+use maka_app_client::{Client, Subscription, SubscriptionEvent};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use serde_json::json;
@@ -54,6 +53,18 @@ pub struct CapturedFile {
 struct TextSource {
     text: String,
     starts: Vec<usize>,
+}
+
+impl CapturedFile {
+    pub(super) fn route_image(&mut self, client: &super::ApplicationClient) -> Result<(), String> {
+        if self.metadata["kind"] == "image" {
+            let uri = self.metadata["uri"]
+                .as_str()
+                .ok_or("The image capture has no URI")?;
+            self.metadata["uri"] = client.asset_uri(uri.to_owned())?.into();
+        }
+        Ok(())
+    }
 }
 
 /// One original source line, including its original line ending.
@@ -118,9 +129,8 @@ pub(super) fn path_label(path: &WorkspacePath) -> Result<String, String> {
         .collect())
 }
 
-pub(super) async fn read(owner: &Owner, source: &FileRead) -> Result<Outcome, String> {
-    let subscription = owner
-        .client
+pub(super) async fn read(client: &Client, source: &FileRead) -> Result<Outcome, String> {
+    let subscription = client
         .subscribe(
             "agent",
             "readFile",

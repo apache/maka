@@ -17,16 +17,18 @@
  * under the License.
  */
 
-import type { UiToolProps } from '../../../../../packages/plugin-sdk/src/workbench.js';
-import { pluginContext, type Contribution } from './context';
+import type { UiToolProps, UiRuntime } from '../../../../../packages/plugin-sdk/src/workbench.js';
+import type { Contribution } from './context';
+import type { JSX } from 'nsh';
 
 export function PluginView(props: {
+  runtime: UiRuntime<JSX.Element>;
   contribution: Contribution;
   sessionId(): string | null;
   input?: () => unknown;
   tool?: () => Omit<UiToolProps, 'context'>;
 }) {
-  return pluginContext()!.render(props.contribution, {
+  return props.runtime.render(props.contribution, {
     get sessionId() {
       return props.sessionId();
     },

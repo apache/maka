@@ -29,6 +29,7 @@ import type {
   UiInstance,
   UiRead,
   UiRoot,
+  UiTarget,
 } from './generated/runtime.js';
 
 export interface UiSubscription<T = unknown> {
@@ -81,14 +82,19 @@ export interface UiService {
   beginMutation(method: string, input: unknown): Promise<UiMutation>;
 }
 
-export interface UiContext<Host = UiHost> {
+export interface UiContext<Host = UiHost, Element = unknown> {
   readonly source: DeploymentRef;
   readonly instance: InstanceId;
   readonly package: PackageRef;
   readonly configuration: Readonly<Record<string, unknown>>;
   readonly host: Host;
+  /** Application calls use this instance's declared service bindings. */
+  readonly application: UiHost;
   readonly services: Readonly<Record<string, readonly UiService[]>>;
   readonly operations: UiOperations;
+  readonly runtime: UiRuntime<Element>;
+  /** JSON returned by this instance's prepareReload, or null on first activation. */
+  readonly restored: unknown;
   locale(): string;
   asset(path: string): string;
   openPanel(id: string, input?: unknown): void;
@@ -96,10 +102,12 @@ export interface UiContext<Host = UiHost> {
 
 export interface UiCommandContext {
   readonly sessionId: string | null;
+  readonly argument?: string;
 }
 
-export interface UiViewProps {
-  readonly context: UiContext;
+export interface UiViewProps<Element = unknown> {
+  readonly context: UiContext<UiHost, Element>;
+  readonly runtime: UiRuntime<Element>;
   readonly sessionId: string | null;
   readonly input?: unknown;
 }
@@ -123,6 +131,30 @@ export interface UiContributionRef {
 
 export type UiRootSelection = UiRoot;
 
+declare const uiViewInput: unique symbol;
+
+/** A shared contract name carries its input type without a second runtime schema. */
+export interface UiViewContract<Input> {
+  readonly id: string;
+  readonly [uiViewInput]?: (input: Input) => Input;
+}
+
+export function defineUiViewContract<Input>(id: string): UiViewContract<Input> {
+  return { id };
+}
+
+export interface UiEmbeddedViewProps<Input, Element = unknown> {
+  readonly context: UiContext<UiHost, Element>;
+  readonly runtime: UiRuntime<Element>;
+  readonly input: Input;
+}
+
+export interface UiViewImplementation<Input = unknown, Element = unknown> {
+  readonly kind: 'view';
+  readonly contract: string;
+  render(props: UiEmbeddedViewProps<Input, Element>): Element;
+}
+
 export interface UiContributionProps {
   readonly sessionId: string | null;
   readonly input?: unknown;
@@ -138,7 +170,11 @@ export interface UiRuntime<Element = unknown> {
   panels(): readonly UiContributionRef[];
   settings(): readonly UiContributionRef[];
   renderer(presentation: string | null | undefined): UiContributionRef | undefined;
+  view<Input>(target: UiTarget, contract: UiViewContract<Input>): UiContributionRef;
+  renderView<Input>(target: UiTarget, contract: UiViewContract<Input>, input: Input): Element;
   render(contribution: UiContributionRef, props: UiContributionProps): Element;
+  openPanel(target: UiTarget, input?: unknown): void;
+  commandEnabled(contribution: UiContributionRef, context: UiCommandContext): boolean;
   invoke(
     contribution: UiContributionRef,
     context: UiCommandContext,
@@ -153,26 +189,33 @@ export interface UiRuntime<Element = unknown> {
 }
 
 export interface UiRootProps<Element = unknown> {
-  readonly context: UiContext;
+  readonly context: UiContext<UiHost, Element>;
   readonly runtime: UiRuntime<Element>;
-  /** JSON returned by this root's prepareReload, or null on its first mount. */
-  readonly restored: unknown;
 }
 
 export type UiImplementation<Element = unknown> =
-  | { kind: 'command'; run(context: UiCommandContext): void | Promise<void> }
+  | {
+      kind: 'command';
+      enabled?(context: UiCommandContext): boolean;
+      run(context: UiCommandContext): void | boolean | Promise<void | boolean>;
+    }
   | {
       kind: 'root';
       render(props: UiRootProps<Element>): Element;
-      /** Persist owned drafts and return JSON before replacing the shared VM. */
-      prepareReload?(): Promise<unknown>;
     }
-  | { kind: 'panel' | 'settings'; render(props: UiViewProps): Element }
+  | UiViewImplementation<unknown, Element>
+  | { kind: 'panel' | 'settings'; render(props: UiViewProps<Element>): Element }
   | { kind: 'tool_renderer'; render(props: UiToolProps): Element };
 
 export type UiExports<Element = unknown> = Readonly<Record<string, UiImplementation<Element>>>;
 
+export interface UiActivation<Element = unknown> {
+  readonly exports: UiExports<Element>;
+  /** Persist owned edits and return JSON before replacing the shared VM. */
+  prepareReload?(): Promise<unknown>;
+}
+
 /** Called once under the enabled instance's NSH owner. Use NSH cleanup for resources. */
 export interface UiModule<Element = unknown> {
-  activate(context: UiContext): UiExports<Element>;
+  activate(context: UiContext<UiHost, Element>): UiActivation<Element>;
 }

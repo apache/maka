@@ -29,6 +29,7 @@ const current = signal(100);
 const text = signal('100');
 const ready = signal(false);
 const saving = signal(false);
+const idle = new Set<() => void>();
 const error = createText();
 let initialized = false;
 
@@ -63,12 +64,22 @@ const save = async () => {
     error.set(message('Interface scale could not be saved.'));
   } finally {
     saving.set(false);
+    for (const resolve of idle) resolve();
+    idle.clear();
   }
 };
 
-export function initializeUiScale() {
+export type UiScaleSnapshot = { saved: number; current: number; text: string; ready: boolean };
+export function initializeUiScale(restored?: UiScaleSnapshot) {
   if (initialized) return;
   initialized = true;
+  if (restored?.ready && supported) {
+    preview(String(restored.current));
+    saved.set(restored.saved);
+    text.set(restored.text);
+    ready.set(true);
+    return;
+  }
   if (!supported) {
     ready.set(true);
     return;
@@ -91,11 +102,18 @@ export function initializeUiScale() {
 }
 
 export const uiScale = {
-  factor: () => current() / 100,
+  snapshot: (): UiScaleSnapshot => ({
+    saved: saved(),
+    current: current(),
+    text: text(),
+    ready: ready(),
+  }),
   supported,
   ready,
   text,
   saving,
+  whenIdle: () =>
+    saving() ? new Promise<void>((resolve) => idle.add(resolve)) : Promise.resolve(),
   error,
   dirty: () => text() !== String(saved()),
   change(value: string) {

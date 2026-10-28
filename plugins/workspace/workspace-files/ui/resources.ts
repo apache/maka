@@ -17,15 +17,27 @@
  * under the License.
  */
 
-import { tr } from './locale';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, signal, untracked } from 'nsh';
 import type { ViewRef } from 'nsh';
-import { createWorkspaceFiles, type WorkspaceFileTarget } from './workspaceFileState';
-import { createCurrentFile, type CurrentFileModel } from './CurrentFile';
-import type { ImagePreview } from './ImageThumbnail';
-import type { ViewerImage } from './ImageViewer';
-import { createTerminals, type TerminalModel } from './terminalState';
+import {
+  createWorkspaceFiles,
+  type WorkspaceFileTarget,
+} from '../../../../products/maka/workbench/app/workspaceFileState';
+import {
+  createCurrentFile,
+  type CurrentFileModel,
+} from '../../../../products/maka/workbench/app/CurrentFile';
+import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
+import type { ViewerImage } from '../../../../products/maka/workbench/app/ImageViewer';
+import {
+  createTerminals,
+  type TerminalModel,
+} from '../../../../products/maka/workbench/app/terminalState';
 import type { ResourceUpdate } from '../../../../packages/plugin-sdk/src/index.js';
+import type { WorkspaceFocusTarget } from '../../../../packages/plugin-sdk/src/workspace-view.js';
+import type { Host } from '../../../../products/maka/workbench/app/host';
+import { errorText, UiError } from '../../../../products/maka/workbench/app/text';
 
 export type ResourceTab = {
   instance: number;
@@ -42,7 +54,14 @@ type ImageViewerState = { tab: ResourceTab; image: ViewerImage; close(): void };
 
 // Window presentation state only. All resource authority remains in the
 // original Host selector; no session, draft or backend data is duplicated here.
-export function createResources(options: { selected(): string | null; blocked(): boolean }) {
+export function createResources(
+  host: Host,
+  options: {
+    selected(): string | null;
+    blocked(): boolean;
+    report(reason: unknown): void;
+  },
+) {
   const shown = signal(false);
   const tabs = signal<ResourceTab[]>([]);
   const active = signal<number | 'files' | 'terminals'>('files');
@@ -53,7 +72,7 @@ export function createResources(options: { selected(): string | null; blocked():
   let session: string | null = null;
   let alive = true;
   let root: ViewRef | undefined;
-  let header: { sessionId: string; node: ViewRef } | undefined;
+  let header: { sessionId: string; node: WorkspaceFocusTarget } | undefined;
   let opener: (() => boolean) | undefined;
   const dispose = (tab: ResourceTab) => {
     if (tab.kind !== 'image') tab.model.dispose();
@@ -70,6 +89,7 @@ export function createResources(options: { selected(): string | null; blocked():
       instance.set(instance() + 1);
       session = selected;
       opener = undefined;
+      header = undefined;
     }
   };
   effect(() => {
@@ -116,7 +136,7 @@ export function createResources(options: { selected(): string | null; blocked():
       identity: `file:${target.path.bytesBase64}`,
       sessionId: target.sessionId,
       title: target.title,
-      model: createCurrentFile(target),
+      model: createCurrentFile(host, target),
     }));
     if (restoreFocus) {
       const fallback = headerOpener(target.sessionId);
@@ -154,6 +174,18 @@ export function createResources(options: { selected(): string | null; blocked():
     }));
     const fallback = headerOpener(sessionId);
     opener = () => image.restoreFocus?.() || fallback();
+  };
+  const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
+    if (!admits(sessionId)) return;
+    try {
+      const link = await host.openLink(target);
+      if (link && admits(sessionId)) {
+        openFile({ sessionId, ...link, title: host.pathLabel(link.path) }, restoreFocus);
+      }
+    } catch (reason) {
+      if (alive && options.selected() === sessionId)
+        options.report(new UiError('Could not open link: {reason}', { reason: errorText(reason) }));
+    }
   };
   const inventory = (target: { sessionId: string; kind: 'files' | 'terminals' }) => {
     if (!admits(target.sessionId)) return;
@@ -210,7 +242,7 @@ export function createResources(options: { selected(): string | null; blocked():
     };
     imageViewer.set(state);
   };
-  const terminals = createTerminals({
+  const terminals = createTerminals(host, {
     sessionId: options.selected,
     active: () =>
       shown() &&
@@ -229,7 +261,7 @@ export function createResources(options: { selected(): string | null; blocked():
       }));
     },
   });
-  const files = createWorkspaceFiles({
+  const files = createWorkspaceFiles(host, {
     sessionId: options.selected,
     active: () => shown() && active() === 'files',
     openFile,
@@ -262,6 +294,7 @@ export function createResources(options: { selected(): string | null; blocked():
     openFiles,
     openFile,
     openImage,
+    openLink,
     openImageViewer,
     imageViewer,
     select,
@@ -277,7 +310,7 @@ export function createResources(options: { selected(): string | null; blocked():
     root: () => root,
     focusRequest,
     focusHandled: () => focusRequest.set(false),
-    attachOpener(sessionId: string, node: ViewRef) {
+    attachOpener(sessionId: string, node: WorkspaceFocusTarget) {
       if (alive && options.selected() === sessionId) header = { sessionId, node };
     },
   };

@@ -24,14 +24,7 @@ import { Button, Tooltip } from 'nsh/base';
 import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import { sessionStatusCaption } from './sessionStatus';
-import {
-  controlsLeft,
-  controlsRight,
-  docked,
-  ownTitleBar,
-  TITLE_BAR_HEIGHT,
-  windowDrag,
-} from './chrome';
+import { controlsLeft, controlsRight, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export function textTooltip(text: () => string | undefined): JSX.Element {
   return (
@@ -218,6 +211,8 @@ export function Disclosure(props: {
   );
 }
 export type BrowserHeader = {
+  navigationDocked: boolean;
+  previewDocked: boolean;
   expanded: boolean;
   hidden: boolean;
   toggle(): void;
@@ -249,8 +244,8 @@ export function Header(props: {
         opacity: props.browser.hidden ? 0 : 1,
         flexDirection: 'row',
         alignItems: 'center',
-        paddingLeft: 16 + controlsLeft(!docked.browser()),
-        paddingRight: 16 + controlsRight(!docked.preview()),
+        paddingLeft: 16 + controlsLeft(!props.browser.navigationDocked),
+        paddingRight: 16 + controlsRight(!props.browser.previewDocked),
         height: ownTitleBar
           ? TITLE_BAR_HEIGHT
           : !platform.isTerminal && !props.title && !props.status

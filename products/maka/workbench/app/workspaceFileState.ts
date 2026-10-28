@@ -20,7 +20,7 @@
 import { createText, errorText, UiError } from './text';
 import { tr } from './locale';
 import { batch, cleanup, effect, signal, untracked } from 'nsh';
-import { host } from './host';
+import type { Host } from './host';
 import type {
   AgentFileChange,
   AgentFileCursor,
@@ -78,11 +78,14 @@ const samePath = (left: WorkspacePath | null, right: WorkspacePath | null) =>
 
 // The owner survives presentation changes; each active directory owns one watch
 // and one list request. Directory identity is not a content revision.
-export function createWorkspaceFiles(options: {
-  sessionId(): string | null;
-  active(): boolean;
-  openFile(target: WorkspaceFileTarget): void;
-}): WorkspaceFilesModel {
+export function createWorkspaceFiles(
+  host: Host,
+  options: {
+    sessionId(): string | null;
+    active(): boolean;
+    openFile(target: WorkspaceFileTarget): void;
+  },
+): WorkspaceFilesModel {
   const breadcrumbs = signal<WorkspaceDirectory[]>([
     {
       path: null,

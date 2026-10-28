@@ -25,7 +25,7 @@ import type {
   DirectoryRootSpec,
   ServiceMethods,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { host } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import { createSettingsOperations } from './settingsOperations';
 import { UiError } from './text';
@@ -43,7 +43,8 @@ type SettingsWorkspaceLocations = NonNullable<
 >;
 
 export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | null): void }) {
-  const operations = createSettingsOperations();
+  const host = useHost();
+  const operations = createSettingsOperations(host);
   const snapshot = signal<SettingsWorkspaceLocations | null>(null);
   const roots = signal<DirectoryRootSpec[]>([]);
   const label = signal('');

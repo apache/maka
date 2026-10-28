@@ -21,6 +21,8 @@ import { ImageThumbnail } from './ImageThumbnail';
 import type { ImagePreview } from './ImageThumbnail';
 export type { ImagePreview } from './ImageThumbnail';
 import type { Position } from './history';
+import { useHost } from './host';
+import { immutableAsset } from './immutableAsset';
 
 export function ToolImage(props: {
   sessionId: string;
@@ -28,11 +30,18 @@ export function ToolImage(props: {
   position: Position;
   preview(image: ImagePreview): void;
 }) {
+  const host = useHost();
   const source = Object.freeze({
     sessionId: props.sessionId,
     through: props.through(),
     position: Object.freeze({ ...props.position }),
     offset: 0,
   });
-  return <ImageThumbnail source={{ kind: 'tool-image', read: source }} preview={props.preview} />;
+  return (
+    <ImageThumbnail
+      source={{ kind: 'tool-image', read: source }}
+      uri={host.assetUri(immutableAsset('tool-image', source))}
+      preview={props.preview}
+    />
+  );
 }

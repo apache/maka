@@ -17,16 +17,53 @@
  * under the License.
  */
 
-use super::{Owner, execute};
+use super::{Owner, execute, ui_services::UiScope};
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use maka_agent_api::contract::{AttachmentImageRead, AttachmentImageSource, ToolImageRead};
 use maka_agent_facts::artifact::content_digest;
+use maka_app_client::Client;
+use maka_plugin_core::composition::InstanceId;
 use nsh_engine::Assets;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+
+const SCOPED_PREFIX: &str = "asset:/ui-image/";
+const TOOL_PREFIX: &str = "asset:/tool-image/";
+const ATTACHMENT_PREFIX: &str = "asset:/attachment-image/";
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ScopedAsset {
+    instance: InstanceId,
+    binding_basis: String,
+    uri: String,
+}
+
+pub(super) fn scoped_uri(
+    instance: &InstanceId,
+    binding_basis: &str,
+    uri: &str,
+) -> Result<String, String> {
+    if ![super::files::PREFIX, TOOL_PREFIX, ATTACHMENT_PREFIX]
+        .iter()
+        .any(|prefix| uri.starts_with(prefix))
+    {
+        return Ok(uri.to_owned());
+    }
+    let encoded = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&ScopedAsset {
+            instance: instance.clone(),
+            binding_basis: binding_basis.to_owned(),
+            uri: uri.to_owned(),
+        })
+        .map_err(|error| error.to_string())?,
+    );
+    Ok(format!("{SCOPED_PREFIX}{encoded}"))
+}
 
 pub(super) struct HostAssets(pub(super) Arc<Owner>);
 
@@ -35,6 +72,67 @@ impl Assets for HostAssets {
         if let Some(encoded) = uri.strip_prefix("asset:/plugin/") {
             return super::plugins::asset(&self.0, encoded);
         }
+        let scoped: Option<ScopedAsset> = uri
+            .strip_prefix(SCOPED_PREFIX)
+            .map(|encoded| {
+                serde_json::from_slice(
+                    &URL_SAFE_NO_PAD
+                        .decode(encoded)
+                        .map_err(|_| "Invalid UI image selector")?,
+                )
+                .map_err(|_| "Invalid UI image selector")
+            })
+            .transpose()?;
+        let source = AssetSource::parse(scoped.as_ref().map_or(uri, |scope| &scope.uri))?;
+        let owner = self.0.clone();
+        // Image assets are read on NSH's image workers. Track the whole read
+        // with the launcher's other IO.
+        let captured = self.0.runtime.block_on(execute(owner.clone(), async move {
+            if let Some(scoped) = scoped {
+                let (source_ref, _) = owner
+                    .plugins
+                    .current_ui(&scoped.instance)
+                    .ok_or("UI image instance is no longer active")?;
+                let scope = UiScope::new(
+                    owner,
+                    source_ref,
+                    scoped.instance,
+                    scoped.binding_basis,
+                    None,
+                )?;
+                let result = async {
+                    let client = scope.services.client().await?;
+                    read_asset(&client, source).await
+                }
+                .await;
+                let closed = scope.services.close().await;
+                let captured = result?;
+                closed?;
+                Ok(captured)
+            } else {
+                read_asset(&owner.client, source).await
+            }
+        }))?;
+        match captured {
+            AssetBytes::Verified(bytes) => Ok(bytes),
+            AssetBytes::Unverified { bytes, digest } => {
+                // Hash a large image on its reader, outside a Host IO worker.
+                if content_digest(&bytes) != digest {
+                    return Err("The original image digest does not match".into());
+                }
+                Ok(bytes)
+            }
+        }
+    }
+}
+
+enum AssetSource {
+    File(maka_agent_api::contract::FileRead),
+    Image(ImageSource),
+}
+
+impl AssetSource {
+    fn parse(uri: &str) -> Result<Self, String> {
         if let Some(encoded) = uri.strip_prefix(super::files::PREFIX) {
             let source: maka_agent_api::contract::FileRead = serde_json::from_slice(
                 &URL_SAFE_NO_PAD
@@ -49,25 +147,9 @@ impl Assets for HostAssets {
             if source.session_id.is_empty() || source.expected_version.is_none() {
                 return Err("Invalid current file selector".into());
             }
-            let owner = self.0.clone();
-            return self.0.runtime.block_on(execute(owner.clone(), async move {
-                match super::files::read(&owner, &source).await? {
-                    super::files::Outcome::Ready(capture)
-                        if matches!(
-                            capture.content,
-                            maka_agent_api::contract::FileContent::Image { .. }
-                        ) =>
-                    {
-                        Ok(capture.bytes)
-                    }
-                    _ => Err(
-                        "The current image changed or is unavailable; refresh the file preview"
-                            .into(),
-                    ),
-                }
-            }));
+            return Ok(Self::File(source));
         }
-        let source = if let Some(encoded) = uri.strip_prefix("asset:/tool-image/") {
+        let source = if let Some(encoded) = uri.strip_prefix(TOOL_PREFIX) {
             let source: ToolImageRead = serde_json::from_slice(
                 &URL_SAFE_NO_PAD
                     .decode(encoded)
@@ -82,7 +164,7 @@ impl Assets for HostAssets {
                 return Err("Invalid tool image source".into());
             }
             ImageSource::Tool(source)
-        } else if let Some(encoded) = uri.strip_prefix("asset:/attachment-image/") {
+        } else if let Some(encoded) = uri.strip_prefix(ATTACHMENT_PREFIX) {
             let source: AttachmentImageRead = serde_json::from_slice(
                 &URL_SAFE_NO_PAD
                     .decode(encoded)
@@ -113,21 +195,38 @@ impl Assets for HostAssets {
         if source.session().is_empty() {
             return Err("Invalid image session".into());
         }
-        let owner = self.0.clone();
-        // Image assets are read on NSH's image workers. Track the whole read
-        // with the launcher's other IO.
-        let (bytes, digest) = self.0.runtime.block_on(execute(owner.clone(), async move {
-            read_image(&owner, source).await
-        }))?;
-        // Hash a large image on its reader, without occupying a Host IO worker.
-        if content_digest(&bytes) != digest {
-            return Err("The original image digest does not match".into());
-        }
-        Ok(bytes)
+        Ok(Self::Image(source))
     }
 }
 
-async fn read_image(owner: &Owner, source: ImageSource) -> Result<(Vec<u8>, String), String> {
+enum AssetBytes {
+    Verified(Vec<u8>),
+    Unverified { bytes: Vec<u8>, digest: String },
+}
+
+async fn read_asset(client: &Client, source: AssetSource) -> Result<AssetBytes, String> {
+    match source {
+        AssetSource::File(source) => match super::files::read(client, &source).await? {
+            super::files::Outcome::Ready(capture)
+                if matches!(
+                    capture.content,
+                    maka_agent_api::contract::FileContent::Image { .. }
+                ) =>
+            {
+                Ok(AssetBytes::Verified(capture.bytes))
+            }
+            _ => {
+                Err("The current image changed or is unavailable; refresh the file preview".into())
+            }
+        },
+        AssetSource::Image(source) => {
+            let (bytes, digest) = read_image(client, source).await?;
+            Ok(AssetBytes::Unverified { bytes, digest })
+        }
+    }
+}
+
+async fn read_image(client: &Client, source: ImageSource) -> Result<(Vec<u8>, String), String> {
     // Image bytes remain on the original native reader, outside the JS heap.
     let (method, mut input, expected) = source.request();
     let mut bytes = Vec::new();
@@ -135,7 +234,7 @@ async fn read_image(owner: &Owner, source: ImageSource) -> Result<(Vec<u8>, Stri
     loop {
         let offset = bytes.len() as u64;
         input["offset"] = offset.into();
-        let page = owner.client.query("agent", method, input.clone()).await?;
+        let page = client.query("agent", method, input.clone()).await?;
         let total = page["totalBytes"]
             .as_u64()
             .filter(|total| *total > 0)

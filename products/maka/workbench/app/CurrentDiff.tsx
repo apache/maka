@@ -22,7 +22,7 @@ import { errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { host } from './host';
+import type { Host } from './host';
 import type { GitArea, GitDiff, WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { parsePatch } from './patch';
 import { Icon } from './Icon';
@@ -90,7 +90,7 @@ export type CurrentDiffModel = {
 
 // The resource tab owns this projection across dock/Dialog presentation changes.
 // The existing gitDiff query returns a whole patch without a size bound.
-export function createCurrentDiff(target: CurrentDiffTarget): CurrentDiffModel {
+export function createCurrentDiff(host: Host, target: CurrentDiffTarget): CurrentDiffModel {
   const state = signal<DiffState>({ kind: 'loading' });
   let generation = 0;
   let alive = true;

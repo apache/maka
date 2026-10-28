@@ -55,9 +55,10 @@ import {
   type SessionActionTarget,
 } from './sessionLifecycle';
 import { sessionStatusCaption } from './sessionStatus';
-import { controlsLeft, docked, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import { controlsLeft, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export type WorkspaceBrowserProps = {
+  docked(): boolean;
   browsing: Browsing;
   selected(): string | null;
   switching(): boolean;
@@ -74,7 +75,7 @@ export type WorkspaceBrowserProps = {
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
-  const titleBarRow = () => ownTitleBar && docked.browser();
+  const titleBarRow = () => ownTitleBar && props.docked();
   const browser = props.browsing;
   const choosingWorkspace = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);

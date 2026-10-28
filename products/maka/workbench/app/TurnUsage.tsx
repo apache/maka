@@ -30,7 +30,7 @@ import type {
   UsageFence,
   UsageModelAttempt,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { host } from './host';
+import { useHost } from './host';
 import { C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 import { Icon } from './Icon';
 import { dialogTop } from './chrome';
@@ -65,6 +65,7 @@ export function TurnUsage(props: {
   current(): boolean;
   close(): void;
 }) {
+  const host = useHost();
   const reading = signal<Reading>({ kind: 'loading', checked: 0 });
   let alive = true;
   let through: UsageFence | null = null;

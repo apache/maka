@@ -21,14 +21,14 @@ import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { TextViewImage } from 'nsh/base';
-import { host } from './host';
+import { useHost, type Host } from './host';
 import { ImageViewer } from './ImageViewer';
 import { createText, errorText, UiError } from './text';
 import { tr } from './locale';
 import { C, captionTextStyle, controlFocusStyle } from './ui';
 
 type Reading = { stream: Awaited<ReturnType<typeof openFile>> | null };
-const openFile = (sessionId: string, path: { bytesBase64: string }) =>
+const openFile = (host: Host, sessionId: string, path: { bytesBase64: string }) =>
   host.readFile({ sessionId, path });
 const close = async (reading: Reading | null) => {
   const stream = reading?.stream;
@@ -45,6 +45,7 @@ export function MarkdownImageView(props: {
   flow: 'block' | 'inline';
   lineHeight: number;
 }) {
+  const host = useHost();
   const target = props.image().src;
   const sessionId = props.sessionId;
   const source = signal<{ uri: string } | null>(null);
@@ -71,7 +72,7 @@ export function MarkdownImageView(props: {
         source.set({ uri: selected.uri });
         return;
       }
-      const stream = await openFile(sessionId, selected.path);
+      const stream = await openFile(host, sessionId, selected.path);
       if (!owns() || reading !== request) {
         await stream.close();
         return;

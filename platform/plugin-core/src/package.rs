@@ -125,10 +125,33 @@ pub struct UiText {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiContribution {
     Root,
-    Panel { title: UiText },
-    Command { title: UiText },
-    ToolRenderer { presentation: String },
-    Settings { title: UiText },
+    View {
+        contract: String,
+    },
+    Panel {
+        title: UiText,
+    },
+    Command {
+        title: UiText,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<UiText>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shortcut: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        order: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trigger: Option<String>,
+        #[serde(default, rename = "takesArgument")]
+        takes_argument: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint: Option<UiText>,
+    },
+    ToolRenderer {
+        presentation: String,
+    },
+    Settings {
+        title: UiText,
+    },
 }
 
 impl UiEntry {
@@ -142,9 +165,28 @@ impl UiEntry {
             crate::name(id)?;
             let label = match contribution {
                 UiContribution::Root => continue,
-                UiContribution::Panel { title }
-                | UiContribution::Command { title }
-                | UiContribution::Settings { title } => &title.fallback,
+                UiContribution::View { contract } => {
+                    crate::name(contract)?;
+                    continue;
+                }
+                UiContribution::Command {
+                    title,
+                    trigger,
+                    takes_argument,
+                    ..
+                } => {
+                    if let Some(trigger) = trigger {
+                        crate::name(trigger)?;
+                    } else if *takes_argument {
+                        return Err(Error::Declaration(format!(
+                            "UI command {id} accepts arguments without a trigger"
+                        )));
+                    }
+                    &title.fallback
+                }
+                UiContribution::Panel { title } | UiContribution::Settings { title } => {
+                    &title.fallback
+                }
                 UiContribution::ToolRenderer { presentation } => presentation,
             };
             if label.is_empty() {

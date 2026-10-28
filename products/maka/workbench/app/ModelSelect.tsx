@@ -41,10 +41,10 @@ import type {
 import { Button, Popover } from 'nsh/base';
 import { keymap } from 'nsh';
 import { platform, windowSize } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import { createText, errorText, UiError } from './text';
-import type { ConversationHandle } from './Conversation';
+import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
 import { effectiveThinkingLevel, effortCaption, modelCaption, sameRoute } from './modelSelection';
 import type { BackendIdentity, ModelBackend, ModelChoice } from './modelSelection';
 import { ChoiceIndicator } from './ChoiceIndicator';
@@ -233,6 +233,7 @@ function ModelMenu(props: {
   attach(handle: ModelMenuHandle): void;
   detach(handle: ModelMenuHandle): void;
 }) {
+  const host = useHost();
   const owner = props.owner;
   const pane = signal<Pane>(owner.backend() ? 'root' : 'models');
   const query = signal('');

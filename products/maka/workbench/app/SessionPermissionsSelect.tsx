@@ -22,7 +22,7 @@ import { inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button, Popover } from 'nsh/base';
 import { windowSize } from 'nsh';
 import type { AgentWorkspaceAccess } from '../../../../packages/plugin-sdk/src/index.js';
-import type { SessionPermissions } from './sessionPermissions';
+import type { ComposerPermissions as SessionPermissions } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { delayed } from './delayed';
 import { Icon } from './Icon';

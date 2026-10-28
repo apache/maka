@@ -17,34 +17,31 @@
  * under the License.
  */
 
-import { cleanup, context, effect, signal, type JSX } from 'nsh';
+import { cleanup, effect, signal, type JSX } from 'nsh';
 import type {
-  UiContext,
   UiContributionRef,
   UiRuntime,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
 import type { InstanceId } from '../../../../../packages/plugin-sdk/src/generated/runtime.js';
-import type { CommandEntry } from '../composerCommands';
 import { sameValue } from '../../../../../plugins/shared/value';
 import { displayText } from '../locale';
-import { errorText, renderText } from '../text';
 
 export type Contribution = UiContributionRef;
 export type Panel = { contribution: Contribution; input?: unknown; instance: number };
 export type PanelRoute = { instance: InstanceId; id: string; input?: unknown };
 
 export const contributionTitle = (item: Contribution) =>
-  item.declaration.kind === 'tool_renderer' || item.declaration.kind === 'root'
+  item.declaration.kind === 'tool_renderer' ||
+  item.declaration.kind === 'root' ||
+  item.declaration.kind === 'view'
     ? item.instance.path.join(' / ')
     : displayText(item.declaration.title);
 
 export function createWorkbenchPlugins(
   runtime: UiRuntime<JSX.Element>,
-  rootContext: UiContext,
   options: {
     sessionId(): string | null;
     showPanel(): void;
-    report(reason: unknown): void;
     restorePanel?: PanelRoute | null;
   },
 ) {
@@ -78,40 +75,9 @@ export function createWorkbenchPlugins(
     }
   });
   return {
-    ...runtime,
-    context: rootContext,
+    runtime,
     panel,
     sessionId: options.sessionId,
-    updateError: () => {
-      const reason = runtime.updateError();
-      return reason === null ? '' : renderText(errorText(reason));
-    },
-    commands(sessionId = options.sessionId()): CommandEntry[] {
-      return runtime.contributions().flatMap<CommandEntry>((contribution) =>
-        contribution.declaration.kind === 'command'
-          ? [
-              {
-                id: contribution.key,
-                title: displayText(contribution.declaration.title),
-                detail: contribution.instance.path.join(' / '),
-                trigger: `plugin:${contribution.instance.path.join(':')}:${contribution.id}`,
-                async run() {
-                  try {
-                    return await runtime.invoke(
-                      contribution,
-                      { sessionId },
-                      () => options.sessionId() === sessionId,
-                    );
-                  } catch (reason) {
-                    options.report(reason);
-                    return false;
-                  }
-                },
-              },
-            ]
-          : [],
-      );
-    },
     panelRoute(): PanelRoute | null {
       const current = panel();
       return current
@@ -128,4 +94,3 @@ export function createWorkbenchPlugins(
   };
 }
 export type WorkbenchPlugins = ReturnType<typeof createWorkbenchPlugins>;
-export const pluginContext = context<WorkbenchPlugins | null>(null);

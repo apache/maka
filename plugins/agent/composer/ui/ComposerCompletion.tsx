@@ -23,13 +23,15 @@ import type { Bounds, CaretEvent, InputRef, ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
-import { host } from './host';
-import { tr } from './locale';
-import { createText, errorText } from './text';
-import type { ComposerSession, SendAction } from './Composer';
-import type { ComposerCommand } from './composerCommands';
+import { tr } from '../../../../products/maka/workbench/app/locale';
+import { createText, errorText } from '../../../../products/maka/workbench/app/text';
+import type {
+  ComposerSession,
+  ComposerSendAction as SendAction,
+  ComposerCommand,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
-import { sameRoute } from './modelSelection';
+import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
 import {
   completionToken,
   fileInvocation,
@@ -37,8 +39,8 @@ import {
   validSelection,
 } from './composerCompletionSyntax.ts';
 import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
-import { C, bodyTextStyle, captionTextStyle } from './ui';
-import { Icon } from './Icon';
+import { C, bodyTextStyle, captionTextStyle } from '../../../../products/maka/workbench/app/ui';
+import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { createComposerPaste } from './composerPaste';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
@@ -261,11 +263,7 @@ export function createComposerCompletion(options: Options) {
   };
   const lookup = async (read: Read): Promise<void> => {
     if (read.source === 'files') {
-      const stream = await host.subscribe('agent', 'fileCandidates', {
-        sessionId: read.owner.sessionId,
-        query: read.query,
-        ...(read.directory ? { directory: read.directory } : {}),
-      });
+      const stream = await read.owner.completion.files(read.query, read.directory);
       const active: FileRead = { close: () => stream.close(), closing: null };
       fileRead = active;
       const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -294,7 +292,7 @@ export function createComposerCompletion(options: Options) {
                 title = path.replace(/\p{Cc}/gu, '�');
               } catch {
                 // Opaque bytes stay authoritative; display labels are never decoded back into paths.
-                title = host.pathLabel(entry.path);
+                title = read.owner.completion.pathLabel(entry.path);
               }
               const common = {
                 id: `file:${entry.path.bytesBase64}`,
@@ -328,13 +326,9 @@ export function createComposerCompletion(options: Options) {
     const details = read.owner.modelDetails();
     if (!backend || details.kind !== 'ready' || !sameRoute(backend, details.choice.selection))
       return;
-    const result = await host.query('agent', 'skillCandidates', {
-      sessionId: read.owner.sessionId,
-      backend: {
-        kind: 'model',
-        model: details.choice.selection,
-        thinkingLevel: backend.thinkingLevel,
-      },
+    const result = await read.owner.completion.skills({
+      model: details.choice.selection,
+      thinkingLevel: backend.thinkingLevel,
       query: read.query,
     });
     appendRows(

@@ -35,8 +35,9 @@ import {
   IconButton,
 } from './ui';
 import { Icon } from './Icon';
-import { pluginContext } from './plugins/context';
+import { viewRuntimeContext } from './plugins/viewContext';
 import { PluginView } from './plugins/PluginView';
+import { useHost } from './host';
 
 const detailsGap = 8;
 
@@ -82,7 +83,8 @@ function reference(tool: HistoryTool, field: 'arguments' | 'result'): ToolSource
 }
 
 function ProcessOutcome(props: { reference: ToolSourceRef; sessionId: string; through: number }) {
-  const status = createToolSource(props.reference, props.sessionId, props.through, [
+  const host = useHost();
+  const status = createToolSource(host, props.reference, props.sessionId, props.through, [
     'value',
     'status',
   ]);
@@ -93,7 +95,7 @@ function ProcessOutcome(props: { reference: ToolSourceRef; sessionId: string; th
           const phase = value();
           const settled = ['completed', 'failed', 'timed_out', 'cancelled'].includes(phase);
           const exit = settled
-            ? createToolSource(props.reference, props.sessionId, props.through, [
+            ? createToolSource(host, props.reference, props.sessionId, props.through, [
                 'value',
                 'exitCode',
               ])
@@ -125,7 +127,8 @@ function ProcessOutcome(props: { reference: ToolSourceRef; sessionId: string; th
 }
 
 function Outcome(props: { reference: ToolSourceRef; sessionId: string; through: number }) {
-  const kind = createToolSource(props.reference, props.sessionId, props.through, ['kind']);
+  const host = useHost();
+  const kind = createToolSource(host, props.reference, props.sessionId, props.through, ['kind']);
   return (
     <If when={kind.complete() && !kind.error()} else={<Status label={tr('Recorded')} />}>
       <If
@@ -160,8 +163,9 @@ function Field(props: {
   userScroll(): void;
   tool(): HistoryTool;
 }) {
-  const plugins = pluginContext()!;
-  const source = createToolSource(props.reference, props.sessionId, props.through);
+  const host = useHost();
+  const plugins = viewRuntimeContext()!;
+  const source = createToolSource(host, props.reference, props.sessionId, props.through);
   const family = cardFamily(source.original.presentation);
   const renderer = () => plugins.renderer(source.original.presentation);
   const value = computed(() => (source.format() === 'json' ? source.json() : source.content()));
@@ -196,6 +200,7 @@ function Field(props: {
       <Each of={renderer() ? [renderer()!] : []} key={(item) => item.key}>
         {(item) => (
           <PluginView
+            runtime={plugins}
             contribution={item()}
             sessionId={() => props.sessionId}
             tool={() => ({

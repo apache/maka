@@ -1037,4 +1037,9 @@ export const settingsMessages = {
   'Larger text': ['Larger text', '放大文字', '放大文字'],
   'Smaller text': ['Smaller text', '缩小文字', '縮小文字'],
   'Default text size': ['Default text size', '默认文字大小', '預設文字大小'],
+  'Wait for the current settings action to finish.': [
+    'Wait for the current settings action to finish.',
+    '请等待当前设置操作完成。',
+    '請等待目前的設定操作完成。',
+  ],
 } as const satisfies Catalog;

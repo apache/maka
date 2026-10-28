@@ -69,10 +69,30 @@ export const pluginMessages = {
     '找不到插件面板：{panel}',
     '找不到外掛面板：{panel}',
   ],
+  'Unknown UI view: {view}': [
+    'Unknown UI view: {view}',
+    '找不到界面视图：{view}',
+    '找不到介面檢視：{view}',
+  ],
+  'UI contribution is not an embedded view: {view}': [
+    'UI contribution is not an embedded view: {view}',
+    '界面扩展不是嵌入视图：{view}',
+    '介面擴充不是嵌入檢視：{view}',
+  ],
+  'UI view {view} does not implement contract {contract}.': [
+    'UI view {view} does not implement contract {contract}.',
+    '界面视图 {view} 未实现契约 {contract}。',
+    '介面檢視 {view} 未實作契約 {contract}。',
+  ],
   'UI module must export activate(context).': [
     'UI module must export activate(context).',
     'UI 模块必须导出 activate(context)。',
     'UI 模組必須匯出 activate(context)。',
+  ],
+  'UI activate(context) must return an activation.': [
+    'UI activate(context) must return an activation.',
+    'UI activate(context) 必须返回激活结果。',
+    'UI activate(context) 必須回傳啟用結果。',
   ],
   'UI activate(context) must return its declared contributions.': [
     'UI activate(context) must return its declared contributions.',

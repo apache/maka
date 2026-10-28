@@ -17,7 +17,10 @@
  * under the License.
  */
 
-use super::{OriginalMutation, Owner, ScopedSubscription, SubscriptionKind, execute};
+use super::{
+    ApplicationClient, ApplicationHost, OriginalMutation, Owner, ScopedSubscription,
+    SubscriptionKind, execute,
+};
 use maka_app_client::Client;
 use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef};
 use nsh_core::JsonValue;
@@ -37,9 +40,10 @@ use uuid::Uuid;
 /// the original Host remains available separately to trusted UI code.
 #[class]
 pub struct UiScope {
-    services: Arc<Services>,
+    pub(super) services: Arc<Services>,
+    initial_session: Option<String>,
 }
-struct Services {
+pub(super) struct Services {
     owner: Arc<Owner>,
     instance: InstanceId,
     binding_basis: String,
@@ -64,6 +68,7 @@ impl UiScope {
         source: DeploymentRef,
         instance: InstanceId,
         binding_basis: String,
+        initial_session: Option<String>,
     ) -> Result<Self, String> {
         instance.validate().map_err(|error| error.to_string())?;
         let (current, metadata) = owner
@@ -94,6 +99,7 @@ impl UiScope {
             imports.insert(name.clone(), locators);
         }
         Ok(Self {
+            initial_session,
             services: Arc::new(Services {
                 owner,
                 instance,
@@ -109,6 +115,10 @@ impl UiScope {
 }
 
 impl Services {
+    pub(super) fn asset_uri(&self, uri: &str) -> Result<String, String> {
+        super::assets::scoped_uri(&self.instance, &self.binding_basis, uri)
+    }
+
     fn ensure_open(&self) -> Result<(), String> {
         if self.closed.load(Ordering::Acquire) {
             return Err("UI service scope is closed".into());
@@ -129,11 +139,7 @@ impl Services {
         Ok(source)
     }
 
-    async fn resolve(&self, locator: &str) -> Result<(Client, String), String> {
-        let selection = self
-            .routes
-            .get(locator)
-            .ok_or("Unknown UI service locator")?;
+    async fn capture(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Binding>>, String> {
         let mut binding = self.binding.lock().await;
         loop {
             let source = self.current_source()?;
@@ -162,14 +168,52 @@ impl Services {
                     (Err(error), Ok(_)) | (_, Err(error)) => return Err(error),
                 }
             }
-            let bound = binding.as_ref().expect("UI session captured above");
-            let endpoint = bound
-                .imports
-                .get(&selection.import)
-                .and_then(|endpoints| endpoints.get(selection.index))
-                .ok_or("Host omitted a declared UI service binding")?;
-            return Ok((bound.client.clone(), endpoint.clone()));
+            return Ok(binding);
         }
+    }
+
+    pub(super) async fn client(&self) -> Result<Client, String> {
+        let binding = self.capture().await?;
+        Ok(binding
+            .as_ref()
+            .expect("UI session captured above")
+            .client
+            .clone())
+    }
+
+    pub(super) async fn mutation_context(
+        &self,
+        endpoint: &str,
+    ) -> Result<(Client, String, JsonValue), String> {
+        let binding = self.capture().await?;
+        let bound = binding.as_ref().expect("UI session captured above");
+        for (import, endpoints) in &bound.imports {
+            if let Some((index, target)) = endpoints.iter().enumerate().find(|(_, target)| {
+                target.as_str() == endpoint || (import.as_str() == endpoint && endpoints.len() == 1)
+            }) {
+                return Ok((
+                    bound.client.clone(),
+                    target.clone(),
+                    json!({"kind":"ui", "instance":self.instance, "import":import, "index":index}),
+                ));
+            }
+        }
+        Err("UI application has no such service endpoint".into())
+    }
+
+    async fn resolve(&self, locator: &str) -> Result<(Client, String), String> {
+        let selection = self
+            .routes
+            .get(locator)
+            .ok_or("Unknown UI service locator")?;
+        let binding = self.capture().await?;
+        let bound = binding.as_ref().expect("UI session captured above");
+        let endpoint = bound
+            .imports
+            .get(&selection.import)
+            .and_then(|endpoints| endpoints.get(selection.index))
+            .ok_or("Host omitted a declared UI service binding")?;
+        Ok((bound.client.clone(), endpoint.clone()))
     }
 
     fn correlation(&self, locator: &str) -> Result<JsonValue, String> {
@@ -182,7 +226,7 @@ impl Services {
         )
     }
 
-    async fn close(&self) -> Result<(), String> {
+    pub(super) async fn close(&self) -> Result<(), String> {
         self.closed.store(true, Ordering::Release);
         self.cleanup
             .get_or_init(|| async {
@@ -209,6 +253,14 @@ impl Drop for UiScope {
 
 #[class]
 impl UiScope {
+    pub fn application(&self) -> Instance<ApplicationHost> {
+        Instance::new(ApplicationHost {
+            owner: self.services.owner.clone(),
+            client: ApplicationClient::Ui(self.services.clone()),
+            initial_session: self.initial_session.clone(),
+        })
+    }
+
     #[getter]
     pub fn imports(&self) -> JsonValue {
         self.services.imports.clone()

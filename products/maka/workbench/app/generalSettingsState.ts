@@ -18,8 +18,8 @@
  */
 
 import { batch, cleanup, signal } from 'nsh';
-import { host } from './host';
-import { applyLanguagePreference, tr } from './locale';
+import type { Host } from './host';
+import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { errorText, message, UiError } from './text';
 import type {
   AgentGlobalInstructionsView,
@@ -51,6 +51,11 @@ type GlobalEditor = {
   document: { basis: GlobalInstructions; content: string; conflict: boolean } | null;
 };
 type Editor = PreferencesEditor | GlobalEditor;
+export type GeneralSettingsSnapshot = {
+  facts: SettingsAssistantPreferences | null;
+  editor: Editor | null;
+  view: number;
+};
 type PreferencesAction = {
   view: number;
   policyRevision: number | null;
@@ -70,11 +75,17 @@ export const assistantLanguages = (): { value: LanguagePreference; label: string
   { value: 'zh-TW', label: '繁體中文' },
 ];
 
-export function createGeneralSettings(operations: SettingsOperations, active: () => boolean) {
-  const facts = signal<SettingsAssistantPreferences | null>(null);
-  const editor = signal<Editor | null>(null);
+export function createGeneralSettings(
+  host: Host,
+  operations: SettingsOperations,
+  active: () => boolean,
+  restored?: GeneralSettingsSnapshot,
+  languageChanged?: (locale: string) => void,
+) {
+  const facts = signal<SettingsAssistantPreferences | null>(restored?.facts ?? null);
+  const editor = signal<Editor | null>(restored?.editor ?? null);
   const loading = signal(false);
-  const view = signal(0);
+  const view = signal(restored?.view ?? 0);
   let alive = true;
   let enabled = false;
   let read = 0;
@@ -140,6 +151,7 @@ export function createGeneralSettings(operations: SettingsOperations, active: ()
         {},
       );
       applyLanguagePreference(result.language ?? 'auto', result.revision);
+      languageChanged?.(currentLocale());
       if (owns()) facts.set(result);
     } catch (reason) {
       if (owns()) operations.report(reason);
@@ -164,8 +176,10 @@ export function createGeneralSettings(operations: SettingsOperations, active: ()
       if (!alive) return;
       switch (result.kind) {
         case 'committed':
-          if (mutation.kind === 'language')
+          if (mutation.kind === 'language') {
             applyLanguagePreference(mutation.preference, result.revision);
+            languageChanged?.(currentLocale());
+          }
           // Retire the submitted editor before reading new facts. A failed read
           // cannot leave a committed draft available to submit a second time.
           batch(() => {
@@ -342,6 +356,17 @@ export function createGeneralSettings(operations: SettingsOperations, active: ()
     cancelRead();
   });
   return {
+    async initializeLanguage() {
+      const result = await host.query('settings', 'assistantPreferences', {});
+      if (!alive) return;
+      applyLanguagePreference(result.language ?? 'auto', result.revision);
+      languageChanged?.(currentLocale());
+    },
+    snapshot: (): GeneralSettingsSnapshot => ({
+      facts: facts(),
+      editor: editor(),
+      view: view(),
+    }),
     facts,
     editor,
     loading,

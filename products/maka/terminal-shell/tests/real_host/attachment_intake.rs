@@ -39,9 +39,10 @@ async fn native_file_gestures_keep_original_uploads_when_hidden_or_rebound() {
         let source = r#"
 import { cleanup, signal, Text, View } from "nsh";
 import { Button } from "nsh/base";
-import { host, AttachmentPicker } from "maka/host";
+import { host as nativeHost, AttachmentPicker } from "maka/host";
 export function activate(context) {
-  return { root: { kind: "root", render() {
+  const host = nativeHost;
+  return { exports: { root: { kind: "root", render() {
     const original = host.session(host.initialSession);
     const other = host.session(context.configuration.otherSession);
     const selected = signal(original);
@@ -68,7 +69,7 @@ export function activate(context) {
   </Button>
   <Text>{report()}</Text><Text>{`uploads:${count()}`}</Text>
 </View>;
-  } } };
+  } } } };
 }
 "#;
         let source = nsh_bundler::compile_module("attachment-intake.tsx", source,

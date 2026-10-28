@@ -19,8 +19,8 @@
 
 import { cleanup, signal } from 'nsh';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/index.js';
-import type { Control } from './Conversation';
-import { host } from './host';
+import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
+import type { Host } from './host';
 import { createText, errorText, message } from './text';
 
 type AgentMcpView = ServiceMethods['agent']['projectMcp']['output'];
@@ -28,7 +28,7 @@ type AgentMcpTrustResult = ServiceMethods['agent']['trustProjectMcp']['output'];
 
 type Configuration = Extract<AgentMcpView, { kind: 'configuration' }>;
 export type ProjectMcp = ReturnType<typeof createProjectMcp>;
-export function createProjectMcp(sessionId: string, control: Control) {
+export function createProjectMcp(host: Host, sessionId: string, control: Control) {
   const proposal = signal<Configuration | null>(null);
   const pending = signal(false);
   const error = createText();

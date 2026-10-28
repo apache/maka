@@ -20,7 +20,7 @@
 import { UiError } from './text';
 import { tr } from './locale';
 import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
-import type { Control } from './Conversation';
+import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
 
 export type SessionActionTarget = Pick<
   AgentSession,

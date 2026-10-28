@@ -23,7 +23,7 @@ import { cleanup, inputAction, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentHistorySourceRead } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameValue } from '../../../../plugins/shared/value';
-import { host } from './host';
+import type { Host } from './host';
 import { messageBytes, type Position } from './history';
 import { C, captionTextStyle, codeTextStyle, controlStyle } from './ui';
 
@@ -41,6 +41,7 @@ export type ToolSourceRef = {
 // One mounted reader owns one immutable field/path at its opening fence.
 // It is shared by the readable card and its literal original-details view.
 export function createToolSource(
+  host: Host,
   reference: ToolSourceRef,
   sessionId: string,
   through: number,

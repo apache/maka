@@ -21,14 +21,15 @@ import { cleanup, effect, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { host } from 'nsh';
 import { keymap } from 'nsh';
-import type { ComposerSession } from './Composer';
+import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { tr } from './locale';
 import { bodyTextStyle, C, controlFocusStyle, controlHoverStyle, controlStyle } from './ui';
 
-type StopRequest = { owner: ComposerSession; invocationId: string };
+type InterruptSession = Pick<ComposerSession, 'draft' | 'invocation' | 'stopping' | 'stop'>;
+type StopRequest = { owner: InterruptSession; invocationId: string };
 
 export function createTerminalInterrupt(options: {
-  session(): ComposerSession | null;
+  session(): InterruptSession | null;
   blocked(): boolean;
   dismissOverlay(): boolean;
   report(reason: unknown): void;
@@ -53,7 +54,7 @@ export function createTerminalInterrupt(options: {
     options.session()?.draft();
     reset();
   });
-  let previousOwner: ComposerSession | null = null;
+  let previousOwner: InterruptSession | null = null;
   let previousInvocation: string | null = null;
   effect(() => {
     const owner = options.session();

@@ -17,8 +17,14 @@
  * under the License.
  */
 
-import { createText, UiError, errorText, type UiText, message as uiMessage } from './text';
-import { tr } from './locale';
+import {
+  createText,
+  UiError,
+  errorText,
+  type UiText,
+  message as uiMessage,
+} from '../../../../products/maka/workbench/app/text';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 import {
   batch,
   cleanup,
@@ -36,7 +42,7 @@ import { Button } from 'nsh/base';
 import { keymap, platform } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
-  host,
+  useHost,
   loadDraft,
   saveDraft,
   reserveSend,
@@ -45,43 +51,79 @@ import {
   recoverSend,
   abandonSend,
   type ScopedHost,
-} from './host';
-import { C, Header, captionTextStyle, controlStyle, type BrowserHeader } from './ui';
-import { acceptedSend, mergeChunks, replayStartCursor, updateHistoryMetadata } from './history';
-import type { Row, Position, Subscription } from './history';
-import { thinkingSummary } from './thinkingSummary';
-import type { ComposerSession, SendAction } from './Composer';
-import type { QueueSession } from './QueueDock';
-import { sameRoute } from './modelSelection';
-import type { BackendIdentity, ModelDetails } from './modelSelection';
-import { CompactionDivider } from './CompactionDivider';
-import { MessageRow, type MessageViewState } from './MessageRow';
-import { FinalActions } from './FinalActions';
-import type { SessionAction } from './sessionLifecycle';
-import { createProjectMcp } from './projectMcp';
-import { createSessionPermissions } from './sessionPermissions';
-import { TurnPanel, TurnSummary, turnOutcome } from './TurnPanel';
-import type { GroupViewState, LiveActivity, TurnViewState } from './TurnPanel';
+} from '../../../../products/maka/workbench/app/host';
+import {
+  C,
+  Header,
+  captionTextStyle,
+  controlStyle,
+  type BrowserHeader,
+} from '../../../../products/maka/workbench/app/ui';
+import {
+  acceptedSend,
+  mergeChunks,
+  replayStartCursor,
+  updateHistoryMetadata,
+} from '../../../../products/maka/workbench/app/history';
+import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
+import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
+import type {
+  ComposerSession,
+  ComposerSendAction as SendAction,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
+import type { QueueSession } from '../../../../products/maka/workbench/app/QueueDock';
+import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
+import type {
+  BackendIdentity,
+  ModelDetails,
+} from '../../../../products/maka/workbench/app/modelSelection';
+import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
+import {
+  MessageRow,
+  type MessageViewState,
+} from '../../../../products/maka/workbench/app/MessageRow';
+import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
+import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
+import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
+import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
+import {
+  TurnPanel,
+  TurnSummary,
+  turnOutcome,
+} from '../../../../products/maka/workbench/app/TurnPanel';
+import type {
+  GroupViewState,
+  LiveActivity,
+  TurnViewState,
+} from '../../../../products/maka/workbench/app/TurnPanel';
 import {
   projectProcessGroups,
   sameProcessActivity,
   sameProcessRows,
   sourceSequence,
   stableRowId,
-} from './processGroups';
+} from '../../../../products/maka/workbench/app/processGroups';
 import type {
   ProcessActivity,
   ProcessEntry,
   ProcessGroup,
   ProcessRow,
   TurnPresentation,
-} from './processGroups';
-import { railWidth, ReturnToLatest, TurnNavigation } from './TurnNavigation';
-import type { TurnNavigationItem } from './TurnNavigation';
-import type { ConversationStatus } from './sessionStatus';
-import type { ImagePreview } from './ImageThumbnail';
-import { latestToolActivity, updateToolActivity } from './toolActivity';
-import type { ToolActivity } from './toolActivity';
+} from '../../../../products/maka/workbench/app/processGroups';
+import {
+  railWidth,
+  ReturnToLatest,
+  TurnNavigation,
+} from '../../../../products/maka/workbench/app/TurnNavigation';
+import type { TurnNavigationItem } from '../../../../products/maka/workbench/app/TurnNavigation';
+import type { ConversationStatus } from '../../../../products/maka/workbench/app/sessionStatus';
+import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
+import {
+  latestToolActivity,
+  updateToolActivity,
+} from '../../../../products/maka/workbench/app/toolActivity';
+import type { ToolActivity } from '../../../../products/maka/workbench/app/toolActivity';
 import type {
   AgentHistoryAttachment,
   AgentHistoryChunk,
@@ -100,7 +142,7 @@ import {
   createAttachmentDraft,
   type AttachmentEdit,
   type DraftAttachment,
-} from './attachmentDraft';
+} from '../../../../products/maka/workbench/app/attachmentDraft';
 
 export type ConversationAnchor = { messageId: string; position: Position };
 type HistoryNavigation =
@@ -110,7 +152,14 @@ type HistoryNavigation =
 type HistoryWindow = Pick<AgentHistoryPage, 'through' | 'before' | 'after'> & { identity: object };
 
 export type Control = (method: string, input: any) => Promise<any>;
-export type ConversationHandle = ComposerSession & {
+export type ConversationHandle = Omit<
+  ComposerSession,
+  'attachments' | 'modelDetails' | 'permissions' | 'projectMcp' | 'completion' | 'checklist'
+> & {
+  attachments: AttachmentDraft;
+  modelDetails(): ModelDetails;
+  permissions: ReturnType<typeof createSessionPermissions>;
+  projectMcp: ReturnType<typeof createProjectMcp>;
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
   computerApps(): AgentComputerApps;
@@ -181,6 +230,7 @@ function receiptMessage(reply: any): UiText {
 }
 
 export function Conversation(props: ConversationProps) {
+  const host = useHost();
   const root = signal<ViewRef | null>(null);
   effect(() => {
     const stop = props.stopAction();
@@ -203,8 +253,8 @@ export function Conversation(props: ConversationProps) {
   const stoppingRun = signal<string | null>(null);
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
-  const permissions = createSessionPermissions(sessionId, props.control);
-  const projectMcp = createProjectMcp(sessionId, props.control);
+  const permissions = createSessionPermissions(host, sessionId, props.control);
+  const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
   const interactions = signal<AgentPendingInteractions>({ revision: -1, entries: [] });

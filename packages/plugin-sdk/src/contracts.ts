@@ -46137,6 +46137,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'view',
+                      },
+                      contract: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'contract'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'panel',
                       },
                       title: {
@@ -46155,6 +46169,40 @@ export const contracts = {
                       },
                       title: {
                         $ref: '#/$defs/UiText',
+                      },
+                      description: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/UiText',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      shortcut: {
+                        type: ['string', 'null'],
+                      },
+                      order: {
+                        type: ['integer', 'null'],
+                        format: 'int32',
+                      },
+                      trigger: {
+                        type: ['string', 'null'],
+                      },
+                      takesArgument: {
+                        type: 'boolean',
+                        default: false,
+                      },
+                      hint: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/UiText',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
                       },
                     },
                     additionalProperties: false,

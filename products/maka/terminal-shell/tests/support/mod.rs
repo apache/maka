@@ -78,17 +78,110 @@ fn frame_time() -> f64 {
     STARTED.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
-pub(super) async fn product_package(name: &'static str) -> Package {
-    tokio::task::spawn_blocking(move || {
-        Package::read_from(
-            &PathBuf::from(env!("OUT_DIR"))
-                .join("product/packages")
-                .join(name),
-        )
+async fn product_packages() -> BTreeMap<String, Package> {
+    tokio::task::spawn_blocking(|| {
+        static PACKAGES: OnceLock<BTreeMap<String, Package>> = OnceLock::new();
+        PACKAGES
+            .get_or_init(|| {
+                std::fs::read_dir(PathBuf::from(env!("OUT_DIR")).join("product/packages"))
+                    .unwrap()
+                    .map(|entry| {
+                        let entry = entry.unwrap();
+                        (
+                            entry.file_name().into_string().unwrap(),
+                            Package::read_from(&entry.path()).unwrap(),
+                        )
+                    })
+                    .collect()
+            })
+            .clone()
     })
     .await
     .unwrap()
-    .unwrap()
+}
+
+pub(super) async fn product_package(name: &'static str) -> Package {
+    product_packages().await.remove(name).unwrap()
+}
+
+async fn add_product_ui(plan: &mut Value, packages: &mut Vec<Package>, deployment: Uuid) {
+    let bundled = product_packages().await;
+    let references: BTreeMap<_, _> = bundled
+        .iter()
+        .map(|(name, package)| (name, package.application_ref()))
+        .collect();
+    let mut configuration = json!({
+        "locale":"en",
+        "packages":references,
+        "agent":plan["instances"]["agent"]["configuration"]["values"],
+        "hostDeployment":deployment
+    });
+    if let Some(processes) = plan["instances"].get("processes") {
+        configuration["processes"] = processes["configuration"]["values"].clone();
+    }
+    let source = tokio::task::spawn_blocking(|| {
+        std::fs::read_to_string(
+            PathBuf::from(env!("OUT_DIR")).join("product/authoring/composition.mjs"),
+        )
+        .unwrap()
+    })
+    .await
+    .unwrap();
+    let vm = maka_js_runtime::plugin::Vm::pure(Default::default()).unwrap();
+    let module = vm.load("real-host-ui-composition".into(), source).unwrap();
+    let names: Vec<String> = serde_json::from_value(
+        module
+            .call(
+                vec!["installationNames".into()],
+                vec![configuration.clone()],
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mut keys: BTreeMap<String, Uuid> = [
+        ("workspace-files-ui", 13),
+        ("workbench-ui", 14),
+        ("conversations-ui", 17),
+        ("composer-ui", 18),
+        ("settings-ui", 19),
+    ]
+    .into_iter()
+    .map(|(name, key)| (name.into(), Uuid::from_u128(key)))
+    .collect();
+    for name in names {
+        keys.entry(name).or_insert_with(Uuid::new_v4);
+    }
+    configuration["keys"] = serde_json::to_value(keys).unwrap();
+    let source = module
+        .call(vec!["composition".into()], vec![configuration])
+        .await
+        .unwrap();
+    module.close().await.unwrap();
+    vm.shutdown().await;
+
+    let bindings = plan["instances"]["gateway"]["bindings"].clone();
+    for (name, source_node) in source["host"]["instances"].as_object().unwrap() {
+        if source_node["usePackage"] != "ui" {
+            continue;
+        }
+        let mut node = source_node.clone();
+        for (import, targets) in node["bindings"].as_object_mut().unwrap() {
+            *targets = bindings
+                .get(import)
+                .unwrap_or_else(|| panic!("fixture is missing the product UI import {import}"))
+                .clone();
+        }
+        let reference: maka_plugin_core::package::PackageRef =
+            serde_json::from_value(node["package"]["package"].clone()).unwrap();
+        let package = bundled
+            .values()
+            .find(|package| package.application_ref() == reference)
+            .unwrap();
+        packages.push(package.clone());
+        plan["instances"][name] = node;
+    }
+    plan["ui"] = source["host"]["ui"].clone();
 }
 
 pub fn load_application(
@@ -113,7 +206,7 @@ pub fn tick(view: &mut AppView) {
 #[cfg(unix)]
 pub mod pty;
 
-/// A real Agent, settings store and public Host gateway, without the old UI.
+/// A real Agent, settings store and product-composed UI over a public Host gateway.
 pub struct Fixture {
     pub address: PathBuf,
     pub store: Arc<RootStore>,
@@ -139,7 +232,6 @@ enum InitialCatalog {
 
 enum AdditionalServices {
     None,
-    WorkspaceUi,
     #[cfg(unix)]
     Terminals,
     ObservedGateway(gateway::Publications),
@@ -222,7 +314,7 @@ impl Fixture {
             true,
             None,
             None,
-            AdditionalServices::WorkspaceUi,
+            AdditionalServices::None,
         )
         .await
     }
@@ -276,11 +368,8 @@ impl Fixture {
         file_tool: Option<Value>,
         services: AdditionalServices,
     ) -> Self {
-        let workspace_ui =
-            file_tool.is_some() || matches!(&services, AdditionalServices::WorkspaceUi);
         let (terminals, gateway_publications) = match services {
             AdditionalServices::None => (false, None),
-            AdditionalServices::WorkspaceUi => (false, None),
             #[cfg(unix)]
             AdditionalServices::Terminals => (true, None),
             AdditionalServices::ObservedGateway(published) => (false, Some(published)),
@@ -518,7 +607,6 @@ impl Fixture {
             gateway,
             manager,
         ];
-        let workbench = product_package("workbench").await;
         let outcomes = product_package("skill-outcomes").await;
         let logs = product_package("host-logs").await;
         plan["instances"]["skill-outcomes"] = node(&outcomes, 15, json!({}), json!({}));
@@ -527,29 +615,10 @@ impl Fixture {
             json!([{"kind":"instance","path":["skill-outcomes"],"export":"Outcomes"}]);
         plan["instances"]["gateway"]["bindings"]["hostLogs"] =
             json!([{"kind":"instance","path":["host-logs"],"export":"HostLogs"}]);
-        plan["instances"]["workbench-ui"] = json!({
-            "key": Uuid::from_u128(14),
-            "package":{"source":"pinned","package":workbench.application_ref()},
-            "usePackage":"ui",
-            "configuration":{"values":{}},
-            "bindings":plan["instances"]["gateway"]["bindings"]
-        });
-        plan["ui"] = json!({"path":["workbench-ui"],"id":"root"});
-        packages.extend([workbench, outcomes, logs]);
+        packages.extend([outcomes, logs]);
         if has_files {
             plan["instances"]["files"] = node(&files, 5, json!({}), json!({}));
             packages.push(files);
-        }
-        if workspace_ui {
-            let ui = product_package("workspace-files").await;
-            plan["instances"]["workspace-files-ui"] = json!({
-                "key": Uuid::from_u128(13),
-                "package":{"source":"pinned","package":ui.application_ref()},
-                "usePackage":"ui",
-                "configuration":{"values":{}},
-                "bindings":{}
-            });
-            packages.push(ui);
         }
         if terminals {
             plan["instances"]["processes"] = node(
@@ -565,10 +634,9 @@ impl Fixture {
             );
             plan["instances"]["gateway"]["bindings"]["terminal"] =
                 json!([{"kind":"instance","path":["processes"],"export":"terminal"}]);
-            plan["instances"]["workbench-ui"]["bindings"]["terminal"] =
-                plan["instances"]["gateway"]["bindings"]["terminal"].clone();
             packages.push(processes);
         }
+        add_product_ui(&mut plan, &mut packages, deployment).await;
         let input = serde_json::from_value(plan).unwrap();
         store
             .commit_application(deployment, 0, input, vec![], packages)

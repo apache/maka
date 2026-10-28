@@ -467,12 +467,22 @@ export type UiContribution =
       kind: 'root';
     }
   | {
+      kind: 'view';
+      contract: string;
+    }
+  | {
       kind: 'panel';
       title: UiText;
     }
   | {
       kind: 'command';
       title: UiText;
+      description?: UiText | null;
+      shortcut?: string | null;
+      order?: number | null;
+      trigger?: string | null;
+      takesArgument?: boolean;
+      hint?: UiText | null;
     }
   | {
       kind: 'tool_renderer';

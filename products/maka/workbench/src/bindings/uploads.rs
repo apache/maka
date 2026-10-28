@@ -101,11 +101,8 @@ impl UploadSubscription {
         updates.receiver.borrow_and_update();
         drop(updates);
         execute(scope.owner.clone(), async move {
-            let operations = scope
-                .owner
-                .client
-                .pending_uploads(&scope.session, EDITOR)
-                .await?;
+            let client = scope.client.resolve(&scope.owner).await?;
+            let operations = client.pending_uploads(&scope.session, EDITOR).await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
         })
         .await
@@ -464,9 +461,8 @@ async fn upload(
     updates: &Updates,
 ) -> Result<(), String> {
     updates.emit(status(id, "uploading", name, None));
-    let mutation = scope
-        .owner
-        .client
+    let client = scope.client.resolve(&scope.owner).await?;
+    let mutation = client
         .upload_attachment(id, &scope.session, EDITOR, snapshot)
         .await?;
     mutation.prepare().await?;

@@ -25,7 +25,6 @@ import { windowSize } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
-import { immutableAsset } from './immutableAsset';
 import { tr } from './locale';
 import type {
   AgentToolImageRead,
@@ -45,16 +44,14 @@ export type ImagePreview = {
 
 export function ImageThumbnail(props: {
   source: PreviewSource;
+  uri: string;
   compact?: boolean;
   label?: string;
   tooltip?: string;
   preview(image: ImagePreview): void;
 }) {
   const source = props.source;
-  const uri =
-    source.kind === 'tool-image'
-      ? immutableAsset('tool-image', source.read)
-      : immutableAsset('attachment-image', source.read);
+  const uri = props.uri;
   const action = Object.freeze({ sessionId: source.read.sessionId, uri });
   const size = signal<{ width: number; height: number } | null>(null);
   const error = createText();

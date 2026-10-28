@@ -23,7 +23,7 @@ import type {
   AgentComputerApps,
   GrantScope,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
-import type { Control } from './Conversation';
+import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
 import { computerAppRiskMessage } from './interaction-computer-app';
 import { tr } from './locale';
 import { errorText, renderText, type UiText } from './text';

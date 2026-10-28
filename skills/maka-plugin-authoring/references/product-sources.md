@@ -27,8 +27,10 @@ The bundled skill includes selected TypeScript source from the same build as its
 | Inspect package and management contracts | `references/sdk/contracts/`, `references/sdk/generated/runtime.ts` |
 | Wire Agent/WorkHub instances and grants | `products/maka/bundle/src/composition.ts` |
 | Build a root application or UI contribution | `assets/starter/ui.tsx`, `references/sdk/workbench.ts` |
+| Replace the composer using the resident session controller | `assets/composer-ui/README.md`, `assets/composer-ui/index.tsx`, `references/sdk/composer-view.ts` |
+| Inspect the shared business UI input contracts | `references/sdk/workbench-views.ts`, `references/sdk/workspace-view.ts` |
 
-In packaged resources, prepend `references/source/` to checkout paths. Relative imports retain their checkout spelling; imports into `packages/plugin-sdk/src/` are available under `references/sdk/`. This is reference source, not a standalone build tree. The quickstart starter supplies the standalone example.
+In packaged resources, prepend `references/source/` to checkout paths. Relative imports retain their checkout spelling; imports into `packages/plugin-sdk/src/` are available under `references/sdk/`. This is reference source, not a standalone build tree. The starter and composer assets supply standalone examples.
 
 Read a package declaration before its implementation. Inspect the current Host through its deployment manager before editing it; installed sources may differ from bundled examples. UI contributions use the same package and deployment source as Host services, and both shells mount the selected root through NSH. The bundled Maka workbench is itself an ordinary UI package.
 
