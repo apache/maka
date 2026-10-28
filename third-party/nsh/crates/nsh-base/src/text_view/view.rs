@@ -369,7 +369,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                     d.blocks
                         .get(index)
                         .cloned()
-                        .map(|block| DocumentRow::Block(d.kind, index, block))
+                        .map(|block| DocumentRow::Block(d.kind, index, Box::new(block)))
                         .or_else(|| {
                             (index == d.blocks.len() && !d.footnotes.is_empty())
                                 .then_some(DocumentRow::Footnotes)
@@ -394,7 +394,7 @@ pub fn TextView(props: TextViewProps, cx: Scope<TextViewEvent>) -> impl IntoElem
                             })
                         });
                         let block = computed(move || match item.get() {
-                            DocumentRow::Block(_, _, block) => block,
+                            DocumentRow::Block(_, _, block) => *block,
                             DocumentRow::Footnotes => unreachable!(),
                         });
                         cx.block(block, index.to_string(), last, before)
@@ -465,7 +465,7 @@ fn default_content_style() -> ListContentStyle {
 
 #[derive(Clone, PartialEq)]
 enum DocumentRow {
-    Block(ProjectionKind, usize, Block),
+    Block(ProjectionKind, usize, Box<Block>),
     Footnotes,
 }
 #[derive(Clone, PartialEq, Eq, Hash)]

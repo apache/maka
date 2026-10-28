@@ -28,8 +28,6 @@ export default {
     'zh-CN': { displayName: '技能结果', description: '记录技能执行结果。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.skillOutcomes),
-    },
+    host: native(sdk.nativeImplementations.skillOutcomes),
   },
 };

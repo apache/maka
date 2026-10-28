@@ -27,7 +27,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use maka_event_log::applications::{PreparedApplication, launch::Launch};
 use maka_event_log::root_store::RootStore;
 use maka_plugin_core::{
-    composition::{ExecutionLocation, Override, PackageUse},
+    composition::{Override, PackageUse},
     package::{PackageRef, PackageSelection},
     plan::{PackageChange, Plan},
 };
@@ -393,9 +393,6 @@ async fn synchronize_loaded_packages(
 }
 
 pub(super) fn validate_target(input: &Input, packages: &[Package]) -> Result<(), HostError> {
-    if input.environment.location != ExecutionLocation::Host {
-        return Err("public Host update requires a local Host source".into());
-    }
     maka_event_log::applications::validate_application(input, &[], packages)?;
     Ok(())
 }

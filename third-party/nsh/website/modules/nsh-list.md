@@ -115,10 +115,10 @@ interface ViewToken<T> {
 }
 
 interface ViewabilityConfig {
-  /** Percent of the viewport an item must cover to count as viewable. */
-  viewAreaCoveragePercentThreshold?: number;
-  /** Percent of an item that must be visible. Without either threshold, any visible pixel counts. */
-  itemVisiblePercentThreshold?: number;
+  /** How much of the viewport an item must cover to count as viewable, from 0 to 1. */
+  viewAreaCoverageThreshold?: number;
+  /** How much of an item must be visible, from 0 to 1. Without either threshold, any visible pixel counts. */
+  itemVisibleThreshold?: number;
   /** Milliseconds items must stay viewable before they are reported. */
   minimumViewTime?: number;
 }

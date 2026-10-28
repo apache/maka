@@ -61,7 +61,7 @@ impl EventLog {
         let fence = sql_number(through)?;
         let (source, item) = sql_position(cut)?;
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     super::directory::check_read(connection, &session, through).await?;
                     let crossing: bool = sqlx::query_scalar(
@@ -107,7 +107,7 @@ impl EventLog {
         let fence = read.through;
         let direction = read.direction;
         let limit = read.limit as i64;
-        self.connection.run(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
+        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
             super::directory::check_read(tx, &session, fence).await?;
             let query = match (direction, position.is_some()) {
                 (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id FROM transcript_directory WHERE session_id=?1 AND (source_sequence,item_index)<=(?3,?4) ORDER BY source_sequence DESC,item_index DESC LIMIT ?2",
@@ -126,7 +126,7 @@ impl EventLog {
             for row in selected {
                 let position = row_position(row.try_get(0)?, row.try_get(1)?)?;
                 super::bodycache::ensure(tx, &session, position).await?;
-                let (bytes, digest): (i64, String) = sqlx::query_as("SELECT total_bytes,digest FROM transcript_cache.rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+                let (bytes, digest): (i64, String) = sqlx::query_as("SELECT total_bytes,digest FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
                     .bind(&session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).fetch_one(&mut *tx).await?;
                 result.push(TranscriptRowHeader { position, turn_id: row.try_get(2)?, total_bytes: sequence_number(bytes)?, digest });
             }
@@ -154,14 +154,14 @@ impl EventLog {
                 .ok_or_else(|| invalid("invalid transcript byte offset"))?,
         )?;
         let session = session.to_owned();
-        self.connection.run(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
+        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
             super::directory::check_read(tx, &session, position.source_sequence).await?;
             super::bodycache::ensure(tx, &session, position).await?;
-            let total:i64=sqlx::query_scalar("SELECT total_bytes FROM transcript_cache.rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+            let total:i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
                 .bind(&session).bind(source).bind(item).fetch_optional(&mut *tx).await?.ok_or_else(||invalid("transcript message was not found"))?;
             let total = sequence_number(total)?;
             if offset.checked_add(length).is_none_or(|end|end>total) { return Err(invalid("transcript fragment exceeds message")); }
-            let bytes:Vec<u8>=sqlx::query_scalar("SELECT substr(payload,?4,?5) FROM transcript_cache.rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+            let bytes:Vec<u8>=sqlx::query_scalar("SELECT substr(payload,?4,?5) FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
                 .bind(&session).bind(source).bind(item).bind(start).bind(length as i64).fetch_one(&mut *tx).await?;
             if bytes.len() as u64 != length { return Err(invalid("transcript payload length changed")); }
 
@@ -180,7 +180,7 @@ impl EventLog {
         let fence = sql_number(through)?;
         let session = session.to_owned();
         let turn = turn.to_owned();
-        self.connection.run(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
+        self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
             super::directory::check_read(tx,&session,through).await?;
             let first:Option<(i64,i64)>=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 ORDER BY source_sequence,item_index LIMIT 1")
                 .bind(&session).bind(&turn).bind(fence).fetch_optional(&mut *tx).await?;
@@ -201,7 +201,7 @@ impl EventLog {
                 if selected.is_empty() { break; }
                 for (source,item) in selected {
                     super::bodycache::ensure(tx,&session,row_position(source,item)?).await?;
-                    let size: i64=sqlx::query_scalar("SELECT total_bytes FROM transcript_cache.rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+                    let size: i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
                         .bind(&session).bind(source).bind(item).fetch_one(&mut *tx).await?;
                     bytes=bytes.checked_add(sequence_number(size)?).ok_or(StoreError::PrefixTooLarge)?;
                     cursor=(source,item);

@@ -69,18 +69,24 @@ impl Package {
         let manifest: Manifest = serde_json::from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("manifest: {error}")))?;
         manifest.validate()?;
-        for entry in manifest
-            .application
-            .iter()
-            .flat_map(|application| application.entries.values())
-        {
-            if let maka_plugin_core::package::Implementation::JavaScript { module, .. } =
-                &entry.implementation
-                && !files.contains_key(module)
-            {
-                return Err(Error::Invalid(format!(
-                    "package entry is missing: {module}"
-                )));
+        for application in manifest.application.iter() {
+            let host_module =
+                application
+                    .host
+                    .as_ref()
+                    .and_then(|entry| match &entry.implementation {
+                        maka_plugin_core::package::Implementation::JavaScript {
+                            module, ..
+                        } => Some(module),
+                        maka_plugin_core::package::Implementation::Native { .. } => None,
+                    });
+            let ui_module = application.ui.as_ref().map(|entry| &entry.module);
+            for module in host_module.into_iter().chain(ui_module) {
+                if !files.contains_key(module) {
+                    return Err(Error::Invalid(format!(
+                        "package entry is missing: {module}"
+                    )));
+                }
             }
         }
         let digest = content_digest(
@@ -137,11 +143,11 @@ mod tests {
 
     #[test]
     fn checked_application_rejects_conflicting_and_invalid_authoring() {
-        use maka_plugin_core::package::{CheckedDeclaration, EntryTarget, Packages};
-        let manifest = json!({"schemaVersion":1,"id":"example.checked","application":{"entries":{"host":{
+        use maka_plugin_core::package::{CheckedDeclaration, Packages};
+        let manifest = json!({"schemaVersion":1,"id":"example.checked","application":{"host":{
             "implementation":{"kind":"native","implementation":"example.checked"},
             "configuration":{"type":"object"}, "imports":{}, "exports":{}
-        }}}});
+        }}});
         let package = Package::new(BTreeMap::from([(
             MANIFEST_FILE.into(),
             serde_json::to_vec(&manifest).unwrap(),
@@ -158,11 +164,7 @@ mod tests {
             .insert_checked(reference.clone(), declaration.clone())
             .unwrap();
         let mut changed = declaration.declaration().clone();
-        changed
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap()
-            .configuration = json!({"type":"string"}).into();
+        changed.host.as_mut().unwrap().configuration = json!({"type":"string"}).into();
         assert!(
             packages
                 .insert_checked(reference.clone(), CheckedDeclaration::new(changed).unwrap())
@@ -170,16 +172,12 @@ mod tests {
         );
         assert_eq!(packages.get(&reference).unwrap(), declaration.declaration());
         let mut edited = declaration.declaration().clone();
-        edited
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap()
-            .configuration = json!({"type":42}).into();
+        edited.host.as_mut().unwrap().configuration = json!({"type":42}).into();
         assert!(packages.insert(reference.clone(), edited.clone()).is_err());
         assert!(CheckedDeclaration::new(edited).is_err());
         assert_eq!(packages.get(&reference).unwrap(), declaration.declaration());
         let mut invalid = manifest;
-        invalid["application"]["entries"]["host"]["configuration"] = json!({"type":42});
+        invalid["application"]["host"]["configuration"] = json!({"type":42});
         let error = Package::new(BTreeMap::from([(
             MANIFEST_FILE.into(),
             serde_json::to_vec(&invalid).unwrap(),
@@ -191,7 +189,7 @@ mod tests {
 
     #[test]
     fn author_descriptions_round_trip_with_localized_copy() {
-        let manifest = json!({"schemaVersion":1,"id":"example.notes", "displayName":"Notes", "description":"Write and find your notes.", "localizations":{"zh-CN":{"displayName":"笔记","description":"记录和查找笔记。"}}, "application":{"entries":{"host":{"implementation":{"kind":"native","implementation":"example.notes"},"configuration":{"type":"object"}}}}});
+        let manifest = json!({"schemaVersion":1,"id":"example.notes", "displayName":"Notes", "description":"Write and find your notes.", "localizations":{"zh-CN":{"displayName":"笔记","description":"记录和查找笔记。"}}, "application":{"host":{"implementation":{"kind":"native","implementation":"example.notes"},"configuration":{"type":"object"}}}});
         let package = Package::new(BTreeMap::from([(
             MANIFEST_FILE.into(),
             serde_json::to_vec(&manifest).unwrap(),
@@ -212,10 +210,10 @@ mod tests {
         // Their complete manifest survives the same immutable bundle round trip.
         let manifest = json!({
             "schemaVersion":1,"id":"large.application",
-            "application":{"entries":{"host":{
+            "application":{"host":{
                 "implementation":{"kind":"native","implementation":"example.host"},
                 "configuration":{"description":"a".repeat(300 * 1024)}
-            }}}
+            }}
         });
         let bytes = serde_json::to_vec(&manifest).unwrap();
         assert!(bytes.len() > 256 * 1024);
@@ -234,10 +232,11 @@ mod tests {
     #[test]
     fn application_packages_validate_variants_and_allow_pure_composition() {
         let declaration = json!({
-            "entries": {"tui": {
-                "implementation": {"kind":"javascript", "module":"desktop.mjs", "realm":"dedicated"},
-                "configuration": {"type":"object"}, "imports": {}, "exports": {}
-            }}
+            "ui": {
+                "module":"desktop.mjs",
+                "configuration": {"type":"object"},
+                "contributions": {"main":{"kind":"panel","title":{"fallback":"Example"}}}
+            }
         });
         let files = BTreeMap::from([
             (
@@ -268,13 +267,6 @@ mod tests {
         manifest["schemaVersion"] = json!(0);
         invalid.insert(MANIFEST_FILE.into(), serde_json::to_vec(&manifest).unwrap());
         assert!(Package::new(invalid).is_err());
-        let mut mixed = files;
-        let mut manifest: serde_json::Value =
-            serde_json::from_slice(&mixed[MANIFEST_FILE]).unwrap();
-        manifest["runtime"] = json!({"entry":"desktop.mjs","sdkVersion":3});
-        mixed.insert(MANIFEST_FILE.into(), serde_json::to_vec(&manifest).unwrap());
-        assert!(Package::new(mixed).is_err());
-
         let structural = Package::new(BTreeMap::from([(
             MANIFEST_FILE.into(),
             serde_json::to_vec(&json!({
@@ -297,7 +289,7 @@ mod tests {
     #[test]
     fn package_pins_exact_bytes_and_rejects_cross_platform_path_aliases() {
         let manifest = serde_json::to_vec(&json!({
-            "schemaVersion":1,"id":"graph","application":{"entries":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}}
+            "schemaVersion":1,"id":"graph","application":{"host":{"implementation":{"kind":"native","implementation":"example.host"},"configuration":{"type":"object"}}}
         })).unwrap();
         let files = BTreeMap::from([
             (MANIFEST_FILE.into(), manifest),

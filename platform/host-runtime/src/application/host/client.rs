@@ -144,6 +144,47 @@ impl Client {
     pub fn source(&self) -> &DeploymentRef {
         &self.connected.source
     }
+    pub fn ui_imports(&self) -> Option<&BTreeMap<String, Vec<String>>> {
+        self.connected.ui.as_ref().map(|ui| &ui.imports)
+    }
+    /// Capture the declared services of one UI instance without changing this session.
+    /// The original session owns the returned session's admission and cleanup.
+    pub fn bind_ui(
+        &self,
+        source: DeploymentRef,
+        instance: InstanceId,
+    ) -> futures_util::future::BoxFuture<'static, Result<Self>> {
+        let ready =
+            self.phase == Phase::Ready && self.peer.is_none() && self.connected.ui.is_none();
+        let address = self.address.clone();
+        let epoch = self.connected.epoch;
+        let owner = self.connected.session;
+        Box::pin(async move {
+            if !ready {
+                return Err("UI binding capture requires a ready owner session".into());
+            }
+            let anchor = ipc::connect(&address)
+                .await
+                .map_err(|error| error.to_string())?;
+            let child = Self::open(
+                &address,
+                Some(epoch),
+                anchor,
+                Request::ConnectUi {
+                    owner,
+                    source: source.clone(),
+                    instance: instance.clone(),
+                },
+            )
+            .await?;
+            if child.source() != &source
+                || child.connected.ui.as_ref().map(|ui| &ui.instance) != Some(&instance)
+            {
+                return Err("Host captured a different UI instance".into());
+            }
+            Ok(child)
+        })
+    }
     /// Open inert custody for one exact captured endpoint. A caller retains this
     /// Call through errors; reconnection never retries an unconfirmed mutation.
     pub async fn call(
@@ -245,7 +286,7 @@ impl Client {
     /// Refresh future calls within the original owner's endpoint selections.
     /// Accepted calls retain their original custody and are never replayed.
     pub async fn refresh(&mut self) -> Result<()> {
-        if self.phase != Phase::Ready || self.peer.is_some() {
+        if self.phase != Phase::Ready || self.peer.is_some() || self.connected.ui.is_some() {
             return Err("Host refresh requires a ready owner session".into());
         }
         match self.control(SessionControl::Refresh).await? {

@@ -22,7 +22,7 @@ mod active;
 mod compaction;
 pub(crate) use active::interrupted_messages;
 mod bodycache;
-pub(crate) use bodycache::initialize as initialize_cache;
+pub(crate) use bodycache::{initialize as initialize_cache, purge as purge_cache};
 pub(crate) mod directory;
 mod emit;
 mod evidence;

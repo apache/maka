@@ -273,7 +273,11 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn production_ctrl_c_requires_two_presses_and_intervening_input_resets_the_gesture() {
     let fixture = Fixture::registered().await;
-    let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), None);
+    let mut terminal = support::pty::Pty::spawn(
+        env!("CARGO_BIN_EXE_maka"),
+        &fixture.directory.path().join("host"),
+        None,
+    );
     terminal.wait_for("Make something remarkable.").await;
     terminal.send(b"\x03");
     terminal.wait_for("Press Ctrl+C again to exit.").await;

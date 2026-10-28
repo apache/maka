@@ -139,12 +139,12 @@ The props every element takes ([common props](./index.md#common-props)) go to th
 `testID`, `accessibilityLabel` and the other accessibility props, the styles, `onLayout`, touch and responder props.
 UI tests find a list by its `testID` as they find any view.
 
-`ViewabilityConfig` (Rust: `Viewability { item_visible_percent, view_area_percent }` and `.minimum_view_time(..)`):
+`ViewabilityConfig` (Rust: `Viewability { item_visible_threshold, view_area_coverage_threshold }` and `.minimum_view_time(..)`):
 
 | Field | Type | Description |
 |---|---|---|
-| `itemVisiblePercentThreshold` | `number` | Percent of an item that must be visible. |
-| `viewAreaCoveragePercentThreshold` | `number` | Percent of the viewport an item must cover. Without either threshold, any visible pixel counts. |
+| `itemVisibleThreshold` | `number` | How much of an item must be visible, from 0 to 1. |
+| `viewAreaCoverageThreshold` | `number` | How much of the viewport an item must cover, from 0 to 1. Without either threshold, any visible pixel counts. |
 | `minimumViewTime` | `number` | Milliseconds items must stay viewable before they are reported. |
 
 `ViewToken<T>` is `{ item, key, index, isViewable }`. Rust's listener gets `ViewableItems`: `indices()` is the range of
@@ -189,7 +189,7 @@ virtual_list(move || photos.with(|p| p.len()), move |at| {
 .content_padding(px(12.0))
 .row_gap(px(8.0))
 .column_gap(px(8.0))
-.viewability(Viewability { item_visible_percent: Some(50.0), ..Viewability::default() })
+.viewability(Viewability { item_visible_threshold: Some(Percentage(0.5)), ..Viewability::default() })
 .on_viewable_items_change(move |items: &ViewableItems| {
     visible.set(format!("{} visible", items.indices().count()).into())
 })
@@ -210,7 +210,7 @@ let list!: YNode;
   numColumns={3}
   estimatedItemSize={120}
   contentStyle={{ padding: 12, gap: 8 }}
-  viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+  viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
   onViewableItemsChange={({ viewableItems }) => visible.set(`${viewableItems.length} visible`)}
   header={<Text onPress={() => list.scrollToIndex({ index: 60, viewPosition: 0.5 })}>Jump to 60</Text>}
   style={{ flex: 1 }}

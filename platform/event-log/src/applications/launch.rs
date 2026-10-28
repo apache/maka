@@ -115,7 +115,7 @@ impl EventLog {
         })).await
     }
 
-    /// Prepare restoration while holding the UI Root. The original connection
+    /// Prepare restoration while holding the application Root. The original connection
     /// authority stays fixed; reopening resumes the exact saved source writes.
     pub async fn begin_application_restore(
         &self,

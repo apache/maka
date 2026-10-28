@@ -148,7 +148,7 @@ function Done() {
 
 | TSX | Rust | Returns |
 |---|---|---|
-| `keyboardFrame()` | `keyboard_height()`, `keyboard_duration()` | The height of the software keyboard over the NSH surface, in points (0 while it is hidden), and the duration of its show or hide animation, in seconds. |
+| `keyboardFrame()` | `keyboard_height()`, `keyboard_duration()` | The height of the software keyboard over the NSH surface, in points (0 while it is hidden), and the duration of its show or hide animation, in milliseconds. |
 
 Both are reactive: an effect, a JSX expression or a style closure that reads them runs again when the keyboard shows,
 hides or changes height.

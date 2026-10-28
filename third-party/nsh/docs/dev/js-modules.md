@@ -51,6 +51,27 @@ import, and their declarations and types go into `nsh`'s own file. Apps import a
 the chunks of a split bundle (`Screen.js`: a name that is no native module, with code the host gave; `chunks.rs`,
 `native-pipeline.md`), which `import()` loads through the global `__nsh_import`.
 
+`importModule<T>(id, dependencies?)`, exported by `nsh`, uses that same loader for modules whose ids the
+embedding app discovers at runtime. Names are flat `.js` file names. Each id evaluates once in the current VM;
+its exports, native modules and policy are shared with the app. Changed code uses a new id. Removing its
+components disposes their reactive owners; it does not unload an evaluated ES module from QuickJS's cache.
+
+Native hosts can provide `EngineConfig::chunk_loader` (`ChunkLoader::load` returns a `ChunkLoad` future of
+`ChunkSource`, containing `code` and an optional `asset_base`). Each module receives its directory in
+`import.meta.assetBase`. The bundler's image and font virtual modules use the internal `nsh:rt.assetUrl` helper
+to resolve imported paths against that directory, encoding path segments; an ordinary bundle keeps its root
+`asset:/` names. The asset base stays outside the package source, so content-addressed packages have no
+self-referential digest. Imported files are represented by `nsh_bundler::Asset { path, source }`:
+`path` is their packaged logical name and `source` is the actual build input. A resource family is stored at
+`imports/<sha256>/<filename>`; the digest covers sorted, length-delimited filenames and full contents, including
+all bitmap density variants. Imports outside the entry directory and checkout relocation therefore use the
+same rule, without leaking source paths. Packagers copy `source` to `path`; development servers replace their
+named asset set after each successful rebuild and watch every source, including density siblings.
+The shared engine schedules reads on its configured runtime and delivers completion through the existing chunk
+messages, waking `LocalEngine` as necessary. Dropping the engine cancels its pending loader futures. With no configured
+loader, `MountSink::load_chunk` retains responsibility for fetching split-bundle chunks. Bundled chunks are
+already available and use neither path.
+
 - **Terminal menus** use `nsh/desktop`: `isAvailable` is true, `Menu` controls terminal menus and `Window.setTitle`
   updates the host's title. `platform.idiom === "desktop" && !platform.isTerminal` still describes graphical desktop interaction; terminal apps use
   `platform.isTerminal` to choose terminal behavior. Window placement and desktop chrome stay with the host.

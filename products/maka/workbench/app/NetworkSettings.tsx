@@ -23,7 +23,7 @@ import { tr } from './locale';
 import type { ProxyProtocol } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import { SettingsField } from './SettingsField';
 import { ChoiceIndicator } from './ChoiceIndicator';
-import type { NetworkSettingsOwner } from './networkSettings.ts';
+import type { NetworkSettingsOwner } from './networkSettingsState.ts';
 import {
   bodyTextStyle,
   captionTextStyle,

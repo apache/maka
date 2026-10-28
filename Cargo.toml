@@ -76,8 +76,7 @@ members = [
     "plugins/skills/core",
     "plugins/agent/tool-catalog",
     "plugins/agent/tools",
-    "platform/ui-runtime",
-    "platform/ui-js",
+    "platform/ui-support",
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
     "plugins/workhub/core",
@@ -96,7 +95,6 @@ flatbuffers = "25.12.19"
 maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
-maka-ui-authoring = { path = "plugins/application/authoring/native" }
 maka-app-client = { path = "products/maka/client" }
 nsh-core = { path = "third-party/nsh/crates/nsh-core" }
 nsh-engine = { path = "third-party/nsh/crates/nsh-engine" }
@@ -182,8 +180,7 @@ maka-skills = { path = "plugins/skills/core" }
 maka-tool-catalog = { path = "plugins/agent/tool-catalog" }
 maka-tools = { path = "plugins/agent/tools" }
 maka-terminal-shell = { path = "products/maka/terminal-shell" }
-maka-ui-runtime = { path = "platform/ui-runtime" }
-maka-ui-js = { path = "platform/ui-js" }
+maka-ui-support = { path = "platform/ui-support" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }
 maka-workhub = { path = "plugins/workhub/core" }

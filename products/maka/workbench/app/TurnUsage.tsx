@@ -24,6 +24,8 @@ import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type {
   ModelUsage,
+  ServiceMethods,
+  SettingsUsageRead,
   UsageActivityCursor,
   UsageFence,
   UsageModelAttempt,
@@ -80,23 +82,29 @@ export function TurnUsage(props: {
       let checked = 0;
       let expectedTotal: number | null = null;
       for (;;) {
-        const page = await host.query('settings', 'usage', {
+        const fence = through;
+        const request: SettingsUsageRead = {
           range: {
             from: 0,
             to: Number.MAX_SAFE_INTEGER,
             sessionId: props.sessionId,
-            through,
+            through: fence,
           },
           selection: { kind: 'model', status: null, search: '' },
           cursor,
-        });
+        };
+        const page: ServiceMethods['settings']['usage']['output'] = await host.query(
+          'settings',
+          'usage',
+          request,
+        );
         if (!active()) return;
         checked += page.attempts.length;
         if (
-          (through !== null &&
-            (page.through.stateDomain !== through.stateDomain ||
+          (fence !== null &&
+            (page.through.stateDomain !== fence.stateDomain ||
               page.through.partitions.some(
-                (position, index) => position !== through!.partitions[index],
+                (position, index) => position !== fence.partitions[index],
               ))) ||
           !Number.isSafeInteger(page.total) ||
           page.total < 0 ||

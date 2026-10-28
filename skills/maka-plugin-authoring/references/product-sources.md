@@ -19,17 +19,17 @@
 
 # Product source examples
 
-The bundled skill includes selected TypeScript source from the same build as its SDK. Read `references/source-index.md` for exact resource paths and sizes, then request only the files needed. In a checkout, read the original paths below.
+The bundled skill includes selected TypeScript source from the same build as its SDK. Read `references/source-index.md` for exact resource paths and sizes, then request only needed files. In a checkout, read the original paths below.
 
 | Task | Start here |
 | --- | --- |
-| Declare a Host service and explicit imports | `plugins/application/gateway/package.ts`, `plugins/application/authoring/package.ts` |
-| Inspect exact contracts and immutable package declarations | `references/sdk/contracts/`, `plugins/shared/package.ts` |
-| Wire Agent/WorkHub instances, capabilities and native grants | `products/maka/bundle/src/composition.ts` and its imported modules |
-| Author a standalone SDK component | `assets/starter/tui.mjs` and the generated SDK types |
+| Declare a Host service and explicit imports | `plugins/application/gateway/package.ts`, `plugins/shared/package.ts` |
+| Inspect package and management contracts | `references/sdk/contracts/`, `references/sdk/generated/runtime.ts` |
+| Wire Agent/WorkHub instances and grants | `products/maka/bundle/src/composition.ts` |
+| Build a root application or UI contribution | `assets/starter/ui.tsx`, `references/sdk/workbench.ts` |
 
-In packaged resources, prepend `references/source/` to those paths. Relative imports retain their checkout spelling; an import into `packages/plugin-sdk/src/` is available under `references/sdk/`. This is reference source, not a standalone build tree. The quickstart starter supplies the standalone build.
+In packaged resources, prepend `references/source/` to checkout paths. Relative imports retain their checkout spelling; imports into `packages/plugin-sdk/src/` are available under `references/sdk/`. This is reference source, not a standalone build tree. The quickstart starter supplies the standalone example.
 
-Read a package declaration before its implementation. Imported names and contracts must match the composition where the package will run. Inspect the current Host through its deployment manager before editing it; installed sources may differ from the bundled examples. Maka's terminal and desktop interfaces are authored by their shells and do not load this SDK's standalone component scenes.
+Read a package declaration before its implementation. Inspect the current Host through its deployment manager before editing it; installed sources may differ from bundled examples. UI contributions use the same package and deployment source as Host services, and both shells mount the selected root through NSH. The bundled Maka workbench is itself an ordinary UI package.
 
-The build uses an explicit source allowlist. It excludes native implementation directories, tests, local files and build output; `.gitignore` is not the publication boundary. Extend the allowlist when another complete example materially helps authoring.
+The build uses an explicit source allowlist, excluding implementation directories, tests, local files and build output. Extend the allowlist when another complete example materially helps authoring.

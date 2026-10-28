@@ -97,7 +97,7 @@ function Player() {
 | 事件 | Rust | 载荷 | 时机 |
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | 无 | 开始加载。 |
-| `onLoad` | `.on_load` | `{ duration, size }`（`VideoInfo`：`duration`、`size`） | 视频已就绪：时长（秒）和尺寸。 |
+| `onLoad` | `.on_load` | `{ duration, size }`（`VideoInfo`：`duration`、`size`） | 视频已就绪：时长（秒）和像素尺寸。 |
 | `onProgress` | `.on_progress` | `{ currentTime, duration }`（`VideoProgress`：`current_time`、`duration`） | 播放期间每隔 `progressUpdateInterval` 触发（秒）。 |
 | `onBuffer` | `.on_buffer` | `{ isBuffering }`（`bool`） | 因等待数据而卡顿 / 恢复播放。 |
 | `onEnd` | `.on_end` | 无 | 播放到结尾（设置了 `repeat` 时，每轮结束都会触发）。 |

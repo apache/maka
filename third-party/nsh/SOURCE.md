@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`ad7aadd5a3cb94ae3c90c485203e44d428ea8a78`. The first upstream synchronization
+`9f7213929688dba417af8ddb2730e27c2f99e41c`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -94,6 +94,21 @@ RichEditor fixtures inside their engine. Public keymap factories follow the
 current host keyboard convention, with compilation-target fallback outside an
 engine. Maka retains its event-time dual tables for off-engine sessions, terminal
 and Apple-browser policies, and custom binding precedence.
+
+The following units synchronization makes responder velocities points per second,
+keyboard animation durations milliseconds, and viewability thresholds fractions
+from zero to one under `itemVisibleThreshold` / `viewAreaCoverageThreshold`.
+Image and video intrinsic pixel extents use `PixelSize` in declarations and
+`Size<DevicePixels>` in Rust image callbacks; layout `Size<Points>` stays distinct.
+These are breaking API/unit changes: regenerate declarations, migrate thresholds
+and rebuild existing bundles. Media playback time remains seconds and decay's
+per-millisecond retention remains unchanged. Native keyboard adapters convert at
+the UIKit/Android boundary, not again in the engine. Local list retirement,
+retained-value ownership, terminal image layout and keymap policy are preserved.
+Additional regressions cover fractional threshold boundaries and JS forwarding,
+JS responder velocity, and typed/map image-load pixel payloads. Preparing this
+source does not establish test execution or iOS/Android device behavior; native
+keyboard timing requires the corresponding supported platform validation.
 
 Independent local corrections retain RichEditor geometry on its owning thread,
 retire its session subscription before dropping the geometry payload, and keep
@@ -217,7 +232,8 @@ The GPUI backend delivers files dragged in from other applications
 (`file_drop.rs`): while a drag is active, `AppView` lays a layer over the
 surface whose drag moves and drop drive `onFileDragEnter`, `onFileDragLeave`
 and `onFileDrop` as the native backends do. This is submitted upstream as
-longbridge/nsh#591; take upstream's version when a sync brings it.
+longbridge/nsh#591; take upstream's version when a sync brings it, keeping
+the local rule that paused input (`AppView::pause_input`) lays no drop layer.
 
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
@@ -271,3 +287,18 @@ other queued engine messages. The existing terminal lifecycle, retained-row
 host-identity checks and focus regressions remain in place. Native platform
 runtime and gallery appearance checks require their supported environments;
 Linux core tests are not evidence of those visual checks.
+
+Trusted Workbench modules use the existing chunk runtime through the public
+`importModule` API and an optional `EngineConfig.chunk_loader`. `ChunkSource`
+carries the module's asset directory; imported images and fonts resolve against
+`import.meta.assetBase`. Engines own asynchronous loads and cancel them when
+they close. Terminal `AppView::load_with_config` retains the caller's services,
+assets and module loader while using the actual terminal geometry.
+
+Bundled resources now expose their logical package path and physical source
+separately. Content-based resource families include every bitmap density
+variant, preserving sibling filenames without depending on the checkout path.
+Packaging, development serving, file watching and lazy font assignment use this
+mapping, including imports outside the entry directory. GPUI and terminal input
+fences let a Workbench replacement drain admitted edits before saving its draft;
+they reuse the existing input scopes and engine message ordering.

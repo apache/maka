@@ -123,8 +123,6 @@ impl RootStore {
         for member in &members {
             crate::sessions::validate_id(member)?;
         }
-        let _gate = self.creation_gates[partition].lock().await;
-        self.require_open()?;
         let (partition, command) = self
             .reserve_family(id, fingerprint, command, partition, members)
             .await?;
@@ -537,7 +535,7 @@ impl RootStore {
         Ok(receipt)
     }
 
-    /// Startup owns every creation gate, so unreserved stages cannot race cleanup.
+    /// Startup has not published this Root, so imports cannot race stage cleanup.
     pub(super) async fn cleanup_stages(&self) -> Result<(), StoreError> {
         let directory = self
             .control
@@ -596,8 +594,6 @@ impl RootStore {
                 &failure,
             )?));
         }
-        let _gate = self.creation_gates[partition as usize].lock().await;
-        self.require_open()?;
         self.finish_creation(
             &id,
             &fingerprint,

@@ -51,6 +51,7 @@ mod drafts;
 mod progress;
 mod request_custody;
 mod settings;
+mod ui;
 
 #[derive(Default)]
 struct Counter {
@@ -73,6 +74,7 @@ impl Handler for CounterHandler {
         let owner = self.0.clone();
         Box::pin(async move {
             match method.as_str() {
+                "read" if input["fail"] == true => Err("ordinary counter failure".into()),
                 "read" => Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)})),
                 "uploadAttachment" => {
                     let file = context
@@ -225,10 +227,10 @@ impl Fixture {
             Package::new(BTreeMap::from([(
                 "maka.extension.json".into(),
                 serde_json::to_vec(&json!({
-                    "schemaVersion":1,"id":id,"application":{"entries":{"host":{
+                    "schemaVersion":1,"id":id,"application":{"host":{
                         "implementation":{"kind":"native","implementation":implementation},
                         "configuration":{"type":"object"},"imports":imports,"exports":exports
-                    }}}
+                    }}
                 }))
                 .unwrap(),
             )]))
@@ -259,15 +261,34 @@ impl Fixture {
             }),
             json!({}),
         );
+        let ui = Package::new(BTreeMap::from([
+            (
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion":1, "id":"test.ui", "application":{"ui":{
+                        "module":"index.mjs", "configuration":{"type":"object"},
+                        "imports":{"counter":{"contract":contract,"cardinality":{"kind":"one"}}},
+                        "contributions":{}
+                    }}
+                }))
+                .unwrap(),
+            ),
+            ("index.mjs".into(), b"export default {};".to_vec()),
+        ]))
+        .unwrap();
         let node = |package: &Package, id: u128, bindings: Value| {
             json!({
                 "key":Uuid::from_u128(id),"package":{"source":"pinned","package":package.application_ref()},
-                "usePackage":"entry","bindings":bindings
+                "usePackage":"host","bindings":bindings
             })
         };
         let input = serde_json::from_value(json!({
-            "environment":{"location":"host"},"instances":{
+            "instances":{
                 "business":node(&business,1,json!({})),"reader":node(&reader,2,json!({})),
+                "ui":{
+                    "key":Uuid::from_u128(4), "package":{"source":"pinned","package":ui.application_ref()},
+                    "usePackage":"ui", "bindings":{"counter":[{"kind":"instance","path":["business"],"export":"Counter"}]}
+                },
                 "gateway":node(&gateway,3,json!({
                     "agent":[{"kind":"instance","path":["business"],"export":"Counter"}],
                     "settings":[{"kind":"instance","path":["business"],"export":"Counter"}],
@@ -286,7 +307,7 @@ impl Fixture {
                 0,
                 input,
                 vec![],
-                vec![business, reader, gateway],
+                vec![business, reader, gateway, ui],
             )
             .await
             .unwrap();

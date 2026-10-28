@@ -26,7 +26,7 @@ use serde_json::Value;
 use crate::{
     Error,
     composition::Template,
-    contract::{Availability, Contract, Export, Import, Interface},
+    contract::{Availability, Contract, Export, Import},
 };
 
 /// Author-provided copy for plugin discovery; never an authority declaration.
@@ -80,21 +80,14 @@ impl From<PackageRef> for PackageSelection {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum EntryTarget {
-    Host,
-    Tui,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "PackageDeclaration")]
 pub struct Declaration {
-    #[serde(default)]
-    pub entries: BTreeMap<EntryTarget, EntryDeclaration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<EntryDeclaration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub composition: Option<Template>,
 }
@@ -103,10 +96,6 @@ pub struct Declaration {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EntryDeclaration {
     pub implementation: Implementation,
-    /// Nominal ABI of this JavaScript entry's component scenes. Native recipes
-    /// are checked through their compiled implementation availability instead.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scene: Option<SceneLanguage>,
     pub configuration: crate::Schema,
     #[serde(default)]
     pub imports: BTreeMap<String, Import>,
@@ -114,20 +103,55 @@ pub struct EntryDeclaration {
     pub exports: BTreeMap<String, Export>,
 }
 
-/// Presenter-owned language identity. The kernel does not interpret its syntax.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiEntry {
+    pub module: String,
+    pub configuration: crate::Schema,
+    #[serde(default)]
+    pub imports: BTreeMap<String, Import>,
+    pub contributions: BTreeMap<String, UiContribution>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SceneLanguage {
-    pub name: String,
-    pub version: u32,
+pub struct UiText {
+    pub fallback: String,
+    #[serde(default)]
+    pub translations: BTreeMap<String, String>,
 }
-impl SceneLanguage {
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UiContribution {
+    Root,
+    Panel { title: UiText },
+    Command { title: UiText },
+    ToolRenderer { presentation: String },
+    Settings { title: UiText },
+}
+
+impl UiEntry {
     pub fn validate(&self) -> Result<(), Error> {
-        crate::name(&self.name)?;
-        if self.version == 0 {
-            return Err(Error::Declaration(
-                "scene language version must be nonzero".into(),
-            ));
+        if self.module.is_empty() {
+            return Err(Error::Declaration("UI module is missing".into()));
+        }
+        crate::schema(&self.configuration)?;
+        validate_imports(&self.imports)?;
+        for (id, contribution) in &self.contributions {
+            crate::name(id)?;
+            let label = match contribution {
+                UiContribution::Root => continue,
+                UiContribution::Panel { title }
+                | UiContribution::Command { title }
+                | UiContribution::Settings { title } => &title.fallback,
+                UiContribution::ToolRenderer { presentation } => presentation,
+            };
+            if label.is_empty() {
+                return Err(Error::Declaration(format!(
+                    "UI contribution {id} has no label or presentation"
+                )));
+            }
         }
         Ok(())
     }
@@ -161,25 +185,6 @@ impl EntryDeclaration {
             }
             Implementation::Native { implementation } => crate::name(implementation)?,
             _ => {}
-        }
-        let needs_scene = matches!(self.implementation, Implementation::JavaScript { .. })
-            && self
-                .exports
-                .values()
-                .any(|export| matches!(export.contract.interface, Interface::Component { .. }));
-        match (&self.scene, needs_scene) {
-            (Some(language), true) => language.validate()?,
-            (None, true) => {
-                return Err(Error::Declaration(
-                    "JavaScript components require a scene language".into(),
-                ));
-            }
-            (Some(_), false) => {
-                return Err(Error::Declaration(
-                    "scene language requires JavaScript component exports".into(),
-                ));
-            }
-            (None, false) => {}
         }
         crate::schema(&self.configuration)?;
         validate_imports(&self.imports)?;
@@ -227,18 +232,16 @@ pub(crate) fn validate_imports(imports: &BTreeMap<String, Import>) -> Result<(),
 
 impl Declaration {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.entries.is_empty() && self.composition.is_none() {
+        if self.host.is_none() && self.ui.is_none() && self.composition.is_none() {
             return Err(Error::Declaration(
-                "package has no entries or composition".into(),
+                "package has no Host, UI or composition".into(),
             ));
         }
-        for (target, entry) in &self.entries {
-            entry.validate()?;
-            if *target == EntryTarget::Host && entry.scene.is_some() {
-                return Err(Error::Declaration(
-                    "Host entry cannot require a scene language".into(),
-                ));
-            }
+        if let Some(host) = &self.host {
+            host.validate()?;
+        }
+        if let Some(ui) = &self.ui {
+            ui.validate()?;
         }
         if let Some(template) = &self.composition {
             template.validate()?;

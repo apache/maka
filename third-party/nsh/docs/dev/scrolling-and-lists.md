@@ -39,7 +39,7 @@
   as in ordinary JSX children), `contentStyle`
   (padding and gaps, numbers) / `contentClass` (`p-*`, `gap-*`), `initialScrollIndex`, `onLoadMore` + `loadMoreThreshold`,
   `onLoadMoreAtStart` + `loadMoreAtStartThreshold` (below), `onViewableItemsChange` +
-  `viewabilityConfig` (`itemVisiblePercentThreshold` / `viewAreaCoveragePercentThreshold` / `minimumViewTime`), `keyExtractor`,
+  `viewabilityConfig` (`itemVisibleThreshold` / `viewAreaCoverageThreshold` / `minimumViewTime`), `keyExtractor`,
   `refreshing` / `onRefresh`, `refreshIndicator`, `pullValue`, `scrollValue`. Every other prop (`testID`, accessibility, `class`, `onLayout`, touch
   props, ...) goes to the scroll view as on a `<Scroll>` (`list.rs` `OWN`: the names are read once, when the list is
   made; their values follow their getters). Positions, columns, sticky travel and viewability are all computed in the core; sticky cells

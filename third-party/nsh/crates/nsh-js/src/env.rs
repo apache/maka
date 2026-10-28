@@ -446,7 +446,7 @@ pub(crate) const REEXPORTS: &[Item] = &[
         "keyboardFrame",
         Export::Value(|cx| accessor(cx, Part::Keyboard)),
         Ts::value(
-            "Height of the software keyboard over the surface (0 when hidden) and the\nduration of its animation in seconds (reactive).",
+            "Height of the software keyboard over the surface (0 when hidden) and the\nduration of its animation in milliseconds (reactive).",
             "Accessor<{ height: number; duration: number }>",
         ),
     ),

@@ -84,6 +84,11 @@ pub(super) async fn prompt<W>(
             model: input.provider.model.clone(),
         });
     selection.prior_unknown = prior_unknown;
+    let prior = inner
+        .prepared_history
+        .lock()
+        .expect("prepared history lock poisoned")
+        .clone();
     let body = history::prepare_view(
         &inner.log,
         selection,
@@ -91,8 +96,13 @@ pub(super) async fn prompt<W>(
         input.supports_vision,
         &input.provider.kind,
         cancellation,
+        prior.as_deref(),
     )
     .await?;
+    *inner
+        .prepared_history
+        .lock()
+        .expect("prepared history lock poisoned") = Some(body.clone());
     let mut prompt = PreparedPrompt::from_history(body);
     if let Some(baseline) = &source.baseline {
         let label = match input.configuration.language {

@@ -28,20 +28,94 @@ use maka_plugin_core::{
         CompositionChange, CompositionEdit, ManagedImport, PackageSettingsPage,
         PackageSettingsRead,
     },
-    package::{EntryDeclaration, EntryTarget, PackageRef},
+    package::{Declaration, EntryDeclaration, PackageRef},
 };
 
-fn entry<'a>(
-    packages: &'a [Package],
-    reference: &PackageRef,
-    target: EntryTarget,
-) -> Result<&'a EntryDeclaration> {
+fn declaration<'a>(packages: &'a [Package], reference: &PackageRef) -> Result<&'a Declaration> {
     packages
         .iter()
-        .find(|p| &p.application_ref() == reference)
-        .and_then(|p| p.manifest().application.as_ref())
-        .and_then(|p| p.entries.get(&target))
-        .ok_or_else(|| "package entry unavailable for this presentation".into())
+        .find(|package| &package.application_ref() == reference)
+        .and_then(|package| package.manifest().application.as_ref())
+        .map(|declaration| declaration.declaration())
+        .ok_or_else(|| "application package unavailable".into())
+}
+fn host_entry<'a>(packages: &'a [Package], reference: &PackageRef) -> Result<&'a EntryDeclaration> {
+    declaration(packages, reference)?
+        .host
+        .as_ref()
+        .ok_or_else(|| "Host entry unavailable".into())
+}
+fn package_schema<'a>(
+    declaration: &'a Declaration,
+    use_package: PackageUse,
+) -> Result<std::borrow::Cow<'a, Value>> {
+    use std::borrow::Cow;
+    match use_package {
+        PackageUse::Host => Ok(Cow::Borrowed(
+            &declaration
+                .host
+                .as_ref()
+                .ok_or("Host entry unavailable")?
+                .configuration,
+        )),
+        PackageUse::Ui => Ok(Cow::Borrowed(
+            &declaration
+                .ui
+                .as_ref()
+                .ok_or("UI entry unavailable")?
+                .configuration,
+        )),
+        PackageUse::Composition => {
+            let template = declaration
+                .composition
+                .as_ref()
+                .ok_or("composition unavailable")?;
+            let mut definitions = serde_json::Map::new();
+            let mut properties = serde_json::Map::new();
+            let mut defaults = serde_json::Map::new();
+            let mut required = Vec::new();
+            for (index, (name, parameter)) in template.parameters.iter().enumerate() {
+                let key = index.to_string();
+                let prefix = format!("#/$defs/{key}");
+                let mut schema = parameter.schema.as_ref().clone();
+                relocate_refs(&mut schema, &prefix);
+                definitions.insert(key, schema);
+                properties.insert(name.clone(), serde_json::json!({"$ref": prefix}));
+                match &parameter.default {
+                    Some(value) => {
+                        defaults.insert(name.clone(), value.clone());
+                    }
+                    None => required.push(name),
+                }
+            }
+            Ok(Cow::Owned(serde_json::json!({
+                "type": "object", "properties": properties, "$defs": definitions,
+                "default": defaults, "required": required, "additionalProperties": false,
+            })))
+        }
+    }
+}
+fn relocate_refs(value: &mut Value, prefix: &str) {
+    match value {
+        Value::Object(object) => {
+            if let Some(Value::String(reference)) = object.get_mut("$ref")
+                && let Some(local) = reference
+                    .strip_prefix('#')
+                    .filter(|local| local.is_empty() || local.starts_with('/'))
+            {
+                *reference = format!("{prefix}{local}");
+            }
+            for value in object.values_mut() {
+                relocate_refs(value, prefix);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                relocate_refs(value, prefix);
+            }
+        }
+        _ => {}
+    }
 }
 fn defaults(schema: &Value) -> Value {
     let root = settings::resolved(schema, schema, None);
@@ -94,7 +168,6 @@ impl Manager {
         let _read = self.writes.lock().await;
         let loaded = self.source_at(request.source).await?;
         let plan = loaded.plan();
-        let target = self.environment.entry_target().map_err(|e| e.to_string())?;
         let (entry, configuration, current) = match &request.consumer {
             BindingConsumer::Root { name } => {
                 let node = loaded
@@ -109,10 +182,7 @@ impl Manager {
                     .find(|i| i.path == [name.clone()])
                     .ok_or("consumer unavailable")?;
                 (
-                    instance
-                        .entry
-                        .as_deref()
-                        .ok_or("executable consumer required")?,
+                    instance.host_entry().ok_or("Host consumer required")?,
                     instance
                         .configuration
                         .as_object()
@@ -127,7 +197,7 @@ impl Manager {
                 )
             }
             BindingConsumer::Package { package } => (
-                entry(loaded.packages(), package, target)?,
+                host_entry(loaded.packages(), package)?,
                 BTreeMap::new(),
                 vec![],
             ),
@@ -199,7 +269,7 @@ impl Manager {
                     .manifest()
                     .application
                     .as_ref()
-                    .and_then(|a| a.entries.get(&target))
+                    .and_then(|application| application.host.as_ref())
                 {
                     for (name, export) in &entry.exports {
                         if compatible(export) {
@@ -253,17 +323,14 @@ impl Manager {
         settings::check_path(&request.path, true)?;
         let _read = self.writes.lock().await;
         let loaded = self.source_at(Some(request.source.clone())).await?;
-        let entry = entry(
-            loaded.packages(),
-            &request.package,
-            self.environment.entry_target().map_err(|e| e.to_string())?,
-        )?;
-        let mut configuration = defaults(&entry.configuration);
+        let declaration = declaration(loaded.packages(), &request.package)?;
+        let root_schema = package_schema(declaration, request.use_package)?;
+        let mut configuration = defaults(&root_schema);
         if !request.changes.is_empty() {
             settings::apply(&mut configuration, &request.changes)?;
         }
-        let (schema, value) = settings::at(&entry.configuration, &configuration, &request.path)?;
-        let mut fields = settings::fields(schema, &entry.configuration, value)?;
+        let (schema, value) = settings::at(&root_schema, &configuration, &request.path)?;
+        let mut fields = settings::fields(schema, &root_schema, value)?;
         if let Some(after) = request.after {
             let index = fields
                 .iter()
@@ -272,15 +339,19 @@ impl Manager {
             fields.drain(..=index);
         }
         let (fields, next) = settings::settings_page(fields)?;
-        let imports = entry
-            .imports
-            .iter()
-            .map(|(name, import)| ManagedImport {
-                name: name.clone(),
-                contract: import.contract.name.clone(),
-                cardinality: import.cardinality,
-            })
-            .collect();
+        let imports = match request.use_package {
+            PackageUse::Host => Some(&declaration.host.as_ref().unwrap().imports),
+            PackageUse::Ui => None,
+            PackageUse::Composition => Some(&declaration.composition.as_ref().unwrap().imports),
+        }
+        .into_iter()
+        .flatten()
+        .map(|(name, import)| ManagedImport {
+            name: name.clone(),
+            contract: import.contract.name.clone(),
+            cardinality: import.cardinality,
+        })
+        .collect();
         serde_json::to_value(PackageSettingsPage {
             source: request.source,
             package: request.package,
@@ -300,7 +371,6 @@ impl Manager {
         }
         let loaded = self.source_at(Some(metadata.source.reference)).await?;
         let (mut source, packages, _, _) = loaded.into_parts();
-        let target = self.environment.entry_target().map_err(|e| e.to_string())?;
         let applied = (|| -> Result<()> {
             if request.edits.is_empty() {
                 return Err("no composition changes".into());
@@ -310,14 +380,16 @@ impl Manager {
                     CompositionChange::Insert {
                         name,
                         package,
+                        use_package,
                         settings: changes,
                         bindings,
                     } => {
                         if source.input.instances.contains_key(&name) {
                             return Err("instance name already exists".into());
                         }
-                        let schema = &entry(&packages, &package, target)?.configuration;
-                        let mut configuration = defaults(schema);
+                        let declaration = declaration(&packages, &package)?;
+                        let schema = package_schema(declaration, use_package)?;
+                        let mut configuration = defaults(&schema);
                         if !changes.is_empty() {
                             settings::apply(&mut configuration, &changes)?;
                         }
@@ -327,17 +399,22 @@ impl Manager {
                             .iter()
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect();
+                        let values = Values {
+                            values,
+                            ..Default::default()
+                        };
+                        let (configuration, parameters) = match use_package {
+                            PackageUse::Composition => (Values::default(), values),
+                            PackageUse::Host | PackageUse::Ui => (values, Values::default()),
+                        };
                         source.input.instances.insert(
                             name,
                             Node {
                                 key: uuid::Uuid::new_v4(),
                                 package: package.into(),
-                                use_package: PackageUse::Entry,
-                                configuration: Values {
-                                    values,
-                                    ..Default::default()
-                                },
-                                parameters: Default::default(),
+                                use_package,
+                                configuration,
+                                parameters,
                                 bindings,
                                 disabled: false,
                                 overrides: vec![],
@@ -354,9 +431,13 @@ impl Manager {
                             .instances
                             .get_mut(&name)
                             .ok_or("instance root unavailable")?;
+                        let values = match node.use_package {
+                            PackageUse::Composition => &mut node.parameters,
+                            PackageUse::Host | PackageUse::Ui => &mut node.configuration,
+                        };
                         for (field, value) in configuration {
-                            node.configuration.parameters.remove(&field);
-                            node.configuration.values.insert(field, value);
+                            values.parameters.remove(&field);
+                            values.values.insert(field, value);
                         }
                         node.bindings.extend(bindings);
                     }

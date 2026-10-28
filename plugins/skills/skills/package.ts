@@ -28,8 +28,6 @@ export default {
     'zh-CN': { displayName: '技能存储', description: '发现、安装和加载助手技能。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.skillLibrary),
-    },
+    host: native(sdk.nativeImplementations.skillLibrary),
   },
 };

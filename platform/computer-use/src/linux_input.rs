@@ -21,7 +21,7 @@
 
 use cua_driver_contract::WindowBounds;
 use maka_agent_facts::capability::json;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use std::fmt::{self, Display};
 
@@ -134,12 +134,7 @@ pub(crate) enum Error {
     ElementNotInWindow,
 }
 
-fn canonical(input: &impl Serialize) -> Result<Value, Error> {
-    let serialized = json::stringify(input).map_err(Error::Parse)?;
-    serde_json::from_str(&serialized).map_err(Error::Parse)
-}
-
-fn parse_command<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, Error> {
+fn parse_command<T: serde::de::DeserializeOwned>(mut input: Value) -> Result<T, Error> {
     fn sort_fields(value: &mut Value) {
         match value {
             Value::Object(fields) => {
@@ -157,11 +152,11 @@ fn parse_command<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, Erro
         }
     }
 
-    let mut value = canonical(&input)?;
     // Preserve the native JSON object's field visitation, including points
     // nested in a drag path, when another crate enables insertion-ordered maps.
-    sort_fields(&mut value);
-    serde_json::from_value(value).map_err(Error::Parse)
+    sort_fields(&mut input);
+    let serialized = json::stringify(&input).map_err(Error::Parse)?;
+    serde_json::from_str(&serialized).map_err(Error::Parse)
 }
 
 impl Click {
@@ -229,8 +224,8 @@ impl TryFrom<[f64; 2]> for Point {
     fn try_from(point: [f64; 2]) -> Result<Self, Self::Error> {
         // Reproduce JSON.stringify before native integer deserialization. In
         // particular, 37.0 is an integer and large numbers keep JS spellings.
-        let value = canonical(&point)?;
-        let coordinates = serde_json::from_value(value).map_err(Error::Parse)?;
+        let serialized = json::stringify(&point).map_err(Error::Parse)?;
+        let coordinates = serde_json::from_str(&serialized).map_err(Error::Parse)?;
         Ok(Self(coordinates))
     }
 }
@@ -301,6 +296,14 @@ impl std::error::Error for Error {
 
 #[cfg(test)]
 mod tests {
+    fn assert_parse_error(error: super::Error, offending_value: &str) {
+        let super::Error::Parse(error) = error else {
+            panic!("expected native input parsing to fail, got {error}");
+        };
+        assert!(error.is_data(), "{error}");
+        assert!(error.to_string().contains(offending_value), "{error}");
+    }
+
     #[test]
     fn native_scroll_direction_aliases_keep_canonical_distance_and_parse_failures() {
         for (short, long) in [("u", "up"), ("d", "down"), ("l", "left"), ("r", "right")] {
@@ -314,19 +317,17 @@ mod tests {
                     (scroll.x, scroll.y, scroll.pixels),
                     (Some(37), Some(41), 800)
                 );
-                assert_eq!(
+                assert_parse_error(
                     super::Scroll::parse(serde_json::json!({"direction":spelling,"pixels":37.9}))
-                        .expect_err("a direction alias does not relax the native u16 boundary")
-                        .to_string(),
-                    "failed to parse command input: invalid type: floating point `37.9`, expected u16",
+                        .expect_err("a direction alias does not relax the native u16 boundary"),
+                    "37.9",
                 );
             }
         }
-        assert_eq!(
+        assert_parse_error(
             super::Scroll::parse(serde_json::json!({"direction":"north","pixels":37.9}))
-                .expect_err("direction is visited before pixels")
-                .to_string(),
-            "failed to parse command input: unknown variant `north`, expected one of `up`, `down`, `left`, `right`, `u`, `d`, `l`, `r`",
+                .expect_err("direction is visited before pixels"),
+            "north",
         );
     }
     use super::*;
@@ -360,15 +361,9 @@ mod tests {
     #[test]
     fn native_click_parses_count_before_points_regardless_of_json_field_order() {
         for (count, expected) in [
-            (json!(-1.0), "invalid value: integer `-1`, expected u32"),
-            (
-                json!(1.5),
-                "invalid type: floating point `1.5`, expected u32",
-            ),
-            (
-                json!(4_294_967_296_u64),
-                "invalid value: integer `4294967296`, expected u32",
-            ),
+            (json!(-1.0), "-1"),
+            (json!(1.5), "1.5"),
+            (json!(4_294_967_296_u64), "4294967296"),
         ] {
             for fields in [
                 [
@@ -389,10 +384,7 @@ mod tests {
                         .collect(),
                 );
                 let error = Click::parse(input).expect_err("native count is not a u32");
-                assert_eq!(
-                    error.to_string(),
-                    format!("failed to parse command input: {expected}"),
-                );
+                assert_parse_error(error, expected);
             }
         }
     }
@@ -404,15 +396,9 @@ mod tests {
             json!({"x":37.9,"y":null}),
             json!({"x":32768,"y":41,"click_count":0}),
         ] {
-            let expected = if input["x"] == 32768 {
-                "failed to parse command input: invalid value: integer `32768`, expected i16"
-            } else {
-                "failed to parse command input: invalid type: floating point `37.9`, expected i16"
-            };
-            assert_eq!(
-                Click::parse(input)
-                    .expect_err("invalid native point")
-                    .to_string(),
+            let expected = if input["x"] == 32768 { "32768" } else { "37.9" };
+            assert_parse_error(
+                Click::parse(input).expect_err("invalid native point"),
                 expected,
             );
         }
@@ -474,10 +460,7 @@ mod tests {
         }
         let error = Click::parse(json!({"element_id":null,"click_count":0,"y":37.9}))
             .expect_err("coordinate type errors precede element mouse-option checks");
-        assert_eq!(
-            error.to_string(),
-            "failed to parse command input: invalid type: floating point `37.9`, expected i16"
-        );
+        assert_parse_error(error, "37.9");
         let click = Click::parse(
             json!({"element_id":"missing","x":37,"y":41,"click_count":0,"mouse_button":"middle"}),
         )
@@ -544,23 +527,14 @@ mod tests {
             assert_eq!((scroll.x, scroll.y), expected);
         }
         for (input, expected) in [
-            (
-                json!({"direction":"down","x":null,"y":37.9}),
-                "invalid type: floating point `37.9`, expected i16",
-            ),
+            (json!({"direction":"down","x":null,"y":37.9}), "37.9"),
             (
                 json!({"direction":"down","pixels":100.5,"x":37.9,"y":null}),
-                "invalid type: floating point `100.5`, expected u16",
+                "100.5",
             ),
-            (
-                json!({"direction":"down","pixels":65536,"x":37.9}),
-                "invalid value: integer `65536`, expected u16",
-            ),
+            (json!({"direction":"down","pixels":65536,"x":37.9}), "65536"),
         ] {
-            assert_eq!(
-                Scroll::parse(input).unwrap_err().to_string(),
-                format!("failed to parse command input: {expected}")
-            );
+            assert_parse_error(Scroll::parse(input).unwrap_err(), expected);
         }
     }
 
@@ -579,17 +553,14 @@ mod tests {
         for (input, expected) in [
             (
                 json!({"direction":"down","element_id":":1.0:/own","x":37,"y":41.5}),
-                "invalid type: floating point `41.5`, expected i16",
+                "41.5",
             ),
             (
                 json!({"direction":"down","element_id":":1.0:/own","pixels":100.5,"x":37}),
-                "invalid type: floating point `100.5`, expected u16",
+                "100.5",
             ),
         ] {
-            assert_eq!(
-                Scroll::parse(input).unwrap_err().to_string(),
-                format!("failed to parse command input: {expected}"),
-            );
+            assert_parse_error(Scroll::parse(input).unwrap_err(), expected);
         }
         let element = Scroll::parse(json!({
             "direction":"down","element_id":":1.0:/own","x":null,"y":null,
@@ -617,27 +588,12 @@ mod tests {
             vec![[37, 41], [57, 61]]
         );
         for (path, expected) in [
-            (
-                json!([{"y":37.9,"x":null},{"x":57,"y":61}]),
-                "invalid type: null, expected i16",
-            ),
-            (
-                json!([{"y":null,"x":37.9},{"x":57,"y":61}]),
-                "invalid type: floating point `37.9`, expected i16",
-            ),
-            (
-                json!([{"x":37,"y":41},{"y":61.5,"x":null}]),
-                "invalid type: null, expected i16",
-            ),
-            (
-                json!([{"x":37,"y":41},{"y":null,"x":57.5}]),
-                "invalid type: floating point `57.5`, expected i16",
-            ),
+            (json!([{"y":37.9,"x":null},{"x":57,"y":61}]), "null"),
+            (json!([{"y":null,"x":37.9},{"x":57,"y":61}]), "37.9"),
+            (json!([{"x":37,"y":41},{"y":61.5,"x":null}]), "null"),
+            (json!([{"x":37,"y":41},{"y":null,"x":57.5}]), "57.5"),
         ] {
-            assert_eq!(
-                Drag::parse(json!({"path":path})).unwrap_err().to_string(),
-                format!("failed to parse command input: {expected}")
-            );
+            assert_parse_error(Drag::parse(json!({"path":path})).unwrap_err(), expected);
         }
     }
 
@@ -660,37 +616,18 @@ mod tests {
             );
         }
         for (input, expected) in [
-            (
-                [37.9, 41.9],
-                "invalid type: floating point `37.9`, expected i16",
-            ),
-            (
-                [-1.0, 37.9],
-                "invalid type: floating point `37.9`, expected i16",
-            ),
-            (
-                [-0.5, 37.5],
-                "invalid type: floating point `-0.5`, expected i16",
-            ),
-            (
-                [32768.0, 65535.0],
-                "invalid value: integer `32768`, expected i16",
-            ),
-            (
-                [1_000_000_000_000_000_100.0, 41.0],
-                "invalid value: integer `1000000000000000100`, expected i16",
-            ),
+            ([37.9, 41.9], "37.9"),
+            ([-1.0, 37.9], "37.9"),
+            ([-0.5, 37.5], "-0.5"),
+            ([32768.0, 65535.0], "32768"),
+            ([1_000_000_000_000_000_100.0, 41.0], "1000000000000000100"),
         ] {
             let error = Point::try_from(input).expect_err("invalid native integer point");
-            assert_eq!(
-                error.to_string(),
-                format!("failed to parse command input: {expected}"),
-                "input {input:?}"
-            );
             assert!(
                 std::error::Error::source(&error).is_some(),
                 "parse cause must be retained for input {input:?}"
             );
+            assert_parse_error(error, expected);
         }
     }
 

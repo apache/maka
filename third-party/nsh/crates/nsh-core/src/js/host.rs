@@ -394,6 +394,13 @@ export interface Size {
   height: number;
 }
 
+/** An image's or a video's own extent, in pixels as decoded
+ * (`nsh_core::geometry::Size<DevicePixels>`), not the points it is drawn at. */
+export interface PixelSize {
+  width: number;
+  height: number;
+}
+
 /** A position and an extent, in points (`nsh_core::geometry::Bounds`). */
 export interface Bounds {
   /** The top left corner. */
@@ -677,7 +684,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::Load,
         on::IMAGE,
-        "(e: Size) => void",
+        "(e: PixelSize) => void",
         "The source image's size in pixels (not the decoded, downsampled one).",
     ),
     (
@@ -689,7 +696,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::Load,
         on::VIDEO,
-        "(e: { duration: number; size: Size }) => void",
+        "(e: { duration: number; size: PixelSize }) => void",
         "",
     ),
     (

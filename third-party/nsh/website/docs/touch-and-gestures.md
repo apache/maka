@@ -548,7 +548,7 @@ fn ball() -> impl IntoElement {
             pos.set((x + d.x.0, y + d.y.0));
         })
         .on_responder_release(move |e: &ResponderEvent| {
-            log::info!("released at {} {} pt/ms", e.gesture.vx, e.gesture.vy)
+            log::info!("released at {} {} pt/s", e.gesture.vx, e.gesture.vy)
         })
 }
 ```
@@ -566,7 +566,7 @@ function Ball() {
       start = pos();
     },
     onPanResponderMove: (_, g) => pos.set({ x: start.x + g.dx, y: start.y + g.dy }),
-    onPanResponderRelease: (_, g) => console.log("released at", g.vx, g.vy, "pt/ms"),
+    onPanResponderRelease: (_, g) => console.log("released at", g.vx, g.vy, "pt/s"),
   });
   return (
     <View
@@ -587,7 +587,7 @@ The gesture state:
 | `position` | `moveX`, `moveY` | The latest position of the touches' centroid, in surface points. |
 | `origin` | `x0`, `y0` | Where the centroid was when the responder was granted. |
 | `delta` | `dx`, `dy` | Distance moved since the grant. |
-| `vx`, `vy` | `vx`, `vy` | Velocity, in points per **millisecond**. |
+| `vx`, `vy` | `vx`, `vy` | Velocity, in points per second. |
 | `active_touches` | `numberActiveTouches` | Fingers down. |
 
 `PanGesture::begin` and `PanGesture::update` follow a gesture from raw touches (`.on_touch`) in Rust. The TSX callbacks get `(event, gestureState)`: `onStartShouldSetPanResponder(Capture)`, `onMoveShouldSetPanResponder(Capture)`, `onPanResponderGrant`, `onPanResponderReject`, `onPanResponderStart`, `onPanResponderMove`, `onPanResponderEnd`, `onPanResponderRelease`, `onPanResponderTerminate`, `onPanResponderTerminationRequest` and `onShouldBlockNativeResponder`. The last one defaults to `true`: a granted PanResponder keeps native scroll views from taking its touches.
@@ -624,7 +624,7 @@ view()
 `PanActivation::horizontal(active, fail)` and `PanActivation::vertical(active, fail)` set the usual pairs. Without active offsets the pan activates after 10 points in any direction. Until it activates, the scroll views around wait for it (iOS) and the view's other claims are not asked. When it activates, the scroll views can no longer take these touches and the view becomes the responder (the grant, then the moves); when it fails, the scroll view scrolls as usual. In TSX, `PanResponder`'s `panHandlers` work with it too: spread them next to the prop, and `onPanResponderGrant` runs at the activation.
 
 > [!NOTE]
-> Velocities differ by API: the responder gesture's `vx` / `vy` are points per millisecond, while the pan end's velocity and a spring's or a decay's velocity are points per second. Multiply `vx` by 1000 before passing it to a spring.
+> Every velocity is in points per second: the responder gesture's `vx` / `vy`, a pan's velocity and a spring's or a decay's, so `vx` goes to a spring or a decay as it is.
 
 ## Why some answers are props
 

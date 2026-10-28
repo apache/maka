@@ -244,9 +244,9 @@ impl DevServer {
 
     /// Serves each `(path, file)` at `/assets/<path>` (`asset:/<path>` on
     /// device), besides the assets root: files that live elsewhere, as the
-    /// crates of Rust components ship them.
+    /// crates of Rust components ship them. Replaces the previous named set.
     pub fn serve_files(&self, files: impl IntoIterator<Item = (String, std::path::PathBuf)>) {
-        self.shared.files.lock().expect("files lock").extend(files);
+        *self.shared.files.lock().expect("files lock") = files.into_iter().collect();
     }
 
     /// Serves the web host: `page` (HTML) at `/` and each `(path,

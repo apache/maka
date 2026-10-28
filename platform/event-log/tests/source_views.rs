@@ -85,7 +85,10 @@ async fn imported_first_branch_message_keeps_inherited_lineage_before_and_after_
         .create_session("parent", "parent", &json!({}), 1)
         .await
         .unwrap();
-    message(&source, "parent", "parent-run", "inherited parent question").await;
+    let parent_text = "inherited parent 漢字🙂\n\"question\" ".repeat(2048);
+    let branch_text = "first branch 中文🦀\n\"question\" ".repeat(2048);
+    assert!(parent_text.len() > 32 * 1024 && branch_text.len() > 32 * 1024);
+    message(&source, "parent", "parent-run", &parent_text).await;
     let revision = source
         .get_session::<serde_json::Value>("parent")
         .await
@@ -108,11 +111,8 @@ async fn imported_first_branch_message_keeps_inherited_lineage_before_and_after_
         )
         .await
         .unwrap();
-    message(&source, "branch", "branch-run", "first branch question").await;
-    let expected = vec![
-        "inherited parent question".to_owned(),
-        "first branch question".to_owned(),
-    ];
+    message(&source, "branch", "branch-run", &branch_text).await;
+    let expected = vec![parent_text, branch_text];
     assert_eq!(lineage_text(&source).await, expected);
     let inventory = source.preview_bundle("branch").await.unwrap();
     let (bytes, _) = source

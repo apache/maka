@@ -44,7 +44,7 @@ my-app/
 
 An app with both lists its crates in `"rust"` and has a TSX entry that imports them ([Building with Rust](./rust.md#extending-a-rust-app-with-tsx)).
 
-Every command takes the app's directory or its entry as its argument (`nsh run my-app`, `nsh run my-app/App.tsx`). The directory of `nsh.json` and the entry is the app's root: `nsh.json` is read from there, asset paths are relative to it, and `.nsh/` is written there. In a Rust app (`nsh.json` `"root"`), the directory runs the root component; naming a TSX entry runs that instead.
+Every command takes the app's directory or its entry as its argument (`nsh run my-app`, `nsh run my-app/App.tsx`). The directory of `nsh.json` and the entry is the app's root: `nsh.json` is read from there, imports resolve relative to their importing modules, and `.nsh/` is written there. In a Rust app (`nsh.json` `"root"`), the directory runs the root component; naming a TSX entry runs that instead.
 
 ## The root component
 
@@ -219,6 +219,10 @@ const open = async () => {
 
 Apps on devices ship one bundle, so the module is already there and the promise resolves at once. A web app published split (`nsh build --split`) gets the module, and what only it uses, as a separate file that is downloaded the first time `import()` asks for it ([Web](./web.md#split-bundles)). The specifier must be a literal relative path: the bundler has to see which module is meant.
 
+Embedding apps can also discover modules at runtime and load them with [`importModule`](../modules/nsh.md#importmodule).
+The host provides the compiled JavaScript source. These modules use the same NSH components and native modules
+as the app; they can export components for the app to place in its own interface.
+
 ### NSH's modules
 
 Imports of `nsh` and `nsh/...` are not bundled: the runtime provides them natively.
@@ -268,7 +272,7 @@ text("Hello").font_family(INTER.family)
 
 ```tsx tabs
 import { Image, Text } from "nsh";
-import logo from "./assets/logo@2x.png";   // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
+import logo from "./assets/logo@2x.png";   // { url: "asset:/imports/<digest>/logo@2x.png", size: { width: 64, height: 64 } }
 import Inter from "./assets/Inter.ttf";     // "Inter"
 
 <Image src={logo} />

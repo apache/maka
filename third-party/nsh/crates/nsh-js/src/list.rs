@@ -1336,10 +1336,10 @@ export interface ViewToken<T> {
 }
 
 export interface ViewabilityConfig {
-  /** Percent of the viewport an item must cover to count as viewable. */
-  viewAreaCoveragePercentThreshold?: number;
-  /** Percent of an item that must be visible. Without either threshold, any visible pixel counts. */
-  itemVisiblePercentThreshold?: number;
+  /** How much of the viewport an item must cover to count as viewable, from 0 to 1. */
+  viewAreaCoverageThreshold?: number;
+  /** How much of an item must be visible, from 0 to 1. Without either threshold, any visible pixel counts. */
+  itemVisibleThreshold?: number;
   /** Milliseconds items must stay viewable before they are reported. */
   minimumViewTime?: number;
 }
@@ -1422,6 +1422,43 @@ mod tests {
                 .any(|line| line.trim_start().starts_with("at ")),
             "missing exception frames: {message}"
         );
+    }
+
+    #[test]
+    fn viewability_thresholds_reach_the_core_as_fractions() {
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { mount, signal, List } from "nsh";
+            const config = signal({ itemVisibleThreshold: 0.5, minimumViewTime: 250 });
+            globalThis.changeThreshold = () => config.set({
+                itemVisibleThreshold: 1, viewAreaCoverageThreshold: 0.125, minimumViewTime: 250,
+            });
+            mount(() => List({
+                each: ["row"], children: (item) => item(),
+                get viewabilityConfig() { return config(); },
+            }));
+            "#,
+        )
+        .unwrap();
+        let thresholds = |ops: Vec<Op>| {
+            ops.into_iter()
+                .filter_map(|op| match op {
+                    Op::SetProp {
+                        prop: Prop::Viewability(value),
+                        ..
+                    } => Some((
+                        value.item_visible_threshold.map(|v| v.0),
+                        value.view_area_coverage_threshold.map(|v| v.0),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(thresholds(take_ops(&host)), [(Some(0.5), None)]);
+        host.eval_script("threshold.js", "changeThreshold() ")
+            .unwrap();
+        assert_eq!(thresholds(take_ops(&host)), [(Some(1.0), Some(0.125))]);
     }
 
     #[test]

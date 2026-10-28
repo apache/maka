@@ -398,6 +398,8 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
         let interactions = watch.recv().await.unwrap();
         assert_eq!(interactions["kind"], "interactions");
         assert_eq!(interactions["pending"]["entries"], json!([]));
+        let apps = watch.recv().await.unwrap();
+        assert_eq!(apps, json!({"kind":"computer_apps","apps":{"entries":[]}}));
         let events = watch.recv().await.unwrap();
         assert_eq!(events["kind"], "events");
         assert_eq!(events["events"], json!([]));
@@ -410,10 +412,16 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
         assert_eq!(fixture.mutation(2, "editQueue", update, Uuid::new_v4()).await.unwrap()["kind"], "revision_conflict");
         let notice = loop {
             let update = watch.recv().await.unwrap();
-            if update["kind"] == "queue" { break update; }
-            if update["kind"] == "interactions" { continue; }
-            assert_eq!(update["through"], through);
-            assert_eq!(update["events"], json!([]));
+            match update["kind"].as_str() {
+                Some("queue") => break update,
+                Some("interactions") => assert_eq!(update, interactions),
+                Some("computer_apps") => assert_eq!(update, apps),
+                Some("events") => {
+                    assert_eq!(update["through"], through);
+                    assert_eq!(update["events"], json!([]));
+                }
+                _ => panic!("unexpected queue watch delivery: {update}"),
+            }
         };
         assert_eq!(notice["queue"]["revision"], changed["revision"]);
         assert_eq!(notice["queue"]["entries"][0]["preview"], "x".repeat(80));
