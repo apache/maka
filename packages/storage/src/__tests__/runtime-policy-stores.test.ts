@@ -20,12 +20,23 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { lstat, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, mock, test } from 'node:test';
 import {
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
   createDefaultRuntimePolicy,
   type ConnectionCatalogEntry,
   type ConnectionCatalogEntryDraft,
@@ -4702,6 +4713,104 @@ describe('runtime policy stores', () => {
         ),
         { kind: 'superseded', changed: ['connection'] },
       );
+    });
+  });
+
+  test('onboarding upsert clamps the enabled union at the catalog bound so the document stays readable', async () => {
+    await withTempDir(async (base) => {
+      const root = join(base, 'catalog');
+      await mkdir(root, { recursive: true });
+      const catalog = new ConnectionCatalogDocumentOwner();
+      const discovery = (ids: readonly string[]) => ({
+        models: ids.map((id) => ({ id })),
+        source: 'fetched' as const,
+        fetchedAt: 1_000,
+      });
+      const upsert = (enabledModelIds: readonly string[]) =>
+        catalog.prepareOnboardingUpsert(
+          current,
+          'd6426000-0000-4000-8000-000000006426',
+          'openai',
+          'openai',
+          undefined,
+          null,
+          null,
+          enabledModelIds,
+          discovery(enabledModelIds),
+          false,
+        );
+      let current = await catalog.read(root);
+      // Seed 510 wizard-offered ids: a legal document the read path accepts.
+      const handIds = Array.from({ length: 510 }, (_unused, index) => `hand-${index}`);
+      const seeded = upsert(handIds);
+      assert.equal(seeded.kind, 'ready');
+      if (seeded.kind !== 'ready') return;
+      await catalog.commitPreparedOnboarding(root, seeded);
+      current = await catalog.read(root);
+      assert.deepEqual(current.connections[0]?.enabledModelIds, handIds);
+
+      // Re-running the wizard against a shrunken inventory re-enables 20 ids
+      // while the 510 hand-declared ones are undisplayed: the union is 530.
+      const wizardIds = Array.from({ length: 20 }, (_unused, index) => `wizard-${index}`);
+      const rerun = upsert(wizardIds);
+      assert.equal(rerun.kind, 'ready');
+      if (rerun.kind !== 'ready') return;
+      await catalog.commitPreparedOnboarding(root, rerun);
+
+      // A union past the bound must not persist a document the next read
+      // cannot decode — that brick would take down every stored connection.
+      const reread = await catalog.read(root);
+      const entry = reread.connections[0];
+      assert.ok(entry);
+      assert.ok(entry.enabledModelIds.length <= CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS);
+      // The wizard picks are the user's explicit decision: all of them survive,
+      // ahead of the truncated hand-declared tail.
+      assert.deepEqual(entry.enabledModelIds.slice(0, wizardIds.length), wizardIds);
+      assert.equal(new Set(entry.enabledModelIds).size, entry.enabledModelIds.length);
+    });
+  });
+
+  test('onboarding upsert keeps a union of exactly the enabled bound intact', async () => {
+    await withTempDir(async (base) => {
+      const root = join(base, 'catalog');
+      await mkdir(root, { recursive: true });
+      const catalog = new ConnectionCatalogDocumentOwner();
+      const discovery = (ids: readonly string[]) => ({
+        models: ids.map((id) => ({ id })),
+        source: 'fetched' as const,
+        fetchedAt: 1_000,
+      });
+      const upsert = (enabledModelIds: readonly string[]) =>
+        catalog.prepareOnboardingUpsert(
+          current,
+          'd6426000-0000-4000-8000-000000006427',
+          'openai',
+          'openai',
+          undefined,
+          null,
+          null,
+          enabledModelIds,
+          discovery(enabledModelIds),
+          false,
+        );
+      let current = await catalog.read(root);
+      const handIds = Array.from({ length: 511 }, (_unused, index) => `hand-${index}`);
+      const seeded = upsert(handIds);
+      assert.equal(seeded.kind, 'ready');
+      if (seeded.kind !== 'ready') return;
+      await catalog.commitPreparedOnboarding(root, seeded);
+      current = await catalog.read(root);
+
+      // One more pick lands the union exactly on the bound: nothing is dropped.
+      const wizardIds = ['wizard-0'];
+      const rerun = upsert(wizardIds);
+      assert.equal(rerun.kind, 'ready');
+      if (rerun.kind !== 'ready') return;
+      await catalog.commitPreparedOnboarding(root, rerun);
+
+      const entry = (await catalog.read(root)).connections[0];
+      assert.ok(entry);
+      assert.deepEqual(entry.enabledModelIds, [...wizardIds, ...handIds]);
     });
   });
 
