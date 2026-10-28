@@ -4265,14 +4265,13 @@ test('ledger text rewriting replaces every occurrence of a mapped event address'
 });
 
 test('ledger text rewriting rebuilds the memoized plan when a reference map grows on the same object', () => {
-  const references = ledgerRewriteReferences({
-    runtimeEventIds: new Map([['event-source', 'event-target']]),
-  });
+  const runtimeEventIds = new Map([['event-source', 'event-target']]);
+  const references = ledgerRewriteReferences({ runtimeEventIds });
   assert.equal(
     rewriteLedgerArchiveText(`${TOOL_RESULTS_PREFIX}event-source`, references),
     `${TOOL_RESULTS_PREFIX}event-target`,
   );
-  references.runtimeEventIds.set('event-second', 'event-target-2');
+  runtimeEventIds.set('event-second', 'event-target-2');
   assert.equal(
     rewriteLedgerArchiveText(`${TOOL_RESULTS_PREFIX}event-second`, references),
     `${TOOL_RESULTS_PREFIX}event-target-2`,
