@@ -130,6 +130,8 @@ pub(crate) struct ViewState {
     pub(crate) image: Option<crate::image::ImageState>,
     /// Canvas content.
     pub(crate) canvas: Option<crate::canvas::CanvasState>,
+    /// What a shader draws under the children ([`crate::shader`]).
+    pub(crate) shader: Option<crate::shader::ShaderState>,
     /// Text field (input views).
     pub(crate) input: Option<std::rc::Rc<crate::text_input::InputState>>,
     /// Hosted AppKit views.
@@ -163,6 +165,7 @@ impl ViewState {
             text: None,
             image: None,
             canvas: None,
+            shader: None,
             input: None,
             natives: Vec::new(),
             overflow: None,

@@ -39,11 +39,11 @@ Subsequent calls use indices from that observation. `cua.getState()` lists avail
 
 The `desktop` setting defaults to `auto`: the Windows host in WSL, otherwise the local desktop. `local` selects Linux inside WSL; `windows` requires the Windows helper. Native releases prepare their matching Windows helper through the verified distribution cache. WSL interoperability and an interactive Windows desktop are required.
 
-Browser providers include explicitly configured CDP endpoints for existing profiles and connected native browser adapters. Use `cua.listBrowsers()` to discover their IDs, then `cua.getBrowser({id})` to select one. Missing providers do not restart a browser or enable remote debugging; native browser-window control remains available through `getApp`.
+Browser providers include explicitly configured CDP endpoints for existing profiles and connected Extension browser providers. Use `cua.listBrowsers()` to discover their full IDs, then `cua.getBrowser({id})` to select one. Exact provider IDs take precedence. Only without an exact match do the `maka` and `chatgpt` shortcuts select one current Extension endpoint; multiple endpoints require its full ID. Direct CDP profiles retain their configured IDs. Missing providers do not restart a browser or enable remote debugging; native browser-window control remains available through `getApp`.
 
-Set up the Own or Original native adapter with a `native-desktop` Maka build on Google Chrome's OS and under the same user. Setup registers Chrome's current-user native host; it is not forwarded by the WSL Windows bridge. On Linux and macOS, Chrome's default user configuration directory must already exist. Registration also writes installation metadata next to the selected Maka executable, so those paths must be writable.
+Set up the Maka or ChatGPT Extension provider with a `native-desktop` Maka build on Google Chrome's OS and under the same user. Setup registers Chrome's current-user extension host; it is not forwarded by the WSL Windows bridge. On Linux and macOS, Chrome's default user configuration directory must already exist. Registration also writes installation metadata next to the selected Maka executable, so those paths must be writable.
 
-For Own, export the bundled Chrome connector source to an absolute empty directory under an existing parent:
+For Maka, export the bundled Chrome connector source to an absolute empty directory under an existing parent:
 
 ```sh
 maka browser extension --output /absolute/path/maka-browser-extension
@@ -52,20 +52,20 @@ maka browser extension --output /absolute/path/maka-browser-extension
 Load and enable that directory through Chrome's extension UI, then register its actual extension ID:
 
 ```sh
-maka browser install --extension-id ACTUAL_OWN_EXTENSION_ID
+maka browser install --provider maka --extension-id ACTUAL_MAKA_EXTENSION_ID
 ```
 
-To use an already installed Original extension, select its adapter explicitly instead:
+To use an already installed ChatGPT extension, select its adapter explicitly instead:
 
 ```sh
-maka browser install --adapter original --extension-id ACTUAL_ORIGINAL_EXTENSION_ID
+maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID
 ```
 
-These are alternative registration selections for an executable. Host installation refuses conflicting registrations. Re-export refuses to overwrite modified extension source. Setup does not install extensions, change browser policies or grant site access. Remove the matching native-host registration with `maka browser uninstall` for Own or `maka browser uninstall --adapter original` for Original; removal does not uninstall the extension or delete exported source.
+These are alternative registration selections for an executable. Host installation refuses conflicting registrations. Re-export refuses to overwrite modified extension source. Setup does not install extensions, change browser policies or grant site access. Remove the matching extension-host registration with `maka browser uninstall --provider maka` for Maka or `maka browser uninstall --provider chatgpt` for ChatGPT; removal does not uninstall the extension or delete exported source.
 
-Native adapters expose `browser.user` for user-tab discovery and claiming. The [API reference](src/api.md) covers its permission rules, the `tab.ax` facade, Playwright, clipboard and downloads. Host `browserPreparation` defaults to `popup: false` and `requestHeaders: []`; nonempty headers also enable effective popup adoption/relay. These controls grant no site access and do not prove Original page hooks are off. See the [typed configuration](../../plugins/workspace/api/src/computer.rs).
+Extension providers expose `browser.user` for user-tab discovery and claiming. The [API reference](src/api.md) covers its permission rules, the `tab.ax` facade, Playwright, clipboard and downloads. Host `browserPreparation` defaults to `popup: false` and `requestHeaders: []`; nonempty headers also enable effective popup adoption/relay. These controls grant no site access and do not prove ChatGPT page hooks are off. See the [typed configuration](../../plugins/workspace/api/src/computer.rs).
 
-Own source export is also the entry point for customizing the Chrome connector. Browser object API additions use [facade.js](src/facade.js), typed commands in [protocol.rs](src/protocol.rs) and dispatch in [browser.rs](src/browser.rs), preserving Host authorization and resource ownership. This is source development, not dynamic browser-protocol plugin registration. A complete OpenCLI execution adapter is not implemented in this integration; registering an arbitrary extension ID does not add its protocol. Setup and browser actions require integration verification with the matching Maka CLI/Host build on each target platform; discovery alone does not establish action behavior.
+Maka source export is also the entry point for customizing the Chrome connector. Browser object API additions use [facade.js](src/facade.js), typed commands in [protocol.rs](src/protocol.rs) and dispatch in [browser.rs](src/browser.rs), preserving Host authorization and resource ownership. This is source development, not dynamic browser-protocol plugin registration. ChatGPT and stock OpenCLI integration is best effort; registering an arbitrary extension ID does not add its protocol. Stock OpenCLI currently lacks the interfaces required by this browser session. With no exact provider ID or extension-instance selection, `cua.getBrowser({id: "opencli"})` selects a single usable existing provider before creating or claiming a tab; no match or multiple matches refuses selection. Exact IDs and existing handles stay pinned. No modified OpenCLI extension is required. Setup and browser actions require integration verification with the matching Maka CLI/Host build on each target platform; discovery alone does not establish action behavior.
 
 Computer output recording requires the explicit Host configuration `audio: true`, which defaults to false. It adds `cua.computer.start_audio_recording`, `stop_audio_recording` and `nodeRepl.emitAudio`; recordings capture output audio and never select a microphone. macOS also requires separate audio Session consent. Reset and Session cleanup discard owned recordings.
 

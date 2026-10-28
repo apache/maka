@@ -244,6 +244,8 @@ pub(crate) struct Surface {
     /// The app's keyboard shortcuts ([`crate::keymap`]).
     pub(crate) keymap: crate::keymap::KeymapState,
     pub(crate) file_drop: crate::file_drop::State,
+    /// The GPU device and the shader views rendering ([`crate::shader`]).
+    pub(crate) shaders: crate::shader::Shaders,
 }
 
 /// A per-frame callback ([`Surface::add_frame_callback`]): gets the frame
@@ -293,6 +295,7 @@ impl Surface {
             keymap: Default::default(),
             file_drop: Default::default(),
             chrome: Default::default(),
+            shaders: Default::default(),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));
         // CoreText's first use loads fonts and caches (tens of
@@ -380,6 +383,7 @@ impl Surface {
         self.queued.borrow_mut().clear();
         self.resize_late.set(false);
         self.frame_callbacks.borrow_mut().clear();
+        crate::shader::clear(self);
     }
 
     /// Calls `f` with the engine's control, if an app runs.
@@ -651,6 +655,8 @@ impl Surface {
             );
             (std::mem::take(&mut anim.finished), moved)
         };
+        // Shaders whose animated uniforms moved render from the next frame.
+        crate::shader::wake(self);
         // No surface state borrowed while the app's components run.
         crate::native::component_animated(self, moved);
         crate::scroll::pin_animated_sticky(self);

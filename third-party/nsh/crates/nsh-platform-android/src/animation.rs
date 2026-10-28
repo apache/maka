@@ -82,9 +82,22 @@ pub(crate) struct UiAnimation {
     /// Scroll view id -> its sticky cells that stick an animated value
     /// further in, with that value's node.
     sticky: FxHashMap<u32, Vec<(u32, NodeId)>>,
+    /// The shader views, whose animated slots are written here.
+    pub(crate) shaders: crate::shader::Shaders,
 }
 
 impl UiAnimation {
+    /// Forgets the running app's state (a new app runs), keeping the
+    /// shaders' GPU device.
+    pub(crate) fn reset(&mut self) {
+        let mut shaders = std::mem::take(&mut self.shaders);
+        shaders.clear();
+        *self = UiAnimation {
+            shaders,
+            ..UiAnimation::default()
+        };
+    }
+
     pub(crate) fn apply(&mut self, item: MountItem) {
         match item {
             MountItem::Animation(op) => self.graph.apply(op, &mut self.finished),
@@ -140,7 +153,9 @@ impl UiAnimation {
                     self.sticky.insert(id, animated);
                 }
             }
+            MountItem::Shader { id, layer } => self.shaders.set(id, layer),
             MountItem::Delete { id } => {
+                self.shaders.delete(id);
                 self.bindings.remove(&id);
                 self.statics.remove(&id);
                 self.gestures.remove(&id);
@@ -259,10 +274,31 @@ impl UiAnimation {
         }
     }
 
-    /// `[animating, (view, prop, value)*]` for every bound property.
-    pub(crate) fn outputs(&self) -> Vec<f32> {
+    /// Writes the shader views' animated slots from the graph.
+    fn write_shader_slots(&mut self) {
+        for (id, view) in self.shaders.views_mut() {
+            let Some(bindings) = self.bindings.get(&id) else {
+                continue;
+            };
+            for &(prop, node) in bindings {
+                if let AnimationProp::CanvasArg(k) = prop {
+                    view.set_slot(k, self.graph.eval(node));
+                }
+            }
+        }
+    }
+
+    /// `[animating, (view, prop, value)*]` for every bound property; the
+    /// shader views' bound values are written into them instead, and keep
+    /// frames coming (`animating`) while one has a frame to render.
+    pub(crate) fn outputs(&mut self) -> Vec<f32> {
+        self.write_shader_slots();
         let mut out = Vec::with_capacity(1 + self.bindings.len() * 12);
-        out.push(if self.animating() { 1.0 } else { 0.0 });
+        out.push(if self.animating() || self.shaders.wants_frame() {
+            1.0
+        } else {
+            0.0
+        });
         for (&view, bindings) in &self.bindings {
             let v = f32::from_bits(view);
             let mut overrides = [None; MAX_TRANSFORMS];
@@ -287,6 +323,7 @@ impl UiAnimation {
                         };
                         out.extend_from_slice(&[v, BACKGROUND, value]);
                     }
+                    AnimationProp::CanvasArg(_) if self.shaders.contains(view) => {}
                     AnimationProp::CanvasArg(k) => {
                         let value = match self.graph.eval(node) {
                             AnimationValue::Color(c) => f32::from_bits(c.rotate_right(8)),

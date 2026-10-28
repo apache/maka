@@ -19,13 +19,13 @@ use gpui::{
 };
 
 use crate::{
-    FrameToken, SubmittedFrame,
+    FrameToken, PreparedFrame,
     dispatcher::Dispatcher,
     window::{TerminalWindow, WindowRef, WindowState},
 };
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
-type SubmissionSink = Box<dyn FnMut(SubmittedFrame)>;
+type PreparationSink = Box<dyn FnMut(PreparedFrame)>;
 type MenuAction = Box<dyn FnMut(&dyn Action)>;
 type ValidateMenuAction = Box<dyn FnMut(&dyn Action) -> bool>;
 
@@ -48,15 +48,15 @@ struct Callbacks {
 ///
 /// This owns no terminal input or output. Keep the `ApplicationHandle` returned
 /// by `Application::run_embedded`, call [`Self::pump`] when woken, and send
-/// submitted readbacks to a background executor and completed candidates to the
-/// host's sole writer. Neither submission nor completion is a presentation.
+/// prepared scenes to a background executor for submission/readback, and
+/// completed candidates to the host's sole writer. Neither is a presentation.
 #[non_exhaustive]
 pub struct TerminalPlatform {
     dispatcher: Arc<Dispatcher>,
     background: BackgroundExecutor,
     foreground: ForegroundExecutor,
     text: Arc<dyn PlatformTextSystem>,
-    resources: RefCell<Option<(Box<gpui_wgpu::WgpuHeadlessRenderer>, SubmissionSink)>>,
+    resources: RefCell<Option<(Box<gpui_wgpu::WgpuHeadlessRenderer>, PreparationSink)>>,
     window: RefCell<Option<WindowRef>>,
     viewport: Cell<Option<(Size<DevicePixels>, f32)>>,
     callbacks: RefCell<Callbacks>,
@@ -79,7 +79,7 @@ impl TerminalPlatform {
     /// it must not enter GPUI synchronously from a callback or worker thread.
     pub fn new(
         renderer: Box<gpui_wgpu::WgpuHeadlessRenderer>,
-        sink: Box<dyn FnMut(SubmittedFrame)>,
+        sink: Box<dyn FnMut(PreparedFrame)>,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Rc<Self>> {
         let dispatcher = Dispatcher::new(wake.clone())?;
@@ -131,8 +131,8 @@ impl TerminalPlatform {
     }
 
     /// Runs at most 64 foreground tasks and one window frame on the creating
-    /// thread. Pending work re-wakes the host. Drawing submits an owned GPU
-    /// readback ticket; the host completes it off this native input thread.
+    /// thread. Pending work re-wakes the host. Drawing prepares owned GPU
+    /// commands; the host submits and reads them back off this input thread.
     pub fn pump(&self) -> bool {
         self.pump_with_draw(true)
     }
@@ -599,7 +599,12 @@ mod tests {
         let received = frames.clone();
         let platform = TerminalPlatform::new(
             Box::new(gpui_wgpu::WgpuHeadlessRenderer::new()?),
-            Box::new(move |frame| received.borrow_mut().push(frame)),
+            Box::new(move |frame| {
+                let issued = frame.token();
+                let submitted = frame.submit().expect("GPU submission");
+                assert_eq!(submitted.token(), issued);
+                received.borrow_mut().push(submitted);
+            }),
             Arc::new(move || {
                 wake.fetch_add(1, Ordering::SeqCst);
             }),

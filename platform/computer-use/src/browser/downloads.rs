@@ -19,11 +19,11 @@
 
 //! Download intents share the existing tab/CDP and actual Host authorization.
 //!
-//! Native IDs and filenames are global provider metadata. The original URL-first
+//! Extension IDs and filenames are global provider metadata. The original URL-first
 //! association is preserved; it does not turn a filename into file ownership.
 
 use super::*;
-use cua_driver_core::browser::NativeBrowserProvider;
+use cua_driver_core::browser::ExtensionBrowserProvider;
 
 mod coordinator;
 mod metadata;
@@ -42,7 +42,7 @@ impl Store {
         &mut self,
         owner: uuid::Uuid,
         identity: BrowserIdentity,
-        provider: &NativeBrowserProvider,
+        provider: &ExtensionBrowserProvider,
     ) -> Result<Option<metadata::Metadata>, ToolError> {
         if !provider
             .capabilities()
@@ -64,9 +64,9 @@ impl Store {
         owner: uuid::Uuid,
         expected_browser: &BrowserIdentity,
         scope: &str,
-        native_id: &str,
+        extension_id: &str,
     ) -> Result<Value, ToolError> {
-        if native_id.is_empty() {
+        if extension_id.is_empty() {
             return Err(failed("playwright_download_path requires a download_id"));
         }
         let metadata = self
@@ -76,7 +76,7 @@ impl Store {
             .map(|metadata| metadata.metadata())
             .ok_or_else(|| failed("Download metadata scope is no longer available"))?;
         metadata.synchronize().await?;
-        Ok(json!({"path":metadata.path(native_id)}))
+        Ok(json!({"path":metadata.path(extension_id)}))
     }
 
     pub(super) async fn close_owner(&mut self, owner: uuid::Uuid) -> Result<(), ToolError> {
@@ -161,7 +161,7 @@ impl Browsers {
             invocation,
             cancellation,
             language,
-            super::native::ClaimIntent::Implicit,
+            super::extension::ClaimIntent::Implicit,
         )
         .await?;
         // Browser services are obtained through the original local or remote
@@ -176,7 +176,8 @@ impl Browsers {
                 cancellation,
             )
             .await?;
-        tab.refresh_info(language).await?;
+        tab.refresh_info(super::BrowserCall::new(invocation, cancellation, language))
+            .await?;
         if tab.document() != document || tab.document_identity().await? != source {
             return Err(failed(
                 "Download document changed during Host service admission",
@@ -225,7 +226,7 @@ impl Tab {
         &mut self,
         host: Option<std::sync::Arc<dyn crate::BrowserHostEffects>>,
     ) -> Result<(), ToolError> {
-        let Some(provider) = self.provider.native() else {
+        let Some(provider) = self.provider.extension() else {
             return Ok(());
         };
         let socket = self
@@ -285,21 +286,15 @@ impl Tab {
             .browser_authorization()
             .ok_or_else(|| failed("Browser downloads require Host authorization"))?;
         let controller = self.downloads.as_ref().ok_or_else(|| {
-            failed("Native download notifications are unavailable for this browser provider")
+            failed("Extension download notifications are unavailable for this browser provider")
         })?;
-        let provider = self
-            .provider
-            .native()
-            .expect("native download controller")
-            .with_wire_context(
-                self.native_wire
-                    .clone()
-                    .ok_or_else(|| failed("Download operation lacks trusted native context"))?,
-            );
+        let session_metadata = self
+            .session_metadata(BrowserCall::new(invocation, cancellation, Language::En))
+            .await?;
         controller
             .arm(
                 self.document(),
-                provider,
+                session_metadata,
                 authorization,
                 cancellation.clone(),
                 timeout(&options),

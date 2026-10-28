@@ -21,6 +21,8 @@ use super::*;
 
 mod download_media;
 mod mutation;
+#[path = "wait.rs"]
+pub(super) mod wait;
 pub(super) use mutation::validate_mutation;
 use std::{collections::HashSet, future::Future, pin::Pin, sync::Mutex};
 use tokio_util::sync::CancellationToken;
@@ -338,9 +340,9 @@ impl Tab {
         operation: BrowserReadOperation,
         budget: super::ReadBudget,
         document: crate::BrowserDocument,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::BrowserCall<'_>,
     ) -> Result<Value, ToolError> {
+        let cancellation = call.cancellation;
         let effect = self.read_effect()?;
         let resources = Resources::new();
         let timeout = budget.remaining;
@@ -353,7 +355,7 @@ impl Tab {
         // and document proof belong to this read's deadline too; Host consent
         // has already completed; authorization spent the same remaining budget.
         let ready = async {
-            self.verify(language).await?;
+            self.verify(call).await?;
             if self.document() != document {
                 return Err(failed(
                     "document changed during browser authorization; retry the operation",
@@ -368,7 +370,7 @@ impl Tab {
         }
         if matches!(operation, BrowserReadOperation::DomSnapshot) {
             let result = self
-                .playwright_snapshot_read(document, cancellation, language, &resources, deadline)
+                .playwright_snapshot_read(document, call, &resources, deadline)
                 .await;
             resources.cleanup(self).await;
             return result.map_err(|error| effect.read_failure(error));
@@ -382,7 +384,7 @@ impl Tab {
                 let attempt=async {
                     let result=self.playwright_attempt(&plan.selector,&operation,&resources).await?;
                     if !self.frame_scopes_current(&result.used).await? {return Err(AttemptError::Fatal(failed("frame changed during browser read; retry the operation")));}
-                    self.refresh_info(language).await?;
+                    self.refresh_info(call).await?;
                     if self.document()!=document {return Err(AttemptError::Fatal(failed("document changed during browser read; retry the operation")));}
                     check_input(cancellation)?;
                     Ok(result.value)
@@ -455,11 +457,11 @@ impl Tab {
     async fn playwright_snapshot_read(
         &mut self,
         document: crate::BrowserDocument,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::BrowserCall<'_>,
         resources: &Resources,
         deadline: tokio::time::Instant,
     ) -> Result<Value, ToolError> {
+        let cancellation = call.cancellation;
         let effect = self.read_effect()?;
         check_input(cancellation)?;
         if tokio::time::Instant::now() >= deadline {
@@ -473,7 +475,7 @@ impl Tab {
                 .map_err(|error| match error {
                     AttemptError::Retry(error) | AttemptError::Fatal(error) => error,
                 })?;
-            self.refresh_info(language).await?;
+            self.refresh_info(call).await?;
             if self.document() != document {
                 return Err(failed(
                     "document changed during browser read; retry the operation",
@@ -502,7 +504,7 @@ impl Tab {
             result=tokio::time::timeout_at(deadline,self.frame_catalog())=>match result {
                 Ok(Ok(catalog))=>catalog,
                 Ok(Err(error)) if effect.uncertain(&error)=>return Err(error),
-                Err(_) if matches!(effect, ReadEffect::NativePreparation)=>return Err(effect.interrupted("Playwright snapshot deadline exceeded")),
+                Err(_) if matches!(effect, ReadEffect::ExtensionPreparation)=>return Err(effect.interrupted("Playwright snapshot deadline exceeded")),
                 _=>return Ok(json!(clean_snapshot(&root.full))),
             },
         };
@@ -543,7 +545,7 @@ impl Tab {
                     let child=match tokio::time::timeout_at(deadline,capture).await {
                         Ok(Ok(child))=>child,
                         Ok(Err(AttemptError::Retry(error)|AttemptError::Fatal(error))) if effect.uncertain(&error)=>return Err(error),
-                        Err(_) if matches!(effect,ReadEffect::NativePreparation)=>return Err(effect.interrupted("Playwright snapshot deadline exceeded")),
+                        Err(_) if matches!(effect,ReadEffect::ExtensionPreparation)=>return Err(effect.interrupted("Playwright snapshot deadline exceeded")),
                         _=>return Ok(None),
                     };
                     let nested=self.expand_snapshot(child,catalog,cancellation,resources,deadline,effect).await?;

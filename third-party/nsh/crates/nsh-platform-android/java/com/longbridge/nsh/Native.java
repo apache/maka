@@ -265,6 +265,9 @@ final class Native {
 
     static native float[] tick(long handle, long frameNanos);
 
+    /** Shader view {@code id} is {@code width} × {@code height} px; whether frames should come. */
+    static native boolean shaderSize(long handle, int id, int width, int height);
+
     /**
      * A scroll view's offset, after applying {@code applied} of the scrolls
      * the core asked for. Returns bound values when a scroll value changed,

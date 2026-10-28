@@ -17,11 +17,12 @@
  * under the License.
  */
 
-//! Original native download metadata and its URL-first completion association.
+//! ChatGPT extension download metadata and its URL-first completion association.
 
 use super::*;
 use cua_driver_core::browser::{
-    NativeBrowserProvider, NativeDownloadMetadata, NativeDownloadStatus, NativeProviderEvent,
+    ExtensionBrowserProvider, ExtensionDownloadMetadata, ExtensionDownloadStatus,
+    ExtensionProviderEvent,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -56,7 +57,7 @@ pub(super) struct MetadataOwner {
 
 struct CompletionInner {
     first_id: Option<String>,
-    result: Option<Result<NativeDownloadMetadata, ToolError>>,
+    result: Option<Result<ExtensionDownloadMetadata, ToolError>>,
 }
 
 struct CompletionState {
@@ -67,7 +68,7 @@ struct CompletionState {
     deadline: tokio::time::Instant,
 }
 
-/// This is the original URL-first native-ID association, not a tab ownership proof.
+/// This is the original URL-first extension-ID association, not a tab ownership proof.
 pub(super) struct Completion {
     id: uuid::Uuid,
     metadata: Metadata,
@@ -75,7 +76,7 @@ pub(super) struct Completion {
 }
 
 impl CompletionState {
-    fn observe(&self, download: &NativeDownloadMetadata) {
+    fn observe(&self, download: &ExtensionDownloadMetadata) {
         let mut inner = self
             .inner
             .lock()
@@ -85,19 +86,19 @@ impl CompletionState {
         }
         match inner.first_id.as_deref() {
             None => {
-                if download.status == NativeDownloadStatus::Started && download.url == self.url {
+                if download.status == ExtensionDownloadStatus::Started && download.url == self.url {
                     inner.first_id = Some(download.id.clone());
                     self.changed.notify_waiters();
                 }
             }
             Some(id) if id == download.id => {
                 inner.result = match download.status {
-                    NativeDownloadStatus::Started | NativeDownloadStatus::InProgress => None,
-                    NativeDownloadStatus::Complete => Some(Ok(download.clone())),
-                    NativeDownloadStatus::Failed => {
+                    ExtensionDownloadStatus::Started | ExtensionDownloadStatus::InProgress => None,
+                    ExtensionDownloadStatus::Complete => Some(Ok(download.clone())),
+                    ExtensionDownloadStatus::Failed => {
                         Some(Err(failed(format!("Download {} failed.", download.id))))
                     }
-                    NativeDownloadStatus::Canceled => Some(Err(failed(format!(
+                    ExtensionDownloadStatus::Canceled => Some(Err(failed(format!(
                         "Download {} was canceled.",
                         download.id
                     )))),
@@ -127,12 +128,12 @@ impl Metadata {
         self.scope.to_string()
     }
 
-    fn observe(&self, event: NativeProviderEvent) {
+    fn observe(&self, event: ExtensionProviderEvent) {
         match event {
-            NativeProviderEvent::DownloadChanged { download } => {
+            ExtensionProviderEvent::DownloadChanged { download } => {
                 let watches = {
                     let mut state = self.state.lock().expect("download metadata lock poisoned");
-                    // Cache before notifying completion, including empty native filenames.
+                    // Cache before notifying completion, including empty extension filenames.
                     state
                         .filenames
                         .insert(download.id.clone(), download.filename.clone());
@@ -142,9 +143,11 @@ impl Metadata {
                     watch.observe(&download);
                 }
             }
-            NativeProviderEvent::GenerationClosed { reason } => {
+            ExtensionProviderEvent::GenerationClosed { reason } => {
                 self.fail_current(
-                    unknown(format!("Native download metadata disconnected: {reason}")),
+                    unknown(format!(
+                        "Extension download metadata disconnected: {reason}"
+                    )),
                     true,
                 );
             }
@@ -211,12 +214,12 @@ impl Metadata {
         }
     }
 
-    pub(super) fn path(&self, native_id: &str) -> Option<String> {
+    pub(super) fn path(&self, extension_id: &str) -> Option<String> {
         self.state
             .lock()
             .expect("download metadata lock poisoned")
             .filenames
-            .get(native_id)
+            .get(extension_id)
             .cloned()
     }
 
@@ -224,10 +227,10 @@ impl Metadata {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(ObserverCommand::Barrier(reply))
-            .map_err(|_| unknown("Native download metadata observer stopped"))?;
+            .map_err(|_| unknown("Extension download metadata observer stopped"))?;
         response
             .await
-            .map_err(|_| unknown("Native download metadata barrier was lost"))
+            .map_err(|_| unknown("Extension download metadata barrier was lost"))
     }
 
     pub(super) fn completion(
@@ -254,7 +257,7 @@ impl Metadata {
         drop(metadata);
         self.commands
             .send(ObserverCommand::Refresh)
-            .map_err(|_| unknown("Native download metadata observer stopped"))?;
+            .map_err(|_| unknown("Extension download metadata observer stopped"))?;
         Ok(Completion {
             id,
             metadata: self.clone(),
@@ -264,7 +267,7 @@ impl Metadata {
 }
 
 impl MetadataOwner {
-    pub(super) fn start(provider: &NativeBrowserProvider) -> Self {
+    pub(super) fn start(provider: &ExtensionBrowserProvider) -> Self {
         let (commands, mut waiting) = mpsc::unbounded_channel::<ObserverCommand>();
         let mut events = provider.subscribe_events();
         let metadata = Metadata {
@@ -295,11 +298,11 @@ impl MetadataOwner {
                             match events.try_recv() {
                                 Ok(event) => observed.observe(event),
                                 Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
-                                    observed.fail_current(unknown("Native download metadata events were lost"), false);
+                                    observed.fail_current(unknown("Extension download metadata events were lost"), false);
                                 }
                                 Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
                                 Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                                    observed.fail_current(unknown("Native download metadata observer stopped"), true);
+                                    observed.fail_current(unknown("Extension download metadata observer stopped"), true);
                                     break;
                                 }
                             }
@@ -310,13 +313,16 @@ impl MetadataOwner {
                     event=events.recv()=>match event {
                         Ok(event) => observed.observe(event),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            observed.fail_current(unknown("Native download metadata events were lost"), false);
+                            observed.fail_current(unknown("Extension download metadata events were lost"), false);
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     },
                 }
             }
-            observed.fail_current(unknown("Native download metadata observer stopped"), true);
+            observed.fail_current(
+                unknown("Extension download metadata observer stopped"),
+                true,
+            );
         });
         Self {
             metadata,
@@ -334,14 +340,14 @@ impl MetadataOwner {
             return Ok(());
         }
         self.metadata
-            .fail_current(unknown("Native download metadata observer closed"), true);
+            .fail_current(unknown("Extension download metadata observer closed"), true);
         self.worker.abort();
         match (&mut self.worker).await {
             Ok(()) => {}
             Err(error) if error.is_cancelled() => {}
             Err(error) => {
                 return Err(cleanup(format!(
-                    "Native download metadata observer did not stop: {error}"
+                    "Extension download metadata observer did not stop: {error}"
                 )));
             }
         }
@@ -360,7 +366,7 @@ impl Completion {
     pub(super) async fn wait(
         &self,
         cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<NativeDownloadMetadata, ToolError> {
+    ) -> Result<ExtensionDownloadMetadata, ToolError> {
         let deadline = self.state.deadline;
         loop {
             let changed = self.state.changed.notified();
@@ -419,7 +425,7 @@ pub(super) fn setup_fixture() -> Metadata {
 
 #[cfg(test)]
 pub(super) fn completion_fixture() -> (Metadata, impl Send) {
-    // Retain the real queue receiver without pretending that a Native event,
+    // Retain the real queue receiver without pretending that a Extension event,
     // metadata barrier or completion has been observed.
     let (commands, receive) = mpsc::unbounded_channel();
     (
@@ -448,13 +454,13 @@ mod tests {
         )
     }
 
-    fn native(
+    fn extension(
         id: &str,
         url: &str,
-        status: NativeDownloadStatus,
+        status: ExtensionDownloadStatus,
         filename: &str,
-    ) -> NativeDownloadMetadata {
-        NativeDownloadMetadata {
+    ) -> ExtensionDownloadMetadata {
+        ExtensionDownloadMetadata {
             id: id.into(),
             filename: filename.into(),
             url: url.into(),
@@ -463,43 +469,43 @@ mod tests {
     }
 
     #[test]
-    fn complete_wait_requires_started_then_the_same_actual_native_id() {
+    fn complete_wait_requires_started_then_the_same_actual_extension_id() {
         let (metadata, _receive) = store();
         let watch = metadata
             .completion("https://fixture.test/file".into(), Duration::from_secs(3))
             .unwrap();
         let observe = |id, url, status| {
-            metadata.observe(NativeProviderEvent::DownloadChanged {
-                download: native(id, url, status, ""),
+            metadata.observe(ExtensionProviderEvent::DownloadChanged {
+                download: extension(id, url, status, ""),
             })
         };
         observe(
             "17",
             "https://fixture.test/file",
-            NativeDownloadStatus::Complete,
+            ExtensionDownloadStatus::Complete,
         );
         assert!(watch.state.inner.lock().unwrap().result.is_none());
         observe(
             "other",
             "https://foreign.test/file",
-            NativeDownloadStatus::Started,
+            ExtensionDownloadStatus::Started,
         );
         assert!(watch.state.inner.lock().unwrap().first_id.is_none());
         observe(
             "17",
             "https://fixture.test/file",
-            NativeDownloadStatus::Started,
+            ExtensionDownloadStatus::Started,
         );
         observe(
             "18",
             "https://fixture.test/file",
-            NativeDownloadStatus::Complete,
+            ExtensionDownloadStatus::Complete,
         );
         assert!(watch.state.inner.lock().unwrap().result.is_none());
         observe(
             "17",
             "https://fixture.test/file",
-            NativeDownloadStatus::Complete,
+            ExtensionDownloadStatus::Complete,
         );
         let inner = watch.state.inner.lock().unwrap();
         assert_eq!(inner.result.as_ref().unwrap().as_ref().unwrap().id, "17");
@@ -513,34 +519,34 @@ mod tests {
             .completion(url.into(), Duration::from_secs(3))
             .unwrap();
         for download in [
-            native(
+            extension(
                 "foreign-first",
                 url,
-                NativeDownloadStatus::Started,
-                "/foreign/native/name",
+                ExtensionDownloadStatus::Started,
+                "/foreign/extension/name",
             ),
-            native(
+            extension(
                 "our-later",
                 url,
-                NativeDownloadStatus::Started,
-                "/our/native/name",
+                ExtensionDownloadStatus::Started,
+                "/our/extension/name",
             ),
-            native(
+            extension(
                 "our-later",
                 url,
-                NativeDownloadStatus::Complete,
-                "/our/native/name",
+                ExtensionDownloadStatus::Complete,
+                "/our/extension/name",
             ),
         ] {
-            metadata.observe(NativeProviderEvent::DownloadChanged { download });
+            metadata.observe(ExtensionProviderEvent::DownloadChanged { download });
         }
         assert!(watch.state.inner.lock().unwrap().result.is_none());
-        metadata.observe(NativeProviderEvent::DownloadChanged {
-            download: native(
+        metadata.observe(ExtensionProviderEvent::DownloadChanged {
+            download: extension(
                 "foreign-first",
                 url,
-                NativeDownloadStatus::Complete,
-                "/foreign/native/name",
+                ExtensionDownloadStatus::Complete,
+                "/foreign/extension/name",
             ),
         });
         assert_eq!(
@@ -560,27 +566,27 @@ mod tests {
         // This string remains observed metadata. No owning tab or readable file is asserted.
         assert_eq!(
             metadata.path("foreign-first").as_deref(),
-            Some("/foreign/native/name")
+            Some("/foreign/extension/name")
         );
         assert_eq!(
             metadata.path("our-later").as_deref(),
-            Some("/our/native/name")
+            Some("/our/extension/name")
         );
     }
 
     #[test]
-    fn native_filename_cache_keeps_empty_strings_and_never_rewrites_windows_paths() {
+    fn extension_filename_cache_keeps_empty_strings_and_never_rewrites_windows_paths() {
         let (metadata, _receive) = store();
         assert_eq!(metadata.path("absent"), None);
         for (id, filename) in [
             ("empty", ""),
             ("windows", r"C:\Users\fixture\Downloads\file.bin"),
         ] {
-            metadata.observe(NativeProviderEvent::DownloadChanged {
-                download: native(
+            metadata.observe(ExtensionProviderEvent::DownloadChanged {
+                download: extension(
                     id,
                     "https://fixture.test/file",
-                    NativeDownloadStatus::InProgress,
+                    ExtensionDownloadStatus::InProgress,
                     filename,
                 ),
             });
@@ -595,22 +601,22 @@ mod tests {
             .completion("https://fixture.test/file".into(), Duration::ZERO)
             .unwrap();
         assert!(metadata.next_deadline().is_some());
-        metadata.observe(NativeProviderEvent::DownloadChanged {
-            download: native(
+        metadata.observe(ExtensionProviderEvent::DownloadChanged {
+            download: extension(
                 "17",
                 "https://fixture.test/file",
-                NativeDownloadStatus::Started,
+                ExtensionDownloadStatus::Started,
                 "",
             ),
         });
         assert_eq!(metadata.next_deadline(), None);
         metadata.expire();
         assert!(watch.state.inner.lock().unwrap().result.is_none());
-        metadata.observe(NativeProviderEvent::DownloadChanged {
-            download: native(
+        metadata.observe(ExtensionProviderEvent::DownloadChanged {
+            download: extension(
                 "17",
                 "https://fixture.test/file",
-                NativeDownloadStatus::Canceled,
+                ExtensionDownloadStatus::Canceled,
                 "",
             ),
         });

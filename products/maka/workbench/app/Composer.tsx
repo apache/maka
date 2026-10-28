@@ -42,7 +42,7 @@ import type { ComposerCommand } from './composerCommands';
 import logo from './assets/maka.png';
 
 // Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
-const skillTokens = [
+const skillTokens = () => [
   {
     pattern: String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)`,
     style: { color: C.accent, backgroundColor: `${C.accent}20`, borderRadius: 4 },
@@ -101,11 +101,18 @@ export function Composer(props: {
   stopAction(): () => void;
   chooseWorkspace(): void;
   settings(): void;
+  /** Receives the composer's handler for files dropped beside it. */
+  dropFiles?(drop: (event: { uris: string[] }) => void): void;
 }) {
   const completion = createComposerCompletion({
     session: props.session,
     commands: props.commands,
     active: props.active,
+  });
+  // Files dropped on the conversation attach as they do on the field.
+  props.dropFiles?.((event) => {
+    const owner = props.session();
+    if (owner) completion.drop(owner, event);
   });
   const hero = () => props.session() === null || props.session()!.empty();
   const blocked = () => props.session()?.blockedReason() ?? '';
@@ -154,10 +161,13 @@ export function Composer(props: {
         minHeight: 0,
         justifyContent: 'center',
         width: '100%',
-        maxWidth: 832,
+        // The conversation column's width: the box lines up with the
+        // messages and the turn navigation beside them.
+        maxWidth: 800,
         alignSelf: 'center',
         paddingHorizontal: 16,
-        paddingBottom: hero() ? 16 : 8,
+        paddingTop: hero() || platform.isTerminal ? 0 : 12,
+        paddingBottom: hero() || !platform.isTerminal ? 16 : 8,
       }}
     >
       {props.request}
@@ -375,7 +385,7 @@ export function Composer(props: {
                       autoFocus={owner !== null}
                       multiline
                       submitBehavior="submit"
-                      tokens={skillTokens}
+                      tokens={skillTokens()}
                       value={owner?.draft() ?? ''}
                       readonly={!owner?.editable()}
                       onChange={owner ? (text) => completion.change(owner, text) : undefined}
@@ -489,11 +499,16 @@ export function Composer(props: {
           </View>
           <ComposerCompletion state={completion} />
         </View>
-        <View style={{ minHeight: 24, paddingTop: 8 }}>
-          <If when={blocked()}>
-            <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{blocked()}</Text>
-          </If>
-        </View>
+        {/* The terminal reserves the warning row so the composer never jumps; the
+            desktop shows it only when there is a warning, so no empty band sits
+            under the box. */}
+        <If when={platform.isTerminal || blocked()}>
+          <View style={{ minHeight: 24, paddingTop: 8 }}>
+            <If when={blocked()}>
+              <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{blocked()}</Text>
+            </If>
+          </View>
+        </If>
         <If when={props.session()?.metrics()}>
           <Text style={[{ color: C.muted, fontSize: 12, paddingTop: 4 }, { numberOfLines: 1 }]}>
             {props.session()?.metrics()}

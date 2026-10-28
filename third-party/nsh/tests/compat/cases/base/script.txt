@@ -875,6 +875,9 @@ prop id:pro accessibilityState checked=false
 nostyle id:pro backgroundColor
 frame text:Pro 28 2 24 17
 listens id:pro onPress
+# The group is one stop of the keyboard focus: the checked radio.
+prop id:basic focusable true
+prop id:pro focusable false
 # A press on an unchecked radio asks for `true`; the app checks it and
 # unchecks the one that was.
 tap text:Pro
@@ -885,6 +888,9 @@ style id:pro backgroundColor #00ff00ff
 frame text:Pro 38 2 24 17
 prop id:basic accessibilityState checked=false
 frame text:Basic 28 2 39 17
+# The stop follows the checked radio.
+prop id:pro focusable true
+prop id:basic focusable false
 # A checked radio cannot uncheck itself: a press on it asks nothing.
 tap id:pro
 expect Changes: 1
@@ -926,6 +932,9 @@ prop id:activity accessibilityState {}
 nostyle id:activity backgroundColor
 frame text:Activity 28 2 62 17
 listens id:activity onPress
+# The list is one stop of the keyboard focus: the selected tab.
+prop id:overview focusable true
+prop id:activity focusable false
 # A press reports `onPress`; the app selects the tab, deselects the one
 # that was and shows its content.
 tap text:Activity
@@ -936,6 +945,9 @@ style id:activity backgroundColor #00ff00ff
 frame text:Activity 38 2 62 17
 prop id:overview accessibilityState {}
 frame text:Overview 28 2 62 17
+# The stop follows the selection.
+prop id:activity focusable true
+prop id:overview focusable false
 # The selected tab reports its presses too.
 tap id:activity
 expect Presses: 2

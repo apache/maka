@@ -602,6 +602,16 @@ pub enum SceneQuery {
         /// The view.
         id: u32,
     },
+    /// Where characters `start..end` (UTF-16 units) of text view `id` are
+    /// on screen, as [`SceneQuery::Bounds`]: their first box.
+    TextBounds {
+        /// The text view.
+        id: u32,
+        /// The first character.
+        start: u32,
+        /// After the last character.
+        end: u32,
+    },
     /// The viewport's size in points.
     Viewport,
     /// The text view showing span `id` (a nested text that takes presses)

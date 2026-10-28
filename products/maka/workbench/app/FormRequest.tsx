@@ -62,8 +62,8 @@ function Choice(props: {
         gap: 8,
         backgroundColor: props.selected ? C.raised : C.surface,
       }}
-      hoverStyle={controlHoverStyle}
-      focusStyle={controlFocusStyle}
+      hoverStyle={controlHoverStyle()}
+      focusStyle={controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>

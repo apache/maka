@@ -99,7 +99,7 @@ pub struct BrowserLeaseChildRequest {
     pub native_epoch: String,
     pub turn_id: String,
     pub completion_id: u64,
-    pub opener_claim_id: String,
+    pub opener_subject: crate::BrowserLeaseSubject,
     pub opener_tab_id: u64,
     pub url: String,
 }
@@ -202,7 +202,7 @@ pub struct BrowserPreparationBinding {
     pub generation: String,
     pub turn_id: String,
     pub tab_id: String,
-    pub claim_id: String,
+    pub subject: crate::BrowserLeaseSubject,
 }
 impl BrowserPreparationBinding {
     pub fn check_turn(&self, turn: &str) -> Result<(), ToolError> {
@@ -213,7 +213,7 @@ impl BrowserPreparationBinding {
             || self.turn_id.is_empty()
             || self.turn_id != turn
             || self.tab_id.is_empty()
-            || self.claim_id.is_empty()
+            || self.subject.routing_id().is_empty()
         {
             return Err(ToolError::Failed(
                 "Browser effect preparation lost its native binding".into(),
@@ -268,13 +268,25 @@ pub struct BrowserPreparationHeader {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserPreparationTarget {
-    ReservedTab { tab_id: String },
-    ClaimedTab { tab_id: String, claim_id: String },
+    ReservedTab {
+        tab_id: String,
+    },
+    ClaimedTab {
+        tab_id: String,
+        claim_id: String,
+    },
+    /// Exact logical scope backed by an SDK-issued fixed preparation receipt.
+    FixedSessionTab {
+        tab_id: String,
+        scope_id: String,
+    },
     PendingCreation,
+    /// Scoped session inventory and exact metadata lookup, without a tab grant.
+    SessionInventory,
 }
 
-/// A bounded request to install the source-audited fixed session UI/security
-/// machinery on this owned/reserved tab, including a replacement document.
+/// A bounded request for source-audited native session machinery, including
+/// scoped inventory/metadata lookup or preparation on an owned/reserved tab.
 /// It never authorizes Agent content, input, arbitrary scripts, or a site read.
 /// The caller must validate the actual native ledger before and after admission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,7 +310,11 @@ impl BrowserSessionPreparation {
             BrowserPreparationTarget::ClaimedTab { tab_id, claim_id } => {
                 !tab_id.is_empty() && !claim_id.is_empty()
             }
-            BrowserPreparationTarget::PendingCreation => true,
+            BrowserPreparationTarget::FixedSessionTab { tab_id, scope_id } => {
+                !tab_id.is_empty() && !scope_id.is_empty()
+            }
+            BrowserPreparationTarget::PendingCreation
+            | BrowserPreparationTarget::SessionInventory => true,
         };
         if self.native_owner.is_nil()
             || self.native_epoch.is_empty()
@@ -517,7 +533,56 @@ pub struct InvocationContext<'a> {
     browser_preparation_policy: BrowserPreparationPolicy,
 }
 
+/// Owned inputs of the same admitted invocation while a deferred observation runs.
+/// No grant, target or operation is created by this capture.
+#[cfg(feature = "native-desktop")]
+pub(crate) struct OwnedInvocationContext {
+    session: String,
+    turn: String,
+    operation_id: Option<String>,
+    browser_authorization: Option<Arc<dyn BrowserAuthorization>>,
+    operation_settlement: Option<Arc<dyn OperationSettlement>>,
+    browser_host_effects: Option<Arc<dyn BrowserHostEffects>>,
+    app_target: Option<crate::ComputerAppTarget>,
+    #[cfg(feature = "native-desktop")]
+    browser_services: Option<Arc<dyn BrowserServicesProvider>>,
+    browser_preparation_policy: BrowserPreparationPolicy,
+}
+#[cfg(feature = "native-desktop")]
+impl OwnedInvocationContext {
+    pub(crate) fn borrow(&self) -> InvocationContext<'_> {
+        InvocationContext {
+            session: &self.session,
+            turn: &self.turn,
+            operation_id: self.operation_id.clone(),
+            browser_authorization: self.browser_authorization.clone(),
+            operation_settlement: self.operation_settlement.clone(),
+            browser_host_effects: self.browser_host_effects.clone(),
+            app_target: self.app_target.clone(),
+            #[cfg(feature = "native-desktop")]
+            browser_services: self.browser_services.clone(),
+            browser_preparation_policy: self.browser_preparation_policy.clone(),
+        }
+    }
+}
+
 impl<'a> InvocationContext<'a> {
+    #[cfg(feature = "native-desktop")]
+    pub(crate) fn capture(&self) -> OwnedInvocationContext {
+        OwnedInvocationContext {
+            session: self.session.to_owned(),
+            turn: self.turn.to_owned(),
+            operation_id: self.operation_id.clone(),
+            browser_authorization: self.browser_authorization.clone(),
+            operation_settlement: self.operation_settlement.clone(),
+            browser_host_effects: self.browser_host_effects.clone(),
+            app_target: self.app_target.clone(),
+            #[cfg(feature = "native-desktop")]
+            browser_services: self.browser_services.clone(),
+            browser_preparation_policy: self.browser_preparation_policy.clone(),
+        }
+    }
+
     pub fn new(session: &'a str, turn: &'a str) -> Self {
         Self {
             session,
@@ -1068,5 +1133,31 @@ mod session_preparation_tests {
             };
             assert_eq!(policy.effective_popup(), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod browser_subject_wire_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn lease_child_requires_the_new_typed_opener_and_rejects_old_scalar_layout() {
+        let mut old = json!({
+            "browserId":"browser","generation":"generation",
+            "nativeOwner":uuid::Uuid::new_v4(),"nativeEpoch":"1",
+            "turnId":"turn","completionId":1,
+            "openerClaimId":"old-scalar","openerTabId":7,"url":"https://fixture.invalid/"
+        });
+        assert!(serde_json::from_value::<BrowserLeaseChildRequest>(old.clone()).is_err());
+        old.as_object_mut().unwrap().remove("openerClaimId");
+        old["openerSubject"] = json!({"kind":"fixed_session","scopeId":"observed-scope"});
+        let request = serde_json::from_value::<BrowserLeaseChildRequest>(old).unwrap();
+        assert!(matches!(
+            request.opener_subject,
+            crate::BrowserLeaseSubject::FixedSession { .. }
+        ));
+        // A successful decode is routing only, never an SDK-issued receipt.
+        assert_eq!(request.opener_tab_id, 7);
     }
 }

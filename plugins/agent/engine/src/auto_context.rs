@@ -30,7 +30,7 @@ pub(super) fn output_limit(
     input: &RunSettings,
     source: &ContextView,
 ) -> Result<Option<u64>, RunError> {
-    let limit = input.main_output_limit.unwrap_or(8000);
+    let limit = maka_agent_facts::context::effective_output_limit(input.main_output_limit);
     let Some(window) = input
         .context
         .as_ref()

@@ -26,7 +26,7 @@ pub(super) enum BrowserIdentity {
         port: u16,
         debugger: String,
     },
-    Native {
+    Extension {
         adapter: String,
         extension: String,
         instance: String,
@@ -48,12 +48,12 @@ impl BrowserIdentity {
     pub(super) fn of(provider: &Provider, generation: &str) -> Result<Self, ToolError> {
         match provider {
             Provider::Cdp(provider) => Self::new(provider, generation),
-            Provider::Native { connection, .. } => {
+            Provider::Extension { connection, .. } => {
                 let actual = connection.identity();
                 if actual.generation != generation {
-                    return Err(failed("native provider generation changed"));
+                    return Err(failed("extension provider generation changed"));
                 }
-                Ok(Self::Native {
+                Ok(Self::Extension {
                     adapter: actual.adapter.clone(),
                     extension: actual.extension_id.clone(),
                     instance: actual.instance_id.clone(),
@@ -99,13 +99,13 @@ pub(super) enum Origin {
 #[derive(Clone)]
 pub(super) struct UncertainCreation {
     pub(super) creator: Creator,
-    pub(super) native: Option<cua_driver_core::browser::NativeCreationReceipt>,
+    pub(super) extension: Option<cua_driver_core::browser::ExtensionCreationReceipt>,
 }
 
 pub(super) struct Lease {
-    pub(super) native_sequence: Option<u64>,
+    pub(super) extension_sequence: Option<u64>,
     pub(super) origin: Origin,
-    pub(super) native: Option<super::native::ClaimState>,
+    pub(super) extension: Option<super::extension::ClaimState>,
     pub(super) creator: Creator,
     pub(super) disposition: Disposition,
 }
@@ -113,8 +113,8 @@ pub(super) struct Lease {
 #[derive(Default)]
 pub(crate) struct Host {
     pub(super) tabs: HashMap<TabIdentity, Lease>,
-    pub(super) native: HashMap<(uuid::Uuid, BrowserIdentity), super::native::ProviderState>,
-    pub(super) next_native_sequence: u64,
+    pub(super) extension: HashMap<(uuid::Uuid, BrowserIdentity), super::extension::ProviderState>,
+    pub(super) next_extension_sequence: u64,
     pub(super) uncertain_creations: HashMap<(uuid::Uuid, BrowserIdentity), UncertainCreation>,
     pub(super) cursor_scopes: HashMap<(uuid::Uuid, TabIdentity), super::cursor::CursorEndpoint>,
     pub(super) download_metadata: super::downloads::Store,
@@ -157,7 +157,11 @@ impl Host {
                     "the tab's previous close has not settled".into(),
                 ));
             }
-            lease.creator.turn = turn.to_owned();
+            // Extension cleanup ownership comes from an actual preparation or
+            // creation receipt. Selecting metadata cannot move that obligation.
+            if lease.extension.is_none() {
+                lease.creator.turn = turn.to_owned();
+            }
         }
         Ok(())
     }
@@ -174,9 +178,9 @@ impl Host {
         match self.tabs.entry(identity) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(Lease {
-                    native_sequence: None,
+                    extension_sequence: None,
                     origin: Origin::AgentCreated,
-                    native: None,
+                    extension: None,
                     creator: Creator {
                         owner,
                         turn: turn.to_owned(),
@@ -224,7 +228,7 @@ impl Host {
                     provider,
                     generation,
                 },
-                native: None,
+                extension: None,
             },
         );
     }
@@ -234,7 +238,7 @@ impl Host {
         owner: uuid::Uuid,
         turn: Option<&str>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
-        let native_finished = self.finish_native(owner, turn).await?;
+        let extension_finished = self.finish_extension(owner, turn).await?;
         let belongs = |creator: &Creator| {
             creator.owner == owner && turn.is_none_or(|turn| creator.turn == turn)
         };
@@ -257,14 +261,14 @@ impl Host {
         }
         let mut groups: HashMap<BrowserIdentity, Vec<TabIdentity>> = HashMap::new();
         for (identity, lease) in &self.tabs {
-            if belongs(&lease.creator) && lease.native.is_none() {
+            if belongs(&lease.creator) && lease.extension.is_none() {
                 groups
                     .entry(identity.browser.clone())
                     .or_default()
                     .push(identity.clone());
             }
         }
-        let mut finished = native_finished;
+        let mut finished = extension_finished;
         for (browser, identities) in groups {
             let creator = self.tabs[&identities[0]].creator.clone();
             let (generation, tabs) = creator.provider.inventory().await.map_err(cleanup)?;

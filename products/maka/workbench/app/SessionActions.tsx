@@ -176,8 +176,8 @@ export function SessionActions(props: {
                 accessibilityLabel={tr('Rename conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'rename', original: session() })}
               >
@@ -191,8 +191,8 @@ export function SessionActions(props: {
                 accessibilityLabel={tr('Fork conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'fork', original: session() })}
               >
@@ -208,8 +208,8 @@ export function SessionActions(props: {
                 }
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(submit, {
                   kind: session().archived ? 'restore' : 'archive',
@@ -232,8 +232,8 @@ export function SessionActions(props: {
                 accessibilityLabel={tr('Delete conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'remove', original: session() })}
               >
@@ -277,7 +277,7 @@ export function SessionActions(props: {
             alignItems: 'center',
             padding: 16,
             paddingTop: dialogTop(16),
-            backgroundColor: '#00000099',
+            backgroundColor: C.scrim,
           }}
         >
           <View
@@ -300,8 +300,8 @@ export function SessionActions(props: {
                 tooltip={textTooltip(() => tr('Back · Esc'))}
                 onPress={inputAction(back, page())}
                 style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Icon name="back" color={C.secondary} />
@@ -326,8 +326,8 @@ export function SessionActions(props: {
                 tooltip={textTooltip(() => tr('Close'))}
                 onPress={inputAction(dismiss, page())}
                 style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Icon name="close" color={C.secondary} />
@@ -363,6 +363,14 @@ export function SessionActions(props: {
                     value={title()}
                     readonly={pending()}
                     onChange={(value) => title.set(value)}
+                    // Enter saves, as the button below does.
+                    onSubmit={() =>
+                      void submit(
+                        page() === 'fork'
+                          ? { kind: 'fork', session: session(), title: title(), turnId: null }
+                          : { kind: 'rename', session: session(), title: title() },
+                      )
+                    }
                     placeholder={tr('Conversation title')}
                     style={{
                       height: 32,
@@ -416,8 +424,8 @@ export function SessionActions(props: {
                     disabled={pending()}
                     accessibilityLabel={tr('Confirm delete conversation')}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                     onPress={inputAction(submit, { kind: 'remove', session: session() })}
                   >
@@ -427,8 +435,8 @@ export function SessionActions(props: {
                     disabled={pending()}
                     onPress={inputAction(back, 'remove')}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <Text style={{ color: C.text }}>{tr('Keep conversation')}</Text>
@@ -448,6 +456,7 @@ const menuRowStyle = () => ({
   height: compact() ? 32 : 40,
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
+  justifyContent: 'flex-start' as const,
   paddingHorizontal: 8,
   paddingVertical: 6,
   gap: 8,

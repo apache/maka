@@ -29,10 +29,24 @@ scene, adapter-information and sprite-atlas methods. The original test/bench
 `PlatformHeadlessRenderer` bridge delegates its existing three methods to the
 same implementation. No GPUI core feature or trait is extended.
 
-`submit_scene` records drawing and its readback copy in one GPU submission and
-returns an owned `SubmittedReadback` without waiting or allocating RGBA image
-storage. The ticket holds its device, staging allocation, dimensions, mapping
-result and device-error observer independently of the renderer. Its mapping
+The local `prepare_scene` API encodes drawing and its readback copy into an
+owned `PreparedReadback` without submitting GPU commands. Its consuming
+`submit()` runs on the embedding host's existing background executor and
+returns a `SubmittedReadback` after queue submission and the mapping request.
+The host must wait for that submission to return before preparing the next
+scene, so shared GPU resource writes remain ordered. Readback can then overlap
+preparation of later scenes. `submit_scene` delegates to
+`prepare_scene(...).submit()` for callers that submit immediately.
+
+`SubmissionTimings` retains the handoff's wall-clock boundaries:
+`prepare_started`, `encode_started`, `encode_finished`, `submit_started`,
+`submit_finished` and `map_requested`. Encoding timestamps belong to preparation;
+submission and mapping-request timestamps come from the actual submitting
+thread. These timings do not imply display presentation or a frame-rate result.
+
+Submission does not wait for readback or allocate RGBA image storage. The ticket
+holds its device, staging allocation, dimensions, mapping result and device-error
+observer independently of the renderer. Its mapping
 callback only sends the result; `complete` or `complete_into` performs the
 existing bounded GPU wait, strips row padding and converts BGRA on the calling
 background owner. The blocking image and pixel methods delegate to this same

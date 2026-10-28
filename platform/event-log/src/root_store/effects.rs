@@ -174,7 +174,9 @@ mod tests {
             operation: Operation::BrowserLeaseChild {
                 browser_id: "browser".into(),
                 generation: "generation".into(),
-                opener_claim_id: "actual-captured-claim-fixture".into(),
+                opener_subject: maka_capabilities::computer::BrowserLeaseSubject::PhysicalClaim {
+                    claim_id: "actual-captured-claim-fixture".into(),
+                },
                 opener_tab_id: 17,
                 url: "https://example.test/child".into(),
             },
@@ -388,5 +390,160 @@ mod tests {
             "browser service must not bypass the selected Session gateway"
         );
         root.shutdown().await.unwrap();
+    }
+
+    fn fixed_session_request(session: &str, source: &DeploymentRef) -> Request {
+        let mut request = request(session, source);
+        let Operation::BrowserLeaseChild { opener_subject, .. } = &mut request.operation else {
+            unreachable!("fixture requires a browser child request")
+        };
+        // Durable observation only; this string is neither an SDK receipt nor
+        // a physical claim, Host grant or fresh Agent invocation.
+        *opener_subject = maka_capabilities::computer::BrowserLeaseSubject::FixedSession {
+            scope_id: "captured-fixed-session-fixture".into(),
+        };
+        request
+    }
+
+    #[tokio::test]
+    async fn fixed_session_pending_receipt_recovers_actual_unknown_and_fences_late_success() {
+        let (_directory, root, session, source) = fixture().await;
+        let request = fixed_session_request(session.id(), &source);
+        let captured = serde_json::to_value(&request).unwrap();
+        let receipt = session.begin_browser_lease_child(request).await.unwrap();
+        let id = receipt.id();
+        let before = session
+            .browser_lease_child_effect(namespace(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            before.outcome.is_none(),
+            "actual durable T1 exists before any effect"
+        );
+        assert_eq!(serde_json::to_value(&before.request).unwrap(), captured);
+        assert!(matches!(before.request.operation,
+            Operation::BrowserLeaseChild { opener_subject: maka_capabilities::computer::BrowserLeaseSubject::FixedSession { ref scope_id }, .. }
+                if scope_id == "captured-fixed-session-fixture"));
+        assert!(
+            matches!(
+                root.recover_host_effects().await,
+                Err(StoreError::SessionBusy)
+            ),
+            "actual admitted Session SQL pin must exclude recovery"
+        );
+        drop(receipt); // No service outcome was supplied and no fake success written.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match root.recover_host_effects().await {
+                    Err(StoreError::SessionBusy) => tokio::task::yield_now().await,
+                    result => break result.unwrap(),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let recovered = session
+            .browser_lease_child_effect(namespace(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(recovered.outcome, Some(Outcome::Unknown { .. })),
+            "real exclusive recovery produces canonical Unknown"
+        );
+        assert_eq!(
+            serde_json::to_value(&recovered.request).unwrap(),
+            captured,
+            "recovery must preserve actual fixed subject, owner, source and boundary"
+        );
+        let log = session.scoped().await.unwrap();
+        assert!(
+            matches!(
+                log.settle_host_effect(
+                    id,
+                    Outcome::Completed {
+                        value: json!({"late":"success"})
+                    },
+                    None
+                )
+                .await,
+                Err(StoreError::EventConflict)
+            ),
+            "an actual recovery Unknown cannot be overwritten by late success"
+        );
+        drop(log);
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn matching_new_db_browser_records_reject_old_or_malformed_subject_as_json_error() {
+        for malformed in ["old_shape", "wrong_type", "extra_field", "null_claim"] {
+            let (_directory, root, session, source) = fixture().await;
+            let request = fixed_session_request(session.id(), &source);
+            let mut raw = serde_json::to_value(&request).unwrap();
+            let receipt = session.begin_browser_lease_child(request).await.unwrap();
+            let id = receipt.id();
+            receipt
+                .settle(Outcome::Failed {
+                    message: "fixture ended before any native effect".into(),
+                })
+                .await
+                .unwrap();
+            let input = raw["operation"]["input"].as_object_mut().unwrap();
+            match malformed {
+                "old_shape" => {
+                    input.remove("openerSubject");
+                    input.insert("openerClaimId".into(), json!("old-shape-observation"));
+                }
+                "wrong_type" => {
+                    input.insert(
+                        "openerSubject".into(),
+                        json!({"kind":"fixed_session","scopeId":17}),
+                    );
+                }
+                "extra_field" => {
+                    input.insert(
+                        "openerSubject".into(),
+                        json!({"kind":"fixed_session","scopeId":"fixed","claimId":"unexpected"}),
+                    );
+                }
+                "null_claim" => {
+                    input.insert(
+                        "openerSubject".into(),
+                        json!({"kind":"physical_claim","claimId":null}),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            // Corrupt only the request of an actual matching NEW DB row. This
+            // tests failed closed decoding, not support for an old database.
+            let raw = serde_json::to_string(&raw).unwrap();
+            let log = session.scoped().await.unwrap();
+            log.connection
+                .run(move |connection| {
+                    Box::pin(async move {
+                        let result =
+                            sqlx::query("UPDATE host_effects SET request = ? WHERE id = ?")
+                                .bind(raw)
+                                .bind(id.to_string())
+                                .execute(connection)
+                                .await?;
+                        assert_eq!(result.rows_affected(), 1);
+                        Ok(())
+                    })
+                })
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    session.browser_lease_child_effect(namespace(), id).await,
+                    Err(StoreError::Json(_))
+                ),
+                "{malformed}: matching malformed record must error, never become None"
+            );
+            drop(log);
+            root.shutdown().await.unwrap();
+        }
     }
 }

@@ -397,6 +397,7 @@ impl Session {
                 Command::Observe { handle, .. }
                 | Command::Action { handle, .. }
                 | Command::BrowserRead { handle, .. }
+                | Command::BrowserWait { handle, .. }
                 | Command::BrowserMutation { handle, .. }
                 | Command::ClipboardRead { handle }
                 | Command::ClipboardReadText { handle }
@@ -602,7 +603,10 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<crate::InvocationCompletion, ToolError> {
-        if !matches!(&command, Command::BrowserDownloadWait { .. }) {
+        if !matches!(
+            &command,
+            Command::BrowserDownloadWait { .. } | Command::BrowserWait { .. }
+        ) {
             return self
                 .invoke_immediate(command, invocation, cancellation, language)
                 .await

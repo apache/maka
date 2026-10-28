@@ -197,6 +197,104 @@ final class Decor extends Drawable {
         /** Stops as written when some are in points (else null): 0 spread, 1 fraction, 2 pixels. */
         int[] units;
         float[] values;
+        /** Repeats past the last stop (`repeating-*-gradient`). */
+        boolean repeating;
+        /** The stops {@link #place} made for the shader: colors, and positions within 0..1. */
+        int[] drawnColors;
+        float[] drawnPositions;
+        /** What {@link #drawnColors} and {@link #drawnPositions} were placed for. */
+        private float placedLine = Float.NaN, placedReach = Float.NaN;
+
+        /** Most stops {@link #place} repeats a gradient's into, as the core's `MAX_UNROLLED_STOPS`. */
+        private static final int MAX_UNROLLED_STOPS = 16384;
+
+        /**
+         * Places the stops along a gradient line {@code line} px long ({@link #resolve}) for a
+         * shader that repeats nothing and draws them over {@code 0..reach} of the line (1: the
+         * whole line of a linear or conic gradient; a radial gradient's rings go on past its ending
+         * shape, to the box's farthest corner), as the core's `Gradient::unrolled_stops` does: the
+         * positions as fractions of {@code reach}, a repeating gradient's stops repeated over all
+         * of it with period last − first, both ways (CSS Images 3), and cut at both ends with the
+         * colors there. Sets {@link #drawnColors} and {@link #drawnPositions}.
+         */
+        void place(float line, float reach) {
+            if (drawnColors != null && line == placedLine && reach == placedReach) return;
+            placedLine = line;
+            placedReach = reach;
+            resolve(line);
+            reach = Math.max(reach, 1e-6f);
+            int n = positions.length;
+            float period = n > 0 ? positions[n - 1] - positions[0] : 0;
+            double start = 0, end = 0;
+            if (period > 1e-4f) {
+                start = Math.floor(-positions[n - 1] / period);
+                end = Math.ceil((reach - positions[0]) / period);
+            }
+            drawnColors = colors;
+            if (!repeating || period <= 1e-4f || (end - start + 1) * n > MAX_UNROLLED_STOPS) {
+                drawnPositions = positions;
+                if (reach != 1) {
+                    drawnPositions = new float[n];
+                    for (int k = 0; k < n; k++) drawnPositions[k] = positions[k] / reach;
+                }
+                return;
+            }
+            // The copies that reach into the line, from the one ending before it to the one
+            // starting after it.
+            int copies = (int) (end - start + 1), m = copies * n;
+            int[] tiledColors = new int[m];
+            float[] tiled = new float[m];
+            float max = Float.NEGATIVE_INFINITY;
+            for (int c = 0; c < copies; c++) {
+                float shift = (float) (start + c) * period;
+                for (int k = 0; k < n; k++) {
+                    // A copy's first stop may round to a hair before the last one's.
+                    max = Math.max(max, positions[k] + shift);
+                    tiled[c * n + k] = max;
+                    tiledColors[c * n + k] = colors[k];
+                }
+            }
+            int inside = 0;
+            for (float p : tiled) if (p > 0 && p < reach) inside++;
+            drawnColors = new int[inside + 2];
+            drawnPositions = new float[inside + 2];
+            drawnColors[0] = colorAt(tiledColors, tiled, 0);
+            int j = 1;
+            for (int i = 0; i < m; i++) {
+                if (tiled[i] <= 0 || tiled[i] >= reach) continue;
+                drawnColors[j] = tiledColors[i];
+                drawnPositions[j++] = tiled[i] / reach;
+            }
+            drawnColors[j] = colorAt(tiledColors, tiled, reach);
+            drawnPositions[j] = 1;
+        }
+
+        /**
+         * The color at {@code t} of ascending stops: between the stops around it (at a hard edge,
+         * two stops at one position, the later one's).
+         */
+        private static int colorAt(int[] colors, float[] positions, float t) {
+            int i = positions.length - 1;
+            while (i >= 0 && positions[i] > t) i--;
+            if (i < 0) return colors[0];
+            if (i + 1 < positions.length && positions[i + 1] > positions[i]) {
+                return mix(colors[i], colors[i + 1], (t - positions[i]) / (positions[i + 1] - positions[i]));
+            }
+            return colors[i];
+        }
+
+        /** {@code a} mixed with {@code b} by {@code t} (0: a) with premultiplied alpha, as CSS mixes. */
+        private static int mix(int a, int b, float t) {
+            float alphaA = a >>> 24, alphaB = b >>> 24;
+            float alpha = alphaA + (alphaB - alphaA) * t;
+            int out = Math.round(Math.max(0, Math.min(255, alpha))) << 24;
+            if (alpha <= 0) return out;
+            for (int shift = 0; shift <= 16; shift += 8) {
+                float x = ((a >>> shift) & 0xff) * alphaA, y = ((b >>> shift) & 0xff) * alphaB;
+                out |= Math.round(Math.max(0, Math.min(255, (x + (y - x) * t) / alpha))) << shift;
+            }
+            return out;
+        }
 
         /**
          * Places the stops along a gradient line {@code line} px long, as `Gradient::resolve_stops`
@@ -385,10 +483,15 @@ final class Decor extends Drawable {
                                 : (float) Math.hypot(dx / 1.4142135f, dy / 1.4142135f);
                         dx = dy = r;
                     }
+                    // The farthest corner, in radii of the ending shape: a repeating gradient's
+                    // rings go on to it.
+                    float reach = g.repeating && dx > 0 && dy > 0
+                            ? Math.max(1, (float) Math.hypot(Math.max(ax, w - ax) / dx, Math.max(ay, h - ay) / dy))
+                            : 1;
                     // Lengths are along the ray to the right.
-                    g.resolve(dx);
-                    shader = new android.graphics.RadialGradient(cx, cy, Math.max(0.5f, dx), g.colors, g.positions,
-                            android.graphics.Shader.TileMode.CLAMP);
+                    g.place(dx, reach);
+                    shader = new android.graphics.RadialGradient(cx, cy, Math.max(0.5f, dx) * reach, g.drawnColors,
+                            g.drawnPositions, android.graphics.Shader.TileMode.CLAMP);
                     // An ellipse: the circle scaled vertically.
                     gradientMatrix.setScale(1, dy / Math.max(0.5f, dx), cx, cy);
                     shader.setLocalMatrix(gradientMatrix);
@@ -396,7 +499,8 @@ final class Decor extends Drawable {
                 }
                 case 3: {
                     float cx = b.left + g.x * w, cy = b.top + g.y * h;
-                    shader = new android.graphics.SweepGradient(cx, cy, g.colors, g.positions);
+                    g.place(0, 1);
+                    shader = new android.graphics.SweepGradient(cx, cy, g.drawnColors, g.drawnPositions);
                     // Sweeps start right; CSS starts up.
                     gradientMatrix.setRotate(g.angle - 90, cx, cy);
                     shader.setLocalMatrix(gradientMatrix);
@@ -413,9 +517,9 @@ final class Decor extends Drawable {
                     float len = Math.abs(w * sin) + Math.abs(h * cos);
                     float cx = b.left + w / 2, cy = b.top + h / 2;
                     float dx = sin * len / 2, dy = -cos * len / 2;
-                    g.resolve(len);
-                    shader = new android.graphics.LinearGradient(cx - dx, cy - dy, cx + dx, cy + dy, g.colors,
-                            g.positions, android.graphics.Shader.TileMode.CLAMP);
+                    g.place(len, 1);
+                    shader = new android.graphics.LinearGradient(cx - dx, cy - dy, cx + dx, cy + dy, g.drawnColors,
+                            g.drawnPositions, android.graphics.Shader.TileMode.CLAMP);
                 }
             }
             paint.setShader(shader);

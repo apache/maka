@@ -386,6 +386,7 @@ async fn reply_barrier_covers_earlier_events_without_waiting_for_a_live_stream_t
         send.send(CdpEvent {
             method: "fixture".into(),
             session_id: None,
+            source_target_id: None,
             params: serde_json::json!({"initial":initial}),
         })
         .unwrap();
@@ -404,6 +405,7 @@ async fn reply_barrier_covers_earlier_events_without_waiting_for_a_live_stream_t
             .send(CdpEvent {
                 method: "later".into(),
                 session_id: None,
+                source_target_id: None,
                 params: serde_json::Value::Null,
             })
             .unwrap();
@@ -455,8 +457,8 @@ async fn cancelled_close_keeps_original_join_and_closing_refuses_new_host_effect
     let socket = super::super::Cdp {
         connection: Arc::new(connected.unwrap()),
         dialogs: None,
-        native_context: None,
-        preparation: crate::browser::native::PreparationTransport::NotRequired,
+        extension_context: None,
+        preparation: crate::browser::extension::PreparationTransport::NotRequired,
     };
     let host = Arc::new(RejectingHost::default());
     let capability: Arc<Mutex<Option<Arc<dyn crate::BrowserHostEffects>>>> =
@@ -473,6 +475,7 @@ async fn cancelled_close_keeps_original_join_and_closing_refuses_new_host_effect
                 CdpEvent {
                     method: "Target.attachedToTarget".into(),
                     session_id: None,
+                    source_target_id: None,
                     params: serde_json::json!({"sessionId":session,"targetInfo":{"type":"iframe"}}),
                 },
                 &mut children,

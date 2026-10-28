@@ -88,7 +88,7 @@ pub enum Operation {
     BrowserLeaseChild {
         browser_id: String,
         generation: String,
-        opener_claim_id: String,
+        opener_subject: maka_capabilities::computer::BrowserLeaseSubject,
         opener_tab_id: u64,
         url: String,
     },
@@ -277,7 +277,7 @@ pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreErro
         Operation::BrowserLeaseChild {
             browser_id,
             generation,
-            opener_claim_id,
+            opener_subject,
             ..
         },
     ) = (
@@ -301,7 +301,7 @@ pub(crate) fn browser_lease_session(request: &Request) -> Result<&str, StoreErro
         || owner.epoch.is_nil()
         || browser_id.is_empty()
         || generation.is_empty()
-        || opener_claim_id.is_empty()
+        || opener_subject.routing_id().is_empty()
     {
         return Err(invalid(
             "browser lease effect identity does not match its captured source",

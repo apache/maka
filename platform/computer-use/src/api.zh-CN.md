@@ -1,7 +1,9 @@
 Computer Use 是独立且持久的 JavaScript REPL，直接调用 cua_repl；无需 Code Mode。变量与绑定对象在当前 Host 进程内跨调用和 Turn 保留。重启后 REPL 没有历史变量；请遵循模型请求提供的当前 Computer Use 状态。
 `cua.computer.target` 标识选定的桌面平台（`mac`、`linux`、`windows`）。WSL 默认选择 Windows 主机；Shell 命令仍可能在 Linux 中运行。
 
-全新 REPL 没有绑定目标。以下入口会输出 API 文档及清单或目标初始状态。浏览器 ID 来自已配置的 CDP 提供方和已连接的原生浏览器适配器；两者都不可用时，通过 getApp 操作原生浏览器窗口。API 不提供 start_session 等驱动管理操作。
+全新 REPL 没有绑定目标。以下入口会输出 API 文档及清单或目标初始状态。浏览器 ID 来自已配置的 CDP 提供方和已连接的 Extension 浏览器提供方；精确 ID 优先；没有精确匹配时，`maka` 和 `chatgpt` 才选择唯一的当前 Extension 端点。两者都不可用时，通过 getApp 操作原生浏览器窗口。API 不提供 start_session 等驱动管理操作。
+
+ChatGPT 和原版 OpenCLI 按实际能力尽力兼容。原版 OpenCLI 当前无法满足浏览器会话接口；没有精确 ID 或扩展实例选择时，`getBrowser({id: "opencli"})` 会在创建或认领标签页前选择唯一可用的已有提供方；没有候选或候选多个时拒绝选择。精确 ID 和已有句柄不会切换提供方。
 
 入口（选择目标时自动输出初始状态）：
 - `await cua.getState({emit?})`：应用和可用浏览器清单，包括清单错误。
@@ -15,7 +17,7 @@ Computer Use 是独立且持久的 JavaScript REPL，直接调用 cua_repl；无
   先创建归当前 turn 管理的空白页，再导航到明确提供的网址。拒绝导航后，空白页仍由 turn 结束时清理。
 - `await browser.tabs.list()`、`await browser.tabs.get(id)`、`await browser.tabs.new()`：列出、绑定确切标签页或在该浏览器创建空白临时标签页。它们返回数据而不自动输出；get/new 返回 Tab 对象，不进行初始 AX 观察。使用观察目标前调用 getAXState。`await tab.title()` 和 `await tab.url()` 返回当前元数据，不改变无障碍观察。
 
-- 已连接的浏览器适配器还提供 `await browser.user.openTabs()` 和 `await browser.user.claimTab(tabOrId)`。前者返回当前用户标签页元数据；后者在核对当前权限并准备连接后返回普通 Tab。可传入清单中的字符串 ID 或对象。Turn 清理会释放用户标签页而不关闭它；本 Session 创建的标签页仍为临时页。`browser.tabs.get(id)` 保持延迟绑定，不进行初始认领或 AX 观察。这些方法不保留授权。对原生适配器，`browser.tabs.list()` 列出本 Session 管理的标签页。配置的 CDP 提供方没有 `browser.user`，使用其 `browser.tabs` 方法。
+- 已连接的浏览器适配器还提供 `await browser.user.openTabs()` 和 `await browser.user.claimTab(tabOrId)`。前者返回当前用户标签页元数据；后者在核对当前权限并准备连接后返回普通 Tab。可传入清单中的字符串 ID 或对象。Turn 清理会释放用户标签页而不关闭它；本 Session 创建的标签页仍为临时页。`browser.tabs.get(id)` 保持延迟绑定，不进行初始认领或 AX 观察。这些方法不保留授权。对 Extension 提供方，`browser.tabs.list()` 列出本 Session 管理的标签页。配置的 CDP 提供方没有 `browser.user`，使用其 `browser.tabs` 方法。
 
 Maka 提供 AX 浏览器模式：`tab.ax` 包含 `get`、`write`、`click`、`drag`、`paste`、
 `performSecondaryAction`、`pressKey`、`scroll`、`selectText`、`setValue` 和 `typeText`；
@@ -55,6 +57,19 @@ Tab 导航：`goto(url)`、`back()`、`forward()`、`reload()`、`close()`。导
 确切 `text/plain` 条目的文本；仅有 base64 时返回空字符串，页面的 `readText()` 则通过 Blob 解码。
 Turn 清理移除页面桥接并保留数据；重置会创建新的空上下文。
 
+等待方法返回 undefined。`locator.waitFor({state, timeoutMs?})` 必须指定
+`state: 'attached'|'detached'|'visible'|'hidden'`，只检查第一个匹配元素；
+没有匹配元素时，`detached` 和 `hidden` 成功。
+`tab.playwright.waitForURL(pattern, {waitUntil?, timeoutMs?})` 匹配完整 URL：
+`*` 不跨越 `/`，`**` 可以跨越 `/`，其余字符按字面值匹配。`waitUntil` 默认为
+`commit`；可指定 `load`、`domcontentloaded` 或 `networkidle`，在 URL 匹配后继续等待。
+`tab.playwright.waitForLoadState({state?, timeoutMs?})` 默认等待 `load`，也支持
+`domcontentloaded` 和 `networkidle`。条件等待默认 3000 ms，数值超时上限为
+3000 ms。零不提供事件等待时间：定位器仍检查一次，当前 URL/加载状态可能已匹配，
+networkidle 则超时。
+`tab.playwright.waitForTimeout(ms)` 接受非负整数并等待固定时长。等待某个动作触发的
+变化时，先启动等待，再执行动作，最后等待两个 promise。Stop 会取消原来的等待。
+
 `tab.playwright` 可以直接解析 DOM 定位器，不要求先读取 AX。
 使用 `locator(selector)`、`getByRole`、`getByText`、`getByLabel`、
 `getByPlaceholder` 或 `getByTestId`；`frameLocator(selector)` 进入 iframe。
@@ -79,7 +94,7 @@ Turn 清理移除页面桥接并保留数据；重置会创建新的空上下文
 成功写操作仅清除调用定位器所属集合的读取缓存。仍需在页面核对实际结果；
 不确定的输入结果不会自动重放。
 
-下载需要已连接且提供下载通知的原生适配器，以及当前 Host 的下载权限。先在同一 Tab 上准备等待：
+下载需要已连接且提供下载通知的 Extension 提供方，以及当前 Host 的下载权限。先在同一 Tab 上准备等待：
 `const pending = tab.playwright.waitForEvent('download', {timeoutMs:3000});`
 再执行点击或导航，随后 `const download = await pending`。
 `await download.path({timeoutMs?})` 返回浏览器报告的文件名或 null；不会传输文件，也不证明路径归本任务所有。
@@ -88,7 +103,7 @@ Turn 清理移除页面桥接并保留数据；重置会创建新的空上下文
 下载等待返回数据而不自动输出，媒体触发方法返回 undefined。首个匹配的 Started 事件结束原生启动期限，之后仍受取消和 Host 清理约束。
 读取权限与下载权限分开检查，源站点或目标站点不同时亦如此。只有 CDP 连接不能提供原生下载通知。
 Maka 还提供两个窄扩展：`tab.cua.downloadMedia({x,y,timeoutMs?})` 和
-`tab.dom_cua.downloadMedia({node_id,timeoutMs?})`。所选原生适配器目前拒绝这些坐标或节点媒体命令，
+`tab.dom_cua.downloadMedia({node_id,timeoutMs?})`。所选 Extension 提供方目前拒绝这些坐标或节点媒体命令，
 使用已实现的定位器路径。这些对象不代表支持其他 `.cua` 或 `.dom_cua` 输入方法。
 下载结果不确定时不会自动重试。
 返回的对象保留原 Tab 绑定，不保留授权。请保持该标签页可用：`path()` 在查缓存前重新核对当前标签页元数据和 Host 权限。

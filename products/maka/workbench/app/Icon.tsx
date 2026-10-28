@@ -44,6 +44,7 @@ const glyphs = {
   wrap: '↵',
   nowrap: '→',
   code: '⌘',
+  markdown: 'M',
   check: '✓',
   more: '⋯',
   latest: '↓',
@@ -165,14 +166,26 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.lineTo(14, 14);
             break;
           case 'settings':
-            cx.arc(8, 8, 5, 0, Math.PI * 2);
-            cx.moveTo(10, 8);
-            cx.arc(8, 8, 2, 0, Math.PI * 2);
+            // One closed outline with eight square-ended teeth, so the gear does
+            // not read as a sun's separate rays.
             for (let i = 0; i < 8; i++) {
               const angle = (i * Math.PI) / 4;
-              cx.moveTo(8 + Math.cos(angle) * 5, 8 + Math.sin(angle) * 5);
-              cx.lineTo(8 + Math.cos(angle) * 7, 8 + Math.sin(angle) * 7);
+              const points: [number, number][] = [
+                [5.2, angle - 0.36],
+                [7, angle - 0.2],
+                [7, angle + 0.2],
+                [5.2, angle + 0.36],
+              ];
+              for (const [index, [radius, at]] of points.entries()) {
+                const x = 8 + Math.cos(at) * radius;
+                const y = 8 + Math.sin(at) * radius;
+                if (i === 0 && index === 0) cx.moveTo(x, y);
+                else cx.lineTo(x, y);
+              }
             }
+            cx.closePath();
+            cx.moveTo(10.25, 8);
+            cx.arc(8, 8, 2.25, 0, Math.PI * 2);
             break;
           case 'folder':
             cx.moveTo(1.5, 5);
@@ -256,7 +269,15 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.lineTo(9.5, 11.5);
             break;
           case 'copy':
-            cx.roundRect(2, 1.5, 9, 10, 1.5);
+            // The sheet behind shows only where the front one leaves it.
+            cx.moveTo(5, 11.5);
+            cx.lineTo(3.5, 11.5);
+            cx.arc(3.5, 10, 1.5, Math.PI / 2, Math.PI);
+            cx.lineTo(2, 3);
+            cx.arc(3.5, 3, 1.5, Math.PI, Math.PI * 1.5);
+            cx.lineTo(9.5, 1.5);
+            cx.arc(9.5, 3, 1.5, Math.PI * 1.5, Math.PI * 2);
+            cx.lineTo(11, 4.5);
             cx.roundRect(5, 4.5, 9, 10, 1.5);
             break;
           case 'wrap':
@@ -290,6 +311,19 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.moveTo(10, 4);
             cx.lineTo(14, 8);
             cx.lineTo(10, 12);
+            break;
+          case 'markdown':
+            // The Markdown mark: an M and a down arrow.
+            cx.moveTo(1.5, 12);
+            cx.lineTo(1.5, 4);
+            cx.lineTo(4.5, 8);
+            cx.lineTo(7.5, 4);
+            cx.lineTo(7.5, 12);
+            cx.moveTo(12, 4);
+            cx.lineTo(12, 12);
+            cx.moveTo(10, 10);
+            cx.lineTo(12, 12);
+            cx.lineTo(14, 10);
             break;
           case 'check':
             cx.moveTo(3, 8);

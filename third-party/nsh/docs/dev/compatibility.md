@@ -163,7 +163,10 @@ below it, a popup's backdrop), `wait <ms>` runs timers, and `viewport <w> <h>` a
 screen and pick the platform whose `ios={{…}}` / `android={{…}}` / `desktop={{…}}` / `web={{…}}` props apply, and
 `fontscale <scale>` sets the user's text size. What a view looks like is checked as the platform receives it:
 `frame <selector> <x> <y> <width> <height>` (its layout, in points relative to its parent), `prop` / `noprop` (a host
-prop), `style` / `nostyle` (a paint or text style key), `listens` (an event the platform reports),
+prop), `style` / `nostyle` (a paint or text style key), `drawing` / `nodrawing` (an operation of a canvas's latest
+drawing, written as the canvas method or property apps use: `drawing id:chart strokeStyle #ff0000ff`; the SVG paint
+properties `fill`, `stroke`, `strokeWidth` and `strokeDasharray` show only there, in what a component draws),
+`listens` (an event the platform reports),
 `statusbar <key>=<value>...` (the status bar the platform was last told to show: `foreground`, `hidden`, `animated`);
 `log <text>` checks a `console` line, and `covers <item>` is a claim, not a step. Other steps stand in for the
 platform's input: `event <selector> <onEvent> [<key>=<value>...]` reports an event with its payload keys as the

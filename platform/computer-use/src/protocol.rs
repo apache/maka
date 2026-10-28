@@ -19,6 +19,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod browser_wait;
+pub use browser_wait::BrowserWaitOperation;
+
 mod browser_download;
 pub use browser_download::{BrowserDownloadOptions, BrowserMediaTarget};
 
@@ -166,6 +169,10 @@ pub enum Command {
         locator: LocatorPlan,
         operation: BrowserMutationOperation,
     },
+    BrowserWait {
+        handle: Handle,
+        operation: BrowserWaitOperation,
+    },
     BrowserDownloadWait {
         handle: Handle,
         #[serde(default)]
@@ -272,6 +279,7 @@ pub struct LocatorPlan {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum BrowserReadOperation {
+    WaitDiagnostics,
     DomSnapshot,
     Count,
     AllTextContents,

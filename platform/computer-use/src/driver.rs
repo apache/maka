@@ -49,7 +49,7 @@ pub struct Driver {
     pub(crate) cursors: crate::cursor::Host,
     pub(crate) windows: crate::desktop::worker::Worker,
     pub(crate) browsers: Arc<tokio::sync::Mutex<crate::browser::Host>>,
-    pub(crate) native_browsers: crate::browser::provider::NativeCache,
+    pub(crate) extension_browsers: crate::browser::provider::ExtensionCache,
     #[cfg(target_os = "macos")]
     mac_controllers: std::collections::HashMap<i32, MacController>,
 }

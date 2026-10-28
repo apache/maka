@@ -121,8 +121,8 @@ enum Phase {
     Measure,
 }
 
-/// Drives only terminal transport. GPU work runs on its native UI thread, so
-/// blocked readback or stdout cannot prevent Ctrl+Q and Host-scope cleanup.
+/// Drives terminal transport independently of native UI preparation and
+/// background GPU submission, readback and encoding.
 pub(super) fn run(
     output: &mut Output,
     presentation: &Presentation,

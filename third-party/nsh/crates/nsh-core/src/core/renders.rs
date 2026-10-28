@@ -11,7 +11,8 @@
 //! tells it when none is placed any more (`JsEvent::Unrender`). JS inserts
 //! its holder (`componentRender`) into the component's host; the core
 //! places it as the only child of the (prop, key)'s placeholder (the last
-//! one placed, when the view places a key twice). Apps that render nothing
+//! one placed, when the view places a key twice, outside the list cells
+//! their lists freed: [`Core::shown_place`]). Apps that render nothing
 //! this way pay nothing: every path starts with a check of an empty map.
 
 use std::{rc::Rc, sync::Arc};
@@ -107,16 +108,18 @@ impl<M: TextEngine> Core<M> {
     /// Placeholder `id` no longer places its render (it changed or went):
     /// the holder leaves it.
     pub(super) fn forget_render_place(&mut self, id: NodeId) {
-        let renders = &mut self.components.renders;
-        let Some(place) = renders.places.remove(&id) else {
+        let Some(place) = self.components.renders.places.remove(&id) else {
             return;
         };
         let key = (place.host, place.slot());
         let mut leaves = None;
+        if let Some(slot) = self.components.renders.slots.get(&key)
+            && self.shown_place(&slot.places) == Some(id)
+        {
+            leaves = slot.holder;
+        }
+        let renders = &mut self.components.renders;
         if let Some(slot) = renders.slots.get_mut(&key) {
-            if slot.places.last() == Some(&id) {
-                leaves = slot.holder;
-            }
             slot.places.retain(|&p| p != id);
         }
         renders.dirty.push(key);
@@ -147,12 +150,15 @@ impl<M: TextEngine> Core<M> {
         };
         entry.1 = host;
         let key = (host, entry.0.clone());
-        let (old, place) = match renders.slots.get_mut(&key) {
-            Some(slot) => (
-                slot.holder.replace(holder).filter(|&h| h != holder),
-                slot.places.last().copied(),
-            ),
-            None => (None, None),
+        let place = self
+            .components
+            .renders
+            .slots
+            .get(&key)
+            .and_then(|slot| self.shown_place(&slot.places));
+        let old = match self.components.renders.slots.get_mut(&key) {
+            Some(slot) => slot.holder.replace(holder).filter(|&h| h != holder),
+            None => None,
         };
         if let Some(old) = old {
             self.detach_id(old);
@@ -202,7 +208,10 @@ impl<M: TextEngine> Core<M> {
             if slot.holder.is_some() {
                 continue;
             }
-            let Some(mut k) = slot.places.last().and_then(|&p| self.key(p).ok()) else {
+            let Some(mut k) = self
+                .shown_place(&slot.places)
+                .and_then(|p| self.key(p).ok())
+            else {
                 continue;
             };
             loop {
@@ -230,11 +239,11 @@ impl<M: TextEngine> Core<M> {
         }
         let dirty = std::mem::take(&mut self.components.renders.dirty);
         for key in dirty {
-            let renders = &mut self.components.renders;
-            let Some(slot) = renders.slots.get_mut(&key) else {
+            let Some(slot) = self.components.renders.slots.get(&key) else {
                 continue;
             };
-            let Some(&place) = slot.places.last() else {
+            let Some(place) = self.shown_place(&slot.places) else {
+                let renders = &mut self.components.renders;
                 let slot = renders.slots.remove(&key).expect("a slot");
                 if slot.sent.is_some() {
                     self.events.push(JsEvent::Unrender {
@@ -248,6 +257,8 @@ impl<M: TextEngine> Core<M> {
                 }
                 continue;
             };
+            let renders = &mut self.components.renders;
+            let slot = renders.slots.get_mut(&key).expect("a slot");
             let value = renders.places[&place].value.clone();
             if !slot.sent.as_ref().is_some_and(|v| v.same(&*value)) {
                 slot.sent = Some(value.clone());
@@ -272,6 +283,43 @@ impl<M: TextEngine> Core<M> {
                     });
                 }
             }
+        }
+    }
+
+    /// The placeholder of `places` (oldest first) that shows their render:
+    /// the last one outside the list cells their lists freed, else the last
+    /// one. A freed cell keeps its content until the list binds it again,
+    /// and after a splice that content may place the key of a row that
+    /// moved to another cell (its own row went, and it reads the row now at
+    /// its old index): the row's own cell shows it.
+    pub(super) fn shown_place(&self, places: &[NodeId]) -> Option<NodeId> {
+        if places.len() > 1
+            && !self.lists.is_empty()
+            && let Some(&place) = places.iter().rev().find(|&&p| !self.in_freed_cell(p))
+        {
+            return Some(place);
+        }
+        places.last().copied()
+    }
+
+    /// Whether node `id` is in a list cell its list freed.
+    fn in_freed_cell(&self, id: NodeId) -> bool {
+        let Ok(mut k) = self.key(id) else {
+            return false;
+        };
+        loop {
+            let parent = self.nodes[k as usize].parent;
+            if parent == NO_KEY {
+                return false;
+            }
+            if self.nodes[parent as usize]
+                .list
+                .as_ref()
+                .is_some_and(|l| l.frees(k))
+            {
+                return true;
+            }
+            k = parent;
         }
     }
 }

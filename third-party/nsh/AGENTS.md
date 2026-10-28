@@ -28,6 +28,7 @@ the module docs of the code (`//!`, Javadoc), which are the reference for how a 
 crates/
   nsh-core/            Platform-independent core: typed units and geometry (`geometry/`, as GPUI's), shadow tree, styles (CSS semantics, React Native's defaults for what nothing sets), Taffy layout (flex + grid + block, on the core's own layout tree: `core/layout_tree.rs`), text merging, list virtualization,
                        mount items; CSS values (`css.rs`: colors, lengths, shadows, gradients, filters), effects (`effects.rs`), Tailwind (`tailwind/`);
+                       shaders (`shader.rs`: apps' WGSL `shade(uv)` checked with naga, uniforms packed, GLSL ES for the web);
                        CSS environment variables in padding and margin (`env(safe-area-inset-*)`, `env(keyboard-inset-height)`: `Core::sync_env`);
                        what iOS and Android share (`mobile.rs`: `nsh/mobile`'s `TabBar`, a native component the two backends register);
                        the reactive graph both sides run on (`reactive.rs`, Solid's algorithm, generic over the host), the loads of
@@ -76,7 +77,9 @@ crates/
                        the catalog and its loader, LLRT's `buffer` / `crypto` / `path` / `url` / `zlib`, `console`,
                        the globals `WebSocket`, `process` and `nextTick`); the TypeScript declarations of all of it
                        (`declarations.rs`, from the declaration next to each export and spec)
-  nsh-engine/          Engine thread: drives nsh-js + nsh-core and hands one MountBatch per frame to the platform
+  nsh-engine/          Engine thread: drives nsh-js + nsh-core and hands one MountBatch per frame to the platform;
+                       feature `shader`: the native backends' shader renderer (`shader.rs`: shader views' WGSL rendered with
+                       wgpu offscreen, read back asynchronously, never blocking the main thread; docs/dev/shaders.md)
   nsh-package/         Signed packages (`.nshpkg`): Ed25519 keys, release-key certificates, revocation lists, the trust store
   nsh-bundler/         Bundler: rolldown + Oxc (TS stripping) + NSH's JSX compiler (`jsx.rs`, docs/dev/native-pipeline.md) + source maps;
                        imports of the native modules stay imports (`plugin.rs`), so a bundle holds only the app's code;
@@ -198,6 +201,7 @@ are never linked into the CLI: it reads their UI sets as data (`nsh_core::elemen
 | units and geometry (`Points`, `Length`, `Bounds`, ...) | `docs/dev/geometry.md` |
 | scroll views, zooming, `List` | `docs/dev/scrolling-and-lists.md` |
 | animation, canvas, images | `docs/dev/animation.md`, `canvas.md`, `images.md` |
+| shaders: WGSL views, the renderer | `docs/dev/shaders.md` |
 | VM limits, capabilities, signed packages | `docs/dev/sandbox.md`, `signed-packages.md` |
 | packaging, the iOS / Android SDKs, native components | `docs/dev/embedding.md` |
 | `.nsh/types`, the dev server, hot reload | `docs/dev/tooling.md` |
@@ -339,7 +343,9 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   behavior, state, focus, keyboard and accessibility and leave every visual choice to the app (navigation, dialogs, a
   button, a checkbox, radios, a switch, tabs, popovers, menus, tooltips and sheets, text input and system alerts today, with the status bar a
   prop of pages and dialogs; controls such as toggles, sliders and selects as their behavior is written). Names follow `gpui-base`'s
-  (`docs/dev/api-naming.md`). `gpui-component` ↔ nothing: a styled component library is never part of NSH; apps and
+  (`docs/dev/api-naming.md`), and so do the API and the features: GPUI Kit's components are long proven, so an
+  `nsh-base` component covers every option of its `gpui-base` / `gpui-component` counterpart (as a prop, a part or the
+  app's slot), or `docs/dev/api-naming.md` says why it does not. `gpui-component` ↔ nothing: a styled component library is never part of NSH; apps and
   the community build theirs on `nsh-base`, or style the UI in the app itself. Each export has one home (two
   registries exporting one name panic, `Registry::merged`). Mobile-only APIs (iOS, Android or both) go to `nsh/mobile`, desktop-only ones to `nsh/desktop`,
   platform-only props into `ios={{…}}` / `android={{…}}` / `desktop={{…}}`. `nsh` has no catch-all re-exports. Beside
@@ -460,6 +466,19 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
 - New `pub struct` types use `#[non_exhaustive]` and implement `Default`, deriving it when possible.
 - Set only the fields needed and leave the rest at their defaults. Within the defining crate, use `..Default::default()`; callers in other crates start with `Type::default()` and assign fields, because non-exhaustive structs cannot be constructed with external struct literals.
 - New fields have sensible defaults so extending a struct does not break downstream construction.
+
+## Public Rust element API
+
+What apps call to build UI in Rust stays stable and strongly typed:
+
+- Element constructors take no content: `shader()`, then builder methods (`.source(program)`, `.uniform(..)`), so a
+  new input is a new method, never a changed signature. Existing constructors that take their content
+  (`canvas(painter)`, `video(url)`) are not a model for new ones.
+- Names NSH defines (style properties, built-in values) are typed; names the app defines in its own code (a
+  shader's uniforms, declared in its WGSL) are plain `&str`, as TSX's keys are, checked where they are defined.
+- Values are typed (`impl Into<UniformValue>`, `Hsla`, `Points`), not strings to parse.
+- No macros to make elements or set their props (declaring components with `#[component]` and its derives stays):
+  plain functions, methods and traits.
 
 ## Commits and pull requests
 

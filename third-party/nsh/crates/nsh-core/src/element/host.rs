@@ -212,6 +212,12 @@ host_element! {
 }
 
 host_element! {
+    /// A view whose box a shader draws under its children (`<shader>`, TS:
+    /// `Shader` of `nsh`), made by [`shader`] ([`crate::shader`]).
+    ShaderView
+}
+
+host_element! {
     /// A web page (`<webview>`), made by [`web_view`].
     WebView
 }
@@ -236,6 +242,7 @@ host_element! {
 }
 
 impl ParentElement for Overlay {}
+impl ParentElement for ShaderView {}
 impl ParentElement for Scroll {}
 impl ParentElement for Stack {}
 impl ParentElement for Screen {}
@@ -352,6 +359,115 @@ pub fn canvas(painter: impl IntoReactive<Painter>) -> CanvasView {
 }
 
 crate::static_reactive!(Painter: Painter, Drawing);
+
+/// A view whose box a shader draws, under its children: give it the
+/// program with [`ShaderView::source`] and its uniforms with
+/// [`ShaderView::uniform`]. Without a program it draws nothing of its own.
+pub fn shader() -> ShaderView {
+    ShaderView(ElNode::new(Tag::Shader))
+}
+
+crate::static_reactive!(crate::shader::Shader: crate::shader::Shader);
+
+/// A value [`ShaderView::uniform`] takes ([`IntoUniform`]).
+pub struct Uniform(UniformSource);
+
+enum UniformSource {
+    Value(super::Reactive<crate::shader::UniformValue>),
+    Animated(super::AnimatedNode),
+}
+
+/// What [`ShaderView::uniform`] takes: a number, a color or a list, bound
+/// or not, or an animated value (`&AnimatedValue`, `&AnimatedNode`).
+pub trait IntoUniform {
+    /// As a [`Uniform`].
+    fn into_uniform(self) -> Uniform;
+}
+
+impl<T: IntoReactive<crate::shader::UniformValue>> IntoUniform for T {
+    fn into_uniform(self) -> Uniform {
+        Uniform(UniformSource::Value(self.into_reactive()))
+    }
+}
+
+impl IntoUniform for &super::AnimatedValue {
+    fn into_uniform(self) -> Uniform {
+        Uniform(UniformSource::Animated(super::Animated::animated_node(
+            self,
+        )))
+    }
+}
+
+impl IntoUniform for &super::AnimatedNode {
+    fn into_uniform(self) -> Uniform {
+        Uniform(UniformSource::Animated(*self))
+    }
+}
+crate::static_reactive!(
+    crate::shader::UniformValue: crate::shader::UniformValue,
+    f32,
+    i32,
+    Color,
+    Hsla,
+    [f32; 2],
+    [f32; 3],
+    [f32; 4],
+    Vec<crate::shader::UniformValue>
+);
+
+impl ShaderView {
+    /// The program that draws its box, compiled once with
+    /// [`Shader::compile`](crate::shader::Shader::compile) (a bound one
+    /// draws the new program when it changes).
+    pub fn source(self, shader: impl IntoReactive<crate::shader::Shader>) -> Self {
+        self.bind_prop(shader, |s| Prop::Shader(Some(s)))
+    }
+
+    /// Sets the member `name` of the shader's `struct Uniforms` to `value`
+    /// ([`IntoUniform`]): a number, a color or a list (a vector, an array of
+    /// `vec4f`), which a bound value (`move || …`) sets again when it
+    /// changes; or an animated value (`&wave`, a number, or colors for a
+    /// `vec3f` / `vec4f`), which the platform writes on every frame it
+    /// changes, without the engine (one whose owner is gone counts as 0).
+    pub fn uniform(mut self, name: &str, value: impl IntoUniform) -> Self {
+        let name: Arc<str> = name.into();
+        let value = match value.into_uniform().0 {
+            UniformSource::Value(value) => value,
+            UniformSource::Animated(node) => {
+                let value = match node.live() {
+                    Some(node) => {
+                        let id = node.id();
+                        self.0.attrs.bound.push(node);
+                        crate::shader::UniformValue::Animated(id)
+                    }
+                    None => crate::shader::UniformValue::Number(0.0),
+                };
+                super::Reactive::Static(value)
+            }
+        };
+        self.0.bind_attr(value, move |attrs, value| {
+            let mut uniforms = attrs
+                .props
+                .iter()
+                .find_map(|p| match p {
+                    Prop::Uniforms(u) => Some(u.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            match uniforms.0.iter_mut().find(|(n, _)| *n == name) {
+                Some(entry) => entry.1 = value,
+                None => uniforms.0.push((name.clone(), value)),
+            }
+            set_in(&mut attrs.props, Prop::Uniforms(uniforms));
+        });
+        self
+    }
+
+    /// Stops its clock (`nsh.time` keeps its value), or starts it again.
+    pub fn paused(self, paused: impl IntoReactive<bool>) -> Self {
+        self.bind_prop(paused, Prop::ShaderPaused)
+    }
+}
 
 /// A web view loading `url` (a bound one loads again when it changes).
 pub fn web_view(url: impl IntoReactive<String>) -> WebView {
@@ -2020,3 +2136,110 @@ impl From<Drawing> for Painter {
 }
 
 crate::static_reactive!(ScreenAnimation: ScreenAnimation);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        element::{
+            AnimatedValue,
+            reactive::{Runtime, create_root, signal},
+        },
+        shader::{ShaderUniforms, UniformValue},
+    };
+
+    fn uniforms(attrs: &super::super::builder::Attrs) -> ShaderUniforms {
+        attrs
+            .props
+            .iter()
+            .find_map(|p| match p {
+                Prop::Uniforms(u) => Some(u.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// The animation nodes released since the last call.
+    fn released(executor: &super::super::task::Executor) -> usize {
+        executor
+            .take_actions()
+            .into_iter()
+            .filter(|a| {
+                matches!(
+                    a,
+                    super::super::task::Action::Animation(
+                        crate::animation::AnimationOp::Release { .. }
+                    )
+                )
+            })
+            .count()
+    }
+
+    fn value(u: &ShaderUniforms, name: &str) -> Option<UniformValue> {
+        u.0.iter()
+            .find(|(n, _)| &**n == name)
+            .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn uniform_takes_static_bound_and_animated_values() {
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let executor = std::rc::Rc::new(super::super::task::Executor::default());
+        let (value_owner, wave) = create_root(|| AnimatedValue::new(&executor, 0.0));
+        let speed = signal(1.0_f32);
+        let view = shader()
+            .uniform("center", [0.5_f32, 0.5])
+            .uniform("wave", &wave)
+            .uniform("speed", move || speed.get());
+        let node = view.0;
+
+        // The static and animated ones are set at once; the animated one by
+        // its node, which the element holds.
+        let set = uniforms(&node.attrs);
+        assert_eq!(
+            value(&set, "center"),
+            Some(UniformValue::List(vec![
+                UniformValue::Number(0.5),
+                UniformValue::Number(0.5)
+            ]))
+        );
+        let id = wave.node().live().expect("live").id();
+        assert_eq!(value(&set, "wave"), Some(UniformValue::Animated(id)));
+        assert_eq!(
+            node.attrs.bound.len(),
+            1,
+            "the element holds the animated node"
+        );
+        assert_eq!(
+            value(&set, "speed"),
+            None,
+            "a bound one is applied when resolved"
+        );
+
+        // The bound one follows its signal.
+        assert_eq!(
+            value(&uniforms(&node.resolved_attrs()), "speed"),
+            Some(UniformValue::Number(1.0))
+        );
+        speed.set(2.0);
+        assert_eq!(
+            value(&uniforms(&node.resolved_attrs()), "speed"),
+            Some(UniformValue::Number(2.0))
+        );
+
+        // The node outlives the owner of the handle it came from.
+        value_owner.dispose();
+        assert_eq!(released(&executor), 0, "the view keeps the animated node");
+        drop(node);
+        assert_eq!(released(&executor), 1, "and lets it go with the view");
+    }
+
+    #[test]
+    fn a_later_uniform_replaces_one_of_the_same_name() {
+        let view = shader().uniform("speed", 1.0_f32).uniform("speed", 3.0_f32);
+        let set = uniforms(&view.0.attrs);
+        assert_eq!(set.0.len(), 1);
+        assert_eq!(value(&set, "speed"), Some(UniformValue::Number(3.0)));
+    }
+}

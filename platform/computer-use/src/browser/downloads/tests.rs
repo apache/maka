@@ -31,6 +31,7 @@ fn response(mime: &str, disposition: Option<&str>) -> CdpEvent {
     CdpEvent {
         method: "Fetch.requestPaused".into(),
         session_id: None,
+        source_target_id: None,
         params: json!({
             "requestId":"actual-fetch-id","resourceType":"Document","request":{"url":"https://fixture.test/file"},
             "responseStatusCode":200,"responseStatusText":"OK","responseHeaders":headers,
@@ -114,7 +115,7 @@ fn unarmed_binary_is_still_detected_for_blocking_but_html_and_redirects_pass() {
 }
 
 #[test]
-fn attachment_header_is_anchored_and_preserves_native_header_bytes() {
+fn attachment_header_is_anchored_and_preserves_extension_header_bytes() {
     for value in [
         "attachment",
         "ATTACHMENT ; filename=x",

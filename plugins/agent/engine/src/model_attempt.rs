@@ -516,7 +516,7 @@ pub(super) fn prepare_request<W>(
     let max_output_tokens = Some(crate::context_input::output_limit(
         input,
         context_breakdown.estimated_tokens(),
-        max_output_tokens.unwrap_or(8000),
+        maka_agent_facts::context::effective_output_limit(max_output_tokens),
         purpose,
     ));
     #[derive(serde::Serialize)]

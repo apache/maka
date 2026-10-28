@@ -81,9 +81,10 @@ final class Effects {
                 case 2: g.circle = b.getInt() != 0; g.size = b.getInt(); g.x = b.getFloat(); g.y = b.getFloat(); break;
                 default: g.angle = b.getFloat(); g.x = b.getFloat(); g.y = b.getFloat(); break;
             }
+            g.repeating = b.getInt() != 0;
             int stops = b.getInt();
             // Negative: stops as written, some in points, placed when the
-            // box is known (`Decor.Gradient.resolve`).
+            // box is known (`Decor.Gradient.place`).
             boolean written = stops < 0;
             if (written) stops = -stops;
             g.colors = new int[stops];

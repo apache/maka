@@ -102,7 +102,7 @@ struct TwoFinger {
     transform: Transform,
 }
 
-use crate::keys::{VK_MENU, VK_TAB};
+use crate::keys::{VK_ESCAPE, VK_MENU, VK_TAB};
 
 /// What a pointer did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -894,6 +894,21 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
     }
 }
 
+/// The closest view under `(x, y)` (root points) that listens to
+/// `onFileDrop`, within its modal ([`crate::file_drop`]).
+pub(crate) fn file_drop_target(surface: &Surface, x: f32, y: f32) -> Option<NshView> {
+    let mut view = pick(&surface.root, x, y, true)?.view;
+    loop {
+        if view.state().events.contains(EventKind::FileDrop) {
+            return Some(view);
+        }
+        if view.kind() == ViewKind::Modal || view.id() == ROOT_ID {
+            return None;
+        }
+        view = view.parent_view()?;
+    }
+}
+
 // --- Events from the window ---------------------------------------------------------
 
 /// A pointer event from the window.
@@ -994,6 +1009,18 @@ pub(crate) fn wheel(surface: &Rc<Surface>, event: WheelEvent) {
 /// A key from the window; true when handled. Only key downs (and their
 /// repeats) go to the modules; ups are not acted on.
 pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
+    if event.down && event.vk == VK_ESCAPE {
+        crate::text_input::disarm(surface);
+    }
+    if crate::text_input::hold_key(surface, &event) {
+        return true;
+    }
+    key_now(surface, event)
+}
+
+/// A key from the window, or one that waited behind typed text for the
+/// next field ([`crate::text_input`]). True when handled.
+pub(crate) fn key_now(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     let input = &surface.input;
     if !event.down {
         crate::keymap::released(surface, &event);
@@ -1039,6 +1066,9 @@ pub(crate) fn component_key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     if !event.down {
         crate::keymap::released(surface, &event);
         return event.vk == VK_MENU && surface.input.alt_combo.replace(false);
+    }
+    if event.vk == VK_ESCAPE {
+        crate::text_input::disarm(surface);
     }
     let repeat = crate::keymap::pressed(surface, &event);
     let handled = crate::chrome::window_key(surface, &event)
@@ -2576,14 +2606,15 @@ fn hover(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
     let tracking = !input.hover_tracked.borrow().is_empty() || !input.hovered.borrow().is_empty();
     let pressed = input.pointers.borrow().iter().any(|p| p.key == Key::Mouse);
     let hit = pick(&surface.root, x, y, true);
-    // The scroll views under the mouse show their indicators.
-    if let Some(hit) = &hit {
-        for v in chain(&hit.view)
+    // The innermost scroll view under the mouse that has something to
+    // scroll shows its indicator; the ones around it stay as they are, so
+    // nested views do not light up side by side.
+    if let Some(hit) = &hit
+        && let Some(v) = chain(&hit.view)
             .iter()
-            .filter(|v| v.kind() == ViewKind::Scroll)
-        {
-            crate::scroll::hovered(surface, v);
-        }
+            .find(|v| v.kind() == ViewKind::Scroll && crate::scroll::overflows(v))
+    {
+        crate::scroll::hovered(surface, v);
     }
     if tracking {
         let views = match &hit {

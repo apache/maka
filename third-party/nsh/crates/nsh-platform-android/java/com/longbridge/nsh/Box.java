@@ -2,6 +2,7 @@ package com.longbridge.nsh;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Path;
 import android.graphics.Rect;
@@ -48,6 +49,13 @@ class Box extends ViewGroup implements Node {
     /** Children go here while the box both clips and casts a shadow. */
     private Box content;
     private final Path clipPath = new Path();
+    /** Whether a shader draws its box (`SHADER`; libnsh renders it). */
+    private boolean shader;
+    /** The shader's last frame, reused while its size stays. */
+    private Bitmap shaderBitmap;
+    private final Path shaderPath = new Path();
+    private final Rect shaderBounds = new Rect();
+    private final android.graphics.Paint shaderPaint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
 
     Box(Context context, Mounter mounter, int id) {
         super(context);
@@ -131,6 +139,53 @@ class Box extends ViewGroup implements Node {
         invalidateOutline();
         decor.applyPivot(this);
         if (content != null) content.layout(0, 0, w, h);
+        if (shader) shaderSize();
+    }
+
+    // --- Shaders -----------------------------------------------------------------
+
+    /** A shader draws its box (or no longer does). */
+    void setShader(boolean on) {
+        shader = on;
+        if (on) {
+            shaderSize();
+        } else if (shaderBitmap != null) {
+            shaderBitmap = null;
+            invalidate();
+        }
+    }
+
+    /** Tells libnsh the size its frames are rendered at. */
+    private void shaderSize() {
+        long handle = mounter.handle();
+        if (handle != 0 && Native.shaderSize(handle, id, getWidth(), getHeight())) mounter.host.requestFrames();
+    }
+
+    /** A new frame: premultiplied RGBA rows, copied before returning (the buffer is libnsh's). */
+    void shaderFrame(java.nio.ByteBuffer pixels, int width, int height) {
+        if (!shader) return;
+        if (pixels == null || width <= 0 || height <= 0) {
+            shaderBitmap = null;
+        } else {
+            if (shaderBitmap == null || shaderBitmap.getWidth() != width || shaderBitmap.getHeight() != height) {
+                shaderBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            }
+            shaderBitmap.copyPixelsFromBuffer(pixels);
+        }
+        invalidate();
+    }
+
+    /** The shader's frame, stretched over the box inside its rounded corners, under the children. */
+    @Override
+    protected void onDraw(Canvas canvas) {
+        super.onDraw(canvas);
+        if (shaderBitmap == null || getWidth() <= 0 || getHeight() <= 0) return;
+        shaderBounds.set(0, 0, getWidth(), getHeight());
+        canvas.save();
+        if (decor.rounded()) canvas.clipPath(decor.shape(shaderBounds, 0, shaderPath));
+        else canvas.clipRect(shaderBounds);
+        canvas.drawBitmap(shaderBitmap, null, shaderBounds, shaderPaint);
+        canvas.restore();
     }
 
     /** Applies clipping after a style change. */

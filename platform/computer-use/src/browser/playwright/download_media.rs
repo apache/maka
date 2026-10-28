@@ -29,9 +29,9 @@ impl Tab {
         locator: &LocatorPlan,
         options: &BrowserDownloadOptions,
         document: crate::BrowserDocument,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::super::BrowserCall<'_>,
     ) -> Result<Value, ToolError> {
+        let cancellation = call.cancellation;
         let resources = Resources::new();
         let budget = super::super::downloads::locator_timeout(options);
         let deadline = (!budget.is_zero()).then(|| tokio::time::Instant::now() + budget);
@@ -64,12 +64,17 @@ impl Tab {
                         continue;
                     }
                 };
-                self.refresh_info(language).await?;
+                self.refresh_info(call).await?;
                 if self.document() != document || !self.frame_scopes_current(&used).await? {
                     return Err(failed("document or frame changed before locator download"));
                 }
                 let engine = self.playwright_engine(&frame, &resources).await?;
                 check_input(cancellation)?;
+                // Metadata/selector engine awaits spend this same deadline.
+                // Once a extension command is issued its original future drains.
+                if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                    return Err(failed("Playwright selector deadline exceeded"));
+                }
                 resources
                     .mutated
                     .store(true, std::sync::atomic::Ordering::Relaxed);

@@ -17,18 +17,18 @@
  * under the License.
  */
 
-//! Own browser native-host bootstrap, before CLI logging or async startup.
+//! Maka browser extension-host bootstrap, before CLI logging or async startup.
 
-/// Select explicit connector setup or the exact installed native-host origin.
+/// Select explicit connector setup or the exact installed extension-host origin.
 pub fn bootstrap() -> Option<std::process::ExitCode> {
     #[cfg(feature = "native-desktop")]
     {
-        cua_driver_core::browser::native_process::bootstrap_installed()
+        cua_driver_core::browser::extension_process::bootstrap_installed()
     }
     #[cfg(not(feature = "native-desktop"))]
     {
         let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-        let native = arguments
+        let extension = arguments
             .first()
             .and_then(|arg| arg.to_str())
             .is_some_and(|arg| arg.starts_with("chrome-extension://"));
@@ -37,7 +37,7 @@ pub fn bootstrap() -> Option<std::process::ExitCode> {
                 arguments.get(1).and_then(|arg| arg.to_str()),
                 Some("install" | "uninstall" | "extension")
             );
-        if native || setup {
+        if extension || setup {
             eprintln!("Maka browser connector requires a build with native-desktop enabled");
             Some(std::process::ExitCode::FAILURE)
         } else {

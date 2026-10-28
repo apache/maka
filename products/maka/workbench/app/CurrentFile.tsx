@@ -361,8 +361,8 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
                 : tr('Copy captured file'),
           )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon
@@ -378,8 +378,8 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
             model.state().kind === 'error' ? tr('Retry current file') : tr('Refresh current file'),
           )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="refresh" color={C.secondary} />
@@ -510,8 +510,8 @@ function RetryCurrentFile(props: { model: CurrentFileModel }) {
         gap: 8,
         backgroundColor: C.surface,
       }}
-      hoverStyle={controlHoverStyle}
-      focusStyle={controlFocusStyle}
+      hoverStyle={controlHoverStyle()}
+      focusStyle={controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <Icon name="refresh" color={C.secondary} />
@@ -674,8 +674,8 @@ function FileImage(props: {
               alignItems: 'center',
               gap: 8,
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="refresh" color={C.secondary} />

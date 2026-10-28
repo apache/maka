@@ -622,6 +622,7 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
             | Command::BrowserUserOpenTabs { .. }
             | Command::BrowserUserClaimTab { .. }
             | Command::BrowserRead { .. }
+            | Command::BrowserWait { .. }
             | Command::BrowserDownloadWait { .. }
             | Command::BrowserDownloadPath { .. }
             | Command::BrowserDownloadMedia { .. }

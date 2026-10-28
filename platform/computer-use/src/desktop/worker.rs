@@ -1295,6 +1295,12 @@ mod tests {
         .unwrap();
         for hello in [
             Hello {
+                // The previous internal epoch is not a compatibility branch.
+                protocol: 3,
+                platform: "windows".into(),
+                audio_enabled: false,
+            },
+            Hello {
                 protocol: PROTOCOL + 1,
                 platform: "windows".into(),
                 audio_enabled: false,

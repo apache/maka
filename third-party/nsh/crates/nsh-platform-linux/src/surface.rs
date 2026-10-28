@@ -123,6 +123,9 @@ pub(crate) struct Surface {
     /// The model of a test session's app (`nsh test --target linux`).
     #[cfg(feature = "dev")]
     test_model: RefCell<Option<Arc<nsh_testing::agent::Model>>>,
+    /// The GPU device shader views render with, opened when the first
+    /// shader is mounted (`None` inside: there is none).
+    shader_renderer: std::cell::OnceCell<Option<Rc<nsh_engine::shader::Renderer>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
@@ -143,6 +146,17 @@ pub(crate) struct Surface {
 }
 
 impl Surface {
+    /// The GPU device shader views render with ([`crate::shader`]), opened
+    /// the first time one asks.
+    pub(crate) fn shader_renderer(&self) -> Option<Rc<nsh_engine::shader::Renderer>> {
+        self.shader_renderer
+            .get_or_init(|| {
+                nsh_engine::shader::Renderer::new(nsh_engine::shader::PixelFormat::Rgba)
+                    .map(Rc::new)
+            })
+            .clone()
+    }
+
     /// A surface with no app yet.
     pub(crate) fn new(environment: Environment) -> Rc<Surface> {
         let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);
@@ -171,6 +185,7 @@ impl Surface {
             on_hot_update_failed: RefCell::new(None),
             #[cfg(feature = "dev")]
             test_model: RefCell::default(),
+            shader_renderer: std::cell::OnceCell::new(),
             asset_base: RefCell::new(None),
             image_cache: RefCell::new(None),
             access: RefCell::new(Arc::default()),
@@ -190,7 +205,10 @@ impl Surface {
         // Canvases that came into sight are drawn in the frame that shows them.
         root.connect_realize(|root| {
             if let Some(clock) = root.frame_clock() {
-                clock.connect_layout(|_| crate::canvas::reveal());
+                clock.connect_layout(|_| {
+                    crate::canvas::reveal();
+                    crate::shader::reveal();
+                });
             }
         });
         crate::input::install(&surface);

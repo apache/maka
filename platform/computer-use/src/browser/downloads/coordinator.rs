@@ -116,7 +116,7 @@ pub(super) struct Armed {
     shared: Arc<Shared>,
     metadata: metadata::Metadata,
     socket: Cdp,
-    provider: cua_driver_core::browser::NativeBrowserProvider,
+    session_metadata: super::super::extension::SessionMetadataCall,
     access: Arc<dyn crate::BrowserAuthorization>,
     document: crate::BrowserDocument,
     cancellation: CancellationToken,
@@ -348,7 +348,7 @@ impl Shared {
         completion: &metadata::Completion,
         socket: Cdp,
         cancellation: &CancellationToken,
-    ) -> Result<cua_driver_core::browser::NativeDownloadMetadata, ToolError> {
+    ) -> Result<cua_driver_core::browser::ExtensionDownloadMetadata, ToolError> {
         let actual = self
             .release_observed(
                 &response.id,
@@ -378,7 +378,7 @@ impl Shared {
         }
         tokio::select! {
             biased;
-            ()=self.stopped.cancelled()=>Err(unknown("Download tab detached after response release; native file state is unknown")),
+            ()=self.stopped.cancelled()=>Err(unknown("Download tab detached after response release; extension file state is unknown")),
             result=completion.wait(cancellation)=>result,
         }
     }
@@ -551,13 +551,13 @@ impl Controller {
     pub(super) async fn arm(
         &self,
         document: crate::BrowserDocument,
-        provider: cua_driver_core::browser::NativeBrowserProvider,
+        session_metadata: super::super::extension::SessionMetadataCall,
         access: Arc<dyn crate::BrowserAuthorization>,
         cancellation: CancellationToken,
         timeout: Duration,
     ) -> Result<Armed, ToolError> {
         let metadata = self.metadata.clone().ok_or_else(|| {
-            failed("Native download notifications are unavailable for this browser provider")
+            failed("Extension download notifications are unavailable for this browser provider")
         })?;
         self.install().await?;
         let socket = self
@@ -593,7 +593,7 @@ impl Controller {
             shared: self.shared.clone(),
             metadata,
             socket,
-            provider,
+            session_metadata,
             access,
             document,
             cancellation,
@@ -658,7 +658,7 @@ impl Controller {
                     && !unsent
                 {
                     return Err(cleanup(format!(
-                        "Original Document interception setup did not settle: {error}"
+                        "ChatGPT Document interception setup did not settle: {error}"
                     )));
                 }
             }
@@ -750,14 +750,10 @@ impl Armed {
 
     async fn current_document(&self) -> Result<crate::BrowserDocument, ToolError> {
         check_input(&self.cancellation)?;
-        if self.provider.identity().generation != self.document.generation {
+        if self.session_metadata.generation() != self.document.generation {
             return Err(failed("Download browser generation changed"));
         }
-        let tab = self
-            .provider
-            .resolve_user_tab(&self.document.tab_id)
-            .await
-            .map_err(provider::native_error)?;
+        let tab = self.session_metadata.resolve(&self.document.tab_id).await?;
         if tab.id.to_string() != self.document.tab_id {
             return Err(failed("Download metadata resolved a different tab"));
         }
@@ -912,8 +908,8 @@ mod tests {
             Cdp {
                 connection: Arc::new(connection),
                 dialogs: None,
-                native_context: None,
-                preparation: crate::browser::native::PreparationTransport::NotRequired,
+                extension_context: None,
+                preparation: crate::browser::extension::PreparationTransport::NotRequired,
             },
             peer.await.unwrap(),
         )
@@ -979,11 +975,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absent_native_metadata_still_intercepts_and_blocks_unarmed_downloads_once() {
+    async fn absent_extension_metadata_still_intercepts_and_blocks_unarmed_downloads_once() {
         tokio::time::timeout(Duration::from_secs(5), async {
             let (socket, mut peer) = wire().await;
             // This executor only runs the original response futures. It does not
-            // fabricate Native provider capabilities, site grants or file custody.
+            // fabricate Extension provider capabilities, site grants or file custody.
             let effects = Arc::new(AutomaticEffects::default());
             let mut controller = Controller::start(socket.clone(), None, Some(effects.clone()));
             let (installed, ()) = tokio::join!(controller.install(), async {
@@ -1249,7 +1245,7 @@ mod tests {
                     futures_util::future::poll_fn(|context| {
                         assert!(
                             std::future::Future::poll(continued.as_mut(), context).is_pending(),
-                            "no Native completion has been observed"
+                            "no Extension completion has been observed"
                         );
                         if shared.inner.lock().unwrap().responses.is_empty() {
                             std::task::Poll::Ready(())
@@ -1276,7 +1272,7 @@ mod tests {
             let mut original_completion = Box::pin(completion.wait(&pending_cancellation));
             assert!(
                 futures_util::poll!(&mut original_completion).is_pending(),
-                "neither wire ACK nor Stop invents a Native completion"
+                "neither wire ACK nor Stop invents a Extension completion"
             );
             assert!(shared.inner.lock().unwrap().responses.is_empty());
             controller.close().await.unwrap();
@@ -1362,7 +1358,7 @@ mod tests {
     async fn guard_refused_setup_has_no_numeric_wire_and_close_does_not_claim_it_started() {
         let (socket, mut peer) = wire().await;
         let mut refused = socket.clone();
-        refused.preparation = super::super::super::native::PreparationTransport::Unadmitted;
+        refused.preparation = super::super::super::extension::PreparationTransport::Unadmitted;
         let mut controller = Controller::start(refused, None, None);
         assert!(controller.install().await.is_err());
         {
@@ -1410,7 +1406,7 @@ mod tests {
     async fn explicit_close_uses_current_socket_for_held_response_not_terminal_producer_socket() {
         let (old_wire, mut old_peer) = wire().await;
         let mut old = old_wire.clone();
-        old.preparation = super::super::super::native::PreparationTransport::Unadmitted;
+        old.preparation = super::super::super::extension::PreparationTransport::Unadmitted;
         let (current, mut current_peer) = wire().await;
         let mut controller = Controller::start(current.clone(), None, None);
         controller.shared = paused(old);

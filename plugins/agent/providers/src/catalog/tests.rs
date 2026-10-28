@@ -53,7 +53,7 @@ fn new_public_model_keeps_each_routes_own_controls_and_limits() {
     let openrouter = json!({"data":[{
         "id":"vendor/new-model:free","canonical_slug":"this-is-not-the-bridge",
         "name":"Gateway name","description":"Shared model description","knowledge_cutoff":"2026-01",
-        "context_length":131072,"top_provider":{"max_completion_tokens":32768},
+        "context_length":1048576,"top_provider":{"max_completion_tokens":393216},
         "architecture":{"input_modalities":["text","image"],"output_modalities":["text"]},
         "supported_parameters":["tools","structured_outputs","reasoning"],
         "reasoning":{"mandatory":true,"supported_efforts":["max","high"],"default_effort":"max"}
@@ -75,15 +75,26 @@ fn new_public_model_keeps_each_routes_own_controls_and_limits() {
     assert_eq!(native.default_thinking_level, None);
     let gateway = snapshot.get("openrouter", "vendor/new-model:free").unwrap();
     assert_eq!(gateway.display_name.as_deref(), Some("Gateway name"));
-    assert_eq!(gateway.context_window, Some(131072));
-    assert_eq!(gateway.max_output_tokens, Some(32768));
+    assert_eq!(gateway.context_window, Some(1048576));
+    assert_eq!(gateway.max_output_tokens, Some(393216));
     assert_eq!(gateway.input_limit, None);
     assert_eq!(gateway.thinking_levels, Some(vec![Max, High]));
     assert_eq!(gateway.default_thinking_level, Some(Max));
     assert_eq!(gateway.capabilities.unwrap().vision, Some(true));
     assert_eq!(gateway.capabilities.unwrap().function_calling, Some(true));
     assert_eq!(gateway.structured_output, Some(true));
-    assert_eq!(snapshot.get("openrouter", "brand-new-native"), None);
+    assert_eq!(
+        snapshot.get("openai-compatible", "brand-new-native"),
+        Some(&ModelInfo {
+            id: "brand-new-native".into(),
+            display_name: Some("Gateway name".into()),
+            description: Some("Shared model description".into()),
+            knowledge_cutoff: Some("2026-01".into()),
+            context_window: Some(1048576),
+            max_output_tokens: Some(393216),
+            ..Default::default()
+        })
+    );
     assert_eq!(
         snapshot.get("deepseek", "vendor/new-model:free"),
         Some(&ModelInfo {
@@ -91,6 +102,8 @@ fn new_public_model_keeps_each_routes_own_controls_and_limits() {
             display_name: Some("Gateway name".into()),
             description: Some("Shared model description".into()),
             knowledge_cutoff: Some("2026-01".into()),
+            context_window: Some(1048576),
+            max_output_tokens: Some(393216),
             ..Default::default()
         })
     );
@@ -115,6 +128,7 @@ fn compatible_connections_share_exact_public_ids_without_borrowing_route_control
         display_name: Some("Public name".into()),
         description: Some("Public description".into()),
         knowledge_cutoff: Some("2026-01".into()),
+        context_window: Some(131072),
         ..Default::default()
     };
     assert_eq!(
@@ -210,7 +224,7 @@ fn conflicting_gateway_descriptions_never_cross_routes_or_use_slugs_as_ids() {
     assert_eq!(local.display_name, None);
     assert_eq!(local.description.as_deref(), Some("Same description"));
     assert_eq!(local.knowledge_cutoff, None);
-    assert_eq!(local.context_window, None);
+    assert_eq!(local.context_window, Some(1000));
     assert_eq!(local.thinking_levels, Some(vec![]));
     assert_eq!(
         snapshot
@@ -223,6 +237,7 @@ fn conflicting_gateway_descriptions_never_cross_routes_or_use_slugs_as_ids() {
     assert_eq!(conflicting.display_name.as_deref(), Some("Other name"));
     assert_eq!(conflicting.description, None);
     assert_eq!(conflicting.knowledge_cutoff, None);
+    assert_eq!(conflicting.context_window, None);
     let same = snapshot.get("private-relay", "vendor/base:free").unwrap();
     assert_eq!(same.display_name.as_deref(), Some("Free name"));
     assert_eq!(same.description.as_deref(), Some("Same description"));
@@ -453,7 +468,7 @@ fn raw_sources_resolve_decoded_duplicates_before_schema_validation() {
     )
     .unwrap();
     assert_eq!(actual.models, expected.models);
-    assert_eq!(actual.descriptions, expected.descriptions);
+    assert_eq!(actual.shared, expected.shared);
     assert_eq!(
         actual.get("x", "m").unwrap().display_name.as_deref(),
         Some("Final")
@@ -501,7 +516,7 @@ fn raw_source_numeric_overflow_follows_value_acceptance_before_schema_validation
         let actual = Snapshot::from_sources(Some(&body), None).unwrap();
         let expected = from_values(Some(&expected.unwrap()), None).unwrap();
         assert_eq!(actual.models, expected.models);
-        assert_eq!(actual.descriptions, expected.descriptions);
+        assert_eq!(actual.shared, expected.shared);
         assert_eq!(
             actual.get("x", "m").unwrap().display_name.as_deref(),
             Some("Final")

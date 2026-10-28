@@ -64,6 +64,7 @@ final class Mounter {
     private static final int RETIRE_LIST_CELL = 34;
     private static final int PROJECT_ROOT = 35;
     private static final int COMPONENT_PROP_SLOTS = 36;
+    private static final int SHADER = 37;
     /** The surface lays out right to left: native widgets mirror. */
     boolean rtl;
     /** The app's appearance (`nsh_core::platform::Appearance`): 0 the system's, 1 light, 2 dark. */
@@ -119,7 +120,8 @@ final class Mounter {
     }
 
     final NshView host;
-    final float density;
+    /** Pixels per dp; {@link NshView} updates it when the display density changes. */
+    float density;
     final Context context;
     final Images images;
     final SparseArray<View> views = new SparseArray<>();
@@ -234,6 +236,17 @@ final class Mounter {
 
     private int px(float dp) {
         return Math.round(dp * density);
+    }
+
+    /** Keeps pixel-based native state in the new coordinate system. */
+    void setDensity(float next) {
+        float scale = next / density;
+        density = next;
+        for (int i = 0; i < views.size(); i++) {
+            View view = views.valueAt(i);
+            if (view instanceof ScrollBox) ((ScrollBox) view).rescale(scale);
+        }
+        for (int i = 0; i < modals.size(); i++) modals.valueAt(i).densityChanged();
     }
 
     void apply(byte[] bytes, Object[] objects, long seq) {
@@ -532,6 +545,13 @@ final class Mounter {
                 case COMPONENT: {
                     int id = b.getInt();
                     component(id, string(objects, b.getInt()));
+                    break;
+                }
+                case SHADER: {
+                    // The layer stays in libnsh, which renders it (`shader.rs`).
+                    View v = views.get(b.getInt());
+                    boolean on = b.getInt() != 0;
+                    if (v instanceof Box) ((Box) v).setShader(on);
                     break;
                 }
                 case COMPONENT_PROP_SLOTS: {

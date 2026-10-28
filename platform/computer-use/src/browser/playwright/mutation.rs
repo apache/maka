@@ -32,9 +32,32 @@ struct MutationContext<'a> {
     document: &'a crate::BrowserDocument,
     deadline: tokio::time::Instant,
     cancellation: &'a CancellationToken,
+    invocation: &'a crate::InvocationContext<'a>,
     resources: &'a Resources,
     language: Language,
     cursor: &'a crate::cursor::Spec,
+}
+
+impl MutationContext<'_> {
+    fn check_deadline(&self) -> Result<(), ToolError> {
+        check_input(self.cancellation)?;
+        if tokio::time::Instant::now() >= self.deadline {
+            return Err(
+                if self
+                    .resources
+                    .mutated
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    ToolError::OutcomeUnknown(
+                        "Locator deadline exceeded after a page effect; do not replay".into(),
+                    )
+                } else {
+                    failed("Playwright selector deadline exceeded")
+                },
+            );
+        }
+        Ok(())
+    }
 }
 
 struct Selected {
@@ -129,10 +152,11 @@ impl Tab {
         &mut self,
         index: Option<u64>,
         value: &str,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::super::BrowserCall<'_>,
         cursor: &crate::cursor::Spec,
     ) -> Result<(), ToolError> {
+        let cancellation = call.cancellation;
+        let language = call.language;
         let document = self.document();
         let frame = match index {
             Some(index) => self
@@ -172,7 +196,7 @@ impl Tab {
             let context = MutationContext {
                 document: &document,
                 deadline: tokio::time::Instant::now() + Duration::from_secs(3),
-                cancellation, resources: &resources, language, cursor,
+                cancellation, invocation: call.invocation, resources: &resources, language, cursor,
             };
             // Recheck the same authorized document after metadata preparation.
             let proof = self.origin_proof.clone()
@@ -348,27 +372,30 @@ impl Tab {
             document,
             deadline,
             cancellation,
-            resources,
+            invocation,
             language,
             ..
         } = *context;
-        check_input(cancellation)?;
-        if tokio::time::Instant::now() >= deadline {
-            return Err(
-                if resources.mutated.load(std::sync::atomic::Ordering::Relaxed) {
-                    ToolError::OutcomeUnknown(
-                        "Locator deadline exceeded after a page effect; do not replay".into(),
-                    )
-                } else {
-                    failed("Playwright selector deadline exceeded")
-                },
-            );
-        }
-        self.refresh_info(language).await?;
+        context.check_deadline()?;
+        let effect = self.read_effect()?;
+        let mut budget = Some(super::super::ReadBudget {
+            remaining: deadline.saturating_duration_since(tokio::time::Instant::now()),
+        });
+        super::super::read_step_for(
+            &mut budget,
+            cancellation,
+            effect,
+            self.refresh_info(super::super::BrowserCall::new(
+                invocation,
+                cancellation,
+                language,
+            )),
+        )
+        .await?;
         if self.document() != *document || !self.frame_scopes_current(&selected.used).await? {
             return Err(failed("document or frame changed before locator input"));
         }
-        check_input(cancellation)
+        context.check_deadline()
     }
 
     async fn locator_current(
@@ -392,7 +419,7 @@ impl Tab {
         if focused.is_some() && state["focused"] != true {
             return Err(failed("Element is not focused"));
         }
-        check_input(context.cancellation)
+        context.check_deadline()
     }
 
     async fn locator_prepare(
@@ -419,6 +446,7 @@ impl Tab {
             }
             _ => json!({"kind":"prepareText","requireEditable":true}),
         };
+        let effect = self.read_effect()?;
         loop {
             let attempt = async {
                 let selected = self.locator_element(query, resources).await?;
@@ -435,13 +463,16 @@ impl Tab {
                 }
                 Ok(selected)
             };
-            // Only the observation phase can be abandoned or repeated. The
-            // returned DOM object is retained for all subsequent page effects.
-            let result = tokio::select! {
-                biased;
-                ()=cancellation.cancelled()=>return Err(failed("Browser mutation cancelled")),
-                result=tokio::time::timeout_at(deadline,attempt)=>result.map_err(|_|failed("Playwright selector deadline exceeded"))?,
-            };
+            // A Extension observation can also activate session preparation.
+            // The same absolute deadline and actual first-poll classification
+            // preserve that uncertainty without replaying the accepted work.
+            let mut budget = Some(super::super::ReadBudget {
+                remaining: deadline.saturating_duration_since(tokio::time::Instant::now()),
+            });
+            let result = super::super::read_step_for(&mut budget, cancellation, effect, async {
+                Ok(attempt.await)
+            })
+            .await?;
             match result {
                 Ok(selected) => return Ok(selected),
                 Err(AttemptError::Fatal(error)) => return Err(error),
@@ -465,9 +496,10 @@ impl Tab {
         operation: BrowserMutationOperation,
         document: crate::BrowserDocument,
         cursor: &crate::cursor::Spec,
-        cancellation: &CancellationToken,
-        language: Language,
+        call: super::super::BrowserCall<'_>,
     ) -> Result<Value, ToolError> {
+        let cancellation = call.cancellation;
+        let language = call.language;
         validate_mutation(&operation)?;
         let resources = Resources::new();
         let deadline = tokio::time::Instant::now() + timeout(&operation);
@@ -475,32 +507,32 @@ impl Tab {
             document: &document,
             deadline,
             cancellation,
+            invocation: call.invocation,
             resources: &resources,
             language,
             cursor,
         };
+        let effect = self.read_effect()?;
         let result = async {
-            tokio::select! {
-                biased;
-                ()=cancellation.cancelled()=>return Err(failed("Browser mutation cancelled")),
-                ready=tokio::time::timeout_at(deadline,self.verify(language))=>ready.map_err(|_|failed("Playwright selector deadline exceeded"))??,
-            }
-            let selected = self
-                .locator_prepare(
-                    &plan.selector,
-                    &operation,
-                    &context,
-                )
+            let mut budget = Some(super::super::ReadBudget {
+                remaining: deadline.saturating_duration_since(tokio::time::Instant::now()),
+            });
+            super::super::read_step_for(&mut budget, cancellation, effect, self.verify(call))
                 .await?;
-            let selected = if matches!(operation,
-                BrowserMutationOperation::Fill {..}|BrowserMutationOperation::Type {..}|BrowserMutationOperation::PressSequentially {..}
-            ) { self.locator_input_target(&selected, &resources).await? } else { selected };
-            self.locator_dispatch(
-                &selected,
-                &operation,
-                &context,
-            )
-            .await
+            let selected = self
+                .locator_prepare(&plan.selector, &operation, &context)
+                .await?;
+            let selected = if matches!(
+                operation,
+                BrowserMutationOperation::Fill { .. }
+                    | BrowserMutationOperation::Type { .. }
+                    | BrowserMutationOperation::PressSequentially { .. }
+            ) {
+                self.locator_input_target(&selected, &resources).await?
+            } else {
+                selected
+            };
+            self.locator_dispatch(&selected, &operation, &context).await
         }
         .await;
         resources.cleanup(self).await;

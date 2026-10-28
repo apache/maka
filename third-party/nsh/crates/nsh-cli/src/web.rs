@@ -8,13 +8,13 @@
 //! index.html                       the app's page (the only file that changes in place)
 //! manifest.webmanifest             name, icons, colors (installing it as an app)
 //! nsh.<digest>.js                  the DOM runtime
-//! nsh.<digest>.wasm                the engine, the core, the components and QuickJS
+//! nsh.<digest>.wasm                the engine, the core and the components
 //! nsh-bindgen.<digest>.js          wasm-bindgen's glue, for crates that call JS (`crate::bindgen`)
 //! snippets.<digest>/<crate>-<hash>/ the JS snippets the glue imports, under their own paths
-//! app.<digest>.nshc                the app's bundle, compiled to QuickJS bytecode
-//! harden.<digest>.nshc             the sandbox's hardening, compiled likewise
+//! app.<digest>.js                  the app's browser ES module
+//! browser.<digest>/               the browser binding modules and licenses
 //! host.<digest>.js                 the page's host (`nsh.json` `web.host`), when the app has one
-//! chunks/<name>.<digest>.nshc      what `import()` loads, fetched when first imported
+//! <chunk>.<digest>.js              what `import()` loads, fetched when first imported
 //! assets/<path>.<digest>.<ext>     `asset:/<path>`, loaded from its URL when used
 //! icons/<size>.<digest>.png        favicon, apple-touch-icon, the manifest's
 //! ```
@@ -25,16 +25,16 @@
 //! fonts are fetched before the app starts, as text is measured with them
 //! synchronously.
 //!
-//! The app ships compiled: the runtime of published apps has no QuickJS
-//! parser (`runtime::WebKind::Release`), and starts sooner without
-//! compiling. The bytecode is the CLI's (`nsh_js::BYTECODE_VERSION`),
-//! which the web build's 32-bit QuickJS reads as the 64-bit hosts do.
+//! Published standalone TSX runs as browser ES modules. Its Wasm runtime
+//! has no QuickJS; the existing embedded/development players retain it.
 
 use std::{
+    collections::BTreeSet,
     fmt::Write as _,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::OnceLock,
     time::Duration,
 };
 
@@ -62,10 +62,6 @@ fn ui_sets() -> Vec<String> {
         .map(|set| set.specifier.clone())
         .collect()
 }
-
-/// The app's code: its bundle compiled to bytecode (`nsh_start_bytecode`),
-/// the only form the runtime of published apps runs.
-const CODE: (&str, &str) = ("app", "nshc");
 
 /// Hex digits of the SHA-256 in content-addressed names.
 const DIGEST_LEN: usize = 10;
@@ -95,7 +91,9 @@ pub(crate) fn package(
             missing.join(", ")
         );
     }
-    let runtime = runtime::web(runtime::WebKind::Release, true)?.context("no web runtime")?;
+    // The lite runtime when the app uses nothing it leaves out.
+    let lite = built.native_use.as_ref().is_some_and(serves_lite);
+    let (runtime, kind) = runtime::package_web(lite)?;
     let dir = options.out.join(name);
     let step = ui::Step::start(format!("packaging {}", ui::path(&dir)));
     if dir.exists() {
@@ -104,6 +102,12 @@ pub(crate) fn package(
     let site = Site::new(&dir)?;
     let js = fs::read_to_string(&runtime.js)
         .with_context(|| format!("read {}", runtime.js.display()))?;
+    let browser_path =
+        publish_browser_host(&site, runtime.js.parent().context("runtime has no parent")?)?;
+    let js = js.replace(
+        "./browser/runtime.js",
+        &format!("./{browser_path}/runtime.js"),
+    );
     // About a third of its size: the runtime is downloaded before anything
     // shows (the app's code is minified as it is bundled).
     let js = nsh_bundler::minify_module("nsh.js", &js).map_err(anyhow::Error::msg)?;
@@ -112,6 +116,16 @@ pub(crate) fn package(
         "nsh.wasm",
         &fs::read(&runtime.wasm).with_context(|| format!("read {}", runtime.wasm.display()))?,
     )?;
+    // What the runtime fetches when it first needs it: the syntaxes it
+    // highlights code with, which every page would download otherwise.
+    let mut data = serde_json::Map::new();
+    if let Some(path) = &runtime.syntaxes {
+        let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        data.insert(
+            "syntaxes".into(),
+            site.add(runtime::SYNTAXES, &bytes)?.into(),
+        );
+    }
     // The wasm-bindgen glue of a runtime whose crates call JS through
     // wasm-bindgen (`crate::bindgen`).
     let glue = runtime
@@ -124,17 +138,17 @@ pub(crate) fn package(
     let (code, harden) = if built.rust_root {
         (String::new(), String::new())
     } else {
-        let code = site.add(&format!("{}.{}", CODE.0, CODE.1), &built.bytecode)?;
+        let code = site.add("app.js", built.code.as_bytes())?;
         // The runtime cannot compile its hardening: it comes compiled by
         // the QuickJS that compiled the app.
-        (code, site.add("harden.nshc", &nsh_js::compile_harden()?)?)
+        (code, String::new())
     };
     // Chunk id -> URL: the page hands the map to the runtime, which fetches
     // lazy chunks on demand. Static entry dependencies are staged before startup.
     let mut chunks = serde_json::Map::new();
     for chunk in &built.chunks {
         let stem = chunk.id.strip_suffix(".js").unwrap_or(&chunk.id);
-        let url = site.add(&format!("chunks/{stem}.{}", CODE.1), &chunk.bytecode)?;
+        let url = site.add(&format!("{stem}.js"), chunk.code.as_bytes())?;
         chunks.insert(chunk.id.clone(), url.into());
     }
     let mut assets = serde_json::Map::new();
@@ -174,7 +188,9 @@ pub(crate) fn package(
         "harden": harden,
         "capabilities": built.capabilities_json(),
         "rust": built.rust_root,
+        "browser": !built.rust_root,
         "assets": assets,
+        "data": data,
         "fonts": fonts,
         "chunkFonts": chunk_fonts,
         "chunks": chunks,
@@ -205,15 +221,58 @@ pub(crate) fn package(
         .as_deref(),
     });
     fs::write(dir.join("index.html"), html)?;
+    let which = match kind {
+        runtime::WebKind::Lite => ", the lite runtime",
+        _ => "",
+    };
     step.done(format!(
         "packaged {}{}",
         ui::path(&dir),
-        ui::dim(format!(", {}", ui::bytes(dir_size(&dir))))
+        ui::dim(format!(", {}{which}", ui::bytes(dir_size(&dir))))
     ));
     if options.run {
         serve(&dir)?;
     }
     Ok(())
+}
+
+/// Whether the lite web runtime ([`runtime::WebKind::Lite`]) serves an app
+/// that uses `uses` of the native modules: nothing of `nsh/base` beyond its
+/// core part, neither `nsh/base/plot`, `zlib` nor `crypto`, no global
+/// `crypto` and no `import()` of a computed specifier. What the bundler
+/// cannot tell apart counts as everything, so the answer is never yes for
+/// an app that needs more.
+pub(crate) fn serves_lite(uses: &nsh_bundler::NativeUse) -> bool {
+    if uses.global_crypto || uses.computed_import {
+        return false;
+    }
+    uses.imports
+        .iter()
+        .all(|(module, imported)| match module.as_str() {
+            "zlib" | "crypto" | "nsh/base/plot" => false,
+            nsh_base::SPECIFIER => match imported {
+                nsh_bundler::Imported::All => false,
+                nsh_bundler::Imported::Names(names) => {
+                    names.iter().all(|name| core_exports().contains(name))
+                }
+            },
+            _ => true,
+        })
+}
+
+/// What `nsh/base`'s core part exports (`nsh_base::parts::core`, with
+/// the navigation and `Input` every set has).
+fn core_exports() -> &'static BTreeSet<String> {
+    static EXPORTS: OnceLock<BTreeSet<String>> = OnceLock::new();
+    EXPORTS.get_or_init(|| {
+        let set = nsh_base::registry_of([nsh_base::parts::core as nsh_base::parts::Part]);
+        let mut names: BTreeSet<String> =
+            set.specs().iter().map(|s| s.export.to_string()).collect();
+        names.extend(set.class_specs().iter().map(|c| c.name.to_owned()));
+        names.extend(set.module_specs().iter().map(|m| m.name.to_owned()));
+        names.extend(set.native_value_names().iter().map(|n| (*n).to_owned()));
+        names
+    })
 }
 
 /// Serves the site `dir` on this machine, as a CDN would (`nsh_dev::SiteServer`),
@@ -236,6 +295,43 @@ fn serve(dir: &Path) -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_millis(200));
     }
     Ok(())
+}
+
+/// Version the complete facade directory together so relative ES imports
+/// remain valid, and every public file keeps immutable cache semantics.
+fn publish_browser_host(site: &Site, root: &Path) -> anyhow::Result<String> {
+    let mut paths = fs::read_dir(root.join("browser"))?
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.retain(|path| {
+        path.extension()
+            .is_some_and(|ext| ext == "js" || ext == "txt")
+    });
+    paths.sort();
+    let mut files = Vec::new();
+    let mut content = Vec::new();
+    for path in paths {
+        let name = path
+            .file_name()
+            .context("host file has no name")?
+            .to_string_lossy()
+            .into_owned();
+        let code = fs::read_to_string(&path)?;
+        let code = if name.ends_with(".js") {
+            nsh_bundler::minify_module(&name, &code).map_err(anyhow::Error::msg)?
+        } else {
+            code
+        };
+        content.extend_from_slice(name.as_bytes());
+        content.push(0);
+        content.extend_from_slice(code.as_bytes());
+        files.push((name, code));
+    }
+    let directory = format!("browser.{}", digest(&content));
+    for (name, code) in files {
+        site.write(&format!("{directory}/{name}"), code.as_bytes())?;
+    }
+    Ok(directory)
 }
 
 /// Adds the wasm-bindgen glue `path` (`crate::bindgen`) to `site`, named by
@@ -300,6 +396,8 @@ pub(crate) fn dev_host(runtime: &WebRuntime, rust: bool) -> anyhow::Result<(Stri
     let js = read(&runtime.js)?;
     let wasm = read(&runtime.wasm)?;
     let glue = runtime.glue.as_deref().map(read).transpose()?;
+    // `nsh.js` fetches the syntaxes next to itself when code is highlighted.
+    let syntaxes = runtime.syntaxes.as_deref().map(read).transpose()?;
     // The snippets the glue imports, at the paths it imports them by.
     let snippets = match &runtime.glue {
         Some(path) => crate::bindgen::snippets(path)?
@@ -341,6 +439,9 @@ pub(crate) fn dev_host(runtime: &WebRuntime, rust: bool) -> anyhow::Result<(Stri
         files.push((crate::bindgen::GLUE.to_owned(), glue));
     }
     files.extend(snippets);
+    if let Some(syntaxes) = syntaxes {
+        files.push((runtime::SYNTAXES.to_owned(), syntaxes));
+    }
     Ok((page, files))
 }
 
@@ -825,6 +926,87 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn uses(imports: &[(&str, Option<&[&str]>)]) -> nsh_bundler::NativeUse {
+        let mut uses = nsh_bundler::NativeUse::default();
+        for (module, names) in imports {
+            let imported = match names {
+                Some(names) => {
+                    nsh_bundler::Imported::Names(names.iter().map(|n| n.to_string()).collect())
+                }
+                None => nsh_bundler::Imported::All,
+            };
+            uses.imports.insert(module.to_string(), imported);
+        }
+        uses
+    }
+
+    #[test]
+    fn the_lite_runtime_serves_apps_using_the_core_of_nsh_base_only() {
+        let core: &[&str] = &["Button", "Switch", "Tabs", "Tab", "NavStack", "AlertDialog"];
+        assert!(serves_lite(&uses(&[("nsh", Some(&["mount", "View"]))])));
+        assert!(serves_lite(&uses(&[
+            ("nsh", Some(&["mount"])),
+            ("nsh/base", Some(core)),
+            ("buffer", None),
+            ("nsh/image", None),
+        ])));
+        for imports in [
+            &[("nsh/base", Some(&["Button", "Editor"][..]))][..],
+            &[("nsh/base", Some(&["TextView"][..]))],
+            &[("nsh/base", None)],
+            &[("nsh/base/plot", Some(&["Plot"][..]))],
+            &[("zlib", Some(&["gzipSync"][..]))],
+            &[("crypto", Some(&["createHash"][..]))],
+        ] {
+            assert!(!serves_lite(&uses(imports)), "{imports:?}");
+        }
+        let mut crypto = uses(&[("nsh", Some(&["mount"]))]);
+        crypto.global_crypto = true;
+        assert!(!serves_lite(&crypto));
+        let mut computed = uses(&[]);
+        computed.computed_import = true;
+        assert!(!serves_lite(&computed));
+    }
+
+    #[test]
+    fn the_dev_host_serves_the_syntaxes_next_to_nsh_js() {
+        let dir = std::env::temp_dir().join(format!("nsh-web-syntaxes-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let syntaxes = dir.join(runtime::SYNTAXES);
+        fs::write(&syntaxes, "dump").unwrap();
+        let runtime = WebRuntime {
+            wasm: dir.join("nsh-dev.wasm"),
+            js: dir.join("nsh.js"),
+            glue: None,
+            syntaxes: Some(syntaxes),
+        };
+        fs::write(&runtime.js, "js").unwrap();
+        fs::write(&runtime.wasm, "one").unwrap();
+        let (_, files) = dev_host(&runtime, false).unwrap();
+        let (_, bytes) = files
+            .iter()
+            .find(|(p, _)| p == "nsh-syntaxes.bin")
+            .expect("the syntaxes are served");
+        assert_eq!(bytes, b"dump");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The syntaxes copied from the workspace's two-face are a dump that
+    /// the web runtime's syntect reads (`nsh-base`'s `syntax.rs`).
+    #[test]
+    fn the_syntaxes_file_is_a_dump_syntect_reads() {
+        let dir = std::env::temp_dir().join(format!("nsh-web-dump-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+        let path = runtime::write_syntaxes(&manifest, &dir).unwrap();
+        let set: syntect::parsing::SyntaxSet =
+            syntect::dumps::from_uncompressed_data(&fs::read(path).unwrap()).unwrap();
+        for language in ["rs", "tsx", "json"] {
+            assert!(set.find_syntax_by_token(language).is_some(), "{language}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_dev_page_knows_its_runtime() {
         let dir = std::env::temp_dir().join(format!("nsh-web-dev-{}", std::process::id()));
@@ -833,6 +1015,7 @@ mod tests {
             wasm: dir.join("nsh-dev.wasm"),
             js: dir.join("nsh.js"),
             glue: None,
+            syntaxes: None,
         };
         fs::write(&runtime.js, "js").unwrap();
         fs::write(&runtime.wasm, "one").unwrap();
@@ -873,6 +1056,7 @@ mod tests {
             wasm: dir.join("nsh-dev.wasm"),
             js: dir.join("nsh.js"),
             glue: None,
+            syntaxes: None,
         };
         fs::write(&runtime.js, "js").unwrap();
         fs::write(&runtime.wasm, "one").unwrap();

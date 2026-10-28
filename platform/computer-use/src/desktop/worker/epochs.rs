@@ -2104,7 +2104,9 @@ mod tests {
                 native_epoch: "not-a-live-native-epoch".into(),
                 turn_id: "logical-turn".into(),
                 completion_id: 0,
-                opener_claim_id: "not-an-admitted-claim".into(),
+                opener_subject: crate::BrowserLeaseSubject::PhysicalClaim {
+                    claim_id: "not-an-admitted-claim".into(),
+                },
                 opener_tab_id: 0,
                 url: "https://fixture.test/requested".into(),
             },

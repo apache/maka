@@ -113,11 +113,15 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
     });
   const button = {
     style: controlStyle,
-    hoverStyle: controlHoverStyle,
-    focusStyle: controlFocusStyle,
+    get hoverStyle() {
+      return controlHoverStyle();
+    },
+    get focusStyle() {
+      return controlFocusStyle();
+    },
     disabledStyle: controlDisabledStyle,
   };
-  const inputStyle = {
+  const inputStyle = () => ({
     height: 36,
     paddingHorizontal: 12,
     color: C.text,
@@ -125,7 +129,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
     backgroundColor: C.background,
     borderRadius: inputBorderRadius,
     fontSize: 14,
-  };
+  });
   void load();
   return (
     <View
@@ -222,7 +226,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
         readonly={locked()}
         accessibilityLabel={tr('Workspace location name')}
         placeholder={tr('Location name')}
-        style={inputStyle}
+        style={inputStyle()}
       />
       <Input
         value={path()}
@@ -230,7 +234,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
         readonly={locked()}
         accessibilityLabel={tr('Workspace location path')}
         placeholder={tr('Absolute folder path on this Host')}
-        style={inputStyle}
+        style={inputStyle()}
       />
       <Button
         {...button}

@@ -396,7 +396,7 @@ pub(super) async fn run(
             operation: Operation::BrowserLeaseChild {
                 browser_id: request.browser_id.clone(),
                 generation: request.generation.clone(),
-                opener_claim_id: request.opener_claim_id.clone(),
+                opener_subject: request.opener_subject.clone(),
                 opener_tab_id: request.opener_tab_id,
                 url: request.url.clone(),
             },

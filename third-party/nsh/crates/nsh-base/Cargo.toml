@@ -29,6 +29,10 @@ unicode-segmentation.workspace = true
 imara-diff.workspace = true
 log.workspace = true
 syntect = { workspace = true, optional = true }
+
+# The syntaxes' data: the native runtimes keep it in their binaries; the web
+# runtime leaves it out and fetches the page's copy on first use (`syntax.rs`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 two-face = { workspace = true, optional = true }
 
 [dev-dependencies]

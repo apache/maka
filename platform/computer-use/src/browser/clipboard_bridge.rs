@@ -1086,8 +1086,8 @@ mod tests {
             Cdp {
                 connection: Arc::new(connection),
                 dialogs: None,
-                native_context: None,
-                preparation: crate::browser::native::PreparationTransport::NotRequired,
+                extension_context: None,
+                preparation: crate::browser::extension::PreparationTransport::NotRequired,
             },
             Wire {
                 requests: received,
@@ -1148,17 +1148,17 @@ mod tests {
                 url: "https://fixture.example".into(),
                 kind: "page".into(),
                 websocket: None,
-                native: None,
+                extension: None,
             },
             socket: Some(socket),
             socket_prepared: true,
             origin_proof: None,
             navigation_admission: None,
-            native_claim: None,
-            native_wire: None,
-            native_host_operation: None,
-            native_acquired: false,
-            native_acquired_turn: None,
+            extension_claim: None,
+            extension_wire: None,
+            extension_host_operation: None,
+            extension_acquisition: None,
+            fixed_presentation: None,
             frame: None,
             refs: HashMap::new(),
             frames: frames::Frames::default(),
@@ -1663,7 +1663,7 @@ mod tests {
             state.script = DocumentScript::Absent;
         }
         let mut guarded = bridge.shared.socket.clone();
-        guarded.preparation = crate::browser::native::PreparationTransport::Unadmitted;
+        guarded.preparation = crate::browser::extension::PreparationTransport::Unadmitted;
         let result = install(&bridge.shared, None, installation.clone(), &guarded).await;
         assert!(matches!(result, Err(ToolError::Failed(_))));
         assert!(matches!(

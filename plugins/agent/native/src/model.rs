@@ -324,10 +324,8 @@ fn request_context(
         tracing::warn!(stage = "request_context", cause = "input_limit_exceeds_context", connection_id = %row.connection_id, "Model preparation failed");
         return Err(unavailable());
     }
-    let input = match (model.context_window, model.input_limit) {
-        (Some(capacity), Some(input)) => Some(capacity.min(input)),
-        (capacity, input) => capacity.or(input),
-    };
+    let input =
+        maka_agent_facts::context::effective_input_limit(model.context_window, model.input_limit);
     let context = ModelRequestContext {
         provider_id: row.provider.name.clone(),
         context_window: input,
@@ -337,7 +335,12 @@ fn request_context(
             .as_ref()
             .and_then(|models| models.get(&model.id))
             .and_then(|profile| profile.compaction_threshold)
-            .or_else(|| input.map(|limit| ((u128::from(limit) * 85 / 100) as u64).max(1))),
+            .or_else(|| {
+                maka_agent_facts::context::default_compaction_threshold(
+                    model.context_window,
+                    model.input_limit,
+                )
+            }),
     };
     context.validate().map_err(|_| {
         tracing::warn!(stage = "request_context", cause = "request_context_invalid", connection_id = %row.connection_id, "Model preparation failed");

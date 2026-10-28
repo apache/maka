@@ -54,8 +54,15 @@ impl Tab {
         // owns its synchronous paste effect and never borrows the OS clipboard.
         if self.clipboard_authorization.is_some() && self.dialog_host.is_some() {
             let turn = self.last_turn.clone();
-            self.ensure_clipboard_bridge(&turn, context.language)
-                .await?;
+            self.ensure_clipboard_bridge(
+                &turn,
+                crate::browser::BrowserCall::new(
+                    context.invocation,
+                    context.cancellation,
+                    context.language,
+                ),
+            )
+            .await?;
         }
         let store = self.clipboard_store.clone();
         let _items = lock(&store, context).await?;
@@ -137,12 +144,19 @@ impl Tab {
     ) -> Result<(), ToolError> {
         if matches!(operation, shortcut::ClipboardShortcut::Refuse) {
             return Err(failed(
-                "Native clipboard shortcuts are disabled; use Browser Use virtual clipboard commands instead.",
+                "Extension clipboard shortcuts are disabled; use Browser Use virtual clipboard commands instead.",
             ));
         }
         let turn = self.last_turn.clone();
-        self.ensure_clipboard_bridge(&turn, context.language)
-            .await?;
+        self.ensure_clipboard_bridge(
+            &turn,
+            crate::browser::BrowserCall::new(
+                context.invocation,
+                context.cancellation,
+                context.language,
+            ),
+        )
+        .await?;
         let store = self.clipboard_store.clone();
         let mut items = lock(&store, context).await?;
         if current_active {

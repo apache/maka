@@ -27,7 +27,7 @@ import { platform } from 'nsh';
 import { messageKey, type Row } from './history';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
-import { C, bodyTextStyle, secondaryTextStyle, controlStyle } from './ui';
+import { C, bodyTextStyle, secondaryTextStyle, controlStyle, disclosureInset } from './ui';
 import { Icon } from './Icon';
 import { HistoryAttachments } from './Attachments';
 import { ToolCard } from './ToolCard';
@@ -46,6 +46,7 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  repeats,
   sessionId,
   through,
   viewState,
@@ -59,6 +60,8 @@ export function MessageRow({
   finalActions,
 }: {
   item: () => Row;
+  /** How many identical failures this row stands for. */
+  repeats?: () => number;
   sessionId: string;
   through: () => number;
   viewState?: MessageViewState;
@@ -79,6 +82,22 @@ export function MessageRow({
           return (
             <CompactionDivider state="completed" durationMs={() => row().compaction!.durationMs} />
           );
+        // A failure is a notice about the run, not an answer: one quiet line, with
+        // no source view since its source is the same text.
+        if (row().role === 'failure')
+          return (
+            <Text
+              style={[
+                { ...secondaryTextStyle, color: C.warning, paddingVertical: 4 },
+                { userSelect: 'text' },
+              ]}
+            >
+              {row().text}
+              {(repeats?.() ?? 1) > 1
+                ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
+                : ''}
+            </Text>
+          );
         const expanded = viewState?.expanded ?? signal(false),
           sourceMode = viewState?.sourceMode ?? signal(false);
         const ownsRow = (action: MessageRowToggle) => {
@@ -92,6 +111,14 @@ export function MessageRow({
           expanded.set(action.value);
           if (action.value) onExpand?.(action.key);
         };
+        // A reply's source toggle shows with its final actions; on the
+        // replies between them (while the agent works) it shows only while
+        // the pointer is over the message, it has the focus or the source
+        // shows, so it does not line every paragraph. Terminals have no
+        // hover: there it always shows.
+        const hovered = signal(false);
+        const quietSource = () =>
+          !platform.isTerminal && !row().finalOutput && !hovered() && !sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
         const text = computed(() => row().text);
         const preview = computed(() => /\S[^\r\n]*/.exec(text())?.[0].trim() ?? '');
@@ -117,7 +144,11 @@ export function MessageRow({
                 <If
                   when={compact()}
                   else={
-                    <View style={{ gap: 8 }}>
+                    <View
+                      onHoverIn={() => hovered.set(true)}
+                      onHoverOut={() => hovered.set(false)}
+                      style={{ gap: 8 }}
+                    >
                       <If
                         when={sourceMode()}
                         else={
@@ -199,11 +230,12 @@ export function MessageRow({
                             width: 32,
                             paddingHorizontal: 8,
                             alignItems: 'center',
+                            opacity: quietSource() ? 0 : 1,
                           }}
                           hoverStyle={{ backgroundColor: C.surface }}
-                          focusStyle={{ backgroundColor: C.raised }}
+                          focusStyle={{ backgroundColor: C.raised, opacity: 1 }}
                         >
-                          <Icon name={sourceMode() ? 'file' : 'code'} color={C.muted} />
+                          <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
                         </Button>
                       </View>
                     </View>
@@ -226,7 +258,7 @@ export function MessageRow({
                               ...controlStyle,
                               flex: 1,
                               minWidth: 0,
-                              paddingHorizontal: 0,
+                              paddingHorizontal: disclosureInset(0),
                               flexDirection: 'row',
                               alignItems: 'center',
                               gap: 8,
@@ -271,14 +303,14 @@ export function MessageRow({
                               hoverStyle={{ backgroundColor: C.raised }}
                               focusStyle={{ backgroundColor: C.line }}
                             >
-                              <Icon name={sourceMode() ? 'file' : 'code'} color={C.muted} />
+                              <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
                             </Button>
                           </If>
                         </View>
                         <If when={expanded()}>
                           <View
                             style={{
-                              paddingLeft: platform.isTerminal ? 24 : 22,
+                              paddingLeft: platform.isTerminal ? 24 : 32,
                               paddingVertical: 4,
                             }}
                           >

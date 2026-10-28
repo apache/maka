@@ -273,8 +273,9 @@ The built-in highlighter keeps syntect's state every 16 lines (and on lines that
 marks the lines from its first one dirty; parsing starts at the nearest state kept before it and stops as soon as a
 line ends in the state the next line started with before, so typing in a function costs a few lines. Only an edit that
 changes what follows (opening a block comment or a string) parses on. The syntaxes load on a blocking thread the
-first time a language needs them. Without feature `highlight` the built-in languages are plain; the app's
-highlighters still run.
+first time a language needs them (`Highlighter::load_async`, which `DiffView` uses too); on the web they come from the
+page then (`nsh-syntaxes.bin`, `text-view.md` "Syntax highlighting"), and the text stays plain until they arrive.
+Without feature `highlight` the built-in languages are plain; the app's highlighters still run.
 
 The app's highlighters and languages (`highlighter.rs`, `languages.rs`) are kept per engine, in a value of the
 surface (`nsh_core::element::global`), never process-wide. `register_language` adds an `EditorLanguage` (a

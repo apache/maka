@@ -114,6 +114,17 @@ fn scopes_match(used: &[Frame], current: &HashMap<Option<String>, Value>) -> boo
     true
 }
 
+impl Frames {
+    pub(super) fn observation_branch(&self, events: mpsc::UnboundedReceiver<CdpEvent>) -> Self {
+        Self {
+            enabled: self.enabled,
+            pending: self.pending.clone(),
+            events: Some(events),
+            children: self.children.clone(),
+        }
+    }
+}
+
 impl Tab {
     pub(super) async fn frame_observation(
         &self,

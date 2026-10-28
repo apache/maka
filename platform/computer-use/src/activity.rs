@@ -137,6 +137,7 @@ pub(crate) fn command(command: &Command, bound_target: Option<&str>) -> Text {
         Command::TabMetadata { .. } | Command::BrowserRead { .. } | Command::GetJsDialog { .. } => {
             ("Inspect page", "查看网页", "查看網頁", bound_target)
         }
+        Command::BrowserWait { .. } => ("Wait for page", "等待网页", "等待網頁", bound_target),
         Command::BrowserMutation { .. } => {
             ("Interact with page", "操作网页", "操作網頁", bound_target)
         }

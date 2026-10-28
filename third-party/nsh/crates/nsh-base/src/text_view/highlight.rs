@@ -13,7 +13,9 @@
 //! measured fast. Otherwise its code shows plain at once and is highlighted
 //! on a blocking thread; the colors then arrive through a signal, and only
 //! that text changes (same characters, so no layout moves). The syntaxes
-//! themselves load on that thread too, on the first block with a language.
+//! themselves load on that thread too, on the first block with a language;
+//! on the web they come from the page then (`nsh-syntaxes.bin`, which the
+//! runtime leaves out).
 //!
 //! The last blocks highlighted are kept (for every engine of the process)
 //! with the parser's state at the start of their last line, so a block seen
@@ -114,12 +116,14 @@ mod syntect_highlighter {
     }
 
     /// WebAssembly has no threads: the block is highlighted after the
-    /// frame that shows it plain.
+    /// frame that shows it plain, once the syntaxes have come from the
+    /// page; without them it stays plain.
     #[cfg(target_arch = "wasm32")]
     fn later(language: String, code: String, highlighted: Signal<Tokens>) {
         spawn(async move {
-            next_frame().await;
-            highlighted.set(tokens(&language, &code));
+            if crate::syntax::load_async().await {
+                highlighted.set(tokens(&language, &code));
+            }
         });
     }
 

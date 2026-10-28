@@ -5,27 +5,66 @@
 `platform.os` is `"web"` (`Os::Web`).
 User-facing page: `website/docs/web.md`.
 
-## Two runtimes
+## Browser JavaScript and embedded runtimes
 
-The crate builds two runtimes that differ in QuickJS only:
+Published standalone TSX apps use `nsh-browser.wasm` (`--no-default-features --features browser`).
+The browser loads their ES modules; Wasm contains the Rust engine, reactive graph, core, base components,
+layout and DOM backend, without `nsh-js` or QuickJS. Native targets are unchanged.
 
-| | Built with | Runs | Ships in |
-|---|---|---|---|
-| `nsh.wasm` | feature `bytecode-only` | bytecode only: no QuickJS parser and compiler (0.17 MB less) | published apps (`nsh package --target web`), the website's player and gallery |
-| `nsh-dev.wasm` | default features | JS source and bytecode, hot updates | the development host (`nsh dev`, `nsh run --target web`) |
+`Player.runModule(entry, { appId, capabilities, chunks, imports })` returns a promise after the entry module
+loads. It replaces the previous app. Each run has a fresh same-origin iframe realm, preserving native module
+identity, cycles, top-level await and browser globals. `stop()` disposes Rust owners, outstanding bridge calls,
+callbacks, blob module URLs and the iframe. The iframe is **not a security sandbox**: standalone code has the
+page origin's authority. Do not use this API for untrusted plugins. The existing `run` bytecode/source API,
+signed packages, hardening and native isolation continue to use QuickJS.
 
-The playground's `nsh-playground.wasm` (feature `compiler`) also has the parser: it compiles in the page.
-`nsh-js`'s feature `bytecode-only` makes the VM's context without the `eval` intrinsic (`host::new_context`: the
-intrinsics of `JS_NewContext` but that one); nothing then reaches `__JS_EvalInternal` and the linker leaves the
-parser out. Source evaluation fails there (`eval is not supported`), so everything such a runtime runs comes compiled
-by the CLI, whose QuickJS writes the bytecode (`BYTECODE_VERSION`; 64-bit hosts' bytecode loads in the 32-bit
-wasm): the app (`nsh_start_bytecode`), its chunks (`nsh_chunk` with `ok` 2) and the sandbox's hardening, which is
-JS (`sandbox.rs`): `nsh_js::compile_harden` compiles it as the app is packaged, the page hands it over
-(`run(code, { harden })`, `nsh_bundle_harden`), and `HostOptions::harden_bytecode` runs it instead of compiling it.
-Bytecode also starts sooner: the gallery's shell starts in 58–85 ms instead of 67–122 ms from source (first start in
-desktop Chromium; before the gallery was split, 60–100 instead of 97–138 ms, a warm start 13 instead of 37 ms); it is
-larger (the whole gallery 130 KB with brotli instead of 75 KB as minified JS), about what the parser-free runtime
-saves.
+| Artifact | Feature | Purpose |
+|---|---|---|
+| `nsh-browser.wasm` | `browser`, no defaults | Trusted standalone published TSX apps |
+| `nsh-browser-lite.wasm` | `browser-core`, no defaults | Published TSX apps using core components |
+| `nsh.wasm` | `bytecode-only` | Existing embedded bytecode player, QuickJS without its parser |
+| `nsh-dev.wasm` | `dev` | Existing QuickJS development host and hot updates |
+| `nsh-playground.wasm` | `compiler` | In-page TSX compiler and QuickJS player |
+
+Browser bindings live in `src/browser/` and `web/browser/`. Rust registry descriptions generate component,
+class and module faces; the same core reactive graph and virtualized list machinery drive both hosts.
+JS values cross through generation-checked arena handles. Weak tracing connects Rust-owned callbacks and
+payloads to their JS peers; externally held Rust values remain strong. DOM child edges are traced separately,
+so detached trees with callback cycles can be collected. Explicit owner disposal remains deterministic.
+Callbacks escaping a stopped run become inert; pending module and host calls reject on disposal.
+
+Browser fetch, streams, WebCrypto, URL, timers and promises use browser implementations, including their
+CORS, secure-context and permission rules. Synchronous hash/compression APIs retain Rust implementations;
+Buffer and POSIX path use pinned vendored implementations with licenses in `third_party/`. These APIs are
+not removed to reduce Wasm size. Mobile-only APIs retain their off-platform behavior. The development host
+continues to execute QuickJS: testing that host alone does not validate the browser execution path.
+
+### Browser-host regression checks
+
+Build `cargo build -p nsh-platform-web --target wasm32-unknown-unknown --no-default-features
+--features browser-tests --profile web`, then run:
+
+```sh
+NSH_BROWSER_WASM=target/wasm32-unknown-unknown/web/nsh_platform_web.wasm node --expose-gc --test crates/nsh-platform-web/web/browser/*.test.mjs
+python3 crates/nsh-platform-web/web/browser/browser-check.py --wasm target/wasm32-unknown-unknown/web/nsh_platform_web.wasm
+```
+
+The second command requires Python Playwright and Chromium (`--chrome` selects its executable). It checks
+real module realms, host events queued before startup, repeated replacement/disposal and rejected startup.
+`browser-tests` contains ownership fixtures: never measure or publish that artifact. Rebuild with `browser`
+and use the supported `nsh package --target web` flow for shipping and size measurements.
+
+Measure the supported CLI package with `node crates/nsh-platform-web/web/browser/package-size.mjs SITE
+--require-browser`. It reports raw bytes, gzip level 9 and Brotli quality 11 independently for every Wasm,
+JavaScript and bytecode file, including all optional chunks. `--requests=FILE` accepts a JSON array of URLs
+observed during a cold navigation and separates initial code from optional code. Fonts, media and HTTP headers
+are excluded and must be accounted for separately when discussing total page transfer. The website CI guards
+Gallery's total compressed code at 4,000,000 Brotli bytes; this is a regression ceiling, not the original
+1,000,000-byte product goal.
+
+Run `python3 crates/nsh-platform-web/web/browser/packaged-check.py URL` against a served, freshly packaged
+Gallery to exercise standard utilities/files/environment, lists, dialogs, form input, table virtualization,
+animation, press events and editor input. Its report does not claim exhaustive API or device coverage.
 
 ## Building
 
@@ -33,8 +72,8 @@ saves.
 `web/index.html` (the player, loading the gallery's runtime files: see "What a published app downloads"), `nsh-playground.wasm` (feature `compiler`, built in `target/web-playground` so the two
 builds keep their caches), and compiles each demo with `nsh build --release` into `website/public/play/demos/<name>.nshc` (generated,
 ignored by git), and publishes `examples/gallery` with `nsh package --target web` into `play/gallery/` (the website's
-Gallery page frames it; packaging builds `nsh.wasm`: `--target wasm32-unknown-unknown --profile web`, the release
-profile optimized for size, QuickJS still at `-O3`). Check the crate with `cargo clippy -p nsh-platform-web --target wasm32-unknown-unknown`: off
+Gallery page frames it; packaging builds `nsh-browser.wasm`: `--target wasm32-unknown-unknown --profile web`, the release
+profile optimized for size). Check the crate with `cargo clippy -p nsh-platform-web --target wasm32-unknown-unknown`: off
 WebAssembly it is empty. `.cargo/config.toml` gives wasm32 an 8 MiB stack (QuickJS recursion) and selects getrandom's custom entropy backend. The CLI passes that backend flag to generated Rust-app builds as well, retaining existing compiler flags.
 
 QuickJS is C, so the build needs a clang that targets wasm32 and an `llvm-ar` (CI: Ubuntu's `clang` and `llvm`, with
@@ -44,17 +83,17 @@ QuickJS is C, so the build needs a clang that targets wasm32 and an `llvm-ar` (C
 
 ## The CLI's web target
 
-`crates/nsh-cli/src/web.rs`. The CLI finds the runtimes as it finds the others (`runtime::web`, `WebKind::Release` /
-`Dev`): `runtime/web/nsh.wasm`, `nsh-dev.wasm` and `nsh.js` in the distribution (`cargo xtask dist` puts them there);
+`crates/nsh-cli/src/web.rs`. The CLI finds the runtimes as it finds the others (`runtime::web`, `WebKind::Browser` /
+`Dev`): `runtime/web/nsh-browser.wasm`, `nsh-dev.wasm`, `browser/` and `nsh.js` in the distribution (`cargo xtask dist` puts them there);
 in a checkout it builds `nsh-platform-web` with `--profile web --target wasm32-unknown-unknown` whatever its own
 profile (a debug build is several times larger and slower; `AR_wasm32_unknown_unknown` defaults to `llvm-ar`), with
-`--features bytecode-only` for the release one and `--features dev` for the development host's, copies the result to `nsh.wasm` / `nsh-dev.wasm` next to it (both
+`--no-default-features --features browser` for the published one and `--features dev` for the development host's, copies the result to `nsh-browser.wasm` / `nsh-dev.wasm` next to it (both
 build to the same file) and takes `nsh.js` from the crate.
 
 - **`nsh package --target web`** writes a static site. Every file but `index.html` and `manifest.webmanifest` is
   content-addressed (`<stem>.<10 hex digits of SHA-256>.<ext>`, `web::hashed_name`), so hosts cache them for good
   (`immutable`) and only the page is revalidated. The page (template `crates/nsh-cli/src/web/index.html`) imports the
-  hashed `nsh.js`; a script in its head requests the wasm, the app's bytecode, the hardening's and its fonts while the page
+  hashed `nsh.js`; a script in its head requests the wasm and entry fonts while the page
   is parsed (`fetches`, once each; not `<link rel=preload>`, see `pitfalls.md` "Web, browsers"), and the page passes
   `createPlayer` the wasm's response, `assets`
   (each `asset:/<path>` to its hashed URL: images and videos load from there on demand) and `readAsset` (the fonts'
@@ -62,18 +101,17 @@ build to the same file) and takes `nsh.js` from the crate.
   sets register are fetched before the app starts; one only chunks register (`font("asset:/…")` in their code) comes
   with the first of them, through `createPlayer`'s `prepareChunk(id)`, which `nsh.js` awaits with the chunk's download
   (`web::font_loads`). With `nsh.json` `web.host` the page also imports `host.<digest>.js` and passes `createPlayer` a
-  `host` (Platform services). It runs the bundle with `run(code, { release: true, harden, capabilities, appId, chunks })`
+  `host` (Platform services). It imports the bundle with `runModule(code, { capabilities, appId, chunks })`
   (`appId`: the `nsh.json` id, the page's `app.id`; a Rust app's root carries its own), without `limits`: a published
   app runs on its own, with none (`sandbox.md`); an app whose capabilities restrict `network`
   gets a CSP `connect-src` meta with `'self'` and explicit HTTP / WebSocket scheme, host and port sources
   (`web::connect_src`; GET rules also admit their mapped `ws` / `wss` transport, and a host without a port uses
   `host:*`), as the browser follows redirects before NSH could check them. Relative URLs resolve against the page
-  (`document.baseURI`, `nsh_set_base_url`). The app's code ships as bytecode
-  (`web::CODE`, `app.<digest>.nshc`), with the hardening's (`harden.<digest>.nshc`). The app is built split
-  (`build::compile_split`): each chunk is written as `chunks/<name>.<digest>.nshc` (its bytecode) and the page's `chunks` maps its id to
-  that URL. The entry’s transitive static dependencies (`entryChunks`) and their fonts load before startup;
-  the page stages them through `preloadedChunks` / `nsh_bundle_chunk`. The runtime fetches other chunks when
-  `import()` first needs them. An app with a Rust crate of
+  (`document.baseURI`, `nsh_set_base_url`). The app ships as minified ES modules
+  (`app.<digest>.js` and `<chunk>.<digest>.js`). An import map resolves original chunk URLs to hashed files;
+  transitive entry fonts load before startup and dynamic imports prepare the requested chunk's font dependencies.
+  The browser loads static dependencies, module cycles and dynamic chunks itself. No bytecode or hardening
+  bytecode ships in a browser package. An app with a Rust crate of
   its own gets a runtime of its own ("Apps with Rust components"). `--run` serves the directory with `nsh_dev::SiteServer` (the cache headers a CDN should send) and
   prints its address.
 - **The development host** is a page the dev server serves (`DevServer::serve_web`: the page at `/`, `nsh.js` and
@@ -95,15 +133,30 @@ build to the same file) and takes `nsh.js` from the crate.
   hello says `tests` (`player.takesTests`), so the server sends it steps; each `step` is answered at once with
   `player.testStep`: `nsh_test_answer` answers what the model knows (selectors, texts, dialogs, activity) and whether
   an animation runs, `testPage` what only the DOM knows (`getBoundingClientRect` in CSS pixels, the viewport, an
-  input's value, where a dialog's button is). The input itself is the browser's trusted input, sent by the CLI.
+  input's value, where a dialog's button is, where a text's characters are: each run knows its first character's
+  offset). The input itself is the browser's trusted input, sent by the CLI.
 
 `nsh_bundle_options` sets how the next `nsh_start` / `nsh_start_bytecode` runs: development settings by default (the
 player, the playground, the dev host), hardened (`Policy::default()`) for published apps, the declared capabilities,
 a source map and the app's id (for its storage); `nsh_bundle_harden` the hardening's bytecode.
 
-### What a published app downloads
+### The lite runtime
 
-`examples/gallery` as `nsh package --target web` publishes it (2026-10; `gzip -9`, `brotli -q 11`). Each demo is a
+`nsh package --target web` selects `nsh-browser-lite.wasm` when the bundle uses only the core exports of
+`nsh/base`, no `nsh/base/plot`, `zlib` or `crypto`, no crypto globals and no computed module specifiers
+(`web::serves_lite`, `NativeUse`). Otherwise it selects `nsh-browser.wasm`. Both execute browser ES modules.
+Apps with custom Rust components get their own full runtime.
+
+The full `browser` feature includes `browser-core`, `base-full`, `std-zlib` and `std-crypto`. The lite runtime
+builds with `--no-default-features --features browser-core`: core base components, browser bindings and URL
+operations. The optional Rust hashing and compression operations are excluded. Browser globals remain those
+of the browser. The full runtime fetches syntax data on first highlight; the lite package contains no syntax data.
+The pre-browser QuickJS measurements below are historical and do not measure these combined runtimes.
+
+### Historical QuickJS package sizes
+
+Historical measurement at `f94e17a` (#58, 2026-10-18), before the standard modules and TextView:
+`examples/gallery` as `nsh package --target web` published it (`gzip -9`, `brotli -q 11`). Each demo is a
 module the index loads with `import()` (the gallery's `lazy`), so it is a chunk of its own: the first load is the page,
 the runtime, the app's shell and the demo shown first (Stocks, in the desktop layout; none in the phone layout's
 index). The other demos, 18 chunks of 265 KB (72 KB gzipped) in all, and the fonts they register (Pacifico, with
@@ -124,12 +177,18 @@ browser wants them.
 | images (`bounce.gif`, `logo@2x.png`, `spinner.webp`) | 16.1 KB | 6.0 KB | 5.6 KB |
 | icons 180 / 192 / 512 px | 114 KB | 89.4 KB | 86.9 KB |
 
+The syntaxes code is highlighted with are a file of their own, `nsh-syntaxes.<digest>.bin` (0.92 MB, 0.83 MB
+gzipped, 0.80 MB with brotli: two-face's dump compresses each syntax already), fetched the first time a `TextView`
+code block, an `Editor` or a `DiffView` highlights a language (`nsh_core::runtime_data`, the page's `data`; Text View
+and Editor in the gallery). Kept in the module, they made every first load 0.83 MB larger gzipped: on 2026-10-27 the
+gallery's `nsh.wasm` went from 16.02 MB (5.46 MB gzipped, 4.18 MB with brotli) to 15.10 MB (4.63 MB, 3.38 MB).
+
 The app's own share of the first load went from 676 KB (195 KB with brotli) to 91 KB (24 KB). The wasm is now nearly all of the first load. `nsh.js` is minified at package time
 (`nsh_bundler::minify_module`: oxc's minifier, local names mangled, property names kept, since the mounter looks its
 `op_<name>` methods up by name); the dev host serves it as it is. Published sites carry no source maps.
 
-The website's player (`cargo xtask web`) loads the published gallery's `nsh.<digest>.js` and `nsh.<digest>.wasm`
-(`play/gallery/`) rather than copies of its own, so the site deploys one runtime, the parser-free one: its demos are
+The website's player (`cargo xtask web`) loads the published gallery's `nsh.<digest>.js`, `nsh.<digest>.wasm` and
+`nsh-syntaxes.<digest>.bin` (`play/gallery/`) rather than copies of its own, so the site deploys one runtime, the parser-free one: its demos are
 bytecode (`demos/<name>.nshc`, fetched as bytes; `astro dev` compiles one on request, `website/src/lib/play-dev.js`).
 Only the playground has a second wasm (`nsh-playground.wasm`, with the compiler).
 
@@ -141,22 +200,128 @@ interpreter is about 10% slower, and QuickJS is the slowest link. `nsh-platform-
 `disable-assertions` (QuickJS' internal `assert`s, which check its own invariants: 37 KB, and a little faster); the
 native platforms keep them.
 
-Published apps' runtime has no QuickJS parser ("Two runtimes"): 0.17 MB, 40 KB with brotli. The runtime carries no
+Published apps' runtime has no QuickJS parser ("Two runtimes"): 0.17 MB, 40 KB with brotli. The syntaxes are a
+file the page fetches when code is first highlighted ("What a published app downloads"): 0.83 MB gzipped. The runtime carries no
 declaration text (the documentation and TypeScript of the specs, which only make
 `.nsh/types`: `docs/dev/tooling.md`): 69 KB, 20 KB with brotli.
 
-Where the rest goes (raw, before compression): QuickJS about 0.6 MB of code without its parser, the web APIs of `nsh-js` 0.36 MB (streams alone 0.14 MB), the core and Taffy about 0.65 MB, `url`'s IDNA with
-ICU4X's normalization data 0.16 MB, generic code of `core` / `alloc` / `hashbrown` 0.6 MB, data 0.43 MB. Tried and
-left out:
+### Current release size and attribution
 
-- `wasm-opt -Oz` (binaryen): 15% smaller raw, but no smaller (slightly larger) with brotli or gzip.
-- An ASCII-only IDNA (`idna_adapter` 1.0): 33 KB less with brotli, but non-ASCII host names would fail to parse;
-  `idna_adapter` 1.1 (the unicode-rs crates) is larger than ICU4X.
-- Rust at `opt-level = "s"`: larger.
+The figures above describe #58, not the current feature set. At `0d385b2a` (2026-10-27), release packages of both
+`examples/counter` and `examples/gallery` contain the same `nsh.<digest>.wasm`: the default runtime registers all
+of `nsh/base`, syntax highlighting and the portable standard modules. Splitting the app's JS does not remove Rust
+from that runtime. `nsh-dev.wasm` additionally supports development/testing; `nsh-playground.wasm` also compiles TSX.
+Neither is the artifact measured here.
 
-Measure with names kept (`CARGO_PROFILE_WEB_STRIP=false`) and `twiggy top` / `twiggy dominators`, or a linker map
-(`RUSTFLAGS="-C link-arg=--Map=map.txt"`, which also sizes the data segment by symbol). Compare raw, `gzip -9` and
-`brotli -q 11` sizes: pages are served compressed, and a change can shrink the raw module and not the compressed one.
+Measured on Linux x86_64 with Rust 1.99.1, clang/LLVM 19.1.7, the unchanged `web` profile and `bytecode-only` feature.
+Values are decimal **bytes**; gzip is level 9 without a timestamp, Brotli is CLI 1.1.0 quality 11.
+
+| Release Wasm, counter and gallery | Raw | gzip | Brotli |
+|---|---:|---:|---:|
+| `0d385b2a` | 15,062,914 | 5,149,366 | 3,906,836 |
+| Shared `JsObject` field decoder | 14,913,415 | 5,131,112 | 3,904,677 |
+| Reduction | 149,499 | 18,254 | 2,159 |
+
+The decoder shares field lookup, null/undefined checks and error formatting between fields of the same type.
+On Wasm it stays out of line: otherwise LTO repeats those operations in every generated style part decoder.
+Required fields, defaults, nullable fields, errors and supported APIs retain their behavior. The smaller transfer
+saving is expected: repeated machine code already compresses well.
+
+The baseline has **11,599,694 bytes of code**, **3,374,329 bytes of data**, and 88,891 bytes of other sections and
+headers. It contains no custom/debug sections. The 8 MiB stack is reserved linear memory, not downloaded data.
+A named build with a linker map gives this attribution (aliases counted once per code offset):
+
+| Code, by leading crate of the demangled symbol | Bytes |
+|---|---:|
+| `nsh_core` | 2,069,299 |
+| `nsh_base` | 1,811,942 |
+| `core`, `alloc`, `hashbrown` | 2,055,243 |
+| `nsh_js` | 681,672 |
+| `quickjs_jit_stdlib` | 623,188 |
+| `rquickjs_core` | 497,443 |
+| `regex_automata` | 280,050 |
+| `brotli` | 260,787 |
+| `taffy` | 242,633 |
+
+This is approximate ownership under fat LTO, not additive savings from disabling features: generic code can
+refer to several crates. The largest functions include regex strategy construction (53,978 bytes), QuickJS's
+`JS_CallInternal` (50,150), `TextViewStyles::from_js` (34,082), `TextViewClasses::from_js` (29,477), HTML tree
+builder `step` (28,730) and crypto `KeyAlgorithm::from_js` (28,257).
+
+Data attributed to input archives includes `two_face` 922,018 bytes (921,717 in its syntax blob), `brotli` 550,833
+(262,144 in its logarithm table), `regex_syntax` 313,620, `markup5ever` 255,431, `nsh_base` 219,078,
+`brotli_decompressor` 134,824, `markdown` 110,798, QuickJS 84,829, `icu_normalizer` 70,363 and `crypto_primes` 49,135.
+The syntax definitions, Unicode/HTML tables and compression/crypto code implement existing behavior.
+
+As a ranking aid, compressing each category independently with Brotli 11 gives: syntax data 801,381 bytes;
+core code 390,130; base code 385,464; C code (QuickJS, libc and compression) 250,204; Brotli tables 210,574;
+JS host code 187,541; Rust `core` code 157,527; standard-library wrapper code 129,344; Rust `alloc` code 111,287.
+These concatenate function bodies or data ranges in module order and compress them separately. They are **not
+additive shares of the whole-file transfer or measured savings from removing a feature**: dictionaries are shared
+when the complete module is compressed. A byte comparison using parsed data-segment addresses finds two duplicate ranges of at least 1 KiB:
+3,016 bytes shared by base/Unicode segmentation and 2,048 by Brotli encode/decode. These total only 5,064 raw
+bytes; the largest tables occur once. Linker-map file offsets alone are unsuitable for this comparison.
+
+The release symbol table contains no `JS_EvalInternal`, TSX compiler or rolldown; remaining `js_parse*` / `JS_Parse*`
+functions parse JSON and numbers. `oxc_sourcemap` supports error locations, not source compilation. Compression
+encoders are reachable through the standard `zlib` APIs, so deleting them would change the supported API.
+
+History explains why the old transfer estimate is no longer a budget for the full runtime: #145 (`3b19b22`)
+added portable buffer/crypto/compression APIs, #227 (`5a20cee`) added TextView and recorded +0.86 MB Brotli,
+and #452, #458 and #494 added Editor/DiffView, DataTable and RichEditor. These are historical reports and source
+changes, not historical binaries rebuilt with the current toolchain.
+
+Binaryen 120 `wasm-opt -Oz --all-features` on the baseline produces 12,221,585 raw / 5,253,410 gzip / 4,076,402
+Brotli bytes: it shrinks raw bytes but increases transfer, so it is not part of packaging. With the shared decoder,
+Rust `opt-level = "s"` also regresses all sizes: 16,754,854 / 5,621,073 / 4,192,241 bytes. QuickJS remains at `-O3`;
+a current `-Os` build saves another 49,426 Brotli bytes but slows the measured interpreter workload. An interleaved,
+otherwise idle Chromium comparison (five fresh pages per runtime, eight batches of 160,000 object allocations,
+sorts and numeric iterations; first batch omitted) gives median 158 ms baseline, 159 ms shared decoder,
+189 ms QuickJS `-Os`, 165 ms QuickJS `-O2`, and 162 ms C `-flto`. Every checksum agrees. This is one workload,
+not a comprehensive performance guarantee. C LTO saves only 4,346 Brotli bytes over the decoder and slightly
+grows gzip, while adding toolchain coupling; it is not selected. IDNA, syntax languages and standard modules remain
+available. A sub-1 MB raw or compressed default runtime needs a separate design decision, such as loading native
+modules/data on demand or an explicit app-specific runtime contract; removing defaults is not a size optimization.
+The present Rust-app generation still registers all of `nsh/base`; JS chunks do not split native code. Moving syntax
+data out first could defer roughly 0.8 MB, but alone would still leave several MB. Lazy native modules need an
+ABI/ownership boundary and loading rules for synchronous APIs; an opt-in app-specific build needs a registry
+that conservatively retains dynamic/namespace imports and a Rust build/distribution strategy. These are separate
+architecture decisions, not silent changes to the default runtime.
+
+### Reproducing and checking a budget
+
+Build the CLI, then use the supported packaging path with identical profiles for both workloads:
+
+```sh
+cargo build -p nsh-cli
+./target/debug/nsh package examples/counter --target web -o target/size/counter
+./target/debug/nsh package examples/gallery --target web -o target/size/gallery
+python3 scripts/wasm-size.py target/size/counter/Counter/nsh.*.wasm \
+  --max-raw 14950000 --max-gzip 5150000 --max-brotli 3950000
+python3 scripts/wasm-size.py target/size/gallery/Gallery/nsh.*.wasm \
+  --max-raw 14950000 --max-gzip 5150000 --max-brotli 3950000
+```
+
+The script requires `brotli`, prints the module's SHA-256 and each size, and fails if any supplied budget is
+exceeded. Without limits it reports only. These limits guard this full runtime on the measured toolchain; they
+are regression ceilings, not the original 1 MB product goal. Reassess them explicitly when features or toolchains
+change. Use fresh output directories so each glob selects exactly one module.
+
+For attribution, keep names and request a linker map without changing dependency flags from the CLI build:
+
+```sh
+cargo rustc -p nsh-platform-web --profile web --features bytecode-only \
+  --target wasm32-unknown-unknown \
+  --config 'target.wasm32-unknown-unknown.rustflags=["--cfg", "getrandom_backend=\"custom\""]' \
+  -- -C strip=none -C link-arg=--Map=target/web-size.map
+wasm-objdump -h target/wasm32-unknown-unknown/web/nsh_platform_web.wasm
+```
+
+Use `llvm-cxxfilt` to demangle the map's symbols; deduplicate aliases by code offset. The named module includes
+analysis-only sections and must not be used for transfer measurements. Measure the packaged file instead.
+Compressed sizes are potential transfer sizes: the host must actually negotiate `Content-Encoding: gzip` or `br`.
+The local `nsh package --run` static server sends raw bytes; a raw download does not become smaller just because a
+Brotli size was reported. Verify response headers and transferred bytes on the intended host.
 
 ### Apps with Rust components
 
@@ -166,11 +331,17 @@ The prebuilt runtime serves the runtime's modules and `nsh/base`; an app with a 
 `nsh-platform-web` and the app's crate whose code is `nsh_platform_web::ui_sets!(vec![nsh_base::registry(), app_set()])`. The macro exports `nsh_app_init`, which `nsh.js` calls right after instantiating the module (there is
 no `main` to call `set_ui_sets` in a wasm module, nor a `dlsym` as Android's `ui_sets!` uses); a module without it
 (the prebuilt runtime) serves `nsh/base`. The `nsh_*` exports come from `nsh-platform-web`'s rlib: a `cdylib`
-exports its dependencies' `#[no_mangle]` functions. The workspace has the same `web` profile as nsh's `Cargo.toml`, and
-the crate's `build.rs` passes the 8 MiB stack as a link argument of its own (nsh's `.cargo/config.toml` may not apply
-where the app builds, and target-wide `rustflags` would rebuild every dependency instead of sharing nsh's builds).
-Both kinds build to `target/wasm32-unknown-unknown/web/nsh_app_<package>_web.wasm` and are copied to
-`.nsh/rust/web-runtime/nsh.wasm` / `nsh-dev.wasm`; `nsh.js` is nsh's. Everything else (bundling, bytecode, the
+exports its dependencies' `#[no_mangle]` functions. The release runtime builds with the same `web` profile as nsh's
+`Cargo.toml`; the development one (`nsh run --target web`, built again on every change to the app's Rust code) with a
+generated `web-dev` profile (`RustApp::web_dev_profile`): `dev`'s incremental builds without LTO, the app's crates at
+`opt-level = 1`, the other crates at `"s"`, QuickJS at 3, `panic = "abort"` and no debug assertions, so the page
+behaves as a published one. A change to the app's crate then rebuilds that crate and links incrementally, where
+`web`'s fat LTO over one codegen unit re-optimizes the whole module. The crate's `build.rs` passes the 8 MiB stack as
+a link argument of its own (nsh's `.cargo/config.toml` may not apply where the app builds, and target-wide `rustflags`
+would rebuild every dependency instead of sharing nsh's builds). The kinds build to
+`target/wasm32-unknown-unknown/{web,web-dev}/nsh_app_<package>_web.wasm` and are copied to
+`.nsh/rust/web-runtime/nsh.wasm` / `nsh-dev.wasm`, beside the syntaxes (`nsh-syntaxes.bin`, written again only
+after the workspace's `Cargo.lock` changes, so a rebuild does not wait for `cargo metadata`); `nsh.js` is nsh's. Everything else (bundling, bytecode, the
 crate's assets, the dev server) already knows the set, from its description (`docs/dev/tooling.md`).
 
 `web::ui_sets` (the sets the runtime serves, which `package` checks the app's imports against and the dev page sends
@@ -287,7 +458,8 @@ the end, so tasks woken only there (timers, fetch replies) request no pump of th
 
 ## Standard modules in the browser
 
-All eleven standard modules load in the web runtime. `quickjs-jit-stdlib` compiles its portable Rust hashing, buffers and compression into WebAssembly, preserving synchronous APIs; cryptographic entropy comes from the player's `crypto.getRandomValues` bridge. The `path` module uses POSIX paths with virtual working directory `/`. NSH's URL classes retain their identity.
+All eleven standard modules load in the web runtime (`zlib` and `crypto` with its features `std-zlib` and
+`std-crypto`, on by default: 0.56 and 0.35 MB of the gzipped module, `js-modules.md`). `quickjs-jit-stdlib` compiles its portable Rust hashing, buffers and compression into WebAssembly, preserving synchronous APIs; cryptographic entropy comes from the player's `crypto.getRandomValues` bridge. The `path` module uses POSIX paths with virtual working directory `/`. NSH's URL classes retain their identity.
 
 `filesystem.rs` implements `FileSystem` through the player's Origin Private File System bridge. Rust checks the app's file grants, normalizes paths relative to its configured data directory and enforces quotas before sending an operation. OPFS persists files in an app-specific namespace within the page's origin and requires a secure context. File modification time comes from browser metadata; unknown access/birth times and modes are zero. `rename` uses the browser handle's atomic `move` operation, reporting `ENOTSUP` when that operation is unavailable. OPFS entries are files and directories; `readlink` reports `EINVAL`.
 

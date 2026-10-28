@@ -6,8 +6,10 @@ follow the current Computer Use state supplied with the model request.
 In WSL it defaults to the Windows host; shell commands may still run in Linux.
 
 A fresh REPL has no bound targets. The entry points below emit API documentation
-and inventory or initial target state. Browser IDs come from configured CDP providers and connected native browser
-adapters. If neither is available, use native browser windows through getApp. The API does not expose driver administration such as start_session.
+and inventory or initial target state. Browser IDs come from configured CDP providers and connected Extension browser
+providers. Exact IDs take precedence; only without an exact match do `maka` and `chatgpt` select a unique current Extension endpoint. If neither is available, use native browser windows through getApp. The API does not expose driver administration such as start_session.
+
+ChatGPT and stock OpenCLI compatibility is best effort. Stock OpenCLI currently cannot serve this browser-session contract. Without an exact provider ID or extension-instance selection, `getBrowser({id: "opencli"})` selects a unique usable existing provider before any tab creation or claim; zero or multiple candidates refuses selection. Exact IDs and existing handles never switch providers.
 
 Entry points (selection emits initial state):
 - `await cua.getState({emit?})`: app and available browser inventory, including inventory errors.
@@ -39,7 +41,7 @@ Entry points (selection emits initial state):
   Use a listed string ID or a listed object. Turn cleanup releases user tabs without closing
   them; tabs created by this Session remain temporary. `browser.tabs.get(id)` remains a lazy
   binding and performs no initial claim or AX observation. These methods do not
-  retain grants. For native adapters, `browser.tabs.list()` lists this Session's
+  retain grants. For Extension providers, `browser.tabs.list()` lists this Session's
   managed tabs. Configured CDP providers omit `browser.user`; use their
   `browser.tabs` methods instead.
 
@@ -111,6 +113,21 @@ first exact `text/plain` entry's text, or an empty string for a base64-only entr
 the page's `readText()` decodes that entry through a Blob. Turn cleanup removes
 page bridges and preserves stored data. Reset creates a fresh empty context.
 
+Wait methods return undefined. `locator.waitFor({state, timeoutMs?})` requires
+`state: 'attached'|'detached'|'visible'|'hidden'` and tests the first match;
+no match satisfies `detached` and `hidden`.
+`tab.playwright.waitForURL(pattern, {waitUntil?, timeoutMs?})` matches the full URL:
+`*` stays within a slash-delimited segment, `**` may cross slashes, and other
+characters are literal. The default `waitUntil` is `commit`; `load`,
+`domcontentloaded` and `networkidle` wait for that state after a match.
+`tab.playwright.waitForLoadState({state?, timeoutMs?})` defaults to `load` and also
+accepts `domcontentloaded` and `networkidle`. These condition waits default to
+3000 ms and cap numeric timeouts at 3000 ms. Zero leaves no event-wait budget:
+a locator still gets its first probe, current URL/load state may already match,
+and networkidle times out. `tab.playwright.waitForTimeout(ms)` accepts a nonnegative
+integer and waits for a fixed duration. For an action-triggered wait, start the
+wait before the action, then await both promises. Stop cancels the original wait.
+
 `tab.playwright` resolves DOM locators without requiring a preceding AX observation.
 Use `locator(selector)`, `getByRole`, `getByText`, `getByLabel`, `getByPlaceholder`
 or `getByTestId`; `frameLocator(selector)` enters a frame. Locators support
@@ -138,7 +155,7 @@ unsupported combinations throw before sending native keys. Successful writes cle
 only the calling locator collection's cached reads. Input results must still be
 checked in the page; an uncertain result is not automatically replayed.
 
-Downloads use a connected native adapter with download notifications and current
+Downloads use a connected Extension provider with download notifications and current
 Host download permission. Arm before triggering the action on the same Tab:
 `const pending = tab.playwright.waitForEvent('download', {timeoutMs:3000});`
 then perform the click or navigation and `const download = await pending`.
@@ -154,7 +171,7 @@ source or destination origin. A configured CDP connection alone does not provide
 native download notifications.
 Maka also exposes `tab.cua.downloadMedia({x,y,timeoutMs?})` and
 `tab.dom_cua.downloadMedia({node_id,timeoutMs?})` as narrow extensions. The selected
-native adapters currently reject these coordinate/node media commands; use the
+Extension providers currently reject these coordinate/node media commands; use the
 implemented locator route. These objects do not imply other `.cua` or `.dom_cua`
 input methods. An uncertain download result is never automatically retried.
 The returned handle retains its original Tab binding, not a grant. Keep that tab

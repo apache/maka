@@ -22,7 +22,7 @@ nsh-bundler = { workspace = true, features = ["bundle"] }
 nsh-core.workspace = true
 nsh-engine = { workspace = true, features = ["js"] }
 nsh-dev = { workspace = true, features = ["server"] }
-nsh-js.workspace = true
+nsh-js = { workspace = true, features = ["zlib", "crypto"] }
 nsh-base.workspace = true
 nsh-package.workspace = true
 nsh-testing = { workspace = true, features = ["agent", "bundle"] }
@@ -59,3 +59,7 @@ windows-sys = { workspace = true, features = [
   "Win32_System_LibraryLoader",
   "Win32_System_Threading",
 ] }
+
+[dev-dependencies]
+# The syntaxes file the web runtime fetches must be a dump its syntect reads.
+syntect.workspace = true

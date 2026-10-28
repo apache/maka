@@ -30,7 +30,7 @@ const ORIGIN_GETTER: &str = r#"(() => {
     const prototype = Object.getOwnPropertyDescriptor(Window.prototype, 'origin');
     const own = Object.getOwnPropertyDescriptor(globalThis, 'origin');
     const getter = typeof prototype?.get === 'function' ? prototype.get : own?.get;
-    if (typeof getter !== 'function') throw new Error('native Window.origin getter unavailable');
+    if (typeof getter !== 'function') throw new Error('extension Window.origin getter unavailable');
     return Reflect.apply(getter, globalThis, []);
 })()"#;
 
@@ -109,6 +109,10 @@ pub(super) struct DocumentOrigin {
     context: String,
 }
 impl DocumentOrigin {
+    pub(super) fn execution_context(&self) -> &str {
+        &self.context
+    }
+
     pub(super) fn document_identity(&self) -> &DocumentIdentity {
         &self.identity
     }
@@ -309,7 +313,7 @@ impl Tab {
         invocation: &crate::InvocationContext<'_>,
         cancellation: &tokio_util::sync::CancellationToken,
         language: Language,
-        intent: super::native::ClaimIntent,
+        intent: super::extension::ClaimIntent,
     ) -> Result<(), ToolError> {
         self.prepare_origin_transport_with_budget(
             invocation,
@@ -326,28 +330,33 @@ impl Tab {
         invocation: &crate::InvocationContext<'_>,
         cancellation: &tokio_util::sync::CancellationToken,
         language: Language,
-        intent: super::native::ClaimIntent,
+        intent: super::extension::ClaimIntent,
         budget: &mut Option<super::ReadBudget>,
     ) -> Result<(), ToolError> {
-        match self.provider.native() {
-            Some(native) => {
-                let capabilities = native
+        match self.provider.extension() {
+            Some(extension) => {
+                let capabilities = extension
                     .capabilities()
-                    .map_err(super::provider::native_error)?;
+                    .map_err(super::provider::extension_error)?;
                 match capabilities.attachment_preparation {
-                    cua_driver_core::browser::NativeAttachmentPreparation::FullPreparation => {
-                        // Original numeric CDP can re-enter fixed preparation on
+                    cua_driver_core::browser::ExtensionAttachmentPreparation::FullPreparation => {
+                        // ChatGPT numeric CDP can re-enter fixed preparation on
                         // an existing claim too. A prior admission is not current
                         // authority for a later turn/replacement document.
                         super::read_step_for(
                             budget,
                             cancellation,
-                            super::ReadEffect::NativePreparation,
-                            self.prepare_native_session(invocation, cancellation, language, intent),
+                            super::ReadEffect::ExtensionPreparation,
+                            self.prepare_extension_session(
+                                invocation,
+                                cancellation,
+                                language,
+                                intent,
+                            ),
                         )
                         .await
                     }
-                    cua_driver_core::browser::NativeAttachmentPreparation::MetadataOnly => {
+                    cua_driver_core::browser::ExtensionAttachmentPreparation::MetadataOnly => {
                         self.prepare_metadata_with_budget(
                             invocation,
                             cancellation,
@@ -356,9 +365,11 @@ impl Tab {
                         )
                         .await
                     }
-                    cua_driver_core::browser::NativeAttachmentPreparation::Unknown => Err(failed(
-                        "selected native adapter has not classified its attachment preparation",
-                    )),
+                    cua_driver_core::browser::ExtensionAttachmentPreparation::Unknown => {
+                        Err(failed(
+                            "selected extension adapter has not classified its attachment preparation",
+                        ))
+                    }
                 }
             }
             None => {
@@ -387,7 +398,12 @@ impl Tab {
         language: Language,
         budget: &mut Option<super::ReadBudget>,
     ) -> Result<(), ToolError> {
-        super::read_step(budget, cancellation, self.refresh_info(language)).await?;
+        super::read_step(
+            budget,
+            cancellation,
+            self.refresh_info(super::BrowserCall::new(invocation, cancellation, language)),
+        )
+        .await?;
         let document = self.document();
         invocation
             .authorize_browser(
@@ -397,17 +413,22 @@ impl Tab {
                 cancellation,
             )
             .await?;
-        super::read_step(budget, cancellation, self.refresh_info(language)).await?;
+        super::read_step(
+            budget,
+            cancellation,
+            self.refresh_info(super::BrowserCall::new(invocation, cancellation, language)),
+        )
+        .await?;
         if self.document() != document {
             return Err(failed("document changed during browser metadata admission"));
         }
         check_input(cancellation)?;
-        if self.provider.native().is_some() {
+        if self.provider.extension().is_some() {
             super::read_step_for(
                 budget,
                 cancellation,
-                super::ReadEffect::NativePreparation,
-                self.attach_native_metadata(invocation, cancellation),
+                super::ReadEffect::ExtensionPreparation,
+                self.attach_extension_metadata(invocation, cancellation),
             )
             .await?;
         }

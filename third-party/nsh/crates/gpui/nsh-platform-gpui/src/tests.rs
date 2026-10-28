@@ -382,12 +382,14 @@ fn wait_for(view: &Entity<AppView>, cx: &mut VisualTestContext, text: &str) {
 fn windows(cx: &mut TestAppContext) {
     // The engine (and the settings portal) run on threads of their own.
     cx.executor().allow_parking();
+    text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx);
     keys_reach_the_fields_of_a_surface_showing_a_native_component(cx);
     #[cfg(feature = "dev")]
     synthetic_keys_type_printable_characters_after_shortcuts(cx);
     compositions_are_reported_and_hold_values_until_they_end(cx);
     menu_shortcuts_leave_a_focused_field_the_keys_it_uses(cx);
     presses_carry_where_the_pointer_was(cx);
+    files_dropped_from_outside_reach_the_view_under_them(cx);
     presses_carry_the_modifier_keys_and_click_count(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
@@ -1216,6 +1218,250 @@ fn an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx: &mut 
     wait_for(&view, cx, "ab");
 }
 
+/// Two fields. Enter in the first, and Ctrl+N (Command+N on macOS), both
+/// focus the second. Text typed before the engine has handled that key
+/// belongs to the second field.
+const TWO_FIELDS: &str = r#"
+import { keymap, mount, signal, View, type YNode } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const first = signal("A");
+  const second = signal("");
+  let next!: YNode, outside!: YNode;
+  const go = () => next.focus();
+  keymap.bind("mod+n", go, { when: "always" });
+  keymap.bind("mod+k", () => second.set(second() + "!"), { when: "always" });
+  keymap.bind("mod+b", () => outside.focus(), { when: "always" });
+  return (
+    <View style={{ flex: 1, padding: 8, gap: 8 }}>
+      <Input
+        autoFocus
+        value={first()}
+        onChange={(t) => first.set(t)}
+        onSubmit={go}
+        submitBehavior="submit"
+        style={{ height: 30 }}
+      />
+      <Input ref={next} value={second()} onChange={(t) => second.set(t)} style={{ height: 30 }} />
+      <Input testID="report" readonly focusable={false} value={second()} style={{ height: 30 }} />
+      <View ref={outside} testID="outside" focusable style={{ height: 30 }} />
+    </View>
+  );
+}
+mount(App);
+"#;
+
+fn down(vk: u16, modifiers: crate::input::Modifiers) -> crate::input::KeyEvent {
+    crate::input::KeyEvent {
+        vk,
+        down: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// `x`, then Backspace, then `y`, before the engine applies `key`. The
+/// focused field must still read "A", and then "y" once the next field
+/// has the keyboard.
+fn typed_ahead(cx: &mut TestAppContext, key: crate::input::KeyEvent) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let surface = view.surface().clone();
+        assert!(crate::input::key(&surface, key), "the key was not handled");
+        crate::text_input::char_input(&surface, "x");
+        assert!(crate::input::key(
+            &surface,
+            down(crate::keys::VK_BACK, crate::input::Modifiers::default())
+        ));
+        crate::text_input::char_input(&surface, "y");
+        let now = crate::text_input::focused(view.surface())
+            .and_then(|field| crate::text_input::accessible_value(&field))
+            .map(|value| value.text);
+        assert!(
+            matches!(now.as_deref(), None | Some("A")),
+            "typed ahead into the field that still has the keyboard: {now:?}"
+        );
+    });
+    wait_for(&view, cx, "y");
+}
+
+fn text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx: &mut TestAppContext) {
+    typed_ahead(
+        cx,
+        down(crate::keys::VK_RETURN, crate::input::Modifiers::default()),
+    );
+    let modifiers = if cfg!(target_os = "macos") {
+        crate::input::Modifiers {
+            meta: true,
+            ..crate::input::Modifiers::default()
+        }
+    } else {
+        crate::input::Modifiers {
+            ctrl: true,
+            ..crate::input::Modifiers::default()
+        }
+    };
+    typed_ahead(cx, down(0x4E, modifiers));
+    composed_ahead(cx, modifiers);
+    bindings_ahead(cx, modifiers);
+    paused_ahead(cx, modifiers);
+}
+
+fn composed_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    use crate::text_input::ime;
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(
+            s,
+            down(crate::keys::VK_RETURN, Default::default())
+        ));
+        ime::replace_and_mark_text_in_range(s, None, "n", Some(1..1));
+        ime::replace_and_mark_text_in_range(s, None, "ni😀", Some(2..2));
+    });
+    let start = Instant::now();
+    loop {
+        cx.run_until_parked();
+        if view.read_with(cx, |view, _| ime::marked_text_range(view.surface())) == Some(0..4) {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "preedit did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(field_text(&view, cx).as_deref(), Some(""));
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert_eq!(ime::marked_text_range(s), Some(0..4));
+        assert_eq!(ime::selected_text_range(s).unwrap().range, 2..2);
+        assert_eq!(
+            ime::text_for_range(s, 0..4, &mut None).as_deref(),
+            Some("ni😀")
+        );
+        ime::replace_text_in_range(s, None, "你");
+    });
+    wait_for(&view, cx, "你");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(s, down(0x4E, modifiers)));
+        ime::replace_and_mark_text_in_range(s, None, "discard", None);
+        ime::replace_and_mark_text_in_range(s, None, "", None);
+        ime::replace_text_in_range(s, None, "x");
+        let mut released = down(0x4E, Default::default());
+        released.down = false;
+        crate::input::key(s, released);
+    });
+    wait_for(&view, cx, "你x");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert_eq!(ime::marked_text_range(s), None);
+        assert!(crate::input::key(s, down(0x4E, modifiers)));
+        ime::replace_and_mark_text_in_range(s, None, "😀", Some(2..2));
+        ime::unmark_text(s);
+        ime::replace_text_in_range(s, Some(0..1), "好");
+    });
+    wait_for(&view, cx, "好x😀");
+}
+
+fn bindings_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(
+            s,
+            down(crate::keys::VK_RETURN, Default::default())
+        ));
+        crate::text_input::char_input(s, "x");
+        for _ in 0..2 {
+            assert!(crate::input::key(s, down(0x4B, modifiers)));
+            let mut released = down(0x4B, Default::default());
+            released.down = false;
+            crate::input::key(s, released);
+        }
+    });
+    wait_for(&view, cx, "x!!");
+}
+
+fn paused_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    let result = Arc::new(Mutex::new(None));
+    for editing in [true, false] {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                if !editing {
+                    view.resume_input(window, cx);
+                }
+                let s = view.surface();
+                if editing {
+                    assert!(crate::input::key(
+                        s,
+                        down(crate::keys::VK_RETURN, Default::default())
+                    ));
+                    crate::text_input::char_input(s, "你");
+                    assert!(crate::input::key(s, down(0x4E, modifiers)));
+                    let mut released = down(0x4E, Default::default());
+                    released.down = false;
+                    crate::input::key(s, released);
+                    crate::text_input::char_input(s, "好");
+                } else {
+                    assert!(crate::input::key(s, down(0x42, modifiers)));
+                    crate::text_input::ime::replace_text_in_range(s, None, "");
+                    crate::text_input::ime::replace_and_mark_text_in_range(s, None, "", None);
+                }
+                let result = result.clone();
+                view.pause_input(window, cx, move |done| *result.lock().unwrap() = Some(done));
+            });
+        });
+        let start = Instant::now();
+        loop {
+            cx.run_until_parked();
+            if let Some(done) = result.lock().unwrap().take() {
+                done.unwrap();
+                view.update(cx, |view, _| view.surface().drain());
+                assert_eq!(field_text(&view, cx).as_deref(), editing.then_some("你好"));
+                assert_eq!(
+                    view.read_with(cx, |view, _| {
+                        find_test_view(&view.surface().root, "report")
+                            .and_then(|view| crate::text_input::accessible_value(&view))
+                            .map(|value| value.text)
+                    })
+                    .as_deref(),
+                    Some("你好")
+                );
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "input pause did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 struct KeyLog {
     keys: Rc<std::cell::RefCell<Vec<String>>>,
     focus: Rc<std::cell::RefCell<Option<gpui::FocusHandle>>>,
@@ -1596,6 +1842,123 @@ mod press_point {
                     .h(px(30.0)),
             )
     }
+}
+
+fn files_dropped_from_outside_reach_the_view_under_them(cx: &mut TestAppContext) {
+    let source = r#"
+import { mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+const log = signal<string[]>([]);
+const add = (entry: string) => log.set([...log(), entry]);
+mount(() => <View style={{ flex: 1 }}>
+  <View
+    onFileDragEnter={() => add("enter outer")}
+    onFileDragLeave={() => add("leave outer")}
+    onFileDrop={(e) => add("drop outer " + e.uris.join(";"))}
+    style={{ height: 100 }}
+  >
+    <View
+      onFileDragEnter={() => add("enter inner")}
+      onFileDragLeave={() => add("leave inner")}
+      onFileDrop={(e) => add("drop inner " + e.uris.join(";"))}
+      style={{ height: 40 }}
+    />
+  </View>
+  <View style={{ height: 100 }} />
+  <Input autoFocus readonly value={log().join(", ") || "none"} style={{ height: 30 }} />
+</View>);
+"#;
+    let code = nsh_bundler::compile_module("App.tsx", source, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| {
+        view.load(App::Js(Bundle::source(code.clone())))
+    });
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "none");
+    let origin = view.read_with(cx, |view, _| view.surface().origin.get());
+    let at = |y: f32| gpui::point(gpui::px(origin.0 + 10.0), gpui::px(origin.1 + y));
+    let send = |cx: &mut VisualTestContext, event: gpui::FileDropEvent| {
+        cx.update(|window, cx| {
+            window.dispatch_event(gpui::PlatformInput::FileDrop(event), cx);
+        });
+        cx.run_until_parked();
+    };
+    let enter = |cx: &mut VisualTestContext, y: f32, paths: &[&str]| {
+        let paths = gpui::ExternalPaths(paths.iter().map(std::path::PathBuf::from).collect());
+        send(
+            cx,
+            gpui::FileDropEvent::Entered {
+                position: at(y),
+                paths,
+            },
+        );
+        // The platform's next report, once the drag's frame has laid the
+        // drop layer over the surface.
+        send(cx, gpui::FileDropEvent::Pending { position: at(y) });
+    };
+    // The innermost listener under the drag is the destination; moving
+    // leaves it for the next one, and the drop goes there, without the
+    // relative path.
+    enter(cx, 20.0, &["/tmp/a b.txt", "b.txt"]);
+    wait_for(&view, cx, "enter inner");
+    send(cx, gpui::FileDropEvent::Pending { position: at(70.0) });
+    wait_for(&view, cx, "enter inner, leave inner, enter outer");
+    send(cx, gpui::FileDropEvent::Submit { position: at(70.0) });
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer",
+    );
+    // Leaving the window leaves the destination.
+    enter(cx, 20.0, &["/tmp/c.txt"]);
+    send(cx, gpui::FileDropEvent::Exited);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
+    // Where no view listens, the drop goes nowhere.
+    enter(cx, 150.0, &["/tmp/d.txt"]);
+    send(
+        cx,
+        gpui::FileDropEvent::Submit {
+            position: at(150.0),
+        },
+    );
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
+    // The same bundle reuses its node ids, but a new load owns its own drag events.
+    enter(cx, 20.0, &["/tmp/reloaded.txt"]);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner, enter inner",
+    );
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    wait_for(&view, cx, "none");
+    send(cx, gpui::FileDropEvent::Pending { position: at(20.0) });
+    wait_for(&view, cx, "enter inner");
+    send(cx, gpui::FileDropEvent::Submit { position: at(20.0) });
+    wait_for(
+        &view,
+        cx,
+        "enter inner, drop inner file:///tmp/reloaded.txt, leave inner",
+    );
+    enter(cx, 20.0, &["/tmp/cancelled.txt"]);
+    send(cx, gpui::FileDropEvent::Exited);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, drop inner file:///tmp/reloaded.txt, leave inner, enter inner, leave inner",
+    );
+    view.update(cx, |view, _| view.stop());
 }
 
 fn presses_carry_where_the_pointer_was(cx: &mut TestAppContext) {

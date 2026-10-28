@@ -13,11 +13,19 @@ workspace = true
 
 [features]
 default = ["js"]
-# JS apps: the QuickJS VM, source maps, signed packages.
-js = ["dep:nsh-js", "dep:nsh-package", "dep:oxc_sourcemap"]
+# JS apps: the QuickJS VM, source maps, signed packages, and every standard
+# module.
+js = ["js-core", "nsh-js/zlib", "nsh-js/crypto"]
+# The VM without the standard modules `zlib` and `crypto` (and the global
+# `crypto`): a runtime for apps that use neither (the web's lite runtime).
+js-core = ["dep:nsh-js", "dep:nsh-package", "dep:oxc_sourcemap"]
+# A host supplied by the browser; it executes source outside WebAssembly.
+browser = []
 # `net`: the HTTP stack behind `fetch` on ureq, which the Windows, Linux and
 # GPUI backends hand their engines.
 net = ["dep:ureq"]
+# `shader`: the native backends' shader renderer (`shader`), on wgpu.
+shader = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
 rustc-hash.workspace = true
@@ -30,6 +38,8 @@ nsh-js = { workspace = true, optional = true }
 crossbeam-channel.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 ureq = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 # WebAssembly has no threads: `LocalEngine` drives the engine there.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

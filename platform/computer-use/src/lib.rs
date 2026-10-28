@@ -34,6 +34,7 @@ mod driver;
 #[cfg(not(feature = "native-desktop"))]
 #[path = "bridge_driver.rs"]
 mod driver;
+pub mod extension_browser_host;
 #[cfg(feature = "native-desktop")]
 mod identity;
 mod invocation;
@@ -50,7 +51,6 @@ mod linux_image;
 mod linux_input;
 #[cfg(all(feature = "native-desktop", target_os = "macos"))]
 mod macos;
-pub mod native_browser_host;
 #[cfg(feature = "native-desktop")]
 mod observation;
 mod permission_subject;
@@ -68,6 +68,7 @@ pub use invocation::{
     CheckedSettlementFuture, HostEffectFactory, HostEffectFuture, HostUncertaintyFuture,
     InvocationCompletion, InvocationContext, OperationSettlement, SettlementFuture,
 };
+pub use maka_capabilities::computer::BrowserLeaseSubject;
 pub use permission_subject::{ComputerAppBinding, ComputerAppTarget};
 pub fn facade() -> String {
     facade_for(desktop::local_platform(), false)

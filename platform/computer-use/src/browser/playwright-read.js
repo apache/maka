@@ -77,6 +77,37 @@ function read(request) {
       }
       return value({ full: snapshot.full, iframes });
     }
+    case 'waitFor': {
+      const element = elements[0];
+      const state = request.operation.state;
+      if (state === 'attached')
+        return value({ ready: !!element, reason: 'Element is not attached' });
+      if (state === 'detached')
+        return value({ ready: !element, reason: 'Element is still attached' });
+      if (!element) return value({ ready: state === 'hidden', reason: 'Element is not attached' });
+      const result = this.elementState(element, state);
+      if (result.received === 'error:notconnected')
+        return value({ ready: false, reason: 'Element is not connected' });
+      return value({ ready: !!result.matches, reason: 'Element is not ' + state });
+    }
+    case 'waitDiagnostics': {
+      const report = { matchCount: elements.length, visibleCount: 0, matches: [] };
+      for (const element of elements) {
+        const visible = element.getClientRects().length > 0;
+        report.visibleCount += Number(visible);
+        if (report.matches.length < 5)
+          report.matches.push({
+            tag: element.tagName.toLowerCase(),
+            role: element.getAttribute('role'),
+            type: element.getAttribute('type'),
+            ariaLabel: element.getAttribute('aria-label'),
+            text: (element.textContent ?? '').trim().slice(0, 120),
+            visible,
+            disabled: 'disabled' in element && Boolean(element.disabled),
+          });
+      }
+      return value(report);
+    }
     case 'count':
       return value(elements.length);
     case 'allTextContents':

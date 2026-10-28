@@ -57,7 +57,7 @@ mount(App);
 在 TSX 中，每个标签都使用 PascalCase，并指向作用域中的绑定：原语从 `nsh` 导入，基础组件从 `nsh/base` 导入。只有 `<If>` 和 `<Each>` 是无需导入的全局组件。`<view>` 这样的小写标签会导致构建错误，因为 TypeScript 只能对照每个名称一个的全局类型来检查它，`List`、`Each` 这类泛型组件就无法推断条目类型。编译器通过导入识别这些元素并就地创建原生视图，所以导入它们在运行时没有任何开销。参见 [JSX 与组件](../docs/jsx-and-components.md)。
 
 ```tsx
-import { Canvas, Image, List, Overlay, Scroll, Text, Video, View, WebView } from "nsh";
+import { Canvas, Image, List, Overlay, Scroll, Shader, Text, Video, View, WebView } from "nsh";
 import { Button, Dialog, Menu, NavPage, NavStack, Popover, Sheet, Tooltip, Input } from "nsh/base";
 ```
 
@@ -73,6 +73,7 @@ TSX 从 `nsh` 导入，Rust 从 `nsh_core::prelude` 导入。
 | `<Scroll>` | `scroll()` | UIScrollView / ScrollView | [Scroll](./scroll.md) |
 | `<List>` | `virtual_list(count, \|at\| row)` | 复用单元格的 UIScrollView / ScrollView | [List](./list.md) |
 | `<Canvas>` | `canvas(painter)` | 回放 2D 绘制的视图 | [Canvas](./canvas.md) |
+| `<Shader>` | `shader(program)` | 由 WGSL 程序在 GPU 上绘制其区域的视图，绘制在子元素之下 | [Shader](./shader.md) |
 | `<WebView>` | `web_view(url)`、`web_view_html(html, base)` | WKWebView / android.webkit.WebView | [WebView](./web-view.md) |
 | `<Video>` | `video(url)` | AVPlayerLayer / TextureView 上的 MediaPlayer | [Video](./video.md) |
 | `<Overlay>` | `overlay()` | 窗口（或所在对话框）之上的视图，相对锚点放置 | [Overlay](./overlay.md) |

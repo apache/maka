@@ -657,6 +657,10 @@ mod tests {
     }
     impl Fixture {
         async fn new() -> Self {
+            Self::new_with_global_grant(true).await
+        }
+
+        async fn new_with_global_grant(global_grant: bool) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let workspace_path = directory.path().join("workspace");
             std::fs::create_dir(&workspace_path).unwrap();
@@ -776,9 +780,11 @@ mod tests {
                 invocation,
                 attachment,
             };
-            fixture
-                .decision("broad", api::target(), Decision::Allow, 2)
-                .await;
+            if global_grant {
+                fixture
+                    .decision("broad", api::target(), Decision::Allow, 2)
+                    .await;
+            }
             fixture
                 .decision("site", target(ORIGIN.into()), Decision::Allow, 3)
                 .await;
@@ -1387,7 +1393,9 @@ mod tests {
             generation: "observation-generation".into(),
             turn_id: turn.into(),
             tab_id: "17".into(),
-            claim_id: "observation-claim".into(),
+            subject: maka_capabilities::computer::BrowserLeaseSubject::PhysicalClaim {
+                claim_id: "observation-claim".into(),
+            },
         }
     }
 
@@ -1522,5 +1530,448 @@ mod tests {
         release.cancel();
         settlement.await.unwrap();
         fixture.close().await;
+    }
+    fn session_inventory_request(turn: &str) -> BrowserSessionPreparation {
+        // These are routing observations for Host current-authority tests.
+        // No actual Native owner/claim or dispatch proof is created here.
+        let mut request = session_preparation_request(turn);
+        request.target = maka_computer_use::BrowserPreparationTarget::SessionInventory;
+        request
+    }
+
+    #[tokio::test]
+    async fn session_inventory_current_host_check_preserves_site_and_interaction_state() {
+        let fixture = Fixture::new().await;
+        let request = session_inventory_request(&fixture.invocation.turn_id);
+        let destination = "https://unread-inventory.example";
+        let before = fixture
+            .store
+            .session_projection::<StoredSessionConfiguration>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .through_sequence;
+        assert_eq!(
+            fixture
+                .store
+                .browser_origin_decision(
+                    "session",
+                    &target(destination.into()),
+                    &fixture.attachment.basis
+                )
+                .await
+                .unwrap(),
+            None
+        );
+        fixture
+            .attachment
+            .session_preparation_current(&request, &request.operation_id, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .attachment
+                .check(
+                    BrowserAttachmentOrigin::Site(destination.into()),
+                    CancellationToken::new()
+                )
+                .await
+                .is_err()
+        );
+        let after = fixture
+            .store
+            .session_projection::<StoredSessionConfiguration>("session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.through_sequence, before,
+            "a current Host check cannot change Site Allow or interaction state"
+        );
+        assert!(
+            after.pending_interactions.is_empty(),
+            "session inventory cannot request Site approval"
+        );
+        assert_eq!(
+            fixture
+                .store
+                .browser_origin_decision(
+                    "session",
+                    &target(destination.into()),
+                    &fixture.attachment.basis
+                )
+                .await
+                .unwrap(),
+            None
+        );
+        // Production Access records potential epoch cleanup before polling the
+        // native future. This checker proves neither native admission nor T2.
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn session_inventory_rechecks_actual_global_basis_turn_gate_and_operation() {
+        for changed in ["global", "basis", "turn", "gate", "cancel", "operation"] {
+            // A later Deny does not revoke an existing broad Allow. Exercise
+            // genuinely absent Global authority in the same real DB fixture.
+            let fixture = Fixture::new_with_global_grant(changed != "global").await;
+            let request = session_inventory_request(&fixture.invocation.turn_id);
+            let cancellation = CancellationToken::new();
+            if changed != "global" {
+                fixture
+                    .attachment
+                    .session_preparation_current(&request, &request.operation_id, &cancellation)
+                    .await
+                    .unwrap();
+            } else {
+                assert!(
+                    fixture
+                        .store
+                        .client_capability_grant("session", &api::target())
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            let expected = match changed {
+                "global" => "Computer Use Session grant is missing or revoked",
+                "basis" => {
+                    let revision = fixture
+                        .store
+                        .get_session::<StoredSessionConfiguration>("session")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .revision;
+                    let result = fixture
+                        .store
+                        .update_session_permissions::<StoredSessionConfiguration, _>(
+                            "session",
+                            revision,
+                            5,
+                            |configuration| {
+                                configuration.boundary_revision += 1;
+                                Ok(())
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(
+                        result,
+                        maka_event_log::sessions::SessionMutation::Committed(_)
+                    ));
+                    "Browser permission boundary changed"
+                }
+                "turn" => {
+                    fixture.end().await;
+                    "Browser attachment turn is no longer active"
+                }
+                "gate" => {
+                    fixture.attachment.gate.close_admission();
+                    "Computer VM has retired"
+                }
+                "cancel" => {
+                    cancellation.cancel();
+                    "Browser attachment cancelled"
+                }
+                "operation" => "Browser session preparation lost its captured native scope",
+                _ => unreachable!(),
+            };
+            let operation = if changed == "operation" {
+                "another-operation"
+            } else {
+                &request.operation_id
+            };
+            let error = fixture
+                .attachment
+                .session_preparation_current(&request, operation, &cancellation)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, ToolError::Failed(message) if message == expected),
+                "{changed} did not reach its actual Host guard"
+            );
+            fixture.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn non_agent_scope_and_legacy_authorizer_cannot_admit_session_inventory() {
+        struct Legacy {
+            ordinary_calls: Arc<AtomicUsize>,
+        }
+        impl BrowserAuthorization for Legacy {
+            fn authorize(&self, _: BrowserAccess, _: CancellationToken) -> AuthorizationFuture {
+                self.ordinary_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Err(failed("ordinary browser access is not session preparation"))
+                })
+            }
+            fn check(
+                &self,
+                access: BrowserAccess,
+                cancellation: CancellationToken,
+            ) -> AuthorizationFuture {
+                self.authorize(access, cancellation)
+            }
+        }
+        let fixture = Fixture::new().await;
+        let remote = maka_capabilities::call::Issuer::default()
+            .issue(
+                maka_capabilities::call::Identity::Remote {
+                    request_id: uuid::Uuid::new_v4(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(
+            matches!(access::current(&fixture.owner, &remote, "cua_repl").await,
+            Err(ToolError::Failed(message)) if message == "Computer Use requires an Agent invocation")
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let legacy = Legacy {
+            ordinary_calls: calls.clone(),
+        };
+        let request = session_inventory_request(&fixture.invocation.turn_id);
+        for result in [
+            legacy
+                .authorize_session_preparation(request.clone(), CancellationToken::new())
+                .await,
+            legacy
+                .check_session_preparation(request, CancellationToken::new())
+                .await,
+        ] {
+            assert!(matches!(result, Err(ToolError::Failed(message))
+                if message == "Browser session preparation requires Host authorization"));
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "default session preparation cannot fall back to ordinary authorization"
+        );
+        remote.finish().await.unwrap();
+        fixture.close().await;
+    }
+
+    fn fixed_ui_preparation_request(turn: &str) -> BrowserSessionPreparation {
+        // Shape observations only: Main's separate native ledger must prove
+        // that this scope names a real retained fixed-session receipt.
+        let mut request = session_preparation_request(turn);
+        request.target = maka_computer_use::BrowserPreparationTarget::FixedSessionTab {
+            tab_id: "17".into(),
+            scope_id: "observed-fixed-session-scope".into(),
+        };
+        request
+    }
+
+    fn fixed_ui_effect_binding(
+        request: &BrowserSessionPreparation,
+    ) -> maka_computer_use::BrowserPreparationBinding {
+        let maka_computer_use::BrowserPreparationTarget::FixedSessionTab { tab_id, scope_id } =
+            &request.target
+        else {
+            unreachable!("fixture requires a fixed-session target")
+        };
+        maka_computer_use::BrowserPreparationBinding {
+            native_owner: request.native_owner,
+            native_epoch: request.native_epoch.clone(),
+            browser_id: request.browser_id.clone(),
+            generation: request.generation.clone(),
+            turn_id: request.turn_id.clone(),
+            tab_id: tab_id.clone(),
+            subject: maka_capabilities::computer::BrowserLeaseSubject::FixedSession {
+                scope_id: scope_id.clone(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_ui_current_checks_preserve_replacement_site_deny_and_actual_facts() {
+        let fixture = Fixture::new().await;
+        let destination = "https://fixed-ui-replacement.example";
+        // This Site never had an Allow. A Deny here is not being mistaken for
+        // revocation of an existing Allow; the source Site's Allow stays intact.
+        fixture
+            .decision(
+                "fixed-ui-replacement-denied",
+                target(destination.into()),
+                Decision::Deny,
+                4,
+            )
+            .await;
+        let request = fixed_ui_preparation_request(&fixture.invocation.turn_id);
+        let binding = fixed_ui_effect_binding(&request);
+        assert_eq!(
+            fixture
+                .store
+                .browser_origin_decision(
+                    "session",
+                    &target(destination.into()),
+                    &fixture.attachment.basis
+                )
+                .await
+                .unwrap(),
+            Some(Decision::Deny)
+        );
+        let before = fixture
+            .store
+            .session_projection::<StoredSessionConfiguration>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .through_sequence;
+        fixture
+            .attachment
+            .session_preparation_current(&request, &request.operation_id, &CancellationToken::new())
+            .await
+            .unwrap();
+        fixture
+            .attachment
+            .effect_preparation_current(&binding, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(
+            fixture
+                .attachment
+                .check(
+                    BrowserAttachmentOrigin::Site(destination.into()),
+                    CancellationToken::new()
+                )
+                .await
+                .is_err(),
+            "fixed UI purpose cannot authorize replacement content"
+        );
+        fixture.check().await.unwrap();
+        assert_eq!(
+            fixture
+                .store
+                .browser_origin_decision(
+                    "session",
+                    &target(destination.into()),
+                    &fixture.attachment.basis
+                )
+                .await
+                .unwrap(),
+            Some(Decision::Deny)
+        );
+        let after = fixture
+            .store
+            .session_projection::<StoredSessionConfiguration>("session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.through_sequence, before,
+            "current checks preserve Site decisions and add no interaction"
+        );
+        assert!(after.pending_interactions.is_empty());
+        // These are the real canonical permission checks only. A token/DTO is
+        // not a native receipt, and no physical claim or Host effect is minted.
+        fixture.close().await;
+    }
+
+    #[tokio::test]
+    async fn fixed_ui_targets_recheck_real_global_basis_turn_gate_and_operation() {
+        for changed in ["global", "basis", "turn", "gate", "cancel", "operation"] {
+            let fixture = Fixture::new_with_global_grant(changed != "global").await;
+            let request = fixed_ui_preparation_request(&fixture.invocation.turn_id);
+            let binding = fixed_ui_effect_binding(&request);
+            let cancellation = CancellationToken::new();
+            if changed == "global" {
+                assert!(
+                    fixture
+                        .store
+                        .client_capability_grant("session", &api::target())
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "fixture starts without broad Allow"
+                );
+            } else {
+                fixture
+                    .attachment
+                    .session_preparation_current(&request, &request.operation_id, &cancellation)
+                    .await
+                    .unwrap();
+                fixture
+                    .attachment
+                    .effect_preparation_current(&binding, &cancellation)
+                    .await
+                    .unwrap();
+            }
+            let expected = match changed {
+                "global" => "Computer Use Session grant is missing or revoked",
+                "basis" => {
+                    let revision = fixture
+                        .store
+                        .get_session::<StoredSessionConfiguration>("session")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .revision;
+                    let result = fixture
+                        .store
+                        .update_session_permissions::<StoredSessionConfiguration, _>(
+                            "session",
+                            revision,
+                            5,
+                            |configuration| {
+                                configuration.boundary_revision += 1;
+                                Ok(())
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(
+                        result,
+                        maka_event_log::sessions::SessionMutation::Committed(_)
+                    ));
+                    "Browser permission boundary changed"
+                }
+                "turn" => {
+                    fixture.end().await;
+                    "Browser attachment turn is no longer active"
+                }
+                "gate" => {
+                    fixture.attachment.gate.close_admission();
+                    "Computer VM has retired"
+                }
+                "cancel" => {
+                    cancellation.cancel();
+                    "Browser attachment cancelled"
+                }
+                "operation" => "Browser session preparation lost its captured native scope",
+                _ => unreachable!(),
+            };
+            let operation = if changed == "operation" {
+                "another-operation"
+            } else {
+                &request.operation_id
+            };
+            let error = fixture
+                .attachment
+                .session_preparation_current(&request, operation, &cancellation)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, ToolError::Failed(message) if message == expected),
+                "{changed} must reach the actual canonical request guard"
+            );
+            if changed != "operation" {
+                let error = fixture
+                    .attachment
+                    .effect_preparation_current(&binding, &cancellation)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    matches!(error, ToolError::Failed(message) if message == expected),
+                    "{changed} must also reject the fixed-session effect binding"
+                );
+            }
+            // An effect binding has no Agent operation field. Its operation
+            // lifetime belongs to the existing actual Host effect scope/token;
+            // this checker test cannot manufacture or prove that separate scope.
+            fixture.close().await;
+        }
     }
 }

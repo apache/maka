@@ -52,6 +52,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"
 nsh-core.workspace = true
 # The app's theme (`nsh.json` `"theme"`): its tokens are classes.
 nsh-base.workspace = true
-nsh-js = { workspace = true, optional = true }
+nsh-js = { workspace = true, optional = true, features = ["zlib", "crypto"] }
 serde_json.workspace = true
 log.workspace = true

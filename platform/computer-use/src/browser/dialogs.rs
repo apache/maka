@@ -23,7 +23,7 @@
 //!
 //! Confirmation borrows an owned transport future instead of spawning or
 //! dropping accepted work. A Pending disposition must remain in the caller's
-//! native custody until the RPC settles, even when a close event already proved
+//! extension custody until the RPC settles, even when a close event already proved
 //! the public operation successful.
 
 use crate::protocol::DialogAction;
@@ -1094,11 +1094,11 @@ mod iframe_effect_tests {
         let socket = crate::browser::Cdp {
             connection: Arc::new(connection),
             dialogs: None,
-            native_context: None,
-            preparation: crate::browser::native::PreparationTransport::NotRequired,
+            extension_context: None,
+            preparation: crate::browser::extension::PreparationTransport::NotRequired,
         };
         let mut old = socket.clone();
-        old.preparation = crate::browser::native::PreparationTransport::Unadmitted;
+        old.preparation = crate::browser::extension::PreparationTransport::Unadmitted;
         let host = Arc::new(Host::default());
         let captured: Arc<Mutex<Option<Arc<dyn BrowserHostEffects>>>> =
             Arc::new(Mutex::new(Some(host.clone())));
@@ -1108,6 +1108,7 @@ mod iframe_effect_tests {
             method: "Target.attachedToTarget".into(),
             params: json!({"sessionId":session,"targetInfo":{"type":"iframe"}}),
             session_id: None,
+            source_target_id: None,
         };
         route_event(
             event("unadmitted-child"),
@@ -1127,11 +1128,11 @@ mod iframe_effect_tests {
         }
         assert!(
             requests.try_recv().is_err(),
-            "new opaque admission cannot bypass an unadmitted native transport"
+            "new opaque admission cannot bypass an unadmitted extension transport"
         );
 
         // This positive half is explicitly a generic CDP wire fixture. It proves
-        // fixed request routing, not actual native preparation or Host DB grants.
+        // fixed request routing, not actual extension preparation or Host DB grants.
         route_event(
             event("current-child"),
             &mut children,

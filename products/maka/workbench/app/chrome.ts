@@ -21,7 +21,7 @@
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
 import { effect, signal } from 'nsh';
-import { platform, setColorScheme } from 'nsh';
+import { platform } from 'nsh';
 import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 
@@ -29,10 +29,14 @@ export const ownTitleBar = isAvailable && platform.idiom === 'desktop' && !platf
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
 
-if (ownTitleBar) {
-  Window.setTitleBar('hidden', TITLE_BAR_HEIGHT);
-  // The workbench's colors are dark: the system's menus and controls match them.
-  setColorScheme('dark');
+// The window's colors follow the system until Settings › General chooses
+// (`appearance.ts`); the system's menus and controls follow them too.
+if (ownTitleBar) Window.setTitleBar('hidden', TITLE_BAR_HEIGHT);
+
+/** Titles the window (Mission Control, the Dock's and the Window menu's
+ * lists) with `title`, else the app's name. */
+export function windowTitle(title: () => string | null) {
+  if (ownTitleBar) effect(() => Window.setTitle(title() ?? 'Maka'));
 }
 
 /** Whether the session browser and the preview are docked at the window's edges. */
@@ -54,10 +58,15 @@ export interface MenuActions {
   newConversation(): void;
   chooseWorkspace(): void;
   sessions(): void;
+  search(): void;
   commands(): void;
   models(): void;
   latest(): void;
   settings(): void;
+  sidebarShown(): boolean;
+  toggleSidebar(): void;
+  /** One text size up (1), down (-1), or the default (0). */
+  textSize(step: number): void;
 }
 
 /** The application menu (the macOS menu bar; the shortcuts elsewhere). */
@@ -90,7 +99,7 @@ export function applicationMenu(actions: MenuActions) {
         submenu: [
           { label: tr('New conversation'), shortcut: 'mod+n', onSelect: actions.newConversation },
           { label: `${tr('Choose workspace')}…`, onSelect: actions.chooseWorkspace },
-          { label: tr('Browse sessions'), shortcut: 'mod+o', onSelect: actions.sessions },
+          { label: tr('Browse sessions'), onSelect: actions.sessions },
           { type: 'separator' },
           { role: 'close' },
           !mac && settings,
@@ -108,6 +117,8 @@ export function applicationMenu(actions: MenuActions) {
           { role: 'copy' },
           { role: 'paste' },
           { role: 'selectAll' },
+          { type: 'separator' },
+          { label: `${tr('Search conversations')}…`, shortcut: 'mod+f', onSelect: actions.search },
         ],
       },
       {
@@ -116,6 +127,27 @@ export function applicationMenu(actions: MenuActions) {
           { label: tr('Commands'), shortcut: 'mod+p', onSelect: actions.commands },
           { label: tr('Models'), shortcut: 'mod+g', onSelect: actions.models },
           { label: tr('Jump to latest'), shortcut: 'mod+l', onSelect: actions.latest },
+          { type: 'separator' },
+          {
+            label: actions.sidebarShown()
+              ? tr('Collapse session browser')
+              : tr('Expand session browser'),
+            // macOS's Show Sidebar key (Finder, Mail, Notes).
+            shortcut: mac ? 'ctrl+cmd+s' : undefined,
+            onSelect: actions.toggleSidebar,
+          },
+          { type: 'separator' },
+          { label: tr('Larger text'), shortcut: 'mod+plus', onSelect: () => actions.textSize(1) },
+          {
+            label: tr('Smaller text'),
+            shortcut: 'mod+minus',
+            onSelect: () => actions.textSize(-1),
+          },
+          {
+            label: tr('Default text size'),
+            shortcut: 'mod+0',
+            onSelect: () => actions.textSize(0),
+          },
           { type: 'separator' },
           { role: 'toggleFullScreen' },
         ],

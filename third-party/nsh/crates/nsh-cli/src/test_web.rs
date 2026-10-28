@@ -290,6 +290,20 @@ impl Native for WebNative {
         ))
     }
 
+    fn text_bounds(&self, text: NodeId, start: u32, end: u32) -> Option<Bounds<Points>> {
+        let [x, y, width, height] = self
+            .query::<Option<[f32; 4]>>(SceneQuery::TextBounds {
+                id: text,
+                start,
+                end,
+            })
+            .ok()??;
+        Some(Bounds::new(
+            point(Points(x), Points(y)),
+            Size::new(Points(width), Points(height)),
+        ))
+    }
+
     fn viewport(&self) -> Size<Points> {
         let [width, height] = self
             .query::<[f32; 2]>(SceneQuery::Viewport)

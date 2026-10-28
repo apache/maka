@@ -255,6 +255,13 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<crate::InvocationCompletion, ToolError> {
+        if let Command::BrowserWait { handle, operation } = command {
+            self.admit_invocation(invocation.session(), cancellation)?;
+            return self
+                .browsers
+                .prepare_wait(handle, operation, invocation, cancellation, language)
+                .await;
+        }
         if let Command::BrowserDownloadWait { handle, options } = command {
             self.admit_invocation(invocation.session(), cancellation)?;
             return self
@@ -332,7 +339,7 @@ impl Session {
             }
             Command::ConfigureCursor { options } => {
                 let cursor = self.owner.configure_cursor(options)?;
-                let browsers = self.browsers.configure_cursor(&cursor).await;
+                let browsers = self.browsers.configure_cursor(&cursor, invocation).await;
                 let mut native = self.native.lock().await;
                 let cursor = self.owner.cursor();
                 let native = native.cursors.configure(&cursor).await;
@@ -341,7 +348,7 @@ impl Session {
             Command::CursorState { .. } => {
                 let native = self.native.lock().await.cursors.state(&cursor).await;
                 Ok(
-                    json!({"settings":cursor,"native":native,"browsers":self.browsers.cursor_state(&cursor, language).await}),
+                    json!({"settings":cursor,"native":native,"browsers":self.browsers.cursor_state(&cursor, crate::browser::BrowserCall::new(invocation, cancellation, language)).await?}),
                 )
             }
             Command::ListApps { .. } => self.apps(session, cancellation, language).await,

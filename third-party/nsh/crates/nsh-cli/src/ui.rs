@@ -116,7 +116,7 @@ impl Drop for Stoppable {
 
 /// Whether a signal asked the command to stop ([`Stoppable`]).
 pub(crate) fn stop_requested() -> bool {
-    STOP_SIGNAL.load(Ordering::SeqCst) != 0
+    STOP_SIGNAL.load(Ordering::SeqCst) != 0 || crate::dev_port::stop_requested()
 }
 
 /// After a requested stop: ends the process as the signal would have

@@ -142,6 +142,7 @@ impl Mounter {
         {
             crate::navigation::source_removing(surface, &view);
             crate::focus_return::retiring(surface, &view);
+            crate::file_drop::invalidate(surface, *id);
             crate::input::retire_focus_within(surface, &view);
         }
         match item {
@@ -225,6 +226,7 @@ impl Mounter {
             MountItem::ListCellRetired { .. } => {}
             MountItem::Remove { id } => {
                 if let Some(view) = &self.get(*id) {
+                    crate::text_input::removing(surface, view);
                     crate::navigation::removing(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
@@ -234,6 +236,7 @@ impl Mounter {
             }
             MountItem::Delete { id } => {
                 if let Some(view) = self.views.remove(*id) {
+                    crate::text_input::removing(surface, &view);
                     crate::navigation::removing(surface, &view);
                     crate::native::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
@@ -279,7 +282,7 @@ impl Mounter {
                     ViewKind::WebView | ViewKind::Video | ViewKind::Native => {
                         crate::native::resized(view)
                     }
-                    _ => {}
+                    _ => crate::shader::resized(surface, view),
                 }
             }
             MountItem::ViewStyle { id, style } => {
@@ -305,6 +308,7 @@ impl Mounter {
                     view.state_mut().events = *events;
                     crate::input::events_changed(surface, view);
                     crate::access::events_changed(view);
+                    crate::file_drop::events_changed(surface, view);
                 }
             }
             MountItem::Image {
@@ -377,6 +381,11 @@ impl Mounter {
             MountItem::Canvas { id, drawing } => {
                 if let Some(view) = &self.get(*id) {
                     crate::canvas::set(surface, view, drawing.clone());
+                }
+            }
+            MountItem::Shader { id, layer } => {
+                if let Some(view) = &self.get(*id) {
+                    crate::shader::set(surface, view, layer.clone());
                 }
             }
             MountItem::Gestures { id, values } => {

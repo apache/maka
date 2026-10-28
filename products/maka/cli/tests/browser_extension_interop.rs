@@ -18,7 +18,7 @@
  */
 
 // Task-owned integration consumer of the actual CLI business Host.
-// No native host, browser protocol, NativeContext, Run or grant implementation.
+// No native host, browser protocol, ExtensionContext, Run or grant implementation.
 #![cfg(target_os = "linux")]
 
 use http_body_util::{BodyExt, Full};
@@ -64,7 +64,7 @@ struct Input {
     main_pid: u32,
     chrome_pid: u32,
     ready: Value,
-    adapter: String,
+    provider: String,
     extension_id: String,
     fixture_url: String,
     output: PathBuf,
@@ -113,7 +113,7 @@ fn process(pid: u32) -> Result<Value> {
         json!({"pid":pid,"ppid":parent,"executable":executable,"argv":args,"stat":std::fs::read_to_string(base.join("stat"))?,"status":status}),
     )
 }
-fn same_main_native_processes(input: &Input, evidence: &Evidence) -> Result<usize> {
+fn same_main_extension_processes(input: &Input, evidence: &Evidence) -> Result<usize> {
     let mut count = 0;
     for entry in std::fs::read_dir("/proc")? {
         let entry = entry?;
@@ -589,7 +589,7 @@ async fn approve_actual_computer(
 /// task namespace containing the actual Main binary, actual Chrome and install.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Root-created isolated actual Main Host and Chrome"]
-async fn actual_main_cli_native_discovery() -> Result<()> {
+async fn actual_main_cli_extension_discovery() -> Result<()> {
     let input: Input =
         serde_json::from_slice(&std::fs::read(std::env::var("MAKA_MAIN_INTEROP_INPUT")?)?)?;
     if input.main_binary != Path::new("/home/test/bin/maka")
@@ -598,14 +598,14 @@ async fn actual_main_cli_native_discovery() -> Result<()> {
     {
         return Err("canonical actual Main path/SHA mismatch".into());
     }
-    if !["original", "own"].contains(&input.adapter.as_str())
+    if !["chatgpt", "maka"].contains(&input.provider.as_str())
         || input.extension_id.len() != 32
         || !input
             .extension_id
             .bytes()
             .all(|b| (b'a'..=b'p').contains(&b))
     {
-        return Err("actual adapter/extension identity invalid".into());
+        return Err("actual provider/extension identity invalid".into());
     }
     let fixture = reqwest::Url::parse(&input.fixture_url)?;
     if fixture.scheme() != "http" || fixture.host_str() != Some("127.0.0.1") {
@@ -672,15 +672,15 @@ async fn actual_main_cli_native_discovery() -> Result<()> {
         )?;
         return Err("actual committed Computer desktop is not explicitly local; WSL Auto/Windows refused before Cua".into());
     }
-    // CLI selectors differ from the actual NativeEndpointIdentity.adapter:
+    // CLI selectors differ from the actual ExtensionEndpointIdentity.adapter:
     // Core publishes the installed registration host_name unchanged. This
     // expected value only filters actual public observations; it grants nothing.
-    let expected_host_name = match input.adapter.as_str() {
-        "original" => "com.openai.codexextension",
-        "own" => "org.apache.maka.browser_connector",
+    let expected_host_name = match input.provider.as_str() {
+        "chatgpt" => "com.openai.codexextension",
+        "maka" => "org.apache.maka.browser_connector",
         _ => return Err("unknown task adapter selector".into()),
     };
-    let prefix = format!("native:{}:{}:", expected_host_name, input.extension_id);
+    let prefix = format!("extension:{}:{}:", expected_host_name, input.extension_id);
     let code = format!(
         "var __mb = await cua.listBrowsers({{emit:false}}); var __ms = __mb.filter(b => b.type === 'extension' && b.metadata?.extensionId === {} && b.id.startsWith({})); if (__ms.length !== 1) throw new Error('exact native fixture browser not unique'); var __mbr = await cua.getBrowser({{id:__ms[0].id}}); var __mt = await __mbr.user.openTabs(); console.log({} + JSON.stringify({{browserId:__mbr.browserId,browserInfo:__ms[0],tabs:__mt}}));",
         serde_json::to_string(&input.extension_id)?,
@@ -731,8 +731,8 @@ async fn actual_main_cli_native_discovery() -> Result<()> {
         let history=canonical_history(&client,&evidence,&id).await?;
         let calls:Vec<_>=history.iter().filter(|chunk|chunk["turnId"]==final_execution["execution"]["turnId"]&&chunk["tool"]["call"]["name"]=="cua_repl").collect();
         if calls.is_empty()||!calls.iter().any(|chunk|chunk["tool"]["result"]["isError"]==false&&!chunk["tool"]["result"].is_null()) {return Err("actual canonical cua_repl result is not present and successful".into());}
-        let native_count=same_main_native_processes(&input,&evidence)?;
-        Ok(json!({"observation":observation,"execution":final_execution,"observed_same_main_native_processes":native_count,"scope":"Actual Main business Host/Engine/Computer native inventory only. No document read, input, child adoption, tagged GET, download, file-byte/custody or full parity claim."}))
+        let extension_count=same_main_extension_processes(&input,&evidence)?;
+        Ok(json!({"observation":observation,"execution":final_execution,"observed_same_main_extension_processes":extension_count,"scope":"Actual Main business Host/Engine/Computer extension inventory only. No document read, input, child adoption, tagged GET, download, file-byte/custody or full parity claim."}))
     }).await.unwrap_or_else(|_|Err("actual Main public consumer budget expired; original custody is not assumed settled".into()));
     if outcome.is_err() {
         if let (Some(id), Some(sent)) = (&session, &accepted) {

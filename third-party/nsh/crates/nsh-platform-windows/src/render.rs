@@ -5,7 +5,8 @@
 //! and reads the pixels back (`nsh test`'s screenshots). Both go through
 //! [`draw_view`], which draws one view and its subtree in this order:
 //!
-//! 1. shadows and background ([`crate::decor::draw_background`]),
+//! 1. shadows and background ([`crate::decor::draw_background`]), then
+//!    the shader ([`crate::shader`]) clipped to the rounded bounds,
 //! 2. the content, clipped to the bounds: text, image, canvas,
 //! 3. the children (clipped to the rounded bounds when the view clips),
 //! 4. the hosted items ([`crate::view::Native`]) and the scroll indicator,
@@ -772,6 +773,7 @@ fn paints_one_shape(view: &NshView, state: &ViewState) -> bool {
         && state.text.is_none()
         && state.image.is_none()
         && state.canvas.is_none()
+        && state.shader.is_none()
         && state.input.is_none()
         && state.scroll.is_none()
         && state.natives.is_empty()
@@ -911,6 +913,7 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     let state = view.state();
     crate::decor::draw_backdrop(cx, &state);
     crate::decor::draw_background(cx, &state);
+    crate::shader::draw(cx, &state);
     let clip = state.clips();
     let (w, h) = (state.frame.size.width.0, state.frame.size.height.0);
     // Most views (boxes, rows) have no content of their own: no clip for it.
@@ -1122,6 +1125,8 @@ fn draw_flat(cx: &mut DrawCx<'_>, view: &mut NshView, base: Mat4) {
 
 /// Draws the surface's window: the whole tree, then presents it.
 pub(crate) fn frame(surface: &Rc<Surface>) {
+    // Shader views that came into sight render for the frames after it.
+    crate::shader::reveal();
     let Ok(gfx) = gfx::get() else { return };
     let hwnd = surface.hwnd();
     if hwnd.is_invalid() {

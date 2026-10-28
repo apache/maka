@@ -80,6 +80,9 @@ impl UiAnimation {
                 for &(k, value) in canvas {
                     crate::canvas::set_arg(view, k, value);
                 }
+                if !canvas.is_empty() {
+                    crate::shader::set_args(view, canvas);
+                }
             },
         );
     }
