@@ -96,7 +96,7 @@ export function Workbench(props: {
       <If when={previewDialog()}>
         <Dialog
           animation="none"
-          onOpenChange={inputAction(props.closePreview, undefined)}
+          onOpenChange={inputAction(props.closePreview, null)}
           style={{ flex: 1, padding: 8, paddingTop: dialogTop(8), backgroundColor: C.scrim }}
         >
           {props.preview(false)}

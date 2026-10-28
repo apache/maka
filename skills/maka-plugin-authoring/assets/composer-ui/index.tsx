@@ -82,7 +82,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
     <View style={{ padding: 16, gap: 8, flexShrink: 0 }}>
       {input.request}
       <If when={input.session() === null}>
-        <Button onPress={input.chooseWorkspace}>
+        <Button accessibilityLabel="Choose workspace" onPress={input.chooseWorkspace}>
           <Text>Choose workspace</Text>
         </Button>
       </If>
@@ -152,6 +152,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                   <View style={{ flexDirection: 'row', gap: 8 }}>
                     <Text>{file().name}</Text>
                     <Button
+                      accessibilityLabel={`Remove attachment ${file().name}`}
                       onPress={inputAction(session.attachments.remove, {
                         owner: session.sessionId,
                         id: file().id,
@@ -173,6 +174,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                     </If>
                     <If when={row().kind === 'unknown'}>
                       <Button
+                        accessibilityLabel={`${row().recovery === 'inspect' ? 'Check' : 'Recover'} original upload ${row().name}`}
                         disabled={session.attachments.recovering() !== null}
                         onPress={inputAction(
                           row().recovery === 'inspect'
@@ -186,6 +188,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                     </If>
                     <If when={row().recovery === 'recover_or_abandon' && row().kind === 'unknown'}>
                       <Button
+                        accessibilityLabel={`Abandon unconfirmed upload ${row().name}`}
                         disabled={session.attachments.recovering() !== null}
                         onPress={inputAction(session.attachments.abandon, {
                           owner: session.sessionId,
@@ -197,6 +200,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                     </If>
                     <If when={row().kind === 'failed'}>
                       <Button
+                        accessibilityLabel={`Remove failed upload ${row().name}`}
                         onPress={inputAction(session.attachments.remove, {
                           owner: session.sessionId,
                           id: row().id,
@@ -211,6 +215,9 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 {input.models}
                 <Button
+                  accessibilityLabel={
+                    session.attachments.picker() ? 'Close attachment picker' : 'Attach files'
+                  }
                   disabled={blocked()}
                   onPress={inputAction(session.attachments.open, {
                     owner: session.sessionId,
@@ -220,6 +227,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                   <Text>Attach</Text>
                 </Button>
                 <Button
+                  accessibilityLabel={session.invocation() ? 'Queue message' : 'Send message'}
                   disabled={sendDisabled()}
                   onPress={inputAction(session.sendRendered, {
                     owner: session.sessionId,
@@ -232,6 +240,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
                 </Button>
                 <If when={session.invocation() !== null}>
                   <Button
+                    accessibilityLabel="Stop response"
                     disabled={session.stopping()}
                     onPress={inputAction(session.stop, session.invocation())}
                   >
@@ -247,6 +256,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
               </If>
               <If when={session.recoverable()}>
                 <Button
+                  accessibilityLabel="Recover original send receipt"
                   disabled={session.recovering()}
                   onPress={inputAction(session.recover, null)}
                 >
@@ -256,6 +266,7 @@ function Composer(props: UiEmbeddedViewProps<ComposerViewInput<JSX.Element>, JSX
               <Each of={session.unconfirmed()} key={(id) => id}>
                 {(id) => (
                   <Button
+                    accessibilityLabel={`Abandon unconfirmed send ${id()}`}
                     disabled={session.recovering()}
                     onPress={inputAction(session.abandon, id())}
                   >

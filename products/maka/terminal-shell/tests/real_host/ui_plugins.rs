@@ -699,7 +699,9 @@ export function activate(context) {
   const send = async () => {
     const client = scope();
     const draft = await client.loadDraft();
-    const id = await client.reserveSend(draft.revision, context.configuration.selection);
+    const id = await client.reserveSend(draft.revision, {
+      model: context.configuration.selection, thinkingLevel: null
+    });
     const operation = await client.confirmSend(id);
     sent.set('BOUND_SEND:' + operation.operationId);
   };
@@ -943,7 +945,7 @@ async fn installed_ui_module_uses_real_host_calls_and_tracks_configuration_and_d
             "Connections & models",
         )
         .await;
-        support::click_button(&mut view, "Dynamic preferences").await;
+        support::click_button(&mut view, "Settings section Dynamic preferences").await;
         wait_view(&mut view, |screen| screen.contains("DYNAMIC_SETTINGS_READY")).await;
         support::click_button(&mut view, "Close settings").await;
         tab_to_label(&mut view, "Message composer").await;

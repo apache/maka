@@ -292,6 +292,15 @@ impl Plan {
         self.ui.as_ref()
     }
 
+    /// One instance's own definition, independent of its providers' definitions.
+    pub fn definition_basis(&self, instance: &InstanceId) -> Result<String, Error> {
+        let instance = self
+            .instances
+            .get(instance)
+            .ok_or_else(|| Error::Composition("definition basis instance is missing".into()))?;
+        Ok(hash_basis(instance.activation_basis()))
+    }
+
     /// Source-driven lifetime of one consumer and its transitive effective providers.
     pub fn binding_basis(&self, instance: &InstanceId) -> Result<String, Error> {
         if !self.instances.contains_key(instance) {
@@ -315,11 +324,15 @@ impl Plan {
             .into_iter()
             .map(|id| self.instances[id].activation_basis())
             .collect();
-        let mut value = serde_json::to_value(projection).expect("activation basis is JSON");
-        value.sort_all_objects();
-        let encoded = serde_json::to_vec(&value).expect("activation basis is JSON");
-        Ok(format!("sha256-{}", hex::encode(Sha256::digest(encoded))))
+        Ok(hash_basis(projection))
     }
+}
+
+fn hash_basis(projection: impl Serialize) -> String {
+    let mut value = serde_json::to_value(projection).expect("activation basis is JSON");
+    value.sort_all_objects();
+    let encoded = serde_json::to_vec(&value).expect("activation basis is JSON");
+    format!("sha256-{}", hex::encode(Sha256::digest(encoded)))
 }
 
 enum PendingExport {

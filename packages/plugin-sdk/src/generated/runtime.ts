@@ -4668,6 +4668,7 @@ export interface UiInstance {
   package: PackageRef;
   configuration: unknown;
   module: string;
+  definitionBasis: string;
   bindingBasis: string;
   imports: {
     [k: string]: number | undefined;

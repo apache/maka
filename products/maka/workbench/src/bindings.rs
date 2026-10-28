@@ -429,7 +429,7 @@ impl ApplicationHost {
         &self,
         source: JsonValue,
         instance: JsonValue,
-        binding_basis: String,
+        definition_basis: String,
     ) -> Result<Instance<ui_services::UiScope>, String> {
         let source = serde_json::from_value(source).map_err(|error| error.to_string())?;
         let instance = serde_json::from_value(instance).map_err(|error| error.to_string())?;
@@ -437,7 +437,7 @@ impl ApplicationHost {
             self.owner.clone(),
             source,
             instance,
-            binding_basis,
+            definition_basis,
             self.initial_session.clone(),
         )?))
     }

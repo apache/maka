@@ -615,7 +615,10 @@ export function Conversation(props: ConversationProps) {
     const destination = historyDestination;
     const canPublish = () => {
       if (!ownsWindow(identity)) return false;
-      if (historyDestination === destination && current()) return true;
+      // Focus can cancel navigation before the reader has its first page.
+      // Keep that initial hydration; its cleared target cannot restore focus.
+      if (historyDestination === destination && (current() || historyWindow() === null))
+        return true;
       const previous = historyWindow();
       if (previous) historyWindow.set({ ...previous, identity });
       return false;
@@ -1203,7 +1206,7 @@ export function Conversation(props: ConversationProps) {
   const cancelNavigation = (turnId = navigatingTurn()) => {
     if (!alive || turnId !== navigatingTurn()) return;
     navigation.set(null);
-    if (windowTask !== null) {
+    if (windowTask !== null && historyWindow() !== null) {
       // A user scroll/focus change also revokes a pending replacement page.
       // Preserve the displayed window, never revive its earlier requests.
       historyIdentity = {};

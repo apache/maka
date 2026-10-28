@@ -39,13 +39,13 @@ const ATTACHMENT_PREFIX: &str = "asset:/attachment-image/";
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ScopedAsset {
     instance: InstanceId,
-    binding_basis: String,
+    definition_basis: String,
     uri: String,
 }
 
 pub(super) fn scoped_uri(
     instance: &InstanceId,
-    binding_basis: &str,
+    definition_basis: &str,
     uri: &str,
 ) -> Result<String, String> {
     if ![super::files::PREFIX, TOOL_PREFIX, ATTACHMENT_PREFIX]
@@ -57,7 +57,7 @@ pub(super) fn scoped_uri(
     let encoded = URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&ScopedAsset {
             instance: instance.clone(),
-            binding_basis: binding_basis.to_owned(),
+            definition_basis: definition_basis.to_owned(),
             uri: uri.to_owned(),
         })
         .map_err(|error| error.to_string())?,
@@ -97,7 +97,7 @@ impl Assets for HostAssets {
                     owner,
                     source_ref,
                     scoped.instance,
-                    scoped.binding_basis,
+                    scoped.definition_basis,
                     None,
                 )?;
                 let result = async {

@@ -46076,6 +46076,9 @@ export const contracts = {
                   module: {
                     type: 'string',
                   },
+                  definitionBasis: {
+                    type: 'string',
+                  },
                   bindingBasis: {
                     type: 'string',
                   },
@@ -46101,6 +46104,7 @@ export const contracts = {
                   'package',
                   'configuration',
                   'module',
+                  'definitionBasis',
                   'bindingBasis',
                   'imports',
                   'contributions',

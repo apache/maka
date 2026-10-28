@@ -731,7 +731,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     resources.openImage(image);
   };
   const closeSidebar = () => {
-    if (!alive || overlay()) return;
+    if (!alive || !(shell()?.visible() ?? false) || overlay()) return;
     sidebarExpanded.set(false);
     browserFocus.set(false);
     handle()?.focus();
@@ -739,7 +739,13 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const sidebarShown = () =>
     overlay()?.kind === 'sessions' || (sidebarExpanded() && (shell()?.sidebarDocked() ?? false));
   const toggleSidebar = (request: { sessionId: string | null; expanded: boolean }) => {
-    if (!alive || selected() !== request.sessionId || sidebarShown() !== request.expanded) return;
+    if (
+      !alive ||
+      !(shell()?.visible() ?? false) ||
+      selected() !== request.sessionId ||
+      sidebarShown() !== request.expanded
+    )
+      return;
     const current = overlay();
     if (current && current.kind !== 'sessions') return;
     if (!request.expanded) {

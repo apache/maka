@@ -291,15 +291,27 @@ export function HistoryAttachments(props: {
         >
           {(attachment) => {
             const original = attachment();
-            const read = {
-              sessionId: props.sessionId,
-              offset: 0,
-              source: {
-                kind: 'history' as const,
-                through: props.through,
-                position: { ...props.position! },
-                attachmentIndex: original.index,
-              },
+            const HistoryImage = () => {
+              const read = {
+                sessionId: props.sessionId,
+                offset: 0,
+                source: {
+                  kind: 'history' as const,
+                  through: props.through,
+                  position: { ...props.position! },
+                  attachmentIndex: original.index,
+                },
+              };
+              return (
+                <ImageThumbnail
+                  compact
+                  source={{ kind: 'attachment-image', read }}
+                  uri={host.assetUri(immutableAsset('attachment-image', read))}
+                  label={tr('Open attachment {name}', { name: original.name })}
+                  tooltip={`${original.name}\n${size(original.bytes)} · ${original.kind}`}
+                  preview={props.preview}
+                />
+              );
             };
             return (
               <If
@@ -323,14 +335,7 @@ export function HistoryAttachments(props: {
                   </View>
                 }
               >
-                <ImageThumbnail
-                  compact
-                  source={{ kind: 'attachment-image', read }}
-                  uri={host.assetUri(immutableAsset('attachment-image', read))}
-                  label={tr('Open attachment {name}', { name: original.name })}
-                  tooltip={`${original.name}\n${size(original.bytes)} · ${original.kind}`}
-                  preview={props.preview}
-                />
+                <HistoryImage />
               </If>
             );
           }}

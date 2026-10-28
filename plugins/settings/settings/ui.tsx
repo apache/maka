@@ -190,9 +190,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
             if (!input.opened()) return;
             untracked(() => {
               if (restoreOpen) restoreOpen = false;
-              else if (input.model) {
+              else {
                 route.set(defaultRoute);
-                connections.openModel(input.model);
+                if (input.model) connections.openModel(input.model);
               }
             });
           });

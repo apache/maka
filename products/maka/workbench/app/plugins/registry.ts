@@ -189,7 +189,7 @@ export function createPlugins() {
       const identity = JSON.stringify(instance.instance);
       const existing = old.get(identity);
       old.delete(identity);
-      if (existing && existing.instance.bindingBasis === instance.bindingBasis) {
+      if (existing && existing.instance.definitionBasis === instance.definitionBasis) {
         existing.source = value.source;
         existing.instance = instance;
         return existing;
@@ -222,7 +222,7 @@ export function createPlugins() {
     for (const entry of entries()) {
       if (entry.state().kind !== 'active') continue;
       const next = nextInstances.get(entry.identity);
-      if (!next || next.bindingBasis !== entry.instance.bindingBasis) return true;
+      if (!next || next.definitionBasis !== entry.instance.definitionBasis) return true;
     }
     const packages = new Set(value.instances.map((instance) => instance.package.revision));
     return [...importedPackages].some((revision) => !packages.has(revision));
@@ -332,7 +332,7 @@ export function createPlugins() {
         const bindings = await nativeHost.bindUi(
           entry.source,
           entry.instance.instance,
-          entry.instance.bindingBasis,
+          entry.instance.definitionBasis,
         );
         if (!entry.live) {
           closeBindings(bindings);

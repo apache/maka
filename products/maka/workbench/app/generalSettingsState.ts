@@ -387,8 +387,10 @@ export function createGeneralSettings(
       else if (!form) void load();
     },
     deactivate() {
+      const preserveDraft = dirty();
       enabled = false;
       cancelRead();
+      if (!preserveDraft) editor.set(null);
     },
     reset() {
       cancelRead();

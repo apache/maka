@@ -22,7 +22,10 @@ use super::{
     SubscriptionKind, execute,
 };
 use maka_app_client::Client;
-use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef};
+use maka_plugin_core::{
+    composition::InstanceId,
+    deployment::{DeploymentRef, management::UiInstance},
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use serde_json::json;
@@ -46,7 +49,7 @@ pub struct UiScope {
 pub(super) struct Services {
     owner: Arc<Owner>,
     instance: InstanceId,
-    binding_basis: String,
+    definition_basis: String,
     imports: JsonValue,
     routes: BTreeMap<String, Selection>,
     binding: Mutex<Option<Binding>>,
@@ -60,6 +63,7 @@ struct Selection {
 struct Binding {
     client: Client,
     imports: BTreeMap<String, Vec<String>>,
+    binding_basis: String,
 }
 
 impl UiScope {
@@ -67,7 +71,7 @@ impl UiScope {
         owner: Arc<Owner>,
         source: DeploymentRef,
         instance: InstanceId,
-        binding_basis: String,
+        definition_basis: String,
         initial_session: Option<String>,
     ) -> Result<Self, String> {
         instance.validate().map_err(|error| error.to_string())?;
@@ -78,7 +82,7 @@ impl UiScope {
         if source.state_domain != current.state_domain || source.deployment != current.deployment {
             return Err("UI bindings belong to another deployment".into());
         }
-        if metadata.binding_basis != binding_basis {
+        if metadata.definition_basis != definition_basis {
             return Err("UI service scope belongs to a retired binding generation".into());
         }
         let mut routes = BTreeMap::new();
@@ -103,7 +107,7 @@ impl UiScope {
             services: Arc::new(Services {
                 owner,
                 instance,
-                binding_basis,
+                definition_basis,
                 imports: serde_json::to_value(imports).map_err(|error| error.to_string())?,
                 routes,
                 binding: Mutex::new(None),
@@ -116,7 +120,7 @@ impl UiScope {
 
 impl Services {
     pub(super) fn asset_uri(&self, uri: &str) -> Result<String, String> {
-        super::assets::scoped_uri(&self.instance, &self.binding_basis, uri)
+        super::assets::scoped_uri(&self.instance, &self.definition_basis, uri)
     }
 
     fn ensure_open(&self) -> Result<(), String> {
@@ -126,56 +130,56 @@ impl Services {
         Ok(())
     }
 
-    fn current_source(&self) -> Result<DeploymentRef, String> {
+    fn current_source(&self) -> Result<(DeploymentRef, Arc<UiInstance>), String> {
         self.ensure_open()?;
         let (source, metadata) = self
             .owner
             .plugins
             .current_ui(&self.instance)
             .ok_or("UI service scope is no longer active")?;
-        if metadata.binding_basis != self.binding_basis {
+        if metadata.definition_basis != self.definition_basis {
             return Err("UI service scope belongs to a retired binding generation".into());
         }
-        Ok(source)
+        Ok((source, metadata))
     }
 
     async fn capture(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Binding>>, String> {
         let mut binding = self.binding.lock().await;
-        self.ensure_open()?;
-        if binding
-            .as_ref()
-            .is_some_and(|bound| !bound.client.binding_retired())
-        {
-            return Ok(binding);
-        }
         loop {
-            let source = self.current_source()?;
-            if binding
-                .as_ref()
-                .is_some_and(|bound| bound.client.binding_retired())
-            {
-                let old = binding.take().expect("retired binding checked above");
-                let _ = self.owner.spawn(async move { old.client.retire().await });
+            let (source, metadata) = self.current_source()?;
+            if binding.as_ref().is_some_and(|bound| {
+                bound.binding_basis == metadata.binding_basis && !bound.client.binding_retired()
+            }) {
+                return Ok(binding);
             }
-            if binding.is_none() {
-                let captured = self
-                    .owner
-                    .client
-                    .bind_ui(source.clone(), self.instance.clone())
-                    .await;
-                match (captured, self.current_source()) {
-                    (Ok((client, imports)), Ok(_)) => {
-                        *binding = Some(Binding { client, imports });
-                    }
-                    (Ok((client, _)), Err(error)) => {
+            let captured = self
+                .owner
+                .client
+                .bind_ui(source.clone(), self.instance.clone())
+                .await;
+            match (captured, self.current_source()) {
+                (Ok((client, imports)), Ok((_, latest))) => {
+                    if latest.binding_basis != metadata.binding_basis || client.binding_retired() {
                         let _ = self.owner.spawn(async move { client.retire().await });
-                        return Err(error);
+                        continue;
                     }
-                    (Err(_), Ok(latest)) if latest != source => continue,
-                    (Err(error), Ok(_)) | (_, Err(error)) => return Err(error),
+                    let old = binding.replace(Binding {
+                        client,
+                        imports,
+                        binding_basis: metadata.binding_basis.clone(),
+                    });
+                    if let Some(old) = old {
+                        let _ = self.owner.spawn(async move { old.client.retire().await });
+                    }
+                    return Ok(binding);
                 }
+                (Ok((client, _)), Err(error)) => {
+                    let _ = self.owner.spawn(async move { client.retire().await });
+                    return Err(error);
+                }
+                (Err(_), Ok((latest, _))) if latest != source => continue,
+                (Err(error), Ok(_)) | (_, Err(error)) => return Err(error),
             }
-            return Ok(binding);
         }
     }
 
