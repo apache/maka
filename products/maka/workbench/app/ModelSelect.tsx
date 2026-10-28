@@ -782,8 +782,7 @@ function ModelMenu(props: {
             flexShrink: 1,
             // On the desktop the list is a field like the search above it, so
             // a row cut off at its edge does not run into the count below.
-            borderRadius: 8,
-            backgroundColor: listFill(),
+            ...(platform.isTerminal ? {} : { borderRadius: 8, backgroundColor: C.background }),
           }}
         >
           {(id) => (
