@@ -154,9 +154,12 @@ export function Composer(props: {
         minHeight: 0,
         justifyContent: 'center',
         width: '100%',
-        maxWidth: 832,
+        // The conversation column's width: the box lines up with the
+        // messages and the turn navigation beside them.
+        maxWidth: 800,
         alignSelf: 'center',
         paddingHorizontal: 16,
+        paddingTop: hero() || platform.isTerminal ? 0 : 12,
         paddingBottom: hero() ? 16 : 8,
       }}
     >
