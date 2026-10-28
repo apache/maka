@@ -744,40 +744,9 @@ async fn owner_retirement_keeps_copied_fragments_until_source_collection() {
 async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_jobs() {
     let mut db = database().await;
     let registry = crate::context::prepared::lifetime::PreparedRegistry::new();
-    for (id, session) in [("parent", "session"), ("child", "child")] {
-        sqlx::query("INSERT INTO context_prepared_builds(id,identity,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,complete) VALUES(?1,?1,?1,?2,1,1,2,0,'node',1)")
-            .bind(id).bind(serde_json::json!({"session":session}).to_string()).execute(&mut db).await.unwrap();
-        sqlx::query(
-            "INSERT INTO context_prepared_heads(session_id,build_id,touched) VALUES(?,?,0)",
-        )
-        .bind(session)
-        .bind(id)
-        .execute(&mut db)
+    crate::context::prepared::tests::seed_shared_wire_gc_fixture(&mut db)
         .await
         .unwrap();
-    }
-    sqlx::query("INSERT INTO context_prepared_nodes VALUES('node',?)")
-        .bind(serde_json::json!({"left":null,"right":null,"content":"group"}).to_string())
-        .execute(&mut db)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO context_prepared_groups VALUES('group',?)")
-        .bind(serde_json::json!({"wire_id":"wire"}).to_string())
-        .execute(&mut db)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO context_prepared_payloads VALUES('wire','wire')")
-        .execute(&mut db)
-        .await
-        .unwrap();
-    for index in 0..260 {
-        sqlx::query("INSERT INTO context_prepared_chunks VALUES('wire',?,0,0,1,NULL,?)")
-            .bind(index)
-            .bind(vec![42u8])
-            .execute(&mut db)
-            .await
-            .unwrap();
-    }
     crate::context::prepared::gc::retire_owner(&mut db, "session")
         .await
         .unwrap();
@@ -795,6 +764,9 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert_eq!(retained, 260);
+    crate::context::prepared::tests::assert_refs(&mut db)
+        .await
+        .unwrap();
     crate::context::prepared::gc::retire_owner(&mut db, "child")
         .await
         .unwrap();
@@ -812,6 +784,9 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert_eq!(remaining, 132);
+    crate::context::prepared::tests::assert_refs(&mut db)
+        .await
+        .unwrap();
     while crate::context::prepared::gc::maintain(
         &mut db,
         &registry,
@@ -825,6 +800,9 @@ async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_j
         .await
         .unwrap();
     assert!(!exists);
+    crate::context::prepared::tests::assert_refs(&mut db)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -898,7 +876,7 @@ async fn group_and_page_queries_seek_the_order_index_instead_of_rescanning_the_o
             );
         } else {
             assert!(
-                details.iter().any(|detail| detail.contains("PRIMARY KEY")
+                details.iter().any(|detail| detail.starts_with("SEARCH ")
                     && detail.contains("owner_session_id=? AND source_sequence>?")),
                 "whole-window page must seek by source before ordering: {details:?}"
             );
@@ -1215,13 +1193,72 @@ async fn stable_changes_page_latest_revisions_from_the_current_source_cursor() {
     assert!(
         details
             .iter()
-            .any(|detail| detail.starts_with("SEARCH r USING PRIMARY KEY")
+            .any(|detail| detail.starts_with("SEARCH r USING ")
+                && detail.contains("owner_session_id=?")
                 && detail.contains("(source_sequence,source_index,revision)>(?,?,?)")),
         "each page must seek the current revision cursor: {details:?}"
     );
     assert!(
         !details.iter().any(|detail| detail.contains("TEMP B-TREE")),
         "source-key order must use the index: {details:?}"
+    );
+    let mut previous = 0_i64;
+    let mut work = Vec::new();
+    for history in [128_i64, 16_384] {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        sqlx::query("WITH RECURSIVE items(n) AS (VALUES(?1) UNION ALL SELECT n+1 FROM items WHERE n<?2)
+            INSERT INTO context_semantic_rows SELECT 'session',9,n,1,9,n,'invocation','invocation','earlier-'||n,
+                'assistant_part',0,0,1,0,json_set(?3,'$.id.sourceSequence',9,'$.id.itemIndex',n,'$.revision',1,'$.order.sourceSequence',9,'$.order.itemIndex',n)
+            FROM items")
+            .bind(previous+1).bind(history).bind(serde_json::to_string(&row).unwrap()).execute(&mut db).await.unwrap();
+        let steps = Arc::new(AtomicU64::new(0));
+        let observed = steps.clone();
+        db.lock_handle()
+            .await
+            .unwrap()
+            .set_progress_handler(1, move || {
+                observed.fetch_add(1, Ordering::Relaxed);
+                true
+            });
+        let page = sqlx::query(write::STABLE_CHANGES_SQL)
+            .bind("session")
+            .bind("invocation")
+            .bind(10_i64)
+            .bind(132_i64)
+            .bind(30_i64)
+            .bind(10_i64)
+            .bind(290_i64)
+            .bind(128_i64)
+            .fetch_all(&mut db)
+            .await;
+        db.lock_handle().await.unwrap().remove_progress_handler();
+        let keys = page
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row.get::<i64, _>(0),
+                    row.get::<i64, _>(1),
+                    row.get::<i64, _>(2),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            (133..=261)
+                .filter(|index| *index != 200)
+                .map(|index| (10, index, 30))
+                .collect::<Vec<_>>()
+        );
+        work.push(steps.load(Ordering::Relaxed));
+        previous = history;
+    }
+    assert!(
+        work[1] <= work[0] * 2,
+        "fixed revision page scanned earlier source history: {work:?}"
     );
     let stored = StoredEvent {
         sequence: 1000,

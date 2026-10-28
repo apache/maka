@@ -105,7 +105,10 @@ impl EventLog {
             let id=uuid::Uuid::new_v4().to_string();
             let lease=registry.acquire("wire_view",&id,Some(view.lease.clone()))?;
             sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,discovery_root) VALUES(?,?,?,?,?,?)")
-                .bind(&id).bind(&view.build_id).bind(&codec).bind(encoded(&format)?).bind(root).bind(&old_logical).execute(&mut *tx).await?;
+                .bind(&id).bind(&view.build_id).bind(&codec).bind(encoded(&format)?).bind(&root).bind(&old_logical).execute(&mut *tx).await?;
+            let mut refs=refs::RefBatch::default();
+            for root in [&root,&old_logical].into_iter().flatten() { refs.change(&mut tx,refs::Kind::Node,root,1).await?; }
+            refs.flush(&mut tx).await?;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
             in_flight.insert(assembly::Kind::Wire,&id,runtime::Generation::Wire(discovery::Wire::new(warm,old_logical)));
             lease.wake();
@@ -180,8 +183,8 @@ impl EventLog {
             assembly::require_discovered(&mut tx,assembly::Kind::Wire,&build.id).await?;
             let dirty:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_wire_dirty WHERE view_id=? AND group_sequence=?)").bind(&build.id).bind(sequence as i64).fetch_one(&mut *tx).await?;
             if !dirty {return Err(invalid("wire group was not selected for encoding"));}
-            let logical_content=tree::content_id(&mut tx,build.view.root.as_deref(),sequence).await?;
-            let mut group=tree::group(&mut tx,&logical_content).await?;
+            let mut refs=refs::RefBatch::default();
+            let (logical_content,group)=tree::logical_group_at(&mut tx,build.view.root.as_deref(),sequence).await?;
             if wire.message_count!=group.messages.len(){return Err(invalid("wire group changed the logical message count"));}
             let storage_id=uuid::Uuid::new_v4().to_string();
             sqlx::query("INSERT INTO context_prepared_payloads(storage_id) VALUES(?)").bind(&storage_id).execute(&mut *tx).await?;
@@ -205,9 +208,9 @@ impl EventLog {
             // A duplicate keeps the published complete body. Its new storage
             // remains unpublished and follows the bounded retirement queue.
             publish_payload(&mut tx, &storage_id, &wire_id).await?;
-            group.wire_id=Some(wire_id);group.wire_bytes=wire_bytes;
-            let content=tree::save_group(&mut tx,&group).await?;
-            assembly::stage(&mut tx,in_flight,assembly::Kind::Wire,&build.id,sequence,&content).await?;
+            let content=tree::save_wire_group(&mut tx,&mut refs,tree::WireGroup::new(logical_content,wire_id,wire_bytes)).await?;
+            assembly::stage(&mut tx,&mut refs,in_flight,assembly::Kind::Wire,&build.id,sequence,&content).await?;
+            refs.flush(&mut tx).await?;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;build.lease.wake();Ok(())
         })).await
     }

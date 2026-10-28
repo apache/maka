@@ -53,10 +53,8 @@ impl SizingPolicy {
 #[derive(Clone)]
 pub(crate) struct PageFrame {
     bounds: WindowBounds,
-    native_scale: f64,
     scaling_factor: f64,
     requested_image_size: [f64; 2],
-    sizing_policy: SizingPolicy,
 }
 
 impl PageFrame {
@@ -115,28 +113,14 @@ impl PageFrame {
         }
         Ok(Self {
             bounds,
-            native_scale,
             scaling_factor,
             requested_image_size,
-            sizing_policy,
         })
-    }
-
-    pub(crate) fn bounds(&self) -> &WindowBounds {
-        &self.bounds
-    }
-
-    pub(crate) fn native_scale(&self) -> f64 {
-        self.native_scale
     }
 
     /// Requested CGFloat dimensions precede the capture's independent ceil.
     pub(crate) fn requested_image_size(&self) -> [f64; 2] {
         self.requested_image_size
-    }
-
-    pub(crate) fn sizing_policy(&self) -> SizingPolicy {
-        self.sizing_policy
     }
 
     /// Apply the observation's one scalar on both axes, then translate into
@@ -269,7 +253,6 @@ mod tests {
         .unwrap();
         assert_eq!(frame.requested_image_size(), [200.5, 160.25]);
         assert_eq!(frame.screen_point([200.0, 160.0]).unwrap(), [90.0, 100.0]);
-        assert_eq!(frame.native_scale(), 2.0);
     }
 
     #[test]

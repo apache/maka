@@ -38,7 +38,7 @@ CREATE TABLE prepared_cache.context_prepared_dirty (
 CREATE INDEX prepared_cache.context_prepared_group_members ON context_prepared_dirty(build_id,COALESCE(leader_sequence,group_sequence),group_sequence);
 CREATE INDEX prepared_cache.context_prepared_pending ON context_prepared_dirty(build_id,group_sequence) WHERE done=0;
 CREATE TABLE prepared_cache.context_prepared_nodes (id TEXT PRIMARY KEY, node_json TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE prepared_cache.context_prepared_groups (id TEXT PRIMARY KEY, group_json TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE prepared_cache.context_prepared_groups (id TEXT PRIMARY KEY NOT NULL, group_json TEXT NOT NULL);
 CREATE TABLE prepared_cache.context_prepared_payloads (
  storage_id TEXT PRIMARY KEY, digest TEXT UNIQUE
 ) WITHOUT ROWID;
@@ -48,9 +48,12 @@ CREATE TABLE prepared_cache.context_prepared_chunks (
  storage_id TEXT NOT NULL, piece_index INTEGER NOT NULL, message_index INTEGER NOT NULL,
  item_start INTEGER NOT NULL, item_end INTEGER NOT NULL, metadata_json TEXT, bytes BLOB NOT NULL,
  PRIMARY KEY(storage_id,piece_index)
-) WITHOUT ROWID;
+);
 CREATE INDEX prepared_cache.context_prepared_wire_seek ON context_prepared_chunks(storage_id,message_index,piece_index);
 
+-- The previous logical root is needed while discovering codec dependencies.
+-- It remains owned even if a cancelled initializer is resumed after its parent
+-- build lease has retired, and is released when discovery completes.
 CREATE TABLE prepared_cache.context_prepared_wire_views (
     id TEXT PRIMARY KEY, build_id TEXT NOT NULL, codec TEXT NOT NULL,
     format_json TEXT NOT NULL, root TEXT, complete INTEGER NOT NULL DEFAULT 0, discovered INTEGER NOT NULL DEFAULT 0 CHECK(discovered IN (0,1)), discovery_root TEXT,
@@ -110,72 +113,6 @@ CREATE TABLE prepared_cache.context_prepared_refs (
 ) WITHOUT ROWID;
 CREATE INDEX prepared_cache.context_prepared_zero_refs ON context_prepared_refs(kind,id) WHERE refs=0;
 
-CREATE TRIGGER prepared_cache.context_prepared_builds_refs_insert AFTER INSERT ON context_prepared_builds
-BEGIN
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node', NEW.root, 1 WHERE NEW.root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-
-CREATE TRIGGER prepared_cache.context_prepared_builds_refs_update AFTER UPDATE OF root ON context_prepared_builds
-WHEN OLD.root IS NOT NEW.root
-BEGIN
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node', NEW.root, 1 WHERE NEW.root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.root;
-END;
-
-CREATE TRIGGER prepared_cache.context_prepared_builds_refs_delete AFTER DELETE ON context_prepared_builds
-BEGIN
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.root;
-END;
-
-CREATE TRIGGER prepared_cache.context_prepared_wire_views_refs_insert AFTER INSERT ON context_prepared_wire_views
-BEGIN
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node', NEW.root, 1 WHERE NEW.root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-
-CREATE TRIGGER prepared_cache.context_prepared_wire_views_refs_update AFTER UPDATE OF root ON context_prepared_wire_views
-WHEN OLD.root IS NOT NEW.root
-BEGIN
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node', NEW.root, 1 WHERE NEW.root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.root;
-END;
-
-CREATE TRIGGER prepared_cache.context_prepared_wire_views_refs_delete AFTER DELETE ON context_prepared_wire_views
-BEGIN
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.root;
-END;
-
-CREATE TRIGGER prepared_cache.context_prepared_nodes_refs_insert AFTER INSERT ON context_prepared_nodes
-BEGIN
-    INSERT INTO context_prepared_refs VALUES('node',NEW.id,0) ON CONFLICT(kind,id) DO NOTHING;
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node', json_extract(NEW.node_json,'$.left'), 1 WHERE json_extract(NEW.node_json,'$.left') IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node', json_extract(NEW.node_json,'$.right'), 1 WHERE json_extract(NEW.node_json,'$.right') IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'group', json_extract(NEW.node_json,'$.content'), 1 WHERE json_extract(NEW.node_json,'$.content') IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_nodes_refs_check BEFORE DELETE ON context_prepared_nodes
-WHEN COALESCE((SELECT refs FROM context_prepared_refs WHERE kind='node' AND id=OLD.id),0)!=0
-BEGIN SELECT RAISE(ABORT,'prepared object still has owners'); END;
-CREATE TRIGGER prepared_cache.context_prepared_nodes_refs_delete AFTER DELETE ON context_prepared_nodes
-BEGIN
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=json_extract(OLD.node_json,'$.left');
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=json_extract(OLD.node_json,'$.right');
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='group' AND id=json_extract(OLD.node_json,'$.content');
-    DELETE FROM context_prepared_refs WHERE kind='node' AND id=OLD.id;
-END;
-
-CREATE TRIGGER prepared_cache.context_prepared_groups_refs_insert AFTER INSERT ON context_prepared_groups
-BEGIN
-    INSERT INTO context_prepared_refs VALUES('group',NEW.id,0) ON CONFLICT(kind,id) DO NOTHING;
-    INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'wire', json_extract(NEW.group_json,'$.wire_id'), 1 WHERE json_extract(NEW.group_json,'$.wire_id') IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_groups_refs_check BEFORE DELETE ON context_prepared_groups
-WHEN COALESCE((SELECT refs FROM context_prepared_refs WHERE kind='group' AND id=OLD.id),0)!=0
-BEGIN SELECT RAISE(ABORT,'prepared object still has owners'); END;
-CREATE TRIGGER prepared_cache.context_prepared_groups_refs_delete AFTER DELETE ON context_prepared_groups
-BEGIN
-    UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='wire' AND id=json_extract(OLD.group_json,'$.wire_id');
-    DELETE FROM context_prepared_refs WHERE kind='group' AND id=OLD.id;
-END;
-
 -- A head publication uses UPSERT, whose conflict policy overrides trigger OR IGNORE.
 -- Explicit key-targeted UPSERT keeps repeated retirement requests idempotent.
 CREATE TRIGGER prepared_cache.context_prepared_heads_release_update AFTER UPDATE ON context_prepared_heads
@@ -195,63 +132,5 @@ CREATE TABLE prepared_cache.context_prepared_generation_nodes (
  kind TEXT NOT NULL, owner_id TEXT NOT NULL, node_id TEXT NOT NULL,
  PRIMARY KEY(kind,owner_id,node_id)
 ) WITHOUT ROWID;
-CREATE TRIGGER prepared_cache.context_prepared_generation_nodes_insert AFTER INSERT ON context_prepared_generation_nodes
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) VALUES('node',NEW.node_id,1) ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_generation_nodes_delete AFTER DELETE ON context_prepared_generation_nodes
-BEGIN
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.node_id;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_dirty_stage_insert AFTER INSERT ON context_prepared_dirty
-
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'group',NEW.content,1 WHERE NEW.content IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_dirty_stage_update AFTER UPDATE OF content ON context_prepared_dirty
-WHEN OLD.content IS NOT NEW.content
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'group',NEW.content,1 WHERE NEW.content IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='group' AND id=OLD.content;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_dirty_stage_delete AFTER DELETE ON context_prepared_dirty
-
-BEGIN
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='group' AND id=OLD.content;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_wire_dirty_stage_insert AFTER INSERT ON context_prepared_wire_dirty
-
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'group',NEW.content,1 WHERE NEW.content IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_wire_dirty_stage_update AFTER UPDATE OF content ON context_prepared_wire_dirty
-WHEN OLD.content IS NOT NEW.content
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'group',NEW.content,1 WHERE NEW.content IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='group' AND id=OLD.content;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_wire_dirty_stage_delete AFTER DELETE ON context_prepared_wire_dirty
-
-BEGIN
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='group' AND id=OLD.content;
-END;
 CREATE INDEX prepared_cache.context_prepared_uncovered ON context_prepared_dirty(build_id,group_sequence) WHERE covered=0;
 CREATE INDEX prepared_cache.context_prepared_unexpanded ON context_prepared_dirty(build_id,group_sequence) WHERE expanded=0;
-
--- The previous logical root is needed while discovering codec dependencies.
--- It remains owned even if a cancelled initializer is resumed after its parent
--- build lease has retired, and is released when discovery completes.
-CREATE TRIGGER prepared_cache.context_prepared_discovery_root_insert AFTER INSERT ON context_prepared_wire_views
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node',NEW.discovery_root,1 WHERE NEW.discovery_root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_discovery_root_update AFTER UPDATE OF discovery_root ON context_prepared_wire_views
-WHEN OLD.discovery_root IS NOT NEW.discovery_root
-BEGIN
- INSERT INTO context_prepared_refs(kind,id,refs) SELECT 'node',NEW.discovery_root,1 WHERE NEW.discovery_root IS NOT NULL ON CONFLICT(kind,id) DO UPDATE SET refs=refs+1;
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.discovery_root;
-END;
-CREATE TRIGGER prepared_cache.context_prepared_discovery_root_delete AFTER DELETE ON context_prepared_wire_views
-BEGIN
- UPDATE context_prepared_refs SET refs=refs-1 WHERE kind='node' AND id=OLD.discovery_root;
-END;

@@ -19,7 +19,7 @@
 
 use super::*;
 
-async fn drain(log: &EventLog) {
+pub(super) async fn drain(log: &EventLog) {
     for _ in 0..10_000 {
         let registry = log.prepared.clone();
         let more = log
@@ -30,6 +30,7 @@ async fn drain(log: &EventLog) {
             })
             .await
             .unwrap();
+        assert_log_refs(log).await;
         if !more {
             return;
         }
@@ -244,8 +245,6 @@ async fn empty_groups_and_large_manifests_have_nonzero_cache_weight() {
         .await
         .unwrap();
     let group = Group {
-        wire_id: None,
-        wire_bytes: 0,
         index_bytes: 0,
         dependencies: Vec::new(),
         members: (0..2048).collect(),
@@ -258,7 +257,7 @@ async fn empty_groups_and_large_manifests_have_nonzero_cache_weight() {
             }],
         },
     };
-    let content = tree::save_group(&mut db, &group).await.unwrap();
+    let content = store_group_fixture(&mut db, &group).await;
     let root = tree::insert(&mut db, None, 1, content, group)
         .await
         .unwrap();
@@ -280,6 +279,7 @@ async fn cancelled_partial_assembly_releases_execution_frontier_and_staging() {
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &BTreeMap::new()).await, 130);
+    assert_log_refs(&log).await;
     let mut saw_frontier = false;
     for _ in 0..100 {
         let id = build.id.clone();
@@ -300,7 +300,10 @@ async fn cancelled_partial_assembly_releases_execution_frontier_and_staging() {
                     let nodes = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_nodes")
                         .fetch_one(&mut *db)
                         .await?;
-                    gc::collect_unreachable(db).await?;
+                    let mut tx = db.begin().await?;
+                    gc::collect_unreachable(&mut tx).await?;
+                    assert_refs(&mut tx).await?;
+                    tx.commit().await?;
                     Ok((ready, frames, nodes))
                 })
             })

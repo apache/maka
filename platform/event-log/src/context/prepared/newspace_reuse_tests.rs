@@ -68,6 +68,7 @@ async fn drain(log: &EventLog) {
             .await
             .unwrap();
         if !more {
+            assert_log_refs(log).await;
             return;
         }
     }

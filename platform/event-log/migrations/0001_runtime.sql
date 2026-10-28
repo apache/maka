@@ -398,7 +398,7 @@ CREATE TABLE recall_documents (
 CREATE INDEX recall_document_turn ON recall_documents(session_id, turn_id, source_sequence, item_index);
 CREATE INDEX recall_document_context ON recall_documents(session_id, source_sequence, item_index)
     WHERE body<>'' OR role IN ('tool_call','tool_result');
-CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=full);
+CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=none);
 CREATE TRIGGER recall_document_deleted AFTER DELETE ON recall_documents BEGIN
     DELETE FROM recall_terms WHERE rowid=old.id;
 END;
@@ -592,7 +592,7 @@ CREATE TABLE context_semantic_rows (
     unknown_only INTEGER NOT NULL,
     row_json TEXT NOT NULL,
     PRIMARY KEY(owner_session_id,source_sequence,source_index,revision)
-) WITHOUT ROWID;
+);
 
 CREATE TABLE context_semantic_fragments (
     source_sequence INTEGER NOT NULL,
@@ -608,7 +608,7 @@ CREATE TABLE context_semantic_fragment_pieces (
     piece_index INTEGER NOT NULL,
     bytes BLOB NOT NULL,
     PRIMARY KEY(source_sequence,source_index,piece_index)
-) WITHOUT ROWID;
+);
 
 CREATE TABLE context_semantic_cuts (
     owner_session_id TEXT NOT NULL,
@@ -1033,7 +1033,7 @@ CREATE INDEX context_semantic_row_order ON context_semantic_rows(owner_session_i
 
 CREATE INDEX context_semantic_invocation_rows ON context_semantic_rows(owner_session_id,invocation_id,kind,source_sequence,source_index,revision);
 
-CREATE INDEX context_semantic_unknown_rows ON context_semantic_rows(owner_session_id,unknown_only,source_sequence,order_sequence) WHERE unknown_only=1;
+CREATE INDEX context_semantic_unknown_rows ON context_semantic_rows(owner_session_id,unknown_only,source_sequence,order_sequence,source_index,revision) WHERE unknown_only=1;
 
 CREATE INDEX context_semantic_notifications ON context_semantic_rows(owner_session_id,invocation_id,source_sequence,source_index,revision) WHERE kind='notification';
 

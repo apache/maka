@@ -154,6 +154,154 @@ async fn duplicate_wire_and_failed_encoding_preserve_pages_metadata_and_identity
         .await
         .unwrap();
     assert_eq!(counts, (1, 0));
+    assert_log_refs(&log).await;
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn wire_envelope_failure_retries_the_same_build_without_changing_logical_snapshot() {
+    async fn snapshot(log: &EventLog, view: &PreparedView) -> serde_json::Value {
+        let group = log.prepared_semantic_group(view, 1).await.unwrap().unwrap();
+        serde_json::to_value((
+            group.rows,
+            group.manifest,
+            group.skip,
+            view.message_count,
+            &view.breakdown,
+            log.prepared_prefix_identity(view, 1).await.unwrap(),
+        ))
+        .unwrap()
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("wire-retry.sqlite"))
+        .await
+        .unwrap();
+    seed(&log, 1, 1, false).await;
+    log.connection
+        .run(|db| {
+            Box::pin(async move {
+                let payload = maka_agent_facts::history::semantic::Payload::Text(
+                    "captured logical row".into(),
+                );
+                sqlx::query("INSERT INTO context_semantic_fragments VALUES(1,0,1,0)")
+                    .execute(&mut *db)
+                    .await?;
+                sqlx::query("INSERT INTO context_semantic_fragment_pieces VALUES(1,0,0,?)")
+                    .bind(serde_json::to_vec(&payload)?)
+                    .execute(db)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let messages = vec![
+        Message::user("first 漢字🙂"),
+        Message::user("second logical message"),
+    ];
+    let values = BTreeMap::from([("1".into(), messages.clone())]);
+    let logical = log
+        .prepare_model_view(selection(1), "wire-retry", None)
+        .await
+        .unwrap();
+    assert_eq!(render(&log, &logical, &values).await, 1);
+    let view = log.finish_prepared(&logical).await.unwrap();
+    assert_eq!(view.message_count, 2);
+    let before = snapshot(&log, &view).await;
+    let build = log
+        .prepare_wire_view(&view, WireFormat::Responses, "fixture-v1", None)
+        .await
+        .unwrap();
+    let group = PreparedGroup { id: "1".into() };
+    let mut wrong = encoded_wire(&messages, WireFormat::Responses, "ordinary");
+    wrong.message_count = 3;
+    assert!(
+        log.put_prepared_wire_group(&build, &group, wrong)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("logical message count")
+    );
+    let root = view.root.clone();
+    let wire_view = build.id.clone();
+    log.prepared_store().unwrap().run(move |db,_|Box::pin(async move {
+        let logical_id=tree::content_id(db,root.as_deref(),1).await?;
+        sqlx::query("CREATE TEMP TABLE wire_fault_target(logical_id TEXT,view_id TEXT)").execute(&mut *db).await?;
+        sqlx::query("INSERT INTO wire_fault_target VALUES(?,?)").bind(logical_id).bind(wire_view).execute(&mut *db).await?;
+        sqlx::raw_sql("CREATE TEMP TRIGGER fail_wire_edge BEFORE UPDATE ON prepared_cache.context_prepared_refs
+            WHEN NEW.kind='group' AND NEW.id=(SELECT logical_id FROM wire_fault_target)
+              AND EXISTS(SELECT 1 FROM context_prepared_chunks)
+              AND EXISTS(SELECT 1 FROM context_prepared_wire_dirty WHERE view_id=(SELECT view_id FROM wire_fault_target) AND content IS NOT NULL)
+            BEGIN SELECT RAISE(ABORT,'wire logical edge fault'); END;").execute(db).await?;
+        Ok(())
+    })).await.unwrap();
+    let error = log
+        .put_prepared_wire_group(
+            &build,
+            &group,
+            encoded_wire(&messages, WireFormat::Responses, "ordinary"),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(&error, StoreError::Sqlx(sqlx::Error::Database(_))));
+    assert!(error.to_string().contains("wire logical edge fault"));
+    assert_eq!(snapshot(&log, &view).await, before);
+    assert_eq!(
+        log.prepared_wire_dirty_groups(&build, None, 8)
+            .await
+            .unwrap()
+            .iter()
+            .map(|group| group.id.as_str())
+            .collect::<Vec<_>>(),
+        ["1"]
+    );
+    log.prepared_store().unwrap().run(|db,_|Box::pin(async move {
+        let failed:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT COUNT(*) FROM context_prepared_payloads),(SELECT COUNT(*) FROM context_prepared_chunks),(SELECT COUNT(*) FROM context_prepared_wire_dirty WHERE content IS NOT NULL)").fetch_one(&mut *db).await?;
+        assert_eq!(failed,(0,0,0),"failed publication must roll back chunks, envelope staging and payload together");
+        assert_refs(db).await?;
+        sqlx::raw_sql("DROP TRIGGER fail_wire_edge; DROP TABLE wire_fault_target;").execute(db).await?;
+        Ok(())
+    })).await.unwrap();
+    log.put_prepared_wire_group(
+        &build,
+        &group,
+        encoded_wire(&messages, WireFormat::Responses, "ordinary"),
+    )
+    .await
+    .unwrap();
+    let first = log.finish_prepared_wire(&build).await.unwrap();
+    assert_eq!(first.message_count, view.message_count);
+    let expected: Vec<u8> = messages
+        .iter()
+        .flat_map(|message| serde_json::to_vec(&("ordinary", message)).unwrap())
+        .collect();
+    assert_eq!(bytes(&log, &first).await, expected);
+    let prefix = log.prepared_wire_prefix_identity(&first, 1).await.unwrap();
+    assert_eq!(snapshot(&log, &view).await, before);
+    let alternate = log
+        .prepare_wire_view(&view, WireFormat::Responses, "alternate", None)
+        .await
+        .unwrap();
+    let mut encoded = encoded_wire(
+        &messages,
+        WireFormat::Responses,
+        "different encoding and metadata",
+    );
+    encoded.codec = "alternate".into();
+    log.put_prepared_wire_group(&alternate, &group, encoded)
+        .await
+        .unwrap();
+    let alternate = log.finish_prepared_wire(&alternate).await.unwrap();
+    assert_eq!(alternate.message_count, view.message_count);
+    assert_ne!(bytes(&log, &alternate).await, expected);
+    lifetimes::drain(&log).await;
+    assert_eq!(bytes(&log, &first).await, expected);
+    assert_eq!(
+        log.prepared_wire_prefix_identity(&first, 1).await.unwrap(),
+        prefix
+    );
+    assert_eq!(snapshot(&log, &view).await, before);
+    assert_log_refs(&log).await;
     log.close().await.unwrap();
 }
 
@@ -166,7 +314,9 @@ async fn same_digest_reappears_while_old_storage_is_partially_collected() {
     log.prepared_store().unwrap().run(|connection, _in_flight| Box::pin(async move {
         let mut tx = connection.begin().await?;
         sqlx::query("INSERT INTO context_prepared_payloads VALUES('a-old','same-content')").execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO context_prepared_refs VALUES('wire','same-content',0)").execute(&mut *tx).await?;
+        let mut refs=refs::RefBatch::default();
+        refs.create(&mut tx,refs::Kind::Wire,"same-content").await?;
+        refs.flush(&mut tx).await?;
         for index in 0..260i64 {
             sqlx::query("INSERT INTO context_prepared_chunks VALUES('a-old',?,0,0,0,NULL,?)").bind(index).bind(vec![index as u8; 16]).execute(&mut *tx).await?;
         }
@@ -180,7 +330,16 @@ async fn same_digest_reappears_while_old_storage_is_partially_collected() {
             sqlx::query("INSERT INTO context_prepared_chunks VALUES('b-new',?,0,0,0,NULL,?)").bind(index).bind(vec![index as u8; 16]).execute(&mut *tx).await?;
         }
         wire::publish_payload(&mut tx, "b-new", "same-content").await?;
-        sqlx::query("INSERT INTO context_prepared_refs VALUES('wire','same-content',1)").execute(&mut *tx).await?;
+        let mut refs=refs::RefBatch::default();
+        let group=Group { index_bytes:0,dependencies:vec![],members:vec![1],messages:vec![],manifest:Default::default(),breakdown:Default::default() };
+        let logical_content=tree::save_group(&mut tx,&mut refs,&group).await?;
+        let (logical_id,_)=tree::logical_group(&mut tx,&logical_content).await?;
+        let content=tree::save_wire_group(&mut tx,&mut refs,tree::WireGroup::new(logical_id,"same-content".into(),4160)).await?;
+        sqlx::query("INSERT INTO context_prepared_builds(id,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,identity,discovered) VALUES('owner','fixture','{}',0,0,1,0,'owner',1)").execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,discovered) VALUES('wire-owner','owner','fixture',?,1)").bind(encoded(&WireFormat::Responses)?).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO context_prepared_wire_dirty(view_id,group_sequence) VALUES('wire-owner',1)").execute(&mut *tx).await?;
+        assembly::stage(&mut tx,&mut refs,&runtime::InFlight::default(),assembly::Kind::Wire,"wire-owner",1,&content).await?;
+        refs.flush(&mut tx).await?;
         gc::collect_unreachable(&mut tx).await?;
         let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_chunks WHERE storage_id='a-old'").fetch_one(&mut *tx).await?;
         assert_eq!(remaining, 4);
@@ -191,6 +350,7 @@ async fn same_digest_reappears_while_old_storage_is_partially_collected() {
         assert_eq!(storage, "b-new");
         let pieces: Vec<Vec<u8>> = sqlx::query_scalar("SELECT bytes FROM context_prepared_chunks WHERE storage_id=? ORDER BY piece_index").bind(storage).fetch_all(&mut *tx).await?;
         assert_eq!(pieces, (0..260).map(|index|vec![index as u8;16]).collect::<Vec<_>>());
+        assert_refs(&mut tx).await?;
         tx.rollback().await?;
         Ok(())
     })).await.unwrap();

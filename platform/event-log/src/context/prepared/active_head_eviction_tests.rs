@@ -41,6 +41,7 @@ async fn retained_generation_extends_incrementally_after_head_eviction() {
     let (wire, encoded) = encode(&log, &retained, WireFormat::Responses, &values).await;
     assert_eq!(encoded, 2);
     let old_bytes = bytes(&log, &wire).await;
+    assert_log_refs(&log).await;
     log.prepared_store()
         .unwrap()
         .run(|connection, _in_flight| {
@@ -53,6 +54,7 @@ async fn retained_generation_extends_incrementally_after_head_eviction() {
         })
         .await
         .unwrap();
+    assert_log_refs(&log).await;
     seed(&log, 4, 4, false).await;
     let next = log
         .prepare_model_view(selection(4), "active", Some(&retained))
@@ -103,5 +105,6 @@ async fn retained_generation_extends_incrementally_after_head_eviction() {
     let (cold_wire, encoded) = encode(&log, &cold, WireFormat::Responses, &values).await;
     assert_eq!(encoded, 3);
     assert_eq!(bytes(&log, &next_wire).await, bytes(&log, &cold_wire).await);
+    assert_log_refs(&log).await;
     log.close().await.unwrap();
 }
