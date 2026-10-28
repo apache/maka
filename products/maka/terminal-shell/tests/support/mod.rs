@@ -1530,12 +1530,13 @@ pub struct ReplyGate {
 }
 impl ReplyGate {
     pub fn start(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "send", "mutation", false, None)
+        Self::for_method(directory, target, "agent", "send", "mutation", false, None)
     }
     pub fn global_instructions(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(
             directory,
             target,
+            "agent",
             "updateGlobalInstructions",
             "mutation",
             false,
@@ -1543,15 +1544,26 @@ impl ReplyGate {
         )
     }
     pub fn directories(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "directories", "finished", false, None)
+        Self::for_method(
+            directory,
+            target,
+            "agent",
+            "directories",
+            "finished",
+            false,
+            None,
+        )
     }
     pub fn respond(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "respond", "mutation", false, None)
+        Self::for_method(
+            directory, target, "agent", "respond", "mutation", false, None,
+        )
     }
     pub fn stop_computer_app(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(
             directory,
             target,
+            "agent",
             "stopComputerApp",
             "mutation",
             false,
@@ -1560,29 +1572,48 @@ impl ReplyGate {
     }
     #[cfg(unix)]
     pub fn history(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "history", "finished", false, None)
+        Self::for_method(
+            directory, target, "agent", "history", "finished", false, None,
+        )
     }
     #[cfg(unix)]
     pub fn disconnect_history(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "history", "finished", true, None)
+        Self::for_method(
+            directory, target, "agent", "history", "finished", true, None,
+        )
     }
     #[cfg(unix)]
     pub fn disconnect_watch(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "watch", "item", true, None)
+        Self::for_method(directory, target, "agent", "watch", "item", true, None)
     }
     pub fn before_history(directory: &Path, target: PathBuf, cursor: Value) -> Self {
         Self::for_method(
             directory,
             target,
+            "agent",
             "history",
             "finished",
             false,
             Some(cursor),
         )
     }
+    /// The settings query that resolves the model, which a send awaits before
+    /// it reserves the draft.
+    pub fn resolve_model(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(
+            directory,
+            target,
+            "settings",
+            "resolveModel",
+            "finished",
+            false,
+            None,
+        )
+    }
     fn for_method(
         directory: &Path,
         target: PathBuf,
+        endpoint: &'static str,
         method: &'static str,
         reply: &'static str,
         disconnect: bool,
@@ -1615,7 +1646,7 @@ impl ReplyGate {
                                 let (up_read,mut up_write)=tokio::io::split(upstream);
                                 let selected=Arc::new(AtomicBool::new(false)); let mark=selected.clone();
                                 let up=async move {let mut reader=wire::Reader::new(down_read); while let Ok(value)=reader.read::<Value>().await {
-                                    if value["endpoint"]=="agent" && value["method"]==method && before.as_ref().is_none_or(|cursor| value["input"]["position"]["kind"]=="before" && value["input"]["position"]["cursor"]==*cursor) {mark.store(true,Ordering::SeqCst);}
+                                    if value["endpoint"]==endpoint && value["method"]==method && before.as_ref().is_none_or(|cursor| value["input"]["position"]["kind"]=="before" && value["input"]["position"]["cursor"]==*cursor) {mark.store(true,Ordering::SeqCst);}
                                     if wire::write(&mut up_write,&value).await.is_err(){break;}
                                 }
                                 let _ = up_write.shutdown().await;

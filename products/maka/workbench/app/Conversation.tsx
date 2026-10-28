@@ -39,7 +39,8 @@ import {
   host,
   loadDraft,
   saveDraft,
-  sendDraft,
+  reserveSend,
+  confirmSend,
   pendingSends,
   recoverSend,
   abandonSend,
@@ -484,6 +485,10 @@ export function Conversation(props: ConversationProps) {
   let editEpoch = 0;
   let pendingDraft: (AttachmentEdit & { text: string }) | null = null;
   let saveTask: Promise<void> | null = null;
+  // From Enter until the send is reserved, the saved draft must stay the
+  // revision being sent. Edits made meanwhile show at once and are saved after.
+  let holding = false;
+  let heldDraft: (AttachmentEdit & { text: string }) | null = null;
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -491,8 +496,7 @@ export function Conversation(props: ConversationProps) {
     changed() {
       if (!alive || !draftReady()) return;
       editEpoch += 1;
-      pendingDraft = { text: draft(), ...attachments.snapshot() };
-      startSave();
+      queueDraft({ text: draft(), ...attachments.snapshot() });
     },
   });
 
@@ -1335,12 +1339,29 @@ export function Conversation(props: ConversationProps) {
       await saveTask;
     }
   };
+  const queueDraft = (edit: AttachmentEdit & { text: string }) => {
+    if (holding) {
+      heldDraft = edit;
+      return;
+    }
+    pendingDraft = edit;
+    startSave();
+  };
   const changeDraft = (text: string) => {
     if (!alive || !draftReady()) return;
     editEpoch += 1;
     draft.set(text);
-    pendingDraft = { text, ...attachments.snapshot() };
+    queueDraft({ text, ...attachments.snapshot() });
+  };
+  // Saves what was edited while a send was being reserved; whether there was any.
+  const releaseHeld = () => {
+    holding = false;
+    const edit = heldDraft;
+    heldDraft = null;
+    if (edit === null || !alive) return false;
+    pendingDraft = edit;
     startSave();
+    return true;
   };
   const acceptRecoveredDraft = (
     stored: { revision: number; text: string; attachments: DraftAttachment[] },
@@ -1551,6 +1572,7 @@ export function Conversation(props: ConversationProps) {
     const files = [...attachments.files()];
     sending.set(true);
     error.set('');
+    holding = true;
     try {
       const model = await selection(expectedBackend);
       if (!alive || model === null) return;
@@ -1558,7 +1580,7 @@ export function Conversation(props: ConversationProps) {
       await flushDraft();
       if (!alive) return;
       if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
-      if (editEpoch !== epoch)
+      if (editEpoch !== epoch && heldDraft === null)
         throw new UiError('The draft changed before confirmation. Send again to confirm it.');
       if (
         expectedBackend !== undefined &&
@@ -1568,12 +1590,20 @@ export function Conversation(props: ConversationProps) {
       // The native journal consumes only this exact revision. New edits keep
       // saving while confirmation waits and never inherit this send attempt.
       receiptsKnown.set(false);
-      const sent = await sendDraft(client, draftRevision, model);
+      const operation = await reserveSend(client, draftRevision, model);
+      const typedAhead = releaseHeld();
+      const sent = await confirmSend(client, operation);
       if (!alive) return;
       settleReply(sent.reply, text, epoch, files);
+      // Text typed before the send was reserved continues the sent message in
+      // the composer; once it is accepted, only the continuation stays. A
+      // rejected send leaves its text in the draft, so the whole edit stays.
+      if (typedAhead && acceptedSend(sent.reply, sessionId) && draft().startsWith(text))
+        changeDraft(draft().slice(text.length));
     } catch (reason) {
       report(reason);
     } finally {
+      releaseHeld();
       try {
         if (alive) {
           const operations = await pendingSends(client);
@@ -1760,6 +1790,12 @@ export function Conversation(props: ConversationProps) {
         return false;
       }
       await flushDraft();
+      // Text typed while a send is being reserved can only be saved once it
+      // is reserved; switching now would dispose it.
+      if (heldDraft !== null) {
+        notice.set(uiMessage('Wait for the message to send before switching.'));
+        return false;
+      }
       return !savingFailed();
     },
     focus() {

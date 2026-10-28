@@ -1242,6 +1242,11 @@ export const conversationMessages = {
     '查看本轮模型用量',
     '查看本輪模型用量',
   ],
+  'Wait for the message to send before switching.': [
+    'Wait for the message to send before switching.',
+    '请等消息发出后再切换。',
+    '請等訊息送出後再切換。',
+  ],
   'Wait for the saved draft before switching.': [
     'Wait for the saved draft before switching.',
     '请等待草稿保存后再切换。',
