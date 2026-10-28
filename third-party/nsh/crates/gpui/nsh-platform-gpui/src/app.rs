@@ -598,30 +598,40 @@ impl AppView {
         &self.surface
     }
 
+    /// Files dragged in from another application moved over the window
+    /// (`render`'s drop layer, [`crate::file_drop`]).
+    fn drag_files(
+        &mut self,
+        event: &gpui::DragMoveEvent<gpui::ExternalPaths>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (x, y) = self.root_point(event.event.position);
+        crate::file_drop::update(&self.surface, x, y);
+        crate::rt::flush(cx);
+    }
+
+    /// Files dragged in from another application were dropped.
+    fn drop_files(
+        &mut self,
+        paths: &gpui::ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (x, y) = self.root_point(window.mouse_position());
+        crate::file_drop::perform(&self.surface, x, y, paths.paths());
+        crate::rt::flush(cx);
+    }
+
+    /// A window point in the surface's root points.
+    fn root_point(&self, position: gpui::Point<gpui::Pixels>) -> (f32, f32) {
+        let (ox, oy) = self.surface.origin.get();
+        (f32::from(position.x) - ox, f32::from(position.y) - oy)
+    }
+
     /// Tab: the surface's next text field; past its last one, the window's
     /// next tab stop (the embedding app's widgets), or the first field again
     /// when there is none.
-    /// Files dragged in from outside the window (Finder, the desktop) and
-    /// dropped: GPUI turns the drop into a mouse up carrying them, which
-    /// only its own elements hear (`render`'s drop layer).
-    fn drop_files(&mut self, paths: &gpui::ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
-        let uris: Vec<String> = paths
-            .paths()
-            .iter()
-            .filter(|path| path.is_absolute())
-            .map(|path| nsh_core::platform::clipboard::file_url(&path.to_string_lossy()))
-            .collect();
-        if uris.is_empty() {
-            return;
-        }
-        let (ox, oy) = self.surface.origin.get();
-        let position = window.mouse_position();
-        let (x, y) = (f32::from(position.x) - ox, f32::from(position.y) - oy);
-        if crate::input::file_drop(&self.surface, x, y, uris) {
-            crate::rt::flush(cx);
-        }
-    }
-
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
         self.tab(false, window, cx);
     }
@@ -861,6 +871,16 @@ impl Render for AppView {
         let surface = crate::dev::wrap(self, surface.into_any_element(), cx);
         // The window's chrome (title bar, menu bar) goes around the surface.
         let content = crate::chrome::render(&self.surface, surface, window, cx);
+        let dragging = cx.has_active_drag();
+        // A file drag that left the window, or ended without a drop, leaves
+        // its destination (GPUI redraws the window as it ends).
+        if !dragging && crate::file_drop::active(&self.surface) {
+            let surface = self.surface.clone();
+            cx.defer(move |cx| {
+                crate::file_drop::clear(&surface);
+                crate::rt::flush(cx);
+            });
+        }
         // The div registers the view's tab stop, which only GPUI's own
         // elements can.
         gpui::div()
@@ -870,14 +890,15 @@ impl Render for AppView {
             .on_action(cx.listener(Self::focus_prev))
             .size_full()
             .child(content)
-            // While something is dragged, a layer over the surface takes the
-            // drop: the surface's hitbox blocks the mouse for the elements
-            // behind it, this div included.
-            .when(cx.has_active_drag(), |div| {
+            // While something is dragged, a layer over the surface follows
+            // and takes files from other applications: the surface's hitbox
+            // blocks the mouse for the elements behind it, this div included.
+            .when(dragging, |div| {
                 div.child(
                     gpui::div()
                         .absolute()
                         .inset_0()
+                        .on_drag_move(cx.listener(Self::drag_files))
                         .on_drop(cx.listener(Self::drop_files)),
                 )
             })

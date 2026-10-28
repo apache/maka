@@ -1600,48 +1600,89 @@ fn files_dropped_from_outside_reach_the_view_under_them(cx: &mut TestAppContext)
     let source = r#"
 import { mount, signal, View } from "nsh";
 import { Input } from "nsh/base";
-const dropped = signal("none");
+const log = signal<string[]>([]);
+const add = (entry: string) => log.set([...log(), entry]);
 mount(() => <View style={{ flex: 1 }}>
-  <View onFileDrop={(e) => dropped.set("outer " + e.uris.join(";"))} style={{ height: 100 }}>
-    <View onFileDrop={(e) => dropped.set("inner " + e.uris.join(";"))} style={{ height: 40 }} />
+  <View
+    onFileDragEnter={() => add("enter outer")}
+    onFileDragLeave={() => add("leave outer")}
+    onFileDrop={(e) => add("drop outer " + e.uris.join(";"))}
+    style={{ height: 100 }}
+  >
+    <View
+      onFileDragEnter={() => add("enter inner")}
+      onFileDragLeave={() => add("leave inner")}
+      onFileDrop={(e) => add("drop inner " + e.uris.join(";"))}
+      style={{ height: 40 }}
+    />
   </View>
   <View style={{ height: 100 }} />
-  <Input testID="report" readonly value={dropped()} style={{ height: 30 }} />
+  <Input autoFocus readonly value={log().join(", ") || "none"} style={{ height: 30 }} />
 </View>);
 "#;
     let code = nsh_bundler::compile_module("App.tsx", source, &[]).unwrap();
     let (view, cx) =
         cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
     view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
-    wait_for_report(&view, cx, "none");
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "none");
     let origin = view.read_with(cx, |view, _| view.surface().origin.get());
-    let drop = |cx: &mut VisualTestContext, y: f32, paths: &[&str]| {
-        let position = gpui::point(gpui::px(origin.0 + 10.0), gpui::px(origin.1 + y));
-        let paths = gpui::ExternalPaths(paths.iter().map(std::path::PathBuf::from).collect());
+    let at = |y: f32| gpui::point(gpui::px(origin.0 + 10.0), gpui::px(origin.1 + y));
+    let send = |cx: &mut VisualTestContext, event: gpui::FileDropEvent| {
         cx.update(|window, cx| {
-            window.dispatch_event(
-                gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Entered { position, paths }),
-                cx,
-            );
+            window.dispatch_event(gpui::PlatformInput::FileDrop(event), cx);
         });
-        // The drag's frame, which lays the drop layer over the surface.
         cx.run_until_parked();
-        cx.update(|window, cx| {
-            window.dispatch_event(
-                gpui::PlatformInput::FileDrop(gpui::FileDropEvent::Submit { position }),
-                cx,
-            );
-        });
     };
-    // The innermost listener under the drop hears it; relative paths are left out.
-    drop(cx, 20.0, &["/tmp/a.txt", "b.txt"]);
-    wait_for_report(&view, cx, "inner file:///tmp/a.txt");
-    drop(cx, 70.0, &["/tmp/c.txt"]);
-    wait_for_report(&view, cx, "outer file:///tmp/c.txt");
+    let enter = |cx: &mut VisualTestContext, y: f32, paths: &[&str]| {
+        let paths = gpui::ExternalPaths(paths.iter().map(std::path::PathBuf::from).collect());
+        send(
+            cx,
+            gpui::FileDropEvent::Entered {
+                position: at(y),
+                paths,
+            },
+        );
+        // The platform's next report, once the drag's frame has laid the
+        // drop layer over the surface.
+        send(cx, gpui::FileDropEvent::Pending { position: at(y) });
+    };
+    // The innermost listener under the drag is the destination; moving
+    // leaves it for the next one, and the drop goes there, without the
+    // relative path.
+    enter(cx, 20.0, &["/tmp/a b.txt", "b.txt"]);
+    wait_for(&view, cx, "enter inner");
+    send(cx, gpui::FileDropEvent::Pending { position: at(70.0) });
+    wait_for(&view, cx, "enter inner, leave inner, enter outer");
+    send(cx, gpui::FileDropEvent::Submit { position: at(70.0) });
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer",
+    );
+    // Leaving the window leaves the destination.
+    enter(cx, 20.0, &["/tmp/c.txt"]);
+    send(cx, gpui::FileDropEvent::Exited);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
     // Where no view listens, the drop goes nowhere.
-    drop(cx, 150.0, &["/tmp/d.txt"]);
-    cx.run_until_parked();
-    wait_for_report(&view, cx, "outer file:///tmp/c.txt");
+    enter(cx, 150.0, &["/tmp/d.txt"]);
+    send(
+        cx,
+        gpui::FileDropEvent::Submit {
+            position: at(150.0),
+        },
+    );
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
 }
 
 fn presses_carry_where_the_pointer_was(cx: &mut TestAppContext) {

@@ -36,6 +36,7 @@ mod decor;
 #[cfg(feature = "dev")]
 pub mod dev;
 mod events;
+mod file_drop;
 mod focus_return;
 mod geom;
 mod image;

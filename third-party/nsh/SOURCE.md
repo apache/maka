@@ -213,6 +213,12 @@ input listening for file drops. Other input fields keep their literal text.
 The file content is reported once through `onPaste`, or through `onFileDrop`
 when no paste listener is mounted, without inserting the paths as text.
 
+The GPUI backend delivers files dragged in from other applications
+(`file_drop.rs`): while a drag is active, `AppView` lays a layer over the
+surface whose drag moves and drop drive `onFileDragEnter`, `onFileDragLeave`
+and `onFileDrop` as the native backends do. This is submitted upstream as
+longbridge/nsh#591; take upstream's version when a sync brings it.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 
