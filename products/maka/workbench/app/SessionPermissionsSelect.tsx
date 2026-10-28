@@ -24,6 +24,7 @@ import { windowSize } from 'nsh';
 import type { AgentWorkspaceAccess } from '../../../../packages/plugin-sdk/src/index.js';
 import type { SessionPermissions } from './sessionPermissions';
 import { ChoiceIndicator } from './ChoiceIndicator';
+import { delayed } from './delayed';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import {
@@ -80,7 +81,10 @@ export function SessionPermissionsSelect(props: { owner: SessionPermissions | nu
 function PermissionsMenu(props: { owner: SessionPermissions }) {
   const owner = props.owner;
   const open = signal(false);
-  const disabled = () => owner.pending() || owner.snapshot() === null;
+  // A save that settles quickly keeps the menu as it is. Choices made while
+  // it is pending are ignored by `select`, so only the look waits.
+  const saving = delayed(owner.pending);
+  const disabled = () => saving() || owner.snapshot() === null;
   const changeOpen = (next: boolean) => {
     if (!owner.pending()) open.set(next);
   };
@@ -156,7 +160,7 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
               {tr('Sandbox and approvals')}
             </Text>
             <Button
-              disabled={owner.pending()}
+              disabled={saving()}
               accessibilityLabel={tr('Close sandbox settings')}
               tooltip={textTooltip(() => tr('Close'))}
               onPress={inputAction(changeOpen, false)}
@@ -246,7 +250,7 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                       checked={owner.snapshot()?.permissions.requestPermissions === ask()}
                       disabled={disabled()}
                     />
-                    <Text style={{ ...captionTextStyle, color: C.text }}>
+                    <Text style={{ ...captionTextStyle, color: C.text, flex: 1, minWidth: 0 }}>
                       {ask() ? tr('Ask for approval') : tr('Do not ask for approval')}
                     </Text>
                   </Button>
@@ -260,7 +264,7 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
                   'Applies to this conversation. Changing either setting clears earlier approvals.',
                 )}
               </Text>
-              <If when={owner.pending()}>
+              <If when={saving()}>
                 <Text style={{ ...captionTextStyle, color: C.muted, padding: 8 }}>
                   {tr('Saving sandbox settings…')}
                 </Text>
