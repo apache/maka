@@ -61,6 +61,7 @@ import type { BrowserWorkspace } from './browsing';
 import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
 import { applicationMenu, ownTitleBar, windowTitle } from './chrome';
+import { watchNotifications } from './notifications';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
 import { createWorkbenchPlugins, pluginContext, type PanelRoute } from './plugins/context';
@@ -698,6 +699,11 @@ function App(
     { when: 'always' },
   );
   windowTitle(() => handle()?.title() ?? null);
+  watchNotifications({
+    sessions: browsing.sessions,
+    foreground,
+    open: (sessionId) => void selectBrowsed(sessionId, selected()),
+  });
   const recoverControls = async () => {
     if (recovering()) return;
     recovering.set(true);
