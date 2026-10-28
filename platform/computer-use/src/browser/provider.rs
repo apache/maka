@@ -136,7 +136,10 @@ pub(super) fn extension_tab(tab: ExtensionTabInfo) -> TabInfo {
     }
 }
 
-pub(super) fn extension_error(error: ExtensionProviderError) -> ToolError {
+pub(super) fn extension_error(
+    error: impl std::borrow::Borrow<ExtensionProviderError>,
+) -> ToolError {
+    let error = error.borrow();
     match error {
         ExtensionProviderError::ChromeRejected { .. }
         | ExtensionProviderError::Refused { .. }

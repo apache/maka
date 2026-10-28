@@ -1156,15 +1156,14 @@ impl Browsers {
                             }
                             // A real known acquisition missing from the filtered
                             // session view is unavailable, never globally reselected.
-                            if let TabReference::Id(id) = &reference {
-                                if self
+                            if let TabReference::Id(id) = &reference
+                                && self
                                     .extension_has_acquisition(&provider, &generation, id)
                                     .await?
-                                {
-                                    return Err(failed(
-                                        "tab_unavailable: known tab is not in this session's visible metadata",
-                                    ));
-                                }
+                            {
+                                return Err(failed(
+                                    "tab_unavailable: known tab is not in this session's visible metadata",
+                                ));
                             }
                         }
                         let (generation, tabs) = provider.inventory().await?;

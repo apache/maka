@@ -103,7 +103,7 @@ pub(in crate::browser) enum FixedPreparation {
     #[default]
     NotAttempted,
     Pending(FixedAttempt),
-    Retained(FixedResource),
+    Retained(Box<FixedResource>),
 }
 
 impl FixedPreparation {
@@ -463,7 +463,7 @@ impl Host {
                 "fixed ACK retained for cleanup only after owner/turn retirement".into()
             });
         }
-        state.fixed_preparation = FixedPreparation::Retained(FixedResource {
+        state.fixed_preparation = FixedPreparation::Retained(Box::new(FixedResource {
             current_ui: attempt.ui.clone(),
             pending_ui: None,
             attempt,
@@ -477,7 +477,7 @@ impl Host {
                 FixedPhase::Ready
             },
             uncertainty,
-        });
+        }));
         Ok(())
     }
     pub(super) fn apply_fixed_unknown(
@@ -500,7 +500,7 @@ impl Host {
                 FixedPreparation::Retained(resource) => Some(resource.clone()),
                 _ => None,
             };
-            state.fixed_preparation = FixedPreparation::Retained(FixedResource {
+            state.fixed_preparation = FixedPreparation::Retained(Box::new(FixedResource {
                 current_ui: prior.as_ref().map_or_else(
                     || attempt.ui.clone(),
                     |resource| resource.current_ui.clone(),
@@ -520,7 +520,7 @@ impl Host {
                 last_ui: prior.and_then(|resource| resource.last_ui),
                 phase: FixedPhase::Unknown,
                 uncertainty: Some(reason.to_owned()),
-            });
+            }));
             return Ok(());
         }
         let old = match operation {
@@ -1020,7 +1020,7 @@ impl Host {
                 state.fixed_preparation = FixedPreparation::NotAttempted;
             }
             FixedPreparation::Pending(attempt) => {
-                state.fixed_preparation = FixedPreparation::Retained(FixedResource {
+                state.fixed_preparation = FixedPreparation::Retained(Box::new(FixedResource {
                     current_ui: attempt.ui.clone(),
                     pending_ui: None,
                     attempt: attempt.clone(),
@@ -1030,7 +1030,7 @@ impl Host {
                     clear_attempt: None,
                     phase: FixedPhase::Unknown,
                     uncertainty: Some(error.into()),
-                });
+                }));
             }
             FixedPreparation::NotAttempted => {}
         }
@@ -1124,7 +1124,7 @@ async fn clear_for_replacement(
     };
     let result = scope
         .dispatch(async {
-            enter_fixed_ui(&expected.dispatch)?;
+            enter_fixed_ui(&expected.dispatch).map_err(|error| *error)?;
             scope.control.clear_session_preparation(receipt).await
         })
         .await;
@@ -1259,7 +1259,7 @@ pub(super) async fn prepare_fixed_tab(
     let dispatch = expected.dispatch.clone();
     let result = scope
         .dispatch(async {
-            enter_fixed_ui(&dispatch)?;
+            enter_fixed_ui(&dispatch).map_err(|error| *error)?;
             scope
                 .control
                 .prepare_fixed_session_tab(tab_id, &policy, &ui)
@@ -1613,7 +1613,7 @@ impl Tab {
                 .begin_fixed_ui(self.cursor_owner, &identity, &scope, &ui)?;
         let result = scope
             .dispatch(async {
-                enter_fixed_ui(&dispatch)?;
+                enter_fixed_ui(&dispatch).map_err(|error| *error)?;
                 scope.control.session_ui(&receipt, &ui).await
             })
             .await;
@@ -1725,7 +1725,7 @@ pub(in crate::browser) async fn configure_fixed_session_ui(
         .begin_fixed_ui(owner, identity, &scope, &ui)?;
     let result = scope
         .dispatch(async {
-            enter_fixed_ui(&dispatch)?;
+            enter_fixed_ui(&dispatch).map_err(|error| *error)?;
             scope.control.session_ui(receipt, &ui).await
         })
         .await;
@@ -1763,7 +1763,7 @@ pub(in crate::browser) async fn configure_fixed_session_ui(
 
 fn enter_fixed_ui(
     dispatch: &AtomicU8,
-) -> Result<(), cua_driver_core::browser::ExtensionProviderError> {
+) -> Result<(), Box<cua_driver_core::browser::ExtensionProviderError>> {
     dispatch
         .compare_exchange(
             UI_RESERVED,
@@ -1772,13 +1772,13 @@ fn enter_fixed_ui(
             Ordering::SeqCst,
         )
         .map(|_| ())
-        .map_err(
-            |_| cua_driver_core::browser::ExtensionProviderError::Refused {
+        .map_err(|_| {
+            Box::new(cua_driver_core::browser::ExtensionProviderError::Refused {
                 kind: "retired_fixed_ui".into(),
                 message: "fixed UI retired before SDK first poll".into(),
                 details: None,
-            },
-        )
+            })
+        })
 }
 
 #[derive(Clone)]
@@ -2036,7 +2036,7 @@ impl Host {
         };
         let result = scope
             .dispatch_retirement(async {
-                enter_fixed_ui(&expected.dispatch)?;
+                enter_fixed_ui(&expected.dispatch).map_err(|error| *error)?;
                 cleanup_control.clear_session_preparation(receipt).await
             })
             .await;
@@ -2160,7 +2160,7 @@ mod tests {
     }
     fn projected_resource(epoch: crate::desktop::NativeEpochId) -> FixedPreparation {
         let ui = projected_ui("original-turn", epoch);
-        FixedPreparation::Retained(FixedResource {
+        FixedPreparation::Retained(Box::new(FixedResource {
             attempt: FixedAttempt {
                 operation: ui.operation.clone(),
                 epoch,
@@ -2176,7 +2176,7 @@ mod tests {
             clear_attempt: None,
             phase: FixedPhase::Unknown,
             uncertainty: Some("retained cause".into()),
-        })
+        }))
     }
 
     #[test]
@@ -2186,7 +2186,7 @@ mod tests {
             .compare_exchange(UI_RESERVED, UI_RETIRED, Ordering::SeqCst, Ordering::SeqCst)
             .unwrap();
         assert!(matches!(
-            enter_fixed_ui(&retired),
+            enter_fixed_ui(&retired).map_err(|error| *error),
             Err(cua_driver_core::browser::ExtensionProviderError::Refused { .. })
         ));
         let dispatched = AtomicU8::new(UI_RESERVED);
@@ -2516,14 +2516,14 @@ mod actual_call_scope_tests {
         async fn reject_at_actual_call_gate(&self) -> ExtensionProviderError {
             // Build the SAME real SDK future before sealing the actual scope.
             let original = self.scope.dispatch(async {
-                enter_fixed_ui(&self.attempt.dispatch)?;
+                enter_fixed_ui(&self.attempt.dispatch).map_err(|error| *error)?;
                 self.scope
                     .control
                     .prepare_fixed_session_tab(17, &self.policy, &self.ui)
                     .await
             });
             self.scope.controls.seal();
-            bounded(original).await.unwrap_err()
+            *bounded(original).await.unwrap_err()
         }
     }
 
@@ -2565,7 +2565,7 @@ mod actual_call_scope_tests {
         let mut fixture = Fixture::open_with_lifecycle("host").await;
         let pending = PendingScope::new(&fixture).await;
         let original = pending.scope.dispatch(async {
-            enter_fixed_ui(&pending.attempt.dispatch)?;
+            enter_fixed_ui(&pending.attempt.dispatch).map_err(|error| *error)?;
             pending
                 .scope
                 .control
@@ -2711,7 +2711,7 @@ mod actual_call_scope_tests {
         let epoch = scope.epoch;
         let control = scope.control.clone();
         let mut original = Box::pin(scope.dispatch(async {
-            enter_fixed_ui(&attempt.dispatch)?;
+            enter_fixed_ui(&attempt.dispatch).map_err(|error| *error)?;
             scope
                 .control
                 .prepare_fixed_session_tab(17, &policy, &ui)
@@ -2781,7 +2781,7 @@ mod actual_call_scope_tests {
             .unwrap()
             .clone();
         let mut next_future = Box::pin(replacement.dispatch(async {
-            enter_fixed_ui(&next.dispatch)?;
+            enter_fixed_ui(&next.dispatch).map_err(|error| *error)?;
             replacement
                 .control
                 .prepare_fixed_session_tab(17, &policy, &ui)
@@ -2844,7 +2844,7 @@ mod actual_call_scope_tests {
             let mut fixture = Fixture::open_with_lifecycle("host").await;
             let pending = PendingScope::new(&fixture).await;
             let prepare = pending.scope.dispatch(async {
-                enter_fixed_ui(&pending.attempt.dispatch)?;
+                enter_fixed_ui(&pending.attempt.dispatch).map_err(|error| *error)?;
                 pending
                     .scope
                     .control
@@ -2872,7 +2872,7 @@ mod actual_call_scope_tests {
             let (result, ()) = bounded(async { tokio::join!(prepare, reply) }).await;
             if case == 2 {
                 assert!(matches!(
-                    result,
+                    result.map_err(|error| *error),
                     Err(ExtensionProviderError::OutcomeUnknown { .. })
                 ));
             } else {
@@ -2908,7 +2908,7 @@ mod actual_call_scope_tests {
                     .begin_fixed_ui(pending.owner, &pending.identity, &pending.scope, &request)
                     .unwrap();
                 let mut original = Box::pin(pending.scope.dispatch(async {
-                    enter_fixed_ui(&dispatch)?;
+                    enter_fixed_ui(&dispatch).map_err(|error| *error)?;
                     pending.scope.control.session_ui(&receipt, &request).await
                 }));
                 let frame = bounded(async {
@@ -2965,7 +2965,7 @@ mod actual_call_scope_tests {
                     _ => unreachable!(),
                 };
                 let mut original = Box::pin(pending.scope.dispatch(async {
-                    enter_fixed_ui(&clear.dispatch)?;
+                    enter_fixed_ui(&clear.dispatch).map_err(|error| *error)?;
                     pending
                         .scope
                         .control
@@ -3030,7 +3030,7 @@ mod actual_call_scope_tests {
                     _ => unreachable!(),
                 };
                 let mut next_future = Box::pin(pending.scope.dispatch(async {
-                    enter_fixed_ui(&next.dispatch)?;
+                    enter_fixed_ui(&next.dispatch).map_err(|error| *error)?;
                     pending
                         .scope
                         .control
@@ -3122,7 +3122,7 @@ mod actual_call_scope_tests {
                 );
                 assert_eq!(unpolled.dispatch.load(Ordering::SeqCst), UI_RETIRED);
                 assert!(
-                    matches!(enter_fixed_ui(&unpolled.dispatch),Err(ExtensionProviderError::Refused{kind,..})if kind=="retired_fixed_ui")
+                    matches!(enter_fixed_ui(&unpolled.dispatch).map_err(|error| *error),Err(ExtensionProviderError::Refused{kind,..})if kind=="retired_fixed_ui")
                 );
             }
             assert!(control.pending_operations().await.unwrap().is_empty());
@@ -3207,7 +3207,7 @@ mod actual_call_scope_tests {
             .await;
         };
         let result = new_scope.dispatch(async {
-            enter_fixed_ui(&new_attempt.dispatch)?;
+            enter_fixed_ui(&new_attempt.dispatch).map_err(|error| *error)?;
             new_scope
                 .control
                 .prepare_fixed_session_tab(17, &old.policy, &ui)
@@ -3215,7 +3215,7 @@ mod actual_call_scope_tests {
         });
         let (result, ()) = bounded(async { tokio::join!(result, reply) }).await;
         assert!(matches!(
-            result,
+            result.map_err(|error| *error),
             Err(ExtensionProviderError::OutcomeUnknown { .. })
         ));
         {
@@ -3267,7 +3267,7 @@ mod actual_call_scope_tests {
         let mut fixture = Fixture::open_with_lifecycle("host").await;
         let pending = PendingScope::new(&fixture).await;
         let original = pending.scope.dispatch(async {
-            enter_fixed_ui(&pending.attempt.dispatch)?;
+            enter_fixed_ui(&pending.attempt.dispatch).map_err(|error| *error)?;
             pending
                 .scope
                 .control
@@ -3303,7 +3303,7 @@ mod actual_call_scope_tests {
         let mut fixture = Fixture::open_with_lifecycle("host").await;
         let old = PendingScope::new(&fixture).await;
         let original = old.scope.dispatch(async {
-            enter_fixed_ui(&old.attempt.dispatch)?;
+            enter_fixed_ui(&old.attempt.dispatch).map_err(|error| *error)?;
             old.scope
                 .control
                 .prepare_fixed_session_tab(17, &old.policy, &old.ui)
@@ -3334,7 +3334,10 @@ mod actual_call_scope_tests {
                 .clone()
         };
         let error = bounded(original).await.unwrap_err();
-        assert!(matches!(error, ExtensionProviderError::Refused { .. }));
+        assert!(matches!(
+            error.as_ref(),
+            ExtensionProviderError::Refused { .. }
+        ));
         assert_eq!(old.attempt.dispatch.load(Ordering::SeqCst), UI_RETIRED);
         {
             let mut ledger = old.host.lock().await;
@@ -3386,7 +3389,7 @@ mod actual_call_scope_tests {
             }}})).await;
         };
         let original = pending.scope.dispatch(async {
-            enter_fixed_ui(&pending.attempt.dispatch)?;
+            enter_fixed_ui(&pending.attempt.dispatch).map_err(|error| *error)?;
             pending
                 .scope
                 .control
@@ -3441,7 +3444,7 @@ mod actual_call_scope_tests {
             }}})).await;
         };
         let original = pending.scope.dispatch(async {
-            enter_fixed_ui(&pending.attempt.dispatch)?;
+            enter_fixed_ui(&pending.attempt.dispatch).map_err(|error| *error)?;
             pending
                 .scope
                 .control
@@ -3489,7 +3492,7 @@ mod actual_call_scope_tests {
                 }}})).await;
             };
             let prepare = original.scope.dispatch(async {
-                enter_fixed_ui(&original.attempt.dispatch)?;
+                enter_fixed_ui(&original.attempt.dispatch).map_err(|error| *error)?;
                 original
                     .scope
                     .control
@@ -3536,7 +3539,7 @@ mod actual_call_scope_tests {
                 }
             };
             let mut clear = Box::pin(original.scope.dispatch(async {
-                enter_fixed_ui(&clear_attempt.dispatch)?;
+                enter_fixed_ui(&clear_attempt.dispatch).map_err(|error| *error)?;
                 original
                     .scope
                     .control
@@ -3626,7 +3629,7 @@ mod actual_call_scope_tests {
                 (scope, attempt, ui)
             };
             let replacement_future = replacement.dispatch(async {
-                enter_fixed_ui(&attempt.dispatch)?;
+                enter_fixed_ui(&attempt.dispatch).map_err(|error| *error)?;
                 replacement
                     .control
                     .prepare_fixed_session_tab(17, &original.policy, &ui)
@@ -3670,7 +3673,7 @@ mod actual_call_scope_tests {
             };
             let (result, ()) = bounded(async { tokio::join!(replacement_future, reply) }).await;
             assert!(matches!(
-                result,
+                result.map_err(|error| *error),
                 Err(ExtensionProviderError::OutcomeUnknown { .. })
             ));
             let receipt = {
@@ -3746,7 +3749,7 @@ mod actual_call_scope_tests {
         let mut fixture = Fixture::open_with_lifecycle("host").await;
         let old = PendingScope::new(&fixture).await;
         let original = old.scope.dispatch(async {
-            enter_fixed_ui(&old.attempt.dispatch)?;
+            enter_fixed_ui(&old.attempt.dispatch).map_err(|error| *error)?;
             old.scope
                 .control
                 .prepare_fixed_session_tab(17, &old.policy, &old.ui)
@@ -3797,7 +3800,7 @@ mod actual_call_scope_tests {
             frame
         };
         let actual = old.scope.dispatch(async {
-            enter_fixed_ui(&replacement.dispatch)?;
+            enter_fixed_ui(&replacement.dispatch).map_err(|error| *error)?;
             old.scope
                 .control
                 .prepare_fixed_session_tab(17, &old.policy, &old.ui)
@@ -3916,7 +3919,7 @@ mod actual_call_scope_tests {
                     }}})).await;
                 };
                 let original = pending.scope.dispatch(async {
-                    enter_fixed_ui(&pending.attempt.dispatch)?;
+                    enter_fixed_ui(&pending.attempt.dispatch).map_err(|error| *error)?;
                     pending
                         .scope
                         .control
@@ -4184,7 +4187,7 @@ mod actual_call_scope_tests {
             .await;
         };
         let prepare = initial.scope.dispatch(async {
-            enter_fixed_ui(&initial.attempt.dispatch)?;
+            enter_fixed_ui(&initial.attempt.dispatch).map_err(|error| *error)?;
             initial
                 .scope
                 .control
@@ -4237,7 +4240,7 @@ mod actual_call_scope_tests {
             }}})).await;
         };
         let configure = configuration.dispatch(async {
-            enter_fixed_ui(&dispatch)?;
+            enter_fixed_ui(&dispatch).map_err(|error| *error)?;
             configuration
                 .control
                 .session_ui(&prepared.receipt, &ui)
@@ -4412,7 +4415,7 @@ mod actual_call_scope_tests {
                 .await;
             };
             let prepare = initial.scope.dispatch(async {
-                enter_fixed_ui(&initial.attempt.dispatch)?;
+                enter_fixed_ui(&initial.attempt.dispatch).map_err(|error| *error)?;
                 initial
                     .scope
                     .control
@@ -4524,7 +4527,7 @@ mod actual_call_scope_tests {
                 .await;
             };
             let configure = scope.dispatch(async {
-                enter_fixed_ui(&dispatch)?;
+                enter_fixed_ui(&dispatch).map_err(|error| *error)?;
                 scope.control.session_ui(&prepared.receipt, &ui).await
             });
             let (proof, ()) = bounded(async { tokio::join!(configure, reply) }).await;
@@ -4563,7 +4566,7 @@ mod actual_call_scope_tests {
                     }}})).await;
                 };
                 let newer = scope.dispatch(async {
-                    enter_fixed_ui(next)?;
+                    enter_fixed_ui(next).map_err(|error| *error)?;
                     scope.control.session_ui(&prepared.receipt, &ui).await
                 });
                 let (newer, ()) = bounded(async { tokio::join!(newer, reply) }).await;

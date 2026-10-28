@@ -412,17 +412,19 @@ struct ControlPermit {
 impl ControlGate {
     fn enter(
         self: &Arc<Self>,
-    ) -> Result<ControlPermit, cua_driver_core::browser::ExtensionProviderError> {
+    ) -> Result<ControlPermit, Box<cua_driver_core::browser::ExtensionProviderError>> {
         let mut state = self
             .state
             .lock()
             .expect("extension control lifetime lock poisoned");
         if state.sealed {
-            return Err(cua_driver_core::browser::ExtensionProviderError::Refused {
-                kind: "retiring_scope".to_owned(),
-                message: "extension control scope retired before first poll".to_owned(),
-                details: None,
-            });
+            return Err(Box::new(
+                cua_driver_core::browser::ExtensionProviderError::Refused {
+                    kind: "retiring_scope".to_owned(),
+                    message: "extension control scope retired before first poll".to_owned(),
+                    details: None,
+                },
+            ));
         }
         state.in_flight += 1;
         Ok(ControlPermit { gate: self.clone() })
@@ -729,7 +731,7 @@ impl CallScope {
     async fn dispatch<T, F>(
         &self,
         future: F,
-    ) -> Result<T, cua_driver_core::browser::ExtensionProviderError>
+    ) -> Result<T, Box<cua_driver_core::browser::ExtensionProviderError>>
     where
         F: std::future::Future<
                 Output = Result<T, cua_driver_core::browser::ExtensionProviderError>,
@@ -740,7 +742,7 @@ impl CallScope {
         // Core records logical registration before transport admission on this
         // exact view. A completed local preflight refusal registers nothing;
         // a registered request keeps its duty regardless of its outcome.
-        future.await
+        future.await.map_err(Box::new)
     }
     async fn dispatch_retirement<F: std::future::Future>(&self, future: F) -> F::Output {
         let _dispatch = self.enter_retirement_dispatch();
@@ -1825,7 +1827,7 @@ impl Host {
         );
         // Several wrappers can retain the same real acquisition. Use the newest
         // issued acquisition order, never raw-ID/time order or a metadata row.
-        known.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        known.sort_unstable_by_key(|(sequence, _)| std::cmp::Reverse(*sequence));
         let mut ids = HashSet::new();
         known.retain(|(_, id)| ids.insert(id.clone()));
         known.sort_unstable_by_key(|(sequence, _)| *sequence);
@@ -5926,10 +5928,10 @@ impl Tab {
     async fn session_path_result<T>(
         &self,
         host: &Arc<tokio::sync::Mutex<Host>>,
-        result: Result<T, cua_driver_core::browser::ExtensionProviderError>,
+        result: Result<T, Box<cua_driver_core::browser::ExtensionProviderError>>,
     ) -> Result<T, ToolError> {
         if let Err(cua_driver_core::browser::ExtensionProviderError::OutcomeUnknown { .. }) =
-            &result
+            result.as_ref().map_err(|error| error.as_ref())
             && let Some(state) = host
                 .lock()
                 .await

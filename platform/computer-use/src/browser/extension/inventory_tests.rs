@@ -239,7 +239,7 @@ async fn same_unpolled_scope_survives_real_reconcile_then_seal_rejects_without_i
         .await
         .seal_extension_controls(owner, Some("inventory-turn"), None);
     bounded(drain.wait()).await.unwrap();
-    assert!(matches!(bounded(unpolled).await,
+    assert!(matches!(bounded(unpolled).await.map_err(|error| *error),
         Err(ExtensionProviderError::Refused { kind, .. }) if kind == "retiring_scope"));
     fixture.assert_no_frame_and_close().await;
     let ledger = host.lock().await;
@@ -639,7 +639,7 @@ async fn completed_pre_registration_refusal_creates_no_finish_or_ipc() {
     // This fixture supports inventory, not provider-session preparation. The
     // actual Core capability check rejects before logical request registration.
     assert!(matches!(
-        bounded(call.dispatch(call.control.prepare_session_tab(17))).await,
+        bounded(call.dispatch(call.control.prepare_session_tab(17))).await.map_err(|error| *error),
         Err(ExtensionProviderError::NotDispatched { kind, message, details: None, .. })
             if kind == "unsupported"
                 && message == "selected provider delegates this operation to a different scope or owner"
@@ -702,7 +702,7 @@ async fn registered_refusal_with_the_same_error_still_requires_actual_finish() {
         bounded(async { tokio::join!(call.dispatch(call.control.list_session_tabs(&[])), reply) })
             .await;
     assert!(
-        matches!(rows, Err(ExtensionProviderError::Refused {kind, message, details: None})
+        matches!(rows.map_err(|error| *error), Err(ExtensionProviderError::Refused {kind, message, details: None})
         if kind == "unsupported" && message == "selected provider delegates this operation to a different scope or owner")
     );
     {
@@ -801,7 +801,7 @@ async fn reused_call_view_keeps_pending_registration_across_local_refusal() {
     let during = async {
         received.await.unwrap();
         assert!(
-            matches!(first.dispatch(first.control.prepare_session_tab(17)).await,
+            matches!(first.dispatch(first.control.prepare_session_tab(17)).await.map_err(|error| *error),
             Err(ExtensionProviderError::NotDispatched {kind,..}) if kind == "unsupported")
         );
         {
@@ -840,7 +840,7 @@ async fn reused_call_view_keeps_pending_registration_across_local_refusal() {
     .await;
     assert!(rows.unwrap().is_empty());
     assert!(
-        matches!(first.dispatch(first.control.prepare_session_tab(17)).await,
+        matches!(first.dispatch(first.control.prepare_session_tab(17)).await.map_err(|error| *error),
         Err(ExtensionProviderError::NotDispatched {kind,..}) if kind == "unsupported")
     );
     {
@@ -890,7 +890,7 @@ async fn closed_transport_registers_before_zero_byte_failure_and_keeps_finish_de
     let call = scope(&mut *host.lock().await, owner, &provider);
     fixture.assert_no_frame_and_close().await;
     assert!(
-        matches!(bounded(call.dispatch(call.control.list_session_tabs(&[]))).await,
+        matches!(bounded(call.dispatch(call.control.list_session_tabs(&[]))).await.map_err(|error| *error),
         Err(ExtensionProviderError::OutcomeUnknown {operation, reason, details: None})
             if operation == "inventory" && reason == "owner IPC connection is closed")
     );

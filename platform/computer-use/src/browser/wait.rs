@@ -351,9 +351,7 @@ impl Browsers {
             pending.await?;
             return Err(error);
         }
-        Ok(crate::InvocationCompletion::pending(
-            async move { future.await },
-        ))
+        Ok(crate::InvocationCompletion::pending(future))
     }
 }
 
@@ -539,7 +537,7 @@ impl Tab {
                         return Err(AttemptError::Retry(failed("frame changed while waiting for locator")));
                     }
                     proof.check_current(self).await?;
-                    Ok(read_reply(result["value"].clone())?)
+                    read_reply(result["value"].clone())
                 };
                 let observed = if timeout.is_zero() {
                     tokio::select! { biased;
