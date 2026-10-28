@@ -1057,12 +1057,20 @@ export async function importSessionBundleState(
           // retry could not fix, because the ids are now taken.
           const artifacts = await copyBundleArtifacts(bundleStateRoot, stateRoot);
           let contextRefs: number | undefined;
+          // Payload files this attempt's own `link` created, in order. The
+          // copies land before the context merge's transaction, so a merge that
+          // throws rolls its blob rows back and leaves these files content-
+          // addressed, committed-row-free, and unreachable by a collection that
+          // only ever starts from committed rows. Files that were already there
+          // are not this attempt's, and stay.
+          const publishedContextPayloads: string[] = [];
           try {
             contextRefs = await mergeBundleContext(
               bundleStateRoot,
               stateRoot,
               contextLocked,
               sessionIds,
+              publishedContextPayloads,
             );
             const inserted = mergeBundleDatabase(lease, bundleDatabasePath);
             return { sessionIds: inserted, artifactFiles: artifacts.copied, contextRefs };
@@ -1077,6 +1085,7 @@ export async function importSessionBundleState(
               if (contextRefs !== undefined && contextRefs > 0) {
                 await releaseUnpublishedBundleContext(stateRoot, unpublished);
               }
+              await removeUnreferencedBundleContextPayloads(publishedContextPayloads, stateRoot);
               for (const path of artifacts.created) {
                 const artifactPath = relative(resolveInside(stateRoot, 'artifacts'), path);
                 if (unpublished.some((id) => isArtifactPathForSession(artifactPath, id))) {
@@ -1454,6 +1463,7 @@ async function mergeBundleContext(
   stateRoot: string,
   contextLocked: boolean,
   sessionIds: readonly string[],
+  publishedContextPayloads: string[],
 ): Promise<number> {
   const bundleContext = resolveInside(bundleStateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
   if (!(await pathExists(bundleContext))) return 0;
@@ -1483,7 +1493,12 @@ async function mergeBundleContext(
     // Managed payloads live at `sha256/<prefix>/<hash>`, so a copy that visited
     // only immediate children saw one directory, skipped it, and reported a
     // successful import whose referenced bytes were all absent.
-    await copyDeclaredContextValues(bundleContext, bundleStateRoot, stateRoot);
+    await copyDeclaredContextValues(
+      bundleContext,
+      bundleStateRoot,
+      stateRoot,
+      publishedContextPayloads,
+    );
     return mergeBundleContextDatabase(bundleContext, stateRoot, sessionIds);
   });
 }
@@ -1649,6 +1664,45 @@ async function releaseUnpublishedBundleContext(
 }
 
 /**
+ * Removes payload files this attempt created that no committed blob row names.
+ *
+ * The copies land before the context merge's database transaction, so a merge
+ * that throws -- a colliding reference, an unreadable target -- rolls the rows
+ * back and leaves content-addressed files that collection, which only ever
+ * starts from committed rows, can never find. Only files this attempt's own
+ * `link` created are candidates: the target's committed rows decide which of
+ * them are live (their bytes stay until their own references are released), and
+ * a path this import found already occupied is never touched.
+ */
+async function removeUnreferencedBundleContextPayloads(
+  publishedContextPayloads: readonly string[],
+  stateRoot: string,
+): Promise<void> {
+  if (publishedContextPayloads.length === 0) return;
+  const named = new Set<string>();
+  const targetContextPath = resolveInside(stateRoot, CONTEXT_OFFLOAD_DATABASE_NAME);
+  if (await pathExists(targetContextPath)) {
+    const target = new DatabaseSync(targetContextPath, { readOnly: true });
+    try {
+      for (const row of target
+        .prepare("SELECT payload FROM context_blobs WHERE storage_kind = 'managed_file'")
+        .iterate() as Iterable<{ payload?: unknown }>) {
+        if (row.payload instanceof Uint8Array) {
+          named.add(Buffer.from(row.payload).toString('utf8'));
+        }
+      }
+    } finally {
+      target.close();
+    }
+  }
+  const destinationRoot = resolveInside(stateRoot, CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME);
+  for (const locator of publishedContextPayloads) {
+    if (named.has(locator)) continue;
+    await rm(resolveInside(destinationRoot, locator), { force: true });
+  }
+}
+
+/**
  * Copy a managed-payload tree, structure and all.
  *
  * Content-addressed names mean an existing file is the same file, so an
@@ -1673,6 +1727,7 @@ async function copyDeclaredContextValues(
   bundleContext: string,
   bundleStateRoot: string,
   stateRoot: string,
+  publishedContextPayloads: string[],
 ): Promise<void> {
   const locators: string[] = [];
   const database = new DatabaseSync(bundleContext, { readOnly: true });
@@ -1706,7 +1761,7 @@ async function copyDeclaredContextValues(
     }
     await mkdir(dirname(to), { recursive: true, mode: 0o700 });
     await assertManagedDestinationDirectory(dirname(to), stateRoot);
-    await publishContextValue(from, to, stateRoot);
+    if (await publishContextValue(from, to, stateRoot)) publishedContextPayloads.push(locator);
   }
 }
 
@@ -1768,10 +1823,14 @@ async function assertManagedDestinationDirectory(
  * The staging name is the Store's with a different suffix. Two imports cannot
  * race -- both need the write authority, and it is exclusive -- but an import
  * and the Store publishing the same blob can, and they must not share a name.
+ *
+ * Returns whether this call created the final path. A path that was already
+ * there belongs to whatever put it, and is never the import's to remove.
  */
-async function publishContextValue(from: string, to: string, stateRoot: string): Promise<void> {
+async function publishContextValue(from: string, to: string, stateRoot: string): Promise<boolean> {
   const staging = join(dirname(to), `.${basename(to)}.import.tmp`);
   await rm(staging, { force: true });
+  let created = false;
   try {
     await copyFile(from, staging, constants.COPYFILE_EXCL);
     // 'r+' rather than 'r': Windows flushes through the handle and refuses a
@@ -1784,12 +1843,13 @@ async function publishContextValue(from: string, to: string, stateRoot: string):
     }
     try {
       await link(staging, to);
+      created = true;
       // The bytes were synced; the directory entry naming them was not. A crash
       // here otherwise keeps the committed reference and loses the name, which
       // reads exactly like a payload that never arrived.
       await syncDirectoryChain(dirname(to), stateRoot);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || created) throw error;
       // Reaching the final path now means the payload was already there, not
       // that this import put it there. Content addressing says it should be
       // byte-identical; if it is not, the store holds something this bundle
@@ -1805,6 +1865,7 @@ async function publishContextValue(from: string, to: string, stateRoot: string):
   } finally {
     await unlink(staging).catch(() => {});
   }
+  return created;
 }
 
 function countContextRefs(databasePath: string, sessionIds: readonly string[]): number {
