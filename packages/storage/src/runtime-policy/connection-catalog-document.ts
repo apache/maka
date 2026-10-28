@@ -658,7 +658,19 @@ export class ConnectionCatalogDocumentOwner {
     const undisplayed = (previous?.enabledModelIds ?? []).filter(
       (modelId) => !offered.has(modelId) && !changes.enabledModelIds.includes(modelId),
     );
-    const enabledModelIds = [...changes.enabledModelIds, ...undisplayed];
+    // The read path rejects more than CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS
+    // enabled ids, so an unbounded union here would persist a document the very
+    // next catalog read cannot decode — bricking every connection in the file
+    // (#6426). The wizard picks are the user's explicit decision and stay in
+    // full; the hand-declared ids the preserve rule carries over (#1584) lose
+    // their tail first, the smallest loss that rule admits.
+    const enabledModelIds = [
+      ...changes.enabledModelIds,
+      ...undisplayed.slice(
+        0,
+        CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS - changes.enabledModelIds.length,
+      ),
+    ];
     // The endpoint keys the profile table and the last test the same way it
     // does on the update path: declarations describe the relay that made
     // them, so a swapped URL must not inherit either.
