@@ -22,6 +22,7 @@ import { test } from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { parseHTML } from 'linkedom';
 import { TurnView } from '../chat-turn.js';
+import { formatTurnDuration } from '../chat-display-helpers.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { TurnViewModel } from '../materialize.js';
 
@@ -189,4 +190,27 @@ test('shows the outcome in the status row and actions then finish time in the fo
   assert.ok(copy && time);
   assert.equal(copy.compareDocumentPosition(time) & 4, 4);
   assert.doesNotMatch(footer?.textContent ?? '', /fixture-model|\$/);
+});
+
+
+test('turn durations show hours at the hour boundary', () => {
+  assert.equal(formatTurnDuration(3_599_999), '59m 59s');
+  assert.equal(formatTurnDuration(3_600_000), '1h 0m 0s');
+  assert.equal(formatTurnDuration(5_345_000), '1h 29m 5s');
+  assert.equal(formatTurnDuration(90_000_000), '25h 0m 0s');
+});
+
+test('settled turn duration shows localized hours', () => {
+  const turn: TurnViewModel = {
+    turnId: 'turn-1', status: 'completed', tools: [], notes: [], startedAt: 1,
+    durationMs: 5_345_000, timeline: [{ kind: 'thinking', text: 'reasoning', messageId: 'thought' }],
+  };
+  for (const [locale, expected] of [
+    ['en', 'Done · Worked for 1h 29m 5s'],
+    ['zh-CN', '已完成 · 用时 1 小时 29 分 5 秒'],
+    ['zh-TW', '已完成 · 用時 1 小時 29 分 5 秒'],
+  ] as const) {
+    const markup = renderToStaticMarkup(<LocaleProvider locale={locale}><TurnView turn={turn} /></LocaleProvider>);
+    assert.equal(parseHTML(markup).document.querySelector('.maka-processing-summary')?.textContent, expected);
+  }
 });

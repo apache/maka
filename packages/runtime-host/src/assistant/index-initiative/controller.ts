@@ -24,6 +24,7 @@ import { InitiativeStore } from './store.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { wakeInput, DISCOVERY_TASK, JUDGEMENT_TASK, NOTEBOOK_RULES } from './prompt.js';
 import { Notebook, NotebookValidationError } from './notebook.js';
+import type { AssistantRunOutcome, RunSegment } from '../run-cost.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
@@ -323,9 +324,22 @@ export class InitiativeController {
 
   async run(agent: any, state: any) {
     const id = state.active.id;
+    const startedAt = state.active.startedAt ?? Date.now();
+    // Each Session the heartbeat drives and the window it was driven in, so the
+    // run's cost can be read back from the Usage ledger afterwards (#6309).
+    const segments: RunSegment[] = [];
+    const measured = async (worker: any, work: () => Promise<void>) => {
+      const from = Date.now();
+      try {
+        await work();
+      } finally {
+        segments.push({ sessionId: worker.sessionId, from, to: Date.now() });
+      }
+    };
+    let outcome: AssistantRunOutcome = 'failed';
     this.activeAgent = agent;
     try {
-      await this.execute(agent, state);
+      await measured(agent, () => this.execute(agent, state));
       if (state.active.phase === 'discovery') {
         const next = this.store.update((s) => {
           if (s.active?.id !== id) throw Error('Heartbeat ownership changed');
@@ -337,8 +351,10 @@ export class InitiativeController {
         const snapshot = await judge.snapshot();
         if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot))
           throw Error('Judgement worker is busy or awaiting user input; notebook retained');
-        await this.execute(judge, this.store.get());
+        await measured(judge, () => this.execute(judge, this.store.get()));
       }
+      // The signal the run's `lastRun` outcome is derived from: the Bot accepted a report.
+      outcome = this.store.get()?.active?.reported ? 'reported' : 'no_report';
       this.store.finish(id);
     } catch (e) {
       try {
@@ -355,6 +371,15 @@ export class InitiativeController {
       }
     } finally {
       this.activeAgent = undefined;
+      // Observation only: the ledger swallows its own failures and nothing reads it back.
+      await this.ctx.runCost?.record({
+        kind: 'discovery',
+        runId: id,
+        startedAt,
+        endedAt: Date.now(),
+        outcome,
+        segments,
+      });
     }
   }
   async enable(input: any, call: any) {

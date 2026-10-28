@@ -109,10 +109,11 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 // Re-check against main before merging; sibling PRs may use the same next epoch.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 237 as const;
-// 237: Revision copy responses carry stagedAttachments — the edited turn's
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 238 as const;
+// 238: Revision copy responses carry stagedAttachments — the edited turn's
 // attachments restaged into the copy with target-owned refs (#5109). Older
 // peers reject the additional field in the strict copy-result decoder.
+// 237: Codex model discovery carries a compaction compatibility hash.
 // 236: Goal event wait consumers include the assistant character and pet operations from main.
 // 235: Goal event wait consumers include the quick-discovery operations from main.
 // 233: Goal event wait consumers include the Session check-in operations from main.

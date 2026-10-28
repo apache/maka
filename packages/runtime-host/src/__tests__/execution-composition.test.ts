@@ -47,7 +47,7 @@ import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 import { PluginAgentService, type PluginAgentRuntime } from '@maka/runtime/plugin-agent-service';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -5445,17 +5445,26 @@ async function withCompositionRoot(
     owner: NonNullable<Awaited<ReturnType<typeof tryAcquireInteractiveRootOwner>>>;
   }) => Promise<void>,
 ): Promise<void> {
+  // The Host seeds a default connection from these provider keys at bootstrap, so
+  // a developer's real key would make "no default model is configured" untrue.
+  const providerKeys = ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY'] as const;
+  const savedKeys = providerKeys.map((name) => [name, process.env[name]] as const);
+  for (const name of providerKeys) delete process.env[name];
   const base = await mkdtemp(join(tmpdir(), 'maka-execution-composition-'));
   const root = join(base, 'interactive');
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
-  assert.ok(owner);
-  if (!owner) throw new Error('Unable to acquire composition test root');
   try {
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire composition test root');
     await run({ root, owner });
   } finally {
-    await owner.close();
+    await owner?.close();
     await rm(base, { recursive: true, force: true });
+    for (const [name, value] of savedKeys) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
   }
 }
 
@@ -5963,7 +5972,9 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
       const chat = sessions[0]!;
       assert.equal(chat.id, 'assistant-fallback-chat');
       assert.match(chat.cwd!, /[/\\]Maka[/\\]tasks[/\\]task-[^/\\]+$/);
-      assert.ok(chat.cwd!.startsWith(home));
+      // The Host canonicalizes the task directory; tmpdir() may be a symlink
+      // (macOS /var -> /private/var), so compare against the resolved home.
+      assert.ok(chat.cwd!.startsWith(await realpath(home)));
       assert.deepEqual(chat.labels, ['personal-assistant']);
       await captured.composition.close();
       captured = await createCapturedExecutionComposition(owner, { assistantHomeDirectory: home });

@@ -43,6 +43,7 @@ import type {
 } from '@maka/runtime/plugin-turn-finish-service';
 import type { HostPluginDataRuntime } from '../server/plugin-data-runtime.js';
 import type { MakaCompositionEntryInspection } from '@maka/runtime/plugin-runtime';
+import { RunCostLedger, type ReadSessionUsage } from './run-cost.js';
 
 export const ASSISTANT_LEGACY_PACKAGES = [
   'dev.maka.memory-network',
@@ -81,11 +82,19 @@ export interface AssistantDependencies {
   stopSessions(): Promise<void>;
   markBackgroundSessions(sessionIds: readonly string[]): Promise<void>;
   resolveTools(sessionId: string, core: readonly MakaTool[]): { tools: readonly MakaTool[] };
+  /**
+   * Model usage a Session accrued in a time window, read from the Usage ledger.
+   * Observability only (#6309): without it runs are still counted, but their
+   * cost is recorded as unknown.
+   */
+  readSessionUsage?: ReadSessionUsage;
 }
 
 export interface AssistantModuleServices
-  extends Omit<AssistantDependencies, 'resolveTools' | 'stopSessions'> {
+  extends Omit<AssistantDependencies, 'resolveTools' | 'stopSessions' | 'readSessionUsage'> {
   bot: AssistantBotBridge;
+  /** Cost and outcome of discovery runs and Matter activations; never limits them (#6309). */
+  runCost: RunCostLedger;
   backgroundSessions: { register(read: () => readonly string[]): void };
   onClose(dispose: Dispose): void;
   onStart(start: () => Dispose): void;
@@ -152,8 +161,11 @@ class AssistantRuntime {
   async recover(legacy: HostPluginDataRuntime, entries: readonly MakaCompositionEntryInspection[]) {
     if (this.initialized) throw Error('Personal assistant already initialized');
     const settings = await this.loadSettings(legacy, entries);
+    const runCost = new RunCostLedger(this.directory, this.dependencies.readSessionUsage);
+    this.disposers.push(() => runCost.close());
     const services: AssistantModuleServices = {
       bot: this.bot,
+      runCost,
       backgroundSessions: { register: (read) => this.backgroundSessions.push(read) },
       ...this.dependencies,
       onClose: (dispose: Dispose) => this.disposers.push(dispose),

@@ -98,6 +98,9 @@ export function registerAssistant(
       },
       ...(includeMemory ? { memory: memoryState } : {}),
       tasks: taskState,
+      // What background discovery and Matter activations cost and whether they reported
+      // (#6309). Observability only: nothing in the scheduler reads it.
+      cost: ctx.runCost?.summary() ?? null,
       hostRequired: true,
     };
   };

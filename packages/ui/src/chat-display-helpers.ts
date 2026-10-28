@@ -53,7 +53,7 @@
    `Intl` options. */
 
 /**
- * A turn's duration, counted in whole seconds: `0s`, `25s`, `1m 54s`.
+ * A turn's duration, counted in whole seconds: `0s`, `25s`, `1m 54s`, `1h 29m 0s`.
  *
  * Deliberately NOT tool-activity's `formatDuration`, which resolves below the
  * second (`450 ms`, `8.2s`). That shape reports a span measured after the fact.
@@ -69,5 +69,6 @@
 export function formatTurnDuration(ms: number): string {
   const totalSeconds = Math.floor(Math.max(0, ms) / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s`;
-  return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
+  if (totalSeconds < 3600) return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
+  return `${Math.floor(totalSeconds / 3600)}h ${Math.floor(totalSeconds / 60) % 60}m ${totalSeconds % 60}s`;
 }
