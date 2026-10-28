@@ -16,7 +16,7 @@ function App() {
         <View
           testID="box"
           style={{ marginTop: 8, width: wide() ? 200 : 100, height: 30 }}
-          onLayout={(e) => layout.set(`${e.origin.x},${e.origin.y} ${e.size.width}x${e.size.height}`)}
+          onLayout={({ bounds: b }) => layout.set(`${b.origin.x},${b.origin.y} ${b.size.width}x${b.size.height}`)}
         />
       </View>
       <Text>Layout: {layout()}</Text>

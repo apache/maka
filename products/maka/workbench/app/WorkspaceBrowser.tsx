@@ -33,7 +33,7 @@ import {
   Image,
   List,
 } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
@@ -62,7 +62,7 @@ export type WorkspaceBrowserProps = {
   switching(): boolean;
   focusRequest(): boolean;
   focusHandled(): void;
-  attach(node: YNode): void;
+  attach(node: ViewRef): void;
   close(): void;
   selectSession(id: string, expectedSessionId: string | null): Promise<void>;
   create(workspace: BrowserWorkspace, expectedSessionId: string | null): Promise<void>;
@@ -77,11 +77,11 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const browser = props.browsing;
   const choosingWorkspace = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
-  const actionsAnchor = signal<YNode | null>(null);
+  const actionsAnchor = signal<ViewRef | null>(null);
   const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
   const viewportHeight = signal(160);
-  let navigationTarget: YNode | undefined;
-  let list: YNode | undefined;
+  let navigationTarget: ViewRef | undefined;
+  let list: ListRef | undefined;
   let removeEscape = () => {};
   let alive = true;
   cleanup(() => {
@@ -145,7 +145,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   };
   const openActions = (
     target: { session: SessionActionTarget; origin: string | null },
-    anchor: YNode,
+    anchor: ViewRef,
   ) => {
     if (
       alive &&
@@ -370,7 +370,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             </If>
           </View>
         )}
-        onLayout={(frame) => viewportHeight.set(frame.size.height)}
+        onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
         onLoadMore={() => {
           if (!choosingWorkspace()) void browser.loadMore();
         }}
@@ -441,7 +441,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 );
               }
               const session = () => sessionsById().get(key());
-              let actionTrigger: YNode | undefined;
+              let actionTrigger: ViewRef | undefined;
               cleanup(() => {
                 if (alive && actionsAnchor() === actionTrigger) actionsAnchor.set(null);
               });

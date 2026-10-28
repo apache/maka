@@ -1911,7 +1911,16 @@ opt-level = 3
             let lib = self.build_with(sdk.ndk_cargo(triple)?, &build)?;
             let dir = out.join("lib").join(&abi);
             fs::create_dir_all(&dir)?;
-            install(&lib, &dir.join("libnsh.so"))?;
+            let dest = dir.join("libnsh.so");
+            if dev {
+                install(&lib, &dest)?;
+            } else {
+                // Without its symbol tables and debug info, which APKs
+                // store uncompressed; `symbols/<abi>` keeps them, for
+                // `ndk-stack` and Play Console.
+                let symbols = out.join("symbols").join(&abi).join("libnsh.so");
+                install_stripped(&lib, &dest, &symbols, |from, to| sdk.strip(from, to))?;
+            }
         }
         Ok(out)
     }
@@ -2146,11 +2155,33 @@ fn check_specifiers(crates: &[AppCrate], sets: &[SetDescription]) -> anyhow::Res
 
 /// Copies `from` to `to` when it is newer.
 fn install(from: &Path, to: &Path) -> anyhow::Result<()> {
-    let modified = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
-    if modified(to).is_some() && modified(to) >= modified(from) {
+    if up_to_date(to, from) {
         return Ok(());
     }
     fs::copy(from, to).with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
+    Ok(())
+}
+
+/// Whether `file` exists and is no older than `source`.
+fn up_to_date(file: &Path, source: &Path) -> bool {
+    let modified = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+    modified(file).is_some() && modified(file) >= modified(source)
+}
+
+/// Installs both release artifacts. Older CLIs copied an unstripped library
+/// to `to`; its timestamp alone cannot establish that stripping has run.
+fn install_stripped(
+    from: &Path,
+    to: &Path,
+    symbols: &Path,
+    strip: impl FnOnce(&Path, &Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    if up_to_date(to, from) && up_to_date(symbols, from) {
+        return Ok(());
+    }
+    fs::create_dir_all(symbols.parent().context("symbols directory")?)?;
+    strip(from, to)?;
+    fs::copy(from, symbols)?;
     Ok(())
 }
 
@@ -2204,6 +2235,56 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{AppCrate, Nsh, RootConfig, RustApp};
+
+    #[test]
+    fn release_libraries_upgrade_old_caches_and_restore_symbols() {
+        use std::{
+            fs,
+            time::{Duration, SystemTime},
+        };
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.nsh")
+            .join(format!("strip-cache-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("linked.so");
+        let dest = dir.join("libnsh.so");
+        let symbols = dir.join("symbols/libnsh.so");
+        fs::write(&source, b"complete library").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(60);
+        fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        // The old CLI copied the complete library after Cargo linked it.
+        fs::copy(&source, &dest).unwrap();
+        assert!(super::up_to_date(&dest, &source));
+        let strip = |_: &Path, to: &Path| -> anyhow::Result<()> {
+            fs::write(to, b"stripped library")?;
+            Ok(())
+        };
+        super::install_stripped(&source, &dest, &symbols, strip).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"stripped library");
+        assert_eq!(fs::read(&symbols).unwrap(), b"complete library");
+        // A complete cache avoids running the NDK again.
+        super::install_stripped(&source, &dest, &symbols, |_, _| panic!("cache miss")).unwrap();
+        // Losing the symbol backup repairs both artifacts, even with a fresh APK library.
+        fs::remove_file(&symbols).unwrap();
+        super::install_stripped(&source, &dest, &symbols, strip).unwrap();
+        assert_eq!(fs::read(&symbols).unwrap(), b"complete library");
+        // A stale backup must also be refreshed.
+        fs::File::options()
+            .write(true)
+            .open(&symbols)
+            .unwrap()
+            .set_modified(old - Duration::from_secs(60))
+            .unwrap();
+        super::install_stripped(&source, &dest, &symbols, strip).unwrap();
+        assert!(super::up_to_date(&symbols, &source));
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     /// An app in `dir` with `crates` (package, directory), built against
     /// this checkout.

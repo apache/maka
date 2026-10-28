@@ -10,7 +10,7 @@
 //! every token as they name a theme variable (`bg-muted`, `bg-up/30`,
 //! `rounded-(--radius)`, `font-(family-name:--font-mono)`;
 //! `tailwind/theme.rs`), TS reads them with `nsh`'s `token()`, and Rust
-//! components with [`super::ambient::tokens`].
+//! components with [`super::tokens`].
 
 use std::sync::Arc;
 

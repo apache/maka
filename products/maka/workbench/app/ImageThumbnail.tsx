@@ -22,7 +22,7 @@ import { createText } from './text';
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import { Button } from 'nsh/base';
 import { windowSize } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
 import { immutableAsset } from './immutableAsset';
@@ -60,7 +60,7 @@ export function ImageThumbnail(props: {
   const error = createText();
   const attempt = signal(0);
   let alive = true;
-  let button: YNode | undefined;
+  let button: ViewRef | undefined;
   cleanup(() => {
     alive = false;
   });
@@ -151,7 +151,7 @@ export function ImageThumbnail(props: {
           {() => (
             <Image
               src={uri}
-              onLoad={(dimensions) => {
+              onLoad={({ size: dimensions }) => {
                 if (alive) size.set(dimensions);
               }}
               onError={(reason) => {

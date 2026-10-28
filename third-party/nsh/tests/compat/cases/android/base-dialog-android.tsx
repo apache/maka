@@ -19,9 +19,9 @@ function App() {
         open={open()}
         android={{ statusBarTranslucent: true }}
         ios={{ supportedOrientations: ["landscape"] }}
-        onOpenChange={(next, why) => {
-          reason.set(why);
-          open.set(next);
+        onOpenChange={(e) => {
+          reason.set(e.reason);
+          open.set(e.open);
         }}
       >
         <Text>Translucent dialog</Text>

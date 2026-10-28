@@ -50,7 +50,7 @@ async function main() {
   show(`Missing: ${missing}`);
   show(`Outside: ${refused(() => readFile("/nsh-compat-outside/file"))}`);
   show(`Escape: ${refused(() => writeFile(`${root}/../escape.txt`, "x"))}`);
-  show(`Socket: ${refused(() => connect("compat.invalid", 80))}`);
+  show(`Socket: ${refused(() => connect({ host: "compat.invalid", port: 80 }))}`);
   show(`Process: ${refused(() => run("nsh-compat-ungranted", []))}`);
 }
 

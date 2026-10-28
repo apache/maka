@@ -57,8 +57,8 @@ pub struct Transaction {
     transform: Transform,
     schema: Schema,
     pub(super) base_revision: u64,
-    /// When it was made, in milliseconds (the platform's clock; 0 where
-    /// there is none, so the view sets it).
+    /// When it was made, in milliseconds since the Unix epoch on the
+    /// engine's clock ([`nsh_core::time::unix_ms`]).
     pub time: u64,
     // The selection as of `selection_steps` steps; later steps map it.
     selection: Selection,
@@ -387,18 +387,10 @@ impl Transaction {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+// The engine's clock, which the web has (`SystemTime::now` panics in
+// WebAssembly) and tests' manual clocks move.
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
-// `SystemTime::now` panics on wasm32-unknown-unknown; the web view sets
-// `time` itself.
-#[cfg(target_arch = "wasm32")]
-fn now_ms() -> u64 {
-    0
+    nsh_core::time::unix_ms() as u64
 }
 
 #[cfg(test)]

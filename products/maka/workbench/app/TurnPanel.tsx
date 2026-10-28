@@ -20,7 +20,7 @@
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
 import { cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
-import type { Signal, YNode } from 'nsh';
+import type { ListRef, Signal, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
@@ -68,8 +68,8 @@ export type GroupViewState = {
   opening?: 'top' | 'bottom';
   revealRow?: string;
   visibleRows: Signal<ReadonlySet<string>>;
-  rowNodes: Map<string, YNode>;
-  list?: YNode;
+  rowNodes: Map<string, ViewRef>;
+  list?: ListRef;
   requestFocus?: boolean;
 };
 
@@ -201,7 +201,7 @@ function ActivityLog(props: {
   });
   const opening = state.opening;
   state.opening = undefined;
-  let ownList: YNode | undefined;
+  let ownList: ListRef | undefined;
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -317,7 +317,7 @@ function ActivityLog(props: {
                 const first = props.row(ownedId());
                 if (!first) return <View />;
                 const rowId = ownedId();
-                let ownRow: YNode | undefined;
+                let ownRow: ViewRef | undefined;
                 cleanup(() => {
                   if (state.rowNodes.get(rowId) === ownRow) state.rowNodes.delete(rowId);
                 });
@@ -330,7 +330,7 @@ function ActivityLog(props: {
                     style={{
                       paddingBottom: props.group().rowIds.at(-1) === ownedId() ? 0 : memberGap,
                     }}
-                    onLayout={(frame) => {
+                    onLayout={({ bounds: frame }) => {
                       if (
                         !alive ||
                         lease !== state.lease ||

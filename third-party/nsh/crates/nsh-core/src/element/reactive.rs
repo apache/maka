@@ -44,8 +44,8 @@ pub(crate) struct RustData {
     runaway: bool,
     /// Events components that run once emitted, for the core.
     emits: Vec<super::once::Emitted>,
-    /// What components read of the core ([`super::ambient`]).
-    pub(crate) ambient: super::ambient::Ambient,
+    /// What components read of the core (the free functions of [`super`]).
+    pub(crate) ambient: super::Ambient,
     /// The APIs views registered, by host ([`super::Scope::methods`]).
     apis: rustc_hash::FxHashMap<crate::NodeId, ApiEntry>,
     /// The error boundaries ([`super::catch_error`]): what fails under the

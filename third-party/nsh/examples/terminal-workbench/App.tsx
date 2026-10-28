@@ -116,7 +116,7 @@ function Workbench() {
                 autoFocus
                 value={query()}
                 placeholder="Name, region, owner..."
-                onChange={(value) => query.set(value)}
+                onChange={({ value }) => query.set(value)}
                 style={{ flex: 1, minWidth: 0, height: 16, paddingHorizontal: 8, backgroundColor: p.raised, color: p.ink, placeholderColor: p.faint, fontSize: 14, lineHeight: 16 }}
               />
               <Each of={["all", "healthy", "degraded"] as const}>
@@ -247,13 +247,13 @@ function Workbench() {
         <If when={inspector()}><Label color={p.faint}>Tab focus · Ctrl+Q quit</Label></If>
       </View>
 
-      <Dialog open={deployOpen()} animation="fade" onOpenChange={(open) => deployOpen.set(open)} style={{ flex: 1 }}>
+      <Dialog open={deployOpen()} animation="fade" onOpenChange={({ open }) => deployOpen.set(open)} style={{ flex: 1 }}>
         <View style={{ flex: 1, padding: 16, alignItems: "center", justifyContent: "center", backgroundColor: "#02060dcc" }}>
           <View style={{ width: 448, maxWidth: "100%", padding: 16, gap: 16, backgroundColor: p.panel }}>
             <Label strong color={p.mint}>Deploy service</Label>
             <Label color={p.ink}>{`${current().name} → v2.19.0`}</Label>
             <View><Label color={p.blue}>Preflight checks passed</Label><Label>{`${current().region} · ${current().replicas} replicas`}</Label><Label>Rolling update / one replica at a time</Label></View>
-            <View><Label color={p.faint}>Release note</Label><Input testID="release-note" accessibilityLabel="Release note" value={releaseNote()} onChange={(value) => releaseNote.set(value)} style={{ height: 16, paddingHorizontal: 8, fontSize: 14, lineHeight: 16, color: p.ink, backgroundColor: p.raised }} /></View>
+            <View><Label color={p.faint}>Release note</Label><Input testID="release-note" accessibilityLabel="Release note" value={releaseNote()} onChange={({ value }) => releaseNote.set(value)} style={{ height: 16, paddingHorizontal: 8, fontSize: 14, lineHeight: 16, color: p.ink, backgroundColor: p.raised }} /></View>
             <View style={{ height: 16, flexDirection: "row", justifyContent: "flex-end", gap: 16 }}>
               <Action label="Cancel" testID="cancel-deploy" accessibilityLabel="Cancel deployment" onPress={() => deployOpen.set(false)} />
               <Action label="Queue deployment" testID="confirm-deploy" accessibilityLabel="Confirm deployment" primary onPress={confirmDeployment} />

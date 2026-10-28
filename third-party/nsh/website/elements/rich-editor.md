@@ -54,7 +54,8 @@ Without `schema` an editor uses the starter schema (`starterSchema()`); without 
 ## Styling
 
 The editor draws the document with the app's look: `classes` and `styles` style its parts (`root`, `content`, `caret`,
-`selection`, `placeholder`, `composition`, `selectedNode`, `listMarker`), its nodes by type (`nodes: { heading:
+`selection`, `placeholder`, `composition`, `selectedNode`, `listMarker`, and for tables `selectedCell`,
+`tableGrip`, `tableResizeHandle`, `tableDropIndicator`), its nodes by type (`nodes: { heading:
 "text-2xl font-bold", "heading[level=2]": "text-xl" }`) and its marks (`marks: { bold: "font-bold" }`). The items of
 lists whose node spec sets `extra.listMarker` to `"bullet"` or `"ordered"` (the starter schema's lists) show a marker
 in the `listMarker` part: `•`, `◦`, `▪` by depth, or numbers from the list's `start`, placed before the item, in the list's indent (`pl-6` on the list, as a browser indents `ul`).
@@ -358,3 +359,73 @@ editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
 
 The popup is the app's: it reads the suggestion's state, places itself at `coordsAtPos(range.from)` and draws the
 items its own way.
+
+## Tables
+
+`TableKit` brings Tiptap's tables: `RichTable` (Tiptap's `Table`), `RichTableRow`, `RichTableHeader` and
+`RichTableCell`. It is added next to `StarterKit`:
+
+```tsx
+import { RichEditor, StarterKit, TableKit, addRowAfter, createRichEditor, insertTable, mergeCells } from "nsh/base";
+
+const editor = createRichEditor({
+  extensions: [StarterKit, TableKit.configure({ table: { cellMinWidth: 40 } })],
+});
+
+editor.run(insertTable({ rows: 3, cols: 3, withHeaderRow: true }));
+editor.run(addRowAfter());
+```
+
+The table takes the options `resizable` (true), `cellMinWidth` (25), `lastColumnResizable` (true),
+`allowTableNodeSelection` (false) and `HTMLAttributes`; `TableKit.configure({ tableHeader: false })` leaves one
+extension out. Cells hold blocks and have `colspan`, `rowspan` and `colwidth` (a width in points per column they
+span); rows have a `height`.
+
+Tab and Shift-Tab move between cells, and Tab in the last cell adds a row. Arrow keys at a cell's edge go on to the
+next cell; Shift with an arrow, or a drag across cells, selects a rectangle of cells (a selection of the type
+`"cell"`, whose `anchor` and `head` are the positions before its first and last cells). Backspace and Delete empty
+the selected cells, and delete the table when all its cells are selected.
+
+In the editor a table is a grid of its cells: each column as wide as its cells' `colwidth`, columns without one
+sharing the room (at least `cellMinWidth` wide), each row at least its `height`. Its look starts from the theme: a
+1-point `border` grid, header cells on `muted`, padded cells, and each selected cell under the `selectedCell` part in
+the selection color. `classes.nodes` (`table`, `tableCell`, `tableHeader`) and the parts restyle
+all of it. Up and Down on a cell's first or last line go to the cell above or below.
+
+While the document can be edited:
+
+- On desktops, the right border of each column and the bottom border of each row resize them: the pointer shows the
+  resize cursor and the `tableResizeHandle` line, the table follows the drag, and the release sets `colwidth` or
+  `height` in one step that undo takes back. `resizable: false` turns this off, `lastColumnResizable: false` keeps the
+  last column's width.
+- The table the selection is in shows grips (`tableGrip`) on its top border over each column and on its left border
+  beside each row. Pressing one selects that column or row; dragging it on desktops shows where it drops
+  (`tableDropIndicator`) and moves it there on release.
+
+```tsx
+<RichEditor
+  editor={editor}
+  classes={{
+    nodes: { tableHeader: "font-semibold", tableCell: "px-3 py-2" },
+    selectedCell: "bg-primary/10",
+    tableGrip: "bg-muted-foreground/60 rounded-full",
+  }}
+/>
+```
+
+The commands, each a helper of `nsh/base`:
+
+- `insertTable({ rows, cols, withHeaderRow })` (3 × 3 with a header row by default) and `deleteTable()`.
+- `addColumnBefore()`, `addColumnAfter()`, `deleteColumn()`, `addRowBefore()`, `addRowAfter()`, `deleteRow()`.
+- `mergeCells()`, `splitCell()` and `mergeOrSplit()`.
+- `toggleHeaderRow()`, `toggleHeaderColumn()` and `toggleHeaderCell()`.
+- `setCellAttribute(name, value)`, `setCellSelection({ anchorCell, headCell })`, `goToNextCell()`,
+  `goToPreviousCell()` and `fixTables()`, which repairs tables with missing or overlapping cells.
+- `moveTableRow({ from, to, select })` and `moveTableColumn({ from, to, select })` move a row or column, together
+  with the rows or columns its merged cells span; `setColumnWidth({ col, width })` and
+  `setRowHeight({ row, height })` size them (`null` sizes them to their content). These take `table`, the position
+  before a table, to act on a table other than the selection's.
+
+Tables read from and write to HTML (`<table>` with `<th>` / `<td>`, `colspan`, `rowspan` and `data-colwidth`) and
+Markdown: a table with a header row whose cells are each one paragraph is a GFM pipe table, and any other table is
+written as its HTML, which reads back the same. In plain text a row is a line of its cells separated by tabs.

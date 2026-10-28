@@ -145,8 +145,8 @@ export function MessageRow({
                   when={compact()}
                   else={
                     <View
-                      onHoverIn={() => hovered.set(true)}
-                      onHoverOut={() => hovered.set(false)}
+                      onMouseEnter={() => hovered.set(true)}
+                      onMouseLeave={() => hovered.set(false)}
                       style={{ gap: 8 }}
                     >
                       <If

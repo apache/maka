@@ -164,7 +164,7 @@ export function FormRequest(props: {
                     masked={draft()?.hidden}
                     autoCorrect={false}
                     placeholder={placeholder()}
-                    onChange={(value) => props.edit(index(), original, value)}
+                    onChange={({ value }) => props.edit(index(), original, value)}
                     style={{
                       ...inputTextStyle,
                       height: compact() ? 32 : 40,

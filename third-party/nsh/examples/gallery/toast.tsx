@@ -144,7 +144,7 @@ export function Toaster() {
       <ToastStack
         placement={desktop() ? "bottomRight" : "bottomCenter"}
         style={{ width: 340, maxWidth: "100%" }}
-        onExpandedChange={(open) => expanded.set(open)}
+        onExpandedChange={({ expanded: open }) => expanded.set(open)}
         onCancel={() => {
           const newest = shown().filter((e) => e.status !== "ending").at(-1);
           if (newest) dismissToast(newest.id);

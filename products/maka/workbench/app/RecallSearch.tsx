@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { batch, cleanup, computed, inputAction, List, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ListRef } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
@@ -100,7 +100,7 @@ export function RecallSearch(props: {
   let sequence = 0;
   let wanted: Request | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let removeKeys = () => {};
   const release = (request: Request) => {
     if (!request.stream) return Promise.resolve();
@@ -279,7 +279,7 @@ export function RecallSearch(props: {
   return (
     <Dialog
       animation="none"
-      onOpenChange={(open) => {
+      onOpenChange={({ open }) => {
         if (!open) close();
       }}
       style={{
@@ -363,7 +363,7 @@ export function RecallSearch(props: {
           accessibilityLabel={tr('Search conversation history')}
           autoFocus
           value={query()}
-          onChange={(text) => search(text)}
+          onChange={({ value: text }) => search(text)}
           onSubmit={submit}
           submitBehavior="submit"
           readonly={opening()}

@@ -31,7 +31,7 @@ use crate::{
     geometry::{Percentage, Point, Points},
 };
 
-/// An element of a view: made with [`super::ambient::element_ref`], put on
+/// An element of a view: made with [`super::element_ref`], put on
 /// the element ([`super::Element::element_ref`]). Its commands go to
 /// whatever element carries it now, in order with the component's other
 /// changes; they do nothing while no rendered element carries it, and once
@@ -287,7 +287,7 @@ impl fmt::Debug for ElementRef {
 }
 
 /// A component of a view (TS: a `ref` to a component, its methods): made
-/// with [`super::ambient::component_ref`], put on the component's element
+/// with [`super::component_ref`], put on the component's element
 /// ([`super::ComponentElement::component_ref`]); [`Self::api`] reaches its
 /// methods, with no encoding. A `Copy` handle, as [`ElementRef`] is.
 pub struct ComponentRef<C: Component> {

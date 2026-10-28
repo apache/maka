@@ -428,7 +428,7 @@ export function CurrentFile(props: { model: CurrentFileModel; openImageViewer: O
       <If when={!readable()}>
         <Scroll
           accessibilityLabel={tr('File preview status')}
-          onLayout={(frame) => emptyHeight.set(frame.size.height)}
+          onLayout={({ bounds: frame }) => emptyHeight.set(frame.size.height)}
           style={{ flex: 1, minHeight: 0 }}
         >
           <View
@@ -628,14 +628,14 @@ function FileImage(props: {
   });
   return (
     <Scroll
-      onLayout={(frame) => viewportHeight.set(frame.size.height)}
+      onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
       style={{ flex: 1, minHeight: 0 }}
     >
       <CapturedFileStatus model={props.model} />
       <View style={{ height: Math.max(0, viewportHeight() - footerHeight() - 8), marginBottom: 8 }}>
         <Image
           src={props.view.uri}
-          onLoad={(value) => {
+          onLoad={({ size: value }) => {
             if (mounted) dimensions.set(value);
           }}
           onError={(reason) => {
@@ -645,7 +645,10 @@ function FileImage(props: {
           style={[{ flex: 1, minHeight: 0, width: '100%' }, { objectFit: 'contain' }]}
         />
       </View>
-      <View onLayout={(frame) => footerHeight.set(frame.size.height)} style={{ gap: 8 }}>
+      <View
+        onLayout={({ bounds: frame }) => footerHeight.set(frame.size.height)}
+        style={{ gap: 8 }}
+      >
         <If when={dimensions()}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Text style={{ ...captionTextStyle, flex: 1, color: C.muted }}>

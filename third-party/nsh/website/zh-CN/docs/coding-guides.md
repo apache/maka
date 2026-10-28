@@ -226,7 +226,7 @@ pub fn Search(props: SearchProps) -> impl IntoElement {
 ```tsx tabs
 function Search(props: { placeholder: string }) {
   const query = signal("");
-  return <Input value={query()} onChange={(text) => query.set(text)} placeholder={props.placeholder} />;
+  return <Input value={query()} onChange={({ value }) => query.set(value)} placeholder={props.placeholder} />;
 }
 ```
 
@@ -278,7 +278,7 @@ switch()
 ```
 
 ```tsx tabs
-<Switch checked={showHidden()} onChange={(next) => showHidden.set(next)}>
+<Switch checked={showHidden()} onChange={({ checked }) => showHidden.set(checked)}>
   <Text>Show hidden files</Text>
 </Switch>
 ```
@@ -394,7 +394,7 @@ function CartRow() {
       max={10}
       decrementLabel="Fewer"
       incrementLabel="More"
-      onChange={(next) => quantity.set(next)}
+      onChange={({ value }) => quantity.set(value)}
     />
   );
 }
@@ -418,7 +418,7 @@ export interface QuantityStepperProps {
   /** What screen readers say for the button that adds one. */
   incrementLabel: string;
   /** The user asked for another quantity; the owner sets `value`. */
-  onChange?: (next: number) => void;
+  onChange?: (e: { value: number }) => void;
 }
 
 export function QuantityStepper(props: QuantityStepperProps) {
@@ -426,7 +426,7 @@ export function QuantityStepper(props: QuantityStepperProps) {
   const max = () => props.max ?? 99;
   const step = (delta: number) => {
     const next = Math.min(max(), Math.max(min(), props.value + delta));
-    if (next !== props.value) props.onChange?.(next);
+    if (next !== props.value) props.onChange?.({ value: next });
   };
   const buttonClass = "size-8 items-center justify-center rounded-(--radius) bg-muted active:opacity-60 disabled:opacity-40";
   return (
@@ -818,7 +818,7 @@ const liked = signal<Set<number>>(new Set());
 （组件的 props 和事件、crate 的导出、宿主应用的原生组件和模块接收的函数）采用同样的纪律：
 
 - 输入只增加可选成员；类型只放宽；默认值和行为保持不变（新行为需要主动开启）；
-- 选项是一个对象（`scrollTo({ x, y, animated })`），而不是第三个位置参数；
+- 参数可能增加的函数把选项放在一个对象里（`scrollTo({ x, y, animated })`），而不是再加一个位置参数；永远不会增加的参数（例如范围的起点和终点）保持为位置参数；
 - 模式是可以增加取值的字符串联合类型，而不是以后需要第三种状态的布尔值；
 - 一个值只有一种类型：`version: string`，而不是 `string | number`；
 - 函数返回一个可以增加字段的对象，而不是元组或单独的值；
@@ -879,10 +879,10 @@ const liked = signal<Set<number>>(new Set());
 | 插槽 | 它是什么 | `header`、`footer`、`trigger`、`content`、`empty` |
 | 应用提供的内容 | `render<Part>` | `renderCodeBlock` |
 | 关闭开关 | `closeOn<Trigger>`，默认 `true` | `closeOnEscape`、`closeOnBackdropPress` |
-| 值的变化 | `on<Value>Change(next, details?)` | `onChange(text)`、`onOpenChange(open, reason)` |
+| 值的变化 | `on<Value>Change({ <value>, ... })`，一个对象 | `onChange({ value })`、`onOpenChange({ open, reason })` |
 | 其他事件 | `on<Event>`，现在时，一个对象 | `onPress()`、`onSubmit({ text })` |
 | 阶段 | `<act>Start`、`<act>End` | `onPanStart`、`onLoadStart` |
-| 指针位于视图上方 | `In` / `Out` | `onHoverIn`、`onHoverOut` |
+| 鼠标位于视图上方 | `Enter` / `Move` / `Leave`，与 DOM 相同 | `onMouseEnter`、`onMouseMove`、`onMouseLeave` |
 | 开始监听 | 返回 `() => void` | `keymap.bind(..)` |
 | 环境中的值 | 访问器，旁边是 `set<Value>` | `colorScheme()`、`setColorScheme` |
 | 只读的布尔值 | `is<Adjective>`、`has<Noun>` | `isAvailable` |
@@ -927,12 +927,13 @@ Rust 构建器消费并返回 `Self`，以它设置的 prop 命名，不加 `set
 
 ### 回调与事件的措辞
 
-- 值的变化先传值，其他内容放在后面：`onChange(next)`、`onOpenChange(open, reason)`。其他每个事件都传一个对象，即使只有一个
-  字段（`onLinkPress({ url })`），这样以后增加字段只是一次添加；没有内容可报告的事件不传参数。
+- 每个事件都传一个对象，即使只有一个字段、即使是值的变化，字段按它们报告的属性命名：`onChange({ value })`、
+  `onOpenChange({ open, reason })`、`onLinkPress({ url })`。这样以后增加字段只是一次添加。API 的数据类型是一个字段，
+  而不是载荷本身（`onImagePress({ image })`）；没有内容可报告的事件不传参数。
 - 以动作命名，不用过去时，也不用请求：`onPress`、`onClose`、`onCancel`、`onBackPress`。
 - 当动作有名字时，以意图而不是几何位置命名：`onLoadMore`，而不是“到达了末尾”。
-- 生命周期成对使用 `onOpen` / `onClose`；阶段用 `Start` / `End`，从不用 `Begin`；指针位于视图上方是 `onHoverIn` /
-  `onHoverOut`，文件拖过视图是 `Enter` / `Leave`。
+- 生命周期成对使用 `onOpen` / `onClose`；阶段用 `Start` / `End`，从不用 `Begin`；鼠标位于视图上方是 `onMouseEnter` /
+  `onMouseMove` / `onMouseLeave`（与 DOM 的名称相同），文件拖过视图是 `Enter` / `Leave`。
 - 在文档中说明回调是在组件自身状态变化之前还是之后运行，以及它是否可能重入组件。
 
 ### 文档与界面文案

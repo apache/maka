@@ -520,10 +520,16 @@ pub fn Bar(props: BarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
         let away = at.interpolate(&[c - s, c, c + s], &[dim, 0.0, dim]);
         Some(away.mul(&plot.fade).mul(-1.0).add(1.0))
     };
-    // Records the bars, each its own path, growing while the plot appears.
+    // Records the bars, each its own path, growing while the plot appears
+    // and moving with the value axis's domain (its corners kept round).
     let draw = move |mut p: Painter, fill: &dyn Fn(Painter, &BarRect) -> Painter| {
         let Some(g) = geometry.get() else { return p };
         let appearing = plot.appearing.get();
+        let tween = match g.across {
+            true => plot.x_tween,
+            false => plot.y_tween,
+        };
+        let moving = tween.moving.get();
         let corners = radii.get().corners().map(|r| Num::Const(r.0));
         let square = corners.iter().all(|r| *r == Num::Const(0.0));
         for bar in &g.bars {
@@ -531,16 +537,18 @@ pub fn Bar(props: BarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                 p = p.global_alpha(&alpha);
             }
             let (lo, len) = bar.span();
-            let (at, length) = match appearing {
+            let (at, length) = match (appearing, moving) {
                 // Scaled about the stack's base, so a stack grows whole.
-                true => {
+                (true, _) => {
                     let q = grown(&g, bar.row);
-                    (
-                        p.num(&q.mul(lo - g.origin).add(g.origin)),
-                        p.num(&q.mul(len)),
-                    )
+                    let (at, length) = (q.mul(lo - g.origin).add(g.origin), q.mul(len));
+                    match moving {
+                        true => (p.num(&tween.shown(&at)), p.num(&tween.stretched(&length))),
+                        false => (p.num(&at), p.num(&length)),
+                    }
                 }
-                false => (Num::Const(lo), Num::Const(len)),
+                (false, true) => (p.num(&tween.shown(lo)), p.num(&tween.stretched(len))),
+                (false, false) => (Num::Const(lo), Num::Const(len)),
             };
             let (start, thick) = (Num::Const(bar.start), Num::Const(bar.thick));
             let rect = match g.across {
@@ -651,8 +659,9 @@ pub fn Bar(props: BarProps, _cx: Scope<NoEvent>) -> impl IntoElement {
         ))
 }
 
-/// The texts `label` reads of `rows`, once known (as [`series::values`]).
-fn texts(
+/// The texts `label` reads of `rows`, once known (as [`series::values`]):
+/// a bar's labels and a pie's.
+pub(super) fn texts(
     rows: impl Fn() -> Rows + 'static,
     label: impl Fn() -> Option<RowText> + 'static,
 ) -> Signal<Option<Arc<[SharedString]>>> {
@@ -720,10 +729,11 @@ fn bar_label(label: BarLabel<impl Fn() -> SharedString + 'static>) -> View {
     };
     // While the bars grow, the label sits back toward the base by what is
     // left to grow: (origin - end) * (1 - grown).
-    let back = animated_value(0.0);
+    let (back, end) = (animated_value(0.0), animated_value(0.0));
     effect(move || {
         if let Some((_, origin, b)) = bar() {
             back.set(origin - b.to);
+            end.set(b.to);
         }
     });
     let grown = untracked(|| {
@@ -732,6 +742,12 @@ fn bar_label(label: BarLabel<impl Fn() -> SharedString + 'static>) -> View {
     });
     let left = grown.mul(-1.0).add(1.0);
     let ride = back.mul(&left);
+    // And it moves with the value axis's domain, where its bar's end goes.
+    let tween = match across {
+        true => plot.x_tween,
+        false => plot.y_tween,
+    };
+    let ride = ride.add(&tween.moved(&end.add(&ride)));
     let anchor = view()
         .absolute()
         .w(px(0.0))

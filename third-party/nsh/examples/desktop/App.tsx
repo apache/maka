@@ -67,7 +67,7 @@ function App() {
 
   effect(() => {
     // The bar is 40 points tall: the window controls are centered in it.
-    Window.setTitleBar(hidden() ? "hidden" : "default", 40);
+    Window.setTitleBar({ style: hidden() ? "hidden" : "default", height: 40 });
   });
 
   effect(() => {
@@ -115,7 +115,7 @@ function App() {
           <Each of={menus()}>
             {(menu) => (
               <View
-                onLayout={(e) => (buttons[menu().label] = { x: e.origin.x, width: e.size.width })}
+                onLayout={(e) => (buttons[menu().label] = { x: e.bounds.origin.x, width: e.bounds.size.width })}
                 onPress={() => {
                   const label = menu().label;
                   opened.set(label);

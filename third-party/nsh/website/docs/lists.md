@@ -181,8 +181,8 @@ A list takes every scrolling prop of the scroll view that makes sense for a list
 | `keyExtractor` | `.keys(..)` | `(item, index) => string` | | The key in viewability tokens; in Rust, the rows' identities. |
 | `refreshing` / `onRefresh` | `.refreshing(..)` / `.on_refresh(..)` | `boolean` / `() => void` | | Pull to refresh. |
 | `refreshIndicator` | `.refresh_indicator(..)` | `{ height: number }` | | The app's own pull-to-refresh indicator, in place of the platform's spinner (see [Scrolling](./scrolling.md#an-indicator-of-your-own)). |
-| `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
-| `ref` | `.element_ref(&list)` | `YNode` | | `scrollToIndex`, `scrollToOffset`, `scrollToEnd`, `scrollTo`. |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](../elements/scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
+| `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`, `scrollToOffset`, `scrollToEnd`, `scrollTo`. |
 
 The header, footer and empty slots take an element (in TSX also a component: `header={Header}`). They are cells of their own, never recycled, and they are reactive like any other element.
 
@@ -448,7 +448,7 @@ function Chat() {
       <View style={{ flexDirection: "row", gap: 8, padding: 8 }}>
         <Input
           value={draft()}
-          onChange={(t) => draft.set(t)}
+          onChange={({ value }) => draft.set(value)}
           onSubmit={send}
           multiline
           submitBehavior="submit"
@@ -750,9 +750,9 @@ list.scroll_to_index(120, percentage(0.5), px(0.0), true);
 ```
 
 ```tsx tabs
-import { List, type YNode } from "nsh";
+import { List, type ListRef } from "nsh";
 
-let list!: YNode;
+let list!: ListRef;
 
 <List ref={list} each={items} estimatedItemSize={48} style={{ flex: 1 }}>…</List>
 

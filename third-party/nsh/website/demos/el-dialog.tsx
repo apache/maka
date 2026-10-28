@@ -24,7 +24,7 @@ function App() {
   const backdrop = () => (
     <Switch
       checked={backdropCloses()}
-      onChange={(next) => backdropCloses.set(next)}
+      onChange={({ checked }) => backdropCloses.set(checked)}
       class={wide() ? "flex-row items-center gap-2 self-center active:opacity-70" : "flex-row items-center gap-3 rounded-xl p-3 active:opacity-70"}
       style={wide() ? undefined : ui().row}
       trackClass={track}
@@ -59,7 +59,7 @@ function App() {
                 <Panel title="open · onCancel">
                   <Text style={{ fontSize: 13, color: ui().text }}>{state()}</Text>
                 </Panel>
-                <Panel title="onOpenChange(open, reason) · onOpen" grow>
+                <Panel title="onOpenChange({ open, reason }) · onOpen" grow>
                   <Text style={{ fontSize: 13, fontWeight: "600", color: ui().accent }}>{log()}</Text>
                 </Panel>
               </Inspector>
@@ -85,9 +85,9 @@ function App() {
         open={card()}
         animation="fade"
         closeOnBackdropPress={backdropCloses()}
-        onOpenChange={(open, reason) => {
+        onOpenChange={({ open, reason }) => {
           card.set(open);
-          log.set(`onOpenChange(${open}, "${reason}")`);
+          log.set(`onOpenChange({ open: ${open}, reason: "${reason}" })`);
         }}
         onCancel={() => cancels.update((n) => n + 1)}
         onOpen={() => log.set("onOpen: card")}
@@ -126,9 +126,9 @@ function App() {
       <Dialog
         open={sheet()}
         presentation="pageSheet"
-        onOpenChange={(open, reason) => {
+        onOpenChange={({ open, reason }) => {
           sheet.set(open);
-          log.set(`onOpenChange(${open}, "${reason}")`);
+          log.set(`onOpenChange({ open: ${open}, reason: "${reason}" })`);
         }}
         onCancel={() => cancels.update((n) => n + 1)}
         onOpen={() => log.set("onOpen: sheet")}

@@ -51,6 +51,12 @@ export interface Palette {
   light: string;
   /** Text on `light`. */
   onLight: string;
+  /** The app's sidebar, beside the page. */
+  sidebar: string;
+  /** The selected row of the sidebar. */
+  sidebarSelected: string;
+  /** The sidebar's edge and the toolbar's hairline. */
+  sidebarBorder: string;
   /** A switch's track when off. */
   track: string;
   /** A switch's knob when off. */
@@ -77,9 +83,9 @@ function tokens<K extends string>(names: Record<K, keyof Tokens>): Record<K, str
 /**
  * The shared example UI's look: a graphite page (or a paper one in light
  * appearance), cards with an inset surface, tabular numbers and one citrus
- * accent, its colors the tokens of `theme.json`. Sizes are for phones:
- * 16 pt gutters, 44 pt touch targets, 15 pt body text. The desktop layout
- * (`desktop`) keeps them and puts more side by side.
+ * accent, its colors the tokens of `theme.json`. Desktops are compact
+ * (28-point controls, 13-point labels), touch screens roomier (36 to 40
+ * points).
  */
 export const colors: Palette = tokens<keyof Palette>({
   background: "background",
@@ -98,6 +104,9 @@ export const colors: Palette = tokens<keyof Palette>({
   onAccent: "on-brand",
   light: "primary",
   onLight: "primary-foreground",
+  sidebar: "sidebar",
+  sidebarSelected: "sidebar-accent",
+  sidebarBorder: "sidebar-border",
   track: "track",
   knob: "knob",
   code: "code",
@@ -112,6 +121,17 @@ export const colors: Palette = tokens<keyof Palette>({
 export function alpha(color: string, a: number) {
   return `color-mix(in srgb, ${color} ${a * 100}%, transparent)`;
 }
+
+/** The charts' series colors, in order (`theme.json`'s `chart-1` to
+ * `chart-5`): the brand's citrus first, then graphite from dark to light,
+ * so one series leads and the rest stay as quiet as the interface. */
+export const chart = tokens({
+  s1: "chart-1",
+  s2: "chart-2",
+  s3: "chart-3",
+  s4: "chart-4",
+  s5: "chart-5",
+});
 
 /** Translucent tints of the tones, for fills behind text. */
 export const tints = tokens({
@@ -133,11 +153,15 @@ export interface Finish {
 }
 
 /**
- * Light and depth: gentle top-to-bottom gradients, a highlight along top
- * edges and soft shadows, so cards, controls and buttons read as surfaces.
+ * Light and depth, kept quiet: one-color edges (corners join cleanly), a
+ * hard 1-point drop under what stands up and a 1-point inner shade in what
+ * is sunk; only floating surfaces (menus, glass) cast a soft
+ * shadow. `hover` and `pressed` are a raised control's states, `fill` a
+ * slider's or a meter's run of the accent.
  */
-export const finish = themed<Record<"card" | "inset" | "field" | "raised" | "light" | "accent" | "track" | "knob" | "pill" | "chip" | "glass" | "menu", Finish>>(finishes.dark, finishes.light
-);
+export const finish = themed<
+  Record<"card" | "inset" | "field" | "raised" | "hover" | "pressed" | "light" | "accent" | "track" | "fill" | "knob" | "pill" | "chip" | "glass" | "menu", Finish>
+>(finishes.dark, finishes.light);
 
 export type Tone = "neutral" | "accent" | "info" | "warn" | "danger" | "up" | "down";
 
@@ -185,8 +209,7 @@ export const motion = {
 export const hovered = (): ViewStyle => ({ backgroundColor: alpha(colors.text, 0.05) });
 
 /**
- * The keyboard focus (`focusStyle`): a 2-point ring of `info` inside the
- * view's edge, so a card's rounded clip does not cut it (`offset` 2 puts it
- * outside, around a filled button).
+ * The keyboard focus (`focusStyle`): a 2-point outline in the theme's info
+ * color, inset by default (`offset` moves it relative to the edge).
  */
 export const focusRing = (offset = -2): ViewStyle => ({ outlineStyle: "solid", outlineWidth: 2, outlineColor: colors.info, outlineOffset: offset });

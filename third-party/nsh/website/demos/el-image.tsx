@@ -94,7 +94,7 @@ function App() {
           blurRadius={blur() ? 12 : 0}
           fadeDuration={250}
           onLoadStart={() => log("onLoadStart")}
-          onLoad={(e) => log(`onLoad ${Math.round(e.width)} × ${Math.round(e.height)}`)}
+          onLoad={({ size }) => log(`onLoad ${Math.round(size.width)} × ${Math.round(size.height)}`)}
           onError={(e) => log(`onError ${e.message}`)}
           onLoadEnd={() => log("onLoadEnd")}
           style={{ ...ui().inset, flex: 1, minHeight: 180, borderRadius: 14, objectFit: mode() }}

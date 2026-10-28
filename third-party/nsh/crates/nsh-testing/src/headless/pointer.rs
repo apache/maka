@@ -42,7 +42,7 @@ enum Mode {
 }
 
 /// The finger.
-struct Finger {
+pub(super) struct Finger {
     start: Point<Points>,
     at: Point<Points>,
     /// Milliseconds since the drag began.
@@ -71,8 +71,35 @@ impl Headless {
     /// pulled far enough past its top, and the press under the finger is
     /// cancelled once it moves away (`onPressUp`, no `onPress`).
     pub fn drag(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
-        let parsed = Selector::parse(selector)?;
         self.step(format!("drag({selector}, {}, {})", by.x, by.y));
+        self.drag_from(selector, by, false)
+    }
+
+    /// The step `dragAndHold(<selector>, <by>)`: [`Self::drag`] without the
+    /// lift, so the test can look at the screen mid-drag (a drag preview, a
+    /// drop line); [`Self::drop_held`] lifts the finger where it is.
+    pub fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
+        self.step(format!("dragAndHold({selector}, {}, {})", by.x, by.y));
+        self.drag_from(selector, by, true)
+    }
+
+    /// The step `drop()`: the finger [`Self::drag_and_hold`] left down lifts.
+    pub fn drop_held(&mut self) -> Result<(), String> {
+        self.step(String::from("drop()"));
+        let finger = self
+            .finger
+            .take()
+            .ok_or("`drop()` comes after `dragAndHold`: no finger is down")?;
+        self.finger_lifted(finger);
+        self.done()
+    }
+
+    fn drag_from(&mut self, selector: &str, by: Point<Points>, hold: bool) -> Result<(), String> {
+        // A new drag lifts the finger an earlier one left down.
+        if let Some(finger) = self.finger.take() {
+            self.finger_lifted(finger);
+        }
+        let parsed = Selector::parse(selector)?;
         let pick = self.screen.view(&parsed);
         let target = self.picked(pick, selector, "view")?;
         let bounds = self
@@ -133,8 +160,9 @@ impl Headless {
             self.touch(TouchPhase::Start, &finger, None);
         }
         // Inside a scroll view a touch presses only once it rests: a drag
-        // moves away before.
-        let mut press_due = if in_scroll {
+        // moves away before. A desktop's mouse presses at once (a drag
+        // selects text there rather than scrolling).
+        let mut press_due = if in_scroll && !self.environment.desktop() {
             Some(SCROLL_PRESS_DELAY as f64)
         } else {
             self.press_in(&mut finger);
@@ -170,7 +198,11 @@ impl Headless {
             self.finger_moved(&mut finger, at);
             self.responder_granted(&mut finger);
         }
-        self.finger_lifted(finger);
+        if hold {
+            self.finger = Some(finger);
+        } else {
+            self.finger_lifted(finger);
+        }
         self.done()
     }
 
@@ -312,11 +344,21 @@ impl Headless {
 
     /// The press under the finger goes in (`onPressDown`).
     fn press_in(&mut self, finger: &mut Finger) {
-        if let Some(press) = &mut finger.press
-            && let Some(kind) = press.press_in()
-        {
-            self.send(press.node, kind, EventPayload::None);
-        }
+        let Some(press) = &mut finger.press else {
+            return;
+        };
+        let Some(kind) = press.press_in() else {
+            return;
+        };
+        // Where the drag starts, in the pressed view, with the keys held:
+        // a press that selects or drags from there reads them.
+        let node = press.node;
+        let at = self
+            .screen
+            .bounds_in_root(node)
+            .map(|b| point(finger.start.x - b.origin.x, finger.start.y - b.origin.y));
+        let payload = self.press_payload(node, at);
+        self.send(node, kind, payload);
     }
 
     /// The finger moved away from its press: it ends without a press.
@@ -460,12 +502,13 @@ impl Headless {
 
     /// The step `hover(<selector>)`: the mouse comes over the middle of the
     /// view `selector` names, as on a desktop (`open`'s `platform`): the
-    /// views under it that it left hear `onHoverOut` (from the inside out),
-    /// those it came over `onHoverIn` (from the outside in) and take their
-    /// `hover:` styles, and the ones listening to `onHoverMove` hear where
-    /// it is. A browser has one whatever its width (the web in the phone
-    /// idiom included); an iOS or Android phone or tablet has none: there
-    /// it fails.
+    /// views under it that it left hear `onMouseLeave` (from the inside
+    /// out), those it came over `onMouseEnter` (from the outside in) and
+    /// take their `hover:` styles, and the hovered ones hear `onMouseMove`
+    /// (from the inside out), each with where the mouse is now in it and
+    /// no button down (the mouse never presses here). A browser has one
+    /// whatever its width (the web in the phone idiom included); an iOS or
+    /// Android phone or tablet has none: there it fails.
     pub fn hover(&mut self, selector: &str) -> Result<(), String> {
         let parsed = Selector::parse(selector)?;
         self.step(format!("hover({selector})"));
@@ -495,7 +538,7 @@ impl Headless {
             {
                 control.set_states(id, states);
             }
-            self.send(id, EventKind::HoverOut, EventPayload::None);
+            self.send(id, EventKind::MouseLeave, self.mouse_at(id, at));
         }
         for id in entered {
             if let Some(states) =
@@ -504,20 +547,26 @@ impl Headless {
             {
                 control.set_states(id, states);
             }
-            self.send(id, EventKind::HoverIn, EventPayload::None);
+            self.send(id, EventKind::MouseEnter, self.mouse_at(id, at));
         }
         for id in views {
-            let origin = self
-                .screen
-                .bounds_in_root(id)
-                .map_or(Point::default(), |b| b.origin);
-            let event = nsh_core::HoverEvent {
-                position: point(at.x - origin.x, at.y - origin.y),
-                page_position: at,
-                modifiers: nsh_core::keymap::Modifiers::default(),
-            };
-            self.send(id, EventKind::HoverMove, EventPayload::Hover(event));
+            self.send(id, EventKind::MouseMove, self.mouse_at(id, at));
         }
         self.done()
+    }
+
+    /// The mouse at `at` in the root, as view `id` hears it: where it is in
+    /// the view, no modifier keys and no button down.
+    fn mouse_at(&self, id: NodeId, at: Point<Points>) -> EventPayload {
+        let origin = self
+            .screen
+            .bounds_in_root(id)
+            .map_or(Point::default(), |b| b.origin);
+        EventPayload::Mouse(nsh_core::MouseEvent::new(
+            point(at.x - origin.x, at.y - origin.y),
+            at,
+            self.held,
+            None,
+        ))
     }
 }

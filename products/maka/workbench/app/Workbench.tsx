@@ -55,7 +55,7 @@ export function Workbench(props: {
   children: JSX.Element;
 }) {
   const plugins = pluginContext()!;
-  let pluginRoot: import('nsh').YNode | undefined;
+  let pluginRoot: import('nsh').ViewRef | undefined;
   const previewShown = () => props.resources.shown() || plugins.panel() !== null;
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(48 * CELL);
@@ -92,7 +92,7 @@ export function Workbench(props: {
           size={preferredWidth()}
           minSize={BROWSER_MIN}
           maxSize={BROWSER_MAX}
-          onResize={(size) => preferredWidth.set(size)}
+          onResize={({ size }) => preferredWidth.set(size)}
           style={{ minHeight: 0, backgroundColor: C.surface }}
         >
           <If when={browser()}>
@@ -108,7 +108,7 @@ export function Workbench(props: {
           visible={preview()}
           size={preferredPreviewWidth()}
           minSize={PREVIEW_MIN}
-          onResize={(size) => preferredPreviewWidth.set(size)}
+          onResize={({ size }) => preferredPreviewWidth.set(size)}
           style={{ minHeight: 0 }}
         >
           <If when={preview()}>

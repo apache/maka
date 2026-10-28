@@ -638,13 +638,13 @@ impl JsValue for Color {
     }
 }
 
-/// A node JS passes (a `YNode`, a `ref`).
+/// A node JS passes (an element, a `ref`: TS `ViewRef`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeRef(pub crate::NodeId);
 
 impl JsValue for NodeRef {
     fn ts_type(_types: &mut TsTypes) -> String {
-        "YNode".into()
+        "ViewRef".into()
     }
 
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {

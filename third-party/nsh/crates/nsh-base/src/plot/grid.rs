@@ -32,7 +32,7 @@ pub fn Grid(props: GridProps, _cx: Scope<NoEvent>) -> impl IntoElement {
         plot,
         || STROKE_ROOM,
         move |p, _| {
-            let mut p = p
+            let p = p
                 .stroke_style_from_view(SvgPaint::CurrentColor)
                 .line_width_from_view()
                 .line_dash_from_view()
@@ -43,21 +43,28 @@ pub fn Grid(props: GridProps, _cx: Scope<NoEvent>) -> impl IntoElement {
             // 1 pt wide on a 1x screen is one pixel, not two half ones).
             let ratio = pixel_ratio();
             let sharp = |v: f32| ((v * ratio).floor() + 0.5) / ratio;
-            let x_map = plot.x_map.get();
-            for v in x.get() {
-                if let Some(at) = x_map.tick(v) {
-                    let at = sharp(at);
-                    p = p.move_to(at, 0.0).line_to(at, size.height.0);
+            // Each line moves with its scale's domain, across the whole plot.
+            let p = plot.traced(p, true, false, |mut p| {
+                let x_map = plot.x_map.get();
+                for v in x.get() {
+                    if let Some(at) = x_map.tick(v) {
+                        let at = sharp(at);
+                        p = p.move_to(at, 0.0).line_to(at, size.height.0);
+                    }
                 }
-            }
-            let y_map = plot.y_map.get();
-            for v in y.get() {
-                if let Some(at) = y_map.tick(v) {
-                    let at = sharp(at);
-                    p = p.move_to(0.0, at).line_to(size.width.0, at);
+                p
+            });
+            plot.traced(p, false, true, |mut p| {
+                let y_map = plot.y_map.get();
+                for v in y.get() {
+                    if let Some(at) = y_map.tick(v) {
+                        let at = sharp(at);
+                        p = p.move_to(0.0, at).line_to(size.width.0, at);
+                    }
                 }
-            }
-            p.stroke()
+                p
+            })
+            .stroke()
         },
     ))
 }

@@ -221,7 +221,7 @@ pub(crate) struct Retirement {
     pub retired: bool,
     pub focus: Vec<u32>,
     pub cancelled: Vec<u32>,
-    pub states: Vec<(u32, u8)>,
+    pub states: Vec<(u32, u16)>,
 }
 
 /// Hands one batch to the DOM mounter without re-entering WebAssembly to

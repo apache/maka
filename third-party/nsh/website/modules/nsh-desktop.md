@@ -33,7 +33,7 @@ graphical desktop; `platform.isTerminal` identifies the terminal renderer. See [
 ```ts
 const Window: {
   setTitle(title: string): void;
-  setTitleBar(style: "default" | "hidden", height?: number): void;
+  setTitleBar(options: { style: "default" | "hidden"; height?: number }): void;
   setMenuBar(mode: "shown" | "autoHide"): void;
   minimize(): void;
   toggleMaximize(): void;
@@ -55,7 +55,7 @@ The Rust column names the functions of `nsh_core::element::desktop`.
 | Member | Rust | Description |
 |---|---|---|
 | `setTitle(title)` | | The window's title: the title bar, the taskbar or Dock, the window switcher. |
-| `setTitleBar(style, height?)` | `set_title_bar(TitleBarStyle::Hidden, Some(px(height)))` | `"hidden"` removes the system's title bar: the app fills the window up to its top edge and draws a title bar of its own. The system's window controls stay (macOS's traffic lights, Windows' minimize / maximize / close buttons, GTK's window buttons). `height` is your bar's height in points: the controls are centered in it (Windows' caption buttons fill it; on macOS `height` selects compact chrome up to 44 points and regular chrome above; size your bar using the actual height from `titleBar().height`, and AppKit places the traffic lights during live resizing. An embedding app's existing toolbar keeps its own style and height); without it they take the platform's height. `"default"` brings the system's title bar back (Rust: `set_title_bar(TitleBarStyle::Default, None)`). |
+| `setTitleBar({ style, height? })` | `set_title_bar(TitleBarStyle::Hidden, Some(px(height)))` | `style: "hidden"` removes the system's title bar: the app fills the window up to its top edge and draws a title bar of its own. The system's window controls stay (macOS's traffic lights, Windows' minimize / maximize / close buttons, GTK's window buttons). `height` is your bar's height in points: the controls are centered in it (Windows' caption buttons fill it; on macOS `height` selects compact chrome up to 44 points and regular chrome above; size your bar using the actual height from `titleBar().height`, and AppKit places the traffic lights during live resizing. An embedding app's existing toolbar keeps its own style and height); without it they take the platform's height. `style: "default"` brings the system's title bar back (Rust: `set_title_bar(TitleBarStyle::Default, None)`). |
 | `setMenuBar(mode)` | `set_menu_bar(mode)` | On Windows and Linux in GPUI apps, where the window draws the application menu as a bar above the app: `"shown"` (the default) shows it always; `"autoHide"` shows it after Alt is pressed and released alone, until Alt alone hides it again, as in Windows and GNOME apps. F10 and Alt with a menu's initial open a menu either way, and the bar shows while it is open. macOS's menu bar is the system's. |
 | `minimize()` | | Minimizes the window. |
 | `toggleMaximize()` | | Maximizes the window, or restores it when it is maximized. |
@@ -106,7 +106,7 @@ import { Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { titleBar, Window } from "nsh/desktop";
 
-Window.setTitleBar("hidden", 40); // a bar 40 points tall
+Window.setTitleBar({ style: "hidden", height: 40 }); // a bar 40 points tall
 
 function TitleBar() {
   return (

@@ -3,7 +3,13 @@ import { createAnimatedValue } from "nsh";
 import { platform } from "nsh";
 import logo from "../logo@2x.png";
 import { Icon } from "../icons";
-import { Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, paneWidth, Press, radius, Stat, type Tone, toneColor } from "../ui";
+import { Badge, bindRefresh, Button, colors, columnsFor, desktop, finish, paneWidth, Press, radius, scrollbarTheme, Stat, type Tone, toneColor } from "../ui";
+
+/** The gallery's scroll bar, starting below the compact bar laid over the list's top. */
+const belowBar = {
+  ...scrollbarTheme,
+  vertical: { ...scrollbarTheme.vertical, class: scrollbarTheme.vertical?.class?.replace("inset-y-0", "top-11 bottom-0") },
+};
 
 type Photo = { id: number; title: string; author: string; tone: Tone; views: number };
 
@@ -245,6 +251,7 @@ export function Photos() {
               onLoadMore={loadMore}
               header={hero()}
               footer={footer()}
+              scrollbar={belowBar}
             >
               {(photo) => <PhotoTile photo={photo()} />}
             </List>

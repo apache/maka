@@ -26,9 +26,9 @@ function App() {
       accessibilityLabel={locked ? `${label} plan` : undefined}
       class="group flex-row items-center"
       checkedStyle={{ backgroundColor: "#00ff00" }}
-      onChange={next => {
+      onChange={({ checked }) => {
         changes.set(changes() + 1);
-        if (next) plan.set(value);
+        if (checked) plan.set(value);
       }}
     >
       <View class={dot} />

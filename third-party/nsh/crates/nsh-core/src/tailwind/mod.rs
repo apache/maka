@@ -45,28 +45,32 @@ use crate::{
 /// Interaction states a class can depend on (`active:`, `hover:`, ...).
 pub mod state {
     /// The view is pressed (`active:`).
-    pub const PRESSED: u8 = 1;
+    pub const PRESSED: u16 = 1;
     /// A pointer is over the view (`hover:`).
-    pub const HOVERED: u8 = 2;
+    pub const HOVERED: u16 = 2;
     /// The input has focus (`focus:`).
-    pub const FOCUSED: u8 = 4;
+    pub const FOCUSED: u16 = 4;
     /// The view is disabled (`disabled:`).
-    pub const DISABLED: u8 = 8;
+    pub const DISABLED: u16 = 8;
     /// The view or a descendant has focus (`focus-within:`).
-    pub const FOCUS_WITHIN: u8 = 16;
+    pub const FOCUS_WITHIN: u16 = 16;
     /// The view is selected (`selected:`): its
     /// `accessibilityState.selected`, a `Button`'s `selected`. Set by the
     /// core, never reported by the platform.
-    pub const SELECTED: u8 = 32;
+    pub const SELECTED: u16 = 32;
     /// The view is checked (`checked:`): its `accessibilityState.checked`
     /// (a checkbox, a switch, a radio; not when mixed). Set by the core,
     /// never reported by the platform.
-    pub const CHECKED: u8 = 64;
+    pub const CHECKED: u16 = 64;
     /// The view is indeterminate (`indeterminate:`): its
     /// `accessibilityState.checked` is mixed (a checkbox that is neither
     /// checked nor unchecked, as CSS's `:indeterminate`). Set by the core,
     /// never reported by the platform.
-    pub const INDETERMINATE: u8 = 128;
+    pub const INDETERMINATE: u16 = 128;
+    /// The view's popup, menu or section is open (`aria-expanded:`): its
+    /// `accessibilityState.expanded`, which `Popover` and `Menu` set on
+    /// their trigger. Set by the core, never reported by the platform.
+    pub const EXPANDED: u16 = 256;
 }
 
 /// The view's place among its siblings (`first:`, `odd:`, ...).
@@ -160,12 +164,12 @@ pub struct Context<'a> {
     /// Right-to-left layout.
     pub rtl: bool,
     /// [`state`] bits of the node.
-    pub states: u8,
+    pub states: u16,
     /// [`position`] bits of the node.
     pub position: u8,
     /// [`state`] bits of the nearest ancestor group with this name (`""`
     /// for unnamed groups).
-    pub group: &'a dyn Fn(&str) -> u8,
+    pub group: &'a dyn Fn(&str) -> u16,
 }
 
 /// Conditions of one rule (all must hold).
@@ -179,11 +183,11 @@ pub(crate) struct Condition {
     rtl: Option<bool>,
     reduce_motion: Option<bool>,
     /// Required [`state`] bits.
-    states: u8,
+    states: u16,
     /// [`state`] bits that must be off (`enabled:`).
-    not_states: u8,
+    not_states: u16,
     /// A group name and its required states.
-    group: Option<(Box<str>, u8)>,
+    group: Option<(Box<str>, u16)>,
     /// Allowed [`position`] bits (any of them).
     position: u8,
     /// Applies to an input's placeholder.
@@ -242,7 +246,7 @@ impl Condition {
     /// Applies only while the view (or its group) is pressed, hovered or
     /// focused: press feedback.
     fn interactive(&self) -> bool {
-        const INTERACTION: u8 =
+        const INTERACTION: u16 =
             state::PRESSED | state::HOVERED | state::FOCUSED | state::FOCUS_WITHIN;
         self.states & INTERACTION != 0
             || self
@@ -380,8 +384,10 @@ pub(crate) mod rank {
     pub(crate) const ACTIVE: Key = Key::new(37);
     pub(crate) const ENABLED: Key = Key::new(38);
     pub(crate) const DISABLED: Key = Key::new(39);
-    pub(crate) const MOTION_SAFE: Key = Key::new(40);
-    pub(crate) const MOTION_REDUCE: Key = Key::new(41);
+    /// Tailwind's `aria-*` variants come after the pseudo-classes.
+    pub(crate) const EXPANDED: Key = Key::new(40);
+    pub(crate) const MOTION_SAFE: Key = Key::new(41);
+    pub(crate) const MOTION_REDUCE: Key = Key::new(42);
     /// `max-*` breakpoints, widest first.
     pub(crate) const MAX: u16 = 50;
     /// Breakpoints and `min-*`, narrowest first.
@@ -400,7 +406,7 @@ pub(crate) mod rank {
 impl Rule {
     /// A rule applying `decls` while the node is in all of [`state`]
     /// `states`, ordered by `rank`.
-    pub(crate) fn new(states: u8, rank: impl Into<Rank>, decls: Vec<Decl>) -> Self {
+    pub(crate) fn new(states: u16, rank: impl Into<Rank>, decls: Vec<Decl>) -> Self {
         Self {
             cond: Condition {
                 states,
@@ -417,7 +423,7 @@ impl Rule {
     /// `states` (and, unless `disabled`, not disabled), applied over the
     /// inline style as `!` utilities are, ordered by `rank`.
     pub(crate) fn state_style(
-        states: u8,
+        states: u16,
         rank: impl Into<Rank>,
         decls: Vec<crate::StyleDecl>,
     ) -> Self {
@@ -442,8 +448,8 @@ impl Rule {
     /// [`Rule::new`], also requiring the nearest ancestor group `group`
     /// (`""`: unnamed) in its states, and dark appearance when `dark`.
     pub(crate) fn with(
-        states: u8,
-        group: Option<(&str, u8)>,
+        states: u16,
+        group: Option<(&str, u16)>,
         dark: bool,
         rank: Rank,
         decls: Vec<Decl>,
@@ -557,7 +563,7 @@ pub struct ClassList {
     /// [`deps`] bits.
     deps: u16,
     /// [`state`] bits the platform must report for this view.
-    tracked: u8,
+    tracked: u16,
     /// The view is a `group` (`""`) or named groups (`group/item`).
     groups: Vec<Box<str>>,
     /// Classes that are not known utilities.
@@ -573,7 +579,7 @@ impl ClassList {
 
     /// [`state`] bits whose changes the platform must report.
     #[inline]
-    pub fn tracked_states(&self) -> u8 {
+    pub fn tracked_states(&self) -> u16 {
         self.tracked
     }
 
@@ -776,7 +782,11 @@ impl ClassList {
     fn add(&mut self, rule: Rule) {
         self.deps |= rule.cond.deps();
         self.tracked |= rule.cond.states
-            & !(state::DISABLED | state::SELECTED | state::CHECKED | state::INDETERMINATE);
+            & !(state::DISABLED
+                | state::SELECTED
+                | state::CHECKED
+                | state::INDETERMINATE
+                | state::EXPANDED);
         if rule.cond.states & state::FOCUS_WITHIN != 0 {
             self.tracked |= state::FOCUS_WITHIN;
         }
@@ -1044,7 +1054,7 @@ fn themed(
 /// Applies variant `v` to `cond`; returns its place in Tailwind's order.
 fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
     use state::*;
-    let states = |cond: &mut Condition, s: u8| {
+    let states = |cond: &mut Condition, s: u16| {
         cond.states |= s;
     };
     // Tailwind registers `group-*` first, then the pseudo-elements, then
@@ -1118,6 +1128,10 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
             states(cond, DISABLED);
             rank::DISABLED
         }
+        "aria-expanded" => {
+            states(cond, EXPANDED);
+            rank::EXPANDED
+        }
         "motion-safe" => {
             cond.reduce_motion = Some(false);
             rank::MOTION_SAFE
@@ -1175,6 +1189,7 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
                     "selected" => (SELECTED, rank::SELECTED),
                     "checked" => (CHECKED, rank::CHECKED),
                     "indeterminate" => (INDETERMINATE, rank::INDETERMINATE),
+                    "aria-expanded" => (EXPANDED, rank::EXPANDED),
                     _ => return None,
                 };
                 let entry = cond.group.get_or_insert_with(|| (name.into(), 0));

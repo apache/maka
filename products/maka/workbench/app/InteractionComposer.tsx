@@ -29,7 +29,7 @@ import {
 import { tr } from './locale';
 import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { host } from './host';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
@@ -631,7 +631,7 @@ export function InteractionComposer({
     });
   let unbindKeys = () => {};
   cleanup(() => unbindKeys());
-  const attach = (node: YNode) => {
+  const attach = (node: ViewRef) => {
     unbindKeys();
     const bindings = [
       keymap.bind('mod+enter', submit, { when: 'always', within: node }),
@@ -943,7 +943,7 @@ export function InteractionComposer({
                             value={String(answers()[index()]?.value ?? '')}
                             readonly={blocked()}
                             placeholder={tr('Your answer')}
-                            onChange={(value) => choose(index(), value, true)}
+                            onChange={({ value }) => choose(index(), value, true)}
                             style={{
                               ...inputTextStyle,
                               placeholderColor: C.muted,

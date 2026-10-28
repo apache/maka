@@ -1305,9 +1305,9 @@ pub(crate) const EXPORTS: &[crate::modules::Item] = &[(
          signals created inside the row.",
         // Arrays also have at(): infer their elements before indexed sources.
         &[
-            "<T>(props: Omit<ListProps<T>, \"each\"> & { each: readonly T[] }): YNode",
-            "<T>(props: Omit<ListProps<T>, \"each\"> & { each: ReadonlyListSource<T> }): YNode",
-            "<T>(props: ListProps<T>): YNode",
+            "<T>(props: Omit<ListProps<T>, \"each\"> & { each: readonly T[] }): JSX.Element",
+            "<T>(props: Omit<ListProps<T>, \"each\"> & { each: ReadonlyListSource<T> }): JSX.Element",
+            "<T>(props: ListProps<T>): JSX.Element",
         ],
     ),
 )];
@@ -1347,7 +1347,7 @@ export interface ViewabilityConfig {
 /** A list's props: its own, and those of the scroll view it is (the test
  * id, accessibility, classes, touch and layout events, ...), which it
  * passes on as they are. */
-export interface ListProps<T> extends Omit<ViewProps, "children">, ScrollingHostProps, ListHostProps {
+export interface ListProps<T> extends Omit<ViewProps, "children" | "ref">, ScrollingHostProps, ListHostProps {
   each: readonly T[] | ReadonlyListSource<T>;
   /** Above the items, scrolling with them. */
   header?: ListSlot;
@@ -1376,7 +1376,7 @@ export interface ListProps<T> extends Omit<ViewProps, "children">, ScrollingHost
   onLoadMoreAtStart?: () => void;
   /** How close to the start (in viewports) `onLoadMoreAtStart` fires; default 1. */
   loadMoreAtStartThreshold?: number;
-  ref?: YNode | ((node: YNode) => void);
+  ref?: ListRef | ((node: ListRef) => void);
   /** Renders one row. Called once per recycled cell; `item` and `index`
    * change when the cell is reused for another item. */
   children: (item: () => T, index: () => number) => JSX.Element;

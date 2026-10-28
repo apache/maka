@@ -211,13 +211,12 @@ impl PluginSpec for Counter {
         let Some(limit) = has_limit(self.limit(state)) else {
             return slice;
         };
-        let selection = state.selection();
-        let (from, to) = (selection.from(), selection.to());
+        // As the paste replaces the selection: fitted where it goes, which a
+        // bare replace refuses (inline content over the whole document).
         let fits = |slice: &Slice| {
-            state
-                .doc()
-                .replace(from, to, slice)
-                .is_ok_and(|doc| self.characters(&doc, self.options.mode) <= limit)
+            let mut tr = state.tr();
+            tr.replace_selection(slice.clone());
+            self.characters(tr.doc(), self.options.mode) <= limit
         };
         if fits(&slice) {
             return slice;
@@ -350,7 +349,7 @@ mod tests {
     use crate::rich_editor::{
         extensions::starter,
         model::Fragment,
-        state::{EditorStateConfig, TextSelection},
+        state::{AllSelection, EditorStateConfig, TextSelection},
     };
 
     fn state_with(text: &str, options: CharacterCountOptions) -> EditorState {
@@ -444,6 +443,24 @@ mod tests {
         tr.replace_selection(slice);
         let state = state.apply(tr).unwrap();
         assert_eq!(state.doc().text_content(), "abcdef");
+    }
+
+    #[test]
+    fn a_paste_over_the_whole_document_is_kept() {
+        let state = state_with("hello", limited(4000));
+        let mut tr = state.tr();
+        tr.set_selection(AllSelection::new(state.doc()).into());
+        let state = state.apply(tr).unwrap();
+        let schema = state.schema().clone();
+        let slice = Slice::new(Fragment::from(vec![schema.text("pq", vec![])]), 0, 0);
+        let slice = state
+            .plugins()
+            .iter()
+            .fold(slice, |s, p| p.transform_pasted(&state, s));
+        let mut tr = state.tr();
+        tr.replace_selection(slice);
+        let state = state.apply(tr).unwrap();
+        assert_eq!(state.doc().text_content(), "pq");
     }
 
     #[test]

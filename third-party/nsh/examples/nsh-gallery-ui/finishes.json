@@ -1,108 +1,156 @@
 {
   "dark": {
     "card": {
-      "backgroundImage": "linear-gradient(180deg, #1b1c20 0%, #191a1d 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.04), 0 16px 36px -20px rgba(0,0,0,0.75)"
+      "backgroundImage": "linear-gradient(180deg, #25262a 0%, #25262a 100%)",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.35)"
     },
     "inset": {
-      "boxShadow": "inset 0 1px 3px rgba(0,0,0,0.55)"
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.2)"
     },
     "field": {
-      "boxShadow": "inset 0 1px 2px rgba(0,0,0,0.55)"
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.3), 0 1px 0 rgba(255,255,255,0.04)"
     },
     "raised": {
-      "backgroundImage": "linear-gradient(180deg, #2b2d32 0%, #24262a 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.07), 0 1px 1px rgba(0,0,0,0.4), 0 6px 14px -7px rgba(0,0,0,0.7)"
+      "backgroundColor": "#2d2e32",
+      "backgroundImage": "linear-gradient(180deg, #303135 0%, #292a2d 100%)",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
+      "borderColor": "#414348"
+    },
+    "hover": {
+      "backgroundColor": "#2d2e32",
+      "backgroundImage": "linear-gradient(180deg, #35363a 0%, #2d2e32 100%)",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
+      "borderColor": "#474950"
+    },
+    "pressed": {
+      "backgroundColor": "#29292c",
+      "backgroundImage": "linear-gradient(180deg, #29292c 0%, #29292c 100%)",
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.3)",
+      "borderColor": "#393b40"
     },
     "light": {
-      "backgroundImage": "linear-gradient(180deg, #fbfbfc 0%, #e3e5e8 100%)",
-      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(0,0,0,0.4), 0 8px 18px -8px rgba(0,0,0,0.75)"
+      "backgroundColor": "#c4ec6a",
+      "backgroundImage": "linear-gradient(180deg, #c9f173 0%, #bce562 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 2px 0 rgba(255,255,255,0.12), 0 1px 0 rgba(0,0,0,0.45)",
+      "borderColor": "#8db536"
     },
     "accent": {
-      "backgroundImage": "linear-gradient(180deg, #d6f78a 0%, #c1ea5c 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), 0 1px 1px rgba(0,0,0,0.4), 0 8px 20px -9px rgba(200,242,109,0.4)"
+      "backgroundColor": "#c4ec6a",
+      "backgroundImage": "linear-gradient(180deg, #c9f173 0%, #bce562 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 2px 0 rgba(255,255,255,0.12), 0 1px 0 rgba(0,0,0,0.45)",
+      "borderColor": "#8db536"
     },
     "track": {
-      "boxShadow": "inset 0 1px 2px rgba(0,0,0,0.5)"
+      "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.35)",
+      "borderColor": "#2e3034"
+    },
+    "fill": {
+      "backgroundImage": "linear-gradient(180deg, #c3ea6c 0%, #b4dc58 100%)",
+      "borderColor": "#8db536",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.3)"
     },
     "knob": {
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.35), 0 2px 6px rgba(0,0,0,0.45)"
+      "backgroundColor": "#8f9298",
+      "backgroundImage": "linear-gradient(180deg, #9a9da3 0%, #83868c 100%)",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
+      "borderColor": "#8a8d93"
     },
     "pill": {
-      "backgroundColor": "#2b2d32",
-      "backgroundImage": "linear-gradient(180deg, #2f3136 0%, #2a2c30 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.08), 0 1px 1px rgba(0,0,0,0.4), 0 6px 14px -7px rgba(0,0,0,0.7)",
-      "borderColor": "rgba(255,255,255,0.08)"
+      "backgroundColor": "#2d2e32",
+      "backgroundImage": "linear-gradient(180deg, #303135 0%, #292a2d 100%)",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.45)",
+      "borderColor": "#414348"
     },
     "chip": {
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.07), inset 0 -1px 0 rgba(0,0,0,0.18)"
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.3)"
     },
     "glass": {
-      "backgroundColor": "rgba(22,23,26,0.62)",
-      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.019) 60%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.09), 0 -8px 24px rgba(0,0,0,0.28)",
-      "borderColor": "rgba(255,255,255,0.07)",
+      "backgroundColor": "rgba(37,38,42,0.78)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 0 rgba(0,0,0,0.4)",
+      "borderColor": "#36383c",
       "backdropFilter": "blur(20px)"
     },
     "menu": {
-      "backgroundColor": "rgba(30,32,36,0.82)",
-      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.043) 0%, rgba(255,255,255,0.024) 40%, rgba(255,255,255,0.018) 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.11), inset 0 -1px 0 rgba(0,0,0,0.25), 0 12px 32px rgba(0,0,0,0.42)",
-      "borderColor": "rgba(255,255,255,0.08)",
-      "backdropFilter": "blur(24px)"
+      "backgroundColor": "#25262a",
+      "boxShadow": "0 1px 0 rgba(0,0,0,0.4), 0 16px 32px -10px rgba(0,0,0,0.6)",
+      "borderColor": "#36383c"
     }
   },
   "light": {
     "card": {
-      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #fdfdfc 100%)",
-      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(20,20,10,0.04), 0 14px 32px -18px rgba(20,20,10,0.2)"
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #ffffff 100%)",
+      "boxShadow": "0 1px 0 rgba(20,20,10,0.04)"
     },
     "inset": {
-      "boxShadow": "inset 0 1px 2px rgba(20,20,10,0.07)"
+      "boxShadow": "inset 0 1px 1px rgba(20,20,10,0.03)"
     },
     "field": {
-      "boxShadow": "inset 0 1px 2px rgba(20,20,10,0.09)"
+      "boxShadow": "inset 0 1px 1px rgba(20,20,10,0.04)"
     },
     "raised": {
-      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f6f6f2 100%)",
-      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(20,20,10,0.06), 0 5px 12px -6px rgba(20,20,10,0.18)"
+      "backgroundColor": "#f5f5f1",
+      "backgroundImage": "linear-gradient(180deg, #f5f5f1 0%, #f5f5f1 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 2px 0 rgba(255,255,255,0.6), 0 1px 0 rgba(20,20,10,0.05)",
+      "borderColor": "#cdcdc5"
+    },
+    "hover": {
+      "backgroundColor": "#f9f9f6",
+      "backgroundImage": "linear-gradient(180deg, #f9f9f6 0%, #f9f9f6 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 2px 0 rgba(255,255,255,0.6), 0 1px 0 rgba(20,20,10,0.05)",
+      "borderColor": "#c9c9c1"
+    },
+    "pressed": {
+      "backgroundColor": "#efefeb",
+      "backgroundImage": "linear-gradient(180deg, #efefeb 0%, #efefeb 100%)",
+      "boxShadow": "inset 0 1px 1px rgba(20,20,10,0.10)",
+      "borderColor": "#c4c4bc"
     },
     "light": {
-      "backgroundImage": "linear-gradient(180deg, #2e3035 0%, #1b1c20 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.16), 0 1px 1px rgba(20,20,10,0.2), 0 7px 14px -7px rgba(20,20,10,0.5)"
+      "backgroundColor": "#c6ef6a",
+      "backgroundImage": "linear-gradient(180deg, #c6ef6a 0%, #c6ef6a 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -1px 0 rgba(60,90,0,0.12), 0 1px 0 rgba(60,90,0,0.14)",
+      "borderColor": "#9cc43a"
     },
     "accent": {
-      "backgroundImage": "linear-gradient(180deg, #d6f78a 0%, #c1ea5c 100%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.6), 0 1px 1px rgba(80,110,10,0.2), 0 7px 14px -7px rgba(110,150,20,0.55)"
+      "backgroundColor": "#c6ef6a",
+      "backgroundImage": "linear-gradient(180deg, #c6ef6a 0%, #c6ef6a 100%)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -1px 0 rgba(60,90,0,0.12), 0 1px 0 rgba(60,90,0,0.14)",
+      "borderColor": "#9cc43a"
     },
     "track": {
-      "boxShadow": "inset 0 1px 2px rgba(20,20,10,0.08)"
+      "boxShadow": "inset 0 1px 1px rgba(20,20,10,0.05)",
+      "borderColor": "#dcdcd5"
+    },
+    "fill": {
+      "backgroundImage": "linear-gradient(180deg, #cdf47c 0%, #c4ed68 100%)",
+      "borderColor": "#9cc43a",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.45)"
     },
     "knob": {
-      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 4px rgba(20,20,10,0.28)"
+      "backgroundColor": "#ffffff",
+      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f4f4f1 100%)",
+      "boxShadow": "0 1px 0 rgba(20,20,10,0.08)",
+      "borderColor": "#c4c4bc"
     },
     "pill": {
-      "backgroundColor": "#ffffff",
-      "backgroundImage": "linear-gradient(180deg, #ffffff 0%, #f6f6f2 100%)",
-      "boxShadow": "inset 0 1px 0 #ffffff, 0 1px 1px rgba(20,20,10,0.06), 0 5px 12px -6px rgba(20,20,10,0.18)",
-      "borderColor": "rgba(20,20,10,0.14)"
+      "backgroundColor": "#f5f5f1",
+      "backgroundImage": "linear-gradient(180deg, #f5f5f1 0%, #f5f5f1 100%)",
+      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 2px 0 rgba(255,255,255,0.6), 0 1px 0 rgba(20,20,10,0.05)",
+      "borderColor": "#cdcdc5"
     },
     "chip": {
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.65), inset 0 -1px 0 rgba(20,20,10,0.04)"
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.65)"
     },
     "glass": {
-      "backgroundColor": "rgba(250,250,248,0.66)",
-      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.472) 0%, rgba(255,255,255,0.227) 60%)",
-      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.9), 0 -6px 20px rgba(20,20,10,0.06)",
-      "borderColor": "rgba(20,20,10,0.07)",
+      "backgroundColor": "rgba(249,249,246,0.8)",
+      "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 0 rgba(20,20,10,0.04)",
+      "borderColor": "#dcdcd5",
       "backdropFilter": "blur(20px)"
     },
     "menu": {
-      "backgroundColor": "rgba(255,255,255,0.84)",
-      "backgroundImage": "linear-gradient(180deg, rgba(255,255,255,0.497) 0%, rgba(255,255,255,0.287) 40%, rgba(255,255,255,0.217) 100%)",
-      "boxShadow": "inset 0 1px 0 #ffffff, inset 0 -1px 0 rgba(20,20,10,0.05), 0 12px 32px rgba(20,20,10,0.12)",
-      "borderColor": "rgba(20,20,10,0.08)",
-      "backdropFilter": "blur(24px)"
+      "backgroundColor": "#f9f9f6",
+      "boxShadow": "0 1px 0 rgba(20,20,10,0.04), 0 12px 28px -10px rgba(20,20,10,0.22)",
+      "borderColor": "#dcdcd5"
     }
   }
 }

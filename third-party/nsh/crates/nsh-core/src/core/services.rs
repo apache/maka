@@ -1,5 +1,5 @@
 //! The core's side of the platform services Rust components ask for
-//! ([`crate::element::ambient`]'s functions) beyond commands for the
+//! ([`crate::element`]'s free functions) beyond commands for the
 //! platform: display frames and the layout direction.
 //!
 //! The surface's direction follows the user's language: its root's

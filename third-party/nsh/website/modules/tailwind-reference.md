@@ -49,7 +49,7 @@ view()
 ## How classes combine
 
 - **Later wins.** Among utilities of the same variant level, the one later in the string wins: `"p-4 p-2"` is `p-2`. A component can take a `class` prop and append it to its own classes without `tailwind-merge`.
-- **Variants apply after plain utilities**, in Tailwind's variant order: `group-*:` (by their state, then by group name), `selection:`, `placeholder:`, position (`first:` ...), `checked:`, `indeterminate:`, `selected:`, `focus-within:`, `hover:`, `focus:`, `focus-visible:`, `active:`, `enabled:`, `disabled:`, motion, `max-*:` breakpoints widest first, then breakpoints ascending, orientation, direction, `dark:`, then platform. A class's highest variant decides, then its next highest, and one more variant comes later (`dark:hover:` after `dark:`), as Tailwind sorts them. So `"active:bg-red-500 bg-blue-500"` is red while pressed.
+- **Variants apply after plain utilities**, in Tailwind's variant order: `group-*:` (by their state, then by group name), `selection:`, `placeholder:`, position (`first:` ...), `checked:`, `indeterminate:`, `selected:`, `focus-within:`, `hover:`, `focus:`, `focus-visible:`, `active:`, `enabled:`, `disabled:`, `aria-expanded:`, motion, `max-*:` breakpoints widest first, then breakpoints ascending, orientation, direction, `dark:`, then platform. A class's highest variant decides, then its next highest, and one more variant comes later (`dark:hover:` after `dark:`), as Tailwind sorts them. So `"active:bg-red-500 bg-blue-500"` is red while pressed.
 - **`style` wins over classes.** The inline `style` is applied on top of the resolved classes. A style key is the CSS property of its name, the one the utilities set, so it replaces that property and nothing else: `style={{ paddingLeft: 8 }}` beats `pl-4` and keeps `pr-4`. An important utility (`!p-4` or `p-4!`) wins over the inline style too.
 - **Text styles inherit.** Text utilities on a view (`text-white`, `font-bold`, `text-center`, ...) pass to the `<Text>` and `<Input>` elements inside it, as in CSS.
 - **Display is CSS's.** `flex` and `inline-flex` make a row unless a direction utility says otherwise, wherever it is in the string (`flex-col flex` is a column). A style's `display: "flex"` is a row in the same way; views that set no display keep NSH's column default.
@@ -486,8 +486,9 @@ States are tracked by the platform only for elements whose classes use them, and
 | `selected:` | the element is selected: a `Button`'s `selected`, or `accessibilityState.selected` |  |
 | `checked:` | the element is checked: `accessibilityState.checked` is `true` (`"mixed"` is not checked) |  |
 | `indeterminate:` | the element is indeterminate: `accessibilityState.checked` is `"mixed"` |  |
+| `aria-expanded:` | the element is expanded: `accessibilityState.expanded` is `true` (a `Popover`'s or `Menu`'s trigger while its popup is open) |  |
 
-The same states as style objects are the `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle`, `checkedStyle` and `indeterminateStyle` props of every element (and a `Button`'s `selectedStyle`); they go over the element's style and classes.
+The same states as style objects are the `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle` and `expandedStyle` props of every element (and a `Button`'s `selectedStyle`); they go over the element's style and classes.
 
 `disabled` works on any element: it applies `disabled:` and removes the element's press handlers, so it shows no press feedback either.
 
@@ -529,6 +530,7 @@ Mark an ancestor with `group` and style descendants by its state with `group-<st
 | `group-selected:` | selected |  |
 | `group-checked:` | checked |  |
 | `group-indeterminate:` | indeterminate |  |
+| `group-aria-expanded:` | expanded |  |
 
 ```rust tabs
 view()

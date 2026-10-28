@@ -114,10 +114,10 @@ function App() {
               </View>
               <Switch
                 checked={unknown()}
-                onChange={(next) => {
-                  unknown.set(next);
-                  if (next) stop();
-                  log(next ? "Size unknown: indeterminate" : "Size known: value " + sent());
+                onChange={({ checked }) => {
+                  unknown.set(checked);
+                  if (checked) stop();
+                  log(checked ? "Size unknown: indeterminate" : "Size known: value " + sent());
                 }}
                 class={`-mx-2 flex-row-reverse items-center justify-between gap-3 rounded-lg px-2 ${desktop ? "py-1" : "py-2"} active:opacity-70`}
                 hoverStyle={hoverFill()}

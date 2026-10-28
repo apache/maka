@@ -19,8 +19,8 @@ function App() {
         testID="window"
         onPress={() => {
           Window.setTitle("Compat");
-          Window.setTitleBar("hidden", 40);
-          Window.setTitleBar("default");
+          Window.setTitleBar({ style: "hidden", height: 40 });
+          Window.setTitleBar({ style: "default" });
           Window.setFrame({ size: { width: 800, height: 600 }, animated: false, anchorTop: true });
           Window.setLevel("floating");
           Window.setLevel("normal");

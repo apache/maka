@@ -51,7 +51,7 @@ function App() {
   return (
     <Switch
       checked={on()}
-      onChange={(next) => on.set(next)}
+      onChange={({ checked }) => on.set(checked)}
       class="flex-row items-center gap-3"
       trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
       thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
@@ -88,7 +88,7 @@ mount(App);
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onChange` | `.on_change(\|checked: &bool\| ..)` | 开关被按下：轻点、点击、拥有键盘焦点时按 Space 或 Return，或屏幕阅读器的激活。它报告开关请求的值，即 `checked` 的相反值。 |
+| `onChange` | `.on_change(\|checked: &bool\| ..)` | 开关被按下：轻点、点击、拥有键盘焦点时按 Space 或 Return，或屏幕阅读器的激活。它以 `checked` 报告开关请求的值，即它当前 `checked` 的相反值。 |
 
 禁用的开关不报告任何事件。
 
@@ -115,7 +115,7 @@ mount(App);
 <Switch
   checked={on()}
   disabled={!online()}
-  onChange={(next) => on.set(next)}
+  onChange={({ checked }) => on.set(checked)}
   class="flex-row items-center gap-3 disabled:opacity-50"
   trackClass="w-11 rounded-full bg-muted p-0.5 checked:bg-primary disabled:bg-muted"
   thumbClass="size-5 rounded-full bg-background checked:translate-x-5"

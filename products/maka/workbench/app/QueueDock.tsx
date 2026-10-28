@@ -379,7 +379,7 @@ export function QueueDock(props: { session: QueueSession }) {
                     submitBehavior="submit"
                     value={edit().text}
                     readonly={busy() !== null}
-                    onChange={(text) => editing.set({ ...edit(), text })}
+                    onChange={({ value: text }) => editing.set({ ...edit(), text })}
                     onSubmit={({ text }) => {
                       editing.set({ ...edit(), text });
                       void save();

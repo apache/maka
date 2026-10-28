@@ -955,7 +955,13 @@ fn tick(host: &impl ScrollHost, now: f64) -> bool {
 // Mount items.
 
 /// `ScrollConfig`.
-pub fn config(host: &impl ScrollHost, horizontal: bool, indicator: bool, mirrored: bool) {
+pub fn config(
+    host: &impl ScrollHost,
+    horizontal: bool,
+    indicator: bool,
+    replaced: bool,
+    mirrored: bool,
+) {
     let changed = host.scroll_mut(|s, _| {
         let axis_changed = std::mem::replace(&mut s.horizontal, horizontal) != horizontal;
         if axis_changed {
@@ -964,8 +970,9 @@ pub fn config(host: &impl ScrollHost, horizontal: bool, indicator: bool, mirrore
         }
         // A horizontal view keeps its indicator: it is the mouse's scroll
         // bar, and a mouse without a horizontal wheel has no other way
-        // to move it (mouse drags do not scroll).
-        s.indicator = indicator || horizontal;
+        // to move it (mouse drags do not scroll); a built-in bar of the
+        // app's (`replaced`) is the mouse's then.
+        s.indicator = indicator || (horizontal && !replaced);
         if !indicator {
             s.live.alpha = 0.0;
         }
@@ -1631,7 +1638,7 @@ mod tests {
     #[test]
     fn content_shrink_reconciles_the_old_axis_after_the_anchor_scroll() {
         let host = ExtentHost::new(120.0, 70.0);
-        config(&host, false, false, false);
+        config(&host, false, false, false, false);
         frame(&host, 0.0);
         // Changing the scrolling direction does not discard a valid position.
         assert_eq!(host.state.borrow().origin(), pt(120.0, 70.0));
@@ -1646,7 +1653,7 @@ mod tests {
 
         // An old-axis rubber band must not leave the content displaced either.
         let host = ExtentHost::new(-30.0, 70.0);
-        config(&host, false, false, false);
+        config(&host, false, false, false, false);
         assert_eq!(host.ticks.get(), 1);
         frame(&host, 0.0);
         assert_eq!(host.state.borrow().origin(), pt(0.0, 70.0));
@@ -1666,13 +1673,13 @@ mod tests {
             },
         );
         // An indicator-only change must preserve the running animation.
-        config(&host, true, false, false);
+        config(&host, true, false, false, false);
         frame(&host, 150.0);
         assert_eq!(host.state.borrow().origin(), pt(225.0, 70.0));
         assert!(host.pulls.borrow().is_empty());
 
         // No ScrollContent follows this configuration change.
-        config(&host, false, false, false);
+        config(&host, false, false, false, false);
         frame(&host, 200.0);
         assert_eq!(host.state.borrow().origin(), pt(225.0, 70.0));
         command(
@@ -1690,7 +1697,7 @@ mod tests {
     #[test]
     fn viewport_growth_and_inset_changes_reconcile_the_current_extent() {
         let host = ExtentHost::new(500.0, 70.0);
-        config(&host, false, false, false);
+        config(&host, false, false, false, false);
         frame(&host, 0.0);
         host.size.set(sz(800.0, 400.0));
         resized(&host);
@@ -1702,7 +1709,7 @@ mod tests {
         let mut with_inset = ScrollBehavior::default();
         with_inset.content_inset.right = Points(80.0);
         behavior(&host, &with_inset);
-        config(&host, true, false, false);
+        config(&host, true, false, false, false);
         command(
             &host,
             &Command::ScrollTo {
@@ -1711,7 +1718,7 @@ mod tests {
                 animated: false,
             },
         );
-        config(&host, false, false, false);
+        config(&host, false, false, false, false);
         frame(&host, 2.0);
         assert_eq!(host.state.borrow().origin(), pt(170.0, 70.0));
 
@@ -1726,7 +1733,7 @@ mod tests {
     #[test]
     fn range_changes_bound_the_last_animation_frame_without_a_scrollbar() {
         let host = ExtentHost::new(0.0, 70.0);
-        config(&host, false, false, false);
+        config(&host, false, false, false, false);
         command(
             &host,
             &Command::ScrollTo {
@@ -1745,7 +1752,7 @@ mod tests {
 
         // Retargeting the end keeps the original rubber-band bounce smooth.
         let host = ExtentHost::new(0.0, -40.0);
-        config(&host, false, false, false);
+        config(&host, false, false, false, false);
         command(
             &host,
             &Command::ScrollTo {

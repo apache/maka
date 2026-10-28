@@ -62,7 +62,7 @@ thread_local! {
 /// The theme the app is drawn with (reading it subscribes: a new theme
 /// reaches what read it).
 pub fn theme() -> Arc<Theme> {
-    let tokens = nsh_core::element::ambient::tokens();
+    let tokens = nsh_core::element::tokens();
     CURRENT.with_borrow_mut(|current| match current {
         Some(theme) if Arc::ptr_eq(&theme.tokens, &tokens) => theme.clone(),
         _ => current.insert(Arc::new(Theme::of(tokens))).clone(),

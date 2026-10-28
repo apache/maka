@@ -133,10 +133,6 @@ pub trait EventToJs {
     fn name(&self) -> &'static str;
     /// Its data as a JS value of `host`.
     fn data_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError>;
-    /// The handler takes the items of the data as its arguments.
-    fn spread(&self) -> bool {
-        false
-    }
 }
 
 /// What the core hands JS after a commit, in order: the platform's and the
@@ -145,6 +141,19 @@ pub trait EventToJs {
 pub enum JsEvent {
     /// An event of a node (layout, scroll, a platform component's).
     Event(NodeId, EventKind, EventPayload),
+    /// The initial frame for one newly installed Rust layout listener.
+    /// Delivered by the engine to `Core::component_layout`.
+    #[doc(hidden)]
+    LayoutListener {
+        /// The component whose view installed the listener.
+        host: NodeId,
+        /// Its node.
+        id: NodeId,
+        /// The newly installed callback.
+        listener: super::Listener<EventPayload>,
+        /// The node's current frame.
+        frame: crate::Bounds<crate::Points>,
+    },
     /// An event of the Rust component hosted by `host`.
     Component {
         /// The component's host node.
@@ -200,6 +209,11 @@ impl fmt::Debug for JsEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             JsEvent::Event(id, kind, payload) => write!(f, "Event({id}, {kind:?}, {payload:?})"),
+            JsEvent::LayoutListener {
+                host, id, frame, ..
+            } => {
+                write!(f, "LayoutListener({host}, {id}, {frame:?})")
+            }
             JsEvent::Component { host, event } => write!(f, "Component({host}, {})", event.name()),
             JsEvent::Children { host, wanted } => write!(f, "Children({host}, {wanted})"),
             JsEvent::Render {

@@ -49,7 +49,7 @@ function App() {
           placement={placement()}
           closeOnEscape
           style={{ width: 200 }}
-          onExpandedChange={(open) => expanded.set(open)}
+          onExpandedChange={({ expanded: open }) => expanded.set(open)}
           onCancel={() => log.set("Log: stack cancel")}
         >
           <Each of={shown()} key={(e: ToastEntry) => e.id}>

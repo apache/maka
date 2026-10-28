@@ -201,10 +201,11 @@ fn is_number(ty: &Type) -> bool {
     )
 }
 
-/// Whether `ty` is a style (`nsh_core::element::Style`), whose setter takes the
-/// typed styles' closure.
+/// Whether `ty` is a style (`nsh_core::element::Style`, `TextPartStyle`
+/// for a part that shows text, `InputPartStyle` for one that edits it),
+/// whose setter takes the typed styles' closure.
 fn is_style(ty: &Type) -> bool {
-    matches!(last_segment(ty), Some((id, None)) if id == "Style")
+    matches!(last_segment(ty), Some((id, None)) if id == "Style" || id == "TextPartStyle" || id == "InputPartStyle")
 }
 
 /// `PressDown` -> `press_down`, `HTMLView` -> `html_view`.
@@ -1035,12 +1036,16 @@ fn prop_enum(input: DeriveInput) -> syn::Result<TokenStream2> {
 }
 
 /// `#[derive(Event)]`: a component's events. Each variant is an event in
-/// camel case (`Press` is `onPress` in JS): a unit variant carries no
+/// camel case (`Press` is `onPress` in JS), and every handler gets one
+/// object (`docs/dev/api-naming.md` "Payloads"): a unit variant carries no
 /// data, a variant with named fields an object of them (camel case), a
-/// variant with one unnamed field that value. Doc comments document the
-/// handlers. The handler's argument is `value` (one field) or `event`
-/// (named fields) in TypeScript; `#[args(index)]` on the variant names it
-/// (`onSelect?: (index: number) => void`).
+/// variant with unnamed fields an object with a field for each, named by
+/// `#[args(..)]` on the variant (`#[args(open, reason)]` is
+/// `onOpenChange?: (event: { open: boolean; reason: … }) => void`; one
+/// field without `#[args]` is `value`). `#[args(event)]` on a variant of
+/// one field says its value is the event object itself, passed as it is
+/// (`#[args(event)] RowPress(DataTablePress)`). Doc comments document the
+/// handlers.
 ///
 /// In Rust, the element of a `#[component]` emitting them (`button()`)
 /// gets a listener method per event, named as its handler in snake case
@@ -1072,7 +1077,6 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut data_arms = Vec::new();
     // The listener methods: (variant docs, method, data type, pick arm).
     let mut listeners = Vec::new();
-    let mut spread_arms = Vec::new();
     for v in &data.variants {
         let ident = &v.ident;
         let js = camel(&ident.to_string());
@@ -1084,7 +1088,7 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
             .collect();
         let doc = decl(&docs(&v.attrs));
         let args = args_attr(&v.attrs)?;
-        // Several unnamed fields: the handler's arguments, one name each.
+        // Several unnamed fields: the event object's fields, one name each.
         if let (Fields::Unnamed(f), Some((names, span))) = (&v.fields, &args)
             && f.unnamed.len() > 1
         {
@@ -1098,30 +1102,31 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
             let vars: Vec<_> = (0..tys.len())
                 .map(|i| syn::Ident::new(&format!("a{i}"), Span::call_site()))
                 .collect();
+            let keys: Vec<_> = names.iter().map(|n| camel(n)).collect();
             specs.push(quote! {
                 #ui::EventSpec {
                     name: #js,
-                    arg: "",
+                    arg: "event",
                     data: if #ui::DECLARATIONS {
-                        let params: ::std::vec::Vec<::std::string::String> = ::std::vec![
-                            #(::std::format!("{}: {}", #names, <#tys as #ui::JsValue>::ts_type(types))),*
+                        let fields: ::std::vec::Vec<::std::string::String> = ::std::vec![
+                            #(::std::format!("{}: {}", #keys, <#tys as #ui::JsValue>::ts_type(types))),*
                         ];
-                        params.join(", ")
+                        ::std::format!("{{ {} }}", fields.join("; "))
                     } else {
                         ::std::string::String::new()
                     },
                     doc: #doc,
-                    spread: true,
                 }
             });
             name_arms.push(quote!(Self::#ident(..) => #js));
             data_arms.push(quote! {
                 Self::#ident(#(#vars),*) => {
-                    let items = ::std::vec![#(#ui::JsValue::to_js(#vars, host)?.into_raw()),*];
-                    ::core::result::Result::Ok(#ui::JsOwned::new(host, host.new_array(items)?))
+                    let owned = #ui::JsOwned::new(host, host.new_object()?);
+                    let object = owned.get().raw();
+                    #(host.set_field(object, #keys, #ui::JsValue::to_js(#vars, host)?.into_raw())?;)*
+                    ::core::result::Result::Ok(owned)
                 }
             });
-            spread_arms.push(quote!(Self::#ident(..) => true));
             // Its listener gets the event, as one of named fields does.
             listeners.push((
                 variant_docs,
@@ -1153,7 +1158,7 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
         match &v.fields {
             Fields::Unit => {
                 specs.push(quote! {
-                    #ui::EventSpec { name: #js, arg: #arg, data: ::std::string::String::from("void"), doc: #doc, spread: false }
+                    #ui::EventSpec { name: #js, arg: #arg, data: ::std::string::String::from("void"), doc: #doc }
                 });
                 name_arms.push(quote!(Self::#ident => #js));
                 data_arms.push(quote!(Self::#ident => ::core::result::Result::Ok(#ui::JsOwned::new(host, host.undefined()))));
@@ -1164,13 +1169,45 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
                     quote!(#name::#ident => ::core::option::Option::Some(&())),
                 ));
             }
-            Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+            // The event object itself.
+            Fields::Unnamed(f) if f.unnamed.len() == 1 && arg == "event" => {
                 let ty = &f.unnamed[0].ty;
                 specs.push(quote! {
-                    #ui::EventSpec { name: #js, arg: #arg, data: #ui::ts_of::<#ty>()(types), doc: #doc, spread: false }
+                    #ui::EventSpec { name: #js, arg: "event", data: #ui::ts_of::<#ty>()(types), doc: #doc }
                 });
                 name_arms.push(quote!(Self::#ident(..) => #js));
                 data_arms.push(quote!(Self::#ident(v) => #ui::JsValue::to_js(v, host)));
+                listeners.push((
+                    variant_docs,
+                    method,
+                    quote!(#ty),
+                    quote!(#name::#ident(v) => ::core::option::Option::Some(v)),
+                ));
+            }
+            // A value: one field of the event object, named by `#[args]`.
+            Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                let ty = &f.unnamed[0].ty;
+                let key = camel(&arg);
+                specs.push(quote! {
+                    #ui::EventSpec {
+                        name: #js,
+                        arg: "event",
+                        data: if #ui::DECLARATIONS {
+                            ::std::format!("{{ {}: {} }}", #key, <#ty as #ui::JsValue>::ts_type(types))
+                        } else {
+                            ::std::string::String::new()
+                        },
+                        doc: #doc,
+                    }
+                });
+                name_arms.push(quote!(Self::#ident(..) => #js));
+                data_arms.push(quote! {
+                    Self::#ident(v) => {
+                        let owned = #ui::JsOwned::new(host, host.new_object()?);
+                        host.set_field(owned.get().raw(), #key, #ui::JsValue::to_js(v, host)?.into_raw())?;
+                        ::core::result::Result::Ok(owned)
+                    }
+                });
                 listeners.push((
                     variant_docs,
                     method,
@@ -1199,7 +1236,6 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
                             ::std::string::String::new()
                         },
                         doc: #doc,
-                        spread: false,
                     }
                 });
                 name_arms.push(quote!(Self::#ident { .. } => #js));
@@ -1297,14 +1333,6 @@ fn event(input: DeriveInput) -> syn::Result<TokenStream2> {
             ) -> ::core::result::Result<#ui::JsOwned<'a>, #ui::PropError> {
                 match self {
                     #(#data_arms,)*
-                }
-            }
-
-            fn spread(&self) -> bool {
-                #[allow(unreachable_patterns)]
-                match self {
-                    #(#spread_arms,)*
-                    _ => false,
                 }
             }
         }

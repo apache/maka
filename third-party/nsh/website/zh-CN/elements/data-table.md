@@ -99,7 +99,7 @@ mount(App);
 
 ## 任意数量的行
 
-表格按位置请求行，由应用提供。`rowCount` 是行的总数，`data` 是应用持有的行，`dataStart` 是其中第一行的位置。`data` 之外的行在应用提供之前是空的。`onVisibleRowsChange` 在每个滚动步骤报告视野中的行 `{ start, end }`，是获取其周围一页数据的地方。
+表格按位置请求行，由应用提供。`rowCount` 是行的总数，`data` 是应用持有的行，`dataStart` 是其中第一行的位置。`data` 之外的行在应用提供之前是空的。`onVisibleRowsChange` 在每个滚动步骤报告视野中的行 `{ range: { start, end } }`，是获取其周围一页数据的地方。
 
 ```tsx
 const ROWS = 1_000_000;
@@ -110,7 +110,7 @@ const page = signal({ start: 0, rows: load(0) });
   data={page().rows}
   dataStart={page().start}
   rowCount={ROWS}
-  onVisibleRowsChange={({ start, end }) => {
+  onVisibleRowsChange={({ range: { start, end } }) => {
     // Keep the rows in view inside the page held.
     const held = page();
     if (start < held.start || end > held.start + held.rows.length) {
@@ -165,14 +165,14 @@ const page = signal({ start: 0, rows: load(0) });
 
 ## 排序
 
-`sortable` 的列在标题末端有一个排序按钮：一个小的 ghost 按钮，该列未排序时显示为半透明。按下它会按“未排序、升序、降序、再回到未排序”的顺序用 `onSortChange({ key, direction })` 报告下一个排序（`null` 表示清除）。表格不会重新排列行：应用自己对数据排序，或向服务器请求新顺序的行，并设置 `sort` 让标题显示出来。由于顺序归应用所有，对应用从未持有的一百万行同样适用。
+`sortable` 的列在标题末端有一个排序按钮：一个小的 ghost 按钮，该列未排序时显示为半透明。按下它会按“未排序、升序、降序、再回到未排序”的顺序用 `onSortChange({ sort })` 报告下一个排序 `{ key, direction }`（`null` 表示清除）。表格不会重新排列行：应用自己对数据排序，或向服务器请求新顺序的行，并设置 `sort` 让标题显示出来。由于顺序归应用所有，对应用从未持有的一百万行同样适用。
 
 ```tsx
 <DataTable
   columns={columns}
   data={rows()}
   sort={sort()}
-  onSortChange={(next) => {
+  onSortChange={({ sort: next }) => {
     sort.set(next ?? undefined);
     rows.set(sorted(people, next));
   }}
@@ -184,7 +184,7 @@ const page = signal({ start: 0, rows: load(0) });
 
 ## 调整和移动列
 
-拖动列的尾部边缘会在 `minWidth` 和 `maxWidth` 之内调整宽度，`onColumnResize(key, width)` 报告每一步。连续按两次边缘会把该列适配到最宽的文本和标题。拖动标题会移动列，并用一条线显示将放下的位置；`onColumnMove` 报告 `{ key, from, to, order }`，其中 `order` 是所有列当前顺序的 `key`。固定列只能在固定列之间移动。`resizableColumns` 和 `movableColumns` 对整个表格开关这两项，列自己的 `resizable` 和 `movable` 优先。
+拖动列的尾部边缘会在 `minWidth` 和 `maxWidth` 之内调整宽度，`onColumnResize({ key, width })` 报告每一步。连续按两次边缘会把该列适配到最宽的文本和标题。拖动标题会移动列，并用一条线显示将放下的位置；`onColumnMove` 报告 `{ key, from, to, order }`，其中 `order` 是所有列当前顺序的 `key`。固定列只能在固定列之间移动。`resizableColumns` 和 `movableColumns` 对整个表格开关这两项，列自己的 `resizable` 和 `movable` 优先。
 
 <a id="live-data"></a>
 
@@ -352,15 +352,15 @@ const columns: DataTableColumn[] = [
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | 用户改变了选择：`{ row?, column? }`，或 `null`。 |
+| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | 用户改变了选择：`{ selection }`，一个 `{ row?, column? }` 或 `null`。 |
 | `onRowPress` | `.on_row_press(\|event: &DataTablePress\| ..)` | 按下了一行或一个单元格：`{ row, column?, clicks, shift, control, alt, platform }`。 |
-| `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | 一行、一个单元格或一个标题被连按两次：`{ row?, column? }`。 |
+| `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | 一行、一个单元格或一个标题被连按两次：`{ target }`，一个 `{ row?, column? }`。 |
 | `onContextMenu` | `.on_context_menu(\|event: &DataTableContextMenu\| ..)` | 请求了上下文菜单：`{ row?, column?, x, y }`，位置位于根视图中。 |
-| `onSortChange` | `.on_sort_change(\|sort: &Option<DataTableSort>\| ..)` | 按下了排序按钮：下一个排序 `{ key, direction }`，或 `null`。 |
-| `onColumnResize` | `.on_column_resize(\|key: &SharedString, width: &Points\| ..)` | 列被调整宽度，拖动的每一步都会触发，适配设置宽度时再触发一次。 |
+| `onSortChange` | `.on_sort_change(\|sort: &Option<DataTableSort>\| ..)` | 按下了排序按钮：`{ sort }`，下一个排序 `{ key, direction }` 或 `null`。 |
+| `onColumnResize` | `.on_column_resize(\|key: &SharedString, width: &Points\| ..)` | 列被调整宽度（`{ key, width }`），拖动的每一步都会触发，适配设置宽度时再触发一次。 |
 | `onColumnMove` | `.on_column_move(\|event: &DataTableColumnMove\| ..)` | 列被移动：`{ key, from, to, order }`。 |
-| `onVisibleRowsChange` | `.on_visible_rows_change(\|range: &DataTableRange\| ..)` | 视野中的行变了：`{ start, end }`。在这里获取行。 |
-| `onVisibleColumnsChange` | `.on_visible_columns_change(\|range: &DataTableRange\| ..)` | 视野中的滚动列变了。 |
+| `onVisibleRowsChange` | `.on_visible_rows_change(\|range: &DataTableRange\| ..)` | 视野中的行变了：`{ range }`，一个 `{ start, end }`。在这里获取行。 |
+| `onVisibleColumnsChange` | `.on_visible_columns_change(\|range: &DataTableRange\| ..)` | 视野中的滚动列变了：`{ range }`。 |
 | `onLoadMore` | `.on_load_more(\|\| ..)` | 在 `hasMore` 且未 `loading` 时，视野中的行进入了最后一行的 `loadMoreThreshold` 范围内。 |
 
 <a id="related"></a>

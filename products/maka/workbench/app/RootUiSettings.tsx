@@ -87,7 +87,7 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
       </If>
       <Popover
         open={open()}
-        onOpenChange={(value) => open.set(value)}
+        onOpenChange={({ open: value }) => open.set(value)}
         placement="bottom"
         align="start"
         offset={8}
@@ -135,7 +135,7 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
             accessibilityLabel={tr('Search interfaces')}
             autoFocus
             value={owner.query()}
-            onChange={(value) => owner.query.set(value)}
+            onChange={({ value }) => owner.query.set(value)}
             placeholder={tr('Search interfaces…')}
             style={{
               ...inputTextStyle,

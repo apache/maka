@@ -623,7 +623,7 @@ extension NshAppView {
     /// Takes the URLs the app opens (`openUrl` of `nsh/device`, a
     /// `TextView`'s links when it opens them) before the system does, on the
     /// main thread: return `true` when the embedding app handled the URL (routed
-    /// it through its own router; the app's `openUrl` resolves `true`), `false`
+    /// it through its own router; the app's `openUrl` resolves `{ opened: true }`), `false`
     /// for the system to open it (`UIApplication.open`). `nil` (the default):
     /// the system opens every URL. URLs reach it checked and granted (the
     /// app's `openUrl` capability).

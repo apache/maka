@@ -123,11 +123,11 @@ for (const k of ["cmd+kk", "mod+q"]) {
 }
 say(errors.join(" | "));
 
-keymap.bind("mod+k", (k) => say(`k ${k}`));
-keymap.bind({ "mod+s": (k) => say(`saved ${k}`), "escape": (k) => say(`esc ${k}`) }, { when: "always" });
+keymap.bind("mod+k", ({ keystroke: k }) => say(`k ${k}`));
+keymap.bind({ "mod+s": ({ keystroke: k }) => say(`saved ${k}`), "escape": ({ keystroke: k }) => say(`esc ${k}`) }, { when: "always" });
 keymap.bind("alt+down", () => {}, { repeat: true });
 // Any case; the handler gets the keystroke as written.
-keymap.bind("Mod+Shift+J", (k) => say(`written ${k}`));
+keymap.bind("Mod+Shift+J", ({ keystroke: k }) => say(`written ${k}`));
 
 function Panel() {
   keymap.bind("mod+p", () => say("panel"));

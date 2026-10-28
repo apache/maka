@@ -224,16 +224,8 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
         let inner = match layer {
             Layer::Paint => inner.child(each(
                 rows,
-                |row: &usize| *row,
-                move |row, _| {
-                    gutter_row(
-                        row_ed.clone(),
-                        row.get_untracked(),
-                        number_width,
-                        fold_width,
-                        pointer,
-                    )
-                },
+                |slot: &(usize, usize)| slot.0,
+                move |slot, _| gutter_row(row_ed.clone(), slot, number_width, fold_width, pointer),
             )),
             // A press on a number reports its line; the markers take
             // presses of their own.
@@ -254,15 +246,9 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
                 })
                 .child(each(
                     rows,
-                    |row: &usize| *row,
-                    move |row, _| {
-                        fold_hit(
-                            row_ed.clone(),
-                            row.get_untracked(),
-                            number_width,
-                            fold_width,
-                            pointer,
-                        )
+                    |slot: &(usize, usize)| slot.0,
+                    move |slot, _| {
+                        fold_hit(row_ed.clone(), slot, number_width, fold_width, pointer)
                     },
                 )),
         };
@@ -275,11 +261,11 @@ fn gutter(ed: Ed, layer: Layer, pointer: GutterPointer) -> impl IntoElement {
     })
 }
 
-/// What takes the pointer for the fold marker of display row `row`, when
-/// it has one: a clear box over the painted marker.
+/// What takes the pointer for the fold marker of the display row in
+/// `slot`, when it has one: a clear box over the painted marker.
 fn fold_hit(
     ed: Ed,
-    row: usize,
+    slot: ReadSignal<(usize, usize)>,
     number_width: impl Fn() -> Points + Clone + 'static,
     fold_width: impl Fn() -> Points + Clone + 'static,
     pointer: GutterPointer,
@@ -290,9 +276,11 @@ fn fold_hit(
         computed(move || {
             ed.text_rev.get();
             ed.marks_rev.get();
+            let row = slot.get().1;
             props.folding.get() && ed.st.borrow_mut().gutter_row(row).fold.is_some()
         })
     };
+    let row = move || slot.get_untracked().1;
     when(
         move || folds.get(),
         move || {
@@ -315,34 +303,34 @@ fn fold_hit(
                         px(0.0)
                     })
                 })
-                .top(move || Length::from(lh() * row as f32))
+                .top(move || Length::from(lh() * slot.get().1 as f32))
                 .w(move || Length::from(fold_width()))
                 .h(move || Length::from(lh2()))
                 .cursor_pointer()
-                .on_hover_in(move || pointer.hover.set(Some(row)))
-                .on_hover_out(move || {
-                    if pointer.hover.get_untracked() == Some(row) {
+                .on_mouse_enter(move |_: &MouseEvent| pointer.hover.set(Some(row())))
+                .on_mouse_leave(move |_: &MouseEvent| {
+                    if pointer.hover.get_untracked() == Some(row()) {
                         pointer.hover.set(None);
                     }
                 })
                 .on(EventKind::PressDown, move |_: &EventPayload| {
-                    pointer.pressed.set(Some(row))
+                    pointer.pressed.set(Some(row()))
                 })
                 .on(EventKind::PressUp, move |_: &EventPayload| {
                     pointer.pressed.set(None)
                 })
                 .on_press(move || {
-                    let line = ed.st.borrow().display.row(row).line;
+                    let line = ed.st.borrow().display.row(row()).line;
                     ed.fold(line, None);
                 })
         },
     )
 }
 
-/// The gutter of display row `row`.
+/// The gutter of the display row in `slot`.
 fn gutter_row(
     ed: Ed,
-    row: usize,
+    slot: ReadSignal<(usize, usize)>,
     number_width: impl Fn() -> Points + Clone + 'static,
     fold_width: impl Fn() -> Points + Clone + 'static,
     pointer: GutterPointer,
@@ -354,9 +342,11 @@ fn gutter_row(
             ed.text_rev.get();
             ed.sel_rev.get();
             ed.marks_rev.get();
+            let row = slot.get().1;
             ed.st.borrow_mut().gutter_row(row)
         })
     };
+    let row = move || slot.get_untracked().1;
     let lh = {
         let ed = ed.clone();
         move || {
@@ -371,7 +361,7 @@ fn gutter_row(
         .absolute()
         .left_0()
         .right_0()
-        .top(move || Length::from(lh() * row as f32))
+        .top(move || Length::from(lh() * slot.get().1 as f32))
         .h(move || Length::from(lh2()))
         .flex_row()
         .items_center()
@@ -400,7 +390,7 @@ fn gutter_row(
                         })
                         .on_press({
                             let ed = ed.clone();
-                            move || ed.line_number_press(row)
+                            move || ed.line_number_press(row())
                         });
                     if active {
                         parts(
@@ -443,6 +433,7 @@ fn gutter_row(
                                     .justify_center()
                                     .rounded(px(3.0))
                                     .bg(move || {
+                                        let row = slot.get().1;
                                         if pointer.pressed.get() == Some(row) {
                                             pressed
                                         } else if pointer.hover.get() == Some(row) {
@@ -452,7 +443,7 @@ fn gutter_row(
                                         }
                                     })
                                     .on_press(move || {
-                                        let line = ed.st.borrow().display.row(row).line;
+                                        let line = ed.st.borrow().display.row(row()).line;
                                         ed.fold(line, None);
                                     })
                                     .child(chevron(size, folded)),
@@ -487,11 +478,50 @@ fn chevron(size: Points, folded: bool) -> impl IntoElement {
     }
 }
 
-/// The display rows to make, as a list `each` keeps rows of.
-fn visible_rows(ed: Ed) -> Memo<Vec<usize>> {
+/// The display rows to make, each with its slot, as a list `each` keeps
+/// rows of by slot. The rows made move by a screen or more at a time
+/// (`RowWindow`): keyed by row, each move would make the views of the rows
+/// coming in and delete those of the rows gone, hundreds in one frame.
+/// Keyed by slot, a row coming in takes over the slot (the elements) of a
+/// row gone, and only its text and place change.
+///
+/// Rows staying keep their slots, so in slot order they keep their order.
+/// Slots no row takes keep the row they had, out of view, rather than go:
+/// the window shrinks near the text's ends and grows again past them.
+fn visible_rows(ed: Ed) -> Memo<Vec<(usize, usize)>> {
+    let last = std::cell::RefCell::new(Vec::<(usize, usize)>::new());
     computed(move || {
         ed.text_rev.get();
-        ed.visible_rows().collect()
+        let rows = ed.visible_rows();
+        let count = ed.st.borrow().display.row_count();
+        let mut last = last.borrow_mut();
+        let mut free: Vec<(usize, usize)> = Vec::new();
+        let mut kept = std::collections::HashMap::with_capacity(last.len());
+        for &(slot, row) in last.iter() {
+            if rows.contains(&row) {
+                kept.insert(row, slot);
+            } else {
+                free.push((slot, row));
+            }
+        }
+        // Freed slots in order, the lowest taken first.
+        free.sort_unstable_by(|a, b| b.cmp(a));
+        let mut next = last.iter().map(|s| s.0 + 1).max().unwrap_or(0);
+        let mut slots: Vec<(usize, usize)> = rows
+            .map(|row| {
+                let slot = kept.get(&row).copied().or_else(|| free.pop().map(|f| f.0));
+                let slot = slot.unwrap_or_else(|| {
+                    next += 1;
+                    next - 1
+                });
+                (slot, row)
+            })
+            .collect();
+        // Spare slots: their rows, while the text still has them.
+        slots.extend(free.into_iter().filter(|&(_, row)| row < count));
+        slots.sort_unstable();
+        last.clone_from(&slots);
+        slots
     })
 }
 
@@ -685,8 +715,8 @@ fn rows_box(ed: Ed, lh: impl Fn() -> Points + Clone + 'static, layer: Layer) -> 
                 }
             })
         })
-        .on_hover_move(move |e: &HoverEvent| hover.hover_move(e))
-        .on_hover_out(move || hover_end.hover_out())
+        .on_mouse_move(move |e: &MouseEvent| hover.hover_move(e))
+        .on_mouse_leave(move |_: &MouseEvent| hover_end.hover_out())
         // The mouse selects as it drags (a finger scrolls): the rows take
         // its touches, which the scroll views around them keep off.
         .claim_touches(TouchClaim::on_start().ask(move |request: &ClaimRequest| {
@@ -881,27 +911,33 @@ fn rows(ed: Ed, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
     let list = visible_rows(ed.clone());
     each(
         list,
-        |row: &usize| *row,
-        move |row, _| row_view(ed.clone(), row.get_untracked(), lh.clone()),
+        |slot: &(usize, usize)| slot.0,
+        move |slot, _| row_view(ed.clone(), slot, lh.clone()),
     )
 }
 
-/// Display row `row`.
-fn row_view(ed: Ed, row: usize, lh: impl Fn() -> Points + Clone + 'static) -> impl IntoElement {
+/// The display row in `slot`.
+fn row_view(
+    ed: Ed,
+    slot: ReadSignal<(usize, usize)>,
+    lh: impl Fn() -> Points + Clone + 'static,
+) -> impl IntoElement {
     let props = ed.props;
+    let row = move || slot.get().1;
     let content = {
         let ed = ed.clone();
         computed(move || {
             ed.text_rev.get();
             ed.hl_rev.get();
             ed.marks_rev.get();
-            ed.st.borrow().row_content(row)
+            ed.st.borrow().row_content(row())
         })
     };
     let indent = {
         let ed = ed.clone();
         move || {
             ed.text_rev.get();
+            let row = row();
             let st = ed.st.borrow();
             if row < st.display.row_count() {
                 st.display.row(row).indent
@@ -917,7 +953,7 @@ fn row_view(ed: Ed, row: usize, lh: impl Fn() -> Points + Clone + 'static) -> im
             .absolute()
             .left_0()
             .right_0()
-            .top(move || Length::from(lh() * row as f32))
+            .top(move || Length::from(lh() * row() as f32))
             .h(move || Length::from(lh2()))
             .pointer_events(PointerEvents::None),
         props,
@@ -962,12 +998,12 @@ fn row_view(ed: Ed, row: usize, lh: impl Fn() -> Points + Clone + 'static) -> im
             .top_0()
             .left(move || Length::from(indent()))
             .pointer_events(PointerEvents::Auto)
-            .child(dynamic(move || spans(span_ed.clone(), row, content.get()))),
+            .child(dynamic(move || spans(span_ed.clone(), slot, content.get()))),
     )
 }
 
-/// The spans of a row's content.
-fn spans(ed: Ed, row: usize, content: RowContent) -> Vec<AnyElement> {
+/// The spans of the content of the row in `slot`.
+fn spans(ed: Ed, slot: ReadSignal<(usize, usize)>, content: RowContent) -> Vec<AnyElement> {
     let props = ed.props;
     let mut out: Vec<AnyElement> = Vec::with_capacity(content.spans.len() + 1);
     {
@@ -1028,7 +1064,7 @@ fn spans(ed: Ed, row: usize, content: RowContent) -> Vec<AnyElement> {
         let placeholder = text(" ⋯ ")
             .text_color(move || theme().muted_foreground)
             .on_press(move || {
-                let line = ed.st.borrow().display.row(row).line;
+                let line = ed.st.borrow().display.row(slot.get_untracked().1).line;
                 ed.fold(line, Some(false));
             });
         out.push(part(placeholder, props, EditorPart::FoldPlaceholder).into_element());

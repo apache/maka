@@ -64,7 +64,7 @@ export function createAnimation(invoke, live, wake, environment) {
   const start = (node, spec) => wait(id => send(4, idOf(node), id, spec));
   Object.assign(AnimatedValue.prototype, {
     set(value) { send(3,idOf(this),value); },
-    stop() { send(5,idOf(this)); return this.getValue(); },
+    stop() { send(5,idOf(this)); return this.getValue().then(value => ({ value })); },
     getValue() { return wait(id => send(15,idOf(this),id), true); },
     setOffset(value) { send(12,idOf(this),value); },
     flattenOffset() { send(13,idOf(this)); }, extractOffset() { send(14,idOf(this)); },
@@ -160,10 +160,10 @@ export function createAnimation(invoke, live, wake, environment) {
         const end=pending.get(id); if(!end)continue; pending.delete(id);
         const data=composites.get(end.composite?.deref()); if(data?.running===id)data.running=0;
         try { end.callback?.({finished}); } catch(error) { failure ??= error; }
-        finally { end.resolve(end.read ? value ?? 0 : finished); }
+        finally { end.resolve(end.read ? value ?? 0 : { finished }); }
       }
       if(failure)throw failure;
     },
-    dispose() { for(const timer of timers)clearTimeout(timer);timers.clear();for(const end of pending.values())end.resolve(end.read?0:false);pending.clear();derived.clear(); },
+    dispose() { for(const timer of timers)clearTimeout(timer);timers.clear();for(const end of pending.values())end.resolve(end.read?0:{finished:false});pending.clear();derived.clear(); },
   };
 }

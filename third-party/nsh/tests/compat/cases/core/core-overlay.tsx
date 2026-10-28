@@ -5,14 +5,14 @@
 // and kept inside the margin where it does not fit (`placement`, `align`,
 // `offset`, `margin`, `onPosition`), a press outside it (`onPressOutside`)
 // and Escape or back (`onCancel`). Its script checks each.
-import { Overlay, Text, View, type YNode, signal } from "nsh";
+import { Overlay, Text, View, type ViewRef, signal } from "nsh";
 
 function App() {
   const open = signal(true);
   const at = signal<"ref" | "point" | "box">("ref");
   const placed = signal("none");
   const pressed = signal("none");
-  let anchor: YNode | undefined;
+  let anchor: ViewRef | undefined;
   return (
     <View style={{ flex: 1, paddingTop: 100, paddingLeft: 40 }}>
       <View style={{ width: 100, height: 30, overflow: "hidden" }}>

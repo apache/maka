@@ -29,7 +29,9 @@ import {
   Text,
   View,
   type GestureResponderEvent,
-  type YNode,
+  type InputRef,
+  type ScrollRef,
+  type ViewRef,
 } from 'nsh';
 import { Input } from 'nsh/base';
 import { Button, Dialog } from 'nsh/base';
@@ -129,10 +131,10 @@ export function Terminal(props: { model: TerminalModel }) {
   const confirmation = signal(false);
   const copyStatus = createText();
   const copied = signal(false);
-  let input: YNode | null = null;
-  let scroll: YNode | null = null;
-  let body: YNode | null = null;
-  let fallback: YNode | null = null;
+  let input: InputRef | null = null;
+  let scroll: ScrollRef | null = null;
+  let body: ViewRef | null = null;
+  let fallback: ViewRef | null = null;
   let mounted = true;
   let reset: ReturnType<typeof setTimeout> | null = null;
   let unbind = () => {};
@@ -175,7 +177,7 @@ export function Terminal(props: { model: TerminalModel }) {
       }
     }
   };
-  const attach = (node: YNode) => {
+  const attach = (node: InputRef) => {
     input = node;
     unbind();
     const bindings: Record<string, () => void> = {};
@@ -458,7 +460,7 @@ export function Terminal(props: { model: TerminalModel }) {
         ref={(node) => {
           body = node;
         }}
-        onLayout={(event) => dimensions.set(event.size)}
+        onLayout={({ bounds: event }) => dimensions.set(event.size)}
         onPress={() => {
           input?.focus();
           if (!model.agentOwned()) model.takeControl();
@@ -592,7 +594,7 @@ export function Terminal(props: { model: TerminalModel }) {
           <Input
             ref={attach}
             value={inputValue()}
-            onChange={text}
+            onChange={({ value }) => text(value)}
             onKeyPress={typedKey}
             onFocus={() => {
               if (!model.agentOwned()) model.takeControl();

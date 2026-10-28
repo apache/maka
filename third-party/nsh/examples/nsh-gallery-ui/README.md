@@ -12,6 +12,7 @@ and NSH's elements; it is maintained with these examples, rather than published 
 | `segmented.tsx` | The segmented control shared by the gallery and demo inspectors |
 | `icons.tsx` | The common line icon set |
 | `data-table.ts` | Compact table spacing, resize separators, sort chevrons and selection feedback |
+| `scroll-area.tsx` | The scroll bar's track and thumb, and `ScrollArea`: a scroll view with that bar in place of the platform's indicator |
 | `slider.ts` | The slider's rail, gradient fill, pill thumb, value column and state feedback |
 | `palette.ts`, `demo.ts` | The documentation demos' palette adapter, button/field state helpers, and stage, inspector, panel and log components |
 | `css.js` | CSS variables for the website, generated from the same theme and finish data |

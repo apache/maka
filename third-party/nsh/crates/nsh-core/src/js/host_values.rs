@@ -707,6 +707,46 @@ pub(crate) fn content_offset<I: HostInput>(input: &I, _: &mut HostCx) -> Option<
     Some(ScrollProp::ContentOffset(point(n("x"), n("y"))))
 }
 
+/// `scrollbar`: a boolean, or the object of a theme (kept as JSON for the
+/// set that draws the built-in bar).
+pub(crate) fn scrollbar<I: HostInput>(input: &I, _: &mut HostCx) -> Option<Prop> {
+    Some(Prop::Scrollbar(match input.as_bool() {
+        Some(shows) => shows.into(),
+        None if input.is_object() => {
+            crate::ScrollbarSetting::Themed(std::sync::Arc::new(json_of(input)))
+        }
+        None => crate::ScrollbarSetting::Shown,
+    }))
+}
+
+/// `input` as JSON: what is neither a boolean, number, string, array nor
+/// object (a function) is `null`.
+fn json_of<I: HostInput>(input: &I) -> crate::JsonValue {
+    use crate::JsonValue;
+    if let Some(b) = input.as_bool() {
+        return JsonValue::Bool(b);
+    }
+    if let Some(n) = input.as_number() {
+        return serde_json::Number::from_f64(n).map_or(JsonValue::Null, JsonValue::Number);
+    }
+    if let Some(s) = input.as_string() {
+        return JsonValue::String(s);
+    }
+    if input.as_list().is_some() {
+        return JsonValue::Array(input.items().iter().map(json_of).collect());
+    }
+    if input.is_object() {
+        return JsonValue::Object(
+            input
+                .entries()
+                .into_iter()
+                .map(|(k, v)| (k, json_of(&v)))
+                .collect(),
+        );
+    }
+    JsonValue::Null
+}
+
 /// `keyboardShouldPersistTaps`: a boolean or `"never"` / `"always"` /
 /// `"handled"`.
 pub(crate) fn keyboard_taps<I: HostInput>(input: &I, _: &mut HostCx) -> Option<ScrollProp> {

@@ -53,6 +53,10 @@ pub struct TabBarProps {
     /// `onChange`.
     #[prop(default)]
     pub selected_index: Prop<u32>,
+    /// Out of sight, without a transition (default false): the app sets it when
+    /// it switches tabs, whose pages are kept and shown again as they were.
+    #[prop(default)]
+    pub hidden: Prop<bool>,
 }
 
 /// The events of a [`TabBar`].
@@ -84,6 +88,7 @@ pub fn TabBar(props: TabBarProps, cx: Scope<TabBarEvent>) -> impl IntoElement {
         .prop("selectedIndex", move || {
             JsonValue::from(props.selected_index.get())
         })
+        .prop("hidden", move || JsonValue::Bool(props.hidden.get()))
         .on_native_event(move |event: &NativeEvent| {
             if &*event.name == "change"
                 && let Some(index) = event.data.as_u64()

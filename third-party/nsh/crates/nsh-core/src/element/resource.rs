@@ -11,10 +11,11 @@
 use std::{future::Future, rc::Rc};
 
 use super::{
-    ambient::{Spawned, spawn},
+    Spawned,
     reactive::{
         Signal, SignalEquals, Stored, batch, render_effect, signal, signal_with, stored, untracked,
     },
+    spawn,
 };
 pub use crate::resource::ResourceState;
 use crate::resource::Runs;

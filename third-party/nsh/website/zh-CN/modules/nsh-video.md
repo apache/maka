@@ -17,7 +17,7 @@ import { Video, type VideoProps } from "nsh";
 ## Video
 
 ```ts
-const Video: (props: VideoProps) => YNode;
+const Video: (props: VideoProps) => JSX.Element;
 
 interface VideoProps extends Omit<ViewProps, "children">, VideoHostProps {
   src: string;
@@ -25,12 +25,12 @@ interface VideoProps extends Omit<ViewProps, "children">, VideoHostProps {
 ```
 
 ```tsx
-import { mount, signal, Text, Video, View, type YNode } from "nsh";
+import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
 
 function Player() {
   const paused = signal(true);
   const time = signal("");
-  let video!: YNode;
+  let video!: VideoRef;
   return (
     <View style={{ flex: 1, padding: 16, gap: 12 }}>
       <Video

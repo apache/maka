@@ -107,7 +107,7 @@ Besides the [common props](./index.md#common-props) (with `style` typed as `Imag
 | `objectPosition` (style) | `.object_position(..)`, `.object_top()`, ... | `string` | `"center"` | Where the image sits in its box once `objectFit` has sized it, as CSS's `object-position` (`"top"`, `"25% 75%"`, `"right 10px bottom 20%"`); a covering image is cropped around it. |
 | `onLoadStart` | `.on_load_start(..)` | `() => void` | | Loading began. |
 | `onProgress` | `.on_progress(..)` | `(e: { loaded: number; total: number }) => void` | | Download progress in bytes (`total` is 0 when unknown), at most every 100 ms. |
-| `onLoad` | `.on_load(..)` | `(e: PixelSize) => void` | | Loaded; the source image's size in pixels (not the decoded, downsampled one; an SVG's size in points, [on the web as the browser measures it](../docs/images-and-assets.md#svg-images)); for an image with variants, the loaded variant's. |
+| `onLoad` | `.on_load(..)` | `(e: { size: PixelSize }) => void` | | Loaded; the source image's size in pixels (not the decoded, downsampled one; an SVG's size in points, [on the web as the browser measures it](../docs/images-and-assets.md#svg-images)); for an image with variants, the loaded variant's. |
 | `onError` | `.on_error(..)` | `(e: { message: string }) => void` | | Loading failed. |
 | `onLoadEnd` | `.on_load_end(..)` | `() => void` | | After `onLoad` or `onError`. |
 
@@ -127,7 +127,7 @@ image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | none | Loading began. |
 | `onProgress` | `.on_progress` | `{ loaded, total }` (`ImageProgress`) | Bytes arrived (at most every 100 ms). |
-| `onLoad` | `.on_load` | `{ width, height }` (`Size<DevicePixels>`) | The image is shown; its source size in pixels (an SVG's in points, [on the web as the browser measures it](../docs/images-and-assets.md#svg-images)). |
+| `onLoad` | `.on_load` | `{ size }` (`Size<DevicePixels>`) | The image is shown; its source size in pixels (an SVG's in points, [on the web as the browser measures it](../docs/images-and-assets.md#svg-images)). |
 | `onError` | `.on_error` | `{ message }` (`&str`) | Loading or decoding failed, or the host is outside the app's capabilities. |
 | `onLoadEnd` | `.on_load_end` | none | After `onLoad` or `onError`. |
 
@@ -146,7 +146,7 @@ const state = signal("loading");
 <Image
   src={url}
   style={{ width: "100%", aspectRatio: 16 / 9 }}
-  onLoad={(e) => state.set(`${e.width}×${e.height} px`)}
+  onLoad={({ size }) => state.set(`${size.width}×${size.height} px`)}
   onError={(e) => state.set(e.message)}
 />;
 ```

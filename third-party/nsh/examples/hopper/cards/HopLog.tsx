@@ -18,7 +18,7 @@ function Apogees() {
     <View style={{ gap: 8 }}>
       <Canvas
         style={{ height: 72 }}
-        onLayout={(e) => width.set(e.size.width)}
+        onLayout={(e) => width.set(e.bounds.size.width)}
         {...track((x) => {
           const n = last().length;
           if (width() > 0) picked.set(Math.min(n - 1, Math.max(0, Math.floor((x / width()) * n))));
@@ -83,7 +83,7 @@ function Dispersion() {
     <View style={{ gap: 8 }}>
       <Canvas
         style={{ aspectRatio: 1.25, borderRadius: 14, backgroundColor: color.inset }}
-        onLayout={(e) => size.set(Math.min(e.size.width, e.size.width / 1.25))}
+        onLayout={(e) => size.set(Math.min(e.bounds.size.width, e.bounds.size.width / 1.25))}
         {...track((x, y) => {
           const s = size();
           if (s <= 0) return;

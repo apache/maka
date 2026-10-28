@@ -300,7 +300,7 @@ export function Chart(props: { stock: Stock; running: () => boolean; height?: nu
       <View style={{ height: props.height ?? HEIGHT }}>
         <Canvas
           style={{ height: props.height ?? HEIGHT }}
-          onLayout={(e) => width.set(e.size.width)}
+          onLayout={(e) => width.set(e.bounds.size.width)}
           {...scrub(pick)}
           accessibilityLabel={`${props.stock.code} ${period()} chart`}
           draw={(cx, { width, height }) => {

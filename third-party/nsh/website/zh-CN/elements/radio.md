@@ -78,7 +78,7 @@ function App() {
 mount(App);
 ```
 
-`Radio` 和 `RadioGroup` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值由应用持有：分组本身不持有值。每个单选框被告知自己是否勾选；按下未勾选的单选框时通过 `onChange(true)` 报告，应用设置自己的值，每个单选框显示应用传回的 `checked`。在 Rust 中，`radio()` 和 `radio_group()` 创建它们，每个属性对应一个设置方法（`.checked(..)`），每个事件对应一个监听方法（`.on_change(..)`），外观用类型化的样式方法，内容用 `.child(..)`。
+`Radio` 和 `RadioGroup` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 中是 `nsh-base` crate。值由应用持有：分组本身不持有值。每个单选框被告知自己是否勾选；按下未勾选的单选框时通过 `onChange({ checked: true })` 报告，应用设置自己的值，每个单选框显示应用传回的 `checked`。在 Rust 中，`radio()` 和 `radio_group()` 创建它们，每个属性对应一个设置方法（`.checked(..)`），每个事件对应一个监听方法（`.on_change(..)`），外观用类型化的样式方法，内容用 `.child(..)`。
 
 <a id="props"></a>
 
@@ -109,7 +109,7 @@ mount(App);
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onChange`（`Radio`） | `.on_change(\|checked: &bool\| ..)` | 未勾选的单选框被按下：轻点、点击、拥有键盘焦点时按 Space 或 Return，或屏幕阅读器的激活；或者分组的方向键把键盘焦点移到了它上面。它请求被勾选，所以值是 `true`。它在任何变化之前运行：单选框显示应用传回的 `checked`。 |
+| `onChange`（`Radio`） | `.on_change(\|checked: &bool\| ..)` | 未勾选的单选框被按下：轻点、点击、拥有键盘焦点时按 Space 或 Return，或屏幕阅读器的激活；或者分组的方向键把键盘焦点移到了它上面。它请求被勾选，所以 `checked` 是 `true`。它在任何变化之前运行：单选框显示应用传回的 `checked`。 |
 
 已勾选的单选框保持勾选，不报告任何事件，因为单选框不能取消自己的勾选；禁用的单选框同样不报告。
 

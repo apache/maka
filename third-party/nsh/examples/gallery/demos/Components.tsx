@@ -1,4 +1,4 @@
-import { type JSX, signal, Text, View, type YNode } from "nsh";
+import { type InputRef, type JSX, signal, Text, View, type ViewRef } from "nsh";
 import { announce, reduceMotion, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 import { LayoutAnimation } from "nsh";
 import { locale, pixelRatio, platform } from "nsh";
@@ -125,7 +125,7 @@ function PressableSheet() {
       <Caption label="Scales and darkens while pressed" note="active:scale-[0.97]" />
       <Sheet
         open={sheet()}
-        onOpenChange={(open) => sheet.set(open)}
+        onOpenChange={({ open }) => sheet.set(open)}
         backdropStyle={{ backgroundColor: "rgba(0,0,0,0.5)" }}
         popupStyle={{
           gap: 16,
@@ -204,13 +204,13 @@ function PressFeedback() {
 
 function Accessory() {
   const text = signal("");
-  let input: YNode | undefined;
+  let input: InputRef | undefined;
   return (
     <Card icon="text" title="Input accessory" subtitle="A bar over the iOS keyboard" right={<Badge label="nsh/mobile" />}>
       <Field
         ref={(node) => (input = node)}
         value={text()}
-        onChange={(v) => text.set(v)}
+        onChange={({ value }) => text.set(value)}
         placeholder="Focus me"
         ios={{ inputAccessoryViewID: "counter" }}
       />
@@ -295,7 +295,7 @@ function ModalOptions() {
         animation="slide"
         android={{ statusBarTranslucent: translucent() }}
         ios={{ supportedOrientations: ["portrait", "landscape"] }}
-        onOpenChange={(open) => visible.set(open)}
+        onOpenChange={({ open }) => visible.set(open)}
         style={{ flex: 1 }}
       >
         <View style={{ flex: 1, backgroundColor: isDark() ? "#16200d" : "#eef5dc" }}>
@@ -340,7 +340,7 @@ function PlatformInfo() {
     ["locale()", locale()],
   ];
   const announced = signal(0);
-  let target: YNode | undefined;
+  let target: ViewRef | undefined;
   return (
     <Card icon="spark" title="Platform" subtitle="platform, pixelRatio, announce" right={<Badge label={platform.os} tone="accent" />}>
       <View>

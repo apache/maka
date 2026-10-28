@@ -78,7 +78,7 @@ public class NshView extends FrameLayout {
          *
          * @param url the URL
          * @return true when the embedding app handled it (routed it through
-         *     its own router; the app's {@code openUrl} resolves true), false
+         *     its own router; the app's {@code openUrl} resolves {@code { opened: true }}), false
          *     for the system to open it ({@code Intent.ACTION_VIEW})
          */
         boolean openUrl(String url);

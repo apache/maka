@@ -517,3 +517,63 @@ fn a_long_swipe_exit_keeps_fading_the_backdrop() {
     }
     assert!(before < 0.001, "the exit finishes transparent: {before}");
 }
+
+#[test]
+fn a_web_sheet_uses_the_presented_surface_size_and_keeps_its_close_lifecycle() {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use nsh_core::{EdgeInsets, MountItem, ViewKind};
+
+    let mut config = EngineConfig {
+        viewport: Size::new(px(320.0), px(240.0)),
+        ..EngineConfig::new(Root::of::<SwipeScreen>())
+    };
+    config.environment.os = nsh_core::platform::Os::Web;
+    let mut app = Headless::start(config).unwrap();
+    let state = Arc::new(Mutex::new((None, HashMap::new())));
+    let observed = state.clone();
+    app.observe(move |_, batch| {
+        let mut state = observed.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::Create {
+                    id,
+                    kind: ViewKind::Modal,
+                } => state.0 = Some(*id),
+                MountItem::Frame { id, frame } => {
+                    state.1.insert(*id, *frame);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    let modal = state
+        .lock()
+        .unwrap()
+        .0
+        .expect("the web sheet has a presentation surface");
+    let viewport = Size::new(px(1280.0), px(720.0));
+    app.engine()
+        .control()
+        .set_root_size(modal, viewport, EdgeInsets::default());
+    app.wait(Duration::from_millis(400)).unwrap();
+    {
+        let state = state.lock().unwrap();
+        assert!(
+            state
+                .1
+                .iter()
+                .any(|(id, frame)| *id != modal && frame.size == viewport),
+            "the sheet backdrop fills the presented viewport"
+        );
+    }
+    app.press_key("Escape").unwrap();
+    app.wait_for_gone("Sheet body", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("requests:1").unwrap();
+}

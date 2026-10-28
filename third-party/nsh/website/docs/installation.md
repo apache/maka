@@ -86,7 +86,7 @@ dist/nsh/bin/nsh                                             # the CLI
 dist/nsh/runtime/ios/iphoneos/nsh-ios-app                    # runs packaged apps on iOS devices
 dist/nsh/runtime/ios/iphonesimulator/{nsh-ios-app,nsh-ios-host}
 dist/nsh/runtime/ios/maccatalyst/nsh-ios-host                # the Mac Catalyst development host
-dist/nsh/runtime/android/{release,dev}/                      # classes.dex, lib/<abi>/libnsh.so
+dist/nsh/runtime/android/{release,dev}/                      # classes.dex, lib/<abi>/libnsh.so, symbols/<abi>/libnsh.so
 dist/nsh/runtime/macos/{nsh-macos-host,nsh-macos-app}        # the macOS (AppKit) development host and release runner
 dist/nsh/runtime/linux/{nsh-linux-host,nsh-linux-app}        # the Linux development host and release runner
 dist/nsh/runtime/windows/{nsh-windows-host,nsh-windows-app}.exe  # the Windows development host and release runner

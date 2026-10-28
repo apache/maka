@@ -83,7 +83,9 @@ test("the DataTable demo serves the rows a far scroll lands on", async () => {
     await app.scroll("id:table", by);
     await app.wait(200);
     const range = app.texts().find((t) => t.startsWith("rows "))!;
-    const first = Number(range.slice(5).split("–")[0]) - 1;
+    // The second row of the range: the first can lie almost all above the
+    // view, under the titles, depending on the window's height.
+    const first = Number(range.slice(5).split("–")[0]);
     const names = ["Apple", "Microsoft", "NVIDIA", "Tesla", "Amazon", "Alphabet", "Meta"];
     const more = ["Tencent", "Alibaba", "Meituan", "Xiaomi", "Moutai", "CATL", "DBS"];
     const all = [...names, ...more];

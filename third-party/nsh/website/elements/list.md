@@ -123,12 +123,12 @@ touches and UI tests meet each row once.
 | `onRefresh` | `.on_refresh(..)` | `() => void` | | The user pulled to refresh. |
 | `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | | The app draws its own indicator, `height` points tall: the platform's spinner is hidden, a pull refreshes once it reaches `height`, and refreshing keeps `height` above the content. A height of 0 or less is none. |
 | `pullValue` | `.pull_value(&value)` | `AnimatedValue` | | An animated value fed with how far the list is pulled past its top (0 at rest, growing with the pull; the room kept above the content while it refreshes: `height` with `refreshIndicator`), for the app's indicator. |
-| `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | The scroll indicator shows. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | The scroll indicator shows: the platform's, or the app's [built-in bar](./scrollbar.md#built-in-bars) once it set a theme; an object is a theme of the view's own. On the desktop and in desktop browsers a horizontal view keeps it: it is the mouse's scroll bar. |
 | `scrollValue` | `.scroll_value(&value)` | `AnimatedValue` | | An animated value fed with the scroll offset, for scroll-linked animations. |
 | `keyboardDismissMode` | `.keyboard_dismiss_mode(..)` | `"none" \| "on-drag" \| "interactive"` | `"none"` | Whether dragging dismisses the keyboard. |
 | `style` | `Styled` methods | `StyleProp<ViewStyle>` | | The list's own style (it needs a bounded size: `flex: 1` or a height). |
 | `testID` | `.test_id(id)` | `string` | | The id UI tests find the list's scroll view by (`nsh test`'s `id:`, XCUITest, UI Automator). |
-| `ref` | `.element_ref(&handle)` | `YNode \| (node: YNode) => void` | | The list's node (see [ref methods](#ref-methods)). |
+| `ref` | `.element_ref(&handle)` | `ListRef \| (node: ListRef) => void` | | The list's ref (see [ref methods](#ref-methods)). |
 
 Lists also take the scrolling props of [`Scroll`](./scroll.md#scrolling) (the `Scrollable` methods in Rust):
 `pagingEnabled`, `snapToInterval`, `snapToOffsets`, `snapToAlignment`, `disableIntervalMomentum`, `decelerationRate`,
@@ -155,9 +155,9 @@ viewable rows, `changed()` the rows that came or went.
 | Event | Rust | Payload | When |
 |---|---|---|---|
 | `onScroll` | `.on_scroll` | `ScrollEvent` | The offset changed. |
-| `onScrollDragStart` / `onScrollDragEnd` | `.on_scroll_drag_start` / `.on_scroll_drag_end` | `{ x, y }` | Dragging started / stopped. |
-| `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ x, y }` | A glide started / stopped. |
-| `onScrollEnd` | `.on_scroll_end` | `{ x, y }` | Scrolling came to rest. |
+| `onScrollDragStart` / `onScrollDragEnd` | `.on_scroll_drag_start` / `.on_scroll_drag_end` | `{ offset }` | Dragging started / stopped. |
+| `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ offset }` | A glide started / stopped. |
+| `onScrollEnd` | `.on_scroll_end` | `{ offset }` | Scrolling came to rest. |
 | `onLoadMore` | `.on_load_more` | none | Within `loadMoreThreshold` viewports of the end. |
 | `onLoadMoreAtStart` | `.on_load_more_at_start` | none | Within `loadMoreAtStartThreshold` viewports of the start, once per approach after a scroll. |
 | `onViewableItemsChange` | `.on_viewable_items_change` | `{ viewableItems, changed }` (`ViewableItems`) | Viewability changed. |
@@ -202,7 +202,7 @@ virtual_list(move || photos.with(|p| p.len()), move |at| {
 
 ```tsx tabs
 const visible = signal("");
-let list!: YNode;
+let list!: ListRef;
 
 <List
   ref={list}

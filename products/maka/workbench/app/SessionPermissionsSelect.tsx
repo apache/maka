@@ -99,7 +99,7 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
   return (
     <Popover
       open={open()}
-      onOpenChange={changeOpen}
+      onOpenChange={({ open }) => changeOpen(open)}
       closeOnEscape={!owner.pending()}
       closeOnPressOutside={!owner.pending()}
       placement="top"

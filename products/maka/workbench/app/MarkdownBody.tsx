@@ -58,7 +58,7 @@ export function MarkdownBody(props: {
           options={{ streaming: true, preserveLineBreaks: true }}
           labels={{ table: tr('Markdown table'), copied: tr('Copied') }}
           onScrollIntent={props.userScroll}
-          onParseError={(reason) => failure.set(reason)}
+          onParseError={({ reason }) => failure.set(reason)}
           onLinkPress={(event) => {
             const row = props.row();
             const sourceId = props.sourceId;

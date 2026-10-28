@@ -19,7 +19,7 @@
 
 import { tr } from './locale';
 import { Text, View } from 'nsh';
-import type { JSX, YNode } from 'nsh';
+import type { JSX, ViewRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
 import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
@@ -142,7 +142,7 @@ export function Header(props: {
   commands(): void;
   browser: BrowserHeader;
   files?(): void;
-  filesOpener?(node: YNode): void;
+  filesOpener?(node: ViewRef): void;
 }) {
   const workspaceName = () => {
     const path = props.workspace;

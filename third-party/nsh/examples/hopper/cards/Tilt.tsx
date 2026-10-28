@@ -17,7 +17,7 @@ function Chart(props: { cursor: number; onScrub: (t: number) => void }) {
   return (
     <Canvas
       style={{ height: 210 }}
-      onLayout={(e) => width.set(e.size.width)}
+      onLayout={(e) => width.set(e.bounds.size.width)}
       {...track((x) => {
         const w = width() - pad.left - pad.right;
         if (w > 0) props.onScrub(Math.round(Math.min(HOP_LENGTH, Math.max(0, ((x - pad.left) / w) * HOP_LENGTH)) * 10) / 10);
@@ -99,7 +99,7 @@ function Commands(props: { picked: number | null; onPick: (i: number | null) => 
   return (
     <Canvas
       style={{ height: 40 }}
-      onLayout={(e) => width.set(e.size.width)}
+      onLayout={(e) => width.set(e.bounds.size.width)}
       {...track(
         (x) => width() > 0 && props.onPick(Math.min(gimbalCommands.length - 1, Math.max(0, Math.floor((x / width()) * gimbalCommands.length)))),
         () => props.onPick(null),

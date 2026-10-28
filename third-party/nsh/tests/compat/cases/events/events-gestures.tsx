@@ -6,10 +6,10 @@
 // each.
 import { Text, View, signal } from "nsh";
 
-type Pan = { translationX: number; translationY: number; velocityX: number; velocityY: number; cancelled?: boolean };
+type Pan = { translation: { x: number; y: number }; velocity: { x: number; y: number } };
 
 function pan(e: Pan): string {
-  return `${e.translationX},${e.translationY} v ${e.velocityX},${e.velocityY}`;
+  return `${e.translation.x},${e.translation.y} v ${e.velocity.x},${e.velocity.y}`;
 }
 
 function App() {

@@ -278,7 +278,7 @@ Animated GIF, WebP and APNG files play automatically, as assets or from URLs. Th
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start(..)` | | Loading starts |
 | `onProgress` | `.on_progress(..)` | `{ loaded, total }` in bytes (`total` 0 when unknown) | During a download, at most every 100 ms |
-| `onLoad` | `.on_load(..)` | `{ width, height }` | The image is ready; the source's size in pixels (an SVG's in points, [on the web as the browser measures it](#svg-images)) |
+| `onLoad` | `.on_load(..)` | `{ size }` | The image is ready; the source's size in pixels (an SVG's in points, [on the web as the browser measures it](#svg-images)) |
 | `onError` | `.on_error(..)` | `{ message }` (a `&str` in Rust) | Loading or decoding failed |
 | `onLoadEnd` | `.on_load_end(..)` | | After `onLoad` or `onError` |
 
@@ -297,7 +297,7 @@ const status = signal("loading…");
 
 <Image
   src={url}
-  onLoad={(e) => status.set(`${e.width}×${e.height}`)}
+  onLoad={({ size }) => status.set(`${size.width}×${size.height}`)}
   onError={(e) => status.set(e.message)}
   style={{ width: 90, height: 60 }}
 />
@@ -315,8 +315,8 @@ Images that are not on screen can be measured and loaded ahead: `image_size(..)`
 spawn(async move {
     // Ok(ImageSize { width, height }), in pixels.
     let size = image_size("https://example.com/photo.jpg").await;
-    // true once the bytes are in memory.
-    let ok = prefetch_image("https://example.com/next.jpg").await;
+    // Ok(()) once the bytes are in memory.
+    let loaded = prefetch_image("https://example.com/next.jpg").await;
 });
 ```
 
@@ -324,13 +324,13 @@ spawn(async move {
 import { Image } from "nsh";
 
 const size = await Image.getSize("https://example.com/photo.jpg");   // { width, height } in pixels
-const ok = await Image.prefetch("https://example.com/next.jpg");      // true once the bytes are in memory
+await Image.prefetch("https://example.com/next.jpg");                // once the bytes are in memory
 ```
 
 | Rust | TSX | Returns |
 |---|---|---|
 | `image_size(src)` | `Image.getSize(src)` | The image's size in pixels (an SVG's in points, [on the web as the browser measures it](#svg-images)); an error when it cannot be loaded |
-| `prefetch_image(src)` | `Image.prefetch(src)` | `true` once the image's bytes are loaded |
+| `prefetch_image(src)` | `Image.prefetch(src)` | Nothing, once the image's bytes are loaded; an error when it cannot be loaded |
 
 In TSX, `src` is a URL string or an imported image. For an imported image with [variants](#pixel-densities), both load the variant the views load on this screen, and `getSize` gives the imported file's size. Both keep the downloaded bytes for the views that show the image next, so an image prefetched before it is shown appears without a download.
 

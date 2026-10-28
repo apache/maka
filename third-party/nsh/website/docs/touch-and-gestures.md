@@ -274,8 +274,8 @@ function App() {
         pan={{ x, y }}
         onPanEnd={(e) => {
           // Spring back, starting at the speed the finger let go with.
-          x.spring(0, { velocity: e.velocityX });
-          y.spring(0, { velocity: e.velocityY });
+          x.spring(0, { velocity: e.velocity.x });
+          y.spring(0, { velocity: e.velocity.y });
         }}
         style={{ width: 120, height: 120, borderRadius: 24, backgroundColor: "#8250df", translate: [x, y] }}
       />
@@ -295,7 +295,7 @@ mount(App);
 | `.on_pinch_start` / `.on_pinch_end` | `onPinchStart` / `onPinchEnd` | The pinch started / ended: its scale and velocity (`GestureEvent`). |
 | `.on_rotation_start` / `.on_rotation_end` | `onRotationStart` / `onRotationEnd` | The rotation started / ended: its angle (Rust: `GestureEvent<Radians>`) and velocity. |
 
-A pan event has the translation (`translation`; TSX: `translationX` / `translationY`, points since the start), the velocity (`velocity_x` / `velocity_y`; TSX: `velocityX` / `velocityY`, points per **second**) and the bound values at that moment (`value_x` / `value_y`; TSX: `valueX` / `valueY`).
+A pan event has the translation (`translation`, a `Point`: points since the start), the velocity (`velocity_x` / `velocity_y`; TSX: `velocity`, a `Point`: points per **second**) and the bound values at that moment (`value_x` / `value_y`; TSX: `value`, `{ x?, y? }` with the axes `pan` binds).
 
 What the native side does for you:
 
@@ -321,8 +321,8 @@ view()
 <View
   pan={{ x }}
   onPanEnd={(e) => {
-    const projected = (e.valueX ?? 0) + e.velocityX * 0.2;
-    x.spring(projected > 0 ? 140 : -140, { velocity: e.velocityX });
+    const projected = (e.value?.x ?? 0) + e.velocity.x * 0.2;
+    x.spring(projected > 0 ? 140 : -140, { velocity: e.velocity.x });
   }}
   style={{ translate: [x, 0] }}
 />
@@ -402,7 +402,7 @@ view()
 ```
 
 ```tsx tabs
-let track!: YNode;
+let track!: ViewRef;
 let origin = 0;
 <View
   ref={track}

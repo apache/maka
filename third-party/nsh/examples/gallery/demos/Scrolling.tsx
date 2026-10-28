@@ -1,8 +1,11 @@
-import { Canvas, List, Scroll, type ScrollEvent, signal, Text, View, type YNode } from "nsh";
+import { Canvas, List, platform, Scroll, type ScrollEvent, type ScrollRef, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { createAnimatedValue } from "nsh";
 import { windowSize } from "nsh";
-import { Badge, Button, Caption, colors, DemoPage, Figure, finish, hint, isDark, Meter, mono, Press, radius, Section, Segmented, Toggle as Switch, type Tone, toneColor, toneTint } from "../ui";
+import { alpha, Badge, Button, Caption, colors, DemoPage, Figure, finish, hint, isDark, Meter, mono, Press, radius, Section, Segmented, Toggle as Switch, type Tone, toneColor, toneTint } from "../ui";
+
+/** A pointer's desktop: compact controls and no keyboard to scroll above. */
+const desk = platform.idiom === "desktop";
 
 const tones: Tone[] = ["accent", "info", "warn", "up", "danger"];
 
@@ -94,9 +97,9 @@ function Pager() {
         scrollbar={false}
         scrollValue={x}
         style={{ height: 160, borderRadius: radius.control, backgroundColor: colors.surface, ...finish.card, borderWidth: 1, borderColor: colors.line }}
-        onLayout={(e) => width.set(e.size.width)}
-        onMomentumEnd={(e) => page.set(Math.round(e.x / width()))}
-        onScrollEnd={(e) => page.set(Math.round(e.x / width()))}
+        onLayout={({ bounds }) => width.set(bounds.size.width)}
+        onMomentumEnd={({ offset }) => page.set(Math.round(offset.x / width()))}
+        onScrollEnd={({ offset }) => page.set(Math.round(offset.x / width()))}
       >
         <View style={{ flexDirection: "row" }}>
           <Each of={pages}>
@@ -215,7 +218,7 @@ function Events() {
   const bounces = signal(true);
   const inset = signal(false);
   const throttle = signal<"0" | "100" | "500">("100");
-  const note = (name: string, tone: Tone) => (e: { y: number }) => log.update((l) => [{ name, y: Math.round(e.y), tone }, ...l].slice(0, 5));
+  const note = (name: string, tone: Tone) => ({ offset }: { offset: { y: number } }) => log.update((l) => [{ name, y: Math.round(offset.y), tone }, ...l].slice(0, 5));
   const progress = () => {
     const o = offset();
     return o && o.contentSize.height > o.size.height ? o.offset.y / (o.contentSize.height - o.size.height) : 0;
@@ -282,7 +285,7 @@ function Events() {
 
 /** Pinch to zoom (natively); tap a tile to zoom in on it. */
 function Zoom() {
-  let scroll: YNode | undefined;
+  let scroll: ScrollRef | undefined;
   const scale = signal(1);
   const bounces = signal(true);
   const tiles = Array.from({ length: 24 }, (_, i) => i);
@@ -440,21 +443,24 @@ export function Scrolling() {
                 placeholderColor: colors.faint,
                 caretColor: colors.accent,
                 selectionColor: colors.accent,
-                height: 44,
-                fontSize: 15,
+                height: desk ? 32 : 44,
+                fontSize: desk ? 13 : 15,
                 color: colors.text,
                 backgroundColor: colors.field,
                 ...finish.field,
                 borderWidth: 1,
                 borderColor: colors.fieldBorder,
                 borderRadius: radius.control,
-                paddingHorizontal: 14,
+                paddingHorizontal: desk ? 10 : 14,
               }}
             />
-            <Press onPress={() => presses.set(presses() + 1)} accessibilityLabel="Count a tap">
+            <Press onPress={() => presses.set(presses() + 1)} accessibilityLabel="Count a tap" hoverStyle={{ opacity: 0.94 }}>
               <View
                 style={{
-                  height: 44,
+                  height: desk ? 28 : 44,
+                  alignSelf: desk ? "flex-start" : "stretch",
+                  paddingHorizontal: 14,
+                  borderWidth: 1,
                   borderRadius: radius.control,
                   borderCurve: "continuous",
                   backgroundColor: colors.light,
@@ -465,11 +471,14 @@ export function Scrolling() {
                   gap: 8,
                 }}
               >
-                <Text style={{ fontSize: 15, fontWeight: "600", color: colors.onLight }}>{hint("Tap me", "Click me")}</Text>
-                <Text style={{ fontSize: 15, color: isDark() ? "#55595f" : "#9a9ea4", fontVariant: ["tabular-nums"] }}>{presses()}</Text>
+                <Text style={{ fontSize: desk ? 13 : 15, fontWeight: "600", color: colors.onLight }}>{hint("Tap me", "Click me")}</Text>
+                <Text style={{ fontSize: desk ? 13 : 15, color: alpha(colors.onLight, 0.5), fontVariant: ["tabular-nums"] }}>{presses()}</Text>
               </View>
             </Press>
-            <View style={{ height: 300 }} />
+            {/* Room to scroll the input above a phone's keyboard. */}
+            <If when={!desk}>
+              <View style={{ height: 300 }} />
+            </If>
           </Section>
         ),
       ]}

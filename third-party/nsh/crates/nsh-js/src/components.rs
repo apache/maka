@@ -178,11 +178,10 @@ pub(crate) fn measure(cx: *mut JsContext, id: u32) -> JsValue {
 /// or rejects the call's promise.
 pub(crate) fn deliver(cx: *mut JsContext, event: JsEvent) -> Result<(), JsValue> {
     match event {
-        JsEvent::Event(..) => Ok(()),
+        JsEvent::Event(..) | JsEvent::LayoutListener { .. } => Ok(()),
         JsEvent::Component { host, event } => {
             let name = event.name();
             let host_js = crate::classes::host_outside_calls(cx);
-            let spread = event.spread();
             let data = catch_unwind(AssertUnwindSafe(move || {
                 event.data_js(&host_js).map(|d| d.into_raw())
             }));
@@ -204,7 +203,8 @@ pub(crate) fn deliver(cx: *mut JsContext, event: JsEvent) -> Result<(), JsValue>
                     return Ok(());
                 }
             };
-            component_event_with(cx, host, name, crate::classes::from_raw(data), spread)
+            let data = crate::classes::from_raw(data);
+            component_event(cx, host, name, data)
         }
         JsEvent::Children { host, wanted } => {
             let data = if wanted { qjs::JS_TRUE } else { qjs::JS_FALSE };
@@ -277,18 +277,6 @@ fn component_event(
     name: &str,
     data: JsValue,
 ) -> Result<(), JsValue> {
-    component_event_with(cx, host, name, data, false)
-}
-
-/// [`component_event`]; `spread`: the handler takes the items of `data`
-/// (an array) as its arguments (`{ name, data, spread: true }`).
-fn component_event_with(
-    cx: *mut JsContext,
-    host: nsh_core::NodeId,
-    name: &str,
-    data: JsValue,
-    spread: bool,
-) -> Result<(), JsValue> {
     let handler = dom::handler(cx, host, EventKind::NativeEvent).map(|value| Owned(cx, value));
     let Some(handler) = handler else {
         // SAFETY: ours.
@@ -301,9 +289,6 @@ fn component_event_with(
         let event = qjs::JS_NewObject(cx);
         qjs::JS_SetPropertyStr(cx, event, c"name".as_ptr(), new_string(cx, name));
         qjs::JS_SetPropertyStr(cx, event, c"data".as_ptr(), data);
-        if spread {
-            qjs::JS_SetPropertyStr(cx, event, c"spread".as_ptr(), qjs::JS_TRUE);
-        }
         let mut args = [event];
         let r = qjs::JS_Call(cx, handler.1, UNDEFINED, 1, args.as_mut_ptr());
         qjs::JS_FreeValue(cx, event);
@@ -1090,23 +1075,9 @@ unsafe extern "C" fn on_native_event(
             qjs::JS_FreeValue(cx, handler);
             return UNDEFINED;
         }
-        let data = get(cx, event, "data");
-        let spread = get(cx, event, "spread");
-        let mut args = if qjs::JS_IsBool(spread) && qjs::JS_IsArray(data) {
-            let mut length = 0i32;
-            let len = get(cx, data, "length");
-            qjs::JS_ToInt32(cx, &mut length, len);
-            qjs::JS_FreeValue(cx, len);
-            let length = length.max(0) as u32;
-            let items = (0..length)
-                .map(|i| qjs::JS_GetPropertyUint32(cx, data, i))
-                .collect();
-            qjs::JS_FreeValue(cx, data);
-            items
-        } else {
-            vec![data]
-        };
-        qjs::JS_FreeValue(cx, spread);
+        // One argument: the event's data, one object (`api-naming.md`
+        // "Payloads").
+        let mut args = vec![get(cx, event, "data")];
         let r = qjs::JS_Call(
             cx,
             handler,

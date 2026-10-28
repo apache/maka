@@ -25,6 +25,7 @@ mod node_view;
 mod parts;
 mod render;
 mod session;
+mod table;
 
 use std::collections::BTreeMap;
 
@@ -129,6 +130,30 @@ pub struct RichEditorChange {
     pub revision: u64,
 }
 
+/// A file pasted into a `RichEditor` with its bytes (an image, a screenshot).
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct RichEditorFile {
+    /// Its name (`image.png` for an image without one).
+    pub name: String,
+    /// Its MIME type (`image/png`).
+    pub mime: String,
+    /// Its bytes.
+    pub data: Vec<u8>,
+}
+
+/// Files pasted into a `RichEditor`, which the app inserts as it likes (an
+/// image node, a link to a saved copy): the editor inserts nothing for them,
+/// as Tiptap's file handler leaves them to its `onPaste`.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct RichEditorPastedFiles {
+    /// Files with their bytes, in the platform's order.
+    pub files: Vec<RichEditorFile>,
+    /// `file:` URLs of local files copied in a file manager.
+    pub uris: Vec<String>,
+}
+
 /// A `RichEditor`'s selection, in document positions.
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 #[non_exhaustive]
@@ -170,6 +195,10 @@ pub enum RichEditorEvent {
     /// The selection changed.
     #[args(selection)]
     SelectionChange(RichEditorSelection),
+    /// Files were pasted (images, files copied in a file manager): the
+    /// selection is where the app inserts them.
+    #[args(paste)]
+    PasteFiles(RichEditorPastedFiles),
     /// The editor took the focus.
     Focus,
     /// The editor lost the focus.
@@ -209,8 +238,9 @@ impl RichEditorApi {
     }
 
     /// Replaces the document with `doc` (ProseMirror's JSON), as a change
-    /// undo takes back: whether the schema allowed it.
-    pub fn set_doc_json(&self, doc: Value) -> bool {
+    /// undo takes back; an error (a rejection in TSX) when `doc` is not a
+    /// document of the editor's schema.
+    pub fn set_doc_json(&self, doc: Value) -> Result<(), String> {
         self.rv.set_doc_json(&doc)
     }
 

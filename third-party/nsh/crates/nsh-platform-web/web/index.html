@@ -37,6 +37,7 @@
   const theme = params.get("theme");
   const post = (message) => parent !== window && parent.postMessage({ source: "nsh-player", ...message }, "*");
   const options = {
+    dialogs: "viewport",
     assetBase: new URL("assets/", location.href).href,
     wasm: playground ? "./nsh-playground.wasm" : "./nsh.wasm",
     data: { syntaxes: "./nsh-syntaxes.bin" },

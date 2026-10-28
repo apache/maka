@@ -102,20 +102,20 @@ export function ImageViewer(props: { image: TextViewImage | null; onClose: () =>
       animation="fade"
       style={{ flex: 1 }}
       statusBar={{ foreground: "light" }}
-      onOpenChange={(open) => !open && props.onClose()}
+      onOpenChange={({ open }) => !open && props.onClose()}
     >
       <View
         testID="image-viewer"
         focusable={false}
         onPress={props.onClose}
-        onLayout={(e) => viewport.set({ width: e.size.width, height: e.size.height })}
+        onLayout={({ bounds }) => viewport.set({ width: bounds.size.width, height: bounds.size.height })}
         pinch={{ scale }}
         pan={{ x, y }}
         onPinchEnd={async () => settle({ ...at, scale: await scale.getValue() })}
         onPanEnd={(e) => {
-          const dy = (e.valueY ?? at.y) - at.y;
-          if (at.scale <= 1.01 && (dy > SWIPE_CLOSE || e.velocityY > 1200)) return props.onClose();
-          settle({ scale: at.scale, x: e.valueX ?? at.x, y: e.valueY ?? at.y });
+          const dy = (e.value?.y ?? at.y) - at.y;
+          if (at.scale <= 1.01 && (dy > SWIPE_CLOSE || e.velocity.y > 1200)) return props.onClose();
+          settle({ scale: at.scale, x: e.value?.x ?? at.x, y: e.value?.y ?? at.y });
         }}
         style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.92)" }}
       >
@@ -134,7 +134,7 @@ export function ImageViewer(props: { image: TextViewImage | null; onClose: () =>
         >
           <Image
             src={shown()?.src ?? ""}
-            onLoad={(e) => natural.set({ width: e.width, height: e.height })}
+            onLoad={({ size }) => natural.set({ width: size.width, height: size.height })}
             style={{ width: "100%", height: "100%", objectFit: "contain" }}
           />
         </View>

@@ -13,7 +13,6 @@ use std::{
 };
 
 use nsh_core::{
-    element::Os,
     keymap::{Modifiers, When},
     prelude::*,
 };
@@ -21,12 +20,14 @@ use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{
-    RichEditorChange, RichEditorEvent, RichEditorProps, RichEditorSelection,
+    RichEditorChange, RichEditorEvent, RichEditorFile, RichEditorPastedFiles, RichEditorProps,
+    RichEditorSelection,
     geometry::{DOC, Geometry, Hit},
-    geometry_handle::{register_geometry, retire_geometry},
+    geometry_handle::{LocalGeometry, register_geometry, retire_geometry},
     keys::{self, Move, Unit},
     node_view::{NodeView, NodeViewEvent},
     session::{EditorSession, NodeViews, ViewRequest},
+    table::{TableGesture, TablePreview},
 };
 use crate::{
     editor::layout::{self, AutoScroll},
@@ -38,6 +39,7 @@ use crate::{
             Affinity, ClickEvent, Decoration, EditorState, EditorStateConfig, GapCursor, KeyEvent,
             NodeSelection, Plugin, Selection, TextSelection, Transaction, TransactionOrigin,
         },
+        tables::{CellSelection, is_table, table_role},
         transform::drop_point,
     },
 };
@@ -45,6 +47,13 @@ use crate::{
 /// The sink is emptied once it holds this many bytes (and no composition
 /// is in progress).
 const SINK_LIMIT: usize = 256;
+
+/// How much nearer a drop place that takes a block as it is counts than
+/// one that takes it wrapped, between blocks.
+const DIRECT_SLACK: f32 = 6.0;
+/// How many half-line steps a caret moving up or down probes past a gap
+/// between blocks before it takes the document's edge.
+const GAP_PROBES: usize = 64;
 
 /// A rendered block: its id (kept while the block is the same block across
 /// changes), its node and where it starts.
@@ -80,6 +89,10 @@ pub(crate) fn slot_id(id: u64) -> u64 {
     id | (1 << 62)
 }
 
+/// The content's offset from the page (content less page) and the scroll
+/// offset it was noted at.
+pub(super) type PageOffset = (Point<Points>, Points);
+
 /// A press being dragged.
 #[derive(Debug, Clone)]
 struct Drag {
@@ -92,6 +105,9 @@ struct Drag {
     /// Set when the press started inside the selection (or on a draggable
     /// node): the drag moves what is selected rather than selecting.
     moving: Option<Moving>,
+    /// Pressed with Mod: a selection the drag makes across blocks covers
+    /// them whole on release (Tiptap's NodeRange).
+    blocks: bool,
 }
 
 /// What a drag that started inside the selection carries
@@ -104,6 +120,10 @@ struct Moving {
     moved: bool,
     /// What a release without a drag selects: a caret at the press.
     click: Option<Selection>,
+    /// The dragged range, deleted on a move rather than the selection
+    /// (prosemirror-view's `dragging.node`: a plugin may turn a selected
+    /// table into its cells while it is dragged).
+    source: Option<(usize, usize)>,
 }
 
 /// What the native input that takes typed text holds.
@@ -114,6 +134,9 @@ struct Sink {
     composing: bool,
     /// The composition whose commit is still to come (its id).
     composition: Option<i64>,
+    /// The sink's text last reported while composing, taken when the
+    /// composition ends.
+    held: Option<String>,
 }
 
 /// The view's controller. Cloned into the closures that need it.
@@ -145,6 +168,10 @@ pub(crate) struct Rv {
     sink: Rc<RefCell<Sink>>,
     next_composition: Rc<Cell<i64>>,
     drag: Rc<RefCell<Option<Drag>>>,
+    /// The content point less the page point of the last pointer over the
+    /// content, and the scroll offset then: how a drag the app starts
+    /// from a page point (a drag handle's) maps into the content.
+    pointer: Rc<Cell<Option<PageOffset>>>,
     /// Where a drag that moves the selection would drop it (the drop
     /// cursor).
     pub(crate) drop_at: Signal<Option<usize>>,
@@ -156,6 +183,9 @@ pub(crate) struct Rv {
     pub(crate) scroll: ElementRef,
     pub(crate) content: ElementRef,
     pub(crate) scroll_y: Signal<Points>,
+    /// `scroll_y` outside the reactive graph, for the page queries JS
+    /// asks (`pageCoordsAtPos`, `posAtPageCoords`).
+    pub(crate) scrolled: Rc<Cell<Points>>,
     pub(crate) viewport: Signal<Size<Points>>,
     /// The content box's height, how far the scroll view scrolls.
     pub(crate) content_height: Signal<Points>,
@@ -165,6 +195,10 @@ pub(crate) struct Rv {
     scroll_pending: Rc<Cell<bool>>,
     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
     base_keymap: Rc<Keymap>,
+    /// A press on a table's handle or grip being dragged.
+    pub(crate) table_gesture: Rc<RefCell<Option<TableGesture>>>,
+    /// What that drag shows: a column's or row's new size, a drop line.
+    pub(crate) table_preview: Signal<Option<TablePreview>>,
 }
 
 impl Rv {
@@ -186,6 +220,7 @@ impl Rv {
             tree: Rc::default(),
             geo: Rc::new(RefCell::new(Geometry {
                 font: "16px sans-serif".into(),
+                measure: Some(Rc::new(nsh_core::element::text_measurer())),
                 ..Geometry::default()
             })),
             decorations: Rc::default(),
@@ -201,6 +236,7 @@ impl Rv {
             sink: Rc::default(),
             next_composition: Rc::new(Cell::new(1)),
             drag: Rc::default(),
+            pointer: Rc::default(),
             drop_at: signal(None),
             goal_x: Rc::default(),
             selected: Rc::default(),
@@ -208,12 +244,15 @@ impl Rv {
             scroll: element_ref(),
             content: element_ref(),
             scroll_y: signal(px(0.0)),
+            scrolled: Rc::default(),
             viewport: signal(Size::default()),
             content_height: signal(px(0.0)),
             autoscroll: Rc::default(),
             scroll_pending: Rc::default(),
             blink_task: Rc::default(),
             base_keymap: Rc::new(base_keymap),
+            table_gesture: Rc::default(),
+            table_preview: signal(None),
         };
         rv.sync_tree(&state);
         rv.sync_decorations(&state);
@@ -247,7 +286,13 @@ impl Rv {
                 notified.update(|n| *n += 1);
             }
         });
-        let (geometry, geometry_lease) = register_geometry(self.geo.clone(), self.st.clone());
+        let (geometry, geometry_lease) = register_geometry(LocalGeometry {
+            geo: self.geo.clone(),
+            state: self.st.clone(),
+            tree: self.tree.clone(),
+            pointer: self.pointer.clone(),
+            scrolled: self.scrolled.clone(),
+        });
         let geometry = self.session.attach_geometry(geometry);
         let session = self.session.clone();
         cleanup(move || {
@@ -268,6 +313,12 @@ impl Rv {
                     match request {
                         ViewRequest::Focus => rv.focus(),
                         ViewRequest::Blur => rv.blur(),
+                        ViewRequest::DragBlock { pos, page } => {
+                            rv.drag_block(pos, page);
+                        }
+                        ViewRequest::DragTo(page) => rv.drag_to(page),
+                        ViewRequest::EndDrag => rv.release(),
+                        ViewRequest::Place => rv.place(),
                     }
                 }
             });
@@ -293,7 +344,10 @@ impl Rv {
         let rv = self.clone();
         effect(move || {
             if rv.props.auto_focus.get() {
-                rv.focus();
+                // After this commit: the input it focuses is not mounted yet
+                // when the view connects.
+                let rv = rv.clone();
+                spawn(async move { rv.focus() });
             }
         });
         // Scrolls the selection into view once its place is known.
@@ -456,7 +510,7 @@ impl Rv {
 
     // Committing.
 
-    fn dispatch(&self, tr: Transaction) {
+    pub(crate) fn dispatch(&self, tr: Transaction) {
         if let Err(e) = self.session.dispatch(tr) {
             log::warn!("RichEditor: a transaction was refused: {e}");
         }
@@ -530,6 +584,18 @@ impl Rv {
 
     /// The sink's text changed: what was deleted and typed since.
     pub(crate) fn sink_changed(&self, text: &str) {
+        // Platforms report the uncommitted text (pinyin, kana) as the sink's
+        // while it lasts; the document takes only the commit.
+        if self.sink.borrow().composing {
+            self.sink.borrow_mut().held = Some(text.to_owned());
+            self.sink_value.set(text.to_owned());
+            return;
+        }
+        self.sink_edited(text);
+    }
+
+    /// Applies the sink's `text`: what was deleted and typed since.
+    fn sink_edited(&self, text: &str) {
         let (deleted, inserted, composed) = {
             let mut sink = self.sink.borrow_mut();
             let base = match sink.emptied.take() {
@@ -549,7 +615,9 @@ impl Rv {
         }
         let mut parts = inserted.split('\n').peekable();
         while let Some(part) = parts.next() {
-            self.text_input(part, composed);
+            for piece in typed_pieces(part, composed) {
+                self.text_input(piece, composed);
+            }
             if parts.peek().is_some() {
                 self.key(&keys::plain_event("Enter"));
             }
@@ -580,7 +648,7 @@ impl Rv {
     /// shows at the caret, the document waits for the commit (one
     /// transaction, grouped in the history with the composition's).
     pub(crate) fn composition_changed(&self, composing: bool, text: &str) {
-        {
+        let held = {
             let mut sink = self.sink.borrow_mut();
             if composing && sink.composition.is_none() {
                 let id = self.next_composition.get();
@@ -588,8 +656,12 @@ impl Rv {
                 sink.composition = Some(id);
             }
             sink.composing = composing;
-        }
+            if composing { None } else { sink.held.take() }
+        };
         self.session.set_composing(composing);
+        if let Some(held) = held {
+            self.sink_edited(&held);
+        }
         self.composition
             .set((composing && !text.is_empty()).then(|| text.to_owned()));
     }
@@ -634,6 +706,21 @@ impl Rv {
             // Tiptap's exitable marks: ArrowRight at the end of one at its
             // textblock's end leaves the mark, not the place.
             if event.key == "ArrowRight" && self.exit_mark(&state) {
+                self.after_key(event);
+                return;
+            }
+            // Up and Down from a cell's first or last line: the cell above
+            // or below, at the x the caret keeps (the table keys only know
+            // positions, not lines).
+            let dir = match event.key.as_str() {
+                "ArrowUp" => -1,
+                "ArrowDown" => 1,
+                _ => 0,
+            };
+            if dir != 0
+                && let Some(next) = self.cell_vertical(state.selection(), dir)
+            {
+                self.set_selection(next, true);
                 self.after_key(event);
                 return;
             }
@@ -920,6 +1007,27 @@ impl Rv {
         }
     }
 
+    /// Up or Down (`dir`) from a caret on its cell's first or last line:
+    /// the cell above or below ([`Rv::table_vertical`]).
+    fn cell_vertical(&self, sel: &Selection, dir: i32) -> Option<Selection> {
+        if sel.as_text().is_none() || !sel.empty() {
+            return None;
+        }
+        let m = Move {
+            unit: Unit::Line,
+            dir,
+            extend: false,
+        };
+        if !self.end_of_textblock(sel, m) {
+            return None;
+        }
+        let caret = self.geo.borrow().caret_rect(sel.head(), sel.affinity())?;
+        let x = self.goal_x.get().unwrap_or(caret.origin.x);
+        let next = self.table_vertical(sel.resolved_head(), x, dir)?;
+        self.goal_x.set(Some(x));
+        Some(next)
+    }
+
     /// One grapheme toward `dir` from the head, out of the textblock at
     /// its ends (to the next cursor or selectable node).
     fn char_step(&self, doc: &Node, sel: &Selection, dir: i32) -> Option<Selection> {
@@ -981,6 +1089,7 @@ impl Rv {
     }
 
     /// The position a line (or a page) up or down, at the goal x.
+    #[allow(clippy::cast_precision_loss)]
     fn vertical(
         &self,
         head: usize,
@@ -995,13 +1104,43 @@ impl Rv {
             Unit::Page => self.viewport.get_untracked().height.max(caret.size.height),
             _ => caret.size.height * 0.5 + px(1.0),
         };
-        let y = if m.dir < 0 {
-            caret.origin.y - distance + caret.size.height * 0.5 - caret.size.height * 0.5 - px(0.0)
-        } else {
-            caret.origin.y + caret.size.height + distance - caret.size.height * 0.5
-        };
-        let hit = geo.hit(Point::new(x, if m.dir < 0 { y - px(1.0) } else { y }))?;
-        let (pos, side) = match hit {
+        // A gap between blocks (margins, a divider) can be taller than a
+        // line: a probe landing in it hits the caret's own block again, so
+        // the probe steps on by half a line until it reaches another
+        // position or runs out of document.
+        let step = caret.size.height * 0.5;
+        let mut hit = None;
+        let mut moved = false;
+        for i in 0..GAP_PROBES {
+            let reach = distance + step * i as f32;
+            let y = if m.dir < 0 {
+                caret.origin.y - reach - px(1.0)
+            } else {
+                caret.origin.y + caret.size.height + reach - caret.size.height * 0.5
+            };
+            let Some(found) = geo.hit(Point::new(x, y)) else {
+                break;
+            };
+            // Only a position past the caret, the way it goes, is a move:
+            // a probe in a block's padding hits its own line again.
+            moved = match found {
+                Hit::Text(pos, _) => {
+                    if m.dir < 0 {
+                        pos < head
+                    } else {
+                        pos > head
+                    }
+                }
+                Hit::Node(_) => true,
+            };
+            hit = Some(found);
+            if moved || m.unit == Unit::Page {
+                break;
+            }
+        }
+        let (pos, side) = match hit? {
+            // Nothing past the caret: the first or last line.
+            Hit::Text(..) if !moved => (head, affinity),
             Hit::Text(pos, side) => (pos, side),
             Hit::Node(pos) => {
                 drop(geo);
@@ -1027,7 +1166,7 @@ impl Rv {
     }
 
     /// Selects `selection` (a move: it scrolls into view).
-    fn set_selection(&self, selection: Selection, scroll: bool) {
+    pub(crate) fn set_selection(&self, selection: Selection, scroll: bool) {
         let state = self.session.state();
         let mut tr = state.tr();
         tr.set_selection(selection);
@@ -1058,19 +1197,23 @@ impl Rv {
         self.set_selection(selection, true);
     }
 
-    /// Replaces the document (the ref's `setDocJson`).
-    pub(crate) fn set_doc_json(&self, json: &Value) -> bool {
+    /// Replaces the document (the ref's `setDocJson`): why not, when it
+    /// cannot.
+    pub(crate) fn set_doc_json(&self, json: &Value) -> Result<(), String> {
         let state = self.session.state();
-        let Ok(doc) = state.schema().node_from_json(json) else {
-            return false;
-        };
+        let doc = state
+            .schema()
+            .node_from_json(json)
+            .map_err(|e| format!("setDocJson: not a document of the editor's schema: {e}"))?;
         let mut tr = state.tr();
         let size = state.doc().content().size();
-        if tr.replace_with(0, size, doc.content().clone()).is_err() {
-            return false;
-        }
+        tr.replace_with(0, size, doc.content().clone())
+            .map_err(|e| format!("setDocJson: the document does not fit: {e}"))?;
         tr.set_origin(TransactionOrigin::Api);
-        self.session.dispatch(tr).is_ok()
+        self.session
+            .dispatch(tr)
+            .map(|_| ())
+            .map_err(|e| format!("setDocJson: {e}"))
     }
 
     // The clipboard.
@@ -1094,6 +1237,29 @@ impl Rv {
     /// `clipboard_text_parser`; then `transform_pasted`, and `handle_paste`
     /// or a replace of the selection. Into code, the plain text is pasted
     /// as it is; HTML that parses to nothing falls back to the text.
+    /// A paste: files go to the app (`onPasteFiles`), text and HTML into
+    /// the document.
+    pub(crate) fn paste_event(&self, p: &nsh_core::PasteEvent) {
+        if self.editable() && (!p.files.is_empty() || !p.uris.is_empty()) {
+            let files = p
+                .files
+                .iter()
+                .map(|f| RichEditorFile {
+                    name: f.name.clone(),
+                    mime: f.mime.clone(),
+                    data: f.data.clone(),
+                })
+                .collect();
+            self.cx
+                .emit(RichEditorEvent::PasteFiles(RichEditorPastedFiles {
+                    files,
+                    uris: p.uris.clone(),
+                }));
+            return;
+        }
+        self.paste(&p.text, &p.html);
+    }
+
     pub(crate) fn paste(&self, text: &str, html: &str) {
         if !self.editable() || (text.is_empty() && html.is_empty()) {
             return;
@@ -1155,11 +1321,19 @@ impl Rv {
     ) {
         self.focus();
         self.goal_x.set(None);
-        let hit = self.geo.borrow().hit(at);
-        let Some(hit) = hit else { return };
+        // A table's handle or grip: resizing, or selecting and moving a
+        // row or column.
+        if self.editable()
+            && clicks == 1
+            && let Some(target) = self.table_target(at)
+        {
+            self.start_table_drag(target, at, page);
+            return;
+        }
+        let Some(hit) = self.hit(at) else { return };
         let state = self.session.state();
         let doc = state.doc().clone();
-        let mod_key = if matches!(os(), Os::MacOs | Os::Ios) {
+        let mod_key = if apple_keys() {
             modifiers.cmd
         } else {
             modifiers.ctrl
@@ -1192,6 +1366,7 @@ impl Rv {
         if self.click_hooks(&state, pos, &click, clicks) {
             return;
         }
+        self.note_pointer(at, page);
         let shift = Point::new(at.x - page.x, at.y - page.y);
         let scroll = self.scroll_y.get_untracked();
         // A press inside the selection (or on a draggable node) may drag
@@ -1205,7 +1380,7 @@ impl Rv {
             if !selection.eq(state.selection()) {
                 self.set_selection(selection.clone(), false);
             }
-            let copy = if matches!(os(), Os::MacOs | Os::Ios) {
+            let copy = if apple_keys() {
                 modifiers.alt
             } else {
                 modifiers.ctrl
@@ -1218,7 +1393,9 @@ impl Rv {
                     slice: selection.content(),
                     moved: !copy,
                     click: click_sel,
+                    source: None,
                 }),
+                blocks: false,
             });
             return;
         }
@@ -1229,6 +1406,7 @@ impl Rv {
             && let Some(p) = self.container_at(at)
             && let Some(node) = doc.node_at(p)
             && NodeSelection::is_selectable(&node)
+            && table_role(node.ty()).is_none()
         {
             self.set_selection(NodeSelection::create(&doc, p), false);
             return;
@@ -1271,6 +1449,7 @@ impl Rv {
             shift,
             scroll,
             moving: None,
+            blocks: mod_key,
         });
     }
 
@@ -1293,6 +1472,7 @@ impl Rv {
                 if sel.empty()
                     || sel.is_all()
                     || sel.is_gap_cursor()
+                    || sel.as_custom::<CellSelection>().is_some()
                     || p <= sel.from()
                     || p >= sel.to()
                 {
@@ -1415,8 +1595,125 @@ impl Rv {
             .unwrap_or_else(|| TextSelection::between(anchor, head, None))
     }
 
+    /// The pointer is over the content at `at` and the page at `page`: the
+    /// offset a drag the app starts from the page (a handle's) maps by.
+    pub(crate) fn note_pointer(&self, at: Point<Points>, page: Point<Points>) {
+        self.pointer.set(Some((
+            Point::new(at.x - page.x, at.y - page.y),
+            self.scroll_y.get_untracked(),
+        )));
+    }
+
+    /// Measures where the content is on the page (after a layout, and as a
+    /// handle drag starts): the offset page queries and handle drags map
+    /// by, before any pointer has been over the content.
+    pub(crate) fn place(&self) {
+        let content = self.content;
+        let pointer = self.pointer.clone();
+        let scroll = self.scroll_y;
+        let drag = self.drag.clone();
+        spawn(async move {
+            if let Some(m) = content.measure().await {
+                let at = scroll.get_untracked();
+                let shift = Point::new(-m.page.x, -m.page.y);
+                pointer.set(Some((shift, at)));
+                // A drag begun on an older offset (the content moved on the
+                // page without a layout of its own) maps by the new one.
+                if let Some(drag) = drag.borrow_mut().as_mut() {
+                    drag.shift = Point::new(shift.x, shift.y - (at - drag.scroll));
+                }
+            }
+        });
+    }
+
+    /// Starts moving the block at `pos` from the page point `page`
+    /// (prosemirror-view's `dragging` as Tiptap's drag handle sets it): the
+    /// block is selected and carried; a release that never moves it keeps
+    /// it selected.
+    pub(crate) fn drag_block(&self, pos: usize, page: Point<Points>) -> bool {
+        if !self.editable() {
+            return false;
+        }
+        let Some((shift, scroll)) = self.pointer.get() else {
+            return false;
+        };
+        let state = self.session.state();
+        let doc = state.doc().clone();
+        let Some(node) = doc.node_at(pos) else {
+            return false;
+        };
+        // A handle carries any block, a table too: what a press may
+        // select (`selectable`) does not limit what the handle moves.
+        if node.is_inline() {
+            return false;
+        }
+        // Pressed inside a selection over several of its siblings, the
+        // handle carries them all (Tiptap's drag handle with a range
+        // selected); else the block alone, closed (a selection's content
+        // would carry a list item inside its open list).
+        let (from, to) = self
+            .sibling_range(state.selection(), pos)
+            .unwrap_or((pos, pos + node.node_size()));
+        let selection: Selection = if to - from == node.node_size() {
+            NodeSelection::create(&doc, pos)
+        } else {
+            state.selection().clone()
+        };
+        let Ok(carried) = doc.slice(from, to, false) else {
+            return false;
+        };
+        // The handle owns the pointer: a table's grip under it (a row's,
+        // on the table's left border) does not drag along.
+        self.table_gesture.borrow_mut().take();
+        self.set_selection(selection.clone(), false);
+        // The press is where the pointer is now; the scroll since the
+        // offset was noted moves the content under it.
+        let scrolled = self.scroll_y.get_untracked() - scroll;
+        *self.drag.borrow_mut() = Some(Drag {
+            anchor: pos,
+            shift: Point::new(shift.x, shift.y - scrolled),
+            scroll: self.scroll_y.get_untracked(),
+            moving: Some(Moving {
+                slice: Slice::new(carried.content, 0, 0),
+                moved: true,
+                click: None,
+                source: Some((from, to)),
+            }),
+            blocks: false,
+        });
+        // The content may have moved on the page since its last layout.
+        self.place();
+        // The press is the handle's, off the content; it starts no
+        // move of its own, so the drop cursor waits for the first `page`.
+        self.drag_at(page);
+        true
+    }
+
+    /// The blocks a non-empty `selection` spans beside the block at `pos`,
+    /// when it covers that block and at least one sibling: `from..to`.
+    fn sibling_range(&self, selection: &Selection, pos: usize) -> Option<(usize, usize)> {
+        if selection.empty() {
+            return None;
+        }
+        let doc = self.session.state().doc().clone();
+        let (from, to) = (
+            doc.resolve(selection.from()).ok()?,
+            doc.resolve(selection.to()).ok()?,
+        );
+        let depth = doc.resolve(pos).ok()?.depth;
+        let range = from.block_range(&to, None)?;
+        (range.depth == depth
+            && range.end_index() - range.start_index() > 1
+            && range.start() <= pos
+            && pos < range.end())
+        .then(|| (range.start(), range.end()))
+    }
+
     /// The pointer dragged to `page` (root): the selection extends there.
     pub(crate) fn drag_to(&self, page: Point<Points>) {
+        if self.table_dragging() {
+            return self.table_drag_to(page);
+        }
         self.follow_drag_edge(page);
         self.drag_at(page);
     }
@@ -1428,19 +1725,60 @@ impl Rv {
         };
         let scrolled = self.scroll_y.get_untracked() - drag.scroll;
         let at = Point::new(page.x + drag.shift.x, page.y + drag.shift.y + scrolled);
-        let hit = self.geo.borrow().hit(at);
-        let pos = match hit {
-            Some(Hit::Text(p, _) | Hit::Node(p)) => p,
-            None => return,
-        };
         if let Some(moving) = &drag.moving {
             let state = self.session.state();
-            let target = drop_point(state.doc(), pos, &moving.slice).unwrap_or(pos);
-            if self.drop_at.get_untracked() != Some(target) {
+            // A whole block goes between blocks, by the half of the block
+            // the pointer is over (ProseMirror's drop point, as Tiptap's
+            // drag handle sees it), wherever the pointer is across: a
+            // handle sits in the gutter, off the text; other content
+            // where it is dropped.
+            let slice = &moving.slice;
+            // Blocks carried together share a parent: the first stands for
+            // them all in where they fit.
+            let block =
+                (slice.open_start == 0 && slice.open_end == 0 && slice.content.child_count() > 0)
+                    .then(|| slice.content.child(0))
+                    .filter(|n| n.is_block());
+            // ProseMirror's drop point looks for a place the slice fits as
+            // it is: a place that takes the block wrapped (an item out of
+            // its list) stays where the pointer chose.
+            let target = block
+                .and_then(|node| {
+                    let p = self.block_drop(at, node)?;
+                    let rp = state.doc().resolve(p).ok()?;
+                    let index = rp.index(rp.depth);
+                    if rp.parent().can_replace_with(index, index, node.ty(), None) {
+                        return drop_point(state.doc(), p, slice);
+                    }
+                    // Next to a list that takes the item, it joins that list
+                    // (at its start or end) rather than making another.
+                    let takes = |n: &Node, i: usize| n.can_replace_with(i, i, node.ty(), None);
+                    if let Some(after) = rp.node_after()
+                        && takes(&after, 0)
+                    {
+                        return Some(p + 1);
+                    }
+                    if let Some(before) = rp.node_before()
+                        && takes(&before, before.child_count())
+                    {
+                        return Some(p - 1);
+                    }
+                    Some(p)
+                })
+                .or_else(|| {
+                    self.hit_clamped(at)
+                        .and_then(|p| drop_point(state.doc(), p, slice))
+                });
+            if let Some(target) = target
+                && self.drop_at.get_untracked() != Some(target)
+            {
                 self.drop_at.set(Some(target));
             }
             return;
         }
+        let Some(pos) = self.hit_clamped(at) else {
+            return;
+        };
         let state = self.session.state();
         let doc = state.doc();
         let (Ok(a), Ok(h)) = (doc.resolve(drag.anchor), doc.resolve(pos)) else {
@@ -1456,9 +1794,88 @@ impl Rv {
         self.dispatch(tr);
     }
 
+    /// The position at content point `at`; above or below the content, on
+    /// the first or last line (a block dropped past the end goes last).
+    fn hit_clamped(&self, at: Point<Points>) -> Option<usize> {
+        let bottom = (self.content_height.get_untracked() - px(1.0)).max(px(0.0));
+        match self
+            .hit(at)
+            .or_else(|| self.hit(Point::new(at.x, at.y.min(bottom).max(px(0.0)))))?
+        {
+            Hit::Text(p, _) | Hit::Node(p) => Some(p),
+        }
+    }
+
+    /// Where block `node` dropped at content point `at` goes: before or
+    /// after the innermost block at that height whose parent takes the
+    /// node, by the half the pointer is over; else beside the nearest
+    /// block whose parent takes it.
+    fn block_drop(&self, at: Point<Points>, node: &Node) -> Option<usize> {
+        let state = self.session.state();
+        let doc = state.doc();
+        let tree = self.tree.borrow();
+        let geo = self.geo.borrow();
+        let mut inside: Option<(usize, usize)> = None;
+        let mut nearest: Option<(Points, usize)> = None;
+        for b in tree.children.values().flatten() {
+            let (Some(origin), Some((_, frame))) = (geo.origin(b.id), geo.frames.get(&b.id)) else {
+                continue;
+            };
+            let Ok(rp) = doc.resolve(b.pos) else {
+                continue;
+            };
+            let index = rp.index(rp.depth);
+            // A node the parent takes wrapped goes there too (a list item
+            // dropped between paragraphs lands in a list of its own).
+            let direct = rp.parent().can_replace_with(index, index, node.ty(), None);
+            let fits = direct
+                || rp
+                    .parent()
+                    .content_match_at(index)
+                    .and_then(|m| m.find_wrapping(node.ty()))
+                    .is_some();
+            if !fits {
+                continue;
+            }
+            let (top, bottom) = (origin.y, origin.y + frame.size.height);
+            let boundary = if at.y < top + frame.size.height * 0.5 {
+                b.pos
+            } else {
+                b.pos + b.node.node_size()
+            };
+            if at.y >= top && at.y < bottom {
+                if inside.is_none_or(|(depth, _)| rp.depth > depth) {
+                    inside = Some((rp.depth, boundary));
+                }
+            } else {
+                // Past a list's last item, the item still goes in the list.
+                let distance = if at.y < top {
+                    top - at.y
+                } else {
+                    at.y - bottom
+                };
+                // Between blocks, places that take the node as it is win
+                // a near tie: an item just past its list's end stays in it,
+                // one dragged into the gap above a paragraph leaves it.
+                let rank = if direct {
+                    distance - px(DIRECT_SLACK)
+                } else {
+                    distance
+                };
+                if nearest.is_none_or(|(r, _)| rank < r) {
+                    nearest = Some((rank, boundary));
+                }
+            }
+        }
+        inside.map(|(_, pos)| pos).or(nearest.map(|(_, pos)| pos))
+    }
+
     /// The press ended: a drag that moves the selection drops it where
     /// the drop cursor is, or selects as a press when it never moved.
     pub(crate) fn release(&self) {
+        if self.table_dragging() {
+            return self.table_release();
+        }
         self.autoscroll.borrow_mut().stop();
         let drag = self.drag.borrow_mut().take();
         let target = self.drop_at.get_untracked();
@@ -1470,15 +1887,28 @@ impl Rv {
             ..
         }) = drag
         else {
+            if drag.is_some_and(|d| d.blocks) {
+                self.snap_to_blocks();
+            }
             return;
         };
         match target {
-            Some(target) => self.drop(&moving.slice, target, moving.moved),
+            Some(target) => self.drop(&moving.slice, target, moving.moved, moving.source),
             None => {
                 if let Some(click) = moving.click {
                     self.set_selection(click, false);
                 }
             }
+        }
+    }
+
+    /// Widens a selection across sibling blocks to cover them whole.
+    fn snap_to_blocks(&self) {
+        let state = self.session.state();
+        if let Some(selection) = blocks_selection(state.doc(), state.selection()) {
+            let mut tr = state.tr();
+            tr.set_selection(selection);
+            self.dispatch(tr);
         }
     }
 
@@ -1525,6 +1955,7 @@ impl Rv {
         let to = (from + speed.y).min(max).max(px(0.0));
         if to != from {
             self.scroll_y.set(to);
+            self.scrolled.set(to);
             self.scroll.scroll_to(Point::new(px(0.0), to), false);
             self.drag_at(page);
         }
@@ -1533,7 +1964,13 @@ impl Rv {
     /// Drops `slice` at `pos` (prosemirror-view's drop): the plugins'
     /// `handle_drop` first, else the source deleted when `moved` and the
     /// slice inserted, selected (origin `Drop`, meta `uiEvent: "drop"`).
-    pub(crate) fn drop(&self, slice: &Slice, pos: usize, moved: bool) {
+    pub(crate) fn drop(
+        &self,
+        slice: &Slice,
+        pos: usize,
+        moved: bool,
+        source: Option<(usize, usize)>,
+    ) {
         if !self.editable() {
             return;
         }
@@ -1541,7 +1978,7 @@ impl Rv {
         if self.some_hook(&state, |p, d| p.handle_drop(&state, slice, pos, moved, d)) {
             return;
         }
-        if let Some(tr) = drop_transaction(&state, slice, pos, moved) {
+        if let Some(tr) = drop_transaction(&state, slice, pos, moved, source) {
             self.dispatch(tr);
         }
         self.focus();
@@ -1634,9 +2071,21 @@ impl Rv {
         self.geo.borrow().caret_rect(sel.head(), sel.affinity())
     }
 
-    /// The box around the selection in the content box: its text's lines,
-    /// else the caret's box.
+    /// The caret as drawn: the glyphs' height of its line.
+    pub(crate) fn caret_glyph_rect(&self) -> Option<Bounds<Points>> {
+        let state = self.st.borrow();
+        let sel = state.selection();
+        self.geo
+            .borrow()
+            .caret_glyph_rect(sel.head(), sel.affinity())
+    }
+
+    /// The box around the selection in the content box: its cells' (a
+    /// cell selection), its text's lines, else the caret's box.
     pub(crate) fn selection_box(&self) -> Option<Bounds<Points>> {
+        if let Some(cells) = self.cells_box() {
+            return Some(cells);
+        }
         let state = self.st.borrow();
         let sel = state.selection();
         let geo = self.geo.borrow();
@@ -1694,11 +2143,34 @@ fn walk(
 ) {
     let old = tree.children.remove(&id).unwrap_or_default();
     let mut used = vec![false; old.len()];
-    let by_ptr: Vec<usize> = Vec::new();
-    let _ = by_ptr;
-    let mut items = Vec::with_capacity(node.child_count());
-    let mut pos = start;
-    for (index, child) in node.content().iter().enumerate() {
+    // A table's children are its cells, row after row: rows have no view,
+    // the table is the grid its cells are placed in.
+    let children: Vec<(Node, usize)> = if is_table(node) {
+        let mut cells = Vec::new();
+        let mut row_pos = start;
+        for row in node.content().iter() {
+            let mut cell_pos = row_pos + 1;
+            for cell in row.content().iter() {
+                cells.push((cell.clone(), cell_pos));
+                cell_pos += cell.node_size();
+            }
+            row_pos += row.node_size();
+        }
+        cells
+    } else {
+        let mut pos = start;
+        node.content()
+            .iter()
+            .map(|child| {
+                let at = pos;
+                pos += child.node_size();
+                (child.clone(), at)
+            })
+            .collect()
+    };
+    let mut items = Vec::with_capacity(children.len());
+    for (index, (child, pos)) in children.iter().enumerate() {
+        let (child, pos) = (child, *pos);
         // The same node first, then the node at its index with its type.
         let matched = old
             .iter()
@@ -1754,7 +2226,6 @@ fn walk(
                 atoms,
             );
         }
-        pos += child.node_size();
     }
     tree.children.insert(id, items);
 }
@@ -1850,20 +2321,67 @@ pub(crate) fn fill_gap(state: &EditorState) -> Option<Transaction> {
 /// prosemirror-view's drop of `slice` at `insert`: the selection deleted
 /// first when `moved`, the slice inserted where `insert` maps to (a single
 /// closed node as that node), then selected; `None` when nothing changes.
+/// `node` as it goes at `pos` in `doc`: as it is where it fits, else in
+/// a copy of `home` (the parent it left) when that fits, else in the
+/// schema's first wrapping; none where nothing does.
+fn wrapped(doc: &Node, pos: usize, node: Node, home: Option<&Node>) -> Option<Node> {
+    let rp = doc.resolve(pos).ok()?;
+    let (parent, index) = (rp.parent(), rp.index(rp.depth));
+    if parent.can_replace_with(index, index, node.ty(), None) {
+        return Some(node);
+    }
+    if let Some(home) = home
+        && home.ty().content_match().match_type(node.ty()).is_some()
+        && parent.can_replace_with(index, index, home.ty(), None)
+    {
+        return home
+            .ty()
+            .create(Some(home.attrs().clone()), Fragment::from(node), vec![])
+            .ok();
+    }
+    let wrappers = parent.content_match_at(index)?.find_wrapping(node.ty())?;
+    wrappers.iter().rev().try_fold(node, |inner, ty| {
+        ty.create(None, Fragment::from(inner), vec![]).ok()
+    })
+}
+
 pub(crate) fn drop_transaction(
     state: &EditorState,
     slice: &Slice,
     insert: usize,
     moved: bool,
+    source: Option<(usize, usize)>,
 ) -> Option<Transaction> {
     let mut tr = state.tr();
-    if moved {
-        tr.delete_selection();
+    // The parent the moved block leaves, which wraps it again where the
+    // drop's place takes it only wrapped (an item dropped out of its list).
+    let home = source
+        .and_then(|(from, _)| state.doc().resolve(from).ok())
+        .filter(|rp| rp.depth > 0)
+        .map(|rp| rp.parent().clone());
+    match (moved, source) {
+        (true, Some((from, to))) => {
+            // A parent left empty goes with its last child (a list whose
+            // only item moves away).
+            let (mut from, mut to) = (from, to);
+            while let Ok(rp) = state.doc().resolve(from) {
+                if rp.depth == 0 || rp.start(rp.depth) != from || rp.end(rp.depth) != to {
+                    break;
+                }
+                (from, to) = (rp.before(rp.depth), rp.after(rp.depth));
+            }
+            tr.delete(from, to).ok()?;
+        }
+        (true, None) => {
+            tr.delete_selection();
+        }
+        (false, _) => {}
     }
     let pos = tr.mapping.map(insert, 1);
     let single = (slice.open_start == 0 && slice.open_end == 0 && slice.content.child_count() == 1)
         .then(|| slice.content.first_child().cloned())
         .flatten();
+    let single = single.and_then(|node| wrapped(tr.doc(), pos, node, home.as_ref()));
     let before = tr.doc().clone();
     match &single {
         Some(node) => {
@@ -1981,9 +2499,53 @@ fn common_prefix(a: &str, b: &str) -> usize {
         .unwrap_or_else(|| a.len().min(b.len()))
 }
 
+/// The insertions a change of the sink's text makes: an input method's
+/// commit as one, else each character on its own, as it was typed. A
+/// platform may coalesce a frame's keys (or a test's typed string) into one
+/// change; input rules must still see each character.
+fn typed_pieces(text: &str, composed: bool) -> Vec<&str> {
+    if composed {
+        return vec![text];
+    }
+    text.char_indices()
+        .map(|(i, c)| &text[i..i + c.len_utf8()])
+        .collect()
+}
+
+/// `selection` widened to the whole sibling blocks it spans, when it spans
+/// more than one parent.
+fn blocks_selection(doc: &Node, selection: &Selection) -> Option<Selection> {
+    let (a, h) = (
+        doc.resolve(selection.anchor()).ok()?,
+        doc.resolve(selection.head()).ok()?,
+    );
+    if a.same_parent(&h) {
+        return None;
+    }
+    let range = a.block_range(&h, None)?;
+    let (start, end) = (
+        doc.resolve(range.start()).ok()?,
+        doc.resolve(range.end()).ok()?,
+    );
+    let (anchor, head) = if h.pos >= a.pos {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    Some(TextSelection::between(&anchor, &head, None))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coalesced_typing_goes_in_character_by_character() {
+        assert_eq!(typed_pieces("a**b", false), ["a", "*", "*", "b"]);
+        assert_eq!(typed_pieces("中文", false), ["中", "文"]);
+        assert_eq!(typed_pieces("中文", true), ["中文"]);
+        assert!(typed_pieces("", false).is_empty());
+    }
 
     #[test]
     fn graphemes_step_whole() {
@@ -2013,7 +2575,7 @@ mod tests {
         tr.set_selection(TextSelection::create(state.doc(), 2, Some(4)));
         let state = state.apply(tr).unwrap();
         let slice = state.selection().content();
-        let tr = drop_transaction(&state, &slice, 8, true).unwrap();
+        let tr = drop_transaction(&state, &slice, 8, true, None).unwrap();
         assert_eq!(
             tr.doc()
                 .text_between(0, tr.doc().content().size(), Some("|"), None),
@@ -2022,12 +2584,29 @@ mod tests {
         assert_eq!((tr.selection().from(), tr.selection().to()), (6, 8));
         assert_eq!(tr.get_meta("uiEvent"), Some(&Value::from("drop")));
         // A copy keeps the source.
-        let tr = drop_transaction(&state, &slice, 8, false).unwrap();
+        let tr = drop_transaction(&state, &slice, 8, false, None).unwrap();
         assert_eq!(
             tr.doc()
                 .text_between(0, tr.doc().content().size(), Some("|"), None),
             "abcd|xbcy"
         );
+    }
+
+    #[test]
+    fn a_mod_drag_across_blocks_selects_them_whole() {
+        let state = state_of(serde_json::json!({
+            "type": "doc",
+            "content": [para("one"), para("two"), para("three")],
+        }));
+        let doc = state.doc();
+        // From inside "one" to inside "two": both blocks whole.
+        let picked = blocks_selection(doc, &TextSelection::create(doc, 2, Some(7))).unwrap();
+        assert_eq!((picked.from(), picked.to()), (1, 9));
+        // Backwards keeps its direction.
+        let back = blocks_selection(doc, &TextSelection::create(doc, 12, Some(2))).unwrap();
+        assert_eq!((back.anchor(), back.head()), (16, 1));
+        // Inside one block, nothing changes.
+        assert!(blocks_selection(doc, &TextSelection::create(doc, 1, Some(3))).is_none());
     }
 
     #[test]
@@ -2046,6 +2625,29 @@ mod tests {
     #[test]
     fn words_skip_punctuation() {
         assert_eq!(word_bounds("hi, you"), [(0, 2), (4, 7)]);
+    }
+
+    #[test]
+    fn a_tables_cells_are_its_children() {
+        use crate::rich_editor::tables::test_util::{cell_pos, doc, grid, p};
+        let d = doc(vec![p("x"), grid(&[&["a", "b"], &["c", "d"]])]);
+        let mut tree = Tree::default();
+        let (mut alive, mut texts, mut atoms) = (HashSet::new(), HashMap::new(), HashMap::new());
+        let views = NodeViews::default();
+        walk(
+            &mut tree, &views, DOC, DOC, &d, 0, &mut alive, &mut texts, &mut atoms,
+        );
+        let table = tree.children[&DOC][1].clone();
+        let cells = &tree.children[&table.id];
+        // Rows have no blocks: the cells, row after row, at their positions.
+        assert_eq!(
+            cells.iter().map(|c| c.pos).collect::<Vec<_>>(),
+            ["a", "b", "c", "d"].map(|t| cell_pos(&d, t))
+        );
+        assert!(cells.iter().all(|c| c.parent == table.id));
+        // Each cell's paragraph is a textblock of the cell.
+        let first = &tree.children[&cells[0].id][0];
+        assert_eq!(texts[&first.id], cell_pos(&d, "a") + 2);
     }
 }
 

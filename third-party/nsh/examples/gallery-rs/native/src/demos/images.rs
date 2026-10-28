@@ -269,8 +269,12 @@ fn info() -> AnyElement {
         prefetched.set("loading…".into());
         let loaded = prefetch_image(big());
         let wait = spawn(async move {
-            let loaded = loaded.await;
-            prefetched.set(if loaded { "in memory" } else { "failed" }.into());
+            let shown = if loaded.await.is_ok() {
+                "in memory"
+            } else {
+                "failed"
+            };
+            prefetched.set(shown.into());
         });
         if let Some(last) = prefetching.replace(Some(wait)) {
             last.cancel();

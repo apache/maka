@@ -518,14 +518,14 @@ impl Surface {
     /// Sends an event after the matching native focus snapshot, through
     /// the same engine FIFO.
     pub(crate) fn event(&self, id: NodeId, kind: EventKind, payload: EventPayload) {
-        if matches!(kind, EventKind::HoverIn | EventKind::HoverOut)
+        if matches!(kind, EventKind::MouseEnter | EventKind::MouseLeave)
             && let Some(events) = self.view(id).map(|view| view.state().events)
             && events.contains(kind)
             && !events.contains_listener(kind)
         {
             if let Some(watch) = events.hint_watch() {
                 self.observe_hint(match kind {
-                    EventKind::HoverIn => HintObservation::Enter(watch),
+                    EventKind::MouseEnter => HintObservation::Enter(watch),
                     _ => HintObservation::Leave(watch),
                 });
             }

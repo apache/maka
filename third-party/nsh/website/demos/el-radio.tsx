@@ -21,16 +21,16 @@ function App() {
         {desktop ? "Click an option, or Tab to a group and move with the arrow keys" : "Tap an option: its label checks it too"}
       </Text>
 
-      <Split gap={14} inspector={<Log title={`onChange(checked) · ${plan()}, ${cycle()}`} lines={events()} minHeight={76} />}>
+      <Split gap={14} inspector={<Log title={`onChange({ checked }) · ${plan()}, ${cycle()}`} lines={events()} minHeight={76} />}>
         {/* A segmented choice: each radio is a segment, `checkedStyle` raises the checked one. */}
         <RadioGroup style={{ flexDirection: "row", gap: 4, padding: 3, borderRadius: 10, ...ui().inset, ...(desktop ? { alignSelf: "flex-start" } : {}) }}>
           <Each of={cycles}>
             {(c) => (
               <Radio
                 checked={cycle() === c()}
-                onChange={(next) => {
+                onChange={({ checked }) => {
                   cycle.set(c());
-                  log(`${c()} → ${next}`);
+                  log(`${c()} → ${checked}`);
                 }}
                 style={
                   desktop
@@ -57,9 +57,9 @@ function App() {
                 <Radio
                   checked={plan() === item().id}
                   disabled={item().locked}
-                  onChange={(next) => {
+                  onChange={({ checked }) => {
                     plan.set(item().id);
-                    log(`${item().label} → ${next}`);
+                    log(`${item().label} → ${checked}`);
                   }}
                   class={`group flex-row items-center gap-3 ${desktop ? "px-3 py-2" : "px-4 py-3"} active:opacity-70 disabled:opacity-40`}
                   hoverStyle={item().locked ? undefined : hoverFill()}

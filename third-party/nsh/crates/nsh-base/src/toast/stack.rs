@@ -198,8 +198,8 @@ pub fn ToastStack(props: ToastStackProps, cx: Scope<ToastStackEvent>) -> impl In
     view()
         .relative()
         .style_with(move |s| s.h(height()))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         // Observed, never claimed: the toasts' presses and swipes go on.
         .on_touch(move |e: &TouchEvent| match e.phase {
             TouchPhase::Start => touched.set(true),

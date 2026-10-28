@@ -44,10 +44,12 @@ pub enum SurfaceEvent {
     HintObservation(HintObservation),
     /// A scroll offset, with the number of core adjustments applied.
     Scroll(NodeId, Point<Points>, u32),
+    /// Text offset, content extent and viewport while a built-in input bar is mounted.
+    InputScroll(NodeId, Point<Points>, Size<Points>, Size<Points>),
     /// Whether a list cell left native input and Tab navigation for this request.
     ListCellRetired(NodeId, u64, bool),
     /// Interaction state bits requested by the mounted view.
-    States(NodeId, u8),
+    States(NodeId, u16),
     /// Animation completions and native value reads.
     AnimationsFinished(Vec<nsh_core::animation::Finished>),
     /// A hosted terminal component reported its natural size in points.
@@ -114,12 +116,13 @@ pub(crate) struct Node {
     pub(crate) style: Box<ViewStyle>,
     pub(crate) props: Box<ViewProps>,
     pub(crate) events: EventMask,
-    pub(crate) tracked: u8,
+    pub(crate) tracked: u16,
     pub(crate) text: Option<(Arc<AttributedText>, TextLayout, Bounds<Points>)>,
     pub(crate) input: InputConfig,
     pub(crate) editor: Editor,
     pub(crate) input_content: Bounds<Points>,
     pub(crate) input_viewport: Cell<InputViewport>,
+    pub(crate) reported_input_scroll: Option<(Point<Points>, Size<Points>, Size<Points>)>,
     pub(crate) scroll: ScrollState,
     pub(crate) screen: ScreenConfig,
     pub(crate) modal: ModalConfig,
@@ -155,6 +158,7 @@ impl Node {
             editor: Editor::default(),
             input_content: Bounds::default(),
             input_viewport: Cell::default(),
+            reported_input_scroll: None,
             scroll: ScrollState::default(),
             screen: ScreenConfig::default(),
             modal: ModalConfig::default(),
@@ -205,6 +209,8 @@ pub struct Surface {
     pub(crate) clipboard: String,
     pub(crate) animation: Graph,
     pub(crate) hovered_path: Vec<NodeId>,
+    pub(crate) last_mouse: Option<nsh_core::MouseEvent>,
+    pub(crate) input_scrollers: Vec<NodeId>,
     pub(crate) autofocus_seen: Vec<NodeId>,
     pub(crate) drag_input: Option<NodeId>,
     pub(crate) area_selection: Option<crate::selectable_view::SelectableView>,
@@ -270,6 +276,8 @@ impl Surface {
             clipboard: String::new(),
             animation: Graph::default(),
             hovered_path: Vec::new(),
+            last_mouse: None,
+            input_scrollers: Vec::new(),
             autofocus_seen: Vec::new(),
             drag_input: None,
             area_selection: None,
@@ -440,6 +448,7 @@ impl Surface {
 
     /// Drains application events in their original order.
     pub fn drain_events(&mut self) -> impl Iterator<Item = SurfaceEvent> {
+        self.report_input_scrolls();
         self.events.drain(..)
     }
 
@@ -711,6 +720,7 @@ impl Surface {
             match item {
                 MountItem::LayoutAnimation(animation) => layout = Some(animation),
                 MountItem::Create { id, kind } => {
+                    self.input_scrollers.retain(|&input| input != id);
                     self.forget_text_links(id);
                     self.composites.borrow_mut().invalidate(id);
                     self.canvas_pending.retain(|pending| *pending != id);
@@ -796,6 +806,7 @@ impl Surface {
                     }
                 }
                 MountItem::Delete { id } => {
+                    self.input_scrollers.retain(|&input| input != id);
                     if let Some(node) = self.node_mut(id) {
                         node.component_slots.clear();
                     }
@@ -996,12 +1007,22 @@ impl Surface {
                     self.index_text_links(id);
                 }
                 MountItem::Input { id, config } => {
+                    let reports_scroll = config.multiline && config.replaced;
+                    let was_reporting = self.input_scrollers.contains(&id);
+                    if reports_scroll && !was_reporting {
+                        self.input_scrollers.push(id);
+                    } else if !reports_scroll && was_reporting {
+                        self.input_scrollers.retain(|&input| input != id);
+                    }
                     let selection_changed = if let Some(node) = self.node_mut(id) {
                         if node.input.multiline != config.multiline
                             || node.input.secure != config.secure
                         {
                             node.request_input_reveal();
                         }
+                        // A true-to-true theme change can recreate the core bar
+                        // and clear its report without changing the viewport.
+                        node.reported_input_scroll = None;
                         let changed = node.editor.set_tokens(&config.tokens);
                         node.input = *config;
                         changed
@@ -1022,6 +1043,7 @@ impl Surface {
                     id,
                     horizontal,
                     scrollbar_visible,
+                    replaced: _,
                     scroll_value,
                     pull_value,
                     mirrored,
@@ -1272,7 +1294,16 @@ impl Surface {
             Command::Blur => self.set_focus(None),
             Command::SetSelection { start, end } => self.selection(id, start, end),
             command @ Command::ReplaceRange { .. } => self.replace_input_range(id, command),
-            Command::ScrollTo { x, y, animated } => self.scroll_command(id, x, y, animated),
+            Command::ScrollTo { x, y, animated } => {
+                if self
+                    .node(id)
+                    .is_some_and(|node| node.kind == ViewKind::Input)
+                {
+                    self.scroll_input_to(id, y);
+                } else {
+                    self.scroll_command(id, x, y, animated);
+                }
+            }
             Command::ZoomTo {
                 scale,
                 center,

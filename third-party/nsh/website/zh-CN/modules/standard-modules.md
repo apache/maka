@@ -160,7 +160,7 @@ child.on("exit", ({ code, signal }) => console.log("done", code, signal));
 
 `websocket` 模块的 `WebSocketConnection` 最多同时有 8 个待完成操作（读、写、关闭），尚未发出的写入合计最多 8 MiB；超过字节上限的 `write()` 在调用时抛出 `RangeError`，超过操作上限的则被拒绝。同一时间只能有一个 `read()` 等待。尚未读取的到达消息最多保留八条且合计 8 MiB；再多一条就关闭连接，因为应用读取得比对端发送得慢。解析、连接与握手合计、每次写入和关闭的超时均为 30 秒。连接结束后（对端关闭、读写失败或未读数据过多），`read()` 仍按顺序返回保留的消息，然后以连接结束的原因拒绝。
 
-`net.connect(host, port)` 只使用 `network.sockets` 授权：一组精确的 `"host:port"` 目标（IPv6 写作 `"[::1]:9000"`），检查发生在 DNS 查询之前。每一项授权一个主机上的一个端口；主机模式、`network.hosts` 与 HTTP 授权只用于 HTTP 流量，没有 `"capabilities"` 的应用同样需要列出它的 socket。返回的 `Socket` 提供 `read(size?)`、`write(text)` 和 `close()`；读取返回 `Uint8Array`，EOF 返回 `null`。未授权时在调用处抛出 `TypeError`，超出限制时抛出 `RangeError`；连接与 I/O 失败以带有 Node 的 `code`（`ECONNREFUSED`、`ENOTFOUND`、`ETIMEDOUT`、`ECONNRESET` 等）和 `syscall` 的错误拒绝 Promise，连接失败还带有 `address` 和 `port`，对已关闭 socket 的操作为 `ERR_SOCKET_CLOSED`。连接与 I/O 超时为 30 秒，单次读写最多 1 MiB，等待发送的写入合计最多 4 MiB，`close()` 会立即结束待完成的读写。每个 VM 同时最多有 32 个已打开或正在连接的 socket。这是 Promise 客户端 socket 接口。
+`net.connect({ host, port })` 只使用 `network.sockets` 授权：一组精确的 `"host:port"` 目标（IPv6 写作 `"[::1]:9000"`），检查发生在 DNS 查询之前。每一项授权一个主机上的一个端口；主机模式、`network.hosts` 与 HTTP 授权只用于 HTTP 流量，没有 `"capabilities"` 的应用同样需要列出它的 socket。返回的 `Socket` 提供 `read(size?)`、`write(text)` 和 `close()`；读取返回 `Uint8Array`，EOF 返回 `null`。未授权时在调用处抛出 `TypeError`，超出限制时抛出 `RangeError`；连接与 I/O 失败以带有 Node 的 `code`（`ECONNREFUSED`、`ENOTFOUND`、`ETIMEDOUT`、`ECONNRESET` 等）和 `syscall` 的错误拒绝 Promise，连接失败还带有 `address` 和 `port`，对已关闭 socket 的操作为 `ERR_SOCKET_CLOSED`。连接与 I/O 超时为 30 秒，单次读写最多 1 MiB，等待发送的写入合计最多 4 MiB，`close()` 会立即结束待完成的读写。每个 VM 同时最多有 32 个已打开或正在连接的 socket。这是 Promise 客户端 socket 接口。
 
 原始 TCP 使用原生宿主。Web 应用中的两种 WebSocket 接口使用浏览器传输，保留 Rust 能力检查和上述限制。自定义浏览器握手头会返回明确的选项不支持错误，同时遵循浏览器连接策略。嵌入宿主的能力授权与应用声明取交集。
 
@@ -242,7 +242,7 @@ spawn(async move {
 ```tsx tabs
 import { connect } from "net";
 
-const socket = await connect("tcp.example.com", 9000);
+const socket = await connect({ host: "tcp.example.com", port: 9000 });
 try {
   await socket.write("hello\n");
   const bytes = await socket.read(1024);

@@ -71,7 +71,7 @@ function App() {
     <DockArea
       class="size-full bg-background"
       layout={layout()}
-      onLayoutChange={(v) => layout.set(v)}
+      onLayoutChange={(e) => layout.set(e.layout)}
       handleClass="bg-border group-active:bg-primary"
       tabBarClass="flex-row border-b border-border"
       tabClass="px-3 py-1.5 selected:bg-muted"
@@ -127,10 +127,10 @@ content go when the panel leaves the layout (`onPanelRemove`).
 ```tsx
 <DockArea
   layout={layout()}
-  onLayoutChange={(v) => layout.set(v)}
+  onLayoutChange={(e) => layout.set(e.layout)}
   renderPanel={(panel) => (panel.id === "terminal" ? <Terminal /> : <Editor file={panel.id} />)}
-  onPanelActiveChange={(panel, active) => active && setTitle(panel)}
-  onPanelRemove={(panel) => closeFile(panel)}
+  onPanelActiveChange={({ panel, active }) => active && setTitle(panel)}
+  onPanelRemove={({ panel }) => closeFile(panel)}
 />
 ```
 
@@ -165,7 +165,7 @@ let area!: DockAreaRef;
 <DockArea
   ref={area}
   layout={layout()}
-  onLayoutChange={(v) => layout.set(v)}
+  onLayoutChange={(e) => layout.set(e.layout)}
   renderTab={(tab) => (
     <View class="flex-row items-center gap-2">
       <Text class="text-sm">{titles[tab.panel]}</Text>
@@ -221,8 +221,8 @@ const terminalOpen = signal(true);
 <DockArea
   ref={area}
   layout={layout()}
-  onLayoutChange={(v) => layout.set(v)}
-  onDockOpenChange={(placement, open) => placement === "bottom" && terminalOpen.set(open)}
+  onLayoutChange={(e) => layout.set(e.layout)}
+  onDockOpenChange={({ placement, open }) => placement === "bottom" && terminalOpen.set(open)}
   renderPanel={(panel) => <Editor file={panel.id} />}
 />
 
@@ -310,7 +310,7 @@ rest of the area.
 ```tsx
 <DockArea
   layout={layout()}
-  onLayoutChange={(v) => layout.set(v)}
+  onLayoutChange={(e) => layout.set(e.layout)}
   drawerClass="bg-background border-r border-border"
   sheetClass="rounded-t-(--radius-lg) bg-background"
   backdropClass="bg-black/40"
@@ -353,11 +353,11 @@ rest of the area.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onLayoutChange` | `.on_layout_change(\|layout: &DockAreaLayout\| ..)` | The layout changed (a drag, a selection, a resize, a dock opened or closed, a method): the whole new layout, every id in it. |
-| `onPanelActiveChange` | `.on_panel_active_change(\|e: &DockAreaEvent\| ..)` (`PanelActiveChange(panel, active)`) | A panel became, or stopped being, its group's displayed tab (a closed dock displays none). Once per change; a panel that leaves is not told `false`: `onPanelRemove` is its end. |
-| `onPanelRemove` | `.on_panel_remove(\|panel: &PanelId\| ..)` | A panel left the area for good: closed, removed, or missing from a new layout. A panel that moves never hears it. |
-| `onZoomChange` | `.on_zoom_change(\|panel: &Option<PanelId>\| ..)` | A group zoomed in (the panel it displays) or out (`null`). |
-| `onDockOpenChange` | `.on_dock_open_change(\|e: &DockAreaEvent\| ..)` (`DockOpenChange(placement, open)`) | A dock showed or hid: its layout `open` changed in the full presentation, its drawer or sheet was shown or dismissed in the compact one, or the presentation switched. |
+| `onLayoutChange` | `.on_layout_change(\|layout: &DockAreaLayout\| ..)` | The layout changed (a drag, a selection, a resize, a dock opened or closed, a method): `{ layout }`, the whole new layout, every id in it. |
+| `onPanelActiveChange` | `.on_panel_active_change(\|e: &DockAreaEvent\| ..)` (`PanelActiveChange(panel, active)`) | `{ panel, active }`: a panel became, or stopped being, its group's displayed tab (a closed dock displays none). Once per change; a panel that leaves is not told `false`: `onPanelRemove` is its end. |
+| `onPanelRemove` | `.on_panel_remove(\|panel: &PanelId\| ..)` | `{ panel }`: a panel left the area for good: closed, removed, or missing from a new layout. A panel that moves never hears it. |
+| `onZoomChange` | `.on_zoom_change(\|panel: &Option<PanelId>\| ..)` | A group zoomed in or out: `{ panel }`, the panel it displays, or `null`. |
+| `onDockOpenChange` | `.on_dock_open_change(\|e: &DockAreaEvent\| ..)` (`DockOpenChange(placement, open)`) | `{ placement, open }`: a dock showed or hid: its layout `open` changed in the full presentation, its drawer or sheet was shown or dismissed in the compact one, or the presentation switched. |
 
 ## Parts
 

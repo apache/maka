@@ -175,8 +175,9 @@ One Oxc pass removes TypeScript and lowers JSX (`plugin.rs` `compile_native`):
   new index and its item accessor follows; header, footer, empty and separator cells, viewability tokens (with
   `minimumViewTime`), `initialScrollIndex`. Rust components with rows (an `Items` prop) get a list of the app's data as
   their items slot.
-- Nodes have the methods of `YNode` (`_core.d.ts`: `focus`, `blur`, `setSelection`, `command`, `scrollTo`, `zoomTo`,
-  `scrollToOffset`, `scrollToIndex`, `scrollToEnd`, the web view's and video's): each sends a command
+- Nodes have the methods of the refs (`dom::NODE_METHODS`, declared per element by `declarations::REFS`: `ViewRef`'s
+  `focus`, `blur`, `measure`; `InputRef`'s `setSelection`, `ScrollRef`'s and `ListRef`'s scrolling, `WebViewRef`'s,
+  `VideoRef`'s `seek`, `NativeComponentRef`'s `command`; every node has them all at run time): each sends a command
   (`protocol::decode_command`); `measure` returns a promise the core settles after the turn's layout
   (`Command::Measure`, `elements.md`).
 

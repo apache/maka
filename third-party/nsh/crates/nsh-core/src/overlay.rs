@@ -70,8 +70,9 @@ pub enum OverlayAnchor {
     /// (`onCaretMove`'s `pageBounds`), where an `@` mention's
     /// suggestions open.
     Bounds(Bounds<Points>),
-    /// What a view draws: the box around its children (the view itself
-    /// while it has none). A trigger wrapped in a view its parent
+    /// What a view draws: the box around its children with the view's
+    /// padding and border around them (the view itself while it has no
+    /// children). A trigger wrapped in a view its parent
     /// stretches is placed against what shows, not the stretched wrapper.
     Content(NodeId),
 }

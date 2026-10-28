@@ -39,7 +39,7 @@ function NameField() {
   return (
     <Input
       value={name()}
-      onChange={(text) => name.set(text)}
+      onChange={({ value }) => name.set(value)}
       placeholder="你的名字"
       autoCapitalize="words"
       returnKeyType="done"
@@ -68,6 +68,7 @@ function NameField() {
 | `defaultValue` | `.default_value(..)` | `string` | | 初始文本。 |
 | `placeholder` | `.placeholder(..)` | `string` | | 输入框为空时显示的提示。 |
 | `multiline` | `.multiline(..)` | `boolean` | `false` | 多行；回车插入换行（`submitBehavior` 另有设置时除外）。 |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 多行输入框的滚动条：平台的滚动指示器，应用设置主题后则是内置滚动条（见 [Scrollbar](./scrollbar.md#built-in-bars)）；对象是它自己的主题，`false` 表示不显示。 |
 | `maxLength` | `.max_length(..)` | `number` | | 用户最多能输入的字符数。 |
 | `readonly` | `.readonly(..)` | `boolean` | `false` | 用户可以选择和复制文本，但不能修改。 |
 | `masked` | `.masked(..)` | `boolean` | `false` | 隐藏文本（密码）。 |
@@ -140,14 +141,14 @@ input().auto_fill(AutoFill::OneTimeCode).keyboard_type(KeyboardType::Number)
 
 | 事件 | Rust | 载荷 | 触发时机 |
 |---|---|---|---|
-| `onChange` | `.on_change(\|text: &str\| ..)` | `(text: string)` | 用户修改了文本。 |
+| `onChange` | `.on_change(\|text: &str\| ..)` | `{ value }` | 用户修改了文本：`value` 是现在的文本。 |
 | `onSubmit` | `.on_submit(\|text: &str\| ..)` | `{ text }` | 在会提交的输入框中按下了回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | `.on_focus` / `.on_blur` | 无 | 输入框获得 / 失去焦点。 |
 | `onSelectionChange` | `.on_selection_change(\|s: &Selection\| ..)` | `{ start, end }` | 光标或选区移动（UTF-16 单位）。 |
 | `onPaste` | `.on_paste(\|e: &PasteEvent\| ..)` | `{ text, html, files, uris }` | 用户粘贴了内容：文本、带格式的 HTML（Linux、Web）、作为 `File` 的图片（如截图）、本地文件的 `file:` URL。在它插入的文本的 `onChange` 之前（[表单与键盘](../docs/forms-and-keyboard.md#粘贴图片和文件)）。 |
 | `onCaretMove` | `.on_caret_move(\|e: &CaretEvent\| ..)` | `{ bounds, pageBounds }` | 光标随选区移动，或因文本滚动、重新换行而移动：`bounds` 是它在输入框中的位置，`pageBounds` 是它在窗口中的位置，可作为 `Overlay` 的 `anchor`（[表单与键盘](../docs/forms-and-keyboard.md#光标位置)）。 |
 | `onKeyPress` | `.on_key_press(\|key: &str\| ..)` | `{ key }` | 文本变化之前：`key` 是输入的文本、`"Backspace"` 或 `"Enter"`。 |
-| `onContentSizeChange` | `.on_content_size_change(\|size: &Size<Points>\| ..)` | `{ width, height }` | 文本尺寸变化（多行时按输入框宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
+| `onContentSizeChange` | `.on_content_size_change(\|size: &Size<Points>\| ..)` | `{ size }` | 文本尺寸变化（多行时按输入框宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
 | `onCompositionChange` | `.on_composition_change(\|e: &Composition\| ..)` | `{ composing, text }` | 输入法的组字开始、变化或结束：`text` 是正在组的字（选字前的拼音、变换前的假名），结束时为 `""`。上屏的文本先经 `onChange` 报告，然后才报告结束。 |
 
 随文本增高的多行输入框：
@@ -169,7 +170,7 @@ input()
 const height = signal(40);
 <Input
   multiline
-  onContentSizeChange={(e) => height.set(Math.min(120, Math.max(40, e.height + 16)))}
+  onContentSizeChange={({ size }) => height.set(Math.min(120, Math.max(40, size.height + 16)))}
   style={{ height: height(), paddingHorizontal: 12, paddingVertical: 8 }}
 />;
 ```
@@ -195,7 +196,7 @@ view()
 ```
 
 ```tsx tabs
-let password!: YNode;
+let password!: InputRef;
 <>
   <Input returnKeyType="next" onSubmit={() => password.focus()} />
   <Input ref={password} masked autoComplete="current-password" />

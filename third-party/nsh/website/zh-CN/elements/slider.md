@@ -66,7 +66,7 @@ function App() {
   return (
     <Slider
       value={strength()}
-      onChange={(next) => strength.set(next as number)}
+      onChange={({ value }) => strength.set(value as number)}
       accessibilityLabel="选项强度"
       class="flex-row items-center gap-2"
       trackClass="h-2 flex-1 px-2 rounded-full bg-muted focus-within:ring-2 focus-within:ring-primary/36 focus-within:ring-offset-2 focus-within:ring-offset-background disabled:opacity-35"
@@ -97,8 +97,8 @@ const price = signal<[number, number]>([200, 800]);
 
 <Slider
   value={price()}
-  onChange={(next) => price.set(next as [number, number])}
-  onChangeEnd={(next) => save(next)}
+  onChange={({ value }) => price.set(value as [number, number])}
+  onChangeEnd={({ value }) => save(value)}
   min={0}
   max={1000}
   step={10}
@@ -139,8 +139,8 @@ const price = signal<[number, number]>([200, 800]);
 
 | 事件 | Rust | 参数 | 何时 |
 |---|---|---|---|
-| `onChange` | `.on_change(\|value: &SliderValue\| ..)` | `number \| [number, number]` | 用户要一个新值：按压轨道、拖动的一步、按键、屏幕阅读器的增加或减少。 |
-| `onChangeEnd` | `.on_change_end(\|value: &SliderValue\| ..)` | `number \| [number, number]` | 修改结束：指针抬起，一次按键或屏幕阅读器的步进完成。每次修改一次。 |
+| `onChange` | `.on_change(\|value: &SliderValue\| ..)` | `{ value: number \| [number, number] }` | 用户要一个新值：按压轨道、拖动的一步、按键、屏幕阅读器的增加或减少。 |
+| `onChangeEnd` | `.on_change_end(\|value: &SliderValue\| ..)` | `{ value: number \| [number, number] }` | 修改结束：指针抬起，一次按键或屏幕阅读器的步进完成。每次修改一次。 |
 
 ## 部件
 

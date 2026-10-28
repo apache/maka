@@ -37,8 +37,8 @@ test('browser mouse coordinates follow nested transforms and rendering emits no 
         // Targeting the outer simulates capture: hit testing still finds the inner.
         outer.dispatchEvent(new PointerEvent('pointermove',event));
         const close=(a,b)=>Math.abs(a-b)<0.001;
-        if(sent.length!==2 || sent[0][0]!==3 || sent[1][0]!==2 || !close(sent[0][2].x,20) || !close(sent[0][2].y,30)
-          || !close(sent[1][2].x,outerPoint.x) || !close(sent[1][2].y,outerPoint.y)) throw Error(JSON.stringify(sent));
+        if(sent.length!==2 || sent[0][0]!==3 || sent[1][0]!==2 || !close(sent[0][2].position.x,20) || !close(sent[0][2].position.y,30) || sent[0][2].pressedButton!=="left"
+          || !close(sent[1][2].position.x,outerPoint.x) || !close(sent[1][2].position.y,outerPoint.y)) throw Error(JSON.stringify(sent));
         inner.style.background='red'; inner.style.left='16px';
         setTimeout(()=>{ document.body.dataset.result=sent.length===2?'passed':'render emitted motion'; },50);
       } catch(e) { document.body.dataset.result='failed: '+e.message; }

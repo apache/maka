@@ -122,6 +122,9 @@ pub(crate) enum Action {
     Frame(AnswerSlot<Instant>),
     /// Sets the app's appearance.
     Appearance(crate::platform::Appearance),
+    /// Draws the scroll views' bars with the built-in bar the source makes
+    /// of the theme, or (no theme) with the platform's indicator.
+    BuiltInScrollbars(super::ScrollbarSource, Option<super::AnyValue>),
     /// Measures the node with the layout of the commit the action goes out
     /// with; the measurement resolves the slot.
     Measure(NodeId, AnswerSlot<Option<crate::Measurement>>),
@@ -241,6 +244,8 @@ pub(crate) struct Executor {
     pub(crate) back: Rc<RefCell<super::back::BackListeners>>,
     /// The views' keyboard shortcuts.
     pub(crate) keys: Rc<RefCell<super::keys::ViewKeys>>,
+    /// The views' watches of nodes they did not make.
+    pub(crate) watches: Rc<RefCell<super::watch::Watches>>,
     /// The timers tasks wait for ([`super::timer`]), soonest first: the core
     /// fires them as they come due, and the engine's loop wakes for the
     /// soonest, as it does for JS's timers.
@@ -567,7 +572,7 @@ pub(crate) fn act_after(
     let id = executor.spawn(
         host,
         Box::pin(async move {
-            super::ambient::timer_until(at).await;
+            super::timer_until(at).await;
             if let Some(executor) = acting.upgrade() {
                 executor.act(action);
             }

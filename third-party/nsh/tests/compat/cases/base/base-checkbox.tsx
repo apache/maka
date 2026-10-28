@@ -32,10 +32,10 @@ function App() {
         indeterminate={some()}
         checkedStyle={{ backgroundColor: "#00ff00" }}
         indeterminateStyle={{ backgroundColor: "#ffff00" }}
-        onChange={next => {
+        onChange={({ checked }) => {
           changes.set(changes() + 1);
           some.set(false);
-          all.set(next);
+          all.set(checked);
         }}
         indicator={<Text>{some() ? "Mark: some" : all() ? "Mark: all" : "Mark: none"}</Text>}
         {...parts}
@@ -43,7 +43,7 @@ function App() {
         <Text>All</Text>
       </Checkbox>
       <Text>{`Changes: ${changes()}`}</Text>
-      <Checkbox testID="kept" checked accessibilityLabel="Kept" onChange={next => asked.set(String(next))} {...parts} />
+      <Checkbox testID="kept" checked accessibilityLabel="Kept" onChange={({ checked }) => asked.set(String(checked))} {...parts} />
       <Text>{`Asked: ${asked()}`}</Text>
       <Checkbox testID="menu" role="menuitem" {...parts}>
         <Text>Menu</Text>

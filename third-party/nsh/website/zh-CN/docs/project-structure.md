@@ -177,7 +177,7 @@ NSH 不需要 `node_modules`。取而代之的是，每个构建应用的命令�
 | `.nsh/types/nsh/` 中的文件 | 声明的内容 |
 |---|---|
 | `index.d.ts` | `nsh`：`signal`、`computed`、`effect`、`mount`、`View`、`Text` 等，并重新导出下列类型 |
-| `types.d.ts` | 样式（`ViewStyle`、`TextStyle` 等）、每个元素的 props 和事件、`YNode`（`ref` 接收到的对象） |
+| `types.d.ts` | 样式（`ViewStyle`、`TextStyle` 等）、每个元素的 props 和事件、各个 ref（`ViewRef`、`InputRef` 等：`ref` 接收到的对象） |
 | `jsx-runtime.d.ts` | TypeScript 通过 `jsxImportSource` 解析的 JSX 运行时（`JSX` 命名空间） |
 | `globals.d.ts` | `If` 和 `Each`；`console`、定时器、`requestAnimationFrame`、`fetch` 及其他[全局 API](../modules/globals.md) |
 | `assets.d.ts` | 导入图片或字体得到的值 |

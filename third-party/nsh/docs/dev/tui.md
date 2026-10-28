@@ -194,7 +194,7 @@ itself or a mounted descendant must have focus. A scope miss continues
 through older eligible bindings and ordinary input defaults.
 `keymap.focusedWithin(node)` reads the latest host-supplied focus path as a
 nonreactive boolean snapshot; reading it adds no dependency to an effect.
-Both focus APIs use real `YNode` references. Supplying `within` or calling
+Both focus APIs use real `ViewRef` references. Supplying `within` or calling
 `focusedWithin` on a host without native focus-scope support throws `TypeError`.
 Terminal protocols may merge key combinations or consume them before the
 application receives them.

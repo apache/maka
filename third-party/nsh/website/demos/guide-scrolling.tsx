@@ -1,4 +1,4 @@
-import { mount, Scroll, signal, Text, View, type YNode } from "nsh";
+import { mount, Scroll, type ScrollRef, signal, Text, View } from "nsh";
 import { createAnimatedValue } from "nsh";
 import { button, buttonText, desktop, size, tint, ui, wide } from "./palette";
 
@@ -17,9 +17,9 @@ function Pager() {
         pagingEnabled
         scrollbar={false}
         style={{ height: 110, borderRadius: 12 }}
-        onLayout={(e) => width.set(e.size.width)}
-        onMomentumEnd={(e) => page.set(Math.round(e.x / width()))}
-        onScrollEnd={(e) => page.set(Math.round(e.x / width()))}
+        onLayout={({ bounds }) => width.set(bounds.size.width)}
+        onMomentumEnd={({ offset }) => page.set(Math.round(offset.x / width()))}
+        onScrollEnd={({ offset }) => page.set(Math.round(offset.x / width()))}
       >
         <View style={{ flexDirection: "row" }}>
           <Each of={[0, 1, 2, 3]}>
@@ -73,7 +73,7 @@ function App() {
   const y = signal(0);
   const refreshing = signal(false);
   const refreshed = signal(0);
-  let scroll!: YNode;
+  let scroll!: ScrollRef;
   const refresh = () => {
     refreshing.set(true);
     setTimeout(() => {

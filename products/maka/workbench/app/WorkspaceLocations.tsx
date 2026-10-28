@@ -222,7 +222,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       </List>
       <Input
         value={label()}
-        onChange={(value) => label.set(value)}
+        onChange={({ value }) => label.set(value)}
         readonly={locked()}
         accessibilityLabel={tr('Workspace location name')}
         placeholder={tr('Location name')}
@@ -230,7 +230,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       />
       <Input
         value={path()}
-        onChange={(value) => path.set(value)}
+        onChange={({ value }) => path.set(value)}
         readonly={locked()}
         accessibilityLabel={tr('Workspace location path')}
         placeholder={tr('Absolute folder path on this Host')}

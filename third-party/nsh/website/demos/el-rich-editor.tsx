@@ -13,7 +13,7 @@ Type **Markdown** as you go: \`# \` makes a heading, \`- \` a list, \`[ ] \` a t
 // The session owns the document; the view renders it and turns input into
 // transactions. The toolbar runs Tiptap's named commands on the session.
 function App() {
-  const editor = createRichEditor({ extensions: [StarterKit], content: CONTENT });
+  const editor = createRichEditor({ extensions: [StarterKit], content: CONTENT, format: "markdown" });
   const markdown = signal(editor.getMarkdown());
   const events = signal<string[]>([]);
   const log = (line: string) => events.set([line, ...events()].slice(0, 4));
@@ -60,7 +60,7 @@ function App() {
             editor={editor}
             accessibilityLabel="Document"
             placeholder="Write something"
-            classes={{ content: "p-4", taskCheckbox: "size-4 mr-2 mt-1 rounded border border-border" }}
+            classes={CLASSES}
             style={{ flex: 1 }}
           />
         </View>
@@ -68,5 +68,31 @@ function App() {
     </View>
   );
 }
+
+/** The document's look: NSH's editor draws nothing of its own. */
+const CLASSES = {
+  content: "p-4 gap-3",
+  taskCheckbox: "size-4 mr-2 mt-0.5 rounded border border-border checked:bg-primary checked:border-primary",
+  listMarker: "text-muted-foreground",
+  nodes: {
+    "heading[level=1]": "text-2xl font-bold",
+    "heading[level=2]": "text-xl font-semibold",
+    "heading[level=3]": "text-lg font-semibold",
+    blockquote: "border-l-4 border-border pl-3 text-muted-foreground",
+    codeBlock: "font-mono text-sm bg-muted rounded-md px-3 py-2",
+    bulletList: "gap-1 pl-5",
+    orderedList: "gap-1 pl-5",
+    taskList: "gap-1",
+    taskItem: "flex-row",
+    horizontalRule: "h-px bg-border my-2",
+  },
+  marks: {
+    bold: "font-semibold",
+    italic: "italic",
+    strike: "line-through",
+    code: "font-mono text-sm bg-muted rounded px-1",
+    link: "text-primary underline",
+  },
+};
 
 mount(App);

@@ -1,7 +1,9 @@
 //! A JS host over JSON values, for the core's tests: it reads and makes
 //! values as `nsh-js` does with QuickJS's, in an arena of JSON values
 //! (`undefined` apart), so props, events and results convert as they do
-//! for an app.
+//! for an app; and for UI sets that read values the core keeps as JSON
+//! ([`from_json`]).
+#![cfg_attr(not(test), allow(dead_code))]
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -66,6 +68,15 @@ pub(crate) fn decode(decode: PropDecode, json: JsonValue) -> Result<AnyValue, Pr
     let host = JsonHost::default();
     let raw = host.value(json);
     decode(JsIn::new(&host, raw))
+}
+
+/// JSON value `json` read as a JS value of type `T` is: what a UI set
+/// reads an object of the app's with when the core kept it as JSON (a
+/// view's `scrollbar` theme, [`super::BuiltInScrollbar::theme`]).
+pub fn from_json<T: super::JsValue>(json: &JsonValue) -> Result<T, PropError> {
+    let host = JsonHost::default();
+    let raw = host.value(json.clone());
+    T::from_js(JsIn::new(&host, raw))
 }
 
 /// The data JS hears with `event` (`None`: none).

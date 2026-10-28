@@ -21,7 +21,7 @@ use crate::{
 /// embedding host's existing toolbar keeps its own style and height.
 /// On platforms without desktop windows this has no effect.
 pub fn set_title_bar(style: TitleBarStyle, height: Option<Points>) {
-    super::ambient::desktop_command(DesktopCommand::SetTitleBar {
+    super::desktop_command(DesktopCommand::SetTitleBar {
         style,
         height: crate::desktop::title_bar_height(height),
     });
@@ -32,12 +32,12 @@ pub fn set_title_bar(style: TitleBarStyle, height: Option<Points>) {
 /// changes, including entering and leaving full screen. These are zero
 /// with a system title bar and on platforms without desktop windows.
 pub fn title_bar() -> Edges<Points> {
-    super::ambient::title_bar()
+    super::title_bar()
 }
 
 /// Closes the app's window using the platform's normal close behavior.
 /// The embedding host decides whether closing the last window exits.
 /// On platforms without desktop windows this has no effect.
 pub fn close_window() {
-    super::ambient::desktop_command(DesktopCommand::Close);
+    super::desktop_command(DesktopCommand::Close);
 }

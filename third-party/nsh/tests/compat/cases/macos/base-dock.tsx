@@ -57,10 +57,10 @@ export default function BaseDock() {
           ref={r => (area = r)}
           compact={false}
           layout={layout()}
-          onLayoutChange={next => layout.set(next)}
-          onPanelRemove={panel => removed.set(panel)}
-          onZoomChange={panel => zoom.set(panel ?? "out")}
-          onPanelActiveChange={(panel, on) => active.set([...active(), `${panel}${on ? "+" : "-"}`])}
+          onLayoutChange={({ layout: next }) => layout.set(next)}
+          onPanelRemove={({ panel }) => removed.set(panel)}
+          onZoomChange={({ panel }) => zoom.set(panel ?? "out")}
+          onPanelActiveChange={({ panel, active: on }) => active.set([...active(), `${panel}${on ? "+" : "-"}`])}
           class="flex-1"
           tabBarClass="flex-row h-[24px]"
           tabClass="w-[60px] selected:bg-[#336699]"

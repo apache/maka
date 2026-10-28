@@ -206,7 +206,12 @@ pub(crate) fn key(surface: &Rc<Surface>, window: &NSWindow, name: &str) {
                 _ => 0,
             };
             if flags.contains(NSEventModifierFlags::Shift) {
-                (other.to_uppercase(), code)
+                let mut one = other.chars();
+                let typed = match (one.next(), one.next()) {
+                    (Some(c), None) => nsh_core::keymap::shifted(c).to_string(),
+                    _ => other.to_uppercase(),
+                };
+                (typed, code)
             } else {
                 (other.into(), code)
             }

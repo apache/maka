@@ -1,10 +1,16 @@
-import { List, Scroll, Text, View } from "nsh";
+import { List, platform, Scroll, Text, View } from "nsh";
 import { createAnimatedValue } from "nsh";
-import { colors } from "../ui";
+import { alpha, colors, density, finish } from "../ui";
 
-/** How tall the header is open, and the bar it collapses to. */
-const OPEN = 220;
-const BAR = 56;
+const pointer = platform.idiom === "desktop";
+/** How tall the header is open, and the bar it collapses to: compact with
+ * a pointer, roomier on a touch screen. */
+const OPEN = pointer ? 168 : 220;
+const BAR = pointer ? 44 : 56;
+/** The rows' height, the headings' and the gutter. */
+const ROW = pointer ? 36 : 52;
+const HEADING = pointer ? 28 : 34;
+const GUTTER = pointer ? 24 : 16;
 /** How far the page scrolls while the header collapses. */
 const RANGE = OPEN - BAR;
 
@@ -33,7 +39,10 @@ export function CollapsingHeader() {
   const collapsed = scroll.interpolate({ inputRange: [0, RANGE], outputRange: [0, 1] });
   return (
     <Scroll testID="page" scrollValue={scroll} style={{ flex: 1, backgroundColor: colors.background }}>
-      <View testID="header" style={{ position: "sticky", top: -RANGE, height: OPEN, overflow: "hidden", backgroundColor: colors.accent }}>
+      <View
+        testID="header"
+        style={{ position: "sticky", top: -RANGE, height: OPEN, overflow: "hidden", backgroundColor: colors.light, ...finish.light, borderBottomWidth: 1 }}
+      >
         <View
           style={{
             position: "absolute",
@@ -46,41 +55,57 @@ export function CollapsingHeader() {
             scale: scroll.interpolate({ inputRange: [-OPEN, 0], outputRange: [2, 1] }),
           }}
         >
-          <View style={{ position: "absolute", top: 24, left: 36, width: 120, height: 120, borderRadius: 60, backgroundColor: colors.onAccent, opacity: 0.14 }} />
-          <View style={{ position: "absolute", top: 70, right: 48, width: 72, height: 72, borderRadius: 36, backgroundColor: colors.onAccent, opacity: 0.1 }} />
+          {/* Rings from the trailing corner: a quiet picture that moves at half speed. */}
+          {[1, 2, 3, 4].map((n) => (
+            <View
+              style={{
+                position: "absolute",
+                right: -n * 52,
+                top: -n * 52 + 24,
+                width: n * 104,
+                height: n * 104,
+                borderRadius: n * 52,
+                borderWidth: 1,
+                borderColor: alpha(colors.onLight, 0.1 - n * 0.015),
+              }}
+            />
+          ))}
         </View>
-        <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.accent, opacity: collapsed }} />
+        {/* Collapsed, the bar is a flat fill under the title. */}
+        <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: colors.light, opacity: collapsed }} />
         {/* Shown while open, above the bar's strip: it fades as the header collapses. */}
         <Text
           style={{
             position: "absolute",
-            left: 16,
-            bottom: BAR - 4,
-            color: colors.onAccent,
-            fontSize: 15,
-            opacity: collapsed.interpolate({ inputRange: [0, 0.5], outputRange: [0.8, 0] }),
+            left: GUTTER,
+            bottom: BAR - 2,
+            color: alpha(colors.onLight, 0.62),
+            fontSize: density.note,
+            fontWeight: "500",
+            opacity: collapsed.interpolate({ inputRange: [0, 0.5], outputRange: [1, 0] }),
           }}
         >
           160 entries, by week
         </Text>
         {/* The title, centered in the header's last BAR points: the bar it
             collapses to. It shrinks to the bar's size around its left edge. */}
-        <View style={{ position: "absolute", left: 16, right: 16, bottom: 0, height: BAR, justifyContent: "center" }}>
+        <View style={{ position: "absolute", left: GUTTER, right: GUTTER, bottom: 0, height: BAR, justifyContent: "center" }}>
           <Text
             style={{
               alignSelf: "flex-start",
-              color: colors.onAccent,
-              fontSize: 30,
+              color: colors.onLight,
+              fontSize: pointer ? 26 : 30,
               fontWeight: "700",
+              letterSpacing: -0.4,
               transformOrigin: "left center",
-              scale: collapsed.interpolate({ inputRange: [0, 1], outputRange: [1, 0.62] }),
+              scale: collapsed.interpolate({ inputRange: [0, 1], outputRange: [1, pointer ? 0.58 : 0.62] }),
             }}
           >
             Recent
           </Text>
         </View>
       </View>
-      <List viewport="parent" each={rows} estimatedItemSize={52} stickyHeaderIndices={weeks} stickyHeaderOffset={BAR}>
+      <List viewport="parent" each={rows} estimatedItemSize={ROW} stickyHeaderIndices={weeks} stickyHeaderOffset={BAR}>
         {(row) => (
           // A cell shows a heading now and an entry later: `If` switches
           // with the row it shows.
@@ -89,21 +114,23 @@ export function CollapsingHeader() {
             else={
               <View
                 style={{
-                  height: 52,
+                  height: ROW,
                   flexDirection: "row",
                   alignItems: "center",
-                  paddingHorizontal: 16,
+                  paddingHorizontal: GUTTER,
                   borderBottomWidth: 1,
                   borderBottomColor: colors.line,
                 }}
               >
-                <Text style={{ flex: 1, fontSize: 15, color: colors.text }}>{(row() as { title: string }).title}</Text>
-                <Text style={{ fontSize: 13, color: colors.muted }}>{(row() as { detail: string }).detail}</Text>
+                <Text style={{ flex: 1, fontSize: density.body, color: colors.text }}>{(row() as { title: string }).title}</Text>
+                <Text style={{ fontSize: density.note, color: colors.muted, fontVariant: ["tabular-nums"] }}>{(row() as { detail: string }).detail}</Text>
               </View>
             }
           >
-            <View style={{ height: 34, justifyContent: "center", paddingHorizontal: 16, backgroundColor: colors.inset }}>
-              <Text style={{ fontSize: 13, fontWeight: "700", color: colors.accent }}>Week {(row() as { week: number }).week}</Text>
+            <View
+              style={{ height: HEADING, justifyContent: "center", paddingHorizontal: GUTTER, backgroundColor: colors.inset, borderBottomWidth: 1, borderBottomColor: colors.line }}
+            >
+              <Text style={{ fontSize: 11, fontWeight: "600", letterSpacing: 0.6, textTransform: "uppercase", color: colors.muted }}>Week {(row() as { week: number }).week}</Text>
             </View>
           </If>
         )}

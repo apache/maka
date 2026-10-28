@@ -884,12 +884,13 @@ pub async fn bundle_hot_async(
 
 #[cfg(all(test, windows))]
 mod windows_bundler_path_tests {
-    use super::*;
     use std::{
         ffi::OsString,
         os::windows::ffi::{OsStrExt, OsStringExt},
         path::{Component, Path, Prefix},
     };
+
+    use super::*;
 
     #[test]
     fn ordinary_unc_candidate_preserves_components_without_unicode_conversion() {
