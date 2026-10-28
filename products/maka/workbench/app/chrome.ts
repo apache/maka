@@ -21,7 +21,7 @@
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
 import { effect, signal } from 'nsh';
-import { platform, setColorScheme } from 'nsh';
+import { platform } from 'nsh';
 import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 
@@ -29,11 +29,9 @@ export const ownTitleBar = isAvailable && platform.idiom === 'desktop' && !platf
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
 
-if (ownTitleBar) {
-  Window.setTitleBar('hidden', TITLE_BAR_HEIGHT);
-  // The workbench's colors are dark: the system's menus and controls match them.
-  setColorScheme('dark');
-}
+// The window's colors follow the system until Settings › General chooses
+// (`appearance.ts`); the system's menus and controls follow them too.
+if (ownTitleBar) Window.setTitleBar('hidden', TITLE_BAR_HEIGHT);
 
 /** Titles the window (Mission Control, the Dock's and the Window menu's
  * lists) with `title`, else the app's name. */
@@ -67,6 +65,8 @@ export interface MenuActions {
   settings(): void;
   sidebarShown(): boolean;
   toggleSidebar(): void;
+  /** One text size up (1), down (-1), or the default (0). */
+  textSize(step: number): void;
 }
 
 /** The application menu (the macOS menu bar; the shortcuts elsewhere). */
@@ -135,6 +135,18 @@ export function applicationMenu(actions: MenuActions) {
             // macOS's Show Sidebar key (Finder, Mail, Notes).
             shortcut: mac ? 'ctrl+cmd+s' : undefined,
             onSelect: actions.toggleSidebar,
+          },
+          { type: 'separator' },
+          { label: tr('Larger text'), shortcut: 'mod+plus', onSelect: () => actions.textSize(1) },
+          {
+            label: tr('Smaller text'),
+            shortcut: 'mod+minus',
+            onSelect: () => actions.textSize(-1),
+          },
+          {
+            label: tr('Default text size'),
+            shortcut: 'mod+0',
+            onSelect: () => actions.textSize(0),
           },
           { type: 'separator' },
           { role: 'toggleFullScreen' },

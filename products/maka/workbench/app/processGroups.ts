@@ -20,12 +20,13 @@
 import type { Row } from './history';
 import type { ToolActivity } from './toolActivity';
 
-/** Source identity, ordering and turn/group boundaries, independent of streamed text. */
+/** Source identity, ordering and failure text; streamed answer text does not regroup rows. */
 export type ProcessRow = Pick<
   Row,
   | 'messageId'
   | 'field'
   | 'role'
+  | 'text'
   | 'position'
   | 'tool'
   | 'turnId'
@@ -97,6 +98,7 @@ export function sameProcessRows(
       return (
         stableRowId(row) === stableRowId(next) &&
         row.role === next.role &&
+        (row.role !== 'failure' || row.text === next.text) &&
         row.field === next.field &&
         row.turnId === next.turnId &&
         sourceSequence(row) === sourceSequence(next) &&

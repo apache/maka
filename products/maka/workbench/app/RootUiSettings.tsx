@@ -59,8 +59,8 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
           disabled={owner.busy()}
           onPress={owner.recover}
           style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.warning }}>
@@ -74,8 +74,8 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
               disabled={owner.busy()}
               onPress={inputAction(owner.abandon, original().id)}
               style={{ ...controlStyle, alignSelf: 'flex-start' }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, color: C.warning }}>
@@ -121,8 +121,8 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
               gap: 8,
               alignItems: 'center',
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>{title()}</Text>
@@ -179,8 +179,8 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
                   alignItems: 'center',
                 }}
                 selectedStyle={{ backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <ChoiceIndicator

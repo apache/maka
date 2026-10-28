@@ -21,6 +21,7 @@ import { delayed } from './delayed';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
+import { appearance, initializeAppearance } from './appearance';
 import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
 import type { YNode, JSX } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
@@ -88,6 +89,7 @@ function App(
   props: UiRootProps<JSX.Element> & { bindReload(prepare: () => Promise<unknown>): () => void },
 ) {
   initializeUiScale();
+  initializeAppearance();
   const browsing = createBrowsing();
   const foreground = createForeground();
   const restored = props.restored as RestoredUi | null;
@@ -669,6 +671,9 @@ function App(
     keymap.bind('mod+0', () => void uiScale.resetAndSave(), { when: 'always' });
     keymap.bind('mod+alt+0', () => void uiScale.resetAndSave(), { when: 'always' });
   }
+  // The View menu's Larger text is Command-=; Command-+ (with Shift) is the same request.
+  if (appearance.supported)
+    keymap.bind('mod+shift+plus', () => appearance.stepTextSize(1), { when: 'always' });
   keymap.bind('mod+p', () => open({ kind: 'commands', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+o', () => open({ kind: 'search', sessionId: selected() }), { when: 'always' });
   // The desktop Edit menu's Search conversations, the same search as Command-O. Not in
@@ -800,6 +805,7 @@ function App(
     settings: () => open({ kind: 'settings', sessionId: selected() }),
     sidebarShown,
     toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
+    textSize: appearance.stepTextSize,
   });
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
@@ -1004,8 +1010,8 @@ function App(
                         disabled={recovering()}
                         onPress={inputAction(recoverControls, null)}
                         style={controlStyle}
-                        hoverStyle={controlHoverStyle}
-                        focusStyle={controlFocusStyle}
+                        hoverStyle={controlHoverStyle()}
+                        focusStyle={controlFocusStyle()}
                       >
                         <Text style={{ ...bodyTextStyle, color: C.warning }}>
                           {recovering()
@@ -1025,8 +1031,8 @@ function App(
                           <Button
                             onPress={inputAction(abandonControl, original().id)}
                             style={controlStyle}
-                            hoverStyle={controlHoverStyle}
-                            focusStyle={controlFocusStyle}
+                            hoverStyle={controlHoverStyle()}
+                            focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...bodyTextStyle, color: C.warning }}>
                               {tr('Abandon unconfirmed {method}', { method: original().method })} ·{' '}
@@ -1085,8 +1091,8 @@ function App(
               origin: selected(),
             })}
             style={{ ...controlStyle, alignSelf: 'flex-start' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ color: C.accent }}>
               {tr('Open recovered fork')} · {recoveredFork()!.title}
@@ -1123,7 +1129,7 @@ function App(
                   onOpenChange={() => closeOverlay(current.instance)}
                   style={{
                     flex: 1,
-                    backgroundColor: '#00000099',
+                    backgroundColor: C.scrim,
                   }}
                 >
                   <View style={{ backgroundColor: C.background }}>

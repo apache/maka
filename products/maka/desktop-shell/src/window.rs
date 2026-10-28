@@ -79,10 +79,12 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     let (active, foreground) = watch::channel(false);
     let (exit, mut exits) = tokio::sync::mpsc::unbounded_channel();
     let (folder, mut folders) = tokio::sync::mpsc::unbounded_channel::<HostCall>();
+    let (text_size, mut text_sizes) = tokio::sync::mpsc::unbounded_channel::<f32>();
     let shell = Shell {
         foreground,
         exit,
         folder,
+        text_size,
     };
     let mut start = Some((config, Placement::new(&directory), endpoint, epoch, root));
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
@@ -154,6 +156,12 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
                     },
                     None => call.resolve(JsonValue::Null),
                 }
+            }
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            while let Some(scale) = text_sizes.recv().await {
+                let _ = window.update(cx, |view, _, cx| view.set_font_scale(Some(scale), cx));
             }
         })
         .detach();
@@ -380,6 +388,7 @@ struct Shell {
     exit: tokio::sync::mpsc::UnboundedSender<()>,
     /// Asks for a folder with the system's dialog.
     folder: tokio::sync::mpsc::UnboundedSender<HostCall>,
+    text_size: tokio::sync::mpsc::UnboundedSender<f32>,
 }
 
 impl Shell {
@@ -399,6 +408,20 @@ impl Shell {
                 error.0.reject("the window is closing");
             }
         });
+        let text_size = self.text_size.clone();
+        config.host.handle(
+            "appearance.textSize",
+            move |call| match call.data()["scale"].as_f64().map(|scale| scale as f32) {
+                Some(scale) if scale.is_finite() && scale > 0.0 => {
+                    if text_size.send(scale).is_ok() {
+                        call.resolve(JsonValue::Null);
+                    } else {
+                        call.reject("the window is closing");
+                    }
+                }
+                _ => call.reject("expected a finite positive text scale"),
+            },
+        );
         config
     }
 }

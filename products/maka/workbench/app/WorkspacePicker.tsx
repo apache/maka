@@ -283,7 +283,7 @@ export function WorkspacePicker(props: {
       let found: AgentDirectory | undefined;
       do {
         const page: AgentDirectoryPage = await host.query('agent', 'directories', {
-          kind: 'children',
+          kind: 'children' as const,
           selection: directory.selection,
           after,
         });
@@ -359,7 +359,7 @@ export function WorkspacePicker(props: {
         flex: 1,
         justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
         padding: 16,
         paddingTop: dialogTop(16),
       }}
@@ -419,8 +419,8 @@ export function WorkspacePicker(props: {
                     alignItems: 'center',
                     gap: 8,
                   }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Icon name="refresh" color={C.secondary} />
@@ -488,8 +488,8 @@ export function WorkspacePicker(props: {
                     paddingHorizontal: 8,
                     alignItems: 'center',
                   }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Icon name="close" color={C.muted} />
@@ -504,8 +504,8 @@ export function WorkspacePicker(props: {
                   tooltip={textTooltip(() => shortcut(tr('Parent folder'), 'alt+up'))}
                   onPress={inputAction(back, { location: read.id })}
                   style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Icon name="back" color={C.secondary} />
@@ -516,8 +516,8 @@ export function WorkspacePicker(props: {
                   accessibilityLabel={tr('Workspace locations')}
                   onPress={inputAction(back, { location: read.id, roots: true })}
                   style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Icon name="folder" color={C.secondary} />
@@ -531,8 +531,8 @@ export function WorkspacePicker(props: {
                     managing.set(true);
                   }, null)}
                   style={controlStyle}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Text style={{ color: C.accent, fontSize: 13 }}>{tr('Manage locations')}</Text>
@@ -544,8 +544,8 @@ export function WorkspacePicker(props: {
                     accessibilityLabel={tr('Choose a folder on this computer')}
                     onPress={inputAction(chooseFolder, null)}
                     style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <Icon name="folder" color={C.accent} />

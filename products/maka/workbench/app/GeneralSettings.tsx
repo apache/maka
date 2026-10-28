@@ -28,6 +28,7 @@ import {
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { UiScaleSettings } from './UiScaleSettings';
 import { uiScale } from './uiScale';
+import { appearance, colorThemes, textSizes, type ColorTheme } from './appearance';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import {
@@ -88,9 +89,9 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
         disabled={owner.loading() || owner.busy()}
         onPress={inputAction(owner.reload, request)}
         accessibilityLabel={tr('Refresh general preferences')}
-        focusStyle={controlFocusStyle}
+        focusStyle={controlFocusStyle()}
         style={{ ...controlStyle, alignSelf: 'flex-start' }}
-        hoverStyle={controlHoverStyle}
+        hoverStyle={controlHoverStyle()}
         disabledStyle={controlDisabledStyle}
       >
         <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Refresh preferences')}</Text>
@@ -98,6 +99,9 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
       {/* A terminal without pixel scaling is sized by its font; a desktop window has neither. */}
       <If when={uiScale.supported || platform.isTerminal}>
         <UiScaleSettings />
+      </If>
+      <If when={appearance.supported}>
+        <AppearanceSettings />
       </If>
       <If when={owner.facts()}>
         <View style={{ gap: 8 }}>
@@ -128,8 +132,8 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
                     gap: 8,
                   }}
                   selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <ChoiceIndicator
@@ -180,8 +184,8 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           disabled={owner.disabled()}
           onPress={inputAction(owner.open, { request, kind: 'personalization' })}
           accessibilityLabel={tr('Edit personalization')}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           style={{
             ...controlStyle,
             minHeight: 56,
@@ -203,8 +207,8 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
           disabled={owner.disabled()}
           onPress={inputAction(owner.open, { request, kind: 'compaction' })}
           accessibilityLabel={tr('Edit compaction prompt')}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           style={{
             ...controlStyle,
             minHeight: 56,
@@ -227,8 +231,8 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
         disabled={owner.blocked()}
         onPress={inputAction(owner.openGlobal, request)}
         accessibilityLabel={tr('Edit global instructions')}
-        hoverStyle={controlHoverStyle}
-        focusStyle={controlFocusStyle}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
         style={{
           ...controlStyle,
           minHeight: 56,
@@ -278,8 +282,8 @@ function PreferenceToggle(props: {
         alignItems: 'center',
         gap: 12,
       }}
-      hoverStyle={controlHoverStyle}
-      focusStyle={controlFocusStyle}
+      hoverStyle={controlHoverStyle()}
+      focusStyle={controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>{props.label}</Text>
@@ -323,9 +327,9 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
           disabled={owner.disabled()}
           accessibilityLabel={tr('Use Host default')}
           onPress={inputAction(owner.useDefault, request)}
-          focusStyle={controlFocusStyle}
+          focusStyle={controlFocusStyle()}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
+          hoverStyle={controlHoverStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Use default prompt')}</Text>
@@ -349,9 +353,9 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
           disabled={owner.busy()}
           accessibilityLabel={tr('Cancel')}
           onPress={inputAction(owner.cancel, request)}
-          focusStyle={controlFocusStyle}
+          focusStyle={controlFocusStyle()}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
+          hoverStyle={controlHoverStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Cancel')}</Text>
@@ -416,9 +420,9 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
           disabled={owner.blocked()}
           accessibilityLabel={tr('Reload (discard edits)')}
           onPress={inputAction(owner.reloadGlobal, request)}
-          focusStyle={controlFocusStyle}
+          focusStyle={controlFocusStyle()}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
+          hoverStyle={controlHoverStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>
@@ -429,14 +433,103 @@ function GlobalInstructionsEditor(props: { owner: GeneralSettingsOwner; request:
           disabled={owner.busy()}
           accessibilityLabel={tr('Cancel')}
           onPress={inputAction(owner.cancel, request)}
-          focusStyle={controlFocusStyle}
+          focusStyle={controlFocusStyle()}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
+          hoverStyle={controlHoverStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Cancel')}</Text>
         </Button>
       </View>
+    </View>
+  );
+}
+
+const themeLabel = (theme: ColorTheme) =>
+  ({ system: tr('Match system'), light: tr('Light'), dark: tr('Dark') })[theme];
+const textSizeLabel = (scale: number) =>
+  scale < 1 ? tr('Small') : scale === 1 ? tr('Default') : scale < 1.2 ? tr('Large') : tr('Larger');
+
+/** One row of choices under a heading, as the language's. */
+function ChoiceRow<T>(props: {
+  title: string;
+  detail: string;
+  choices: T[];
+  key(choice: T): string;
+  label(choice: T): string;
+  selected(): T;
+  choose(choice: T): void;
+}) {
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600', ...textInset }}>
+        {props.title}
+      </Text>
+      <Text style={{ ...captionTextStyle, color: C.muted, ...textInset }}>{props.detail}</Text>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        <Each of={props.choices} key={props.key}>
+          {(choice) => (
+            <Button
+              selected={props.key(props.selected()) === props.key(choice())}
+              accessibilityLabel={`${props.title}: ${props.label(choice())}`}
+              onPress={inputAction((key: string) => {
+                const next = props.choices.find((value) => props.key(value) === key);
+                if (next !== undefined) props.choose(next);
+              }, props.key(choice()))}
+              style={{
+                ...controlStyle,
+                minHeight: 40,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+              }}
+              selectedStyle={{ backgroundColor: C.raised }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+            >
+              <ChoiceIndicator
+                kind="radio"
+                checked={props.key(props.selected()) === props.key(choice())}
+              />
+              <Text
+                style={{
+                  ...bodyTextStyle,
+                  color: props.key(props.selected()) === props.key(choice()) ? C.accent : C.text,
+                }}
+              >
+                {props.label(choice())}
+              </Text>
+            </Button>
+          )}
+        </Each>
+      </View>
+    </View>
+  );
+}
+
+/** The desktop window's colors and text size. */
+function AppearanceSettings() {
+  return (
+    <View style={{ gap: 16 }}>
+      <ChoiceRow
+        title={tr('Appearance')}
+        detail={tr('Colors of the window and its menus.')}
+        choices={colorThemes}
+        key={(theme) => theme}
+        label={themeLabel}
+        selected={appearance.theme}
+        choose={appearance.chooseTheme}
+      />
+      <ChoiceRow
+        title={tr('Text size')}
+        detail={tr('Size of the text in the window.')}
+        choices={textSizes}
+        key={(scale) => String(scale)}
+        label={textSizeLabel}
+        selected={appearance.textSize}
+        choose={appearance.chooseTextSize}
+      />
     </View>
   );
 }

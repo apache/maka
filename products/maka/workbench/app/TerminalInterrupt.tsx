@@ -158,7 +158,7 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
                 flex: 1,
                 justifyContent: 'center',
                 alignItems: 'center',
-                backgroundColor: '#00000099',
+                backgroundColor: C.scrim,
               }}
             >
               <View
@@ -190,8 +190,8 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
                     accessibilityLabel={tr('Keep running')}
                     onPress={props.state.dismiss}
                     style={{ ...controlStyle, backgroundColor: C.raised }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                   >
                     <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Keep running')}</Text>
                   </Button>
@@ -199,8 +199,8 @@ export function TerminalInterrupt(props: { state: ReturnType<typeof createTermin
                     accessibilityLabel={tr('Stop task')}
                     onPress={() => props.state.confirm(expected)}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                   >
                     <Text style={{ ...bodyTextStyle, color: C.danger }}>{tr('Stop task')}</Text>
                   </Button>

@@ -181,8 +181,8 @@ export function CurrentDiff(props: { model: CurrentDiffModel }) {
             model.state().kind === 'error' ? tr('Retry current diff') : tr('Refresh current diff'),
           )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="refresh" color={C.secondary} />
         </Button>
@@ -251,11 +251,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
               alignItems: 'flex-start',
               minWidth: 0,
               backgroundColor:
-                row().kind === 'added'
-                  ? '#203527'
-                  : row().kind === 'removed'
-                    ? '#382528'
-                    : undefined,
+                row().kind === 'added' ? C.added : row().kind === 'removed' ? C.removed : undefined,
             }}
           >
             <If when={row().kind !== 'hunk' && row().kind !== 'meta'}>
@@ -297,7 +293,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
                     flexShrink: 0,
                     color:
                       row().kind === 'added'
-                        ? '#9bd5a5'
+                        ? C.success
                         : row().kind === 'removed'
                           ? C.danger
                           : C.text,
@@ -316,7 +312,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
                   minWidth: 0,
                   color:
                     row().kind === 'added'
-                      ? '#9bd5a5'
+                      ? C.success
                       : row().kind === 'removed'
                         ? C.danger
                         : row().kind === 'context'

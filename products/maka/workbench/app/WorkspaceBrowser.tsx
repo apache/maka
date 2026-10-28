@@ -310,8 +310,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           backgroundColor: C.background,
           borderRadius: 8,
         }}
-        hoverStyle={controlHoverStyle}
-        focusStyle={controlFocusStyle}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
       >
         <Icon name="search" color={C.secondary} />
         <Text style={[{ color: C.muted, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
@@ -333,8 +333,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           accessibilityLabel={tr('Show active conversations')}
           style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           onPress={inputAction(chooseFilter, 'all')}
         >
           <Text style={{ color: browser.filter() === 'all' ? C.text : C.muted }}>
@@ -346,8 +346,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           accessibilityLabel={tr('Show archived conversations')}
           style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           onPress={inputAction(chooseFilter, 'archived')}
         >
           <Text style={{ color: browser.filter() === 'archived' ? C.text : C.muted }}>
@@ -403,8 +403,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         justifyContent: 'center',
                         borderRadius: 8,
                       }}
-                      hoverStyle={controlHoverStyle}
-                      focusStyle={controlFocusStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
                     >
                       <Text style={[{ color: C.text }, { numberOfLines: 1 }]}>
                         {scope()?.title}
@@ -548,8 +548,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       justifyContent: 'center',
                       borderRadius: 8,
                     }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                   >
                     <Icon name="more" color={C.muted} />
                   </Button>
@@ -575,8 +575,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Button
             onPress={inputAction(props.close, null)}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ color: C.accent }}>{tr('Return to draft')}</Text>
           </Button>
@@ -589,8 +589,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         <Button
           onPress={inputAction(refresh, null)}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Text style={{ color: C.accent }}>{tr('Refresh browser')}</Text>
         </Button>
