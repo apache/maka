@@ -289,9 +289,28 @@ impl Highlighter {
     }
 
     /// Loads the built-in syntaxes (blocking; call off the engine thread).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn load() {
         #[cfg(feature = "highlight")]
         crate::syntax::syntaxes();
+    }
+
+    /// Loads the built-in syntaxes without holding up the engine thread:
+    /// on a blocking thread, or on the web after the frame that shows the
+    /// text plain, from the page's copy of them.
+    pub(crate) async fn load_async() {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = nsh_core::prelude::blocking(Self::load).await;
+        }
+        #[cfg(all(target_arch = "wasm32", feature = "highlight"))]
+        {
+            crate::syntax::load_async().await;
+        }
+        #[cfg(all(target_arch = "wasm32", not(feature = "highlight")))]
+        {
+            nsh_core::prelude::next_frame().await;
+        }
     }
 
     /// The text became `buffer`'s by `changes` (the buffer's last change

@@ -117,8 +117,8 @@ export function WorkspaceChanges(props: {
             state().kind === 'error' ? tr('Retry current changes') : tr('Refresh current changes'),
           )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="refresh" color={C.secondary} />
         </Button>
@@ -174,8 +174,8 @@ export function WorkspaceChanges(props: {
                   alignItems: 'center',
                   gap: 8,
                 }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Icon name="file" color={entry().kind === 'deleted' ? C.danger : C.muted} />
                 <View style={{ flex: 1, minWidth: 0 }}>

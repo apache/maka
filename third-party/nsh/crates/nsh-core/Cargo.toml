@@ -30,11 +30,14 @@ url.workspace = true
 sha2.workspace = true
 # Picked images' sizes and types (`picker.rs`).
 imagesize.workspace = true
+naga.workspace = true
 
 [features]
 # SVG images for the native backends (`svg`: sniffing, sizes and rasters with
 # resvg). The web runtime leaves it off: the browser draws SVG itself.
 svg = ["dep:resvg", "dep:flate2"]
+# Shaders as GLSL ES 3.00 (`Shader::glsl_es`), for the web runtime's WebGL 2.
+glsl = ["naga/glsl-out"]
 
 # Native socket/file implementations. Browser WebSockets and files use
 # the host services; their shared checks do not need these dependencies.

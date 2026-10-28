@@ -33,7 +33,7 @@ bundle = ["js", "dep:nsh-bundler", "dep:nsh-js"]
 nsh-bundler = { workspace = true, features = ["bundle"], optional = true }
 nsh-core.workspace = true
 nsh-engine.workspace = true
-nsh-js = { workspace = true, optional = true }
+nsh-js = { workspace = true, optional = true, features = ["zlib", "crypto"] }
 nsh-dev = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 crossbeam-channel.workspace = true
@@ -55,7 +55,7 @@ nsh-dev = { workspace = true, optional = true, features = ["client"] }
 
 [dev-dependencies]
 # The fetch tests drive a VM's network by hand (`headless/net_fetch_tests.rs`).
-nsh-js.workspace = true
+nsh-js = { workspace = true, features = ["zlib", "crypto"] }
 nsh-base.workspace = true
 
 [[test]]

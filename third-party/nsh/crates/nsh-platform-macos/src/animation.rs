@@ -77,6 +77,7 @@ impl UiAnimation {
                     crate::text_input::animated(view);
                 }
                 if !canvas.is_empty() {
+                    crate::shader::set_args(view, canvas);
                     let damage = crate::canvas::set_args(view, canvas);
                     if damage != Damage::None {
                         mounter.draw_when_shown(view, damage);

@@ -32,7 +32,8 @@ nsh-package = { version = "0.3.0", path = "crates/nsh-package" }
 # Without `highlight`: the platforms turn it on, the CLI and the bundler leave it off.
 nsh-base = { version = "0.3.0", path = "crates/nsh-base", default-features = false }
 nsh-macros = { version = "0.3.0", path = "crates/nsh-macros" }
-nsh-js = { version = "0.3.0", path = "crates/nsh-js" }
+# Without `zlib` and `crypto`: what enables the VM picks them (`nsh-engine`'s `js`, the web runtime).
+nsh-js = { version = "0.3.0", path = "crates/nsh-js", default-features = false }
 nsh-engine = { version = "0.3.0", path = "crates/nsh-engine", default-features = false }
 nsh-bundler = { version = "0.3.0", path = "crates/nsh-bundler", default-features = false }
 nsh-platform-ios = { version = "0.3.0", path = "crates/nsh-platform-ios", default-features = false }
@@ -75,11 +76,22 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 rustc-hash = "2.1"
+# Shaders (`nsh_core::shader`): the WGSL front end and validator wgpu uses, and
+# its GLSL ES writer for the web's WebGL 2.
+naga = { version = "30", default-features = false, features = ["wgsl-in"] }
+# The native backends' shader renderer (`nsh_engine::shader`), the version GPUI uses:
+# WGSL only, each OS's own GPU API (and GL where Vulkan may be missing).
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "metal", "vulkan", "gles"] }
+pollster = "0.4"
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize"] }
 sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+crc32c = "0.6"
 # The image disk cache (`nsh_core::image::DiskCache`): HTTP dates and entry checksums.
 httpdate = "1"
 crc32fast = "1"
@@ -104,8 +116,9 @@ markdown = "1.0.0"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3.0"
 # Syntax highlighting of TextView code blocks (`nsh-base` feature `highlight`): pure-Rust
-# regexes, so it builds for WebAssembly; two-face carries the syntaxes (bat's set).
-syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy"] }
+# regexes, so it builds for WebAssembly; two-face carries the syntaxes (bat's set), which
+# the web runtime reads from the page's copy of two-face's dump instead (`dump-load`).
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "dump-load"] }
 two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"] }
 jni = "0.21"
 windows-sys = "0.61"
@@ -177,7 +190,8 @@ rquickjs = { package = "quickjs-jit", version = "=0.14.1", default-features = fa
 
 # The standard modules `buffer`, `crypto`, `path`, `url` and `zlib` (all targets): LLRT d9fd873e,
 # vendored by quickjs-jit-stdlib, on NSH's exact QuickJS VM. Privileged I/O stays behind NSH grants.
-quickjs-jit-stdlib = { version = "=0.14.1", default-features = false, features = ["buffer", "crypto", "path", "zlib", "zlib-zstd"] }
+# `crypto` and `zlib` are `nsh-js`'s features of those names.
+quickjs-jit-stdlib = { version = "=0.14.1", default-features = false, features = ["buffer", "path"] }
 getrandom-stdlib = { package = "getrandom", version = "0.4", default-features = false }
 cap-std = "4.0.3"
 futures-util = { version = "0.3", features = ["sink"] }

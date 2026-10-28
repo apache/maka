@@ -27,7 +27,7 @@ import { platform } from 'nsh';
 import { messageKey, type Row } from './history';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
-import { C, bodyTextStyle, secondaryTextStyle, controlStyle } from './ui';
+import { C, bodyTextStyle, secondaryTextStyle, controlStyle, disclosureInset } from './ui';
 import { Icon } from './Icon';
 import { HistoryAttachments } from './Attachments';
 import { ToolCard } from './ToolCard';
@@ -46,6 +46,7 @@ type MessageRowToggle = {
 
 export function MessageRow({
   item,
+  repeats,
   sessionId,
   through,
   viewState,
@@ -59,6 +60,8 @@ export function MessageRow({
   finalActions,
 }: {
   item: () => Row;
+  /** How many identical failures this row stands for. */
+  repeats?: () => number;
   sessionId: string;
   through: () => number;
   viewState?: MessageViewState;
@@ -78,6 +81,22 @@ export function MessageRow({
         if (row().role === 'compaction')
           return (
             <CompactionDivider state="completed" durationMs={() => row().compaction!.durationMs} />
+          );
+        // A failure is a notice about the run, not an answer: one quiet line, with
+        // no source view since its source is the same text.
+        if (row().role === 'failure')
+          return (
+            <Text
+              style={[
+                { ...secondaryTextStyle, color: C.warning, paddingVertical: 4 },
+                { userSelect: 'text' },
+              ]}
+            >
+              {row().text}
+              {(repeats?.() ?? 1) > 1
+                ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
+                : ''}
+            </Text>
           );
         const expanded = viewState?.expanded ?? signal(false),
           sourceMode = viewState?.sourceMode ?? signal(false);
@@ -239,7 +258,7 @@ export function MessageRow({
                               ...controlStyle,
                               flex: 1,
                               minWidth: 0,
-                              paddingHorizontal: 0,
+                              paddingHorizontal: disclosureInset(0),
                               flexDirection: 'row',
                               alignItems: 'center',
                               gap: 8,
@@ -291,7 +310,7 @@ export function MessageRow({
                         <If when={expanded()}>
                           <View
                             style={{
-                              paddingLeft: platform.isTerminal ? 24 : 22,
+                              paddingLeft: platform.isTerminal ? 24 : 32,
                               paddingVertical: 4,
                             }}
                           >

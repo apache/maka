@@ -15,11 +15,17 @@
 //!   `requestAnimationFrame` ([`animation`]).
 //!
 //! - `fetch` runs on the browser's `fetch` ([`net`]).
+//! - What the module leaves out, the syntaxes code is highlighted with,
+//!   comes from the page the first time it is needed ([`nsh_data`],
+//!   `nsh_core::runtime_data`).
 //!
 //! There are no native components; web views are `<iframe>`s and scroll
 //! views use the browser's scrolling. Off WebAssembly this crate is empty.
 
 #![cfg(target_arch = "wasm32")]
+
+#[cfg(all(feature = "browser-core", not(feature = "js")))]
+mod browser;
 
 mod animation;
 mod canvas;
@@ -29,6 +35,7 @@ mod filesystem;
 #[cfg(feature = "js")]
 mod local_time;
 mod net;
+mod shader;
 mod storage;
 mod text;
 mod websocket;
@@ -112,7 +119,20 @@ pub fn set_ui_sets(sets: Vec<Registry>) {
 fn ui_sets() -> Vec<Registry> {
     UI_SETS
         .with(|s| s.borrow().clone())
-        .unwrap_or_else(|| vec![nsh_base::registry()])
+        .unwrap_or_else(|| vec![base_set()])
+}
+
+/// `nsh/base`: every part of it.
+#[cfg(feature = "base-full")]
+fn base_set() -> Registry {
+    nsh_base::registry()
+}
+
+/// `nsh/base` in the lite runtime (feature `base-full` off): its core part,
+/// so the other parts' code stays out of the module.
+#[cfg(not(feature = "base-full"))]
+fn base_set() -> Registry {
+    nsh_base::registry_of([nsh_base::parts::core as nsh_base::parts::Part])
 }
 
 /// Makes this module an app's web runtime that serves `$sets` (an
@@ -476,7 +496,7 @@ pub extern "C" fn nsh_start_rust(width: f32, height: f32, dark: u32, pixel_ratio
     )
 }
 
-/// Sets up logging and panics once.
+/// Sets up logging, panics and the runtime's data once.
 fn init() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
@@ -485,7 +505,31 @@ fn init() {
         std::panic::set_hook(Box::new(|info| {
             ffi::report_error(&format!("nsh panicked: {info}"));
         }));
+        // What this module leaves out (the syntaxes) comes from the page.
+        nsh_core::runtime_data::set_loader(ffi::load_data);
     });
+}
+
+/// Hands over the runtime's data `name` that the page fetched for
+/// `load_data` (`nsh_core::runtime_data`): its bytes when `ok` is 1; with 0
+/// the page has no such file or it did not load. Returns the delay (ms)
+/// until [`nsh_pump`] is due, or -1.
+///
+/// # Safety
+///
+/// Both ranges are memory from [`nsh_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_data(
+    name: *const u8,
+    name_len: usize,
+    ptr: *const u8,
+    len: usize,
+    ok: u32,
+) -> f64 {
+    // SAFETY: guaranteed by the caller.
+    let (name, data) = unsafe { (string(name, name_len), bytes(ptr, len)) };
+    nsh_core::runtime_data::deliver(&name, (ok != 0).then(|| data.to_vec()));
+    pump()
 }
 
 #[cfg(feature = "js")]

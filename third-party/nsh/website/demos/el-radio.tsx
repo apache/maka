@@ -18,7 +18,7 @@ function App() {
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>radio</Text>
       <Text style={{ color: ui().muted }}>
-        {desktop ? "Click an option, or Tab to one and press Space" : "Tap an option: its label checks it too"}
+        {desktop ? "Click an option, or Tab to a group and move with the arrow keys" : "Tap an option: its label checks it too"}
       </Text>
 
       <Split gap={14} inspector={<Log title={`onChange(checked) · ${plan()}, ${cycle()}`} lines={events()} minHeight={76} />}>

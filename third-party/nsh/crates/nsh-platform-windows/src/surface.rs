@@ -165,6 +165,9 @@ pub(crate) struct Surface {
     epoch: std::time::Instant,
     on_error: RefCell<Option<ErrorHandler>>,
     on_hot_update_failed: RefCell<Option<Box<dyn Fn()>>>,
+    /// The GPU device shader views render with, opened when the first
+    /// shader is mounted (`None` inside: there is none).
+    shader_renderer: std::cell::OnceCell<Option<Rc<nsh_engine::shader::Renderer>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
@@ -230,6 +233,7 @@ impl Surface {
             epoch: std::time::Instant::now(),
             on_error: RefCell::new(None),
             on_hot_update_failed: RefCell::new(None),
+            shader_renderer: std::cell::OnceCell::new(),
             asset_base: RefCell::new(None),
             image_cache: RefCell::new(None),
             native: Default::default(),
@@ -249,6 +253,17 @@ impl Surface {
             }
         }));
         surface
+    }
+
+    /// The GPU device shader views render with ([`crate::shader`]), opened
+    /// the first time one asks.
+    pub(crate) fn shader_renderer(&self) -> Option<Rc<nsh_engine::shader::Renderer>> {
+        self.shader_renderer
+            .get_or_init(|| {
+                nsh_engine::shader::Renderer::new(nsh_engine::shader::PixelFormat::Bgra)
+                    .map(Rc::new)
+            })
+            .clone()
     }
 
     /// The surface with `key`, if it is alive.
@@ -696,6 +711,9 @@ impl Surface {
             );
             (std::mem::take(&mut anim.finished), moved)
         };
+        // Shader views whose uniforms moved start rendering now that the
+        // graph is not borrowed.
+        crate::shader::start_pending();
         // No surface state borrowed while the app's components run.
         crate::native::component_animated(self, moved);
         crate::scroll::pin_animated_sticky(self);

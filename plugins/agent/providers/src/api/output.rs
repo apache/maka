@@ -22,8 +22,8 @@ use super::Wire;
 use maka_agent_ports::provider::Error;
 use serde_json::Value;
 
-/// An explicit reply budget is capped by capacity, before subtracting a fixed
-/// Anthropic thinking budget. Other OpenAI routes have no implicit reply cap.
+/// The declared output capacity is the default reply budget. Explicit budgets
+/// are capped by that capacity before subtracting a fixed Anthropic thinking budget.
 pub(super) fn resolve(
     connection: &Selection<'_>,
     wire: Wire,
@@ -32,12 +32,6 @@ pub(super) fn resolve(
     let requested = connection
         .overrides
         .and_then(|value| value.max_output_tokens);
-    if requested.is_none()
-        && wire != Wire::AnthropicMessages
-        && !(connection.provider == "kimi-coding-plan" && wire == Wire::OpenaiChatCompletions)
-    {
-        return Ok(None);
-    }
     let limit = connection.model.max_output_tokens;
     let limit = match (requested, limit) {
         (Some(requested), Some(capacity)) => Some(requested.min(capacity)),

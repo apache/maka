@@ -8462,6 +8462,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -9413,6 +9414,7 @@ dependencies = [
  "imagesize 0.15.0",
  "libc",
  "log",
+ "naga",
  "nsh-macros",
  "ordered-float",
  "regex",
@@ -9442,10 +9444,12 @@ dependencies = [
  "nsh-js",
  "nsh-package",
  "oxc_sourcemap",
+ "pollster",
  "rustc-hash 2.1.3",
  "serde_json",
  "tokio",
  "ureq",
+ "wgpu",
  "windows-sys 0.61.2",
 ]
 

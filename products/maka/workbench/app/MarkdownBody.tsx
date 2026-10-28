@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, signal, Text, View } from 'nsh';
+import { cleanup, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { hasCompletePrefix, type Row } from './history';
 import { MarkdownImageView } from './MarkdownImage';
@@ -39,13 +39,13 @@ export function MarkdownBody(props: {
     alive = false;
   });
   const readingStyle = props.compact ? secondaryTextStyle : bodyTextStyle;
-  const color = props.compact ? C.muted : C.text;
+  const color = () => (props.compact ? C.muted : C.text);
   return (
     <View selectable>
       <If
         when={hasCompletePrefix(props.row())}
         else={
-          <Text style={[{ ...readingStyle, color }, { userSelect: 'text' }]}>
+          <Text style={[{ ...readingStyle, color: color() }, { userSelect: 'text' }]}>
             <SourceText row={props.row} sourceId={props.sourceId} />
           </Text>
         }
@@ -99,13 +99,13 @@ export function MarkdownBody(props: {
             { id: 'copy', label: tr('Copy code block') },
           ]}
           styles={{
-            root: { ...readingStyle, color },
+            root: { ...readingStyle, color: color() },
             paragraph: readingStyle,
             heading: {
               ...readingStyle,
               fontSize: props.compact ? secondaryTextStyle.fontSize : 18,
               fontWeight: props.compact ? '600' : '700',
-              color,
+              color: color(),
             },
             heading1: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
             heading2: { fontSize: props.compact ? secondaryTextStyle.fontSize : 18 },
@@ -121,10 +121,18 @@ export function MarkdownBody(props: {
               borderColor: C.line,
               borderRadius: props.compact ? 8 : 12,
             },
-            codeBlockCode: { ...codeTextStyle, color },
-            codeBlockHeader: { color: C.muted },
-            tableCell: { ...readingStyle, color, borderColor: C.line },
-            tableHeaderCell: { ...readingStyle, color, fontWeight: '600', borderColor: C.line },
+            codeBlockCode: { ...codeTextStyle, color: color() },
+            // The desktop starts the actions where the code starts.
+            codeBlockHeader: platform.isTerminal
+              ? { color: C.muted }
+              : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
+            tableCell: { ...readingStyle, color: color(), borderColor: C.line },
+            tableHeaderCell: {
+              ...readingStyle,
+              color: color(),
+              fontWeight: '600',
+              borderColor: C.line,
+            },
             tableHead: { backgroundColor: C.raised },
             tableRow: { backgroundColor: C.surface },
             rule: { backgroundColor: C.line },

@@ -83,3 +83,13 @@ expect ElementTip
 event text:ElementTrigger onHoverOut
 absent ElementTip
 covers [props] tooltip
+
+# The browser-JS backend shares the app's brands and preserves queued jobs.
+tap id:case-runtime-identities
+expect Buffer brand: true
+expect Cleanup identity: true
+expect Callback error: TypeError
+expect Ticks: 0
+tap id:runtime-tick
+wait 20
+expect Ticks: 1

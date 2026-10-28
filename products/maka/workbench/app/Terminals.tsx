@@ -49,8 +49,8 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
             gap: 8,
             backgroundColor: C.surface,
           }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="plus" color={C.secondary} />
@@ -63,8 +63,8 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
           accessibilityLabel={tr('Refresh terminals')}
           tooltip={textTooltip(() => tr('Refresh terminals'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="refresh" color={C.secondary} />
         </Button>
@@ -91,8 +91,8 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
                   abandon: false,
                 })}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Recover original')}</Text>
@@ -106,8 +106,8 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
                     abandon: true,
                   })}
                   style={controlStyle}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Text style={{ ...captionTextStyle, color: C.secondary }}>
@@ -149,8 +149,8 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
               alignItems: 'center',
               gap: 12,
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Icon name="terminal" color={C.muted} />
             <View style={{ flex: 1, minWidth: 0, gap: 4 }}>

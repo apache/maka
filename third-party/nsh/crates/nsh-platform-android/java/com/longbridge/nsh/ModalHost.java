@@ -55,6 +55,15 @@ final class ModalHost {
         container.requestLayout();
     }
 
+    /** A density change changes dp sizes even when the pixels stay put. */
+    void densityChanged() {
+        container.reported = null;
+        // Report after the host has published its new environment, and
+        // request layout even if Android keeps the dialog's pixel bounds.
+        container.requestLayout();
+        container.post(container::report);
+    }
+
     TouchTracker touches() {
         return container.touches;
     }

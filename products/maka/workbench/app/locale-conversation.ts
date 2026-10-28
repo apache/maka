@@ -436,6 +436,7 @@ export const conversationMessages = {
   Error: ['Error', '错误', '錯誤'],
   'Expand session browser': ['Expand session browser', '展开对话侧栏', '展開對話側欄'],
   'Exit {code}': ['Exit {code}', '退出码 {code}', '結束碼 {code}'],
+  'Failed {count} times': ['Failed {count} times', '共失败 {count} 次', '共失敗 {count} 次'],
   File: msg_toolFilePath,
   Files: ['Files', '文件', '檔案'],
   'Filesystem: no additional access': [
@@ -1243,6 +1244,11 @@ export const conversationMessages = {
     '查看本轮模型用量',
     '查看本輪模型用量',
   ],
+  'Wait for the message to send before switching.': [
+    'Wait for the message to send before switching.',
+    '请等消息发出后再切换。',
+    '請等訊息送出後再切換。',
+  ],
   'Wait for the saved draft before switching.': [
     'Wait for the saved draft before switching.',
     '请等待草稿保存后再切换。',
@@ -1344,11 +1350,11 @@ export const conversationMessages = {
     '正在保存沙箱设置…',
     '正在儲存沙箱設定…',
   ],
-  'Sandbox off': ['Sandbox off', '关闭沙箱', '關閉沙箱'],
+  'Sandbox off': ['Sandbox off', '沙箱已关闭', '沙箱已關閉'],
   'Full access · Sandbox off': [
     'Full access · Sandbox off',
-    '完全访问 · 关闭沙箱',
-    '完整存取 · 關閉沙箱',
+    '完全访问 · 沙箱已关闭',
+    '完整存取 · 沙箱已關閉',
   ],
   'Read files without changing the workspace.': [
     'Read files without changing the workspace.',

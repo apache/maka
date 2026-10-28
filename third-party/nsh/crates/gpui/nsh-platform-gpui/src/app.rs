@@ -11,7 +11,7 @@ use std::{
 
 use gpui::{
     App as GpuiApp, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, Styled, Window,
+    IntoElement, ParentElement, Render, Styled, Window, prelude::FluentBuilder as _,
 };
 use nsh_base::{Theme, ThemeError};
 use nsh_core::platform::{Appearance, Locale};
@@ -640,6 +640,37 @@ impl AppView {
         &self.surface
     }
 
+    /// Files dragged in from another application moved over the window
+    /// (`render`'s drop layer, [`crate::file_drop`]).
+    fn drag_files(
+        &mut self,
+        event: &gpui::DragMoveEvent<gpui::ExternalPaths>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (x, y) = self.root_point(event.event.position);
+        crate::file_drop::update(&self.surface, x, y);
+        crate::rt::flush(cx);
+    }
+
+    /// Files dragged in from another application were dropped.
+    fn drop_files(
+        &mut self,
+        paths: &gpui::ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (x, y) = self.root_point(window.mouse_position());
+        crate::file_drop::perform(&self.surface, x, y, paths.paths());
+        crate::rt::flush(cx);
+    }
+
+    /// A window point in the surface's root points.
+    fn root_point(&self, position: gpui::Point<gpui::Pixels>) -> (f32, f32) {
+        let (ox, oy) = self.surface.origin.get();
+        (f32::from(position.x) - ox, f32::from(position.y) - oy)
+    }
+
     /// Tab: the surface's next text field; past its last one, the window's
     /// next tab stop (the embedding app's widgets), or the first field again
     /// when there is none.
@@ -882,6 +913,17 @@ impl Render for AppView {
         let surface = crate::dev::wrap(self, surface.into_any_element(), cx);
         // The window's chrome (title bar, menu bar) goes around the surface.
         let content = crate::chrome::render(&self.surface, surface, window, cx);
+        // Paused input refuses dropped files too, as it does pastes.
+        let dragging = cx.has_active_drag() && !self.surface.input_paused.get();
+        // A file drag that left the window, ended without a drop or met paused
+        // input leaves its destination (GPUI redraws the window as it ends).
+        if !dragging && crate::file_drop::active(&self.surface) {
+            let surface = self.surface.clone();
+            cx.defer(move |cx| {
+                crate::file_drop::clear(&surface);
+                crate::rt::flush(cx);
+            });
+        }
         // The div registers the view's tab stop, which only GPUI's own
         // elements can.
         gpui::div()
@@ -891,6 +933,18 @@ impl Render for AppView {
             .on_action(cx.listener(Self::focus_prev))
             .size_full()
             .child(content)
+            // While something is dragged, a layer over the surface follows
+            // and takes files from other applications: the surface's hitbox
+            // blocks the mouse for the elements behind it, this div included.
+            .when(dragging, |div| {
+                div.child(
+                    gpui::div()
+                        .absolute()
+                        .inset_0()
+                        .on_drag_move(cx.listener(Self::drag_files))
+                        .on_drop(cx.listener(Self::drop_files)),
+                )
+            })
             .children(self.input_pause.borrow().as_ref().map(|pause| {
                 pause
                     .scope

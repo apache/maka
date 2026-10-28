@@ -262,6 +262,9 @@ pub(crate) struct Prepared {
     ellipsize: EllipsizeMode,
     no_wrap: bool,
     rtl: bool,
+    /// The UTF-16 ranges of the text's links (`AttributedText::links`), in
+    /// their order.
+    links: Box<[(u32, u32)]>,
 }
 
 /// One drawn run.
@@ -272,6 +275,15 @@ pub(crate) struct Run {
     pub(crate) y: f32,
     pub(crate) text: String,
     pub(crate) style: u16,
+    /// Offset of its first character (UTF-16 units); `None` when it begins
+    /// with a truncated line's `…`, which belongs to no offset.
+    pub(crate) start: Option<u32>,
+    /// Its characters in links: `(from, to, link)`, UTF-16 units in the
+    /// run and an index into `AttributedText::links` (the innermost).
+    /// They stay in the run, whose shaping and bidi order they keep.
+    pub(crate) links: Vec<(u32, u32, u16)>,
+    /// It ends with a truncated line's `…`, which belongs to no offset.
+    ellipsis: bool,
     /// What follows the run when the text is copied: the line's break (a
     /// newline, or the spaces a wrap dropped) after its last run.
     pub(crate) after: String,
@@ -378,6 +390,39 @@ struct Part {
     /// The `…` of a truncated last line, which is drawn but belongs to no
     /// offset.
     ellipsis: bool,
+}
+
+/// The characters of a run starting at `start` that are in `links`:
+/// `(from, to, link)` in the run, each part in one innermost link.
+fn link_parts(links: &[(u32, u32)], start: u32, text: &str) -> Vec<(u32, u32, u16)> {
+    let end = start + text.encode_utf16().count() as u32;
+    let mut cuts: Vec<u32> = links
+        .iter()
+        .flat_map(|&(s, e)| [s, e])
+        .filter(|&b| b > start && b < end)
+        .collect();
+    cuts.push(start);
+    cuts.push(end);
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut parts: Vec<(u32, u32, u16)> = Vec::new();
+    for pair in cuts.windows(2) {
+        let (from, to) = (pair[0], pair[1]);
+        let Some(link) = links
+            .iter()
+            .enumerate()
+            .filter(|(_, (s, e))| from >= *s && from < *e)
+            .min_by_key(|(_, (s, e))| e - s)
+            .and_then(|(i, _)| u16::try_from(i).ok())
+        else {
+            continue;
+        };
+        match parts.last_mut() {
+            Some(last) if last.1 == from - start && last.2 == link => last.1 = to - start,
+            _ => parts.push((from - start, to - start, link)),
+        }
+    }
+    parts
 }
 
 impl WebTextEngine {
@@ -646,6 +691,7 @@ impl TextEngine for WebTextEngine {
             ellipsize: text.ellipsize,
             no_wrap: text.no_wrap,
             rtl: text.writing_direction.unwrap_or(text.rtl),
+            links: text.links.iter().map(|l| (l.start, l.end)).collect(),
         }
     }
 
@@ -795,6 +841,7 @@ impl TextEngine for WebTextEngine {
                     Some(r) if merge && r.style == style => {
                         let byte = r.text.len();
                         r.text.push_str(&text);
+                        r.ellipsis |= ellipsis;
                         (index.saturating_sub(1), byte)
                     }
                     _ => {
@@ -803,6 +850,9 @@ impl TextEngine for WebTextEngine {
                             y: baseline - s.ascent,
                             text,
                             style,
+                            start: (!ellipsis).then_some(start),
+                            links: Vec::new(),
+                            ellipsis,
                             after: String::new(),
                         });
                         (index, 0)
@@ -885,6 +935,17 @@ impl TextEngine for WebTextEngine {
             });
             y += line.height;
         }
+        if !prepared.links.is_empty() {
+            for run in &mut runs {
+                if let Some(start) = run.start {
+                    let text = match run.ellipsis {
+                        true => run.text.strip_suffix('…').unwrap_or(&run.text),
+                        false => &run.text,
+                    };
+                    run.links = link_parts(&prepared.links, start, text);
+                }
+            }
+        }
         TextLayout(Arc::new(WebLayout {
             runs,
             backgrounds,
@@ -945,5 +1006,15 @@ impl TextEngine for WebTextEngine {
         // when the face finishes loading: `nsh_fonts_loaded`).
         self.clear_caches();
         Ok(())
+    }
+}
+
+/// Canvas drawings use the same font and numeric-variant measurements as text.
+#[cfg(all(feature = "browser-core", not(feature = "js")))]
+pub(crate) fn canvas_width(font: &nsh_core::canvas::CanvasFont, text: &str) -> f32 {
+    let css = crate::canvas::font(font);
+    match css::font_variant_numeric(font.variant) {
+        Some(numeric) => ffi::measure_numeric_text(&css, &numeric, text),
+        None => ffi::measure_text(&css, text),
     }
 }

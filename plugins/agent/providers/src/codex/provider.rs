@@ -154,7 +154,8 @@ impl Provider for Codex {
                     .map(|limit| {
                         info.max_output_tokens
                             .map_or(limit, |capacity| limit.min(capacity))
-                    }),
+                    })
+                    .or(info.max_output_tokens),
                 adapter: request
                     .overrides
                     .as_ref()

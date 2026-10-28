@@ -841,7 +841,17 @@ impl RustApp {
                 }
             })?;
         self.watch_with(&mut watcher)?;
-        for event in &rx {
+        loop {
+            if ui::stop_requested() {
+                return Ok(());
+            }
+            let event = match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(event) => event,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("stopped watching the app's Rust code");
+                }
+            };
             // Reads (inotify reports them) change nothing.
             if !matches!(event.kind, notify::EventKind::Access(_))
                 && event.paths.iter().any(|p| self.is_rust(p))
@@ -852,7 +862,6 @@ impl RustApp {
                 return Ok(());
             }
         }
-        bail!("stopped watching the app's Rust code")
     }
 
     /// What the steps say they build: `the Rust crate charts`, `the Rust
@@ -934,6 +943,7 @@ impl RustApp {
         };
         let sets = self.sets();
         let ws = &self.workspace;
+        let web_dev = self.web_dev_profile();
         // A Rust app's runners too (`nsh.json` "root"), only then: they
         // name its root component.
         let rust = if self.root.is_some() {
@@ -962,7 +972,7 @@ strip = true
 panic = \"abort\"
 [profile.web.package.quickjs-jit-sys]
 opt-level = 3
-"),
+{web_dev}"),
             false,
         )?;
         // What earlier versions of nsh wrote: the app's own command line,
@@ -1285,15 +1295,17 @@ opt-level = 3
                  [lib]\nname = {:?}\npath = \"lib.rs\"\ncrate-type = [\"cdylib\"]\n\n\
                  [features]\n# The runtime of published apps: bytecode only (nsh-platform-web).\n\
                  bytecode-only = [\"nsh-platform-web/bytecode-only\"]\n\
+                 browser = [\"nsh-platform-web/browser\"]\n\
                  # The development host's: what `nsh test --target web` asks about.\n\
-                 dev = [\"nsh-platform-web/dev\"]\n\n\
+                 dev = [\"nsh-platform-web/dev\", \"nsh-platform-web/base-full\", \"nsh-platform-web/std-zlib\", \"nsh-platform-web/std-crypto\"]\n\n\
                  [dependencies]\nnsh-core = {}\nnsh-base = {}\n{app}\n\n\
                  [target.'cfg(target_arch = \"wasm32\")'.dependencies]\nnsh-platform-web = {}\n",
                 self.bin("web"),
                 self.web_lib(),
                 src("nsh-core"),
                 self.nsh.dep("nsh-base", HIGHLIGHT),
-                src("nsh-platform-web"),
+                self.nsh
+                    .dep("nsh-platform-web", ", default-features = false"),
             ),
         )?;
         // nsh's `.cargo/config.toml` gives its own web runtime this stack
@@ -1325,6 +1337,43 @@ opt-level = 3
         )
     }
 
+    /// The profile of the development web runtime (`web-dev`, for
+    /// [`WebKind::Dev`](crate::runtime::WebKind::Dev)), which is built again
+    /// on every change to the app's Rust code: incremental and without LTO,
+    /// so an edit to an app crate rebuilds in well under a second where
+    /// `web`'s fat LTO over one codegen unit re-optimizes the whole module.
+    /// The app's crates are at `-O1` (what changes), the other crates for
+    /// size and QuickJS at `-O3` (it dominates the runtime's cost). It panics
+    /// as `web` does (`abort`) and has no debug assertions, so the page
+    /// behaves as the published one.
+    fn web_dev_profile(&self) -> String {
+        let mut profile = String::from(
+            "
+# The development web runtime (`nsh run --target web`): built again on
+# every change to the app's Rust code, so incremental and without LTO; the
+# app's crates at -O1, the others for size, QuickJS at -O3.
+[profile.web-dev]
+inherits = \"dev\"
+opt-level = 1
+debug = false
+debug-assertions = false
+overflow-checks = false
+panic = \"abort\"
+[profile.web-dev.package.\"*\"]
+opt-level = \"s\"
+[profile.web-dev.package.quickjs-jit-sys]
+opt-level = 3
+",
+        );
+        for c in &self.crates {
+            profile.push_str(&format!(
+                "[profile.web-dev.package.{:?}]\nopt-level = 1\n",
+                c.package
+            ));
+        }
+        profile
+    }
+
     /// The web runtime's library name (its module is `<name>.wasm`),
     /// after the app as its binaries are ([`Self::bin`]).
     fn web_lib(&self) -> String {
@@ -1332,9 +1381,10 @@ opt-level = 3
     }
 
     /// The app's web runtime of `kind` (its `nsh.wasm` / `nsh-dev.wasm`, and
-    /// nsh's `nsh.js`), built for `wasm32-unknown-unknown` with the `web`
-    /// profile as nsh builds its own (`runtime::web`). Without `build`, the
-    /// one built before, if any.
+    /// nsh's `nsh.js`), built for `wasm32-unknown-unknown`: a release one
+    /// with the `web` profile as nsh builds its own (`runtime::web`), a
+    /// development one with `web-dev` ([`Self::web_dev_profile`]). Without
+    /// `build`, the one built before, if any.
     pub(crate) fn web(
         &self,
         kind: crate::runtime::WebKind,
@@ -1385,6 +1435,7 @@ opt-level = 3
                 } => source.join("crates/nsh-platform-web/web/nsh.js"),
                 Nsh::Registry => out.join("nsh.js"),
             },
+            syntaxes: crate::runtime::syntaxes_in(&out),
         };
         if !build {
             return Ok((runtime.wasm.exists() && runtime.js.exists()).then_some(runtime));
@@ -1399,7 +1450,9 @@ opt-level = 3
         // nor hot updates.
         let features: &[&str] = match kind {
             _ if rust => &[],
-            crate::runtime::WebKind::Release => &["--features", "bytecode-only"],
+            crate::runtime::WebKind::Browser | crate::runtime::WebKind::Lite => {
+                &["--features", "browser"]
+            }
             crate::runtime::WebKind::Dev => &["--features", "dev"],
         };
         let (package, artifact) = if rust {
@@ -1415,7 +1468,7 @@ opt-level = 3
             package: &package,
             triple: Some(WASM),
             release: false,
-            profile: Some("web"),
+            profile: Some(web_profile(kind)),
             extra: features,
             artifact: &artifact,
             what: &format!("the web runtime of {}", self.packages()),
@@ -1427,40 +1480,25 @@ opt-level = 3
         runtime.glue = crate::bindgen::install(&built, &out, &stem)?;
         if self.nsh == Nsh::Registry {
             let js = self.registry_crate("nsh-platform-web")?.join("web/nsh.js");
+            crate::runtime::copy_browser_host(
+                js.parent().context("web runtime has no parent")?,
+                &out,
+            )?;
             fs::copy(&js, &runtime.js)
                 .with_context(|| format!("copy {} to {}", js.display(), runtime.js.display()))?;
         }
+        // The syntaxes the module leaves out, as this workspace resolves them.
+        runtime.syntaxes = Some(crate::runtime::write_syntaxes(
+            &self.workspace.join("Cargo.toml"),
+            &out,
+        )?);
         Ok(Some(runtime))
     }
 
     /// The directory Cargo unpacked nsh's crate `name` (from crates.io, at
     /// [`VERSION`]) into for the workspace, as `cargo metadata` reports it.
     fn registry_crate(&self, name: &str) -> anyhow::Result<PathBuf> {
-        let output = Command::new(cargo())
-            .args(["metadata", "--format-version", "1", "--manifest-path"])
-            .arg(self.workspace.join("Cargo.toml"))
-            .output()
-            .context("run cargo metadata")?;
-        if !output.status.success() {
-            bail!(
-                "cargo metadata of {}:\n{}",
-                self.workspace.display(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        let metadata: serde_json::Value =
-            serde_json::from_slice(&output.stdout).context("cargo metadata's output")?;
-        metadata["packages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|p| p["name"].as_str() == Some(name) && p["version"].as_str() == Some(VERSION))
-            .and_then(|p| {
-                Path::new(p["manifest_path"].as_str()?)
-                    .parent()
-                    .map(Path::to_path_buf)
-            })
-            .with_context(|| format!("the workspace resolves no {name} {VERSION}"))
+        crate::runtime::package_dir(&self.workspace.join("Cargo.toml"), name, Some(VERSION))
     }
 
     /// The workspace of the app's GPUI development host
@@ -1802,21 +1840,33 @@ opt-level = 3
     }
 
     /// The Android runtime of the app: the prebuilt runtime's `classes.dex`
-    /// with the app's `libnsh.so` for each of its ABIs.
-    pub(crate) fn android(&self, prebuilt: &Path, dev: bool) -> anyhow::Result<PathBuf> {
-        self.android_runtime(prebuilt, dev, self.root.is_some())
+    /// with the app's `libnsh.so` for each of `abis` (empty: each ABI of the
+    /// prebuilt runtime).
+    pub(crate) fn android(
+        &self,
+        prebuilt: &Path,
+        dev: bool,
+        abis: &[String],
+    ) -> anyhow::Result<PathBuf> {
+        self.android_runtime(prebuilt, dev, self.root.is_some(), abis)
     }
 
     /// The Android runtime `nsh test --target android` runs the app in: the
     /// development library, a Rust app's too (with its root, which it runs
     /// when the test session says so).
     pub(crate) fn test_android(&self, prebuilt: &Path) -> anyhow::Result<PathBuf> {
-        self.android_runtime(prebuilt, true, false)
+        self.android_runtime(prebuilt, true, false, &[])
     }
 
     /// [`Self::android`]; `rust`: a Rust app's runner library, with no
     /// development support.
-    fn android_runtime(&self, prebuilt: &Path, dev: bool, rust: bool) -> anyhow::Result<PathBuf> {
+    fn android_runtime(
+        &self,
+        prebuilt: &Path,
+        dev: bool,
+        rust: bool,
+        abis: &[String],
+    ) -> anyhow::Result<PathBuf> {
         let sdk = crate::android::Sdk::find()?;
         let out = self.workspace.join(match (rust, dev) {
             (true, true) => "android-rust-dev",
@@ -1828,6 +1878,10 @@ opt-level = 3
         install(&prebuilt.join("classes.dex"), &out.join("classes.dex"))?;
         for entry in fs::read_dir(prebuilt.join("lib"))? {
             let abi = entry?.file_name().to_string_lossy().into_owned();
+            // Only what the APK takes: each ABI is a build of its own.
+            if !abis.is_empty() && !abis.contains(&abi) {
+                continue;
+            }
             let triple = match abi.as_str() {
                 "arm64-v8a" => "aarch64-linux-android",
                 "armeabi-v7a" => "armv7-linux-androideabi",
@@ -2133,6 +2187,15 @@ fn nsh_crate(source: &Path, name: &str) -> PathBuf {
     match name {
         "nsh-platform-gpui" | "nsh-gpui-host" => source.join("crates/gpui").join(name),
         _ => source.join("crates").join(name),
+    }
+}
+
+/// The profile the app's web runtime of `kind` builds with: `web` for
+/// published apps, `web-dev` for development ([`RustApp::web_dev_profile`]).
+fn web_profile(kind: crate::runtime::WebKind) -> &'static str {
+    match kind {
+        crate::runtime::WebKind::Browser | crate::runtime::WebKind::Lite => "web",
+        crate::runtime::WebKind::Dev => "web-dev",
     }
 }
 
@@ -2851,6 +2914,100 @@ mod tests {
         let host = std::fs::read_to_string(app.workspace.join("ios-host/Cargo.toml")).unwrap();
         assert!(host.contains("nsh-ios-host = { path ="), "{host}");
         assert!(!host.contains("version = \"="), "{host}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn web_dev_profile_builds_the_development_runtime_incrementally() {
+        use crate::runtime::WebKind;
+        let dir = std::env::temp_dir().join(format!("nsh-rust-web-dev-{}", std::process::id()));
+        let app = app(
+            &dir,
+            &[
+                ("app-charts", dir.join("charts")),
+                ("app-storage", dir.join("storage")),
+            ],
+            None,
+        );
+        app.write_workspace().unwrap();
+        let manifest = std::fs::read_to_string(app.workspace.join("Cargo.toml")).unwrap();
+        assert_eq!(super::web_profile(WebKind::Dev), "web-dev");
+        let profile = |name: &str| -> Vec<String> {
+            let header = format!("[{name}]");
+            let mut lines = manifest.lines().skip_while(|l| *l != header).skip(1);
+            let mut keys = Vec::new();
+            for line in lines.by_ref() {
+                if line.starts_with('[') || line.is_empty() {
+                    break;
+                }
+                keys.push(line.to_owned());
+            }
+            keys
+        };
+        let web_dev = profile("profile.web-dev");
+        for key in [
+            "inherits = \"dev\"",
+            "opt-level = 1",
+            "panic = \"abort\"",
+            "debug-assertions = false",
+        ] {
+            assert!(web_dev.iter().any(|l| l == key), "{key}: {manifest}");
+        }
+        // Incremental: no LTO, and dev's codegen units.
+        assert!(
+            !web_dev
+                .iter()
+                .any(|l| l.starts_with("lto") || l.starts_with("codegen-units"))
+        );
+        assert_eq!(
+            profile("profile.web-dev.package.\"*\""),
+            ["opt-level = \"s\""]
+        );
+        assert_eq!(
+            profile("profile.web-dev.package.quickjs-jit-sys"),
+            ["opt-level = 3"]
+        );
+        for package in ["app-charts", "app-storage"] {
+            let name = format!("profile.web-dev.package.\"{package}\"");
+            assert_eq!(profile(&name), ["opt-level = 1"], "{manifest}");
+        }
+        // As nsh's own manifest, for the debug builds of the hosts: each
+        // table once, or Cargo rejects the manifest as a duplicate key.
+        assert_eq!(
+            profile("profile.dev.package.quickjs-jit-sys"),
+            ["opt-level = 3"]
+        );
+        assert_eq!(profile("profile.dev.package.taffy"), ["opt-level = 3"]);
+        for table in [
+            "[profile.dev.package.quickjs-jit-sys]",
+            "[profile.dev.package.taffy]",
+            "[profile.web-dev]",
+        ] {
+            assert_eq!(manifest.matches(table).count(), 1, "{table}: {manifest}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn web_dev_profile_leaves_the_release_runtime_s_profile_as_it_was() {
+        use crate::runtime::WebKind;
+        let dir = std::env::temp_dir().join(format!("nsh-rust-web-rel-{}", std::process::id()));
+        let app = app(&dir, &[("app-native", dir.join("native"))], None);
+        app.write_workspace().unwrap();
+        let manifest = std::fs::read_to_string(app.workspace.join("Cargo.toml")).unwrap();
+        assert_eq!(super::web_profile(WebKind::Browser), "web");
+        let web = "[profile.web]
+inherits = \"release\"
+opt-level = \"z\"
+lto = \"fat\"
+codegen-units = 1
+strip = true
+panic = \"abort\"
+[profile.web.package.quickjs-jit-sys]
+opt-level = 3
+";
+        assert!(manifest.contains(web), "{manifest}");
+        assert_eq!(manifest.matches("[profile.web.").count(), 1, "{manifest}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

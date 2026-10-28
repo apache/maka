@@ -78,6 +78,7 @@ impl UiAnimation {
                 }
                 if !canvas.is_empty() {
                     crate::canvas::set_args(view, canvas);
+                    crate::shader::set_args(view, canvas);
                 }
             },
         );

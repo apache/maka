@@ -19,7 +19,7 @@
 
 import { tr } from './locale';
 import { effect, inputAction, signal, View, type JSX } from 'nsh';
-import { windowSize } from 'nsh';
+import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
 import { Dialog, ResizablePanel, ResizablePanelGroup } from 'nsh/base';
 import { C } from './ui';
@@ -37,19 +37,21 @@ const CENTER_MIN = 48 * CELL;
 const BROWSER_MIN = 24 * CELL;
 const BROWSER_MAX = 40 * CELL;
 const PREVIEW_MIN = 40 * CELL;
+// A terminal draws the line between panels in a column of its own; a window
+// draws it on the panels' shared edge, so no background shows beside it.
+const GAP = platform.isTerminal ? CELL : 0;
 
 export const canDockBrowser = (withPreview = false) =>
   windowSize().width >=
-  CENTER_DOCK_WIDTH +
-    BROWSER_MIN +
-    CELL +
-    (withPreview && canDockPreview() ? PREVIEW_MIN + CELL : 0);
-const canDockPreview = () => windowSize().width >= CENTER_DOCK_WIDTH + PREVIEW_MIN + CELL;
+  CENTER_DOCK_WIDTH + BROWSER_MIN + GAP + (withPreview && canDockPreview() ? PREVIEW_MIN + GAP : 0);
+const canDockPreview = () => windowSize().width >= CENTER_DOCK_WIDTH + PREVIEW_MIN + GAP;
 
 export function Workbench(props: {
   expanded(): boolean;
   browser: WorkspaceBrowserProps;
   resources: Resources;
+  /** Files dropped anywhere in the center column. */
+  dropFiles?(event: { uris: string[] }): void;
   children: JSX.Element;
 }) {
   const plugins = pluginContext()!;
@@ -83,7 +85,7 @@ export function Workbench(props: {
         axis="horizontal"
         handleAccessibilityLabel={tr('Resize workspace panels')}
         handleStyle={{ backgroundColor: C.line }}
-        style={{ flex: 1, minWidth: 0, minHeight: 0, gap: CELL }}
+        style={{ flex: 1, minWidth: 0, minHeight: 0, gap: GAP }}
       >
         <ResizablePanel
           visible={browser()}
@@ -98,7 +100,9 @@ export function Workbench(props: {
           </If>
         </ResizablePanel>
         <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-          {props.children}
+          <View onFileDrop={props.dropFiles} style={{ flex: 1, minHeight: 0 }}>
+            {props.children}
+          </View>
         </ResizablePanel>
         <ResizablePanel
           visible={preview()}

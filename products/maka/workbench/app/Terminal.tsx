@@ -361,8 +361,8 @@ export function Terminal(props: { model: TerminalModel }) {
           selected={model.control() === 'held'}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="terminal" color={C.secondary} />
@@ -373,8 +373,8 @@ export function Terminal(props: { model: TerminalModel }) {
             onPress={inputAction(model.release, null)}
             tooltip={textTooltip(() => tr('Release terminal input · Ctrl+Shift+Space'))}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Release input')}</Text>
           </Button>
@@ -385,8 +385,8 @@ export function Terminal(props: { model: TerminalModel }) {
           accessibilityLabel={tr('Copy visible terminal')}
           tooltip={textTooltip(() => tr('Copy visible terminal · Ctrl+Shift+C'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="copy" color={C.secondary} />
         </Button>
@@ -399,8 +399,8 @@ export function Terminal(props: { model: TerminalModel }) {
               model.stopping() ? tr('Stopping process…') : tr('Stop terminal process'),
             )}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="stop" color={C.warning} />
@@ -433,8 +433,8 @@ export function Terminal(props: { model: TerminalModel }) {
             alignItems: 'center',
             gap: 8,
           }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="refresh" color={C.secondary} />
           <Text style={{ ...captionTextStyle, color: C.secondary }}>
@@ -647,8 +647,8 @@ export function Terminal(props: { model: TerminalModel }) {
               <Button
                 onPress={() => confirmation.set(false)}
                 style={{ ...controlStyle, backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr('Keep running')}
@@ -661,8 +661,8 @@ export function Terminal(props: { model: TerminalModel }) {
                   void model.stop();
                 }}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Stop process')}</Text>
               </Button>

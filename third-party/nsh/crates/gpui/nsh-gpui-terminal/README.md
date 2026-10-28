@@ -12,10 +12,13 @@ The host constructs `gpui_wgpu::WgpuHeadlessRenderer` and creates `TerminalPlatf
 native window is supported. The shared background executor uses one fewer worker
 than the host's available parallelism, with at least one worker. The foreground
 pump runs at most 64 jobs. Frames are requested when dirty; there
-is no imposed 60 Hz timer. Drawing encodes and submits the scene on the native
-owner thread, then hands an owned GPU readback ticket to the host. The host's
-existing background executor waits for readback, copies RGBA pixels and encodes
-the terminal wire. This API does not establish a frame-rate or input latency result.
+is no imposed 60 Hz timer. Input, CPU layout, painting and GPU command encoding
+stay on the native UI path. Drawing hands owned commands to the host's existing
+background executor for GPU submission, readback and terminal image encoding.
+The host waits for actual submission to return before encoding the next scene,
+preserving GPU queue-write order. Readback, image encoding and terminal output
+can still overlap native work and later frames. This API does not establish a
+frame-rate or input latency result.
 `pump_with_draw(false)` still runs foreground and window lifecycle work while
 the output pipeline is full. It preserves the original dirty frame without
 re-waking just for that deferred draw; the host allows drawing once a candidate
@@ -44,11 +47,12 @@ line, with its full height, in logical window pixels. Convert all four edges
 to terminal units and retain any zero-width rectangle. `input_caret_bounds()`
 continues to report the actual caret independently.
 
-Each successful GPU submission produces a `SubmittedFrame` containing an
-issuer-bound `FrameToken`, viewport generation and its owned readback ticket.
-Complete the ticket on a background executor
-to obtain a `CandidateFrame` with the same token and tightly packed RGBA8 pixels;
-completion never samples application state again.
+Each successful scene preparation produces a `PreparedFrame` containing an
+issuer-bound `FrameToken`, viewport generation and owned GPU commands. On the
+background executor, `submit()` yields a `SubmittedFrame`; its `complete()`
+produces a `CandidateFrame` with tightly packed RGBA8 pixels. All three stages
+retain the same candidate identity. A token is not an output receipt, and
+neither submission nor completion samples application state again.
 Retain one output transaction in flight and one replaceable pending candidate.
 Once any wire byte is written, complete the entire transaction indivisibly.
 

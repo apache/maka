@@ -36,7 +36,7 @@ use crate::{
     placement::Placement,
 };
 use maka_workbench::bindings::Bindings;
-use nsh_engine::{EngineConfig, HostChannel, JsonValue, Limits};
+use nsh_engine::{EngineConfig, HostCall, HostChannel, JsonValue, Limits};
 use nsh_platform_gpui::{
     AppOptions, AppView,
     gpui::{self, App, AppContext as _, Focusable as _, SystemNotification, WindowHandle},
@@ -79,10 +79,14 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
     let (exit, mut exits) = tokio::sync::mpsc::unbounded_channel();
+    let (folder, mut folders) = tokio::sync::mpsc::unbounded_channel::<HostCall>();
+    let (text_size, mut text_sizes) = tokio::sync::mpsc::unbounded_channel::<f32>();
     let (notify, mut notices) = tokio::sync::mpsc::unbounded_channel::<SystemNotification>();
     let shell = Shell {
         foreground,
         exit,
+        folder,
+        text_size,
         notify,
         events: Arc::default(),
     };
@@ -123,6 +127,45 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
                     closing.save(window, cx);
                     window.remove_window();
                 });
+            }
+        })
+        .detach();
+        // The workbench's folder choices open the system's folder dialog, one
+        // at a time; a cancelled dialog answers null.
+        cx.spawn(async move |cx| {
+            while let Some(call) = folders.recv().await {
+                let paths = cx.update(|cx| {
+                    cx.prompt_for_paths(gpui::PathPromptOptions {
+                        files: false,
+                        directories: true,
+                        multiple: false,
+                        prompt: None,
+                    })
+                });
+                let path = match paths.await {
+                    Ok(Ok(paths)) => paths.and_then(|paths| paths.into_iter().next()),
+                    Ok(Err(error)) => {
+                        call.reject(error.to_string());
+                        continue;
+                    }
+                    Err(error) => {
+                        call.reject(error.to_string());
+                        continue;
+                    }
+                };
+                match path {
+                    Some(path) => match path.to_str() {
+                        Some(path) => call.resolve(JsonValue::from(path)),
+                        None => call.reject("the folder's path is not valid UTF-8"),
+                    },
+                    None => call.resolve(JsonValue::Null),
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |cx| {
+            while let Some(scale) = text_sizes.recv().await {
+                let _ = window.update(cx, |view, _, cx| view.set_font_scale(Some(scale), cx));
             }
         })
         .detach();
@@ -369,6 +412,9 @@ struct Shell {
     foreground: watch::Receiver<bool>,
     /// Closes the window.
     exit: tokio::sync::mpsc::UnboundedSender<()>,
+    /// Asks for a folder with the system's dialog.
+    folder: tokio::sync::mpsc::UnboundedSender<HostCall>,
+    text_size: tokio::sync::mpsc::UnboundedSender<f32>,
     /// Posts a system notification.
     notify: tokio::sync::mpsc::UnboundedSender<SystemNotification>,
     /// The loaded workbench's host channel, which hears the notification chosen.
@@ -386,6 +432,26 @@ impl Shell {
         config.host.handle("terminal.exit", move |_| {
             let _ = exit.send(());
         });
+        let folder = self.folder.clone();
+        config.host.handle("workspace.chooseFolder", move |call| {
+            if let Err(error) = folder.send(call) {
+                error.0.reject("the window is closing");
+            }
+        });
+        let text_size = self.text_size.clone();
+        config.host.handle(
+            "appearance.textSize",
+            move |call| match call.data()["scale"].as_f64().map(|scale| scale as f32) {
+                Some(scale) if scale.is_finite() && scale > 0.0 => {
+                    if text_size.send(scale).is_ok() {
+                        call.resolve(JsonValue::Null);
+                    } else {
+                        call.reject("the window is closing");
+                    }
+                }
+                _ => call.reject("expected a finite positive text scale"),
+            },
+        );
         let notify = self.notify.clone();
         config.host.handle("notification.show", move |call| {
             let text = |key: &str| call.data()[key].as_str().map(str::to_owned);

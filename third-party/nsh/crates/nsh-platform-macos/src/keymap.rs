@@ -86,6 +86,15 @@ fn install(key: u64) -> Option<Retained<AnyObject>> {
     unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block) }
 }
 
+/// What the monitor does with key-down `event`, for a key given to a
+/// window that is not the key window (`nsh test`'s, whose events the
+/// monitor never sees): whether it fired a binding (then it is reported to
+/// JS, and the window must not get it).
+#[cfg(feature = "dev")]
+pub(crate) fn fires(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+    pressed(surface, event)
+}
+
 /// Whether key-down `event` fired one of the surface's bindings (then it
 /// is reported to JS and consumed).
 fn pressed(surface: &Rc<Surface>, event: &NSEvent) -> bool {

@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`9f7213929688dba417af8ddb2730e27c2f99e41c`. The first upstream synchronization
+`d4c43ea6bece16881a582275fdbeb754bebb3e4f`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -228,6 +228,13 @@ input listening for file drops. Other input fields keep their literal text.
 The file content is reported once through `onPaste`, or through `onFileDrop`
 when no paste listener is mounted, without inserting the paths as text.
 
+The GPUI backend delivers files dragged in from other applications
+(`file_drop.rs`): while a drag is active, `AppView` lays a layer over the
+surface whose drag moves and drop drive `onFileDragEnter`, `onFileDragLeave`
+and `onFileDrop` as the native backends do. This is submitted upstream as
+longbridge/nsh#591; take upstream's version when a sync brings it, keeping
+the local rule that paused input (`AppView::pause_input`) lays no drop layer.
+
 Maka's workspace uses these local crates, including NSH's offscreen renderer and
 image codec; changing them here changes the code built and tested with Maka.
 
@@ -295,3 +302,27 @@ Packaging, development serving, file watching and lazy font assignment use this
 mapping, including imports outside the entry directory. GPUI and terminal input
 fences let a Workbench replacement drain admitted edits before saving its draft;
 they reuse the existing input scopes and engine message ordering.
+
+The synchronization through `d4c43ea6` adds the Shader view, held typed-ahead
+text in GPUI fields, arrow-key movement in `Tabs` and `RadioGroup`, one unit
+per quantity, Android density remount,
+`nsh/base` registry parts and the browser-engine web runtime. The GPUI hold
+queue wraps the local `set_focus_target` transition, so inline-link targets and
+focus admission tokens remain; editable focus moves arm it, and hover hint
+observations are not counted as engine events. Core creation and remount share
+`mount_state`; list cells keep the local publication path, and a remount does
+not clear a list's mounted cells. Only `sticky_ranges` is added beside the
+local sticky handling. `TextViewLinkTarget` registers with the `text_view` part.
+Android's Shader mount item takes opcode 37, after the local 34 to 36. The
+terminal backend ignores Shader mount items, so a shader view shows its
+background and children. `wgpu` and `naga` follow version 30, which Maka's GPUI
+build already uses, instead of upstream's 29; the shader readback keeps its
+previous frame when wgpu 30 cannot map a range. Maka's root dependency graph
+gains no packages from this synchronization. RichEditor's platform keys keep
+the keymap synchronization's host keyboard convention above.
+
+Local input corrections retain IME replacement ranges, marked selections and
+composition cancellation while input waits for the engine. Delayed key releases
+follow their presses; reload drains the admitted operations before saving the
+draft. Pending edits have no time-based expiry, and a settled nonediting target
+does not intercept ordinary button activation.

@@ -87,9 +87,9 @@ impl Trace {
                 "DISPLAY": std::env::var("DISPLAY").ok(),
                 "WAYLAND_DISPLAY": std::env::var("WAYLAND_DISPLAY").ok(),
             }),
-            // Preallocate a minute at the target 120 Hz and eight Kitty
+            // Preallocate a minute at the target 120 Hz and fifteen Kitty
             // stages. This avoids growth during short measurements, not a cap.
-            samples: Vec::with_capacity(60 * 120 * 8),
+            samples: Vec::with_capacity(60 * 120 * 15),
             inputs: Vec::with_capacity(60 * 120),
             input_pumps: Vec::with_capacity(60 * 120),
             gpu: None,

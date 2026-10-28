@@ -372,7 +372,9 @@ config of the app may override it). The release `nsh.aar` does not.
       android:windowSoftInputMode="adjustResize" />
   ```
 
-  `NshView` follows the new size, color scheme, font scale and layout direction itself.
+  `NshView` follows the new size, color scheme, font scale, display density and layout direction itself; the app keeps
+  its state. Scroll positions are restored in logical coordinates within the new content bounds. Sticky views and
+  open modal windows follow the new density too.
 - **Lifecycle.** Call `destroy()` when the hosting activity or fragment goes away.
 
 ## See also

@@ -41,11 +41,9 @@ final class CanvasBox extends Box {
     private float[] slots = new float[0];
     /** Images it draws, by URI, once loaded. */
     final HashMap<String, Images.Image> images = new HashMap<>();
-    private final float density;
 
     CanvasBox(Context context, Mounter mounter, int id) {
         super(context, mounter, id);
-        density = mounter.density;
         setWillNotDraw(false);
     }
 
@@ -200,6 +198,7 @@ final class CanvasBox extends Box {
         int base = canvas.save();
         // A canvas draws within its bounds (parents do not clip children).
         canvas.clipRect(0, 0, getWidth(), getHeight());
+        float density = mounter.density;
         canvas.scale(density, density);
         // Composite operations compose with the drawing only, not the views behind.
         if (needsLayer) canvas.saveLayer(null, null);
@@ -709,7 +708,7 @@ final class CanvasBox extends Box {
         if (image == null) return;
         Rect source = null;
         if (hasSource) source = new Rect(Math.round(sx), Math.round(sy), Math.round(sx + sw), Math.round(sy + sh));
-        float scale = density;
+        float scale = mounter.density;
         if (Float.isNaN(dw)) dw = (hasSource ? sw : image.width) / scale;
         if (Float.isNaN(dh)) dh = (hasSource ? sh : image.height) / scale;
         paint.reset();

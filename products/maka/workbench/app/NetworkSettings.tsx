@@ -30,6 +30,7 @@ import {
   C,
   controlStyle,
   controlHoverStyle,
+  fieldBoxStyle,
   controlFocusStyle,
   controlDisabledStyle,
 } from './ui';
@@ -61,13 +62,14 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
               })}
               style={{
                 ...controlStyle,
+                ...fieldBoxStyle(),
                 minHeight: 40,
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: 12,
               }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>{tr('Proxy')}</Text>
@@ -97,8 +99,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                       gap: 8,
                     }}
                     selectedStyle={{ backgroundColor: C.raised }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <ChoiceIndicator
@@ -135,13 +137,14 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
               })}
               style={{
                 ...controlStyle,
+                ...fieldBoxStyle(),
                 minHeight: 40,
                 flexDirection: 'row',
                 alignItems: 'center',
                 gap: 12,
               }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...bodyTextStyle, color: C.text, flex: 1 }}>
@@ -181,8 +184,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                     gap: 8,
                   }}
                   selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <ChoiceIndicator
@@ -211,8 +214,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
                     gap: 8,
                   }}
                   selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <ChoiceIndicator
@@ -271,9 +274,9 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
               disabled={disabled()}
               accessibilityLabel={tr('Reload network settings')}
               onPress={inputAction(owner.reload, owner.action())}
-              style={{ ...controlStyle, alignSelf: 'flex-start' }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              style={{ ...controlStyle, ...fieldBoxStyle(), alignSelf: 'flex-start' }}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...bodyTextStyle, color: C.secondary }}>
@@ -288,8 +291,8 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
           accessibilityLabel={tr('Reload network settings')}
           onPress={inputAction(owner.reload, owner.action())}
           style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>

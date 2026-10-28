@@ -35,6 +35,7 @@ mod progress;
 mod radio;
 mod resizable;
 pub mod rich_editor;
+mod roving;
 mod sheet;
 mod slider;
 mod switch;
@@ -139,58 +140,148 @@ pub const SPECIFIER: &str = "nsh/base";
 
 /// Every component and module of `nsh/base`, for an engine to serve.
 pub fn registry() -> Registry {
+    registry_of(parts::ALL.iter().map(|(_, part)| *part))
+}
+
+/// The parts of `nsh/base` in `parts` ([`parts`]), for a runtime that
+/// serves only those: what no part registers is left out of its binary.
+/// Every set has the navigation, `Input` and the theme's tokens.
+pub fn registry_of(parts: impl IntoIterator<Item = parts::Part>) -> Registry {
     let mut registry = Registry::ui_set(SPECIFIER);
-    registry
-        .register::<Button>()
-        .register::<ContextMenu>()
-        .register::<Menu>()
-        .register::<MenuItem>()
-        .register::<MenuSeparator>()
-        .register::<Submenu>()
-        .register::<Popover>()
-        .register::<Sheet>()
-        .register::<Tooltip>()
-        .register::<Checkbox>()
-        .register::<Collapsible>()
-        .register::<DataTable>()
-        .register::<DockArea>()
-        .register::<DiffView>()
-        .register::<Editor>()
-        .register::<Radio>()
-        .register::<RadioGroup>()
-        .register::<ResizablePanelGroup>()
-        .register::<ResizablePanel>()
-        .register::<Slider>()
-        .register::<Switch>()
-        .register::<Table>()
-        .register::<TableHeader>()
-        .register::<TableBody>()
-        .register::<TableFooter>()
-        .register::<TableRow>()
-        .register::<TableHead>()
-        .register::<TableCell>()
-        .register::<TableCaption>()
-        .register::<Progress>()
-        .register::<rich_editor::view::RichEditor>()
-        .register::<Tab>()
-        .register::<Tabs>()
-        .register::<TextView>()
-        .register::<Toast>()
-        .register::<ToastStack>()
-        .class::<toast::ToastManagerClass>()
-        .class::<text_view::TextViewLinkTarget>()
-        .module::<AlertDialog>()
-        .module::<TextView>();
-    rich_editor::js::register(&mut registry);
+    for part in parts {
+        part(&mut registry);
+    }
     registry
         // Navigation and `Input`: made by `nsh-js` (`navigation.rs`,
         // `env.rs`), declared by hand.
         .native_values(&["NavStack", "NavPage", "Dialog", "createNavStack", "Input"])
         // The theme: the app's over the default, as design tokens.
-        .tokens_from(tokens_of)
-        // Charts' parts, a module of their own: `nsh/base/plot`.
-        .submodule(plot::registry());
+        .tokens_from(tokens_of);
     registry
+}
+
+/// The parts [`registry_of`] makes `nsh/base` of. Each registers one
+/// component, or a few that go together, with its classes and modules;
+/// [`core`](parts::core) the controls every app has. A runtime built with
+/// some of them carries the code of those only, the components' own
+/// dependencies included (Markdown's parser with `TextView`, ropey with
+/// the `Editor`).
+pub mod parts {
+    use nsh_core::element::Registry;
+
+    use crate::{
+        AlertDialog, Button, Checkbox, Collapsible, ContextMenu, DataTable, DiffView, DockArea,
+        Editor, Menu, MenuItem, MenuSeparator, Popover, Progress, Radio, RadioGroup,
+        ResizablePanel, ResizablePanelGroup, Sheet, Slider, Submenu, Switch, Tab, Table, TableBody,
+        TableCaption, TableCell, TableFooter, TableHead, TableHeader, TableRow, Tabs, TextView,
+        Toast, ToastStack, Tooltip, plot, rich_editor, toast,
+    };
+
+    /// What a part does: registers its components, classes and modules.
+    pub type Part = fn(&mut Registry);
+
+    /// Every part by its name, the order [`crate::registry`] registers them.
+    pub const ALL: &[(&str, Part)] = &[
+        ("core", core),
+        ("text_view", text_view),
+        ("editor", editor),
+        ("diff", diff),
+        ("rich_editor", rich_editor),
+        ("data_table", data_table),
+        ("table", table),
+        ("dock", dock),
+        ("resizable", resizable),
+        ("plot", plot),
+    ];
+
+    /// The controls, popups, toasts and dialogs every app may use: buttons,
+    /// checkboxes, radios, switches, sliders, tabs, collapsibles, progress,
+    /// menus, popovers, sheets, tooltips, toasts and system alerts.
+    pub fn core(registry: &mut Registry) {
+        registry
+            .register::<Button>()
+            .register::<ContextMenu>()
+            .register::<Menu>()
+            .register::<MenuItem>()
+            .register::<MenuSeparator>()
+            .register::<Submenu>()
+            .register::<Popover>()
+            .register::<Sheet>()
+            .register::<Tooltip>()
+            .register::<Checkbox>()
+            .register::<Collapsible>()
+            .register::<Radio>()
+            .register::<RadioGroup>()
+            .register::<Slider>()
+            .register::<Switch>()
+            .register::<Progress>()
+            .register::<Tab>()
+            .register::<Tabs>()
+            .register::<Toast>()
+            .register::<ToastStack>()
+            .class::<toast::ToastManagerClass>()
+            .module::<AlertDialog>();
+    }
+
+    /// `TextView`: Markdown and HTML documents.
+    pub fn text_view(registry: &mut Registry) {
+        registry
+            .register::<TextView>()
+            .class::<crate::text_view::TextViewLinkTarget>()
+            .module::<TextView>();
+    }
+
+    /// The `Editor`: a code editor.
+    pub fn editor(registry: &mut Registry) {
+        registry.register::<Editor>();
+    }
+
+    /// `DiffView`: the changes between two texts or of a patch.
+    pub fn diff(registry: &mut Registry) {
+        registry.register::<DiffView>();
+    }
+
+    /// `RichEditor`, with its schema, session and plugin classes and its
+    /// module.
+    pub fn rich_editor(registry: &mut Registry) {
+        registry.register::<rich_editor::view::RichEditor>();
+        rich_editor::js::register(registry);
+    }
+
+    /// `DataTable`.
+    pub fn data_table(registry: &mut Registry) {
+        registry.register::<DataTable>();
+    }
+
+    /// `Table` and its parts.
+    pub fn table(registry: &mut Registry) {
+        registry
+            .register::<Table>()
+            .register::<TableHeader>()
+            .register::<TableBody>()
+            .register::<TableFooter>()
+            .register::<TableRow>()
+            .register::<TableHead>()
+            .register::<TableCell>()
+            .register::<TableCaption>();
+    }
+
+    /// `DockArea`: a dockable workspace.
+    pub fn dock(registry: &mut Registry) {
+        registry.register::<DockArea>();
+    }
+
+    /// `ResizablePanelGroup` and `ResizablePanel`.
+    pub fn resizable(registry: &mut Registry) {
+        registry
+            .register::<ResizablePanelGroup>()
+            .register::<ResizablePanel>();
+    }
+
+    /// Charts' parts, a module of their own: `nsh/base/plot`.
+    pub fn plot(registry: &mut Registry) {
+        registry.submodule(plot::registry());
+    }
 }
 
 /// The specs of `nsh/base`, for the generated JS glue.
@@ -266,6 +357,48 @@ mod tests {
             .map(|s| s.export.clone())
             .collect();
         assert_eq!(plot, ["Arc", "Area", "Bar", "Grid", "Line", "Pie", "Plot"]);
+    }
+
+    /// The parts split `nsh/base` without overlap: together they export
+    /// what the whole set does, each export in one part only.
+    #[test]
+    fn the_parts_split_the_exports() {
+        use std::collections::BTreeSet;
+
+        let exports = |registry: &super::Registry| -> BTreeSet<String> {
+            let mut out: BTreeSet<String> = registry
+                .specs()
+                .iter()
+                .map(|s| s.export.to_string())
+                .collect();
+            out.extend(registry.class_specs().iter().map(|c| c.name.to_owned()));
+            out.extend(registry.module_specs().iter().map(|m| m.name.to_owned()));
+            let sets = registry.sets();
+            out.extend(
+                sets.iter()
+                    .skip(1)
+                    .filter_map(|s| s.specifier())
+                    .map(str::to_owned),
+            );
+            out
+        };
+        let mut seen = BTreeSet::new();
+        for (name, part) in super::parts::ALL {
+            for export in exports(&super::registry_of([*part])) {
+                assert!(
+                    seen.insert(export.clone()),
+                    "`{export}` is in two parts, one `{name}`"
+                );
+            }
+        }
+        assert_eq!(seen, exports(&super::registry()));
+        // What every set has, whatever its parts.
+        let bare = super::registry_of([]);
+        assert_eq!(
+            bare.native_value_names(),
+            ["NavStack", "NavPage", "Dialog", "createNavStack", "Input"]
+        );
+        assert!(bare.specs().is_empty());
     }
 
     /// Every export TS sees has a doc comment (the declarations show it).

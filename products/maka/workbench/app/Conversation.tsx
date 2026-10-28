@@ -33,13 +33,14 @@ import {
 } from 'nsh';
 import type { YNode } from 'nsh';
 import { Button } from 'nsh/base';
-import { keymap } from 'nsh';
+import { keymap, platform } from 'nsh';
 import { AnimatedValue } from 'nsh';
 import {
   host,
   loadDraft,
   saveDraft,
-  sendDraft,
+  reserveSend,
+  confirmSend,
   pendingSends,
   recoverSend,
   abandonSend,
@@ -123,6 +124,8 @@ export type ConversationHandle = ComposerSession & {
   reveal(anchor: ConversationAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
+  /** The title its header shows. */
+  title(): string;
 };
 type ConversationProps = {
   client: ScopedHost;
@@ -361,7 +364,7 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
-    | { kind: 'row'; key: string; rowId: string };
+    | { kind: 'row'; key: string; rowId: string; repeats?: number };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -371,7 +374,10 @@ export function Conversation(props: ConversationProps) {
       const turn = turnId ? projection().turns.get(turnId) : undefined;
       if (
         turn &&
-        (entry.kind === 'process' || row?.role === 'assistant') &&
+        (entry.kind === 'process' ||
+          row?.role === 'assistant' ||
+          // Recovered failures sit under the summary that folds them.
+          (row?.role === 'failure' && turnOutcome(turn) === 'completed')) &&
         !summaries.has(turn.turnId) &&
         turnOutcome(turn) !== null
       ) {
@@ -387,6 +393,9 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
+        // A completed turn recovered from its failures (retries that later
+        // succeeded); they fold away with the rest of its work.
+        if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
         if (
           reading() === 'trajectory' &&
           (row.role === 'user' ||
@@ -395,7 +404,7 @@ export function Conversation(props: ConversationProps) {
             (!row.turnId && row.role !== 'failure'))
         )
           continue;
-        result.push({ kind: 'row', key: entry.key, rowId: entry.rowId });
+        result.push({ kind: 'row', key: entry.key, rowId: entry.rowId, repeats: entry.repeats });
       }
     }
     return result;
@@ -482,6 +491,10 @@ export function Conversation(props: ConversationProps) {
   let editEpoch = 0;
   let pendingDraft: (AttachmentEdit & { text: string }) | null = null;
   let saveTask: Promise<void> | null = null;
+  // From Enter until the send is reserved, the saved draft must stay the
+  // revision being sent. Edits made meanwhile show at once and are saved after.
+  let holding = false;
+  let heldDraft: (AttachmentEdit & { text: string }) | null = null;
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -489,8 +502,7 @@ export function Conversation(props: ConversationProps) {
     changed() {
       if (!alive || !draftReady()) return;
       editEpoch += 1;
-      pendingDraft = { text: draft(), ...attachments.snapshot() };
-      startSave();
+      queueDraft({ text: draft(), ...attachments.snapshot() });
     },
   });
 
@@ -1333,12 +1345,29 @@ export function Conversation(props: ConversationProps) {
       await saveTask;
     }
   };
+  const queueDraft = (edit: AttachmentEdit & { text: string }) => {
+    if (holding) {
+      heldDraft = edit;
+      return;
+    }
+    pendingDraft = edit;
+    startSave();
+  };
   const changeDraft = (text: string) => {
     if (!alive || !draftReady()) return;
     editEpoch += 1;
     draft.set(text);
-    pendingDraft = { text, ...attachments.snapshot() };
+    queueDraft({ text, ...attachments.snapshot() });
+  };
+  // Saves what was edited while a send was being reserved; whether there was any.
+  const releaseHeld = () => {
+    holding = false;
+    const edit = heldDraft;
+    heldDraft = null;
+    if (edit === null || !alive) return false;
+    pendingDraft = edit;
     startSave();
+    return true;
   };
   const acceptRecoveredDraft = (
     stored: { revision: number; text: string; attachments: DraftAttachment[] },
@@ -1549,6 +1578,7 @@ export function Conversation(props: ConversationProps) {
     const files = [...attachments.files()];
     sending.set(true);
     error.set('');
+    holding = true;
     try {
       const model = await selection(expectedBackend);
       if (!alive || model === null) return;
@@ -1556,7 +1586,7 @@ export function Conversation(props: ConversationProps) {
       await flushDraft();
       if (!alive) return;
       if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
-      if (editEpoch !== epoch)
+      if (editEpoch !== epoch && heldDraft === null)
         throw new UiError('The draft changed before confirmation. Send again to confirm it.');
       if (
         expectedBackend !== undefined &&
@@ -1566,12 +1596,20 @@ export function Conversation(props: ConversationProps) {
       // The native journal consumes only this exact revision. New edits keep
       // saving while confirmation waits and never inherit this send attempt.
       receiptsKnown.set(false);
-      const sent = await sendDraft(client, draftRevision, model);
+      const operation = await reserveSend(client, draftRevision, model);
+      const typedAhead = releaseHeld();
+      const sent = await confirmSend(client, operation);
       if (!alive) return;
       settleReply(sent.reply, text, epoch, files);
+      // Text typed before the send was reserved continues the sent message in
+      // the composer; once it is accepted, only the continuation stays. A
+      // rejected send leaves its text in the draft, so the whole edit stays.
+      if (typedAhead && acceptedSend(sent.reply, sessionId) && draft().startsWith(text))
+        changeDraft(draft().slice(text.length));
     } catch (reason) {
       report(reason);
     } finally {
+      releaseHeld();
       try {
         if (alive) {
           const operations = await pendingSends(client);
@@ -1706,6 +1744,7 @@ export function Conversation(props: ConversationProps) {
   };
   const ownHandle: ConversationHandle = {
     sessionId,
+    title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
     computerApps,
@@ -1757,6 +1796,12 @@ export function Conversation(props: ConversationProps) {
         return false;
       }
       await flushDraft();
+      // Edits can arrive while the saved draft is being flushed. Held edits
+      // must survive until the send reserves them, before this view is disposed.
+      if (heldDraft !== null) {
+        notice.set(uiMessage('Wait for the message to send before switching.'));
+        return false;
+      }
       return !savingFailed();
     },
     focus() {
@@ -2181,7 +2226,7 @@ export function Conversation(props: ConversationProps) {
                 ? { autoscrollToBottomThreshold: 32 }
                 : {}
             }
-            contentStyle={{ paddingRight: 8 }}
+            contentStyle={{ paddingRight: 8, paddingBottom: platform.isTerminal ? 0 : 16 }}
             style={{ flex: 1, minHeight: 0 }}
             onScroll={(event) => {
               changedReadExposure();
@@ -2288,6 +2333,10 @@ export function Conversation(props: ConversationProps) {
                   return (
                     <MessageRow
                       item={row}
+                      repeats={() => {
+                        const item = displayByKey().get(initial.rowId);
+                        return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
+                      }}
                       toolMaxHeight={() => readingSize().height}
                       ownerKey={() => initial.rowId}
                       viewState={rowState(initial.rowId)}

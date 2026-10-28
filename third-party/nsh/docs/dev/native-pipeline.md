@@ -5,7 +5,14 @@ them into one ES module holding only the app's code (split into chunks loaded on
 natively. The reactive graph, the renderer and every API apps import are Rust; nothing of NSH is JS. Apps cannot
 import `solid-js` (the bundler refuses it, pointing to `nsh`'s `signal` / `computed` / `effect` / ...). It also refuses a named import a
 native module does not export, as the names `nsh-js` serves say (`native_module_exports`), when the code uses it as a
-value (types need no `type` keyword), with the place in the source and the closest export's name.
+value (types need no `type` keyword), with the place in the source and the closest export's name. Since those imports
+stay in the output, the bundle also says what the app uses of each native module (`Bundle::native_use`, `natives.rs`):
+the exports it imports by name across every chunk, every export for a namespace import, `export * from` or an
+`import()` of one, and whether it may use the globals of `crypto` (`nsh_core::js::CRYPTO_GLOBALS`: `crypto`,
+`Crypto`, `SubtleCrypto`, `CryptoKey`): it spells one of their names (a variable, a member, a key it destructures, a
+string), reads a computed member of `globalThis`, or destructures it with a computed key or a rest element. The global
+object under another name, read by a name made at run time (`const g = globalThis; g[name]`), is beyond it.
+`nsh package --target web` serves the app with a runtime that has what it uses (`web.md`).
 
 ```tsx
 import { computed, mount, signal, Text, View } from "nsh";

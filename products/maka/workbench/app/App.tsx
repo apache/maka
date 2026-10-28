@@ -17,9 +17,11 @@
  * under the License.
  */
 
+import { delayed } from './delayed';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
+import { appearance, initializeAppearance } from './appearance';
 import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
 import type { YNode, JSX } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
@@ -58,7 +60,7 @@ import { createBrowsing } from './browsing';
 import type { BrowserWorkspace } from './browsing';
 import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
-import { applicationMenu } from './chrome';
+import { applicationMenu, ownTitleBar, windowTitle } from './chrome';
 import { watchNotifications } from './notifications';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
@@ -88,6 +90,7 @@ function App(
   props: UiRootProps<JSX.Element> & { bindReload(prepare: () => Promise<unknown>): () => void },
 ) {
   initializeUiScale();
+  initializeAppearance();
   const browsing = createBrowsing();
   const foreground = createForeground();
   const restored = props.restored as RestoredUi | null;
@@ -137,11 +140,15 @@ function App(
   const status = createText();
   const switching = signal(false);
   const busy = signal(false);
+  // Shown only when saving a draft or confirming an action takes a while, so a
+  // quick one does not flash the feedback row and move the page.
+  const working = delayed(() => switching() || busy());
   const controls = signal<any[]>([]);
   const controlsKnown = signal(false);
   const recovering = signal(false);
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
+  let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   let editor: YNode | undefined;
   const focusComposer = () => editor?.focus();
   let browserRoot: YNode | undefined;
@@ -666,8 +673,15 @@ function App(
     keymap.bind('mod+0', () => void uiScale.resetAndSave(), { when: 'always' });
     keymap.bind('mod+alt+0', () => void uiScale.resetAndSave(), { when: 'always' });
   }
+  // The View menu's Larger text is Command-=; Command-+ (with Shift) is the same request.
+  if (appearance.supported)
+    keymap.bind('mod+shift+plus', () => appearance.stepTextSize(1), { when: 'always' });
   keymap.bind('mod+p', () => open({ kind: 'commands', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+o', () => open({ kind: 'search', sessionId: selected() }), { when: 'always' });
+  // The desktop Edit menu's Search conversations, the same search as Command-O. Not in
+  // terminals, where Control-F moves the cursor.
+  if (ownTitleBar)
+    keymap.bind('mod+f', () => open({ kind: 'search', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+g', () => open({ kind: 'models', sessionId: selected() }), { when: 'always' });
   keymap.bind('mod+n', () => newConversation(selected()), { when: 'always' });
   const jumpLatest = () => {
@@ -682,20 +696,11 @@ function App(
     },
     { when: 'always' },
   );
+  windowTitle(() => handle()?.title() ?? null);
   watchNotifications({
     sessions: browsing.sessions,
     foreground,
     open: (sessionId) => void selectBrowsed(sessionId, selected()),
-  });
-  // The bindings above take the same keys first; the menu shows and offers them.
-  applicationMenu({
-    newConversation: () => newConversation(selected()),
-    chooseWorkspace: () => open({ kind: 'workspaces', sessionId: selected() }),
-    sessions: () => open({ kind: 'sessions', sessionId: selected() }),
-    commands: () => open({ kind: 'commands', sessionId: selected() }),
-    models: () => open({ kind: 'models', sessionId: selected() }),
-    latest: jumpLatest,
-    settings: () => open({ kind: 'settings', sessionId: selected() }),
   });
   const recoverControls = async () => {
     if (recovering()) return;
@@ -795,6 +800,20 @@ function App(
     hidden: overlay()?.kind === 'sessions' && !foreground,
     toggle: inputAction(toggleSidebar, { sessionId, expanded: sidebarShown() }),
   });
+  // The bindings above take the same keys first; the menu shows and offers them.
+  applicationMenu({
+    newConversation: () => newConversation(selected()),
+    chooseWorkspace: () => open({ kind: 'workspaces', sessionId: selected() }),
+    sessions: () => open({ kind: 'sessions', sessionId: selected() }),
+    search: () => open({ kind: 'search', sessionId: selected() }),
+    commands: () => open({ kind: 'commands', sessionId: selected() }),
+    models: () => open({ kind: 'models', sessionId: selected() }),
+    latest: jumpLatest,
+    settings: () => open({ kind: 'settings', sessionId: selected() }),
+    sidebarShown,
+    toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
+    textSize: appearance.stepTextSize,
+  });
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
@@ -881,6 +900,7 @@ function App(
           </View>
         </If>
         <Workbench
+          dropFiles={(event) => dropFiles?.(event)}
           expanded={() => sidebarExpanded() && overlay()?.kind !== 'sessions'}
           browser={browserProps}
           resources={resources}
@@ -927,6 +947,9 @@ function App(
             )}
           </Each>
           <Composer
+            dropFiles={(drop) => {
+              dropFiles = drop;
+            }}
             blocked={reloading}
             active={() => overlay() === null && !reloading()}
             session={handle}
@@ -965,14 +988,7 @@ function App(
                   }}
                 </Each>
                 <If
-                  when={
-                    error() ||
-                    status() ||
-                    switching() ||
-                    busy() ||
-                    !controlsKnown() ||
-                    controls().length
-                  }
+                  when={error() || status() || working() || !controlsKnown() || controls().length}
                 >
                   <Scroll
                     accessibilityLabel={tr('Action feedback')}
@@ -988,7 +1004,7 @@ function App(
                         {error()}
                       </Text>
                     </If>
-                    <If when={switching() || busy()}>
+                    <If when={working()}>
                       <Text style={{ ...bodyTextStyle, color: C.muted }}>
                         {switching()
                           ? tr('Saving draft before switching…')
@@ -1005,8 +1021,8 @@ function App(
                         disabled={recovering()}
                         onPress={inputAction(recoverControls, null)}
                         style={controlStyle}
-                        hoverStyle={controlHoverStyle}
-                        focusStyle={controlFocusStyle}
+                        hoverStyle={controlHoverStyle()}
+                        focusStyle={controlFocusStyle()}
                       >
                         <Text style={{ ...bodyTextStyle, color: C.warning }}>
                           {recovering()
@@ -1026,8 +1042,8 @@ function App(
                           <Button
                             onPress={inputAction(abandonControl, original().id)}
                             style={controlStyle}
-                            hoverStyle={controlHoverStyle}
-                            focusStyle={controlFocusStyle}
+                            hoverStyle={controlHoverStyle()}
+                            focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...bodyTextStyle, color: C.warning }}>
                               {tr('Abandon unconfirmed {method}', { method: original().method })} ·{' '}
@@ -1086,8 +1102,8 @@ function App(
               origin: selected(),
             })}
             style={{ ...controlStyle, alignSelf: 'flex-start' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ color: C.accent }}>
               {tr('Open recovered fork')} · {recoveredFork()!.title}
@@ -1124,7 +1140,7 @@ function App(
                   onOpenChange={() => closeOverlay(current.instance)}
                   style={{
                     flex: 1,
-                    backgroundColor: '#00000099',
+                    backgroundColor: C.scrim,
                   }}
                 >
                   <View style={{ backgroundColor: C.background }}>

@@ -47,19 +47,20 @@ export function Palette(props: {
 }) {
   const query = signal('');
   const selected = signal(0);
-  const rowStyle = {
-    height: 48,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    borderWidth: 1,
-    borderColor: 'transparent',
-    borderRadius: 8,
-    backgroundColor: C.surface,
-  } satisfies ViewStyle;
-  const selectedRowStyle = { backgroundColor: C.raised } satisfies ViewStyle;
+  const rowStyle = () =>
+    ({
+      height: 48,
+      paddingHorizontal: 12,
+      paddingVertical: 4,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      borderWidth: 1,
+      borderColor: 'transparent',
+      borderRadius: 8,
+      backgroundColor: C.surface,
+    }) satisfies ViewStyle;
+  const selectedRowStyle = () => ({ backgroundColor: C.raised }) satisfies ViewStyle;
   let removeSearchKeys = () => {};
   cleanup(() => removeSearchKeys());
   const matches = computed(() => {
@@ -92,7 +93,7 @@ export function Palette(props: {
         flex: 1,
         justifyContent: 'flex-start',
         alignItems: 'center',
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
         paddingHorizontal: 16,
         paddingTop: compact() ? dialogTop(16) : windowSize().height / 8,
         paddingBottom: 16,
@@ -124,8 +125,8 @@ export function Palette(props: {
             tooltip={textTooltip(() => tr('Close · Esc'))}
             onPress={inputAction(props.close, props.instance)}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="close" color={C.muted} />
@@ -187,10 +188,10 @@ export function Palette(props: {
                     accessibilityLabel={entry().title}
                     selected={matches()[index()]?.id === entry().id}
                     onPress={entry().run}
-                    style={rowStyle}
-                    selectedStyle={selectedRowStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    style={rowStyle()}
+                    selectedStyle={selectedRowStyle()}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>

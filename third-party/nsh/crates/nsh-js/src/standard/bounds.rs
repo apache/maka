@@ -7,9 +7,13 @@
 //! instead. `allocUnsafe` and `allocUnsafeSlow` zero their memory as
 //! `alloc` does: uninitialized Rust memory may hold the host's data.
 use rquickjs::{
-    Class, Ctx, Exception, Function, JsLifetime, Module, Object, Result, Value,
+    Class, Ctx, Exception, Function, JsLifetime, Object, Result, Value,
     class::{ClassKind, JsCell, JsClass, Readable, Trace, Tracer},
     function::{Constructor, Params},
+};
+#[cfg(feature = "crypto")]
+use rquickjs::{
+    Module,
     module::{Declarations, Exports, ModuleDef},
 };
 
@@ -124,11 +128,13 @@ pub(crate) fn guard_buffer(cx: &Ctx<'_>) -> Result<()> {
 }
 
 /// Puts `randomBytes` of the global `crypto` object behind the ceiling.
+#[cfg(feature = "crypto")]
 pub(crate) fn guard_crypto(cx: &Ctx<'_>) -> Result<()> {
     let crypto: Object = cx.globals().get("crypto")?;
     guard_random_bytes(cx, &crypto)
 }
 
+#[cfg(feature = "crypto")]
 fn guard_random_bytes<'js>(cx: &Ctx<'js>, object: &Object<'js>) -> Result<()> {
     let random: Function = object.get("randomBytes")?;
     object.set(
@@ -139,8 +145,10 @@ fn guard_random_bytes<'js>(cx: &Ctx<'js>, object: &Object<'js>) -> Result<()> {
 
 /// The `crypto` module: LLRT's, evaluated as an inner module, its
 /// `randomBytes` behind the ceiling.
+#[cfg(feature = "crypto")]
 pub(crate) struct CryptoModule;
 
+#[cfg(feature = "crypto")]
 impl ModuleDef for CryptoModule {
     fn declare(declare: &Declarations) -> Result<()> {
         quickjs_jit_stdlib::crypto::CryptoModule::declare(declare)

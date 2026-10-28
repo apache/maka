@@ -535,6 +535,18 @@ export const workspaceMessages = {
   ],
   'Manage workspace locations': ['Manage workspace locations', '管理工作区位置', '管理工作區位置'],
   'Manage locations': ['Manage locations', '管理位置', '管理位置'],
+  'Choose folder…': ['Choose folder…', '选择文件夹…', '選擇資料夾…'],
+  'Choose a folder on this computer': [
+    'Choose a folder on this computer',
+    '在这台电脑上选择文件夹',
+    '在這台電腦上選擇資料夾',
+  ],
+  'Opening folder…': ['Opening folder…', '正在打开文件夹…', '正在開啟資料夾…'],
+  'Recover the unfinished settings action in Manage locations first.': [
+    'Recover the unfinished settings action in Manage locations first.',
+    '请先在“管理位置”中恢复未完成的设置操作。',
+    '請先在「管理位置」中復原未完成的設定操作。',
+  ],
   'Add absolute folder paths on this Host. Removing a location does not delete its files.': [
     'Add absolute folder paths on this Host. Removing a location does not delete its files.',
     '添加此主机上的文件夹绝对路径。移除位置不会删除文件。',

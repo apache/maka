@@ -44,10 +44,7 @@ impl DirectoryRootSpec {
                 '\u{205f}' | '\u{3000}' | '\u{feff}')
                 })
                 .to_owned();
-            if label.is_empty()
-                || label.len() > 128
-                || label.chars().any(|c| c <= '\u{001f}' || c == '\u{007f}')
-            {
+            if label.is_empty() || label.chars().any(|c| c <= '\u{001f}' || c == '\u{007f}') {
                 return Err("invalid project root label".into());
             }
             let directory = PublishedDirectory::open(&spec.path)?;
@@ -72,20 +69,24 @@ mod tests {
     #[test]
     fn explicit_roots_have_no_count_cap_and_still_reject_duplicate_paths() {
         let directory = tempfile::tempdir().unwrap();
+        let complete_label = "项目".repeat(32);
         let specs: Vec<_> = (0..12)
             .map(|i| {
                 let path = directory.path().join(format!("project-{i}"));
                 std::fs::create_dir(&path).unwrap();
                 DirectoryRootSpec {
-                    label: format!("Project {i}"),
+                    label: if i == 0 {
+                        complete_label.clone()
+                    } else {
+                        format!("Project {i}")
+                    },
                     path,
                 }
             })
             .collect();
-        assert_eq!(
-            DirectoryRootSpec::normalize(specs.clone()).unwrap().len(),
-            12
-        );
+        let normalized = DirectoryRootSpec::normalize(specs.clone()).unwrap();
+        assert_eq!(normalized.len(), 12);
+        assert_eq!(normalized[0].label, complete_label);
         let mut duplicate = specs;
         duplicate.push(DirectoryRootSpec {
             label: "Another label".into(),

@@ -41,6 +41,7 @@ enum Message {
     Error(AppError),
     Frame,
     HotUpdateFailed,
+    Handled(u64),
 }
 
 thread_local! {
@@ -89,6 +90,10 @@ impl MountSink for Sink {
     fn hot_update_failed(&self) {
         self.send(Message::HotUpdateFailed);
     }
+
+    fn handled(&self, events: u64) {
+        self.send(Message::Handled(events));
+    }
 }
 
 /// Called on every frame with the frame's time until it returns false
@@ -128,6 +133,8 @@ pub(crate) struct Surface {
     pub(crate) pending_auto_focus: RefCell<Option<NshView>>,
     /// Pointer input state ([`crate::input`]).
     pub(crate) input: crate::input::Input,
+    /// The destination of a file dragged in from another application.
+    pub(crate) file_drop: crate::file_drop::State,
     pub(crate) input_paused: Cell<bool>,
     engine: RefCell<Option<Engine>>,
     control: RefCell<Option<EngineControl>>,
@@ -163,6 +170,9 @@ pub(crate) struct Surface {
     /// Extra frame clients (transitions, glides, spinners): called on every
     /// frame until they return false ([`Surface::on_frame`]).
     frame_clients: RefCell<Vec<FrameClient>>,
+    /// The GPU device shader views render with, opened when the first
+    /// shader is mounted (`None` inside: there is none).
+    shader_renderer: std::cell::OnceCell<Option<Rc<nsh_engine::shader::Renderer>>>,
     /// The model of a test session's app (`nsh test --target gpui`).
     #[cfg(feature = "dev")]
     test_model: RefCell<Option<std::sync::Arc<nsh_testing::agent::Model>>>,
@@ -200,6 +210,10 @@ pub(crate) struct Surface {
     pub(crate) shortcuts: RefCell<Vec<ShortcutHandler>>,
     /// How many batches were applied.
     pub(crate) batches: Cell<u64>,
+    /// Events sent to the engine, and how many of them it has handled
+    /// with what they changed applied here.
+    events_sent: Cell<u64>,
+    events_handled: Cell<u64>,
     /// The embedding app's theme ([`crate::AppView::set_theme`]): sent to
     /// every engine the surface starts, before its first frame.
     pub(crate) host_theme: RefCell<Option<nsh_base::Theme>>,
@@ -229,6 +243,7 @@ impl Surface {
             focus_returns: RefCell::default(),
             pending_auto_focus: RefCell::default(),
             input: Default::default(),
+            file_drop: Default::default(),
             input_paused: Cell::new(false),
             engine: RefCell::new(None),
             control: RefCell::new(None),
@@ -246,6 +261,7 @@ impl Surface {
             initial_appearance: Cell::default(),
             js_frame: Cell::new(false),
             frame_clients: RefCell::default(),
+            shader_renderer: std::cell::OnceCell::new(),
             #[cfg(feature = "dev")]
             test_model: RefCell::default(),
             stats: RefCell::new(None),
@@ -265,6 +281,8 @@ impl Surface {
             on_resized: RefCell::default(),
             shortcuts: RefCell::default(),
             batches: Cell::new(0),
+            events_sent: Cell::new(0),
+            events_handled: Cell::new(0),
             chrome: Default::default(),
             host_theme: RefCell::new(None),
             host_dark: Cell::new(None),
@@ -288,6 +306,22 @@ impl Surface {
     /// Its key ([`Surface::by_key`]).
     pub(crate) fn key(&self) -> u64 {
         self.key
+    }
+
+    /// Pixels per point (the window's scale factor).
+    pub(crate) fn scale(&self) -> f32 {
+        self.scale.get()
+    }
+
+    /// The GPU device shader views render with ([`crate::shader`]), opened
+    /// the first time one asks.
+    pub(crate) fn shader_renderer(&self) -> Option<Rc<nsh_engine::shader::Renderer>> {
+        self.shader_renderer
+            .get_or_init(|| {
+                nsh_engine::shader::Renderer::new(nsh_engine::shader::PixelFormat::Bgra)
+                    .map(Rc::new)
+            })
+            .clone()
     }
 
     /// The surface's size in points.
@@ -375,6 +409,7 @@ impl Surface {
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
         self.rx.borrow_mut().take();
+        crate::file_drop::clear(self);
         crate::chrome::clear(self);
         self.focus_returns.borrow_mut().clear();
         self.pending_auto_focus.borrow_mut().take();
@@ -388,6 +423,8 @@ impl Surface {
         crate::text_input::surface_stopped(self.key);
         self.js_frame.set(false);
         self.frame_clients.borrow_mut().clear();
+        self.events_sent.set(0);
+        self.events_handled.set(0);
         self.invalidate();
     }
 
@@ -424,6 +461,14 @@ impl Surface {
                     done(Err("the UI engine changed while pausing input".into()));
                     return;
                 };
+                if crate::text_input::has_pending(&surface) {
+                    if surface.events_sent() > surface.events_handled() {
+                        surface.input_barrier(done);
+                    } else {
+                        done(Err("pending input has no editable focus target".into()));
+                    }
+                    return;
+                }
                 control.advance_clock(std::time::Duration::ZERO, move || done(Ok(())));
             });
         });
@@ -489,16 +534,28 @@ impl Surface {
         self.control(|c| {
             c.set_focus_path(self.focus_path());
             c.dispatch_event(id, kind, payload);
+            self.events_sent.set(self.events_sent.get() + 1);
         });
     }
 
     /// Sends a passive hint observation after the matching native focus
-    /// snapshot, through the same engine FIFO as events.
+    /// snapshot, through the same engine FIFO as events. It is not an event
+    /// the engine counts ([`Self::events_handled`]).
     pub(crate) fn observe_hint(&self, observation: HintObservation) {
         self.control(|c| {
             c.set_focus_path(self.focus_path());
             c.observe_hint(observation);
         });
+    }
+
+    /// Events sent to the engine so far.
+    pub(crate) fn events_sent(&self) -> u64 {
+        self.events_sent.get()
+    }
+
+    /// Events the engine has handled, with what they changed applied.
+    pub(crate) fn events_handled(&self) -> u64 {
+        self.events_handled.get()
     }
 
     /// The view of node `id`.
@@ -652,6 +709,10 @@ impl Surface {
                         f();
                     }
                 }
+                Message::Handled(events) => {
+                    self.events_handled.set(events);
+                    crate::text_input::engine_caught_up(self);
+                }
             }
         }
         if applied {
@@ -762,6 +823,13 @@ impl Surface {
     pub(crate) fn on_frame(self: &Rc<Self>, f: impl FnMut(&Rc<Surface>, f64) -> bool + 'static) {
         self.frame_clients.borrow_mut().push(Box::new(f));
         self.ensure_ticking();
+    }
+
+    /// [`Surface::on_frame`] while the animation graph is borrowed (its
+    /// writes into the views): asks for a frame without looking at it.
+    pub(crate) fn add_frame_client(&self, f: impl FnMut(&Rc<Surface>, f64) -> bool + 'static) {
+        self.frame_clients.borrow_mut().push(Box::new(f));
+        self.invalidate();
     }
 
     /// Whether a native animation runs: the graph's, or the platform's own

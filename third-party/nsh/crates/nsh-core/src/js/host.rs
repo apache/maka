@@ -116,6 +116,7 @@ pub fn element_bits(tag: crate::Tag) -> u32 {
             Tag::Video => on::VIDEO,
             Tag::InputAccessory => on::INPUT_ACCESSORY,
             Tag::View => on::VIEW,
+            Tag::Shader => on::VIEW | on::SHADER,
             Tag::Cell | Tag::Stack | Tag::HeaderItem | Tag::Canvas | Tag::Native | Tag::Overlay => {
                 0
             }
@@ -162,6 +163,8 @@ pub mod on {
     pub const OVERLAY: u32 = 1 << 12;
     /// `<view>`.
     pub const VIEW: u32 = 1 << 13;
+    /// `<shader>`.
+    pub const SHADER: u32 = 1 << 14;
     /// Set by the runtime itself, not part of the elements' types.
     pub const INTERNAL: u32 = 1 << 31;
 }
@@ -906,6 +909,7 @@ const GROUPS: &[(u32, &str, &str)] = &[
     (on::MODAL, "Dialog", "dialogs"),
     (on::WEBVIEW, "WebView", "web views"),
     (on::VIDEO, "Video", "videos"),
+    (on::SHADER, "Shader", "shaders"),
     (on::INPUT_ACCESSORY, "InputAccessory", "input accessories"),
     (on::OVERLAY, "Overlay", "`<Overlay>`"),
 ];
