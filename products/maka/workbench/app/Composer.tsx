@@ -270,7 +270,10 @@ export function Composer(props: {
             return (
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
-                <Checklist sessionId={owner.sessionId} />
+                <Checklist
+                  sessionId={owner.sessionId}
+                  tuck={platform.isTerminal ? undefined : compact() ? 16 : 24}
+                />
                 <QueueDock session={owner.queue} />
                 <If when={owner.recoverable()}>
                   <Button
