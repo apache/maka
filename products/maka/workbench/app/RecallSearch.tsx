@@ -353,6 +353,9 @@ export function RecallSearch(props: {
                 repeat: true,
                 within: node,
               }),
+              // One Escape closes the search, as its close button says; a
+              // text field alone would only lose the focus.
+              keymap.bind('escape', close, { when: 'always', within: node }),
             ];
             removeKeys = () => keys.forEach((remove) => remove());
           }}
