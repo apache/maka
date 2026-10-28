@@ -2513,6 +2513,7 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         let mut screen = history;
         loop {
             support::scroll_snapshot_text(&mut view, &screen, "History ", MouseEventKind::ScrollUp);
+            commit_native_events(&view).await;
             support::tick(&mut view);
             screen = view.snapshot();
             if screen.contains("History 00 paragraph") {
@@ -3254,7 +3255,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         assert_eq!(view.surface().input_context().unwrap().text.as_deref(), Some("UNSENT_PREVIEW_DRAFT"));
         support::wait_draft(&client, &fixture.session, "UNSENT_PREVIEW_DRAFT").await;
         let composer = view.surface().focused().unwrap();
-        support::click_label(&mut view, "Browse workspace files");
+        support::click_button(&mut view, "Browse workspace files").await;
         wait_view(&mut view, |screen| screen.contains("000-preview.txt") && screen.contains("001-scene.data") && !screen.contains("Loading files…") && !screen.contains("Updating files…")).await;
         support::click_label(&mut view, "File: 000-preview.txt");
         let first = wait_view_state(&mut view, |view, screen| screen.contains("AFTER_CURRENT_EDIT") && screen.contains("Captured version") && !screen.contains("Reading current file…") && view.accessibility_snapshot().iter().any(|node| node.label == long_line && node.frame.size.height.0 > 16.0)).await;
@@ -3385,7 +3386,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         wait_view(&mut view, |screen| !screen.contains("Current worktree diff") && screen.contains("UNSENT_PREVIEW_DRAFT")).await;
         assert!(view.accessibility_snapshot().iter().any(|node| node.id == composer));
-        support::click_label(&mut view, "Browse workspace files");
+        support::click_button(&mut view, "Browse workspace files").await;
         wait_view(&mut view, |screen| screen.contains("001-scene.data") && !screen.contains("Loading files…") && !screen.contains("Updating files…")).await;
         support::click_label(&mut view, "File: 001-scene.data");
         let image = wait_view(&mut view, |screen| screen.contains("64 × 48 · Captured image") && screen.contains('▀')).await;
@@ -3425,7 +3426,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         for index in 0..140 {
             std::fs::write(workspace.join(format!("page-{index:03}.txt")), "file\n").unwrap();
         }
-        support::click_label(&mut view, "Browse workspace files");
+        support::click_button(&mut view, "Browse workspace files").await;
         wait_view(&mut view, |screen| screen.contains("page-000.txt") && !screen.contains("Loading files…") && !screen.contains("Updating files…")).await;
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
