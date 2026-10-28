@@ -139,7 +139,7 @@ async fn require_safe_through_policy(
               WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind = 'tool_settled')
               AND (?4 = 0 OR NOT EXISTS(SELECT 1 FROM runtime_events terminal
                 WHERE terminal.invocation_id = e.invocation_id AND terminal.kind = 'invocation_ended'
-                AND json_extract(terminal.event_json, '$.fact.outcome.class') = 'outcome_unknown')))
+                AND json_extract(terminal.event_json, '$.fact.outcome.kind') IN ('failed','cancelled'))))
            OR (e.kind = 'model_requested' AND NOT EXISTS(SELECT 1 FROM runtime_events t
               WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind IN ('model_completed','model_interrupted')))
            OR (e.kind = 'model_requested' AND EXISTS(SELECT 1 FROM accepted_calls p

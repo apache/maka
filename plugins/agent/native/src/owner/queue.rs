@@ -423,6 +423,8 @@ impl Owner {
                 configuration.editing_tools = source.accepted.editing_tools;
                 let tools =
                     self.selected_tools(&basis, basis.tool_discovery, configuration.editing_tools)?;
+                let allow_prior_unknown =
+                    basis.background.is_none() && delivered.message.origin.is_none();
                 PreparedRun::Model(Box::new(RunInput {
                     model_source: Some(Arc::new(source)),
                     model_revision: Some(prepared.revision),
@@ -439,7 +441,7 @@ impl Owner {
                         message: delivered.message.content.clone(),
                         source_messages: vec![delivered],
                         tools,
-                        allow_prior_unknown: false,
+                        allow_prior_unknown,
                     },
                 }))
             }
