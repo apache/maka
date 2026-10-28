@@ -842,13 +842,23 @@ function ModelMenu(props: {
             {tr('No models match this search and connection.')}
           </Text>
         </If>
-        <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
-          {loading()
-            ? tr('Loading…')
-            : choices().length === 1
-              ? tr('{count} model', { count: choices().length })
-              : tr('{count} models', { count: choices().length })}
-        </Text>
+        {/* On the desktop a line ends the list, so a row cut off by its edge
+            does not read as part of the count. */}
+        <View
+          style={{
+            borderTopWidth: platform.isTerminal ? 0 : 1,
+            borderTopColor: C.line,
+            paddingTop: platform.isTerminal ? 0 : 8,
+          }}
+        >
+          <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
+            {loading()
+              ? tr('Loading…')
+              : choices().length === 1
+                ? tr('{count} model', { count: choices().length })
+                : tr('{count} models', { count: choices().length })}
+          </Text>
+        </View>
       </If>
       <If when={pane() === 'effort'}>
         <Scroll style={{ minHeight: 0, flexShrink: 1 }}>
