@@ -21,10 +21,9 @@
 // Shader lifecycle only: no wasm or pixel/GPU output is exercised.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const candidates = [
@@ -49,9 +48,8 @@ test('deleting a shader releases its canvas and observer before an ID is reused'
   try {
     const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
     const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { Player };').toString('base64');
-    await writeFile(join(dir, 'index.html'), `<!doctype html><body><script type="module">
-      import { Player } from '${module}';
-      try {
+    const expression = `(async () => {
+      const { Player } = await import('${module}');
         const check = (value, message) => { if (!value) throw Error(message); };
         const disconnected = new Set();
         const Observer = window.IntersectionObserver;
@@ -99,14 +97,9 @@ test('deleting a shader releases its canvas and observer before an ID is reused'
           check(player.shaderViews.size === 0, 'replacement shader frame client survives deletion');
           root.remove();
         }
-        document.body.dataset.result = 'passed';
-      } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
-    </script>`);
-    const html = execFileSync(chromium, ['--headless', '--disable-dev-shm-usage',
-      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=1000',
-      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
-    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+        return 'passed';
+    })()`;
+    assert.equal(await evaluateInBrowser(dir, expression), 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

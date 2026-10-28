@@ -1549,7 +1549,7 @@
     "third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs": "c5b3303025a0ce8425a77fe455f3c5abab3faee53dd0e666170a2ff9e877f4b2",
     "third-party/nsh/crates/nsh-platform-web/web/scroll-browser.test.mjs": "3f8150ebd2b69d7ab306307868b938b99435308ff37c2c999cf297a0f94fd30d",
     "third-party/nsh/crates/nsh-platform-web/web/scroll.test.mjs": "8340b2dfe118ca654c0fc3313331aae9098288f777d49811f0c5cc1e97ab2e02",
-    "third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs": "87b64c1327178a23402b1c653d98f4cc9d775433e0b6df138e003b46ed74293d",
+    "third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs": "503f9d39585ac3cc1319f6937b559512676f3fe12eb472c7a5cf04c8650ce051",
     "third-party/nsh/crates/nsh-platform-web/web/text-browser.test.mjs": "d81d505db937f4f46f9a3e09bdfe7a9b60d590158b161f3013868d6b796de08c",
     "third-party/nsh/crates/nsh-platform-web/web/viewport-browser.test.mjs": "ff123920cfd90b6ecc7f295a4b26c5a329fec8315b86d1b089cce354a09dc365",
     "third-party/nsh/crates/nsh-platform-windows/Cargo.toml": "0e8ecf656f13e78c83760ec00a410d6d51dba60f0e8edda9c0fedc0c8ad3f089",
