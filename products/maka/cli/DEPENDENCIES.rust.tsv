@@ -206,7 +206,7 @@ ctr@0.10.1		X										X
 ctutils@0.4.5		X										X						
 cua-cursor-motion@0.38.0												X						
 cua-driver-contract@0.38.0												X						
-cua-driver-core@0.38.0												X						
+cua-driver-core@0.38.0		X										X						
 cua-driver-sdk@0.38.0												X						
 cursor-icon@1.2.0		X										X						X
 cursor-overlay@0.38.0												X						

@@ -3806,6 +3806,25 @@ async fn dispatch_extension_popups(
     }
 }
 
+// An event may arrive while this same retained dispatch holds Host across an
+// await. Keep polling that original future while acquiring the event's lock.
+async fn lock_for_extension_event<'host>(
+    host: &'host tokio::sync::Mutex<Host>,
+    dispatch: &mut Option<crate::HostEffectFuture>,
+) -> tokio::sync::MutexGuard<'host, Host> {
+    let lock = host.lock();
+    tokio::pin!(lock);
+    loop {
+        match dispatch.as_mut() {
+            Some(pending) => tokio::select! {
+                ledger = &mut lock => return ledger,
+                _ = pending => { *dispatch = None; }
+            },
+            None => return lock.await,
+        }
+    }
+}
+
 async fn register(
     host: &Arc<tokio::sync::Mutex<Host>>,
     owner: uuid::Uuid,
@@ -3864,7 +3883,15 @@ async fn register(
             let Some(host) = weak.upgrade() else {
                 break;
             };
-            let mut ledger = host.lock().await;
+            let mut ledger = lock_for_extension_event(&host, &mut popup_dispatch).await;
+            if popup_dispatch.is_none() && popup_dirty {
+                popup_dirty = false;
+                let host = host.clone();
+                let provider = provider.clone();
+                popup_dispatch = Some(Box::pin(async move {
+                    dispatch_extension_popups(&host, owner, &provider).await
+                }));
+            }
             if !ledger.extension.contains_key(&(owner, browser.clone())) {
                 break;
             }
@@ -7208,6 +7235,61 @@ mod control_lifetime_tests {
                 .logical_active
                 .as_deref(),
             Some("callback-ran")
+        );
+    }
+
+    #[tokio::test]
+    async fn extension_event_lock_keeps_polling_the_same_dispatch_that_holds_host() {
+        let (owner, browser, state) = fixture();
+        let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+        host.lock()
+            .await
+            .extension
+            .insert((owner, browser.clone()), state);
+        let (release, released) = tokio::sync::oneshot::channel();
+        let callback_host = host.clone();
+        let callback_browser = browser.clone();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let terminal = completed.clone();
+        let mut original: Option<crate::HostEffectFuture> = Some(Box::pin(async move {
+            let mut ledger = callback_host.lock().await;
+            released.await.unwrap();
+            ledger
+                .extension
+                .get_mut(&(owner, callback_browser))
+                .unwrap()
+                .logical_active = Some("same-original-terminal".into());
+            terminal.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        assert!(
+            std::future::poll_fn(|cx| Poll::Ready(
+                original.as_mut().unwrap().as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        assert!(
+            host.try_lock().is_err(),
+            "the actual original future owns Host"
+        );
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
+        release.send(()).unwrap();
+        let ledger = tokio::time::timeout(
+            Duration::from_secs(1),
+            lock_for_extension_event(&host, &mut original),
+        )
+        .await
+        .expect("event lock must continue its retained lock-owning dispatch");
+        assert!(
+            original.is_none(),
+            "the same future reached its real terminal"
+        );
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            ledger.extension[&(owner, browser)]
+                .logical_active
+                .as_deref(),
+            Some("same-original-terminal")
         );
     }
 

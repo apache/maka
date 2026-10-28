@@ -2575,6 +2575,11 @@ mod actual_call_scope_tests {
         let reply = async {
             let frame = read_frame(&mut fixture.server).await;
             assert_eq!(frame["request"]["method"], "prepareSessionTab");
+            assert_eq!(
+                pending.attempt.dispatch.load(Ordering::SeqCst),
+                UI_MAY_DISPATCH,
+                "the actual SDK frame crosses firstpoll before any reply can retire it"
+            );
             write_frame(&mut fixture.server, json!({
                 "kind":"controlEvent", "event":{"kind":"reply", "data":{
                     "id":frame["request"]["id"],
@@ -2587,10 +2592,6 @@ mod actual_call_scope_tests {
         let (result, ()) = bounded(async { tokio::join!(original, reply) }).await;
         let error = result.unwrap_err();
         assert!(pending.scope.control.undispatched_control(&error).is_some());
-        assert_eq!(
-            pending.attempt.dispatch.load(Ordering::SeqCst),
-            UI_MAY_DISPATCH
-        );
         {
             let mut ledger = pending.host.lock().await;
             bounded(ledger.reconcile_provider(pending.owner, &pending.scope.provider))

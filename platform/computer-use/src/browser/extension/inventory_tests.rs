@@ -609,7 +609,7 @@ async fn two_dropped_inventory_observers_supply_real_wakes_to_actual_host_finish
     .await;
     assert!(bounded(finishing).await.unwrap().unwrap().is_empty());
     {
-        let ledger = host.lock().await;
+        let ledger = bounded(host.lock()).await;
         let state = &ledger.extension[&(owner, browser)];
         assert!(state.current_turn.is_none());
         assert!(state.retiring_turn.is_none());
