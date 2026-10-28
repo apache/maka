@@ -161,6 +161,7 @@ pub(super) struct Setup {
     granted: bool,
     pub(super) nestable: bool,
     query: bool,
+    management: bool,
     questions: bool,
     forms: bool,
     files: Option<&'static str>,
@@ -199,6 +200,7 @@ impl Setup {
             echo: false,
             granted: true,
             query: false,
+            management: false,
             questions: false,
             forms: false,
             files: None,
@@ -230,6 +232,7 @@ impl Setup {
             echo: false,
             granted,
             query: false,
+            management: false,
             questions: false,
             forms: false,
             files: None,
@@ -267,6 +270,7 @@ impl Setup {
             echo: false,
             granted: true,
             query: false,
+            management: false,
             questions: true,
             forms: false,
             files: None,
@@ -478,6 +482,9 @@ impl Setup {
         }
     }
     fn contract(&self) -> Contract {
+        if self.management {
+            return maka_plugin_core::deployment::management::deployment_manager_contract();
+        }
         if self.computer {
             return maka_workspace_api::computer::contract();
         }
@@ -506,6 +513,9 @@ impl Setup {
         }
     }
     fn export(&self) -> &str {
+        if self.management {
+            return "Management";
+        }
         if self.computer {
             return maka_workspace_api::computer::EXPORT;
         }
@@ -534,6 +544,9 @@ impl Setup {
         }
     }
     pub(super) fn method(&self) -> &str {
+        if self.management {
+            return "instances";
+        }
         if self.computer {
             return "evaluate";
         }
@@ -699,12 +712,20 @@ impl Setup {
             && !self.protocol
             && self.skills.is_none()
         {
-            let methods = if self.echo {
-                "write({amount,note=''}){return {effects:effects+=amount,payload:note};},read({note=''}){return {effects,payload:note};}"
+            if self.management {
+                let Interface::Service { methods } = self.contract().interface else {
+                    unreachable!()
+                };
+                let names: Vec<_> = methods.keys().collect();
+                files.insert("counter.mjs".into(), format!(r#"export function activate(){{return {{Management:{{contract:{},service:['counter']}}}};}} export const counter={{...Object.fromEntries({}.map(name => [name, () => {{ throw new Error('unexpected method'); }}])),instances(input){{if(input.kind !== 'start' && input.kind !== 'continue') throw new Error('invalid management input'); if(input.kind === 'continue' && (JSON.stringify(input.after) !== JSON.stringify(['00000000-0000-0000-0000-000000000002']) || !input.source)) throw new Error('invalid continuation'); return {{source:input.source ?? {{stateDomain:'a'.repeat(64),deployment:'00000000-0000-0000-0000-000000000001',revision:1}},instances:[],next:null}};}}}};"#, serde_json::to_string(&self.contract()).unwrap(), serde_json::to_string(&names).unwrap()).into_bytes());
             } else {
-                "write({amount}){return {effects:effects+=amount};},read(){return {effects};}"
-            };
-            files.insert("counter.mjs".into(), format!(r#"let effects=0; export function activate(){{return {{Counter:{{contract:{},service:['counter']}}}};}} export const counter={{{methods}}};"#, serde_json::to_string(&counter_contract()).unwrap()).into_bytes());
+                let methods = if self.echo {
+                    "write({amount,note=''}){return {effects:effects+=amount,payload:note};},read({note=''}){return {effects,payload:note};}"
+                } else {
+                    "write({amount}){return {effects:effects+=amount};},read(){return {effects};}"
+                };
+                files.insert("counter.mjs".into(), format!(r#"let effects=0; export function activate(){{return {{Counter:{{contract:{},service:['counter']}}}};}} export const counter={{{methods}}};"#, serde_json::to_string(&counter_contract()).unwrap()).into_bytes());
+            }
         }
         let package = Package::new(files).unwrap();
         input.instances.insert(
@@ -955,7 +976,10 @@ async fn tool_response_input(socket: &mut TcpStream, input: Value) {
     named_tool_response(socket, "Counter", input).await;
 }
 pub(super) async fn named_tool_response(socket: &mut TcpStream, name: &str, input: Value) {
-    let delta = json!({"id":"tool-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"counter-call","type":"function","function":{"name":name,"arguments":input.to_string()}}]},"finish_reason":null}]});
+    tool_response_with_id(socket, "counter-call", name, input).await;
+}
+async fn tool_response_with_id(socket: &mut TcpStream, id: &str, name: &str, input: Value) {
+    let delta = json!({"id":"tool-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":name,"arguments":input.to_string()}}]},"finish_reason":null}]});
     let body = format!(
         "data: {delta}\n\ndata: {{\"id\":\"tool-model\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
     );
@@ -3018,4 +3042,49 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn management_instances_tool_projects_object_schema_and_executes_pagination() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let source = json!({"stateDomain":"a".repeat(64),"deployment":"00000000-0000-0000-0000-000000000001","revision":1});
+        let expected_source = source.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let first = request(&mut socket).await;
+            let tool = &first["tools"][0]["function"];
+            assert_eq!(tool["name"], "UIInstances");
+            let schema = &tool["parameters"];
+            assert_eq!(schema["type"], "object");
+            let validator = jsonschema::options().offline().build(schema).unwrap();
+            assert!(validator.is_valid(&json!({"request":{"kind":"start"}})));
+            assert!(validator.is_valid(&json!({"request":{"kind":"continue","source":expected_source,"after":["00000000-0000-0000-0000-000000000002"]}})));
+            assert!(!validator.is_valid(&json!({"request":{"kind":"continue"}})));
+            tool_response_with_id(&mut socket, "instances-start", "UIInstances", json!({"request":{"kind":"start"}})).await;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let next = request(&mut socket).await;
+            let result = next["messages"].as_array().unwrap().iter().find(|message| message["role"] == "tool").unwrap();
+            let value: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+            assert_eq!(value["source"], expected_source);
+            tool_response_with_id(&mut socket, "instances-continue", "UIInstances", json!({"request":{"kind":"continue","source":expected_source,"after":["00000000-0000-0000-0000-000000000002"]}})).await;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let next = request(&mut socket).await;
+            let result = next["messages"].as_array().unwrap().iter().rev().find(|message| message["role"] == "tool").unwrap();
+            let value: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+            assert_eq!(value["source"], expected_source);
+            response(&mut socket).await;
+        });
+        let mut setup = Setup::javascript().named("UIInstances");
+        setup.management = true;
+        let fixture = Fixture::with_services(&base, None, None, Some(setup)).await;
+        let created = fixture.mutation(2, "create", fixture.create_input("Management tools").await, Uuid::new_v4()).await.unwrap();
+        let session = created["session"]["id"].as_str().unwrap_or_else(|| panic!("creation failed: {created}")).to_owned();
+        fixture.send(&session).await.unwrap();
+        fixture.drained().await;
+        server.await.unwrap();
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    }).await.unwrap();
 }

@@ -113,6 +113,8 @@ pub(crate) fn catalog(
     let mut planning = Vec::new();
     let questions_contract = maka_interactions_api::questions::contract();
     let web_contract = maka_web_api::contract();
+    let management_contract =
+        maka_plugin_core::deployment::management::deployment_manager_contract();
     let mut web_bindings = std::collections::BTreeMap::<String, Vec<Service>>::new();
     let mut computer_bindings = std::collections::BTreeMap::<String, Vec<Service>>::new();
     let mut shell_bindings = Vec::new();
@@ -206,6 +208,9 @@ pub(crate) fn catalog(
                     .validate()
                     .map_err(|_| "agent_tool_title_invalid".to_owned())?;
             }
+            let management_instances = selection.input == ToolInput::Json
+                && binding.contract() == &management_contract
+                && selection.method == "instances";
             let input_schema = match selection.input {
                 ToolInput::Shell => {
                     if binding.contract() != &maka_workspace_api::processes::contract()
@@ -227,7 +232,13 @@ pub(crate) fn catalog(
                     {
                         return Err("agent_skill_tool_projection_required".into());
                     }
-                    method.input.as_ref().clone()
+                    if management_instances {
+                        schemars::schema_for!(ToolRequest<
+                            maka_plugin_core::deployment::management::DeploymentInstances,
+                        >).into()
+                    } else {
+                        method.input.as_ref().clone()
+                    }
                 }
                 ToolInput::Web => {
                     if binding.contract() != &maka_web_api::contract()
@@ -271,6 +282,7 @@ pub(crate) fn catalog(
                 tool_names: tool_names.clone(),
                 selection: selection.clone(),
                 title_kind,
+                management_instances,
                 mode: method.mode,
                 web_basis: None,
             };
@@ -388,6 +400,7 @@ struct Service {
     target: String,
     selection: ServiceTool,
     title_kind: Option<title::Kind>,
+    management_instances: bool,
     mode: MethodMode,
 }
 impl ToolPreparer for Service {
@@ -410,6 +423,7 @@ impl ToolPreparer for Service {
         let selection = self.selection.clone();
         let default_title = self.title_kind;
         let mode = self.mode;
+        let management_instances = self.management_instances;
         Box::pin(async move {
             let store = Arc::new(
                 store
@@ -469,6 +483,11 @@ impl ToolPreparer for Service {
                         ));
                     }
                     let input = match selection.input {
+                        ToolInput::Json if management_instances => {
+                            serde_json::from_value::<ToolRequest<Value>>(input)
+                                .map(|input| input.request)
+                                .map_err(|error| ToolError::Failed(error.to_string()))?
+                        }
                         ToolInput::Json => input,
                         ToolInput::Shell => {
                             let mut input = input;
