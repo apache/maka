@@ -166,10 +166,7 @@ function ToolText(props: {
                 ]}
               />
             </If>
-            {/* A final newline would show as an empty last line; copying keeps it. */}
-            <Text style={[{ ...codeTextStyle, color }, { userSelect: 'text' }]}>
-              {props.text.endsWith('\n') ? props.text.slice(0, -1) : props.text}
-            </Text>
+            <Text style={[{ ...codeTextStyle, color }, { userSelect: 'text' }]}>{props.text}</Text>
           </View>
         </Scroll>
       </If>
