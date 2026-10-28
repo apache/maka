@@ -114,17 +114,37 @@ pub fn open_nofollow(path: &Path, write: bool) -> io::Result<File> {
 /// current-account directory may be tightened, never adopted from another owner.
 pub fn private_directory(path: &Path) -> io::Result<()> {
     let security = PrivateSecurity::current_account()?;
+    if let Err(error) = create_directory(path, &security)
+        && error.kind() != io::ErrorKind::AlreadyExists
+    {
+        return Err(error);
+    }
+    let file = open_directory(path)?;
+    security.restrict(&file).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("private directory {}: {error}", path.display()),
+        )
+    })
+}
+
+/// Create a new private directory; never change an existing entry.
+pub fn create_private_directory(path: &Path) -> io::Result<()> {
+    let security = PrivateSecurity::current_account()?;
+    create_directory(path, &security)?;
+    validate_private(&open_directory(path)?)
+}
+
+fn create_directory(path: &Path, security: &PrivateSecurity) -> io::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
     let path_wide = wide(path.as_os_str())?;
     // SAFETY: pathname and descriptor remain valid for this synchronous call.
-    if unsafe { CreateDirectoryW(path_wide.as_ptr(), &security.attributes()) } == 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::AlreadyExists {
-            return Err(error);
-        }
-    }
+    checked(unsafe { CreateDirectoryW(path_wide.as_ptr(), &security.attributes()) })
+}
+
+fn open_directory(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .access_mode(READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
@@ -136,6 +156,5 @@ pub fn private_directory(path: &Path) -> io::Result<()> {
             "private directory required",
         ));
     }
-    security.restrict(&file)?;
-    validate_private(&file)
+    Ok(file)
 }

@@ -17,7 +17,11 @@
  * under the License.
  */
 
-use super::{LocalAllocation, account::AccountSid, checked, wide};
+use super::{
+    LocalAllocation,
+    account::{AccountSid, sid_text},
+    checked, wide,
+};
 use std::{fs::File, io, os::windows::io::AsRawHandle, ptr};
 use windows_sys::Win32::{
     Security::{
@@ -38,6 +42,22 @@ fn denied() -> io::Error {
         io::ErrorKind::PermissionDenied,
         "object must be private to the current account and SYSTEM",
     )
+}
+
+fn validate_owner(info: &SecurityInfo, account: &AccountSid) -> io::Result<()> {
+    // SAFETY: both SID pointers remain owned by account/info.
+    if unsafe { EqualSid(info.owner, account.as_ptr()) } != 0 {
+        return Ok(());
+    }
+    // SAFETY: SecurityInfo owns the SID returned by GetSecurityInfo.
+    let owner = unsafe { sid_text(info.owner) }?;
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "object owner {owner} differs from current account {}; existing state was not adopted",
+            account.text()?
+        ),
+    ))
 }
 
 /// Current-account owner, protected DACL, inheritable full access only for that
@@ -73,10 +93,7 @@ impl PrivateSecurity {
     pub(super) fn restrict(&self, file: &File) -> io::Result<()> {
         let account = AccountSid::current()?;
         let current = SecurityInfo::read(file)?;
-        // SAFETY: both SID pointers remain owned by account/current.
-        if unsafe { EqualSid(current.owner, account.as_ptr()) } == 0 {
-            return Err(denied());
-        }
+        validate_owner(&current, &account)?;
         let (mut present, mut defaulted, mut dacl) = (0, 0, ptr::null_mut());
         // SAFETY: descriptor was produced from a valid SDDL string.
         checked(unsafe {
@@ -146,10 +163,7 @@ impl SecurityInfo {
 pub fn validate_private(file: &File) -> io::Result<()> {
     let info = SecurityInfo::read(file)?;
     let account = AccountSid::current()?;
-    // SAFETY: owner SID is part of the successful security query.
-    if unsafe { EqualSid(info.owner, account.as_ptr()) } == 0 {
-        return Err(denied());
-    }
+    validate_owner(&info, &account)?;
     // SAFETY: Windows returned a valid ACL and owns its structural validation.
     for index in 0..unsafe { (*info.dacl).AceCount } {
         let mut ace = ptr::null_mut();
@@ -189,6 +203,97 @@ mod tests {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, READ_CONTROL, WRITE_DAC,
     };
+
+    fn descriptor(file: &File) -> String {
+        use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+        let info = SecurityInfo::read(file).unwrap();
+        let mut text = ptr::null_mut();
+        // SAFETY: the queried descriptor remains owned by info; Windows allocates the output.
+        checked(unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                info._allocation.0,
+                SDDL_REVISION_1,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut text,
+                ptr::null_mut(),
+            )
+        })
+        .unwrap();
+        let _allocation = LocalAllocation(text.cast());
+        let mut length = 0;
+        // SAFETY: successful conversion returns a NUL-terminated UTF-16 string.
+        while unsafe { *text.add(length) } != 0 {
+            length += 1;
+        }
+        String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) }).unwrap()
+    }
+
+    #[test]
+    fn prepared_root_is_private_before_initialization_and_can_be_reopened() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("nested/root");
+        let canonical = crate::root::prepare_directory(&path).unwrap();
+        let directory = super::super::open_nofollow(&canonical, false).unwrap();
+        validate_private(&directory).unwrap();
+        let before = descriptor(&directory);
+        assert_eq!(crate::root::prepare_directory(&path).unwrap(), canonical);
+        assert_eq!(descriptor(&directory), before);
+        let namespaces = crate::root::RootNamespaces {
+            ownership: temporary.path().join("owners"),
+            control: temporary.path().join("control"),
+        };
+        let owner = crate::root::RootOwner::create(&path, &namespaces).unwrap();
+        let id = owner.root_id().to_owned();
+        drop(owner);
+        assert_eq!(
+            crate::root::RootOwner::open(&path, &namespaces)
+                .unwrap()
+                .root_id(),
+            id
+        );
+    }
+
+    #[test]
+    fn preparing_an_existing_directory_preserves_security_and_contents() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("existing");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("keep"), b"existing state").unwrap();
+        let directory = super::super::open_nofollow(&path, false).unwrap();
+        let before = descriptor(&directory);
+        assert_eq!(
+            crate::root::windows::create_private_directory(&path)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists,
+        );
+        crate::root::prepare_directory(&path).unwrap();
+        let namespaces = crate::root::RootNamespaces {
+            ownership: temporary.path().join("owners"),
+            control: temporary.path().join("control"),
+        };
+        assert!(crate::root::RootOwner::create(&path, &namespaces).is_err());
+        assert_eq!(descriptor(&directory), before);
+        assert_eq!(std::fs::read(path.join("keep")).unwrap(), b"existing state");
+        assert!(!namespaces.ownership.exists());
+
+        // Elevated Windows tokens can default newly created objects to Administrators.
+        let info = SecurityInfo::read(&directory).unwrap();
+        let account = AccountSid::current().unwrap();
+        // SAFETY: the descriptor and account keep both SID pointers valid.
+        if unsafe { EqualSid(info.owner, account.as_ptr()) } == 0 {
+            let error = crate::root::windows::private_directory(&path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            let message = error.to_string();
+            assert!(message.contains(&path.display().to_string()), "{message}");
+            assert!(message.contains(&account.text().unwrap()), "{message}");
+            assert!(
+                message.contains(&unsafe { sid_text(info.owner) }.unwrap()),
+                "{message}"
+            );
+            assert_eq!(descriptor(&directory), before);
+        }
+    }
 
     #[test]
     fn private_objects_reject_public_access_and_preserve_owner_when_tightened() {

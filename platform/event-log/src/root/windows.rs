@@ -26,7 +26,8 @@ mod security;
 pub use account::{account_home, account_sid};
 pub use filesystem::publish_file;
 pub use filesystem::{
-    FileIdentity, create_private_file, file_identity, open_nofollow, private_directory,
+    FileIdentity, create_private_directory, create_private_file, file_identity, open_nofollow,
+    private_directory,
 };
 pub use security::{PrivateSecurity, validate_private};
 
