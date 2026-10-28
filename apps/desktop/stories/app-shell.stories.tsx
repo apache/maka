@@ -4762,7 +4762,7 @@ export const NarrowComposerFooter: Story = {
     expectComposerToolbar(card);
 
     const send = within(card).getByRole('button', { name: '发送' });
-    const contextGauge = within(card).queryByRole('button', { name: '打开用量追踪' });
+    const contextGauge = within(card).getByRole('button', { name: '打开用量追踪' });
     const modelMenu = card.querySelector<HTMLElement>('.maka-model-switcher-trigger');
     if (!modelMenu) throw new Error('composer model menu is missing');
     await waitFor(() => {
@@ -4770,7 +4770,8 @@ export const NarrowComposerFooter: Story = {
       const sendBox = send.getBoundingClientRect();
       expect(sendBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
       expect(sendBox.right).toBeLessThanOrEqual(cardBox.right + 1);
-      expect(contextGauge).toBeNull();
+      // The compact toolbar keeps usage reachable through its icon button.
+      expect(contextGauge).toBeVisible();
       expect(getComputedStyle(modelMenu).display).not.toBe('none');
       const modelBox = modelMenu.getBoundingClientRect();
       expect(modelBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
