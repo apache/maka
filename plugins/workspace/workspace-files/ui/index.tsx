@@ -75,8 +75,8 @@ function DiffPanel(props: UiViewProps) {
           accessibilityLabel={tr('Changes')}
           onPress={() => props.context.openPanel('changes')}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Changes')}</Text>
         </Button>
