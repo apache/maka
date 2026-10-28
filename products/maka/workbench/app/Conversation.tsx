@@ -1593,7 +1593,8 @@ export function Conversation(props: ConversationProps) {
       receiptsKnown.set(false);
       const sent = await sendDraft(client, draftRevision, model);
       if (!alive) return;
-      releaseHeld(text);
+      // A rejected send leaves its text in the draft, so keep the whole edit.
+      releaseHeld(acceptedSend(sent.reply, sessionId) ? text : undefined);
       settleReply(sent.reply, text, epoch, files);
     } catch (reason) {
       report(reason);
@@ -1781,6 +1782,12 @@ export function Conversation(props: ConversationProps) {
     async flushDraft() {
       if (!draftReady()) {
         notice.set(uiMessage('Wait for the saved draft before switching.'));
+        return false;
+      }
+      // Text typed while a send is reserved can only be saved once the send
+      // settles; switching now would dispose it.
+      if (heldDraft !== null) {
+        notice.set(uiMessage('Wait for the message to send before switching.'));
         return false;
       }
       await flushDraft();

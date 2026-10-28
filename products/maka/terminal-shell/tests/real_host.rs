@@ -49,6 +49,8 @@ mod queue;
 mod request_metrics;
 #[path = "real_host/session_lifecycle.rs"]
 mod session_lifecycle;
+#[path = "real_host/send_hold.rs"]
+mod send_hold;
 mod support;
 #[cfg(unix)]
 #[path = "real_host/terminal_workbench.rs"]
