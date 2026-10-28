@@ -361,3 +361,4 @@ Same-row Plot domain updates move anchors through the domain tween alone; pointe
 
 Native Shader retirement clears pending readback targets; the actual GPU regression checks stale pixels cannot return after removal.
 Native static/paused Shader size updates occur before tick admission; native platform runtime limitations remain explicit.
+Web Shader delete/reset/stop cleans canvases, observers and its owned animation frame; browser-host shutdown and the stop reentrancy guard remain intact. Existing CI runs the real browser regression.

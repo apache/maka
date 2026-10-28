@@ -26,6 +26,8 @@ function fakePlayer(options = {}) {
     fileOperations: new Map(),
     requests: new Map(),
     websockets: new Map(),
+    shaderViews: new Set(),
+    shaderFrameRequest: 0,
     environment: () => ({}),
     updateRootClasses() {},
     wasm: {

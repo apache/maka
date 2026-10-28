@@ -763,6 +763,7 @@ class Player {
     this.mouseTracked = new Set();
     // Shader views (`op_sh`), drawn on one WebGL 2 context (`shaderGl`).
     this.shaderViews = new Set();
+    this.shaderFrameRequest = 0;
     // Of the views' own style rules (`op_css`).
     this.classPrefix = `nsh-p${++players}-`;
     this.timer = 0;
@@ -1447,6 +1448,9 @@ class Player {
     clearTimeout(this.timer);
     cancelAnimationFrame(this.frame);
     this.frame = 0;
+    cancelAnimationFrame(this.shaderFrameRequest);
+    this.shaderFrameRequest = 0;
+    for (const el of this.shaderViews) this.clearShader(el);
     this.browserHost?.stop();
     this.wasm?.nsh_stop();
     } finally { this.stopping = false; }
@@ -2021,9 +2025,9 @@ class Player {
   op_d([, id]) {
     const el = this.view(id);
     if (!el) return;
+    if (el._shader) this.clearShader(el);
     this.views.delete(id);
     this.mouseTracked.delete(id);
-    if (el._shader) this.op_sh([, id, null]);
     if (el._video) {
       // A removed media element keeps playing until it is collected.
       clearInterval(el._progressTimer);
@@ -2614,11 +2618,7 @@ class Player {
     const el = this.view(id);
     if (!el) return;
     if (!layer) {
-      el._shaderCanvas?.remove();
-      el._shaderCanvas = null;
-      el._shaderObserver?.disconnect();
-      el._shader = null;
-      this.shaderViews.delete(el);
+      this.clearShader(el);
       return;
     }
     const old = el._shader;
@@ -2651,6 +2651,15 @@ class Player {
     this.shaderDirty(el);
   }
 
+  clearShader(el) {
+    el._shaderCanvas?.remove();
+    el._shaderCanvas = null;
+    el._shaderObserver?.disconnect();
+    el._shaderObserver = null;
+    el._shader = null;
+    this.shaderViews.delete(el);
+  }
+
   /** Writes an animated value into its slot (`op_a`'s `canvas:N`): a number, or a CSS color. */
   shaderSlot(el, slot, value) {
     const s = el._shader;
@@ -2670,14 +2679,14 @@ class Player {
   }
 
   shaderDirty(el) {
-    if (el._shader) el._shader.dirty = true;
-    if (this.shaderFrameQueued) return;
-    this.shaderFrameQueued = true;
-    requestAnimationFrame((t) => this.shaderFrame(t));
+    if (!el._shader) return;
+    el._shader.dirty = true;
+    if (this.shaderFrameRequest) return;
+    this.shaderFrameRequest = requestAnimationFrame((t) => this.shaderFrame(t));
   }
 
   shaderFrame(t) {
-    this.shaderFrameQueued = false;
+    this.shaderFrameRequest = 0;
     let again = false;
     for (const el of this.shaderViews) {
       const s = el._shader;
@@ -2689,8 +2698,7 @@ class Player {
       again ||= runs;
     }
     if (again) {
-      this.shaderFrameQueued = true;
-      requestAnimationFrame((t) => this.shaderFrame(t));
+      this.shaderFrameRequest = requestAnimationFrame((t) => this.shaderFrame(t));
     }
   }
 
