@@ -382,6 +382,7 @@ fn wait_for(view: &Entity<AppView>, cx: &mut VisualTestContext, text: &str) {
 fn windows(cx: &mut TestAppContext) {
     // The engine (and the settings portal) run on threads of their own.
     cx.executor().allow_parking();
+    text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx);
     keys_reach_the_fields_of_a_surface_showing_a_native_component(cx);
     #[cfg(feature = "dev")]
     synthetic_keys_type_printable_characters_after_shortcuts(cx);
@@ -390,7 +391,6 @@ fn windows(cx: &mut TestAppContext) {
     presses_carry_where_the_pointer_was(cx);
     presses_carry_the_modifier_keys_and_click_count(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
-    text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
     configured_assets_stay_with_their_original_load(cx);
     buttons_keep_native_focus_and_live_key_scopes(cx);
@@ -1227,9 +1227,11 @@ import { Input } from "nsh/base";
 function App() {
   const first = signal("A");
   const second = signal("");
-  let next!: YNode;
+  let next!: YNode, outside!: YNode;
   const go = () => next.focus();
   keymap.bind("mod+n", go, { when: "always" });
+  keymap.bind("mod+k", () => second.set(second() + "!"), { when: "always" });
+  keymap.bind("mod+b", () => outside.focus(), { when: "always" });
   return (
     <View style={{ flex: 1, padding: 8, gap: 8 }}>
       <Input
@@ -1241,6 +1243,8 @@ function App() {
         style={{ height: 30 }}
       />
       <Input ref={next} value={second()} onChange={(t) => second.set(t)} style={{ height: 30 }} />
+      <Input testID="report" readonly focusable={false} value={second()} style={{ height: 30 }} />
+      <View ref={outside} testID="outside" focusable style={{ height: 30 }} />
     </View>
   );
 }
@@ -1303,6 +1307,156 @@ fn text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx: &mut TestA
         }
     };
     typed_ahead(cx, down(0x4E, modifiers));
+    composed_ahead(cx, modifiers);
+    bindings_ahead(cx, modifiers);
+    paused_ahead(cx, modifiers);
+}
+
+fn composed_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    use crate::text_input::ime;
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(
+            s,
+            down(crate::keys::VK_RETURN, Default::default())
+        ));
+        ime::replace_and_mark_text_in_range(s, None, "n", Some(1..1));
+        ime::replace_and_mark_text_in_range(s, None, "ni😀", Some(2..2));
+    });
+    let start = Instant::now();
+    loop {
+        cx.run_until_parked();
+        if view.read_with(cx, |view, _| ime::marked_text_range(view.surface())) == Some(0..4) {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "preedit did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(field_text(&view, cx).as_deref(), Some(""));
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert_eq!(ime::marked_text_range(s), Some(0..4));
+        assert_eq!(ime::selected_text_range(s).unwrap().range, 2..2);
+        assert_eq!(
+            ime::text_for_range(s, 0..4, &mut None).as_deref(),
+            Some("ni😀")
+        );
+        ime::replace_text_in_range(s, None, "你");
+    });
+    wait_for(&view, cx, "你");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(s, down(0x4E, modifiers)));
+        ime::replace_and_mark_text_in_range(s, None, "discard", None);
+        ime::replace_and_mark_text_in_range(s, None, "", None);
+        ime::replace_text_in_range(s, None, "x");
+        let mut released = down(0x4E, Default::default());
+        released.down = false;
+        crate::input::key(s, released);
+    });
+    wait_for(&view, cx, "你x");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert_eq!(ime::marked_text_range(s), None);
+        assert!(crate::input::key(s, down(0x4E, modifiers)));
+        ime::replace_and_mark_text_in_range(s, None, "😀", Some(2..2));
+        ime::unmark_text(s);
+        ime::replace_text_in_range(s, Some(0..1), "好");
+    });
+    wait_for(&view, cx, "好x😀");
+}
+
+fn bindings_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(
+            s,
+            down(crate::keys::VK_RETURN, Default::default())
+        ));
+        crate::text_input::char_input(s, "x");
+        for _ in 0..2 {
+            assert!(crate::input::key(s, down(0x4B, modifiers)));
+            let mut released = down(0x4B, Default::default());
+            released.down = false;
+            crate::input::key(s, released);
+        }
+    });
+    wait_for(&view, cx, "x!!");
+}
+
+fn paused_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    let result = Arc::new(Mutex::new(None));
+    for editing in [true, false] {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                if !editing {
+                    view.resume_input(window, cx);
+                }
+                let s = view.surface();
+                if editing {
+                    assert!(crate::input::key(
+                        s,
+                        down(crate::keys::VK_RETURN, Default::default())
+                    ));
+                    crate::text_input::char_input(s, "你");
+                    assert!(crate::input::key(s, down(0x4E, modifiers)));
+                    let mut released = down(0x4E, Default::default());
+                    released.down = false;
+                    crate::input::key(s, released);
+                    crate::text_input::char_input(s, "好");
+                } else {
+                    assert!(crate::input::key(s, down(0x42, modifiers)));
+                }
+                let result = result.clone();
+                view.pause_input(window, cx, move |done| *result.lock().unwrap() = Some(done));
+            });
+        });
+        let start = Instant::now();
+        loop {
+            cx.run_until_parked();
+            if let Some(done) = result.lock().unwrap().take() {
+                done.unwrap();
+                view.update(cx, |view, _| view.surface().drain());
+                assert_eq!(field_text(&view, cx).as_deref(), editing.then_some("你好"));
+                assert_eq!(
+                    view.read_with(cx, |view, _| {
+                        find_test_view(&view.surface().root, "report")
+                            .and_then(|view| crate::text_input::accessible_value(&view))
+                            .map(|value| value.text)
+                    })
+                    .as_deref(),
+                    Some("你好")
+                );
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "input pause did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 struct KeyLog {

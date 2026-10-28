@@ -301,7 +301,7 @@ text in GPUI fields, arrow-key movement in `Tabs` and `RadioGroup`, one unit
 per quantity, Android density remount,
 `nsh/base` registry parts and the browser-engine web runtime. The GPUI hold
 queue wraps the local `set_focus_target` transition, so inline-link targets and
-focus admission tokens remain; any focus move arms it, and hover hint
+focus admission tokens remain; editable focus moves arm it, and hover hint
 observations are not counted as engine events. Core creation and remount share
 `mount_state`; list cells keep the local publication path, and a remount does
 not clear a list's mounted cells. Only `sticky_ranges` is added beside the
@@ -313,3 +313,9 @@ build already uses, instead of upstream's 29; the shader readback keeps its
 previous frame when wgpu 30 cannot map a range. Maka's root dependency graph
 gains no packages from this synchronization. RichEditor's platform keys keep
 the keymap synchronization's host keyboard convention above.
+
+Local input corrections retain IME replacement ranges, marked selections and
+composition cancellation while input waits for the engine. Delayed key releases
+follow their presses; reload drains the admitted operations before saving the
+draft. Pending edits have no time-based expiry, and a settled nonediting target
+does not intercept ordinary button activation.

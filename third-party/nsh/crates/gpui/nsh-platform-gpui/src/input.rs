@@ -997,7 +997,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     if event.down && event.vk == VK_ESCAPE {
         crate::text_input::disarm(surface);
     }
-    if event.down && crate::text_input::hold_key(surface, &event) {
+    if crate::text_input::hold_key(surface, &event) {
         return true;
     }
     key_now(surface, event)

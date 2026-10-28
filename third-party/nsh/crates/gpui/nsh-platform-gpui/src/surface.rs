@@ -314,7 +314,10 @@ impl Surface {
     /// the first time one asks.
     pub(crate) fn shader_renderer(&self) -> Option<Rc<nsh_engine::shader::Renderer>> {
         self.shader_renderer
-            .get_or_init(|| nsh_engine::shader::Renderer::new(nsh_engine::shader::PixelFormat::Bgra).map(Rc::new))
+            .get_or_init(|| {
+                nsh_engine::shader::Renderer::new(nsh_engine::shader::PixelFormat::Bgra)
+                    .map(Rc::new)
+            })
             .clone()
     }
 
@@ -454,6 +457,14 @@ impl Surface {
                     done(Err("the UI engine changed while pausing input".into()));
                     return;
                 };
+                if crate::text_input::has_pending(&surface) {
+                    if surface.events_sent() > surface.events_handled() {
+                        surface.input_barrier(done);
+                    } else {
+                        done(Err("pending input has no editable focus target".into()));
+                    }
+                    return;
+                }
                 control.advance_clock(std::time::Duration::ZERO, move || done(Ok(())));
             });
         });
