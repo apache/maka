@@ -157,7 +157,7 @@ pub enum DefaultModel {
         target: maka_agent_facts::configuration::ConnectionTarget,
     },
     Ready {
-        choice: ModelChoice,
+        choice: Box<ModelChoice>,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<ModelDefaults>")]
         defaults: Option<ModelDefaults>,
     },
