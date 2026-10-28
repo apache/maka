@@ -20,6 +20,7 @@
 //! Same-transaction semantic projection. Only a classified reducer failure can
 //! leave a canonical fact committed with an unavailable projection; SQL/IO and
 //! serialization errors always propagate to the existing transaction boundary.
+use super::source::{CanonicalToolProjectionSpan, SemanticPayloadSource};
 use crate::StoreError;
 use futures_util::FutureExt;
 use maka_agent_facts::{
@@ -27,7 +28,8 @@ use maka_agent_facts::{
     history::{
         RowPosition,
         semantic::{
-            self, Fragment, Frontier, Payload, PendingNotification, SemanticKind, SemanticRow,
+            self, Fragment, FragmentSource, Frontier, Payload, PendingNotification, SemanticKind,
+            SemanticRow,
         },
     },
 };
@@ -101,14 +103,44 @@ impl Write for Pieces<'_, '_> {
 async fn fragment(
     db: &mut SqliteWorkerConnection<'_>,
     fragment: &Fragment,
+    canonical_json: Option<&str>,
 ) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO context_semantic_fragments VALUES(?,?,?,?)")
+    let source = match &fragment.source {
+        FragmentSource::Payload(_) => SemanticPayloadSource::Pieces,
+        FragmentSource::CanonicalToolProjection => {
+            if fragment.key.item_index != 0 {
+                return Err(invalid(
+                    "canonical Tool projection has a nonzero fragment index",
+                ));
+            }
+            SemanticPayloadSource::CanonicalToolProjection(CanonicalToolProjectionSpan::locate(
+                fragment.key.source_sequence,
+                canonical_json
+                    .ok_or_else(|| invalid("canonical Tool projection lacks its event JSON"))?,
+            )?)
+        }
+    };
+    let (storage_kind, offset, len) = match source {
+        SemanticPayloadSource::Pieces => ("pieces", None, None),
+        SemanticPayloadSource::CanonicalToolProjection(span) => (
+            "canonical_tool_projection",
+            Some(span.offset()),
+            Some(span.len()),
+        ),
+    };
+    sqlx::query("INSERT INTO context_semantic_fragments VALUES(?,?,?,?,?,?,?)")
         .bind(fragment.key.source_sequence as i64)
         .bind(fragment.key.item_index as i64)
         .bind(fragment.part.source_sequence as i64)
         .bind(fragment.part.item_index as i64)
+        .bind(storage_kind)
+        .bind(offset)
+        .bind(len)
         .execute(&mut *db)
         .await?;
+    let FragmentSource::Payload(payload) = &fragment.source else {
+        return Ok(());
+    };
     let mut pieces = Pieces {
         db,
         key: fragment.key,
@@ -116,7 +148,7 @@ async fn fragment(
         buffer: Vec::with_capacity(PIECE_BYTES),
         failure: None,
     };
-    let serialized = serde_json::to_writer(&mut pieces, &fragment.payload);
+    let serialized = serde_json::to_writer(&mut pieces, payload);
     if let Some(error) = pieces.failure.take() {
         return Err(error);
     }
@@ -569,8 +601,9 @@ async fn archive(
         &Fragment {
             key,
             part: key,
-            payload: Payload::Tool(projection),
+            source: FragmentSource::Payload(Box::new(Payload::Tool(projection))),
         },
+        None,
     )
     .await?;
     *payload = key;
@@ -594,6 +627,7 @@ async fn archive(
 pub(crate) async fn record(
     db: &mut SqliteWorkerConnection<'_>,
     stored: &StoredEvent,
+    canonical_json: &str,
 ) -> Result<(), StoreError> {
     let sequence = stored.sequence as i64;
     let owner = &stored.event.invocation.session_id;
@@ -641,7 +675,7 @@ pub(crate) async fn record(
         }
     };
     for fragment_value in &transition.fragments {
-        fragment(db, fragment_value).await?;
+        fragment(db, fragment_value, Some(canonical_json)).await?;
     }
     for (row, event_id, inherited) in hidden {
         save_row(

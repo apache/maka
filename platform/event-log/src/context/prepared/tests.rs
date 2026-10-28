@@ -225,7 +225,7 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
                     sqlx::query("INSERT INTO context_semantic_changes(owner_session_id,revision,source_sequence,source_index,order_sequence,order_index,invocation_id,revision_invocation,archived,inherited,deleted) VALUES('prepared-test',?,?,0,?,0,'invocation','invocation',0,0,0)")
                         .bind(row.revision as i64).bind(source).bind(source)
                         .execute(&mut *worker).await?;
-                    sqlx::query("INSERT OR IGNORE INTO context_semantic_fragments VALUES(?,0,?,0)")
+                    sqlx::query("INSERT OR IGNORE INTO context_semantic_fragments(source_sequence,source_index,part_sequence,part_index,storage_kind) VALUES(?,0,?,0,'pieces')")
                         .bind(source).bind(source).execute(&mut *worker).await?;
                     sqlx::query("INSERT OR IGNORE INTO context_semantic_fragment_pieces VALUES(?,0,0,?)")
                         .bind(source).bind(serde_json::to_vec(&resolved.payload.unwrap())?)

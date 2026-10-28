@@ -45,7 +45,7 @@ pub(crate) async fn insert(
                 "canonical ingress requires an existing transaction".into(),
             ));
         }
-        let inserted = match position {
+        let requested_sequence = match position {
             Position::Admitted => {
                 let claimed: bool = sqlx::query_scalar(
                     "SELECT EXISTS(
@@ -56,19 +56,19 @@ pub(crate) async fn insert(
                 if claimed {
                     return Err(StoreError::EventConflict);
                 }
-                sqlx::query(
-                    "INSERT INTO event_log (event_id, invocation_id, kind, operation_id, event_json) VALUES(?,?,?,?,?)",
-                ).bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
-                    .bind(event.fact.operation_id()).bind(&json)
-                    .execute(&mut *worker).await?
+                None
             },
-            Position::Imported(sequence) => sqlx::query(
-                "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
-            ).bind(sequence.map(i64::try_from).transpose().map_err(|_| StoreError::PrefixTooLarge)?)
-                .bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
-                .bind(event.fact.operation_id()).bind(&json)
-                .execute(&mut *worker).await?,
+            Position::Imported(sequence) => sequence.map(i64::try_from).transpose()
+                .map_err(|_| StoreError::PrefixTooLarge)?,
         };
+        let inserted = crate::canonical_insert::insert(crate::canonical_insert::Record {
+            sequence: requested_sequence,
+            event_id: &event.id,
+            invocation_id: Some(&event.invocation.invocation_id),
+            kind: event.fact.kind(),
+            operation_id: event.fact.operation_id(),
+            json: &json,
+        }).execute(&mut *worker).await?;
         if inserted.rows_affected() != 1 {
             return Err(StoreError::EventConflict);
         }
@@ -77,7 +77,7 @@ pub(crate) async fn insert(
         let stored = StoredEvent { sequence, event };
         crate::context::projection::record(worker, &stored, &json).await?;
         crate::context::evidence::record(worker, &stored, &json).await?;
-        crate::context::semantic::record(worker, &stored).await?;
+        crate::context::semantic::record(worker, &stored, &json).await?;
         Ok(sequence)
     })).await
 }

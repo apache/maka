@@ -33,7 +33,11 @@ const LEDGER: &str = "CREATE TABLE event_log (
     kind TEXT NOT NULL,
     operation_id TEXT,
     event_json TEXT,
-    event_session TEXT GENERATED ALWAYS AS (json_extract(event_json,'$.invocation.session_id')) STORED
+    accounting_at REAL,
+    accounting_usage TEXT,
+    invocation_model TEXT,
+    accounting_tool TEXT,
+    event_session TEXT
 );
 CREATE VIEW runtime_events AS SELECT * FROM event_log WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL;
 CREATE INDEX invocation_sequence ON event_log(invocation_id, sequence);
@@ -302,8 +306,16 @@ async fn append_worker(
         fact,
     );
     let json = serde_json::to_string(&event)?;
-    let result=sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
-        .bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind()).bind(event.fact.operation_id()).bind(&json).execute(&mut *worker).await?;
+    let result = crate::canonical_insert::insert(crate::canonical_insert::Record {
+        sequence: None,
+        event_id: &event.id,
+        invocation_id: Some(&event.invocation.invocation_id),
+        kind: event.fact.kind(),
+        operation_id: event.fact.operation_id(),
+        json: &json,
+    })
+    .execute(&mut *worker)
+    .await?;
     let sequence = u64::try_from(result.last_insert_rowid()).unwrap();
     let stored = StoredEvent { sequence, event };
     crate::context::projection::record(worker, &stored, &json).await?;

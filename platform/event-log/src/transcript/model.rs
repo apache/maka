@@ -213,21 +213,27 @@ mod tests {
             for step in ["with-report", "without-report"] {
                 sequence += 1;
                 let requested = json!({"invocation":{"session_id":"source"},"fact":{"kind":"model_requested","step_id":step,"model_id":format!("alias-{step}")}});
-                sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?, 'invocation','model_requested',?,?)")
-                    .bind(sequence).bind(format!("event-{sequence}")).bind(step).bind(requested.to_string()).execute(&mut *db).await?;
+                crate::canonical_insert::insert(crate::canonical_insert::Record {
+                    sequence: Some(sequence), event_id: &format!("event-{sequence}"), invocation_id: Some("invocation"),
+                    kind: "model_requested", operation_id: Some(step), json: &requested.to_string(),
+                }).execute(&mut *db).await?;
                 for delta in 0..128 {
                     sequence += 1;
                     let event = if step == "with-report" && delta == 0 {
                         json!({"kind":"response_metadata","data":{"model":"reported-early"}})
                     } else { json!({"kind":"part_delta","data":{"id":"part","text":"text"}}) };
                     let observed = json!({"invocation":{"session_id":"source"},"fact":{"kind":"model_observed","step_id":step,"event":event}});
-                    sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,event_json) VALUES(?,?,'invocation','model_observed',?)")
-                        .bind(sequence).bind(format!("event-{sequence}")).bind(observed.to_string()).execute(&mut *db).await?;
+                    crate::canonical_insert::insert(crate::canonical_insert::Record {
+                        sequence: Some(sequence), event_id: &format!("event-{sequence}"), invocation_id: Some("invocation"),
+                        kind: "model_observed", operation_id: None, json: &observed.to_string(),
+                    }).execute(&mut *db).await?;
                 }
                 sequence += 1;
                 let completed = json!({"invocation":{"session_id":"source"},"fact":{"kind":"model_completed","step_id":step,"output":{"model":if step=="with-report" {Some("reported-final")} else {None},"parts":[{"text":"large output".repeat(16384)}]}}});
-                sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,'invocation','model_completed',?,?)")
-                    .bind(sequence).bind(format!("event-{sequence}")).bind(step).bind(completed.to_string()).execute(&mut *db).await?;
+                crate::canonical_insert::insert(crate::canonical_insert::Record {
+                    sequence: Some(sequence), event_id: &format!("event-{sequence}"), invocation_id: Some("invocation"),
+                    kind: "model_completed", operation_id: Some(step), json: &completed.to_string(),
+                }).execute(&mut *db).await?;
             }
             for (query, expected_index) in [(REQUESTED, "operation_fact"), (OBSERVED, "model_response_identity"), (COMPLETED, "operation_fact")] {
                 let explain = format!("EXPLAIN QUERY PLAN {query}");

@@ -26,48 +26,16 @@ CREATE TABLE event_log (
     kind TEXT NOT NULL,
     operation_id TEXT,
     -- Keep compact accounting fields before potentially large JSON overflow
-    -- pages. SQLite derives them from canonical bytes; they cannot be edited.
-    accounting_at REAL GENERATED ALWAYS AS (
-        CASE WHEN kind IN ('model_requested', 'model_completed', 'model_interrupted',
-                           'invocation_ended', 'auxiliary_model_started', 'auxiliary_model_settled',
-                           'tool_dispatched', 'tool_settled', 'tool_rejected')
-        THEN COALESCE(json_extract(COALESCE(event_json, retained_json), '$.recorded_at.secs_since_epoch'),
-                      json_extract(COALESCE(event_json, retained_json), '$.started_at.secs_since_epoch'),
-                      json_extract(COALESCE(event_json, retained_json), '$.completed_at.secs_since_epoch')) * 1000.0
-            + COALESCE(json_extract(COALESCE(event_json, retained_json), '$.recorded_at.nanos_since_epoch'),
-                       json_extract(COALESCE(event_json, retained_json), '$.started_at.nanos_since_epoch'),
-                       json_extract(COALESCE(event_json, retained_json), '$.completed_at.nanos_since_epoch')) / 1000000.0
-        END
-    ) STORED,
-    accounting_usage TEXT GENERATED ALWAYS AS (
-        CASE
-            WHEN kind = 'model_completed' THEN json_extract(COALESCE(event_json, retained_json), '$.fact.output.usage')
-            WHEN kind = 'model_observed' AND json_extract(COALESCE(event_json, retained_json), '$.fact.event.kind') = 'finished'
-                THEN json_extract(COALESCE(event_json, retained_json), '$.fact.event.data.usage')
-            WHEN kind = 'auxiliary_model_usage' THEN json_extract(COALESCE(event_json, retained_json), '$.usage')
-        END
-    ) STORED,
-    invocation_model TEXT GENERATED ALWAYS AS (
-        CASE WHEN kind = 'invocation_opened' THEN json_extract(COALESCE(event_json, retained_json), '$.fact.configuration.model') END
-    ) STORED,
-    accounting_tool TEXT GENERATED ALWAYS AS (
-        CASE
-            WHEN kind IN ('tool_dispatched', 'tool_rejected') THEN json_object(
-                'invocation', json_extract(COALESCE(event_json, retained_json), '$.invocation'),
-                'call', json_extract(COALESCE(event_json, retained_json), '$.fact.call'),
-                'name', json_extract(COALESCE(event_json, retained_json), '$.fact.name'),
-                'rejection', json_extract(COALESCE(event_json, retained_json), '$.fact.reason.kind'))
-            WHEN kind = 'tool_settled' THEN json_object(
-                'outcome', json_extract(COALESCE(event_json, retained_json), '$.fact.outcome.kind'))
-        END
-    ) STORED,
+    -- pages. The shared canonical INSERT derives their immutable publication values.
+    accounting_at REAL,
+    accounting_usage TEXT,
+    invocation_model TEXT,
+    accounting_tool TEXT,
     event_json TEXT,
     -- A collected body is absent, never a synthetic replayable RuntimeEvent.
     retained_json TEXT CHECK(retained_json IS NULL OR json_valid(retained_json)),
     body_digest TEXT,
-    event_session TEXT GENERATED ALWAYS AS (
-        json_extract(COALESCE(event_json, retained_json), '$.invocation.session_id')
-    ) STORED,
+    event_session TEXT,
     CHECK((event_json IS NOT NULL AND retained_json IS NULL AND body_digest IS NULL)
        OR (event_json IS NULL AND retained_json IS NOT NULL AND body_digest IS NOT NULL)),
     CHECK(invocation_id IS NOT NULL OR operation_id IS NULL)
@@ -599,6 +567,14 @@ CREATE TABLE context_semantic_fragments (
     source_index INTEGER NOT NULL,
     part_sequence INTEGER NOT NULL,
     part_index INTEGER NOT NULL,
+    storage_kind TEXT NOT NULL CHECK(storage_kind IN ('pieces','canonical_tool_projection')),
+    byte_offset INTEGER,
+    byte_len INTEGER,
+    CHECK((storage_kind='pieces' AND byte_offset IS NULL AND byte_len IS NULL)
+       OR (storage_kind='canonical_tool_projection' AND source_sequence>0 AND source_index=0
+           AND byte_offset IS NOT NULL AND byte_offset>=0
+           AND byte_len IS NOT NULL AND byte_len>0
+           AND byte_offset<=2147483647-byte_len)),
     PRIMARY KEY(source_sequence,source_index)
 ) WITHOUT ROWID;
 

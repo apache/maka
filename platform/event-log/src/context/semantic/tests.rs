@@ -91,7 +91,7 @@ async fn append_event(
         event: event.clone(),
     };
     crate::connection::worker_query(&mut tx, move |worker| {
-        Box::pin(async move { record(worker, &stored).await })
+        Box::pin(async move { record(worker, &stored, &json).await })
     })
     .await?;
     tx.commit().await?;
@@ -457,12 +457,107 @@ async fn copying_one_source_does_not_scan_other_semantic_revisions() {
 }
 
 #[tokio::test]
+async fn tool_failure_unknown_and_hidden_success_keep_their_payload_boundaries() {
+    for outcome in [
+        ToolOutcome::Failed {
+            message: "failed 中🦀".into(),
+        },
+        ToolOutcome::Unknown {
+            message: "unknown 中🦀".into(),
+            operation: None,
+        },
+    ] {
+        let mut db = database().await;
+        call(&mut db).await;
+        append(&mut db, 5, interrupted("step")).await;
+        let expected = match &outcome {
+            ToolOutcome::Failed { message } | ToolOutcome::Unknown { message, .. } => {
+                message.clone()
+            }
+            _ => unreachable!(),
+        };
+        append(
+            &mut db,
+            6,
+            Fact::ToolSettled {
+                operation_id: "step:call".into(),
+                outcome,
+            },
+        )
+        .await;
+        let page = rows(&mut db, &selection(6), None, 20, None).await.unwrap();
+        let resolved = resolve(&mut db, page.rows).await.unwrap();
+        assert_eq!(
+            resolved.last().unwrap().payload,
+            Some(Payload::Text(expected))
+        );
+        assert!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM context_semantic_fragment_pieces WHERE source_sequence=6"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap()
+                > 0
+        );
+        append(
+            &mut db,
+            7,
+            Fact::ToolDispatched {
+                presentation: None,
+                title: None,
+                operation_id: "hidden".into(),
+                call: ToolCallIdentity::standalone("hidden".into()),
+                name: "hidden".into(),
+                input: serde_json::json!({}),
+            },
+        )
+        .await;
+        append(
+            &mut db,
+            8,
+            Fact::ToolSettled {
+                operation_id: "hidden".into(),
+                outcome: ToolOutcome::Succeeded {
+                    raw: RawToolResultRef {
+                        bytes: 1,
+                        digest: "fixture".into(),
+                    },
+                    model_projection: DurableToolProjection::Text {
+                        text: "hidden projection".into(),
+                    },
+                    artifacts: Vec::new(),
+                },
+            },
+        )
+        .await;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM context_semantic_fragments WHERE source_sequence=8"
+            )
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+            0,
+            "hidden success has no semantic payload source"
+        );
+        let after = rows(&mut db, &selection(8), None, 20, None).await.unwrap();
+        let after = resolve(&mut db, after.rows).await.unwrap();
+        assert_eq!(after.len(), resolved.len());
+        assert_eq!(
+            after.last().unwrap().payload,
+            resolved.last().unwrap().payload
+        );
+    }
+}
+
+#[tokio::test]
 async fn archive_revisions_preserve_old_views_and_copied_payload_identity() {
     let mut db = database().await;
     call(&mut db).await;
     append(&mut db, 5, interrupted("step")).await;
     let projection = DurableToolProjection::Text {
-        text: "original large result".repeat(800),
+        text: "中🦀\"\n\\ {\"model_projection\":\"decoy\"} ".repeat(2_000),
     };
     let result = append(
         &mut db,
@@ -480,6 +575,24 @@ async fn archive_revisions_preserve_old_views_and_copied_payload_identity() {
         },
     )
     .await;
+    let canonical = serde_json::to_string(&result).unwrap();
+    assert!(canonical.len() > 32 * 1024);
+    let stored_json: String =
+        sqlx::query_scalar("SELECT event_json FROM event_log WHERE sequence=6")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+    assert_eq!(stored_json, canonical);
+    let pieces: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM context_semantic_fragment_pieces WHERE source_sequence=6",
+    )
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    assert_eq!(
+        pieces, 0,
+        "successful projection must not duplicate its canonical body"
+    );
     let frozen = selection(6);
     // Freeze a descendant before the parent archives the original result.
     sqlx::query("INSERT INTO session_history_copies VALUES('child','session',6,6)")
@@ -497,7 +610,18 @@ async fn archive_revisions_preserve_old_views_and_copied_payload_identity() {
     )
     .unwrap()
     .unwrap();
+    let archived_projection = placeholder.to_canonical_projection().unwrap();
     append(&mut db, 7, Fact::ToolResultArchived { placeholder }).await;
+    let archived_pieces: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM context_semantic_fragment_pieces WHERE source_sequence=7",
+    )
+    .fetch_one(&mut db)
+    .await
+    .unwrap();
+    assert!(
+        archived_pieces > 0,
+        "archive placeholder has its own derived body"
+    );
     let current = SemanticSelection {
         captured_through: 7,
         before: 8,
@@ -533,10 +657,17 @@ async fn archive_revisions_preserve_old_views_and_copied_payload_identity() {
             ..
         }
     ));
-    let resolved = resolve(&mut db, copied.rows).await.unwrap();
+    for source_rows in [old.rows, copied.rows] {
+        let resolved = resolve(&mut db, source_rows).await.unwrap();
+        assert_eq!(
+            resolved.last().unwrap().payload,
+            Some(Payload::Tool(projection.clone()))
+        );
+    }
+    let archived = resolve(&mut db, new.rows).await.unwrap();
     assert_eq!(
-        resolved.last().unwrap().payload,
-        Some(Payload::Tool(projection))
+        archived.last().unwrap().payload,
+        Some(Payload::Tool(archived_projection))
     );
     let changed = changes(&mut db, &current, 6, None, 20).await.unwrap();
     assert!(
@@ -544,6 +675,33 @@ async fn archive_revisions_preserve_old_views_and_copied_payload_identity() {
             .changes
             .iter()
             .any(|change| change.order.source_sequence == 6)
+    );
+    gc::retire_owner(&mut db, "session").await.unwrap();
+    let copied = rows(&mut db, &child, None, 20, None).await.unwrap();
+    let retained = resolve(&mut db, copied.rows).await.unwrap();
+    assert_eq!(
+        retained.last().unwrap().payload,
+        Some(Payload::Tool(projection))
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT event_json FROM event_log WHERE sequence=6")
+            .fetch_one(&mut db)
+            .await
+            .unwrap(),
+        canonical
+    );
+    gc::retire_owner(&mut db, "child").await.unwrap();
+    for sequence in [6, 7] {
+        gc::collect_event(&mut db, sequence).await.unwrap();
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM context_semantic_fragments WHERE source_sequence IN (6,7)"
+        )
+        .fetch_one(&mut db)
+        .await
+        .unwrap(),
+        0
     );
 }
 

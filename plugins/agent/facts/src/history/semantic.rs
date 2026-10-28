@@ -117,7 +117,14 @@ pub struct Fragment {
     pub key: PayloadKey,
     /// For streamed text, all deltas use the start's key as their part identity.
     pub part: PayloadKey,
-    pub payload: Payload,
+    pub source: FragmentSource,
+}
+
+/// The semantic writer either stores an owned payload or locates this event's projection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum FragmentSource {
+    Payload(Box<Payload>),
+    CanonicalToolProjection,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -207,7 +214,7 @@ fn fragment(transition: &mut Transition, key: PayloadKey, payload: Payload) {
     transition.fragments.push(Fragment {
         key,
         part: key,
-        payload,
+        source: FragmentSource::Payload(Box::new(payload)),
     });
 }
 
@@ -404,10 +411,10 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                         out.fragments.push(Fragment {
                             key,
                             part: open.part,
-                            payload: Payload::TextDelta {
+                            source: FragmentSource::Payload(Box::new(Payload::TextDelta {
                                 text: text.clone(),
                                 provider_options: provider_options.clone(),
-                            },
+                            })),
                         });
                     }
                     ModelEvent::PartFinished {
@@ -421,10 +428,10 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                         out.fragments.push(Fragment {
                             key,
                             part: open.part,
-                            payload: Payload::TextDelta {
+                            source: FragmentSource::Payload(Box::new(Payload::TextDelta {
                                 text: String::new(),
                                 provider_options: provider_options.clone(),
-                            },
+                            })),
                         });
                         out.rows.push(assistant_row(
                             stored,
@@ -604,15 +611,20 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 if pending.dispatched_at.is_none() {
                     return Err("provider result lacks dispatch");
                 }
-                let (payload, is_error) = match outcome {
-                    ToolOutcome::Succeeded {
-                        model_projection, ..
-                    } => (Payload::Tool(model_projection.clone()), false),
-                    ToolOutcome::Failed { message } | ToolOutcome::Unknown { message, .. } => {
-                        (Payload::Text(message.clone()), true)
+                let (source, is_error) = match outcome {
+                    ToolOutcome::Succeeded { .. } => {
+                        (FragmentSource::CanonicalToolProjection, false)
                     }
+                    ToolOutcome::Failed { message } | ToolOutcome::Unknown { message, .. } => (
+                        FragmentSource::Payload(Box::new(Payload::Text(message.clone()))),
+                        true,
+                    ),
                 };
-                fragment(&mut out, key, payload);
+                out.fragments.push(Fragment {
+                    key,
+                    part: key,
+                    source,
+                });
                 out.rows
                     .push(tool_row(stored, operation_id, pending, key, is_error));
                 frontier.stable(&mut out, position(stored.sequence, END_INDEX));

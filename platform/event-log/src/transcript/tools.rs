@@ -187,11 +187,15 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    #[test]
-    fn typed_host_sdk_ancestry_projects_beyond_the_former_depth_limit() {
-        let db = RawConnection::open_in_memory().unwrap();
-        db.execute_batch(&crate::schema::fixture(|kind, _| kind != "trigger"))
-            .unwrap();
+    #[tokio::test]
+    async fn typed_host_sdk_ancestry_projects_beyond_the_former_depth_limit() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+            kind != "trigger"
+        })))
+        .execute(&mut db)
+        .await
+        .unwrap();
         let invocation = Invocation {
             session_id: "session".into(),
             turn_id: "turn".into(),
@@ -231,10 +235,17 @@ mod tests {
                     title: None,
                 },
             );
-            db.execute(
-                "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
-                params![index + 1, event.id, "invocation", event.fact.kind(), event.fact.operation_id(), serde_json::to_string(&event).unwrap()],
-            ).unwrap();
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: Some(index + 1),
+                event_id: &event.id,
+                invocation_id: Some("invocation"),
+                kind: event.fact.kind(),
+                operation_id: event.fact.operation_id(),
+                json: &serde_json::to_string(&event).unwrap(),
+            })
+            .execute(&mut db)
+            .await
+            .unwrap();
         }
         let mut event = RuntimeEvent::new(
             invocation,
@@ -250,26 +261,39 @@ mod tests {
             sequence: 41,
             event,
         };
-        db.execute(
-            "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
-            params![41, stored.event.id, "invocation", stored.event.fact.kind(), stored.event.fact.operation_id(), serde_json::to_string(&stored.event).unwrap()],
-        ).unwrap();
-
-        let result = ancestry(&db, "invocation", 41).unwrap();
-        assert_eq!(result.step, None);
-        assert_eq!(result.dispatch, 40);
-        assert_eq!(result.boundaries, (1..=41).collect::<BTreeSet<_>>());
-        let rows = project(&db, &stored).unwrap();
-        assert_eq!(rows.len(), 1);
-        let message = serde_json::to_value(&rows[0].message).unwrap();
-        assert_eq!(message["id"], "settlement");
-        assert_eq!(message["origin"], "host_sdk");
-        assert_eq!(message["parentOperationId"], "host-38");
-        assert_eq!(message["isError"], true);
-        assert_eq!(
-            message["content"],
-            json!({"kind":"text","text":"original host failure"})
-        );
+        crate::canonical_insert::insert(crate::canonical_insert::Record {
+            sequence: Some(41),
+            event_id: &stored.event.id,
+            invocation_id: Some("invocation"),
+            kind: stored.event.fact.kind(),
+            operation_id: stored.event.fact.operation_id(),
+            json: &serde_json::to_string(&stored.event).unwrap(),
+        })
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.run_on_worker(move |handle| {
+            // SAFETY: this callback exclusively borrows the worker; the non-owning
+            // wrapper and every statement are dropped before the callback returns.
+            let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }.unwrap();
+            let result = ancestry(&db, "invocation", 41).unwrap();
+            assert_eq!(result.step, None);
+            assert_eq!(result.dispatch, 40);
+            assert_eq!(result.boundaries, (1..=41).collect::<BTreeSet<_>>());
+            let rows = project(&db, &stored).unwrap();
+            assert_eq!(rows.len(), 1);
+            let message = serde_json::to_value(&rows[0].message).unwrap();
+            assert_eq!(message["id"], "settlement");
+            assert_eq!(message["origin"], "host_sdk");
+            assert_eq!(message["parentOperationId"], "host-38");
+            assert_eq!(message["isError"], true);
+            assert_eq!(
+                message["content"],
+                json!({"kind":"text","text":"original host failure"})
+            );
+        })
+        .await
+        .unwrap();
     }
 
     async fn boundary_work(siblings: usize) -> usize {
@@ -364,10 +388,17 @@ mod tests {
         });
         for (index, fact) in facts.into_iter().enumerate() {
             let event = RuntimeEvent::new(invocation.clone(), fact);
-            sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)")
-                .bind(index as i64+1).bind(&event.id).bind(&invocation.invocation_id)
-                .bind(event.fact.kind()).bind(event.fact.operation_id())
-                .bind(serde_json::to_string(&event).unwrap()).execute(&mut connection).await.unwrap();
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: Some(index as i64 + 1),
+                event_id: &event.id,
+                invocation_id: Some(&invocation.invocation_id),
+                kind: event.fact.kind(),
+                operation_id: event.fact.operation_id(),
+                json: &serde_json::to_string(&event).unwrap(),
+            })
+            .execute(&mut connection)
+            .await
+            .unwrap();
         }
         let steps = Arc::new(AtomicUsize::new(0));
         let observed = steps.clone();

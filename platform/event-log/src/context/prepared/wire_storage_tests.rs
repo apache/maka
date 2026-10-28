@@ -183,7 +183,7 @@ async fn wire_envelope_failure_retries_the_same_build_without_changing_logical_s
                 let payload = maka_agent_facts::history::semantic::Payload::Text(
                     "captured logical row".into(),
                 );
-                sqlx::query("INSERT INTO context_semantic_fragments VALUES(1,0,1,0)")
+                sqlx::query("INSERT INTO context_semantic_fragments(source_sequence,source_index,part_sequence,part_index,storage_kind) VALUES(1,0,1,0,'pieces')")
                     .execute(&mut *db)
                     .await?;
                 sqlx::query("INSERT INTO context_semantic_fragment_pieces VALUES(1,0,0,?)")

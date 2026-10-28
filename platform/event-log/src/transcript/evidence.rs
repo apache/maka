@@ -463,17 +463,34 @@ mod tests {
             // Deliberately seed one malformed numeric step ID in the query schema.
             // Selection must exclude it before canonical fact decoding can occur.
             for (sequence, kind, operation, fact) in [
-                (1, "invocation_opened", None, json!({"input":{"kind":"message"}})),
-                (2, "model_requested", Some("42"), json!({"purpose":"main","step_id":"42"})),
+                (
+                    1,
+                    "invocation_opened",
+                    None,
+                    json!({"input":{"kind":"message"}}),
+                ),
+                (
+                    2,
+                    "model_requested",
+                    Some("42"),
+                    json!({"purpose":"main","step_id":"42"}),
+                ),
                 (3, "model_observed", None, json!({"step_id":"42"})),
                 (4, "model_observed", None, json!({"step_id":42})),
                 (5, "model_completed", Some("42"), json!({"step_id":"42"})),
                 (6, "model_observed", None, json!({"step_id":"42"})),
             ] {
                 let event = json!({"invocation":{"session_id":"session"},"fact":fact});
-                sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,'invocation',?,?,?)")
-                    .bind(sequence).bind(format!("event-{sequence}")).bind(kind)
-                    .bind(operation).bind(event.to_string()).execute(&mut *db).await?;
+                crate::canonical_insert::insert(crate::canonical_insert::Record {
+                    sequence: Some(sequence),
+                    event_id: &format!("event-{sequence}"),
+                    invocation_id: Some("invocation"),
+                    kind,
+                    operation_id: operation,
+                    json: &event.to_string(),
+                })
+                .execute(&mut *db)
+                .await?;
             }
             let mut tx = db.begin().await?;
             for (step, through, boundary, expected) in [
@@ -488,37 +505,66 @@ mod tests {
                 (Some("missing"), 5, false, vec![1]),
                 (Some("42"), 5, false, vec![1, 2, 3]),
             ] {
-                assert_eq!(selected(&mut tx, "invocation", step, through, boundary).await?, expected);
-                let synchronous = tx.run_on_worker(move |handle| {
-                    // SAFETY: no borrowed handle or statement escapes this callback.
-                    let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                    selected_on_handle(&raw, "invocation", step, through, boundary)
-                }).await??;
+                assert_eq!(
+                    selected(&mut tx, "invocation", step, through, boundary).await?,
+                    expected
+                );
+                let synchronous = tx
+                    .run_on_worker(move |handle| {
+                        // SAFETY: no borrowed handle or statement escapes this callback.
+                        let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
+                        selected_on_handle(&raw, "invocation", step, through, boundary)
+                    })
+                    .await??;
                 assert_eq!(synchronous, expected);
             }
-            assert!(selected(&mut tx, "invocation", None, 7, true).await.is_err());
-            let missing_boundary = tx.run_on_worker(move |handle| {
-                // SAFETY: the raw handle and all statements stay within this callback.
-                let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                selected_on_handle(&raw, "invocation", None, 7, true)
-            }).await?;
+            assert!(
+                selected(&mut tx, "invocation", None, 7, true)
+                    .await
+                    .is_err()
+            );
+            let missing_boundary = tx
+                .run_on_worker(move |handle| {
+                    // SAFETY: the raw handle and all statements stay within this callback.
+                    let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
+                    selected_on_handle(&raw, "invocation", None, 7, true)
+                })
+                .await?;
             assert!(missing_boundary.is_err());
             // A malformed pending request with NULL identity must remain an
             // error, rather than becoming indistinguishable from no request.
-            sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,event_json) VALUES(8,'event-8','invocation','model_requested',?)")
-                .bind(json!({"invocation":{"session_id":"session"},"fact":{"purpose":"main"}}).to_string())
-                .execute(&mut *tx).await?;
-            assert!(selected(&mut tx, "invocation", None, 8, false).await.is_err());
-            let malformed_pending = tx.run_on_worker(move |handle| {
-                // SAFETY: the handle and statements stay within this callback.
-                let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                selected_on_handle(&raw, "invocation", None, 8, false)
-            }).await?;
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: Some(8),
+                event_id: "event-8",
+                invocation_id: Some("invocation"),
+                kind: "model_requested",
+                operation_id: None,
+                json: &json!({"invocation":{"session_id":"session"},"fact":{"purpose":"main"}})
+                    .to_string(),
+            })
+            .execute(&mut *tx)
+            .await?;
+            assert!(
+                selected(&mut tx, "invocation", None, 8, false)
+                    .await
+                    .is_err()
+            );
+            let malformed_pending = tx
+                .run_on_worker(move |handle| {
+                    // SAFETY: the handle and statements stay within this callback.
+                    let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
+                    selected_on_handle(&raw, "invocation", None, 8, false)
+                })
+                .await?;
             assert!(malformed_pending.is_err());
-            assert_eq!(selected(&mut tx, "invocation", Some("42"), 8, false).await?, vec![1, 2, 3, 6]);
+            assert_eq!(
+                selected(&mut tx, "invocation", Some("42"), 8, false).await?,
+                vec![1, 2, 3, 6]
+            );
             tx.rollback().await?;
             Ok(())
-        }.await;
+        }
+        .await;
         result.unwrap();
     }
 }

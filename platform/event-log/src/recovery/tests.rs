@@ -35,7 +35,11 @@ async fn database() -> SqliteConnection {
         sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE,
         invocation_id TEXT NOT NULL, kind TEXT NOT NULL, operation_id TEXT,
         event_json TEXT NOT NULL,
-        event_session TEXT GENERATED ALWAYS AS (json_extract(event_json,'$.invocation.session_id')) STORED
+        accounting_at REAL,
+        accounting_usage TEXT,
+        invocation_model TEXT,
+        accounting_tool TEXT,
+        event_session TEXT
     );
     CREATE INDEX invocation_kind ON event_log(invocation_id,kind,operation_id);
     CREATE VIEW runtime_events AS SELECT * FROM event_log;
@@ -135,9 +139,16 @@ async fn append_worker(
         fact,
     );
     let json = serde_json::to_string(&event)?;
-    let inserted = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
-        .bind(&event.id).bind(invocation).bind(event.fact.kind())
-        .bind(event.fact.operation_id()).bind(&json).execute(&mut *worker).await?;
+    let inserted = crate::canonical_insert::insert(crate::canonical_insert::Record {
+        sequence: None,
+        event_id: &event.id,
+        invocation_id: Some(invocation),
+        kind: event.fact.kind(),
+        operation_id: event.fact.operation_id(),
+        json: &json,
+    })
+    .execute(&mut *worker)
+    .await?;
     let stored = StoredEvent {
         sequence: u64::try_from(inserted.last_insert_rowid()).unwrap(),
         event,

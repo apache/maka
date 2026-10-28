@@ -64,7 +64,7 @@ pub fn project(
         ));
     }
     use maka_agent_facts::history::semantic::{
-        Fragment, Frontier, PartPayload, Payload, ResolvedRow, SemanticKind, reduce,
+        FragmentSource, Frontier, PartPayload, Payload, ResolvedRow, SemanticKind, reduce,
     };
     use std::collections::{BTreeMap, HashMap};
     let mut frontiers: HashMap<&str, Frontier> = HashMap::new();
@@ -81,7 +81,25 @@ pub fn project(
         let transition = reduce(frontier, stored)
             .map_err(|error| RunError::ReconciliationRequired(error.into()))?;
         for fragment in transition.fragments {
-            fragments.insert(fragment.key, fragment);
+            let payload = match fragment.source {
+                FragmentSource::Payload(payload) => *payload,
+                FragmentSource::CanonicalToolProjection => {
+                    let maka_agent_facts::event::Fact::ToolSettled {
+                        outcome:
+                            maka_agent_facts::event::ToolOutcome::Succeeded {
+                                model_projection, ..
+                            },
+                        ..
+                    } = &stored.event.fact
+                    else {
+                        return Err(RunError::ReconciliationRequired(
+                            "canonical projection marker lacks a successful tool source".into(),
+                        ));
+                    };
+                    Payload::Tool(model_projection.clone())
+                }
+            };
+            fragments.insert(fragment.key, (fragment.part, payload));
         }
         for row in transition.rows {
             rows.insert(row.id, row);
@@ -123,7 +141,7 @@ pub fn project(
                     .ok_or_else(|| {
                         RunError::ReconciliationRequired("semantic payload missing".into())
                     })?
-                    .payload
+                    .1
                     .clone(),
             )
         } else if let SemanticKind::AssistantPart {
@@ -138,10 +156,9 @@ pub fn project(
         {
             let mut text = String::new();
             let mut options = None;
-            for Fragment { payload, .. } in fragments
-                .values()
-                .filter(|fragment| fragment.part == *part && fragment.key.source_sequence <= *end)
-            {
+            for (_, (_, payload)) in fragments.iter().filter(|(key, (fragment_part, _))| {
+                *fragment_part == *part && key.source_sequence <= *end
+            }) {
                 let Payload::TextDelta {
                     text: delta,
                     provider_options,

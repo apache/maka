@@ -280,13 +280,23 @@ mod cursor_tests {
             .unwrap(),
             [1, 2]
         );
+        let published_at = ended
+            .recorded_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            * 1000.0;
         // Exercise the query boundary independently of collection's traversal
         // order: the newest own fact has proof but no live body.
         let proof = serde_json::to_string(&retained(&ended)).unwrap();
         let digest = content_digest(serde_json::to_string(&ended).unwrap().as_bytes());
         log.connection.run(move |db| Box::pin(async move {
             sqlx::query("UPDATE event_log SET retained_json=?,body_digest=?,event_json=NULL WHERE sequence=2")
-                .bind(proof).bind(digest).execute(db).await?;
+                .bind(proof).bind(digest).execute(&mut *db).await?;
+            let publication: (f64, String) = sqlx::query_as("SELECT accounting_at,event_session FROM event_log WHERE sequence=2")
+                .fetch_one(&mut *db).await?;
+            assert!((publication.0 - published_at).abs() < 0.001);
+            assert_eq!(publication.1, "source", "collection retains the publication owner");
             Ok(())
         })).await.unwrap();
         for _ in 0..2 {
