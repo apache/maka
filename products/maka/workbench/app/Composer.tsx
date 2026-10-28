@@ -129,6 +129,8 @@ export function Composer(props: {
   let unbind = () => {};
   cleanup(() => unbind());
   const cardRoot = signal<ViewRef | null>(null);
+  // The todo dock sits on the composer and takes its top corners.
+  const joined = signal(false);
   effect(() => {
     const owner = props.session();
     const node = cardRoot();
@@ -270,11 +272,18 @@ export function Composer(props: {
             return (
               <View>
                 <ProjectMcp owner={owner.projectMcp} />
+                {/* On the desktop the todo dock joins the composer, so the queue goes above it. */}
+                <If when={!platform.isTerminal}>
+                  <QueueDock session={owner.queue} />
+                </If>
                 <Checklist
                   sessionId={owner.sessionId}
                   tuck={platform.isTerminal ? undefined : compact() ? 16 : 24}
+                  joined={platform.isTerminal ? undefined : joined.set}
                 />
-                <QueueDock session={owner.queue} />
+                <If when={platform.isTerminal}>
+                  <QueueDock session={owner.queue} />
+                </If>
                 <If when={owner.recoverable()}>
                   <Button
                     disabled={owner.recovering()}
@@ -331,6 +340,7 @@ export function Composer(props: {
             flexShrink: 0,
             backgroundColor: C.raised,
             borderRadius: compact() ? 16 : 24,
+            ...(joined() ? { borderTopLeftRadius: 0, borderTopRightRadius: 0 } : {}),
             borderWidth: 1,
             borderColor: C.line,
             paddingHorizontal: 16,

@@ -56,10 +56,15 @@ const springNext = () => {
 
 /**
  * The conversation's todo dock. On the desktop, `tuck` is the corner radius of
- * the composer below: the dock takes its top corners and slides under the
- * composer by as much, so the two read as one shape.
+ * the composer below: the dock takes its top corners and sits on the composer,
+ * which squares its own top corners while `joined` reports the dock shown, so
+ * the two read as one card divided by the composer's top border.
  */
-export function Checklist(props: { sessionId: string; tuck?: number }) {
+export function Checklist(props: {
+  sessionId: string;
+  tuck?: number;
+  joined?: (shown: boolean) => void;
+}) {
   const sessionId = props.sessionId;
   // How far the dock sits below its place: it rises from behind the composer
   // when it appears during the conversation, not when the conversation opens.
@@ -104,6 +109,7 @@ export function Checklist(props: { sessionId: string; tuck?: number }) {
   };
   cleanup(() => {
     alive = false;
+    props.joined?.(false);
     const previous = stream;
     stream = null;
     if (previous) void previous.close().catch(() => {});
@@ -129,6 +135,7 @@ export function Checklist(props: { sessionId: string; tuck?: number }) {
           riseOnMount = shown(page);
         }
         batch(() => {
+          props.joined?.(shown(page));
           snapshot.set(page);
           items.set(page.items);
           nextOffset.set(page.nextOffset);
@@ -159,8 +166,6 @@ export function Checklist(props: { sessionId: string; tuck?: number }) {
           props.tuck === undefined
             ? { backgroundColor: C.surface, borderRadius: 8 }
             : {
-                // The composer's fill, so the corners it lays over the dock
-                // show the same colour and only its border divides the two.
                 backgroundColor: C.raised,
                 borderWidth: 1,
                 borderColor: C.line,
@@ -169,8 +174,8 @@ export function Checklist(props: { sessionId: string; tuck?: number }) {
                 borderBottomLeftRadius: 0,
                 borderBottomRightRadius: 0,
                 overflow: 'hidden',
-                paddingBottom: props.tuck,
-                marginBottom: -props.tuck,
+                // The composer's top border draws the line between the two.
+                marginBottom: -1,
                 transform: [{ translateY: rise }],
               }
         }
