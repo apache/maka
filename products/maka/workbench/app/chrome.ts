@@ -58,6 +58,8 @@ export interface MenuActions {
   models(): void;
   latest(): void;
   settings(): void;
+  sidebarShown(): boolean;
+  toggleSidebar(): void;
 }
 
 /** The application menu (the macOS menu bar; the shortcuts elsewhere). */
@@ -116,6 +118,15 @@ export function applicationMenu(actions: MenuActions) {
           { label: tr('Commands'), shortcut: 'mod+p', onSelect: actions.commands },
           { label: tr('Models'), shortcut: 'mod+g', onSelect: actions.models },
           { label: tr('Jump to latest'), shortcut: 'mod+l', onSelect: actions.latest },
+          { type: 'separator' },
+          {
+            label: actions.sidebarShown()
+              ? tr('Collapse session browser')
+              : tr('Expand session browser'),
+            // macOS's Show Sidebar key (Finder, Mail, Notes).
+            shortcut: mac ? 'ctrl+cmd+s' : undefined,
+            onSelect: actions.toggleSidebar,
+          },
           { type: 'separator' },
           { role: 'toggleFullScreen' },
         ],

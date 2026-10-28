@@ -454,6 +454,15 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               };
               return (
                 <View
+                  // A secondary click opens the row's actions, as its More button does.
+                  onContextMenu={
+                    session()
+                      ? inputAction(showActions, {
+                          session: sessionActionTarget(session()!),
+                          origin: props.selected(),
+                        })
+                      : undefined
+                  }
                   style={{
                     flexDirection: 'row',
                     height: compact() ? 32 : 48,

@@ -363,6 +363,14 @@ export function SessionActions(props: {
                     value={title()}
                     readonly={pending()}
                     onChange={(value) => title.set(value)}
+                    // Enter saves, as the button below does.
+                    onSubmit={() =>
+                      void submit(
+                        page() === 'fork'
+                          ? { kind: 'fork', session: session(), title: title(), turnId: null }
+                          : { kind: 'rename', session: session(), title: title() },
+                      )
+                    }
                     placeholder={tr('Conversation title')}
                     style={{
                       height: 32,
@@ -448,6 +456,7 @@ const menuRowStyle = () => ({
   height: compact() ? 32 : 40,
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
+  justifyContent: 'flex-start' as const,
   paddingHorizontal: 8,
   paddingVertical: 6,
   gap: 8,

@@ -685,16 +685,6 @@ function App(
     },
     { when: 'always' },
   );
-  // The bindings above take the same keys first; the menu shows and offers them.
-  applicationMenu({
-    newConversation: () => newConversation(selected()),
-    chooseWorkspace: () => open({ kind: 'workspaces', sessionId: selected() }),
-    sessions: () => open({ kind: 'sessions', sessionId: selected() }),
-    commands: () => open({ kind: 'commands', sessionId: selected() }),
-    models: () => open({ kind: 'models', sessionId: selected() }),
-    latest: jumpLatest,
-    settings: () => open({ kind: 'settings', sessionId: selected() }),
-  });
   const recoverControls = async () => {
     if (recovering()) return;
     recovering.set(true);
@@ -792,6 +782,18 @@ function App(
     expanded: sidebarShown(),
     hidden: overlay()?.kind === 'sessions' && !foreground,
     toggle: inputAction(toggleSidebar, { sessionId, expanded: sidebarShown() }),
+  });
+  // The bindings above take the same keys first; the menu shows and offers them.
+  applicationMenu({
+    newConversation: () => newConversation(selected()),
+    chooseWorkspace: () => open({ kind: 'workspaces', sessionId: selected() }),
+    sessions: () => open({ kind: 'sessions', sessionId: selected() }),
+    commands: () => open({ kind: 'commands', sessionId: selected() }),
+    models: () => open({ kind: 'models', sessionId: selected() }),
+    latest: jumpLatest,
+    settings: () => open({ kind: 'settings', sessionId: selected() }),
+    sidebarShown,
+    toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
   });
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
