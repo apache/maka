@@ -46,8 +46,6 @@ fn value(sequence: u64, variant: u64) -> Group {
         vec![Message::user(format!("{sequence}:{variant}"))]
     };
     Group {
-        wire_id: None,
-        wire_bytes: 0,
         index_bytes: 0,
         dependencies: Vec::new(),
         members: vec![sequence],
@@ -435,13 +433,34 @@ async fn immutable_duplicates_and_net_zero_owner_changes_do_not_repeat_ref_write
         .execute(&mut *tx)
         .await
         .unwrap();
-    let mut group = value(1, 0);
-    group.wire_id = Some("wire".into());
+    let group = value(1, 0);
     let content = tree::save_group(&mut tx, &mut refs, &group).await.unwrap();
     assert_eq!(
         tree::save_group(&mut tx, &mut refs, &group).await.unwrap(),
         content
     );
+    let (logical_id, _) = tree::logical_group(&mut tx, &content).await.unwrap();
+    let wire_content = tree::save_wire_group(
+        &mut tx,
+        &mut refs,
+        tree::WireGroup::new(logical_id.clone(), "wire".into(), 0),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        tree::save_wire_group(
+            &mut tx,
+            &mut refs,
+            tree::WireGroup::new(logical_id, "wire".into(), 0)
+        )
+        .await
+        .unwrap(),
+        wire_content
+    );
+    let wire_node = tree::compose(&mut tx, 1, wire_content, None, None)
+        .await
+        .unwrap();
+    let wire_root = tree::save(&mut tx, &mut refs, &wire_node).await.unwrap();
     let node = tree::compose(&mut tx, 1, content.clone(), None, None)
         .await
         .unwrap();
@@ -451,8 +470,11 @@ async fn immutable_duplicates_and_net_zero_owner_changes_do_not_repeat_ref_write
     refs.change(&mut tx, refs::Kind::Node, &root, 1)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,discovery_root) VALUES('wire-owner','dedup','fixture',?,?,?)").bind(encoded(&WireFormat::Responses).unwrap()).bind(&root).bind(&root).execute(&mut *tx).await.unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &root, 2)
+    sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,discovery_root) VALUES('wire-owner','dedup','fixture',?,?,?)").bind(encoded(&WireFormat::Responses).unwrap()).bind(&wire_root).bind(&root).execute(&mut *tx).await.unwrap();
+    refs.change(&mut tx, refs::Kind::Node, &wire_root, 1)
+        .await
+        .unwrap();
+    refs.change(&mut tx, refs::Kind::Node, &root, 1)
         .await
         .unwrap();
     sqlx::query("INSERT INTO context_prepared_dirty(build_id,group_sequence) VALUES('dedup',1)")
@@ -473,12 +495,21 @@ async fn immutable_duplicates_and_net_zero_owner_changes_do_not_repeat_ref_write
         .unwrap();
     }
     refs.flush(&mut tx).await.unwrap();
-    assert_eq!(
+    assert!(
+        !sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM ref_events GROUP BY kind,id HAVING COUNT(*)>1)"
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        "immutable duplicates must not add edges or repeat a ref write"
+    );
+    assert!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ref_events")
             .fetch_one(&mut *tx)
             .await
-            .unwrap(),
-        3
+            .unwrap()
+            > 0
     );
     super::tests::assert_refs(&mut tx).await.unwrap();
     tx.commit().await.unwrap();
@@ -521,7 +552,7 @@ async fn immutable_duplicates_and_net_zero_owner_changes_do_not_repeat_ref_write
         refs.change(&mut tx, refs::Kind::Node, &root, 1)
             .await
             .unwrap(),
-        3
+        2
     );
     assert!(
         refs.remove(&mut tx, refs::Kind::Node, &root).await.is_err(),
@@ -574,13 +605,10 @@ async fn immutable_duplicates_and_net_zero_owner_changes_do_not_repeat_ref_write
         .execute(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("UPDATE context_prepared_wire_views SET root=NULL WHERE id='wire-owner'")
-        .execute(&mut *tx)
+    refs.change(&mut tx, refs::Kind::Node, &root, -1)
         .await
         .unwrap();
-    refs.change(&mut tx, refs::Kind::Node, &root, -2)
-        .await
-        .unwrap();
+
     refs.flush(&mut tx).await.unwrap();
     tx.commit().await.unwrap();
     collect(&mut db).await.unwrap();
@@ -611,6 +639,24 @@ async fn immutable_duplicates_and_net_zero_owner_changes_do_not_repeat_ref_write
         .await
         .unwrap()
     );
+    assert_eq!(
+        tree::totals(&mut db, Some(&wire_root)).await.unwrap().0,
+        1,
+        "the retained wire envelope must resolve logical metadata after the logical node is collected"
+    );
+    super::tests::assert_refs(&mut db).await.unwrap();
+    let mut tx = db.begin().await.unwrap();
+    let mut refs = refs::RefBatch::default();
+    sqlx::query("UPDATE context_prepared_wire_views SET root=NULL WHERE id='wire-owner'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    refs.change(&mut tx, refs::Kind::Node, &wire_root, -1)
+        .await
+        .unwrap();
+    refs.flush(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+    collect(&mut db).await.unwrap();
     assert_eq!(
         tree::group(&mut db, &content).await.unwrap().members,
         [1],

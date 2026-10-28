@@ -55,6 +55,7 @@ pub(crate) async fn assert_refs(db: &mut SqliteConnection) -> Result<(), StoreEr
             UNION ALL SELECT 'node',json_extract(node_json,'$.left') FROM context_prepared_nodes WHERE json_extract(node_json,'$.left') IS NOT NULL
             UNION ALL SELECT 'node',json_extract(node_json,'$.right') FROM context_prepared_nodes WHERE json_extract(node_json,'$.right') IS NOT NULL
             UNION ALL SELECT 'group',json_extract(node_json,'$.content') FROM context_prepared_nodes WHERE json_extract(node_json,'$.content') IS NOT NULL
+            UNION ALL SELECT 'group',json_extract(group_json,'$.logical_content_id') FROM context_prepared_groups WHERE json_extract(group_json,'$.logical_content_id') IS NOT NULL
             UNION ALL SELECT 'wire',json_extract(group_json,'$.wire_id') FROM context_prepared_groups WHERE json_extract(group_json,'$.wire_id') IS NOT NULL
             UNION ALL SELECT 'node',node_id FROM context_prepared_generation_nodes
             UNION ALL SELECT 'group',content FROM context_prepared_dirty WHERE content IS NOT NULL
@@ -106,8 +107,6 @@ pub(crate) async fn seed_shared_wire_gc_fixture(
         .execute(&mut *tx)
         .await?;
     let group = Group {
-        wire_id: Some("wire".into()),
-        wire_bytes: 260,
         index_bytes: 0,
         dependencies: vec![],
         members: vec![1],
@@ -116,19 +115,28 @@ pub(crate) async fn seed_shared_wire_gc_fixture(
         breakdown: Default::default(),
     };
     let content = tree::save_group(&mut tx, &mut refs, &group).await?;
+    let (logical_id, _) = tree::logical_group(&mut tx, &content).await?;
+    let wire_content = tree::save_wire_group(
+        &mut tx,
+        &mut refs,
+        tree::WireGroup::new(logical_id, "wire".into(), 260),
+    )
+    .await?;
     let node = tree::compose(&mut tx, 1, content, None, None).await?;
     let root = tree::save(&mut tx, &mut refs, &node).await?;
+    let wire_node = tree::compose(&mut tx, 1, wire_content, None, None).await?;
+    let wire_root = tree::save(&mut tx, &mut refs, &wire_node).await?;
     for (id, session) in [("parent", "session"), ("child", "child")] {
         sqlx::query("INSERT INTO context_prepared_builds(id,identity,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,complete) VALUES(?1,?1,?1,?2,1,1,2,0,?3,1)")
             .bind(id).bind(serde_json::json!({"session":session}).to_string()).bind(&root).execute(&mut *tx).await?;
         refs.change(&mut tx, refs::Kind::Node, &root, 1).await?;
-        sqlx::query(
-            "INSERT INTO context_prepared_heads(session_id,build_id,touched) VALUES(?,?,0)",
-        )
-        .bind(session)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+        let wire_id = format!("{id}-wire");
+        sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,complete,discovered) VALUES(?,?,'fixture',?,?,1,1)")
+            .bind(&wire_id).bind(id).bind(encoded(&WireFormat::Responses)?).bind(&wire_root).execute(&mut *tx).await?;
+        refs.change(&mut tx, refs::Kind::Node, &wire_root, 1)
+            .await?;
+        sqlx::query("INSERT INTO context_prepared_heads(session_id,build_id,wire_view_id,touched) VALUES(?,?,?,0)")
+            .bind(session).bind(id).bind(wire_id).execute(&mut *tx).await?;
     }
     for index in 0..260 {
         sqlx::query("INSERT INTO context_prepared_chunks VALUES('wire',?,0,0,1,NULL,?)")
@@ -1101,8 +1109,6 @@ async fn inorder_page_frontier_visits_each_node_once_and_skips_zero_width_groups
             })
             .collect();
         let group = Group {
-            wire_id: None,
-            wire_bytes: 0,
             index_bytes: 0,
             dependencies: Vec::new(),
             members: vec![sequence],
@@ -1360,6 +1366,80 @@ async fn bounded_worker_wire_pages_preserve_midgroup_pieces_and_metadata_only_it
 
 #[path = "lifetime_tests.rs"]
 mod lifetimes;
+
+#[tokio::test]
+async fn entirely_empty_wire_finishes_without_encoding_and_releases_its_envelopes() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("empty-wire.sqlite"))
+        .await
+        .unwrap();
+    for source in 1..=3 {
+        seed(&log, source, source, false).await;
+    }
+    let values = (1..=3)
+        .map(|source| (source.to_string(), Vec::<Message>::new()))
+        .collect::<BTreeMap<_, _>>();
+    let logical = log
+        .prepare_model_view(selection(3), "empty-wire", None)
+        .await
+        .unwrap();
+    assert_eq!(render(&log, &logical, &values).await, 3);
+    let view = log.finish_prepared(&logical).await.unwrap();
+    assert_eq!(view.message_count, 0);
+    let build = log
+        .prepare_wire_view(&view, WireFormat::Responses, "fixture-v1", None)
+        .await
+        .unwrap();
+    assert!(
+        log.prepared_wire_dirty_groups(&build, None, 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "empty groups must not require an encoder invocation"
+    );
+    let wire = log.finish_prepared_wire(&build).await.unwrap();
+    assert_eq!(wire.message_count, 0);
+    let page = log
+        .prepared_wire_page(&wire, PreparedWireCursor::default(), 1)
+        .await
+        .unwrap();
+    assert!(page.chunks.is_empty() && page.next_cursor.is_none());
+    let metadata = log
+        .prepared_wire_metadata_page(&wire, PreparedWireCursor::default(), 1)
+        .await
+        .unwrap();
+    assert!(metadata.items.is_empty() && metadata.next_cursor.is_none());
+    let prefix = log.prepared_wire_prefix_identity(&wire, 0).await.unwrap();
+    assert_eq!(
+        log.finish_prepared_wire(&build).await.unwrap().identity,
+        wire.identity
+    );
+    assert_eq!(
+        log.prepared_wire_prefix_identity(&wire, 0).await.unwrap(),
+        prefix
+    );
+    log.prepared_store()
+        .unwrap()
+        .run(|db, _| Box::pin(async move { gc::retire_owner(db, "prepared-test").await }))
+        .await
+        .unwrap();
+    assert!(
+        log.prepared_wire_page(&wire, PreparedWireCursor::default(), 1)
+            .await
+            .unwrap()
+            .chunks
+            .is_empty()
+    );
+    assert_log_refs(&log).await;
+    drop((wire, build, view, logical));
+    lifetimes::drain(&log).await;
+    log.prepared_store().unwrap().read_interruptible(|db|Box::pin(async move {
+        let remaining:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT COUNT(*) FROM context_prepared_builds),(SELECT COUNT(*) FROM context_prepared_wire_views),(SELECT COUNT(*) FROM context_prepared_nodes),(SELECT COUNT(*) FROM context_prepared_groups),(SELECT COUNT(*) FROM context_prepared_refs)").fetch_one(db).await?;
+        assert_eq!(remaining,(0,0,0,0,0));
+        Ok(())
+    })).await.unwrap();
+    log.close().await.unwrap();
+}
 
 #[tokio::test]
 async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {

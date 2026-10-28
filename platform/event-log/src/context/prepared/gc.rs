@@ -386,14 +386,27 @@ pub(crate) async fn collect_unreachable(
             if budget == 0 {
                 break;
             }
-            let wire:Option<Option<String>>=sqlx::query_scalar("SELECT json_extract(group_json,'$.wire_id') FROM context_prepared_groups WHERE id=?")
+            let edges:Option<(Option<String>,Option<String>)>=sqlx::query_as("SELECT json_extract(group_json,'$.logical_content_id'),json_extract(group_json,'$.wire_id') FROM context_prepared_groups WHERE id=?")
                 .bind(&id).fetch_optional(&mut *connection).await?;
             sqlx::query("DELETE FROM context_prepared_groups WHERE id=?")
                 .bind(&id)
                 .execute(&mut *connection)
                 .await?;
-            if let Some(wire) = wire.flatten() {
-                release_edge(connection, &mut refs, &mut candidates, RefKind::Wire, &wire).await?;
+            if let Some((logical, wire)) = edges {
+                if let Some(logical) = logical {
+                    release_edge(
+                        connection,
+                        &mut refs,
+                        &mut candidates,
+                        RefKind::Group,
+                        &logical,
+                    )
+                    .await?;
+                }
+                if let Some(wire) = wire {
+                    release_edge(connection, &mut refs, &mut candidates, RefKind::Wire, &wire)
+                        .await?;
+                }
             }
         } else {
             let edges:Option<(Option<String>,Option<String>,String)>=sqlx::query_as("SELECT json_extract(node_json,'$.left'),json_extract(node_json,'$.right'),json_extract(node_json,'$.content') FROM context_prepared_nodes WHERE id=?")

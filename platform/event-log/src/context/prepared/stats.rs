@@ -71,7 +71,7 @@ impl EventLog {
             let dirty:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_dirty WHERE build_id=? AND group_sequence=?)").bind(&id).bind(sequence as i64).fetch_one(&mut *tx).await?;
             if !dirty {return Err(invalid("prepared group was not selected for rendering"));}
             let mut ref_batch=refs::RefBatch::default();
-            let group=Group{wire_id:None,wire_bytes:0,index_bytes,dependencies:needed,members:members(&mut tx,&id,sequence).await?,messages:refs,breakdown,manifest};
+            let group=Group{index_bytes,dependencies:needed,members:members(&mut tx,&id,sequence).await?,messages:refs,breakdown,manifest};
             let content=tree::save_group(&mut tx,&mut ref_batch,&group).await?;
             for call_id in &group.dependencies {
                 sqlx::query("INSERT OR IGNORE INTO context_prepared_mcp_refs(content_id,call_id,group_sequence) VALUES(?,?,?)")

@@ -318,13 +318,15 @@ pub(super) async fn wire_batch(
                     ready = true;
                     break;
                 };
-                let content =
-                    tree::content_id(db, build.view.root.as_deref(), sequence as u64).await?;
-                let mut group = tree::group(db, &content).await?;
+                let (logical_content, group) =
+                    tree::logical_group_at(db, build.view.root.as_deref(), sequence as u64).await?;
                 if group.messages.is_empty() {
-                    group.wire_id = Some(hash(b""));
-                    group.wire_bytes = 0;
-                    let content = tree::save_group(db, refs, &group).await?;
+                    let content = tree::save_wire_group(
+                        db,
+                        refs,
+                        tree::WireGroup::new(logical_content, hash(b""), 0),
+                    )
+                    .await?;
                     assembly::stage(
                         db,
                         refs,

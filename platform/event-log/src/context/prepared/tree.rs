@@ -30,8 +30,6 @@ pub(super) struct MessageRef {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Group {
-    pub wire_id: Option<String>,
-    pub wire_bytes: usize,
     pub index_bytes: usize,
     pub dependencies: Vec<String>,
     pub members: Vec<u64>,
@@ -39,6 +37,61 @@ pub(super) struct Group {
     pub messages: Vec<MessageRef>,
     pub breakdown: PreparedContextBreakdown,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(super) struct LogicalGroupId(String);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct WireGroup {
+    logical_content_id: LogicalGroupId,
+    wire_id: String,
+    wire_bytes: usize,
+}
+impl WireGroup {
+    pub(super) fn new(
+        logical_content_id: LogicalGroupId,
+        wire_id: String,
+        wire_bytes: usize,
+    ) -> Self {
+        Self {
+            logical_content_id,
+            wire_id,
+            wire_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(super) enum StoredGroup<L = Group> {
+    Logical(L),
+    Wire(WireGroup),
+}
+
+struct Content {
+    group: Group,
+    wire: Option<WireGroup>,
+    stored_bytes: usize,
+}
+impl Content {
+    fn identity(&self) -> Result<String, StoreError> {
+        let (logical_id, _) = logical_record(&self.group)?;
+        match &self.wire {
+            None => Ok(logical_id),
+            Some(wire) => {
+                let boundary = WireGroup::new(
+                    LogicalGroupId(logical_id),
+                    wire.wire_id.clone(),
+                    wire.wire_bytes,
+                );
+                Ok(hash(
+                    encoded(&StoredGroup::<Group>::Wire(boundary))?.as_bytes(),
+                ))
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Node {
     pub(super) sequence: u64,
@@ -63,37 +116,116 @@ pub(super) async fn node(connection: &mut SqliteConnection, id: &str) -> Result<
             .await?;
     Ok(serde_json::from_str(&json)?)
 }
-pub(super) async fn group(
+async fn stored_group(
     connection: &mut SqliteConnection,
     id: &str,
-) -> Result<Group, StoreError> {
+) -> Result<(StoredGroup, usize), StoreError> {
     let json: String =
         sqlx::query_scalar("SELECT group_json FROM context_prepared_groups WHERE id=?")
             .bind(id)
             .fetch_one(connection)
             .await?;
-    Ok(serde_json::from_str(&json)?)
+    Ok((serde_json::from_str(&json)?, json.len()))
+}
+
+pub(super) async fn logical_group(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> Result<(LogicalGroupId, Group), StoreError> {
+    let group = group(connection, id).await?;
+    Ok((LogicalGroupId(id.to_owned()), group))
+}
+pub(super) async fn logical_group_at(
+    connection: &mut SqliteConnection,
+    root: Option<&str>,
+    sequence: u64,
+) -> Result<(LogicalGroupId, Group), StoreError> {
+    let id = content_id(connection, root, sequence).await?;
+    logical_group(connection, &id).await
+}
+pub(super) async fn group(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> Result<Group, StoreError> {
+    match stored_group(connection, id).await?.0 {
+        StoredGroup::Logical(group) => Ok(group),
+        StoredGroup::Wire(_) => Err(invalid("expected a logical prepared group")),
+    }
+}
+async fn resolve_content(
+    connection: &mut SqliteConnection,
+    id: &str,
+) -> Result<Content, StoreError> {
+    let (stored, stored_bytes) = stored_group(connection, id).await?;
+    match stored {
+        StoredGroup::Logical(group) => Ok(Content {
+            group,
+            wire: None,
+            stored_bytes,
+        }),
+        StoredGroup::Wire(wire) => {
+            let (logical, logical_bytes) =
+                stored_group(connection, &wire.logical_content_id.0).await?;
+            let StoredGroup::Logical(group) = logical else {
+                return Err(invalid(
+                    "wire prepared group must reference a logical group",
+                ));
+            };
+            Ok(Content {
+                group,
+                wire: Some(wire),
+                stored_bytes: stored_bytes.saturating_add(logical_bytes),
+            })
+        }
+    }
+}
+fn logical_record(group: &Group) -> Result<(String, String), StoreError> {
+    let json = encoded(&StoredGroup::Logical(group))?;
+    Ok((hash(json.as_bytes()), json))
+}
+async fn insert_group(
+    connection: &mut SqliteConnection,
+    id: &str,
+    json: String,
+) -> Result<bool, StoreError> {
+    Ok(
+        sqlx::query("INSERT OR IGNORE INTO context_prepared_groups(id,group_json) VALUES(?,?)")
+            .bind(id)
+            .bind(json)
+            .execute(connection)
+            .await?
+            .rows_affected()
+            == 1,
+    )
 }
 pub(super) async fn save_group(
     connection: &mut SqliteConnection,
     refs: &mut refs::RefBatch,
     group: &Group,
 ) -> Result<String, StoreError> {
-    let json = encoded(group)?;
-    let id = hash(json.as_bytes());
-    let inserted =
-        sqlx::query("INSERT OR IGNORE INTO context_prepared_groups(id,group_json) VALUES(?,?)")
-            .bind(&id)
-            .bind(json)
-            .execute(&mut *connection)
-            .await?
-            .rows_affected()
-            == 1;
-    if inserted {
+    let (id, json) = logical_record(group)?;
+    if insert_group(connection, &id, json).await? {
         refs.create(connection, refs::Kind::Group, &id).await?;
-        if let Some(wire) = &group.wire_id {
-            refs.change(connection, refs::Kind::Wire, wire, 1).await?;
-        }
+    }
+    Ok(id)
+}
+pub(super) async fn save_wire_group(
+    connection: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
+    wire: WireGroup,
+) -> Result<String, StoreError> {
+    let stored = StoredGroup::<Group>::Wire(wire);
+    let json = encoded(&stored)?;
+    let id = hash(json.as_bytes());
+    if insert_group(connection, &id, json).await? {
+        refs.create(connection, refs::Kind::Group, &id).await?;
+        let StoredGroup::Wire(wire) = stored else {
+            unreachable!("wire group constructor");
+        };
+        refs.change(connection, refs::Kind::Group, &wire.logical_content_id.0, 1)
+            .await?;
+        refs.change(connection, refs::Kind::Wire, &wire.wire_id, 1)
+            .await?;
     }
     Ok(id)
 }
@@ -127,7 +259,8 @@ pub(super) async fn compose(
     left: Option<String>,
     right: Option<String>,
 ) -> Result<Node, StoreError> {
-    let g = group(connection, &content).await?;
+    let stored = resolve_content(connection, &content).await?;
+    let g = &stored.group;
     // One metadata read per child: counts, accounting and role frontier are
     // stored together. Re-reading each child for its tail doubled path reads.
     let left_node = match left.as_deref() {
@@ -166,10 +299,12 @@ pub(super) async fn compose(
         rc + group_tail + left_tail
     };
 
-    let group_bytes = encoded(&g)?
-        .len()
+    // A retained wire slot owns the referenced logical metadata independently
+    // of the current logical head, so sharing must not reduce its cache charge.
+    let group_bytes = stored
+        .stored_bytes
         .saturating_add(g.index_bytes)
-        .saturating_add(g.wire_bytes);
+        .saturating_add(stored.wire.as_ref().map_or(0, |wire| wire.wire_bytes));
     let children_bytes = left_node
         .as_ref()
         .map_or(0, |node| node.storage_bytes)
@@ -314,19 +449,20 @@ pub(super) fn prefix<'a>(
         if count <= left_count {
             return prefix(connection, n.left.as_deref(), count).await;
         }
-        let mut g = group(connection, &n.content).await?;
-        let group_end = left_count + g.messages.len();
+        let mut content = resolve_content(connection, &n.content).await?;
+        let group_end = left_count + content.group.messages.len();
         if count < group_end {
+            let g = &mut content.group;
             g.messages.truncate(count - left_count);
             n.group_count = g.messages.len();
             g.breakdown = PreparedContextBreakdown::default();
             for message in &g.messages {
                 g.breakdown.accumulate(&message.breakdown);
             }
-            n.content = hash(encoded(&g)?.as_bytes());
             n.right = None;
             n.breakdown = left_breakdown;
             n.breakdown.accumulate(&g.breakdown);
+            n.content = content.identity()?;
         } else {
             n.right = prefix(connection, n.right.as_deref(), count - group_end).await?;
             // Aggregate the selected right prefix without requiring a stored node.
@@ -336,7 +472,7 @@ pub(super) fn prefix<'a>(
             let right =
                 take_breakdown(connection, original.right.as_deref(), count - group_end).await?;
             n.breakdown = left_breakdown;
-            n.breakdown.accumulate(&g.breakdown);
+            n.breakdown.accumulate(&content.group.breakdown);
             n.breakdown.accumulate(&right);
         }
         n.count = count;
@@ -365,7 +501,7 @@ fn take_breakdown<'a>(
         if count <= lc {
             return take_breakdown(connection, n.left.as_deref(), count).await;
         }
-        let g = group(connection, &n.content).await?;
+        let g = resolve_content(connection, &n.content).await?.group;
         let included = (count - lc).min(g.messages.len());
         if included == g.messages.len() {
             result.accumulate(&g.breakdown);
@@ -664,7 +800,7 @@ fn prefix_role_tail<'a>(
         if count <= lc {
             return prefix_role_tail(connection, n.left.as_deref(), count).await;
         }
-        let g = group(connection, &n.content).await?;
+        let g = resolve_content(connection, &n.content).await?.group;
         let included = (count - lc).min(g.messages.len());
         let gt = g.messages[..included]
             .iter()

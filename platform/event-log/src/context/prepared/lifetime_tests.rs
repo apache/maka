@@ -19,7 +19,7 @@
 
 use super::*;
 
-async fn drain(log: &EventLog) {
+pub(super) async fn drain(log: &EventLog) {
     for _ in 0..10_000 {
         let registry = log.prepared.clone();
         let more = log
@@ -245,8 +245,6 @@ async fn empty_groups_and_large_manifests_have_nonzero_cache_weight() {
         .await
         .unwrap();
     let group = Group {
-        wire_id: None,
-        wire_bytes: 0,
         index_bytes: 0,
         dependencies: Vec::new(),
         members: (0..2048).collect(),
