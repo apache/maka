@@ -174,32 +174,41 @@ test('model reads reject workspace FIFOs fast on every route instead of blocking
   const failFast = <T>(pending: Promise<T>, label: string): Promise<T> => {
     let giveUp: (reason: Error) => void = () => undefined;
     const timer = setTimeout(
-      () => giveUp(new Error(`${label} did not fail fast; a read blocked on open instead of erroring`)),
+      () =>
+        giveUp(new Error(`${label} did not fail fast; a read blocked on open instead of erroring`)),
       4_000,
     );
     timer.unref();
     return Promise.race([
       pending,
-      new Promise<T>((_, rej) => { giveUp = rej; }),
+      new Promise<T>((_, rej) => {
+        giveUp = rej;
+      }),
     ]);
   };
   await assert.rejects(failFast(readWorkspaceFile(path), 'model read'), /not a regular file/i);
-  await assert.rejects(failFast(new LocalWorkspaceExecutor().readFile({ cwd, path }), 'executor read'), /not a regular file/i);
-  const response = await failFast(executeFilesystemWorkerRequest({
-    version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
-    requestId: 'read-fifo',
-    operation: { kind: 'read', cwd, path },
-    operationBoundary: {
-      filesystem: { entries: [{ path: cwd, access: 'read', scope: 'subtree' }] },
-    },
-    expectedTarget: {
-      enforcementPath: path,
-      access: 'read',
-      scope: 'exact',
-      targetType: 'other',
-      identity: 'unchecked',
-    },
-  }));
+  await assert.rejects(
+    failFast(new LocalWorkspaceExecutor().readFile({ cwd, path }), 'executor read'),
+    /not a regular file/i,
+  );
+  const response = await failFast(
+    executeFilesystemWorkerRequest({
+      version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+      requestId: 'read-fifo',
+      operation: { kind: 'read', cwd, path },
+      operationBoundary: {
+        filesystem: { entries: [{ path: cwd, access: 'read', scope: 'subtree' }] },
+      },
+      expectedTarget: {
+        enforcementPath: path,
+        access: 'read',
+        scope: 'exact',
+        targetType: 'other',
+        identity: 'unchecked',
+      },
+    }),
+    'worker read',
+  );
   assert.equal(response.ok, false);
   if (!response.ok) {
     assert.equal(response.error.code, 'filesystem_error');
