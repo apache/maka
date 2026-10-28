@@ -349,9 +349,9 @@ impl Surface {
     pub(crate) fn reconcile_focus_return(
         &mut self,
         batch: Option<FocusReturnBatch>,
-    ) -> Vec<NodeId> {
+    ) -> (Vec<NodeId>, bool) {
         let Some(mut batch) = batch else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let visible = self.visible_ids();
         // A modal covers background popups without ending their lifetime.
@@ -394,6 +394,7 @@ impl Surface {
             })
             .collect::<Vec<_>>();
         let current = self.current_focus_target();
+        let mut restored_modal = false;
         if !blurred && (current == batch.focus || current.is_none()) {
             let mut owner = batch.owner;
             while let Some(target) = owner {
@@ -419,6 +420,7 @@ impl Surface {
                     && self.focusable(opener.0)
                 {
                     self.set_focus(Some(opener.0));
+                    restored_modal = scope.kind == FocusScopeKind::Modal;
                     break;
                 }
                 owner = Some(scope.parent);
@@ -475,7 +477,7 @@ impl Surface {
             };
             let Some(parent) = parent else { continue };
             let opener = if opened.contains(&parent.0) {
-                self.fresh_autofocus(parent.0, &visible)
+                self.fresh_autofocus(parent.0, &shown)
                     .or_else(|| self.popup_focus_target(parent))
                     .and_then(|id| self.focus_target(id))
             } else {
@@ -488,11 +490,13 @@ impl Surface {
                         // background autoFocus is the return target when no
                         // actual opener survives, rather than a competing
                         // request that may steal focus from the popup later.
-                        self.fresh_autofocus(parent.0, &visible)
+                        self.fresh_autofocus(parent.0, &shown)
                             .and_then(|id| self.focus_target(id))
                     })
             }
-            .filter(|target| !self.within_popup(target.0, id));
+            .filter(|target| {
+                self.returnable_focus(*target, &shown) && !self.within_popup(target.0, id)
+            });
             retained.push(FocusReturn {
                 scope,
                 parent,
@@ -522,7 +526,7 @@ impl Surface {
             }
             opened.clear();
         }
-        opened
+        (opened, restored_modal)
     }
 
     pub(crate) fn focus_opened_popups(&mut self, opened: &[NodeId]) {
@@ -561,7 +565,7 @@ impl Surface {
                 current = self.text_link(id).map(|(owner, _)| owner);
                 continue;
             };
-            if node.props.focus_return_parent.is_some() {
+            if node.kind == ViewKind::Modal || node.props.focus_return_parent.is_some() {
                 return false;
             }
             current = node.parent;
@@ -574,6 +578,8 @@ impl Surface {
             self.node(*id)
                 .is_some_and(|n| n.kind == ViewKind::Input && n.input.auto_focus)
                 && !self.autofocus_seen.contains(id)
+                && !self.is_dying(*id)
+                && self.navigation_accepts(*id)
                 && self.focusable(*id)
                 && self.in_focus_scope(*id, root)
         })
@@ -977,7 +983,17 @@ impl Surface {
     /// A batch may remove the focused field or cover it with a modal.
     /// Focus follows the active scope and returns when that scope closes.
     pub(crate) fn reconcile_focus(&mut self, removed_focus: bool) {
-        let visible = self.visible_ids();
+        self.reconcile_focus_after_return(removed_focus, false, &[]);
+    }
+
+    pub(crate) fn reconcile_focus_after_return(
+        &mut self,
+        removed_focus: bool,
+        mut restored_modal: bool,
+        opened: &[NodeId],
+    ) {
+        let shown = self.paint_ids();
+        let visible = self.input_scope_ids(&shown);
         let popup = self
             .current_popup_owner()
             .map(|scope| scope.scope)
@@ -1016,6 +1032,7 @@ impl Surface {
                 .find_map(|scope| self.inherited_focus(&self.focus_returns, scope.scope, &visible))
         {
             self.set_focus(Some(target.0));
+            restored_modal = true;
         }
         self.focus_returns.retain(|scope| {
             !retired_modals
@@ -1029,18 +1046,21 @@ impl Surface {
             .focus_returns
             .iter()
             .rev()
+            .filter(|scope| !restored_modal || opened.contains(&scope.scope.0))
             .find_map(|scope| self.fresh_autofocus(scope.scope.0, &visible))
             .or_else(|| {
-                popup
-                    .is_none()
+                (popup.is_none() && !restored_modal)
                     .then(|| self.fresh_autofocus(ROOT_ID, &visible))
                     .flatten()
             });
-        for id in &visible {
+        // Covered inputs consume their mount request while the modal owns focus.
+        for id in &shown {
             if self
                 .node(*id)
                 .is_some_and(|n| n.kind == ViewKind::Input && n.input.auto_focus)
                 && !self.autofocus_seen.contains(id)
+                && !self.is_dying(*id)
+                && self.navigation_accepts(*id)
             {
                 self.autofocus_seen.push(*id);
             }
@@ -4913,7 +4933,9 @@ mod tests {
 
     #[test]
     fn modal_focus_scope_traps_tab_and_restores_background_focus() {
-        use nsh_core::{InputConfig, MountBatch, MountItem, ViewProps};
+        use nsh_core::{
+            Command, InputConfig, ModalAnimation, ModalConfig, MountBatch, MountItem, ViewProps,
+        };
         let mut surface = form();
         surface.set_focus(Some(4));
         let mut items = create(6, ViewKind::Modal, ROOT_ID, 0.0);
@@ -4957,6 +4979,88 @@ mod tests {
         });
         surface.tick(2.0);
         assert_eq!(surface.focused(), Some(4));
+
+        for animation in [ModalAnimation::None, ModalAnimation::default()] {
+            for mount_on_close in [false, true] {
+                let mut surface = form();
+                surface.set_focus(Some(4));
+                let mut items = create(6, ViewKind::Modal, ROOT_ID, 0.0);
+                items.push(MountItem::ModalConfig {
+                    id: 6,
+                    config: ModalConfig {
+                        animation,
+                        ..Default::default()
+                    },
+                });
+                items.extend(create(8, ViewKind::Input, 6, 0.0));
+                items.push(MountItem::Input {
+                    id: 8,
+                    config: Box::new(InputConfig {
+                        auto_focus: true,
+                        ..Default::default()
+                    }),
+                });
+                surface.apply(MountBatch { items });
+                assert_eq!(surface.focused(), Some(8));
+                let mut background = create(18, ViewKind::Input, ROOT_ID, 64.0);
+                background.push(MountItem::Input {
+                    id: 18,
+                    config: Box::new(InputConfig {
+                        auto_focus: true,
+                        ..Default::default()
+                    }),
+                });
+                if !mount_on_close {
+                    surface.apply(MountBatch {
+                        items: std::mem::take(&mut background),
+                    });
+                    assert_eq!(surface.focused(), Some(8));
+                }
+                background.push(MountItem::Remove { id: 6 });
+                surface.apply(MountBatch { items: background });
+                surface.tick(1.0);
+                assert_eq!(surface.focused(), Some(4));
+                surface.apply(MountBatch::default());
+                assert_eq!(surface.focused(), Some(4));
+                surface.apply(MountBatch {
+                    items: vec![MountItem::Command {
+                        id: 18,
+                        command: Command::Focus,
+                    }],
+                });
+                assert_eq!(surface.focused(), Some(18));
+            }
+        }
+
+        for existing_opener in [false, true] {
+            let mut surface = Surface::new(40, 12, crate::CellMetrics::default());
+            let mut items = create(4, ViewKind::View, ROOT_ID, 32.0);
+            items.push(MountItem::Events {
+                id: 4,
+                events: mask(&[EventKind::Press]),
+            });
+            if existing_opener {
+                surface.apply(MountBatch {
+                    items: std::mem::take(&mut items),
+                });
+                assert_eq!(surface.focused(), Some(4));
+            }
+            items.extend(create(2, ViewKind::Input, ROOT_ID, 0.0));
+            items.push(MountItem::Input {
+                id: 2,
+                config: Box::new(InputConfig {
+                    auto_focus: true,
+                    ..Default::default()
+                }),
+            });
+            items.extend(modal_focus_return(6, 8));
+            surface.apply(MountBatch { items });
+            assert_eq!(surface.focused(), Some(8));
+            surface.apply(MountBatch {
+                items: vec![MountItem::Remove { id: 6 }],
+            });
+            assert_eq!(surface.focused(), Some(if existing_opener { 4 } else { 2 }));
+        }
     }
 
     fn popup(
