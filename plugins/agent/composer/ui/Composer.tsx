@@ -62,6 +62,8 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     if (owner) completion.drop(owner, event);
   });
   const hero = () => props.session() === null || props.session()!.empty();
+  // Desktop only: the terminal keeps its start pane as it is.
+  const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
   const blocked = () => props.session()?.blockedReason() ?? '';
   const cannotSend = () =>
     props.blocked?.() ||
@@ -183,16 +185,48 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 </Text>
                 <Icon name="down" color={C.secondary} />
               </Button>
-              <Button
-                accessibilityLabel={tr('Connections & models')}
-                onPress={props.settings}
-                style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                hoverStyle={{ backgroundColor: C.surface }}
-                focusStyle={{ backgroundColor: C.raised }}
+              <If
+                when={noConnections()}
+                else={
+                  <Button
+                    accessibilityLabel={tr('Connections & models')}
+                    onPress={props.settings}
+                    style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                    hoverStyle={{ backgroundColor: C.surface }}
+                    focusStyle={{ backgroundColor: C.raised }}
+                  >
+                    <Text style={{ color: C.muted, fontSize: 13 }}>
+                      {tr('Connections & models')}
+                    </Text>
+                  </Button>
+                }
               >
-                <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Connections & models')}</Text>
-              </Button>
+                <Button
+                  accessibilityLabel={tr('Add a model connection')}
+                  onPress={props.settings}
+                  style={{
+                    ...controlStyle,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    backgroundColor: C.accent,
+                  }}
+                  hoverStyle={{ backgroundColor: C.accentHover }}
+                  focusStyle={{ backgroundColor: C.accentHover }}
+                >
+                  <Text style={{ color: C.background, fontSize: 13, fontWeight: '600' }}>
+                    {tr('Add a model connection')}
+                  </Text>
+                </Button>
+              </If>
             </View>
+            <If when={noConnections()}>
+              <Text style={{ color: C.muted, fontSize: 13, textAlign: 'center' }}>
+                {tr(
+                  'Conversations need a model. Add a connection with your API key or account first.',
+                )}
+              </Text>
+            </If>
           </View>
         </If>
         <If when={props.session()?.error()}>

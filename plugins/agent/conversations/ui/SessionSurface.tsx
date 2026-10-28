@@ -852,6 +852,21 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     previousWidth = width;
   });
   void refreshControls().catch(report);
+  // Whether the Host has no model connection, read each time the composer is
+  // shown again (back from Settings, too): the start pane then asks for one.
+  const noConnections = signal(false);
+  let connectionRead = 0;
+  effect(() => {
+    if (overlay() !== null || !(shell()?.visible() ?? false)) return;
+    const read = ++connectionRead;
+    void host
+      .query('settings', 'connections', { kind: 'start' })
+      .then((result) => {
+        if (!alive || read !== connectionRead || result.kind === 'changed') return;
+        noConnections.set(result.connections.length === 0 && result.next === null);
+      })
+      .catch(() => undefined);
+  });
   const composerTarget = context.configuration.composer as UiTarget;
   const ComposerView = (input: ComposerViewInput<JSX.Element>) =>
     runtime.renderView(composerTarget, composerViewContract, input);
@@ -1045,6 +1060,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
               session={composerSession}
               stopAction={stopAction}
+              needsConnection={noConnections}
               request={
                 <View style={{ minHeight: 0, flexShrink: 1 }}>
                   <Each<ConversationHandle>
