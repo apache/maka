@@ -63,8 +63,8 @@ Only a successful, unmapped staging buffer returns to the renderer's single
 reuse cache. Dropping a pending ticket cancels mapping and discards its buffer.
 
 `KittyFrame::encode` prepares a complete lossless PNG/base64 snapshot without
-choosing an image slot. After confirming the cursor origin, the sole writer
-binds the alternate owned slot with `KittyFrame::into_wire`, which chunks the
+choosing an image slot. The sole writer binds the alternate owned slot with
+`KittyFrame::into_wire`, which positions the cursor at the origin, chunks the
 payload at the protocol's 4096-byte boundary and retains the last acknowledged
 image underneath. The complete `q=0` upload must flush and receive its matching
 success reply before the native owner calls `mark_presented`. Preparation and

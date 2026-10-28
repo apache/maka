@@ -24,7 +24,7 @@ use super::super::{
 use gpui::{AppContext, Application, Bounds, Focusable, WindowBounds, WindowOptions, point, px};
 use nsh_core::prelude::*;
 use nsh_engine::{App, Bundle, EngineConfig};
-use nsh_gpui_terminal::{SubmittedFrame, TerminalPlatform};
+use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};
 use std::{
     cell::RefCell,
@@ -110,11 +110,15 @@ fn check_marks(source: &str) {
         sixel_geometry: Default::default(),
     };
     let viewport = caps.logical_viewport().unwrap();
-    let frames = Rc::new(RefCell::new(Vec::<SubmittedFrame>::new()));
+    let frames = Rc::new(RefCell::new(Vec::<CandidateFrame>::new()));
     let received = frames.clone();
     let platform = TerminalPlatform::new(
         Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-        Box::new(move |frame| received.borrow_mut().push(frame.submit().unwrap())),
+        Box::new(move |frame| {
+            received
+                .borrow_mut()
+                .push(frame.submit().unwrap().complete().unwrap());
+        }),
         Arc::new(|| {}),
     )
     .unwrap();
@@ -188,7 +192,6 @@ fn check_marks(source: &str) {
             );
             let mut found = None;
             for frame in frames.borrow_mut().drain(..) {
-                let frame = frame.complete().unwrap();
                 let width = frame.size().width.0 as usize;
                 let height = frame.size().height.0 as usize;
                 if frame.pixels()[..3] != [22 + stage as u8, 23 + stage as u8, 25 + stage as u8] {
@@ -246,9 +249,7 @@ fn check_marks(source: &str) {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 platform.pump();
-                for frame in frames.borrow_mut().drain(..) {
-                    frame.complete().unwrap();
-                }
+                frames.borrow_mut().clear();
                 assert!(
                     errors.borrow().is_none(),
                     "rail input failed: {:?}",
@@ -284,7 +285,6 @@ fn check_marks(source: &str) {
             loop {
                 platform.pump();
                 for frame in frames.borrow_mut().drain(..) {
-                    let frame = frame.complete().unwrap();
                     let width = frame.size().width.0 as usize;
                     let preview = frame.pixels().as_chunks::<4>().0.iter().enumerate().any(
                         |(index, pixel)| index % width < width - 48 && pixel[..3] == [32, 33, 35],

@@ -40,72 +40,127 @@ pub(super) fn submit_pending(
             let token = preparation.frame.token();
             let geometry = preparation.geometry;
             let attempted = preparation.pump_started.map(|_| Instant::now());
-            let result = preparation.frame.submit();
+            let submitted = preparation.frame.submit();
+            let gpu = submitted
+                .as_ref()
+                .ok()
+                .and_then(|frame| preparation.pump_started.map(|_| frame.submission_timings()));
+            let mut readback = None;
+            let result = submitted.and_then(|frame| {
+                let started = preparation.pump_started.map(|_| Instant::now());
+                let result = frame.complete();
+                readback = started.map(|start| (start, Instant::now()));
+                result
+            });
+            let pixels = result.as_ref().ok().and_then(|frame| {
+                preparation
+                    .pump_started
+                    .map(|_| (frame.pixels().len(), frame.size()))
+            });
+            let failed = result.is_err();
             let mut state = presentation.state.lock().unwrap();
-            match result {
-                Ok(frame) => {
-                    let gpu = preparation.pump_started.map(|_| frame.submission_timings());
-                    let admitted = state.pixels.as_mut().unwrap().submitted(Candidate {
-                        frame,
-                        geometry,
-                        pump_started: preparation.pump_started,
-                    });
-                    if !admitted && !state.quit && !presentation.stop.load(Ordering::Acquire) {
+            let cancelled = state.quit || presentation.stop.load(Ordering::Acquire);
+            // A device or readback failure remains session-wide after resize.
+            if let Err(error) = &result
+                && !cancelled
+            {
+                state.error.get_or_insert_with(|| format!("{error:#}"));
+            }
+            let current = !cancelled
+                && state.error.is_none()
+                && state.pixels.as_ref().unwrap().geometry == geometry;
+            let admitted = match result {
+                Ok(frame) if current => {
+                    let admitted = state
+                        .pixels
+                        .as_mut()
+                        .unwrap()
+                        .rendered(Candidate { frame, geometry });
+                    if !admitted {
                         state
                             .error
-                            .get_or_insert_with(|| "GPU submission lost its prepared frame".into());
+                            .get_or_insert_with(|| "GPU readback lost its prepared frame".into());
                     }
-                    if let (Some(gpu), Some(trace)) = (gpu, &mut state.trace) {
-                        for (stage, started, finished) in [
-                            ("gpu_prepare", gpu.prepare_started, gpu.encode_started),
-                            ("gpu_encode", gpu.encode_started, gpu.encode_finished),
-                            (
-                                "gpu_submission_queue",
-                                gpu.encode_finished,
-                                gpu.submit_started,
-                            ),
-                            ("gpu_submit", gpu.submit_started, gpu.submit_finished),
-                            ("gpu_map_request", gpu.submit_finished, gpu.map_requested),
-                        ] {
-                            trace.record(&token, geometry, stage, started, finished);
-                        }
-                        if let Some(start) = preparation.pump_started {
-                            trace.record(
-                                &token,
-                                geometry,
-                                "native_before_gpu",
-                                start,
-                                gpu.prepare_started,
-                            );
-                            let sample = trace.record(
+                    admitted
+                }
+                _ => {
+                    state.pixels.as_mut().unwrap().rendering_finished(&token);
+                    false
+                }
+            };
+            let disposition = if failed || state.error.is_some() {
+                Some("error")
+            } else if cancelled {
+                Some("cancel")
+            } else if !admitted {
+                Some("resize")
+            } else {
+                None
+            };
+            if let Some(trace) = &mut state.trace {
+                if let Some(gpu) = gpu {
+                    for (stage, started, finished) in [
+                        ("gpu_prepare", gpu.prepare_started, gpu.encode_started),
+                        ("gpu_encode", gpu.encode_started, gpu.encode_finished),
+                        (
+                            "gpu_submission_queue",
+                            gpu.encode_finished,
+                            gpu.submit_started,
+                        ),
+                        ("gpu_submit", gpu.submit_started, gpu.submit_finished),
+                        ("gpu_map_request", gpu.submit_finished, gpu.map_requested),
+                    ] {
+                        trace.record(&token, geometry, stage, started, finished);
+                    }
+                    if let Some(start) = preparation.pump_started {
+                        trace.record(
+                            &token,
+                            geometry,
+                            "native_before_gpu",
+                            start,
+                            gpu.prepare_started,
+                        );
+                        trace
+                            .record(
                                 &token,
                                 geometry,
                                 "pump_until_submission",
                                 start,
                                 gpu.submit_finished,
-                            );
-                            sample.outcome = if admitted { "admitted" } else { "discarded" };
-                        }
+                            )
+                            .outcome = if admitted { "admitted" } else { "discarded" };
+                    }
+                } else if let Some(start) = attempted {
+                    trace
+                        .record(
+                            &token,
+                            geometry,
+                            "gpu_submission_failed",
+                            start,
+                            Instant::now(),
+                        )
+                        .outcome = "error";
+                }
+                if let Some((start, end)) = readback {
+                    let sample = trace.record(&token, geometry, "readback", start, end);
+                    sample.bytes = pixels.map(|(bytes, _)| bytes);
+                    sample.outcome = if failed {
+                        "error"
+                    } else if !admitted {
+                        "discarded"
+                    } else {
+                        "ok"
+                    };
+                    if let (Some(start), Some((bytes, size))) = (preparation.pump_started, pixels) {
+                        let sample =
+                            trace.record(&token, geometry, "pump_until_candidate", start, end);
+                        sample.bytes = Some(bytes);
+                        sample.pixel_size = Some((size.width.0, size.height.0));
+                        sample.outcome = if admitted { "admitted" } else { "discarded" };
                     }
                 }
-                Err(error) => {
-                    state.pixels.as_mut().unwrap().submission_failed(&token);
-                    let cancelled = state.quit || presentation.stop.load(Ordering::Acquire);
-                    if !cancelled {
-                        state.error.get_or_insert_with(|| error.to_string());
-                    }
-                    if let (Some(start), Some(trace)) = (attempted, &mut state.trace) {
-                        trace
-                            .record(
-                                &token,
-                                geometry,
-                                "gpu_submission_failed",
-                                start,
-                                Instant::now(),
-                            )
-                            .outcome = "error";
-                        trace.discard(&token, geometry, if cancelled { "cancel" } else { "error" });
-                    }
+                if let Some(outcome) = disposition {
+                    trace.discard(&token, geometry, outcome);
                 }
             }
             if let Some(wake) = &state.pixels.as_ref().unwrap().wake {

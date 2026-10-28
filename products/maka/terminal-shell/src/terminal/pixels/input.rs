@@ -18,7 +18,7 @@
  */
 
 use super::probe::{Capabilities, Protocol, SixelGeometry};
-use nsh_gpui_terminal::{FrameToken, SubmittedFrame};
+use nsh_gpui_terminal::{CandidateFrame, FrameToken};
 use std::{collections::VecDeque, time::Instant};
 use termina::{
     Event, WindowSize,
@@ -44,10 +44,8 @@ pub(super) struct Preparation {
 }
 
 pub(super) struct Candidate {
-    pub frame: SubmittedFrame,
+    pub frame: CandidateFrame,
     pub geometry: u64,
-    /// Present only for the existing opt-in frame trace.
-    pub pump_started: Option<Instant>,
 }
 
 pub(super) enum WireFrame {
@@ -88,7 +86,7 @@ enum FrameWork {
     Reserved,
     Prepared(Preparation),
     Rendering(FrameToken),
-    Submitted(Candidate),
+    Rendered(Candidate),
     Encoding(FrameToken),
     Ready(Encoded),
 }
@@ -99,7 +97,7 @@ impl FrameWork {
             Self::Reserved => None,
             Self::Prepared(preparation) => Some(preparation.frame.token()),
             Self::Rendering(token) => Some(token.clone()),
-            Self::Submitted(candidate) => Some(candidate.frame.token()),
+            Self::Rendered(candidate) => Some(candidate.frame.token()),
             Self::Encoding(token) => Some(token.clone()),
             Self::Ready(encoded) => Some(encoded.frame.token()),
         }
@@ -190,7 +188,7 @@ impl Inbox {
                 && self
                     .frames
                     .iter()
-                    .any(|job| matches!(job.work, FrameWork::Submitted(_))))
+                    .any(|job| matches!(job.work, FrameWork::Rendered(_))))
         {
             return false;
         }
@@ -236,7 +234,7 @@ impl Inbox {
         Some(preparation)
     }
 
-    pub(super) fn submitted(&mut self, candidate: Candidate) -> bool {
+    pub(super) fn rendered(&mut self, candidate: Candidate) -> bool {
         let token = candidate.frame.token();
         let Some(job) = self.frames.iter_mut().find(|job| {
             job.geometry == candidate.geometry
@@ -244,11 +242,11 @@ impl Inbox {
         }) else {
             return false;
         };
-        job.work = FrameWork::Submitted(candidate);
+        job.work = FrameWork::Rendered(candidate);
         true
     }
 
-    pub(super) fn submission_failed(&mut self, token: &FrameToken) {
+    pub(super) fn rendering_finished(&mut self, token: &FrameToken) {
         self.frames
             .retain(|job| !matches!(&job.work, FrameWork::Rendering(active) if active == token));
     }
@@ -279,9 +277,9 @@ impl Inbox {
         let job = self
             .frames
             .iter_mut()
-            .find(|job| matches!(job.work, FrameWork::Submitted(_)))?;
-        let token = job.work.token().expect("submitted native frame");
-        let FrameWork::Submitted(candidate) =
+            .find(|job| matches!(job.work, FrameWork::Rendered(_)))?;
+        let token = job.work.token().expect("rendered native frame");
+        let FrameWork::Rendered(candidate) =
             std::mem::replace(&mut job.work, FrameWork::Encoding(token))
         else {
             unreachable!()
@@ -290,7 +288,7 @@ impl Inbox {
     }
 
     /// A worker can only finish its own immutable token. Stale and cancelled
-    /// jobs release capacity here, after their readback/codec actually returned.
+    /// jobs release capacity here, after their codec actually returned.
     pub(super) fn finished(&mut self, token: &FrameToken, encoded: Option<Encoded>) -> Completion {
         let Some(index) = self
             .frames
@@ -563,7 +561,7 @@ impl Inbox {
         self.resize = Some(self.capabilities.size);
         self.published = None;
         self.cursor = super::cursor::Cursor::default();
-        // A submitted readback or codec still consumes its original slot.
+        // Running submission, readback and codec work keep their original slots.
         // Completed stale wire is safe to retire immediately.
         self.frames
             .retain(|job| !matches!(job.work, FrameWork::Ready(_)));
@@ -749,7 +747,11 @@ mod tests {
         let received = frames.clone();
         let platform = nsh_gpui_terminal::TerminalPlatform::new(
             Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-            Box::new(move |frame| received.borrow_mut().push(frame.submit().unwrap())),
+            Box::new(move |frame| {
+                received
+                    .borrow_mut()
+                    .push(frame.submit().unwrap().complete().unwrap());
+            }),
             Arc::new(|| {}),
         )
         .unwrap();
@@ -782,7 +784,7 @@ mod tests {
                     .unwrap();
             });
             assert!(platform.pump());
-            let frame = frames.borrow_mut().remove(0).complete().unwrap();
+            let frame = frames.borrow_mut().remove(0);
             assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
             assert!(frames.borrow().is_empty());
             completed.push(frame);
