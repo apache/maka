@@ -26,7 +26,7 @@ import type { Signal, YNode } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
-import { host as shell } from 'nsh';
+import { host as shell, platform } from 'nsh';
 import { host } from './host';
 import type {
   AgentDirectory,
@@ -60,7 +60,8 @@ type Location = {
 type FolderAction = { location: number; selection: AgentDirectorySelection };
 const selectionKey = (selection: AgentDirectorySelection) =>
   JSON.stringify([selection.rootId, selection.segments, selection.directoryIdentity]);
-const pathNames = (path: string) => path.split(/[\\/]/).filter(Boolean);
+const pathNames = (path: string) =>
+  path.split(platform.os === 'windows' ? /[\\/]/ : /\//).filter(Boolean);
 /** The names from `root` down to `path`, or null when `path` is not in it. */
 const below = (root: string, path: string) => {
   const [base, names] = [pathNames(root), pathNames(path)];
@@ -251,7 +252,13 @@ export function WorkspacePicker(props: {
       throw new UiError('Recover the unfinished settings action in Manage locations first.');
     const current = await host.query('settings', 'workspaceLocations', {});
     if (!current) throw new UiError('This Host does not manage workspace locations.');
-    const label = pathNames(path).at(-1) ?? path;
+    const name =
+      (pathNames(path).at(-1) ?? path).replace(/[\u0000-\u001f\u007f]/g, ' ').trim() ||
+      tr('Workspace');
+    const labels = new Set(current.roots.map((root: DirectoryRootSpec) => root.label));
+    let label = name;
+    let suffix = 2;
+    while (labels.has(label)) label = `${name} (${suffix++})`;
     const value: any = await operations.mutate('settings', 'updateWorkspaceLocations', {
       source: current.source,
       roots: [...current.roots, { label, path }],

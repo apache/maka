@@ -136,12 +136,17 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
                         prompt: None,
                     })
                 });
-                let path = paths
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .flatten()
-                    .and_then(|paths| paths.into_iter().next());
+                let path = match paths.await {
+                    Ok(Ok(paths)) => paths.and_then(|paths| paths.into_iter().next()),
+                    Ok(Err(error)) => {
+                        call.reject(error.to_string());
+                        continue;
+                    }
+                    Err(error) => {
+                        call.reject(error.to_string());
+                        continue;
+                    }
+                };
                 match path {
                     Some(path) => match path.to_str() {
                         Some(path) => call.resolve(JsonValue::from(path)),
