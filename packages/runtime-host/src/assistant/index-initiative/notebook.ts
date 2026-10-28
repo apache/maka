@@ -125,7 +125,7 @@ export class Notebook {
     ))
       for (const [ruleIndex, rule] of e.payload.rules.entries()) {
         if (!rule.topicIds.includes(topicId) && !overlaps(rule.tags, topic.tags)) continue;
-        current = { ...rule, feedbackId: e.payload.feedbackId, ruleIndex };
+        current = { ...rule, feedbackId: e.payload.feedbackId, resolutionSeq: e.seq, ruleIndex };
       }
     if (current.feedbackId && ['closed', 'deferred'].includes(current.status)) {
       const governing = this.event(current.feedbackId)!.seq;
@@ -288,8 +288,9 @@ export class Notebook {
   /**
    * A closed or deferred topic becomes open again because its underlying
    * information changed, not because the user said so. The change must be in the
-   * notebook: a note on this topic recorded after the user feedback that governs
-   * it. The user's own later feedback still overrides this.
+   * notebook: a note on this topic recorded after the closure decision that
+   * governs it — a note the decision already had in hand and weighed is not a
+   * change. The user's own later feedback still overrides this.
    */
   reopenTopic(entry: any, id: string) {
     requireThat(
@@ -305,10 +306,10 @@ export class Notebook {
       current.feedbackId && ['closed', 'deferred'].includes(current.status),
       'Only a topic the user closed or deferred can be reopened',
     );
-    const governing = this.event(current.feedbackId)!.seq;
+    const governing = current.resolutionSeq;
     requireThat(
       this.events('note').some((e) => e.payload.topicId === entry.topicId && e.seq > governing),
-      'Reopening needs a note on this topic recorded after the user feedback',
+      'Reopening needs a note on this topic recorded after the closure decision',
     );
     // Bind the reopening to the rule it was validated against (see state()).
     return this.put(id, 'reopen', {
