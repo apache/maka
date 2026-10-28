@@ -32,12 +32,16 @@ use maka_model::{
     ModelError, ProviderConfig, ProviderKind, ToolDefinition,
     prompt::{Message, Prompt, PromptCursor, PromptSource},
 };
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct PreparedHistory {
     log: Arc<SessionStore>,
     view: PreparedView,
+    wire: Mutex<Option<PreparedWireView>>,
     language: Language,
     vision: bool,
     provider: ProviderKind,
@@ -52,6 +56,7 @@ pub(crate) async fn capture(
     vision: bool,
     provider: &ProviderKind,
     cancellation: &CancellationToken,
+    prior: Option<&PreparedHistory>,
 ) -> Result<Arc<PreparedHistory>, RunError> {
     #[derive(serde::Serialize)]
     struct Policy<'a> {
@@ -68,7 +73,9 @@ pub(crate) async fn capture(
     })?;
     let session = selection.session.clone();
     let replay = selection.replay.clone();
-    let build = log.prepare_model_view(selection, &policy).await?;
+    let build = log
+        .prepare_model_view(selection, &policy, prior.map(|history| &history.view))
+        .await?;
     let mut after = None;
     loop {
         if cancellation.is_cancelled() {
@@ -109,6 +116,13 @@ pub(crate) async fn capture(
     Ok(Arc::new(PreparedHistory {
         log: log.clone(),
         view,
+        wire: Mutex::new(prior.and_then(|history| {
+            history
+                .wire
+                .lock()
+                .expect("prepared wire lock poisoned")
+                .clone()
+        })),
         language,
         vision,
         provider: provider.clone(),
@@ -138,9 +152,14 @@ impl PreparedHistory {
         let encoding = maka_model::WireEncoding::new(self.language, provider, options, tools)?;
         let codec = encoding.codec().to_owned();
         let format = encoding.format();
+        let prior = self
+            .wire
+            .lock()
+            .expect("prepared wire lock poisoned")
+            .clone();
         let build = self
             .log
-            .prepare_wire_view(&self.view, format, &codec)
+            .prepare_wire_view(&self.view, format, &codec, prior.as_ref())
             .await?;
         let mut after = None;
         loop {
@@ -189,6 +208,7 @@ impl PreparedHistory {
             }
         }
         let view = self.log.finish_prepared_wire(&build).await?;
+        *self.wire.lock().expect("prepared wire lock poisoned") = Some(view.clone());
         Ok(self.prompt().with_wire(
             format,
             codec,

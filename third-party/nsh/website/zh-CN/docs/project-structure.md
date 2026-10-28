@@ -44,7 +44,7 @@ my-app/
 
 两者都有的应用在 `"rust"` 中列出它的 crate，并有一个导入它们的 TSX 入口（[用 Rust 开发](./rust.md#用-tsx-扩展-rust-应用)）。
 
-每个命令都以应用目录或它的入口作为参数（`nsh run my-app`、`nsh run my-app/App.tsx`）。`nsh.json` 和入口所在的目录就是应用的根目录：`nsh.json` 从这里读取，资源路径相对于它，`.nsh/` 也写在这里。在 Rust 应用中（`nsh.json` 带 `"root"`），目录运行根组件；指定 TSX 入口则运行该入口。
+每个命令都以应用目录或它的入口作为参数（`nsh run my-app`、`nsh run my-app/App.tsx`）。`nsh.json` 和入口所在的目录就是应用的根目录：`nsh.json` 从这里读取，导入路径相对于各自模块解析，`.nsh/` 也写在这里。在 Rust 应用中（`nsh.json` 带 `"root"`），目录运行根组件；指定 TSX 入口则运行该入口。
 
 ## 根组件
 
@@ -218,6 +218,9 @@ const open = async () => {
 
 设备上的应用只分发一个 bundle，模块已经在里面，promise 会立即兑现。以拆分方式发布的 Web 应用（`nsh build --split`）会把这个模块以及只有它用到的代码放进单独的文件，在 `import()` 第一次请求时才下载（[Web](./web.md#拆分-bundle)）。参数必须是字面量相对路径：打包器需要知道导入的是哪个模块。
 
+嵌入应用也可以在运行时发现模块，并通过 [`importModule`](../modules/nsh.md#importmodule) 加载。
+宿主提供编译后的 JavaScript 源码，模块使用与应用相同的 NSH 组件和原生模块，也可以导出组件，由应用放到自己的界面中。
+
 ### NSH 的模块
 
 对 `nsh` 和 `nsh/...` 的导入不会被打包：运行时以原生方式提供它们。
@@ -267,7 +270,7 @@ text("Hello").font_family(INTER.family)
 
 ```tsx tabs
 import { Image, Text } from "nsh";
-import logo from "./assets/logo@2x.png";   // { url: "asset:/assets/logo@2x.png", size: { width: 64, height: 64 } }
+import logo from "./assets/logo@2x.png";   // { url: "asset:/imports/<digest>/logo@2x.png", size: { width: 64, height: 64 } }
 import Inter from "./assets/Inter.ttf";     // "Inter"
 
 <Image src={logo} />

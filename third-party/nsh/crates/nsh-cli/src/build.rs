@@ -133,19 +133,13 @@ fn imported_sets(natives: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// The app's assets: `imported` (relative to the entry's directory `root`)
-/// and the UI sets' ([`crate_assets`]).
-fn assets(root: Option<&Path>, imported: &[PathBuf]) -> Vec<Asset> {
-    let root = root.unwrap_or(Path::new("."));
+/// The imported resources' logical names and files, plus those the UI sets ship.
+fn assets(imported: &[nsh_bundler::Asset]) -> Vec<Asset> {
     let mut assets: Vec<Asset> = imported
         .iter()
-        .map(|rel| Asset {
-            path: rel
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/"),
-            source: root.join(rel),
+        .map(|asset| Asset {
+            path: asset.path.clone(),
+            source: asset.source.clone(),
         })
         .chain(crate_assets())
         .collect();
@@ -215,9 +209,6 @@ fn compile_with(
         split,
         ui_sets: crate::ui_sets().to_vec(),
     })?;
-    let dir = dunce::canonicalize(entry)
-        .ok()
-        .and_then(|e| e.parent().map(Path::to_path_buf));
     let sources: Vec<(&str, &str)> = std::iter::once((nsh_js::BUNDLE_NAME, bundle.code.as_str()))
         .chain(
             bundle
@@ -247,7 +238,7 @@ fn compile_with(
         source_map: bundle.source_map,
         chunks,
         entry_imports: bundle.entry_imports,
-        assets: assets(dir.as_deref(), &bundle.assets),
+        assets: assets(&bundle.assets),
         watch_files: bundle.watch_files,
         capabilities: bundle.capabilities,
         ui_sets: imported_sets(&bundle.natives),
@@ -262,9 +253,6 @@ fn compile_with(
 pub(crate) fn compile_hot(entry: &Path) -> Result<(Built, nsh_bundler::HotBundle), BuildError> {
     let start = Instant::now();
     let hot = nsh_bundler::bundle_hot(entry, &crate::ui_sets())?;
-    let dir = dunce::canonicalize(entry)
-        .ok()
-        .and_then(|e| e.parent().map(Path::to_path_buf));
     let (code, source_map) = hot.script();
     let bytecode = nsh_js::compile_bytecode_with(&code, false, &crate::ui_sets())?;
     let built = Built {
@@ -273,7 +261,7 @@ pub(crate) fn compile_hot(entry: &Path) -> Result<(Built, nsh_bundler::HotBundle
         source_map,
         chunks: Vec::new(),
         entry_imports: Vec::new(),
-        assets: assets(dir.as_deref(), &hot.assets),
+        assets: assets(&hot.assets),
         watch_files: hot.watch_files.clone(),
         capabilities: hot.capabilities.clone(),
         ui_sets: imported_sets(hot.natives()),
@@ -368,30 +356,10 @@ pub(crate) fn build(entry: &Path, out: &Path, release: bool, split: bool) -> any
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
 
     #[test]
     fn hosts_must_serve_the_ui_sets_an_app_imports() {
         let natives = ["nsh", "nsh/mobile", "nsh/base"].map(String::from);
         assert_eq!(super::imported_sets(&natives), ["nsh/base"]);
-    }
-
-    #[test]
-    fn imported_assets_keep_their_paths_under_the_entry() {
-        let assets = super::assets(
-            Some(Path::new("/app")),
-            &[PathBuf::from("img/a.png"), PathBuf::from("b.ttf")],
-        );
-        let paths: Vec<_> = assets
-            .iter()
-            .map(|a| (a.path.as_str(), a.source.clone()))
-            .collect();
-        assert_eq!(
-            paths,
-            [
-                ("b.ttf", PathBuf::from("/app/b.ttf")),
-                ("img/a.png", PathBuf::from("/app/img/a.png")),
-            ]
-        );
     }
 }

@@ -19,7 +19,7 @@
 
 import { cleanup, computed, effect, inputAction, List, Overlay, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { Bounds, CaretEvent, YNode } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
@@ -35,14 +35,13 @@ import {
   fileInvocation,
   referenceEdit,
   validSelection,
-} from './composerCompletion.ts';
-import type { CompletionToken, Selection } from './composerCompletion.ts';
+} from './composerCompletionSyntax.ts';
+import type { CompletionToken, Selection } from './composerCompletionSyntax.ts';
 import { C, bodyTextStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
 import { createComposerPaste } from './composerPaste';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
-type Rect = { x: number; y: number; width: number; height: number };
 type Editor = { sessionId: string | null; node: YNode };
 type Read = {
   serial: number;
@@ -93,7 +92,7 @@ const backendKey = (owner: ComposerSession) => {
 /** One resident editor owns its menu, selection and latest outstanding lookup. */
 export function createComposerCompletion(options: Options) {
   const editor = signal<Editor | null>(null);
-  const caret = signal<Rect | null>(null);
+  const caret = signal<Bounds | null>(null);
   const selection = signal<Selection>({ start: 0, end: 0 });
   const composing = signal(false);
   const explicit = signal<Source | null>(null);
@@ -727,7 +726,7 @@ export function createComposerCompletion(options: Options) {
       textVersion += 1;
       owner.changeDraft(text);
     },
-    caret(owner: ComposerSession, event: { pageBounds: Rect }) {
+    caret(owner: ComposerSession, event: CaretEvent) {
       if (options.session() === owner) caret.set(event.pageBounds);
     },
     selection(owner: ComposerSession, event: Selection) {

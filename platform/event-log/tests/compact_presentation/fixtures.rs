@@ -78,7 +78,7 @@ pub(super) fn accepted(text: &str) -> Fact {
 pub(super) fn transcript(
     db: &Connection,
 ) -> Vec<(maka_agent_facts::history::RowPosition, Vec<u8>, String)> {
-    db.prepare("SELECT source_sequence, item_index, payload, digest FROM transcript_cache.rows ORDER BY source_sequence, item_index")
+    db.prepare("SELECT source_sequence, item_index, payload, digest FROM temp.transcript_rows ORDER BY source_sequence, item_index")
         .unwrap()
         .query_map([], |row| Ok((maka_agent_facts::history::RowPosition { source_sequence: row.get::<_, i64>(0)? as u64, item_index: row.get::<_, i64>(1)? as u64 }, row.get(2)?, row.get(3)?)))
         .unwrap()

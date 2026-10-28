@@ -434,13 +434,8 @@ async fn retired_native_initializer_keeps_original_store_until_actual_configurat
                 deployment,
                 1,
                 Input {
-                    environment: Environment {
-                        location: ExecutionLocation::Host,
-                        presentation: None,
-                    },
+                    ui: None,
                     instances: BTreeMap::new(),
-                    recovery: None,
-                    launch: None,
                 },
                 vec![],
                 vec![],

@@ -560,6 +560,7 @@ impl RootView {
             network: Some(crate::net::network()),
             websocket: None,
             filesystem: None,
+            chunk_loader: None,
             assets: Some(Arc::new(crate::image::AssetReader(
                 self.ivars().options.asset_base.clone(),
             ))),

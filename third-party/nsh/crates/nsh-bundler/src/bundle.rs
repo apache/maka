@@ -88,9 +88,8 @@ pub struct Bundle {
     pub chunks: Vec<Chunk>,
     /// Static dependency closure needed before evaluating the entry.
     pub entry_imports: Vec<String>,
-    /// Asset files the app imports, relative to the entry directory
-    /// (`asset:/<path>` URIs refer to them).
-    pub assets: Vec<PathBuf>,
+    /// Imported resources and the logical paths their `asset:/` URIs name.
+    pub assets: Vec<Asset>,
     /// Source and configuration files read by the build, as absolute paths.
     /// Development servers watch these even outside the entry directory.
     pub watch_files: Vec<PathBuf>,
@@ -106,6 +105,16 @@ pub struct Bundle {
     pub capabilities: Option<nsh_core::access::Capabilities>,
     /// Wall time spent bundling, in milliseconds.
     pub elapsed_ms: f64,
+}
+
+/// One imported resource, independently of where its source was installed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
+pub struct Asset {
+    /// Stable package-relative path used by the compiled `asset:/` URI.
+    pub path: String,
+    /// The actual file read during the build and watched during development.
+    pub source: PathBuf,
 }
 
 /// A chunk of a split bundle: shared or lazy modules (with what
@@ -488,12 +497,7 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
         entry_chunk.ok_or_else(|| BundleError::other("bundle produced no entry chunk"))?;
     chunks.sort_by(|a, b| a.id.cmp(&b.id));
     let entry_imports = entry_dependencies(imports, &chunks);
-    let mut assets: Vec<PathBuf> = std::mem::take(&mut *assets.lock().expect("assets lock"))
-        .into_iter()
-        .filter_map(|p| p.strip_prefix(&cwd_root).ok().map(PathBuf::from))
-        .collect();
-    assets.sort();
-    assets.dedup();
+    let (assets, watch_files) = imported_assets(&assets, &bundler, &cwd_root);
     let natives = std::mem::take(&mut *natives.lock().expect("natives lock"));
     let codes = || std::iter::once(code.as_str()).chain(chunks.iter().map(|c| c.code.as_str()));
     if let Some(warning) = ungranted_host(codes(), capabilities.as_ref()) {
@@ -509,7 +513,7 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
         chunks,
         entry_imports,
         assets,
-        watch_files: watch_files(&bundler, &cwd_root),
+        watch_files,
         natives: natives.into_iter().collect(),
         native_use,
         capabilities,
@@ -549,6 +553,21 @@ fn watch_files(bundler: &rolldown::Bundler, dir: &std::path::Path) -> Vec<PathBu
     files.sort();
     files.dedup();
     files
+}
+
+fn imported_assets(
+    assets: &Mutex<Vec<Asset>>,
+    bundler: &rolldown::Bundler,
+    dir: &std::path::Path,
+) -> (Vec<Asset>, Vec<PathBuf>) {
+    let mut assets = std::mem::take(&mut *assets.lock().expect("assets lock"));
+    let mut files = watch_files(bundler, dir);
+    files.extend(assets.iter().map(|asset| asset.source.clone()));
+    files.sort();
+    files.dedup();
+    assets.sort();
+    assets.dedup_by(|a, b| a.path == b.path);
+    (assets, files)
 }
 
 /// The warning for an app that imports `host` from `nsh` (in the bundle's
@@ -608,7 +627,7 @@ pub struct HotBundle {
     /// Native namespaces the factories require statically.
     preloads: Vec<String>,
     /// Asset files the app imports (as in [`Bundle::assets`]).
-    pub assets: Vec<PathBuf>,
+    pub assets: Vec<Asset>,
     /// Source and configuration files read by the build, as absolute paths.
     pub watch_files: Vec<PathBuf>,
     /// As in [`Bundle::capabilities`].
@@ -841,12 +860,7 @@ pub async fn bundle_hot_async(
             embedded,
         });
     }
-    let mut assets: Vec<PathBuf> = std::mem::take(&mut *assets.lock().expect("assets lock"))
-        .into_iter()
-        .filter_map(|p| p.strip_prefix(&cwd).ok().map(PathBuf::from))
-        .collect();
-    assets.sort();
-    assets.dedup();
+    let (assets, watch_files) = imported_assets(&assets, &bundler, &cwd);
     let natives = std::mem::take(&mut *natives.lock().expect("natives lock"));
     if let Some(warning) = ungranted_host(
         modules.iter().map(|m| m.code.as_str()),
@@ -862,7 +876,7 @@ pub async fn bundle_hot_async(
             .collect(),
         entry: entry_id.ok_or_else(|| BundleError::other("bundle produced no entry chunk"))?,
         assets,
-        watch_files: watch_files(&bundler, &cwd),
+        watch_files,
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
@@ -1142,22 +1156,24 @@ mod tests {
     fn svg_app(name: &str, files: &[(&str, &str)]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nsh-svg-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut app = String::from("import { Image, mount, View } from \"nsh\";\n");
+        std::fs::create_dir_all(dir.join("ui")).unwrap();
+        let mut app = String::from(
+            "import { Image, mount, View } from \"nsh\";\nglobalThis.importedAssets = [];\n",
+        );
         for (i, (file, svg)) in files.iter().enumerate() {
             std::fs::write(dir.join(file), svg).unwrap();
             app.push_str(&format!(
-                "import a{i} from \"./{file}\";\nconsole.log(JSON.stringify(a{i}));\n"
+                "import a{i} from \"../{file}\";\nglobalThis.importedAssets.push(a{i});\n"
             ));
         }
         app.push_str("mount(() => <View />);\n");
-        std::fs::write(dir.join("App.tsx"), app).unwrap();
+        std::fs::write(dir.join("ui/index.tsx"), app).unwrap();
         dir
     }
 
     fn bundle_dev(dir: &std::path::Path) -> Result<Bundle, BundleError> {
         bundle(&BundleOptions {
-            entry: dir.join("App.tsx"),
+            entry: dir.join("ui/index.tsx"),
             minify: false,
             split: false,
             ui_sets: Vec::new(),
@@ -1171,25 +1187,61 @@ mod tests {
         let odd = r#"<svg xmlns="http://www.w3.org/2000/svg" width="9.6" height="4.8"/>"#;
         let dir = svg_app(
             "size",
-            &[("icon.svg", icon), ("logo@2x.svg", logo), ("odd.svg", odd)],
+            &[
+                ("icon.svg", icon),
+                ("logo@2x.svg", logo),
+                ("odd #@2x.svg", odd),
+            ],
         );
         let bundle = bundle_dev(&dir).unwrap();
-        let code: String = bundle.code.split_whitespace().collect();
-        assert!(
-            code.contains("url:\"asset:/icon.svg\",size:{width:24,height:24}"),
-            "{code}"
-        );
-        // One side and the viewBox's ratio; `@2x` does not apply to SVG.
-        assert!(
-            code.contains("url:\"asset:/logo@2x.svg\",size:{width:96,height:48}"),
-            "{code}"
-        );
-        // The shortest number of the size they lay out at.
-        assert!(
-            code.contains("url:\"asset:/odd.svg\",size:{width:9.6,height:4.8}"),
-            "{code}"
-        );
+        let root = dunce::canonicalize(&dir).unwrap();
         assert_eq!(bundle.assets.len(), 3);
+        let mut expected = Vec::new();
+        let mut located = Vec::new();
+        for (name, width, height) in [
+            ("icon.svg", 24.0, 24.0),
+            ("logo@2x.svg", 96.0, 48.0),
+            ("odd #@2x.svg", 9.6, 4.8),
+        ] {
+            let asset = bundle
+                .assets
+                .iter()
+                .find(|asset| asset.source == root.join(name))
+                .unwrap();
+            assert!(bundle.watch_files.contains(&asset.source));
+            expected.push(serde_json::json!([
+                format!("asset:/{}", asset.path),
+                width,
+                height
+            ]));
+            located.push(serde_json::json!([
+                format!(
+                    "asset:/plugin/package/ui/{}",
+                    asset.path.replace(' ', "%20").replace('#', "%23")
+                ),
+                width,
+                height,
+            ]));
+        }
+        let host = nsh_js::Host::new().unwrap();
+        host.eval_source(&bundle.code).unwrap();
+        assert!(host.eval_script("check", &format!(
+            "JSON.stringify(globalThis.importedAssets.map(a => [a.url, a.size.width, a.size.height])) === JSON.stringify({})",
+            serde_json::to_string(&expected).unwrap(),
+        )).unwrap());
+        let plugin = nsh_js::Host::new().unwrap();
+        plugin.add_chunk_source(
+            "plugin.js",
+            bundle.code,
+            Some("asset:/plugin/package/ui/".into()),
+        );
+        plugin
+            .eval_source("import { importModule } from 'nsh'; await importModule('plugin.js');")
+            .unwrap();
+        assert!(plugin.eval_script("check", &format!(
+            "JSON.stringify(globalThis.importedAssets.map(a => [a.url, a.size.width, a.size.height])) === JSON.stringify({})",
+            serde_json::to_string(&located).unwrap(),
+        )).unwrap());
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -159,6 +159,11 @@ pub enum StoreError {
     ConnectionClosed,
     #[error("accepted database operation outcome is unknown")]
     OperationUnknown,
+    #[error("prepared operation failed: {cause}; rollback failed: {cleanup}")]
+    PreparedRollbackFailed {
+        cause: Box<StoreError>,
+        cleanup: sqlx::Error,
+    },
     #[error("database close failed: {0}")]
     CloseFailed(String),
     #[error("database startup failed: {cause}; cleanup unconfirmed: {cleanup}")]
@@ -177,6 +182,7 @@ pub struct EventLog {
     root_owner: Option<Arc<root::RootOwner>>,
     commits: commits::CommitHub,
     prepared: context::prepared::lifetime::PreparedRegistry,
+    prepared_store: Option<context::prepared::store::PreparedStore>,
     shell_changes: tokio::sync::broadcast::Sender<shell_runs::ShellChange>,
 }
 
@@ -188,7 +194,7 @@ enum OpenPurpose {
 }
 
 impl EventLog {
-    /// Observe original SQLite actors, including their attached database caches.
+    /// Observe canonical SQLite actors; disposable prepared actors are excluded.
     pub async fn sqlite_resource_stats(
         &self,
     ) -> Result<connection::ConnectionResourceStats, StoreError> {
@@ -199,11 +205,12 @@ impl EventLog {
     /// All journals, notices and actual workers remain the original owner's.
     fn scoped(&self, custody: connection::custody::Custody) -> Self {
         Self {
-            connection: self.connection.scoped(custody),
+            connection: self.connection.scoped(custody.clone()),
             expected_session: self.expected_session.clone(),
             root_owner: self.root_owner.clone(),
             commits: self.commits.clone(),
             prepared: self.prepared.clone(),
+            prepared_store: self.prepared_store.clone(),
             shell_changes: self.shell_changes.clone(),
         }
     }
@@ -361,7 +368,7 @@ impl EventLog {
         let connection = OwnedConnection::open_with_cache(
             options,
             ConnectionAuthority::Writer {
-                lease,
+                lease: lease.clone(),
                 root: root_owner.clone(),
             },
             move |connection| {
@@ -383,10 +390,37 @@ impl EventLog {
                     }
                 })
             },
-            cache,
-            control,
+            None,
+            control.clone(),
         )
         .await?;
+        let prepared_store = if let Some(cache) = cache {
+            match context::prepared::store::PreparedStore::open(
+                &path,
+                lease,
+                root_owner.clone(),
+                cache,
+                control,
+            )
+            .await
+            {
+                Ok(store) => {
+                    connection.install_prepared(store.clone())?;
+                    Some(store)
+                }
+                Err(cause) => {
+                    if let Err(cleanup) = connection.shutdown().await {
+                        return Err(StoreError::StartupCleanupFailed {
+                            cause: Box::new(cause),
+                            cleanup: Box::new(cleanup),
+                        });
+                    }
+                    return Err(cause);
+                }
+            }
+        } else {
+            None
+        };
         let high_water = connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -419,8 +453,29 @@ impl EventLog {
             root_owner,
             commits: commits::CommitHub::new(high_water),
             prepared,
+            prepared_store,
             shell_changes: tokio::sync::broadcast::channel(256).0,
         })
+    }
+
+    fn prepared_store(&self) -> Result<context::prepared::store::PreparedStore, StoreError> {
+        let store = self.prepared_store.as_ref().ok_or_else(|| {
+            StoreError::InvalidTransition("store has no prepared projection owner".into())
+        })?;
+        Ok(match self.connection.scope_custody() {
+            Some(custody) => store.scoped(custody),
+            None => store.clone(),
+        })
+    }
+
+    fn request_shutdown(&self) {
+        self.connection.request_shutdown();
+    }
+
+    fn close_receipt(
+        &self,
+    ) -> futures_util::future::Shared<connection::BoxFuture<'static, Result<(), String>>> {
+        self.connection.close_receipt()
     }
 
     /// Finish every accepted operation and close SQLite before releasing its lease.

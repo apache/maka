@@ -23,7 +23,7 @@
 
 Builds the `maka` executable. It starts the terminal product, serves Hosts, exposes ACP and provides application inspection, composition and installation commands. Product startup wires native factories and JavaScript execution adapters into the platform owners.
 
-From the repository root, run `just run` or `just run --help`. Development builds load `../bundle/dist`; `just run` rebuilds that bundle before Cargo starts. Release builds embed it. Desktop runs in a separate sibling executable.
+From the repository root, run `just run` or `just run --help`. Cargo builds and embeds the current plugin selection and workbench in both debug and release binaries. Desktop runs in a separate sibling executable.
 
 [Source](src/main.rs) · [Cargo manifest](Cargo.toml)
 

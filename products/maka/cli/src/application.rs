@@ -17,6 +17,7 @@
  * under the License.
  */
 
+mod build_ui;
 mod install;
 mod product;
 mod serve;
@@ -41,6 +42,8 @@ use serde::Serialize;
 
 #[derive(Subcommand)]
 pub(super) enum Command {
+    /// Compile a plugin's NSH UI module and assets for packaging.
+    BuildUi(build_ui::BuildUi),
     /// Author a checked business Host without Node or a source checkout.
     Compose(product::Compose),
     /// Preview selected bundled Host package updates; use --apply to synchronize.
@@ -117,8 +120,6 @@ pub(super) struct ReadSource {
 #[serde(rename_all = "camelCase")]
 struct Report<'a> {
     instances: Vec<&'a maka_plugin_core::plan::Instance>,
-    launch: Option<&'a maka_plugin_core::plan::Binding>,
-    recovery: Option<&'a maka_plugin_core::plan::Binding>,
 }
 
 impl Command {
@@ -130,6 +131,7 @@ impl Command {
 
     async fn run_inner(self) -> Result<(), HostError> {
         match self {
+            Self::BuildUi(args) => args.run().await?,
             Self::Compose(args) => args.run().await?,
             Self::UpdateDefaults(args) => args.run().await?,
             Self::InstallUrl(args) => args.run().await?,
@@ -224,8 +226,6 @@ impl Check {
         let plan = Plan::prepare(&input, &packages, &remote)?;
         Ok(serde_json::to_string_pretty(&Report {
             instances: plan.instances().values().collect(),
-            launch: plan.launch(),
-            recovery: plan.recovery(),
         })?)
     }
 }

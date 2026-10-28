@@ -1425,6 +1425,43 @@ mod tests {
     }
 
     #[test]
+    fn viewability_thresholds_reach_the_core_as_fractions() {
+        let host = Host::new().unwrap();
+        host.eval_source(
+            r#"
+            import { mount, signal, List } from "nsh";
+            const config = signal({ itemVisibleThreshold: 0.5, minimumViewTime: 250 });
+            globalThis.changeThreshold = () => config.set({
+                itemVisibleThreshold: 1, viewAreaCoverageThreshold: 0.125, minimumViewTime: 250,
+            });
+            mount(() => List({
+                each: ["row"], children: (item) => item(),
+                get viewabilityConfig() { return config(); },
+            }));
+            "#,
+        )
+        .unwrap();
+        let thresholds = |ops: Vec<Op>| {
+            ops.into_iter()
+                .filter_map(|op| match op {
+                    Op::SetProp {
+                        prop: Prop::Viewability(value),
+                        ..
+                    } => Some((
+                        value.item_visible_threshold.map(|v| v.0),
+                        value.view_area_coverage_threshold.map(|v| v.0),
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(thresholds(take_ops(&host)), [(Some(0.5), None)]);
+        host.eval_script("threshold.js", "changeThreshold() ")
+            .unwrap();
+        assert_eq!(thresholds(take_ops(&host)), [(Some(1.0), Some(0.125))]);
+    }
+
+    #[test]
     fn array_splices_keep_retained_row_state_until_the_core_rebinds() {
         let host = Host::new().unwrap();
         host.eval_source(

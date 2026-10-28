@@ -28,6 +28,7 @@ bundle = [
   "dep:resvg",
   "nsh-core/svg",
   "dep:ttf-parser",
+  "dep:sha2",
   "dep:tokio",
   "oxc/minifier",
 ]
@@ -46,6 +47,7 @@ imagesize = { workspace = true, optional = true }
 # SVG imports are read with the XML parser usvg uses (`resvg::usvg::roxmltree`).
 resvg = { workspace = true, optional = true }
 ttf-parser = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "sync", "fs"], optional = true }
 nsh-core.workspace = true
 # The app's theme (`nsh.json` `"theme"`): its tokens are classes.

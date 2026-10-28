@@ -65,7 +65,8 @@ impl EventLog {
         self.validate_root()?;
         sessions::validate_id(session)?;
         let session = session.to_owned();
-        let prepared = self.prepared.clone();
+        let prepared = self.prepared_store()?.cleanup();
+        let observations = self.connection.observations();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -74,20 +75,23 @@ impl EventLog {
                         .await?
                         .ok_or(StoreError::SessionNotFound)?
                     {
-                        CopyState::Abandoned => return Ok(AbandonRevision::Abandoned),
+                        CopyState::Abandoned => {
+                            tx.rollback().await?;
+                            prepared.retire_owner(session.clone()).await?;
+                            observations.purge_session(session).await?;
+                            return Ok(AbandonRevision::Abandoned);
+                        }
                         CopyState::Committed => return Ok(AbandonRevision::Retained),
                         CopyState::Preparing => {}
                     }
                     // The ledger keeps both identity and allocated family index. Only
                     // destination-owned resources and disposable projections are removed.
-                    crate::context::prepared::gc::retire_owner(&mut tx, &session).await?;
+                    prepared.retire_owner(session.clone()).await?;
                     crate::context::semantic::gc::retire_owner(&mut tx, &session).await?;
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_history_members WHERE session_id=?",
                         "DELETE FROM session_revision_sources WHERE session_id=?",
-                        "DELETE FROM transcript_cache.rows WHERE session_id=?",
-                        "DELETE FROM transcript_cache.text WHERE session_id=?",
                         "DELETE FROM transcript_directory WHERE session_id=?",
                         "DELETE FROM transcript_failures WHERE session_id=?",
                         "DELETE FROM catalog_messages WHERE session_id=?",
@@ -113,7 +117,7 @@ impl EventLog {
                     .await?;
                     sessions::advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    prepared.wake();
+                    observations.purge_session(session).await?;
                     Ok(AbandonRevision::Abandoned)
                 })
             })

@@ -84,7 +84,7 @@ impl ToolExecutor for Effect {
     }
 }
 
-pub(crate) fn input(base: &str, suffix: &str, effect: Arc<Effect>) -> RunInput {
+pub(crate) fn input(base: &str, suffix: &str, effect: Arc<dyn ToolExecutor>) -> RunInput {
     RunInput {
         model_source: None,
         model_revision: None,

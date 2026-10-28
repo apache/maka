@@ -222,6 +222,14 @@ fn an_images_events_reach_its_listeners() {
         "image 300x200",
     );
     send(
+        EventKind::Load,
+        map(&[
+            ("width", PayloadValue::Number(301.4)),
+            ("height", PayloadValue::Number(198.6)),
+        ]),
+        "image 301x199",
+    );
+    send(
         EventKind::Error,
         EventPayload::Error {
             message: "not found".into(),

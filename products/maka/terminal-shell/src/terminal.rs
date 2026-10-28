@@ -84,13 +84,22 @@ pub(crate) struct UiScaleControl(Presentation);
 impl UiScaleControl {
     pub(crate) fn preview(&self, scale: f32) -> Result<(), String> {
         let mut state = self.0.state.lock().unwrap();
+        let tracing = state.trace.is_some();
         let inbox = state
             .pixels
             .as_mut()
             .ok_or("pixel display is unavailable")?;
+        let geometry = inbox.geometry;
+        let completed = tracing.then(|| inbox.completed_frames().collect::<Vec<_>>());
         inbox.set_ui_scale(scale)?;
+        let resized = inbox.geometry != geometry;
         if let Some(wake) = &inbox.wake {
             wake.unpark();
+        }
+        if resized && let (Some(completed), Some(trace)) = (completed, &mut state.trace) {
+            for offer in completed {
+                trace.discard(&offer.token, offer.geometry, "resize");
+            }
         }
         drop(state);
         self.0.wake_driver();
@@ -466,8 +475,10 @@ fn start_reader(presentation: Presentation, reader: EventReader) -> Result<Reade
                                     || pixels.capabilities.sixel_geometry != sixel_geometry;
                                 let completed = (tracing
                                     && resizing
-                                    && pixels.capabilities.protocol
-                                        == Some(pixels::Protocol::Sixel))
+                                    && matches!(
+                                        pixels.capabilities.protocol,
+                                        Some(pixels::Protocol::Sixel | pixels::Protocol::Kitty)
+                                    ))
                                 .then(|| pixels.completed_frames().collect::<Vec<_>>());
                                 let result = graphics_response
                                     .and_then(|()| pixels.set_sixel_geometry(sixel_geometry))

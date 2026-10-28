@@ -271,9 +271,9 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
         // The original upload metadata is independent of the selected file's OS name.
         let selected = f._dir.path().join("image.png");
         std::fs::write(&selected, &bytes).unwrap();
-        let resource = maka_ui_runtime::file::read_selected(
+        let resource = maka_ui_support::file::read_selected(
             &selected,
-            &maka_ui_runtime::budget::NativeBudget::default(),
+            &maka_ui_support::budget::NativeBudget::default(),
         ).unwrap();
         let image = f.mutation_with(
             2, "uploadAttachment",

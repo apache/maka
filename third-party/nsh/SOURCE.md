@@ -95,6 +95,21 @@ current host keyboard convention, with compilation-target fallback outside an
 engine. Maka retains its event-time dual tables for off-engine sessions, terminal
 and Apple-browser policies, and custom binding precedence.
 
+The following units synchronization makes responder velocities points per second,
+keyboard animation durations milliseconds, and viewability thresholds fractions
+from zero to one under `itemVisibleThreshold` / `viewAreaCoverageThreshold`.
+Image and video intrinsic pixel extents use `PixelSize` in declarations and
+`Size<DevicePixels>` in Rust image callbacks; layout `Size<Points>` stays distinct.
+These are breaking API/unit changes: regenerate declarations, migrate thresholds
+and rebuild existing bundles. Media playback time remains seconds and decay's
+per-millisecond retention remains unchanged. Native keyboard adapters convert at
+the UIKit/Android boundary, not again in the engine. Local list retirement,
+retained-value ownership, terminal image layout and keymap policy are preserved.
+Additional regressions cover fractional threshold boundaries and JS forwarding,
+JS responder velocity, and typed/map image-load pixel payloads. Preparing this
+source does not establish test execution or iOS/Android device behavior; native
+keyboard timing requires the corresponding supported platform validation.
+
 Independent local corrections retain RichEditor geometry on its owning thread,
 retire its session subscription before dropping the geometry payload, and keep
 host-specific keyboard conventions and explicit event policy. Plot stationary
@@ -283,3 +298,18 @@ build already uses, instead of upstream's 29; the shader readback keeps its
 previous frame when wgpu 30 cannot map a range. Maka's root dependency graph
 gains no packages from this synchronization. RichEditor's platform keys keep
 the keymap synchronization's host keyboard convention above.
+
+Trusted Workbench modules use the existing chunk runtime through the public
+`importModule` API and an optional `EngineConfig.chunk_loader`. `ChunkSource`
+carries the module's asset directory; imported images and fonts resolve against
+`import.meta.assetBase`. Engines own asynchronous loads and cancel them when
+they close. Terminal `AppView::load_with_config` retains the caller's services,
+assets and module loader while using the actual terminal geometry.
+
+Bundled resources now expose their logical package path and physical source
+separately. Content-based resource families include every bitmap density
+variant, preserving sibling filenames without depending on the checkout path.
+Packaging, development serving, file watching and lazy font assignment use this
+mapping, including imports outside the entry directory. GPUI and terminal input
+fences let a Workbench replacement drain admitted edits before saving its draft;
+they reuse the existing input scopes and engine message ordering.

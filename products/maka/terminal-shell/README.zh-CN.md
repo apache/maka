@@ -25,10 +25,9 @@ NSH 源码位于 [`third-party/nsh`](../../../third-party/nsh/SOURCE.md)。Cargo
 
 ## 启动
 
-在仓库根目录构建产品包，再通过 Maka CLI 启动终端界面：
+在仓库根目录通过 Maka CLI 启动终端界面。Cargo 会构建并嵌入插件和工作台：
 
 ```sh
-npm run build --workspace @maka-agent/product
 cargo run -p maka-cli
 ```
 
@@ -40,7 +39,9 @@ cargo run -p maka-cli
 
 在 **Settings → General** 的 **Interface scale** 中选择预设，或输入百分比并按 Enter 预览。**Save** 保存当前缩放；**Reset to 100%** 预览 100%，**Cancel** 或离开页面会恢复已保存的缩放。Ctrl+0 或 Ctrl+Alt+0 将缩放重置为 100% 并保存（macOS 对应 Cmd+0 或 Cmd+Alt+0）。像素界面会按新缩放重新布局和栅格化文字；Unicode 界面请使用终端自身的字号。
 
-省略 `--session` 时，居中的输入区域会显示 **Choose workspace**，选择工作区后即可开始对话。添加 `--session SESSION_ID` 可直接打开已有会话。Host 必须提供 `agent`、`settings` 和 `receipts`。退出终端只关闭自己的连接，Host 按既有生命周期和空闲策略退出。
+Kitty 在 GPU 继续绘制时准备完整的无损快照。唯一写入方在前一帧确认后选择交替图像槽，将已确认图像保留在下方，只有完整写出并收到对应成功回复后才提交给原生界面。等待写入的快照可以合并，已开始的事务必须完整结束；这些确认不代表屏幕垂直同步。会话持有的任一图像槽收到失败回复都会结束图像会话。窗口尺寸变化会立即使旧指针坐标失效。
+
+省略 `--session` 时，居中的输入区域会显示 **Choose workspace**，选择工作区后即可开始对话。添加 `--session SESSION_ID` 可直接打开已有会话。默认 Maka 根界面需要 `agent`、`settings` 和 `receipts`；自定义根界面使用自己声明的服务，可以不依赖 Agent。退出终端只关闭自己的连接，Host 按既有生命周期和空闲策略退出。
 
 从首页 **Connections & models** 或侧栏 **Settings** 可添加连接和 API key、获取模型目录或手动添加模型 ID，并配置模型支持的推理档位及连接默认档位；全新 Host 也能直接在这里完成这些配置。点击 **Choose workspace** 或按 Ctrl+N，选择 Host 发布的目录。在已有会话中新建时，复用该会话已获授权的工作区。创建完成后打开 **Models**，选择连接、模型和推理档位，再发送消息。
 

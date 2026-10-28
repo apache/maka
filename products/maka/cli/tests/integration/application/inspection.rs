@@ -290,23 +290,23 @@ async fn seed(wal: bool) -> Fixture {
     let previous = Package::new(files).unwrap();
     assert_ne!(previous.application_ref(), current.application_ref());
     let manifest: Value = serde_json::from_slice(&current.files()["maka.extension.json"]).unwrap();
-    let contract = &manifest["application"]["entries"]["host"]["exports"]["files"]["contract"];
+    let contract = &manifest["application"]["host"]["exports"]["files"]["contract"];
     let consumer = Package::new(BTreeMap::from([
         ("maka.extension.json".into(), serde_json::to_vec(&json!({"schemaVersion":1,
-            "id":"example.k110-consumer","application":{"entries":{"host":{
+            "id":"example.k110-consumer","application":{"host":{
                 "implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},
                 "configuration":{"type":"object","properties":{"label":{"type":"string"}},
                     "required":["label"],"additionalProperties":false},
-                "imports":{"files":{"contract":contract,"cardinality":{"kind":"one"}}},"exports":{}}}}})).unwrap()),
+                "imports":{"files":{"contract":contract,"cardinality":{"kind":"one"}}},"exports":{}}}})).unwrap()),
         ("host.mjs".into(), b"export function activate() { return {}; }".to_vec()),
     ])).unwrap();
     let deployment = Uuid::new_v4();
     let files_key = Uuid::new_v4();
     let consumer_key = Uuid::new_v4();
-    let mut input: Input = serde_json::from_value(json!({"environment":{"location":"host"},"instances":{
-        "files":{"key":files_key,"package":{"source":"pinned","package":previous.application_ref()},"usePackage":"entry"},
+    let mut input: Input = serde_json::from_value(json!({"instances":{
+        "files":{"key":files_key,"package":{"source":"pinned","package":previous.application_ref()},"usePackage":"host"},
         "custom":{"key":consumer_key,"package":{"source":"pinned","package":consumer.application_ref()},
-            "usePackage":"entry","configuration":{"values":{"label":"main-only-value"}},
+            "usePackage":"host","configuration":{"values":{"label":"main-only-value"}},
             "bindings":{"files":[{"kind":"instance","path":["files"],"export":"files"}]}}
     }})).unwrap();
     let selection = json!({"kind":"public_host","endpoints":{"files":{

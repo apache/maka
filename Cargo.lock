@@ -7393,7 +7393,7 @@ dependencies = [
  "maka-skills-native",
  "maka-tools",
  "maka-transport",
- "maka-ui-runtime",
+ "maka-ui-support",
  "maka-web",
  "maka-web-api",
  "maka-workspace-api",
@@ -7567,7 +7567,7 @@ dependencies = [
  "maka-skills-api",
  "maka-terminal-shell",
  "maka-transport",
- "maka-ui-runtime",
+ "maka-ui-support",
  "maka-workbench",
  "maka-workspace-api",
  "nsh-base",
@@ -8233,7 +8233,6 @@ dependencies = [
  "maka-providers",
  "maka-settings-native",
  "maka-skills-native",
- "maka-ui-authoring",
  "maka-web",
  "serde_json",
  "sqlx",
@@ -8369,9 +8368,6 @@ dependencies = [
  "maka-plugin-core",
  "maka-settings-native",
  "maka-skills-api",
- "maka-transport",
- "maka-ui-authoring",
- "maka-ui-runtime",
  "maka-web-api",
  "maka-workspace-api",
  "schemars 1.2.3",
@@ -8523,7 +8519,7 @@ dependencies = [
  "maka-sandbox",
  "maka-skills",
  "maka-skills-api",
- "maka-ui-runtime",
+ "maka-ui-support",
  "maka-workspace-support",
  "schemars 1.2.3",
  "serde",
@@ -8606,10 +8602,7 @@ dependencies = [
  "maka-host-runtime",
  "maka-packages",
  "maka-plugin-core",
- "maka-ui-js",
- "maka-ui-runtime",
  "schemars 1.2.3",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -8619,70 +8612,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "maka-ui-authoring"
-version = "0.2.0"
-dependencies = [
- "futures-util",
- "hex",
- "maka-capabilities",
- "maka-event-log",
- "maka-host-runtime",
- "maka-plugin-core",
- "schemars 1.2.3",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "maka-ui-js"
-version = "0.2.0"
-dependencies = [
- "jsonschema 0.60.1",
- "maka-capabilities",
- "maka-event-log",
- "maka-js-runtime",
- "maka-packages",
- "maka-plugin-core",
- "maka-ui-runtime",
- "rusqlite",
- "schemars 1.2.3",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "maka-ui-runtime"
+name = "maka-ui-support"
 version = "0.2.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
  "hex",
- "jsonschema 0.60.1",
  "libc",
- "maka-agent-facts",
  "maka-capabilities",
- "maka-event-log",
- "maka-packages",
  "maka-plugin-core",
- "rusqlite",
- "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "sys-locale",
- "tempfile",
  "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "unicode-segmentation",
- "uuid",
 ]
 
 [[package]]
@@ -8742,10 +8685,11 @@ dependencies = [
  "maka-capabilities",
  "maka-event-log",
  "maka-host-runtime",
+ "maka-packages",
  "maka-plugin-core",
  "maka-process",
  "maka-settings-native",
- "maka-ui-runtime",
+ "maka-ui-support",
  "maka-workspace-api",
  "nsh-base",
  "nsh-bundler",
@@ -8754,6 +8698,7 @@ dependencies = [
  "nsh-js",
  "open",
  "percent-encoding",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -9450,6 +9395,7 @@ dependencies = [
  "rolldown_error",
  "rolldown_sourcemap",
  "serde_json",
+ "sha2 0.10.9",
  "string_wizard",
  "tokio",
  "ttf-parser",

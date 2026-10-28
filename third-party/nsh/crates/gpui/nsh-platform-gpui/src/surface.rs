@@ -133,6 +133,7 @@ pub(crate) struct Surface {
     pub(crate) pending_auto_focus: RefCell<Option<NshView>>,
     /// Pointer input state ([`crate::input`]).
     pub(crate) input: crate::input::Input,
+    pub(crate) input_paused: Cell<bool>,
     engine: RefCell<Option<Engine>>,
     control: RefCell<Option<EngineControl>>,
     rx: RefCell<Option<Receiver<Message>>>,
@@ -160,6 +161,8 @@ pub(crate) struct Surface {
     /// The app's appearance (`nsh.json`, `setColorScheme`): the color
     /// scheme is the system's resolved with it ([`crate::system`]).
     pub(crate) appearance: Cell<nsh_core::platform::Appearance>,
+    /// The embedding options' initial appearance, restored for each app load.
+    pub(crate) initial_appearance: Cell<nsh_core::platform::Appearance>,
     /// JS asked for a display frame.
     js_frame: Cell<bool>,
     /// Extra frame clients (transitions, glides, spinners): called on every
@@ -238,6 +241,7 @@ impl Surface {
             focus_returns: RefCell::default(),
             pending_auto_focus: RefCell::default(),
             input: Default::default(),
+            input_paused: Cell::new(false),
             engine: RefCell::new(None),
             control: RefCell::new(None),
             rx: RefCell::new(None),
@@ -251,6 +255,7 @@ impl Surface {
             input_hovered: Cell::new(false),
             environment: Cell::new(environment),
             appearance: Cell::default(),
+            initial_appearance: Cell::default(),
             js_frame: Cell::new(false),
             frame_clients: RefCell::default(),
             shader_renderer: std::cell::OnceCell::new(),
@@ -398,6 +403,7 @@ impl Surface {
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
         self.rx.borrow_mut().take();
+        crate::chrome::clear(self);
         self.focus_returns.borrow_mut().clear();
         self.pending_auto_focus.borrow_mut().take();
         self.mounter.borrow_mut().clear();
@@ -420,6 +426,37 @@ impl Surface {
         if let Some(control) = &*self.control.borrow() {
             f(control);
         }
+    }
+
+    pub(crate) fn input_barrier(
+        self: &Rc<Self>,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let Some(control) = self.control.borrow().clone() else {
+            done(Err("the UI engine is not running".into()));
+            return;
+        };
+        let (key, generation) = (self.key, self.generation.get());
+        control.advance_clock(std::time::Duration::ZERO, move || {
+            crate::rt::invoke(move || {
+                let Some(surface) =
+                    Surface::by_key(key).filter(|surface| surface.generation.get() == generation)
+                else {
+                    done(Err("the UI engine changed while pausing input".into()));
+                    return;
+                };
+                // JS may have committed native edits whose ChangeText goes back
+                // to its FIFO only when this owner applies the mount batches.
+                surface.drain();
+                let control = surface.control.borrow().clone();
+                let Some(control) = control.filter(|_| surface.generation.get() == generation)
+                else {
+                    done(Err("the UI engine changed while pausing input".into()));
+                    return;
+                };
+                control.advance_clock(std::time::Duration::ZERO, move || done(Ok(())));
+            });
+        });
     }
 
     /// The native keyboard owner and its ancestors, including a transfer

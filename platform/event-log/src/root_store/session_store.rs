@@ -208,6 +208,11 @@ impl SessionStore {
         self.scoped().await?.session_projection(session_id).await
     }
 
+    /// Read the canonical partition-wide sequence under this Session's custody.
+    pub async fn committed_sequence(&self) -> Result<u64, StoreError> {
+        self.scoped().await?.committed_sequence().await
+    }
+
     pub async fn observe_session<T: DeserializeOwned + Send + 'static>(
         &self,
         session_id: &str,
@@ -623,11 +628,12 @@ impl SessionStore {
         &self,
         selection: SemanticSelection,
         policy: &str,
+        prior: Option<&PreparedView>,
     ) -> Result<PreparedBuild, StoreError> {
         self.check_session(&selection.session)?;
         self.scoped()
             .await?
-            .prepare_model_view(selection, policy)
+            .prepare_model_view(selection, policy, prior)
             .await
     }
 
@@ -1025,10 +1031,11 @@ impl SessionStore {
         view: &PreparedView,
         format: WireFormat,
         codec: &str,
+        prior: Option<&PreparedWireView>,
     ) -> Result<PreparedWireBuild, StoreError> {
         self.scoped()
             .await?
-            .prepare_wire_view(view, format, codec)
+            .prepare_wire_view(view, format, codec, prior)
             .await
     }
 

@@ -24,7 +24,10 @@ use core_foundation::{
 };
 use cua_driver_contract::WindowBounds;
 use maka_agent_facts::tools::ToolError;
-use platform_macos::ax::{bindings::*, snapshot::RetainedElement};
+use platform_macos::ax::{
+    bindings::{self, *},
+    snapshot::RetainedElement,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::OnceLock};
 
@@ -59,8 +62,9 @@ pub(crate) struct EventTarget {
     pub(crate) window_id: u32,
     pub(crate) bounds: WindowBounds,
     pub(crate) flipped: bool,
-    pub(crate) element: Option<RetainedElement>,
-    pub(crate) accessibility_window: WindowVariant,
+    // Keep native owners alive through event dispatch.
+    pub(crate) _retained_element: Option<RetainedElement>,
+    pub(crate) _retained_accessibility_window: WindowVariant,
 }
 
 pub(crate) enum Resolution {
@@ -280,8 +284,8 @@ impl TargetResolver {
             window_id: target.window_id,
             bounds,
             flipped,
-            element: self.element.take(),
-            accessibility_window: self.selected_window.clone(),
+            _retained_element: self.element.take(),
+            _retained_accessibility_window: self.selected_window.clone(),
         }
     }
 }
@@ -486,7 +490,7 @@ fn hit_test(
     };
     let element = copied_element(element);
     match status {
-        kAXErrorSuccess => Ok(element),
+        bindings::kAXErrorSuccess => Ok(element),
         AX_ERROR_ILLEGAL_ARGUMENT => Ok(None),
         _ => Err(ax_failure("hit-test screen point", status)),
     }
@@ -655,7 +659,10 @@ fn attribute(element: &RetainedElement, name: &str) -> Result<Option<NativeValue
 }
 
 fn missing_attribute(status: AXError) -> bool {
-    matches!(status, kAXErrorAttributeUnsupported | kAXErrorNoValue)
+    matches!(
+        status,
+        bindings::kAXErrorAttributeUnsupported | bindings::kAXErrorNoValue
+    )
 }
 
 fn copied_element(element: AXUIElementRef) -> Option<RetainedElement> {

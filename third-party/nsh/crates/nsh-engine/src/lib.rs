@@ -15,6 +15,8 @@ pub mod browser;
 mod access;
 mod app_directory;
 mod cache;
+#[cfg(not(target_arch = "wasm32"))]
+mod chunks;
 mod error;
 mod host_channel;
 mod local_storage;
@@ -44,6 +46,8 @@ fn public_api_is_typed() {
 use std::{io, mem::ManuallyDrop, rc::Rc, sync::Arc, time::Duration};
 
 pub use app_directory::app_dir_name;
+#[cfg(not(target_arch = "wasm32"))]
+pub use chunks::{ChunkLoad, ChunkLoader, ChunkSource};
 use crossbeam_channel::{Receiver, Sender};
 pub use local_storage::local_storage_prefix;
 use nsh_core::{
@@ -185,6 +189,8 @@ pub struct Chunk {
     pub code: BundleCode,
     /// Source map (JSON), for stack traces.
     pub source_map: Option<Arc<str>>,
+    /// The directory used by this module's imported images and fonts.
+    pub asset_base: Option<Arc<str>>,
 }
 
 impl Chunk {
@@ -194,6 +200,7 @@ impl Chunk {
             id: id.into(),
             code: BundleCode::Source(code),
             source_map: None,
+            asset_base: None,
         }
     }
 
@@ -207,12 +214,19 @@ impl Chunk {
             id: id.into(),
             code: BundleCode::Bytecode(bytes),
             source_map: None,
+            asset_base: None,
         }
     }
 
     /// Attaches a source map.
     pub fn with_source_map(mut self, map: impl Into<Arc<str>>) -> Self {
         self.source_map = Some(map.into());
+        self
+    }
+
+    /// Gives this module's imported assets a directory of their own.
+    pub fn with_asset_base(mut self, base: impl Into<Arc<str>>) -> Self {
+        self.asset_base = Some(base.into());
         self
     }
 }
@@ -672,6 +686,10 @@ pub struct EngineConfig {
     pub filesystem: Option<Arc<dyn nsh_core::filesystem::FileSystem>>,
     /// Source of bundled files such as fonts; without one, they fail to load.
     pub assets: Option<Arc<dyn Assets>>,
+    /// Asynchronously supplies runtime module sources. Configured loaders take
+    /// precedence over [`MountSink::load_chunk`]. Native engines share this path.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub chunk_loader: Option<Arc<dyn ChunkLoader>>,
     /// The surface's initial environment (its `window` is `viewport`).
     pub environment: Environment,
     /// Height of the platform's screen header bar, normal and with a large
@@ -803,6 +821,8 @@ impl EngineConfig {
             websocket: None,
             filesystem: None,
             assets: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            chunk_loader: None,
             environment: Environment::default(),
             header_heights: (Points(44.0), Points(96.0)),
             limits: Limits::default(),
@@ -1337,8 +1357,15 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
             }
         });
         self.driver.state.core.set_task_notify(notify.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(chunks) = &self.driver.state.chunks {
+            chunks.set_notify(notify.clone());
+        }
         self.driver.posts.set_notify(notify);
-        self.wake = Some(wake);
+        self.wake = Some(wake.clone());
+        if !self.rx.is_empty() {
+            wake();
+        }
     }
 
     /// Handles the input sent since the last call, runs what is due
@@ -1554,6 +1581,14 @@ impl<M: TextEngine + 'static> Driver<M> {
             pinned: config.pinned,
             host: config.host.clone(),
             url_opens: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            chunks: config.chunk_loader.clone().map(|loader| {
+                chunks::Loads::new(
+                    loader,
+                    config.runtime.clone().unwrap_or_else(shared_runtime),
+                    tx.clone(),
+                )
+            }),
             net: Net {
                 network: config.network.clone(),
                 tx,
@@ -1939,6 +1974,8 @@ struct State<M: TextEngine> {
     /// URLs the app asked to open, taken from the core (a reused buffer).
     url_opens: Vec<(u32, String)>,
     net: Net,
+    #[cfg(not(target_arch = "wasm32"))]
+    chunks: Option<chunks::Loads>,
     /// Development updates to apply.
     hot: Vec<HotUpdate>,
     /// `onScroll` events: the latest offset per scroll view, sent once per
@@ -2330,6 +2367,11 @@ impl<M: TextEngine> State<M> {
         let mut ids = Vec::new();
         script.take_chunk_requests(&mut ids);
         for id in ids {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(chunks) = &mut self.chunks {
+                chunks.load(&id);
+                continue;
+            }
             if !sink.load_chunk(&id) {
                 let message = "this host does not load chunks (the app was built split)".to_owned();
                 let _ = self.net.tx.send(Message::Chunk(Err((id, message))));
@@ -2852,6 +2894,13 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         }
         Message::Hot(update) => state.hot.push(update),
         Message::Chunk(chunk) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(chunks) = &mut state.chunks {
+                chunks.finished(match &chunk {
+                    Ok(chunk) => &chunk.id,
+                    Err((id, _)) => id,
+                });
+            }
             if let Some(script) = script {
                 script.chunk(chunk);
             }

@@ -28,12 +28,10 @@ export default {
     'zh-CN': { displayName: '工作区进程', description: '启动和管理工作区中的命令。' },
   },
   application: {
-    entries: {
-      host: {
-        ...native(sdk.nativeImplementations.workspaceProcesses),
-        imports: {
-          web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
-        },
+    host: {
+      ...native(sdk.nativeImplementations.workspaceProcesses),
+      imports: {
+        web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
       },
     },
   },

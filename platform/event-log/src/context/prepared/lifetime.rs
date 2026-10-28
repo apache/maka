@@ -99,6 +99,9 @@ impl PreparedRegistry {
             id: id.to_owned(),
         })
     }
+    pub(crate) fn has_live(&self) -> bool {
+        !self.0.state.lock().unwrap().live.is_empty()
+    }
     pub(crate) fn take_released(&self, limit: usize) -> Vec<Key> {
         let mut state = self.0.state.lock().unwrap();
         (0..limit)
@@ -216,11 +219,10 @@ impl PreparedCache {
         writer: bool,
     ) -> Result<(), StoreError> {
         let path = self.0.directory.path().join("prepared.sqlite");
-        let path = path
-            .to_str()
-            .ok_or_else(|| super::invalid("prepared cache path is not UTF-8"))?;
+        let mode = if writer { "rwc" } else { "ro" };
+        let uri = crate::connection::control::database_uri(&path, mode)?;
         sqlx::query("ATTACH DATABASE ? AS prepared_cache")
-            .bind(path)
+            .bind(uri)
             .execute(&mut *connection)
             .await?;
         if writer {

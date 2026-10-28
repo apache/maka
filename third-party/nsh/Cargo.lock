@@ -3375,6 +3375,7 @@ dependencies = [
  "rolldown_error",
  "rolldown_sourcemap",
  "serde_json",
+ "sha2 0.10.9",
  "string_wizard",
  "tokio",
  "ttf-parser",

@@ -1038,7 +1038,7 @@ mod tests {
             const pan = PanResponder.create({
                 onStartShouldSetPanResponder: () => true,
                 onPanResponderGrant: () => log.push("grant"),
-                onPanResponderMove: (e, g) => log.push(`move ${g.dx},${g.dy}`),
+                onPanResponderMove: (e, g) => log.push(`move ${g.dx},${g.dy} velocity ${g.vx},${g.vy}`),
                 onPanResponderRelease: (e, g) => log.push(`release ${g.dx}`),
             });
             spread(inner, { ...pan.panHandlers, onTouchStart: () => log.push("inner bubble") });
@@ -1090,7 +1090,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             log,
-            "outer capture|inner bubble|outer bubble|grant|move 20,5|release 20"
+            "outer capture|inner bubble|outer bubble|grant|move 20,5 velocity 875,218.75|release 20"
         );
         // The grant blocks native scroll views (the default), the release
         // lets go.

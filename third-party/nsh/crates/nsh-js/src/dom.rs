@@ -36,6 +36,7 @@ use crate::{
     host::Shared,
     modules::{Export, Ts},
     reactive::{self, arg},
+    web::js::{self, native},
 };
 
 type JsValue = qjs::JSValue;
@@ -3540,9 +3541,32 @@ pub(crate) const RT_EXPORTS: &[crate::modules::Item] = &[
     ("list", Export::Function(crate::list::list, 1), Ts::Internal),
     ("setup", Export::Function(setup, 4), Ts::Internal),
     ("font", Export::Function(font, 2), Ts::Internal),
+    ("assetUrl", Export::Function(asset_url, 2), Ts::Internal),
     ("metaUrl", Export::Function(meta_url, 1), Ts::Internal),
     ("ref", Export::Function(ref_, 3), Ts::Internal),
 ];
+
+native! {
+    /// Imported assets use their module's directory; ordinary app assets
+    /// retain the URI their host's embedded asset table names.
+    fn asset_url(cx, _this, args) {
+        let path = js::to_string(cx, args.get(0))?;
+        let base = args.get(1);
+        let located = if js::is_nullish(base) {
+            format!("asset:/{path}")
+        } else {
+            let base = js::to_string(cx, base)?;
+            let mut url = url::Url::parse(&base)
+                .map_err(|e| js::type_error(cx, &format!("invalid module asset directory: {e}")))?;
+            url.path_segments_mut()
+                .map_err(|()| js::type_error(cx, "module asset directory must be a hierarchical URL"))?
+                .pop_if_empty()
+                .extend(path.split('/'));
+            String::from(url)
+        };
+        js::string(cx, &located)
+    }
+}
 
 /// `metaUrl(path)`: what `import.meta.url` of the app's module `path`
 /// (relative to the app's directory) compiles to. The app's directory

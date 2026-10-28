@@ -50,6 +50,7 @@ mount(() => <Text>{status()}</Text>);
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment: Environment {
             os: if cfg!(target_os = "macos") {
                 Os::MacOs
@@ -143,6 +144,7 @@ mount(() => <Text>{status()}</Text>);"#,
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment: Environment {
             os: Os::Linux,
             ..Default::default()

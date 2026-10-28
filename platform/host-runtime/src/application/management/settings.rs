@@ -46,17 +46,13 @@ impl Manager {
             .instances()
             .get(&request.instance)
             .ok_or("managed instance unavailable")?;
-        let schema = &instance
-            .entry
-            .as_ref()
-            .ok_or("open an executable child to configure it")?
-            .configuration;
-        let (schema, current) = at(schema, &instance.configuration, &request.path)?;
-        let mut fields = fields(
-            schema,
-            &instance.entry.as_ref().unwrap().configuration,
-            current,
-        )?;
+        let root_schema = match instance.entry.as_ref() {
+            Some(maka_plugin_core::plan::InstanceEntry::Host(entry)) => &entry.configuration,
+            Some(maka_plugin_core::plan::InstanceEntry::Ui(entry)) => &entry.configuration,
+            None => return Err("open an executable child to configure it".into()),
+        };
+        let (schema, current) = at(root_schema, &instance.configuration, &request.path)?;
+        let mut fields = fields(schema, root_schema, current)?;
         if let Some(after) = &request.after {
             let index = fields
                 .iter()

@@ -2627,6 +2627,21 @@ mod tests {
     }
 
     #[test]
+    fn viewability_fraction_boundaries_and_viewport_precedence() {
+        let mut l = list(100, 100.0, 400.0);
+        l.offset = 50.0;
+        l.viewability.item_visible_threshold = Some(Percentage(1.0));
+        assert_eq!(l.viewable_items(), Some((1, 3)));
+        l.viewability.view_area_coverage_threshold = Some(Percentage(0.125));
+        assert_eq!(l.viewable_items(), Some((0, 4)));
+        l.viewability.view_area_coverage_threshold = Some(Percentage(0.126));
+        assert_eq!(l.viewable_items(), Some((1, 3)));
+        l.viewability.view_area_coverage_threshold = Some(Percentage(0.0));
+        l.offset = 100.0;
+        assert_eq!(l.viewable_items(), Some((1, 4)));
+    }
+
+    #[test]
     fn stale_offset_reports_keep_pending_scrolls() {
         let mut l = list(100, 50.0, 400.0);
         l.offset = 500.0;

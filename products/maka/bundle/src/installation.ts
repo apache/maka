@@ -84,18 +84,69 @@ export function installation(
     'computer',
   );
   add('questions', 'ask', 'AskUserQuestion', 'Ask the user for decisions needed to continue.');
-  add(
-    'ui',
-    'submit',
-    'UIRequest',
-    'Read or change the connected UI through its deployment manager. Returns a durable request ID for UIResult. The builtin maka-plugin-authoring skill documents interfaces, runtime behavior and UI editing. Find it with SkillSearch, then use Skill with its returned reference to read the skill and references/runtime-ui.md.',
-  );
-  add(
-    'ui',
-    'result',
-    'UIResult',
-    'Read the original UI request outcome by ID. A claimed request without a result remains unconfirmed; resubmitting a mutation creates a new operation.',
-  );
+  for (const [method, name, description] of [
+    ['read', 'UIRead', 'Read the current deployment source and immutable package identities.'],
+    ['readUi', 'UIReadCatalog', 'Read enabled UI plugin contributions for the shared workbench.'],
+    [
+      'instances',
+      'UIInstances',
+      'Inspect Host, UI and composition instances in the current deployment.',
+    ],
+    ['readDocument', 'UIReadDocument', 'Read the canonical deployment document before editing it.'],
+    [
+      'readPackage',
+      'UIReadPackage',
+      'Read a source file from an immutable installed plugin package.',
+    ],
+    [
+      'installSource',
+      'UIInstallSource',
+      'Install plugin files into this deployment. Installation makes a package available; enable a UI instance with UIEditComposition to show it.',
+    ],
+    ['installUrl', 'UIInstallUrl', 'Install an immutable plugin package from a URL.'],
+    [
+      'editComposition',
+      'UIEditComposition',
+      'Insert, remove or update Host, UI and composition instances using the observed source revision.',
+    ],
+    [
+      'setEnabled',
+      'UISetEnabled',
+      'Enable or disable an existing Host, UI or composition instance using the observed source revision.',
+    ],
+    [
+      'readSettings',
+      'UIReadSettings',
+      'Read configuration fields and values for an existing instance.',
+    ],
+    [
+      'configure',
+      'UIConfigure',
+      'Update an instance configuration using its observed source revision.',
+    ],
+    [
+      'bindingCandidates',
+      'UIBindingCandidates',
+      'Inspect compatible bindings in the current deployment.',
+    ],
+    [
+      'packageSettings',
+      'UIPackageSettings',
+      'Read the configuration fields for a selected Host, UI or composition entry.',
+    ],
+    [
+      'replaceSource',
+      'UIReplaceSource',
+      'Replace the canonical deployment source and package selection using its observed revision.',
+    ],
+  ] as const)
+    add(
+      'ui',
+      method,
+      name,
+      description +
+        ' The maka-plugin-authoring skill documents the shared NSH UI contract. Mutation outcomes use the original operation receipt; an unknown result must be recovered, not retried as a new edit.',
+    );
   add('skills', 'search', 'SkillSearch', 'Find applicable skills in the selected collections.');
   add('skills', 'load', 'Skill', 'Read a selected skill and its resources.');
   const agent: CompositionConfiguration['agent'] = {

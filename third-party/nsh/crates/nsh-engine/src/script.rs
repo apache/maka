@@ -191,10 +191,18 @@ mod imp {
                         self.symbolicator.borrow_mut().add(&chunk.id, map);
                     }
                     match chunk.code {
-                        BundleCode::Source(code) => self.host.add_chunk_source(&chunk.id, code),
+                        BundleCode::Source(code) => self.host.add_chunk_source(
+                            &chunk.id,
+                            code,
+                            chunk.asset_base.as_deref().map(str::to_owned),
+                        ),
                         // SAFETY: `Chunk::bytecode` requires trusted bytecode.
                         BundleCode::Bytecode(bytes) => unsafe {
-                            self.host.add_chunk_bytecode(&chunk.id, bytes)
+                            self.host.add_chunk_bytecode(
+                                &chunk.id,
+                                bytes,
+                                chunk.asset_base.as_deref().map(str::to_owned),
+                            )
                         },
                     }
                 }

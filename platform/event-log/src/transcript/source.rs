@@ -55,7 +55,7 @@ fn source_sql() -> String {
     json_type(payload, '$.failureMessage') IS 'text' AS failure_message,
     json_type(payload, '$.errorClass') IS 'text' AS error_class,
     json_extract(payload, '$.content.kind') IS 'operation' AS operation
-    FROM transcript_cache.rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3),
+    FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3),
     source AS (SELECT
         CASE WHEN ?5 IS NULL THEN body WHEN format = 'json' THEN
             CASE json_type(body, ?5) WHEN 'text' THEN json_extract(body, ?5) ELSE body -> ?5 END END AS body,
@@ -79,7 +79,7 @@ impl EventLog {
         let session = session.to_owned();
         let tool_use_id = tool_use_id.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     super::directory::check_read(&mut tx, &session, fence).await?;
@@ -138,7 +138,7 @@ impl EventLog {
             SourceField::Receipt => "receipt",
         };
         self.connection
-            .run(move |connection| {
+            .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::check_read(tx, &session, fence).await?;
                     let exists: bool = sqlx::query_scalar(

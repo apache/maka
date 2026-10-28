@@ -50,7 +50,7 @@ const hooks = registerHooks({
     return next(specifier, context);
   },
 });
-const { createConnectionLogin } = await import(new URL('connectionLogin.ts', appRoot));
+const { createConnectionLogin } = await import(new URL('connectionLoginState.ts', appRoot));
 const { createSettingsOperations } = await import(new URL('settingsOperations.ts', appRoot));
 hooks.deregister();
 

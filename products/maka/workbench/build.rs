@@ -18,37 +18,25 @@
  */
 
 fn main() {
-    println!("cargo:rerun-if-changed=app");
-    println!("cargo:rerun-if-changed=../../../plugins/shared/locale.ts");
-    println!("cargo:rerun-if-changed=../../../plugins/shared/locale-messages.ts");
-    println!("cargo:rerun-if-changed=../../../plugins/shared/tui-messages.ts");
+    println!("cargo:rerun-if-changed=app/Bootstrap.tsx");
     // Describe the runtime export without constructing a Host client at build time.
     let mut host = nsh_core::element::Registry::ui_set("maka/host");
-    host.native_values(&["host", "AttachmentPicker", "TerminalGrid"]);
+    host.native_values(&["host", "AttachmentPicker", "TerminalGrid", "UploadIntake"]);
     let ui_sets = vec![nsh_base::registry().into(), host.into()];
     let module = nsh_bundler::bundle(&nsh_bundler::BundleOptions {
-        entry: "app/App.tsx".into(),
+        entry: "app/Bootstrap.tsx".into(),
         minify: false,
         split: false,
         ui_sets,
     })
-    .expect("bundle workbench application");
-    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
-    std::fs::write(output.join("app.js"), module.code).expect("write workbench application");
-    let app = std::path::PathBuf::from(
-        std::env::var_os("CARGO_MANIFEST_DIR").expect("package directory"),
-    )
-    .join("app");
-    let mut assets = String::from("&[\n");
-    for path in module.assets {
-        let source = app.join(&path);
-        println!("cargo:rerun-if-changed={}", source.display());
-        assets.push_str(&format!(
-            "({:?}, include_bytes!({:?}).as_slice()),\n",
-            format!("asset:/{}", path.to_string_lossy().replace('\\', "/")),
-            source,
-        ));
+    .expect("bundle shared UI bootstrap");
+    assert!(
+        module.assets.is_empty(),
+        "UI bootstrap assets belong in ordinary UI packages"
+    );
+    for input in &module.watch_files {
+        println!("cargo:rerun-if-changed={}", input.display());
     }
-    assets.push_str("]\n");
-    std::fs::write(output.join("assets.rs"), assets).expect("write workbench assets");
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
+    std::fs::write(output.join("bootstrap.js"), module.code).expect("write shared UI bootstrap");
 }

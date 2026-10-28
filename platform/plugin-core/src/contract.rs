@@ -61,21 +61,9 @@ pub enum Transport {
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Interface {
-    Service {
-        methods: BTreeMap<String, Method>,
-    },
-    Component {
-        props: Schema,
-        events: BTreeMap<String, Schema>,
-        captures: BTreeMap<String, Capture>,
-    },
-    Value {
-        schema: Schema,
-    },
-    Resource {
-        resource: String,
-        schema: Schema,
-    },
+    Service { methods: BTreeMap<String, Method> },
+    Value { schema: Schema },
+    Resource { resource: String, schema: Schema },
 }
 
 // Deserialize the fields directly instead of buffering the entire tagged enum
@@ -86,7 +74,6 @@ impl<'de> Deserialize<'de> for Interface {
         #[serde(rename_all = "snake_case")]
         enum Kind {
             Service,
-            Component,
             Value,
             Resource,
         }
@@ -108,12 +95,6 @@ impl<'de> Deserialize<'de> for Interface {
             #[serde(default, deserialize_with = "present")]
             methods: Option<BTreeMap<String, Method>>,
             #[serde(default, deserialize_with = "present")]
-            props: Option<Schema>,
-            #[serde(default, deserialize_with = "present")]
-            events: Option<BTreeMap<String, Schema>>,
-            #[serde(default, deserialize_with = "present")]
-            captures: Option<BTreeMap<String, Capture>>,
-            #[serde(default, deserialize_with = "present")]
             schema: Option<Schema>,
             #[serde(default, deserialize_with = "present")]
             resource: Option<String>,
@@ -134,15 +115,11 @@ impl<'de> Deserialize<'de> for Interface {
         let fields = deserializer.deserialize_map(FieldsVisitor)?;
         let allowed: &'static [&'static str] = match fields.kind {
             Kind::Service => &["kind", "methods"],
-            Kind::Component => &["kind", "props", "events", "captures"],
             Kind::Value => &["kind", "schema"],
             Kind::Resource => &["kind", "resource", "schema"],
         };
         for (name, present) in [
             ("methods", fields.methods.is_some()),
-            ("props", fields.props.is_some()),
-            ("events", fields.events.is_some()),
-            ("captures", fields.captures.is_some()),
             ("schema", fields.schema.is_some()),
             ("resource", fields.resource.is_some()),
         ] {
@@ -156,11 +133,6 @@ impl<'de> Deserialize<'de> for Interface {
         Ok(match fields.kind {
             Kind::Service => Self::Service {
                 methods: required(fields.methods, "methods")?,
-            },
-            Kind::Component => Self::Component {
-                props: required(fields.props, "props")?,
-                events: required(fields.events, "events")?,
-                captures: required(fields.captures, "captures")?,
             },
             Kind::Value => Self::Value {
                 schema: required(fields.schema, "schema")?,
@@ -215,20 +187,6 @@ impl ResourceType {
 pub struct ResourceType {
     pub name: String,
     pub version: u32,
-}
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Capture {
-    pub input: Schema,
-    pub output: CaptureOutput,
-}
-/// Resource captures enter checked service slots; continuations remain in the
-/// original presentation owner and only decide admission of query feedback.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CaptureOutput {
-    Resource { resource: ResourceType },
-    Continuation,
 }
 impl ResourceType {
     pub fn validate(&self) -> Result<(), Error> {
@@ -307,24 +265,6 @@ impl Contract {
                     }
                 }
             }
-            Interface::Component {
-                props,
-                events,
-                captures,
-            } => {
-                crate::schema(props)?;
-                for (name, capture) in captures {
-                    crate::name(name)?;
-                    crate::schema(&capture.input)?;
-                    if let CaptureOutput::Resource { resource } = &capture.output {
-                        resource.validate()?;
-                    }
-                }
-                for (name, schema) in events {
-                    crate::name(name)?;
-                    crate::schema(schema)?;
-                }
-            }
             Interface::Value { schema } => crate::schema(schema)?,
             Interface::Resource { resource, schema } => {
                 crate::name(resource)?;
@@ -372,7 +312,6 @@ mod interface_deserialization_tests {
                 "mode": "query", "input": {"type": "object"},
                 "output": {"type": "string"}, "resources": {}
             }}}),
-            json!({"kind": "component", "props": {}, "events": {"change": true}, "captures": {}}),
             json!({"kind": "value", "schema": true}),
             json!({"kind": "resource", "resource": "text", "schema": {}}),
         ] {
@@ -403,7 +342,6 @@ mod interface_deserialization_tests {
         for text in [
             r#"{"kind":"value","schema":null}"#,
             r#"{"kind":"resource","resource":"text","schema":null}"#,
-            r#"{"kind":"component","props":null,"events":{},"captures":{}}"#,
         ] {
             let interface: Interface = serde_json::from_str(text).unwrap();
             assert_eq!(
@@ -413,8 +351,6 @@ mod interface_deserialization_tests {
         }
         for text in [
             r#"{"kind":"service","methods":null}"#,
-            r#"{"kind":"component","props":{},"events":null,"captures":{}}"#,
-            r#"{"kind":"component","props":{},"events":{},"captures":null}"#,
             r#"{"kind":"resource","resource":null,"schema":{}}"#,
             r#"{"kind":null,"schema":{}}"#,
         ] {
@@ -426,9 +362,6 @@ mod interface_deserialization_tests {
     fn malformed_or_cross_variant_fields_are_rejected() {
         for text in [
             r#"{"kind":"service"}"#,
-            r#"{"kind":"component","props":{},"events":{}}"#,
-            r#"{"kind":"component","props":{},"captures":{}}"#,
-            r#"{"kind":"component","events":{},"captures":{}}"#,
             r#"{"kind":"value"}"#,
             r#"{"kind":"resource","schema":{}}"#,
             r#"{"kind":"resource","resource":"text"}"#,
@@ -437,9 +370,7 @@ mod interface_deserialization_tests {
             r#"{"kind":"value","schema":{},"extra":true}"#,
             r#"{"kind":"value","kind":"value","schema":{}}"#,
             r#"{"kind":"value","schema":null,"schema":{}}"#,
-            r#"{"kind":"component","props":null,"props":{},"events":{},"captures":{}}"#,
             r#"{"kind":"service","methods":{},"schema":null}"#,
-            r#"{"kind":"component","props":{},"events":{},"captures":{},"methods":{}}"#,
             r#"{"kind":"value","schema":{},"resource":"text"}"#,
             r#"{"kind":"resource","resource":"text","schema":{},"events":{}}"#,
             r#"["value",null,null,null,null,{},null]"#,

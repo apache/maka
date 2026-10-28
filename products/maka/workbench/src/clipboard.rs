@@ -21,7 +21,7 @@
 
 use clipboard_rs::{Clipboard, ClipboardContext, ContentFormat, common::RustImage};
 use image::{ImageEncoder, codecs::png::PngEncoder};
-use maka_ui_runtime::{
+use maka_ui_support::{
     budget::NativeBudget,
     file::{FileSnapshot, FileSnapshotWriter},
 };

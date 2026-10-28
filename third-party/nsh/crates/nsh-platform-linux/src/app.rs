@@ -266,6 +266,7 @@ impl AppView {
             network: Some(nsh_engine::net::network()),
             websocket: None,
             filesystem: None,
+            chunk_loader: None,
             assets: Some(Arc::new(AssetReader(options.asset_base.clone()))),
             environment: self.surface.environment.get(),
             // NSH draws no header: a page's `header` sits at its top.
