@@ -348,6 +348,8 @@ impl ShaderView {
             None => {
                 self.words.clear();
                 self.frame = Frame::default();
+                // A queued frame must not restore a layer that was cleared.
+                self.target = None;
             }
         }
         let paused = layer.as_ref().is_none_or(|l| l.paused);
@@ -748,6 +750,62 @@ mod tests {
         view.set_slot(0, AnimationValue::Color(0x00ff00ff));
         let f = frame(&mut view, &renderer);
         assert_eq!(pixel(&f, 3, 1), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn clearing_retires_pending_readback_before_rebinding() {
+        let Some(renderer) = Renderer::new(PixelFormat::Rgba) else {
+            eprintln!("no GPU: skipped");
+            return;
+        };
+        let mut view = ShaderView::default();
+        view.set_size(size(px(2.0), px(2.0)), 1.0);
+        let source = "struct Uniforms { color: vec4f }\nfn shade(uv: vec2f) -> vec4f { return uniforms.color; }";
+        view.set_layer(Some(layer(
+            source,
+            &[("color", UniformValue::Color(Color(0xff0000ff)))],
+        )));
+        let first = frame(&mut view, &renderer);
+        assert_eq!(pixel(&first, 0, 0), [255, 0, 0, 255]);
+
+        // Remap the real rendered pixels without polling, so clearing always
+        // precedes collection regardless of how quickly the GPU renders.
+        view.serial += 1;
+        let readback = &mut view.target.as_mut().unwrap().readbacks[0];
+        readback.serial = view.serial;
+        readback.state.store(state::MAPPING, Ordering::Release);
+        let completion = readback.state.clone();
+        let flag = completion.clone();
+        readback
+            .buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                flag.store(
+                    if result.is_ok() {
+                        state::MAPPED
+                    } else {
+                        state::FAILED
+                    },
+                    Ordering::Release,
+                );
+            });
+        assert!(view.pending());
+        view.set_layer(None);
+        let _ = renderer.device.poll(wgpu::PollType::wait_indefinitely());
+        assert_ne!(completion.load(Ordering::Acquire), state::MAPPING);
+        assert!(!view.render(&renderer, Instant::now()));
+        assert!(view.frame().pixels.is_empty());
+        assert_eq!((view.frame().width, view.frame().height), (0, 0));
+        assert!(!view.wants_frame());
+
+        view.set_layer(Some(layer(
+            source,
+            &[("color", UniformValue::Color(Color(0x00ff00ff)))],
+        )));
+        let rebound = frame(&mut view, &renderer);
+        assert_eq!(pixel(&rebound, 0, 0), [0, 255, 0, 255]);
+        assert!(rebound.serial > first.serial);
+        assert!(!view.wants_frame());
     }
 
     #[test]

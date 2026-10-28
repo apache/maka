@@ -358,3 +358,5 @@ component layout callbacks and observe ProjectRoot attachment and transformed
 thumb geometry, rather than substituting an unrelated mount item.
 
 Same-row Plot domain updates move anchors through the domain tween alone; pointer springs remain for selected-row changes. The existing PageOffset alias is reused for the migrated geometry API. These mandatory local adaptations preserve behavior while integrating the new API; raw import hashes remain upstream bytes. Validation is tied to the actual tested source and environment, not a publication claim.
+
+Native Shader retirement clears pending readback targets; the actual GPU regression checks stale pixels cannot return after removal.
