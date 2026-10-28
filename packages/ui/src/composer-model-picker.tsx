@@ -420,11 +420,11 @@ export function ComposerModelPicker(props: {
     {executor && !executor.fixed && <ComposerExecutorRecovery
       executor={{ ...executor, catalog }} disabled={props.disabled || props.isReadOnly}
     />}
-    {(failed || invalid || executor?.error || (unavailable && !selected) || contribution?.error) && <span className="maka-executor-notice" role="status" onClick={event => event.stopPropagation()}>
+    {(failed || invalid || executor?.error || (unavailable && !selected) || contribution?.error) && <Stack as="span" direction="horizontal" wrap="wrap" vAlign="center" gap={1} className="maka-executor-notice" role="status" onClick={event => event.stopPropagation()}>
       {contribution?.error ? contribution.label + ': ' + copy.unavailable : unavailable && !selected ? copy.unavailable : invalid ? copy.invalid : copy.selectionFailed}
       {contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={contribution.loading} onClick={contribution.onLoad} />}
       {executor && !contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={executor.error ? executor.loading : !!executor.selection && isExecutorLoading(executor, executor.selection.executorId)} onClick={() => executor.onRetry(executor.error ? undefined : executor.selection?.executorId)} />}
-    </span>}
+    </Stack>}
   </>;
   return <>
     {/* Keep portaled search clicks from focusing the composer editor. */}
