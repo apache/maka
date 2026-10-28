@@ -57,7 +57,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const ENTRY: &str = "__maka-cua-desktop";
-const PROTOCOL: u32 = 3;
+const PROTOCOL: u32 = 1;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 

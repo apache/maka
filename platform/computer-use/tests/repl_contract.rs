@@ -679,6 +679,50 @@ nodeRepl.write(caught);
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linux_app_scroll_keeps_pixel_validation_with_the_host() {
+    for body in [
+        "pixels must be an integer between 1 and 65535",
+        "pixels must be a positive finite number.",
+    ] {
+        let repl = Repl::new(
+            maka_computer_use::facade_for("linux", false),
+            CellLimits::default(),
+        )
+        .unwrap();
+        let action_errors = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let context =
+            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
+        let result = repl
+            .evaluate(
+                format!(
+                    "const app = await cua.getApp('fixture');
+                     let caught;
+                     try {{ await app.scroll([37,41],'down',{{pixels:0}}); }}
+                     catch (error) {{ caught = error.message; }}
+                     if (caught !== {expected}) throw Error('native scroll refusal changed: ' + caught);",
+                    expected = serde_json::to_string(body).unwrap(),
+                ),
+                Arc::new(Fixture {
+                    app_action_error: Some(ToolError::Failed(body.into())),
+                    action_errors: action_errors.clone(),
+                    ..Fixture::default()
+                }),
+                CancellationToken::new(),
+                context,
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, CellResult::Success { .. }), "{result:?}");
+        assert!(matches!(
+            action_errors.lock().unwrap().as_slice(),
+            [ToolError::Failed(message)] if message == body
+        ));
+        repl.close().await.unwrap();
+    }
+}
+
 #[test]
 fn scroll_distance_distinguishes_missing_from_null_and_round_trips_missing() {
     use maka_computer_use::protocol::{Action, Command, Distance};
@@ -822,6 +866,9 @@ async fn playwright_collection_reads_share_exact_selector_caches_and_keep_tab_id
 #[cfg(feature = "native-desktop")]
 #[tokio::test]
 async fn browser_discovery_distinguishes_no_configuration_from_an_unavailable_selection() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
     let driver = Arc::new(tokio::sync::Mutex::new(maka_computer_use::Driver::default()));
     let mut session = maka_computer_use::Session::new(driver.clone());
     session
@@ -852,12 +899,88 @@ async fn browser_discovery_distinguishes_no_configuration_from_an_unavailable_se
             maka_agent_facts::language::Language::En,
         )
         .await;
+    let missing = match missing {
+        Err(ToolError::Failed(message)) => message,
+        other => panic!("expected missing provider refusal, got {other:?}"),
+    };
+    assert_eq!(missing, "browser_unavailable: no current matching provider");
+    let unselected = session
+        .invoke(
+            serde_json::from_value(json!({"method":"getBrowser","options":{}})).unwrap(),
+            &maka_computer_use::InvocationContext::new("fixture", "fixture-turn"),
+            &CancellationToken::new(),
+            maka_agent_facts::language::Language::En,
+        )
+        .await;
     assert!(
-        missing
-            .unwrap_err()
-            .to_string()
-            .contains("no matching configured CDP provider")
+        matches!(&unselected, Err(ToolError::Failed(message)) if message == "browser selection is ambiguous or missing; select an ID from listBrowsers"),
+        "{unselected:?}"
     );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    session
+        .configure(
+            maka_capabilities::computer::Desktop::Local,
+            vec![maka_capabilities::computer::BrowserConnection {
+                id: "unavailable-fixture".into(),
+                endpoint: endpoint.clone(),
+            }],
+            maka_agent_facts::language::Language::En,
+        )
+        .unwrap();
+    let invocation = maka_computer_use::InvocationContext::new("fixture", "fixture-turn");
+    let cancellation = CancellationToken::new();
+    let (unavailable, request) = tokio::join!(
+        session.invoke(
+            serde_json::from_value(json!({
+                "method":"getBrowser","options":{"id":"unavailable-fixture"}
+            }))
+            .unwrap(),
+            &invocation,
+            &cancellation,
+            maka_agent_facts::language::Language::En,
+        ),
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut request = String::new();
+            stream.read_line(&mut request).await.unwrap();
+            loop {
+                let mut header = String::new();
+                stream.read_line(&mut header).await.unwrap();
+                if header == "\r\n" {
+                    break;
+                }
+                assert!(!header.is_empty(), "incomplete owned CDP fixture request");
+            }
+            stream
+                .get_mut()
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            request
+        })
+    );
+    let request = request.expect("configured provider must reach the owned CDP fixture");
+    let mut request = request.split_whitespace();
+    assert_eq!(request.next(), Some("GET"));
+    assert_eq!(request.next(), Some("/json/version"));
+    let unavailable = match unavailable {
+        Err(ToolError::Failed(message)) => message,
+        other => panic!("expected unavailable configured provider refusal, got {other:?}"),
+    };
+    assert!(
+        unavailable.contains("503 Service Unavailable"),
+        "{unavailable}"
+    );
+    assert!(
+        unavailable.contains(&format!("{endpoint}/json/version")),
+        "{unavailable}"
+    );
+    assert_ne!(unavailable, missing);
     session.close().await.unwrap();
     driver.lock().await.close().await.unwrap();
 }

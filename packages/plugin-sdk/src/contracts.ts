@@ -2291,8 +2291,18 @@ export const contracts = {
                 ],
               },
               GrantCapability: {
-                type: 'string',
-                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                  },
+                  {
+                    description:
+                      'File download consent for a browser origin, independent of page access.',
+                    type: 'string',
+                    const: 'browser_download',
+                  },
+                ],
               },
               GrantScope: {
                 oneOf: [
@@ -9514,8 +9524,18 @@ export const contracts = {
                 ],
               },
               GrantCapability: {
-                type: 'string',
-                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                  },
+                  {
+                    description:
+                      'File download consent for a browser origin, independent of page access.',
+                    type: 'string',
+                    const: 'browser_download',
+                  },
+                ],
               },
               GrantScope: {
                 oneOf: [
@@ -15640,8 +15660,18 @@ export const contracts = {
                 ],
               },
               GrantCapability: {
-                type: 'string',
-                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                  },
+                  {
+                    description:
+                      'File download consent for a browser origin, independent of page access.',
+                    type: 'string',
+                    const: 'browser_download',
+                  },
+                ],
               },
               GrantScope: {
                 oneOf: [
@@ -20726,8 +20756,18 @@ export const contracts = {
                 ],
               },
               GrantCapability: {
-                type: 'string',
-                enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['browser', 'computer_use', 'computer_audio', 'desktop_mcp', 'mcp'],
+                  },
+                  {
+                    description:
+                      'File download consent for a browser origin, independent of page access.',
+                    type: 'string',
+                    const: 'browser_download',
+                  },
+                ],
               },
               GrantScope: {
                 oneOf: [

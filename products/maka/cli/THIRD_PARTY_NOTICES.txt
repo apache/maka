@@ -13163,7 +13163,7 @@ DEALINGS IN THE SOFTWARE.
 
 cua-cursor-motion@0.38.0 (MIT); authors declared by package: trycua
 
-git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980 :: LICENSE
+git+https://github.com/maka-agent/cua?rev=30defb12ca5ade93a301ad06d389b2af80fb1a0a#30defb12ca5ade93a301ad06d389b2af80fb1a0a :: LICENSE
 
 MIT License
 
@@ -13200,12 +13200,12 @@ platform-linux@0.38.0 (MIT)
 platform-macos@0.38.0 (MIT)
 platform-windows@0.38.0 (MIT)
 
-git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980
+git+https://github.com/maka-agent/cua?rev=30defb12ca5ade93a301ad06d389b2af80fb1a0a#30defb12ca5ade93a301ad06d389b2af80fb1a0a
 
 Cua Driver Rust SDK and its workspace crates
 Source: https://github.com/trycua/cua
 Fork: https://github.com/maka-agent/cua
-Revision: e53bc79912458a038120fcf7c5b22d76d8301980
+Revision: 30defb12ca5ade93a301ad06d389b2af80fb1a0a
 The pinned fork includes the upstream 0.38 driver and retains Maka cursor
 ownership and overlay adaptations.
 Linked as pinned Cargo Git dependencies. No Cua perception extension or model
@@ -26222,7 +26222,7 @@ SOFTWARE.
 
 nom@1.2.4 (MIT); authors declared by package: contact@geoffroycouprie.com
 
-git+https://github.com/maka-agent/cua?rev=e53bc79912458a038120fcf7c5b22d76d8301980#e53bc79912458a038120fcf7c5b22d76d8301980 :: LICENSE
+git+https://github.com/maka-agent/cua?rev=30defb12ca5ade93a301ad06d389b2af80fb1a0a#30defb12ca5ade93a301ad06d389b2af80fb1a0a :: LICENSE
 
 Copyright (c) 2015 Geoffroy Couprie
 

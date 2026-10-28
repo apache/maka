@@ -29,30 +29,37 @@ use super::{AuthorizationMode, Failure};
 use crate::invocation::{
     AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,
     BrowserAuthorization, BrowserEffectScope, BrowserHostEffects, BrowserPreparationBinding,
-    BrowserServices, BrowserServicesFuture, BrowserServicesProvider, CheckedSettlementFuture,
-    HostEffectFactory, HostEffectFuture, HostUncertaintyFuture, OperationSettlement,
-    SettlementFuture,
+    CheckedSettlementFuture, HostEffectFuture, HostUncertaintyFuture, OperationSettlement,
 };
+#[cfg(any(feature = "native-desktop", test))]
+use crate::invocation::{BrowserServices, HostEffectFactory, SettlementFuture};
+#[cfg(feature = "native-desktop")]
+use crate::invocation::{BrowserServicesFuture, BrowserServicesProvider};
 use futures_util::FutureExt;
 use maka_agent_facts::tools::ToolError;
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "native-desktop", test))]
+use std::sync::{Weak, atomic::AtomicBool};
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll, Waker},
 };
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::mpsc;
+#[cfg(any(feature = "native-desktop", test))]
+use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(0);
 type Rejected = Box<dyn FnOnce(ToolError) + Send>;
 pub(super) type ParentSender = Arc<dyn Fn(ParentMessage) -> Result<(), ToolError> + Send + Sync>;
+#[cfg(any(feature = "native-desktop", test))]
 pub(super) type WorkerSender = Arc<dyn Fn(WorkerMessage) -> Result<(), ToolError> + Send + Sync>;
 
 fn failed(message: impl Into<String>) -> ToolError {
@@ -67,6 +74,7 @@ fn allocate(counter: &AtomicU64) -> Result<u64, ToolError> {
         .map(|id| id + 1)
         .map_err(|_| failed("Browser callback identity exhausted"))
 }
+#[cfg(any(feature = "native-desktop", test))]
 fn outcome_unknown(error: &ToolError) -> bool {
     matches!(
         error,
@@ -1243,23 +1251,28 @@ impl Drop for EffectBridge {
     }
 }
 
+#[cfg(any(feature = "native-desktop", test))]
 struct PreparedServices {
     grant: ScopeGrant,
     scope: Arc<RemoteScope>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct PendingPrepare {
     invocation_id: u64,
     key: ScopeKey,
     reply: oneshot::Sender<Result<PreparedServices, ToolError>>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct WorkerScope {
     token: ScopeToken,
     scope: Weak<RemoteScope>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 enum PendingEffectWork {
     Future(HostEffectFuture),
     Scoped(HostEffectFactory),
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct PendingEffect {
     scope: Arc<RemoteScope>,
     pending: Option<PendingEffectWork>,
@@ -1267,15 +1280,18 @@ struct PendingEffect {
     admitted: bool,
     uncertain: bool,
 }
+#[cfg(any(feature = "native-desktop", test))]
 enum RetentionAck {
     Pending,
     Accepted,
     Rejected(ToolError),
 }
+#[cfg(any(feature = "native-desktop", test))]
 enum RetentionFuture {
     Known(SettlementFuture),
     Checked(CheckedSettlementFuture),
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl Future for RetentionFuture {
     type Output = Result<(), ToolError>;
 
@@ -1286,6 +1302,7 @@ impl Future for RetentionFuture {
         }
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct PendingRetention {
     scope: Arc<RemoteScope>,
     pending: Option<RetentionFuture>,
@@ -1293,6 +1310,7 @@ struct PendingRetention {
     done: bool,
     uncertain: Option<ToolError>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 #[derive(Default)]
 struct WorkerState {
     prepares: HashMap<u64, PendingPrepare>,
@@ -1303,6 +1321,7 @@ struct WorkerState {
     retained: HashMap<Job, PendingRetention>,
     closed: Option<ToolError>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct WorkerInner {
     send: WorkerSender,
     state: Mutex<WorkerState>,
@@ -1310,8 +1329,10 @@ struct WorkerInner {
     changed: Notify,
     emission: Mutex<()>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 #[derive(Clone)]
 pub(super) struct WorkerCallbacks(Arc<WorkerInner>);
+#[cfg(any(feature = "native-desktop", test))]
 impl WorkerCallbacks {
     pub fn new(send: WorkerSender) -> Self {
         Self(Arc::new(WorkerInner {
@@ -1322,6 +1343,7 @@ impl WorkerCallbacks {
             emission: Mutex::new(()),
         }))
     }
+    #[cfg(feature = "native-desktop")]
     pub fn scope(
         &self,
         identity: ScopeIdentity,
@@ -1603,6 +1625,7 @@ impl WorkerCallbacks {
         self.0.changed.notify_waiters();
         Ok(())
     }
+    #[cfg(feature = "native-desktop")]
     pub fn seal(&self, identity: &ScopeIdentity) {
         let tokens = self
             .0
@@ -1618,6 +1641,7 @@ impl WorkerCallbacks {
             let _ = self.seal_token(&token);
         }
     }
+    #[cfg(feature = "native-desktop")]
     pub fn seal_matching(&self, owner: &str, epoch: Option<&str>, turn: Option<&str>) {
         let identities = self
             .0
@@ -1747,6 +1771,7 @@ impl WorkerCallbacks {
                 .any(|entry| !entry.done || matches!(entry.ack, RetentionAck::Pending))
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 fn worker_scope(state: &WorkerState, token: &ScopeToken) -> Result<Arc<RemoteScope>, ToolError> {
     known_worker_scope(state, token)?;
     state
@@ -1755,6 +1780,7 @@ fn worker_scope(state: &WorkerState, token: &ScopeToken) -> Result<Arc<RemoteSco
         .and_then(|entry| entry.scope.upgrade())
         .ok_or_else(|| failed("Remote browser scope capability expired"))
 }
+#[cfg(any(feature = "native-desktop", test))]
 fn known_worker_scope(state: &WorkerState, token: &ScopeToken) -> Result<(), ToolError> {
     if state
         .scopes
@@ -1776,11 +1802,13 @@ fn matches_identity(
         && epoch.is_none_or(|epoch| identity.epoch == epoch)
         && turn.is_none_or(|turn| identity.turn == turn)
 }
+#[cfg(feature = "native-desktop")]
 struct RemoteServices {
     worker: WorkerCallbacks,
     identity: ScopeIdentity,
     invocation_id: u64,
 }
+#[cfg(feature = "native-desktop")]
 impl BrowserServicesProvider for RemoteServices {
     fn prepare(
         &self,
@@ -1796,6 +1824,7 @@ impl BrowserServicesProvider for RemoteServices {
         Box::pin(async move { worker.prepare(invocation_id, key, cancellation).await })
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct RemoteScope {
     token: ScopeToken,
     invocation_id: u64,
@@ -1803,6 +1832,7 @@ struct RemoteScope {
     worker: WorkerCallbacks,
     sealed: AtomicBool,
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl Drop for RemoteScope {
     fn drop(&mut self) {
         let _ = (self.worker.0.send)(WorkerMessage::Release {
@@ -1810,6 +1840,7 @@ impl Drop for RemoteScope {
         });
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl RemoteScope {
     fn check_attachment(
         &self,
@@ -1863,6 +1894,7 @@ impl RemoteScope {
         })
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl BrowserAttachmentAuthorization for RemoteScope {
     fn check(
         &self,
@@ -1875,6 +1907,7 @@ impl BrowserAttachmentAuthorization for RemoteScope {
         self.check_attachment(AttachmentCheck::Metadata, cancellation)
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl BrowserHostEffects for RemoteScope {
     fn supports_lease_children(&self) -> bool {
         self.lease_children && !self.sealed.load(Ordering::SeqCst)
@@ -1944,6 +1977,7 @@ impl BrowserHostEffects for RemoteScope {
         self.enqueue_effect(PendingEffectWork::Scoped(factory), rejected)
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl RemoteScope {
     fn enqueue_effect(&self, work: PendingEffectWork, rejected: Rejected) -> Result<(), ToolError> {
         let scoped = matches!(&work, PendingEffectWork::Scoped(_));
@@ -1990,6 +2024,7 @@ impl RemoteScope {
         Ok(())
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl RemoteScope {
     fn retain_rpc(&self, pending: RetentionFuture) -> Result<(), (ToolError, RetentionFuture)> {
         let _emission = self.worker.0.emission.lock().unwrap();
@@ -2062,11 +2097,13 @@ impl RemoteScope {
         Ok(())
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct RemoteEffectScope {
     worker: WorkerCallbacks,
     token: ScopeToken,
     effect_id: u64,
 }
+#[cfg(any(feature = "native-desktop", test))]
 fn current_worker_effect(
     state: &WorkerState,
     token: &ScopeToken,
@@ -2086,6 +2123,7 @@ fn current_worker_effect(
     }
     Ok(())
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl BrowserEffectScope for RemoteEffectScope {
     fn check_session_preparation(
         &self,
@@ -2144,6 +2182,7 @@ impl BrowserEffectScope for RemoteEffectScope {
     }
 }
 
+#[cfg(any(feature = "native-desktop", test))]
 impl OperationSettlement for RemoteScope {
     fn retain(&self, pending: SettlementFuture) -> Result<(), (ToolError, SettlementFuture)> {
         match self.retain_rpc(RetentionFuture::Known(pending)) {
@@ -2168,12 +2207,14 @@ impl OperationSettlement for RemoteScope {
         }
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct EffectCustody {
     worker: WorkerCallbacks,
     token: ScopeToken,
     id: u64,
     pending: Option<HostEffectFuture>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl EffectCustody {
     fn new(worker: WorkerCallbacks, token: ScopeToken, id: u64, pending: HostEffectFuture) -> Self {
         Self {
@@ -2211,6 +2252,7 @@ impl EffectCustody {
         }
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl Drop for EffectCustody {
     fn drop(&mut self) {
         if let Some(pending) = self.pending.take() {
@@ -2237,6 +2279,7 @@ impl Drop for EffectCustody {
         }
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 struct RetentionCustody {
     worker: WorkerCallbacks,
     token: ScopeToken,
@@ -2244,6 +2287,7 @@ struct RetentionCustody {
     pending: Option<RetentionFuture>,
     failure: Option<ToolError>,
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl RetentionCustody {
     async fn run(mut self) {
         let outcome = AssertUnwindSafe(self.pending.as_mut().unwrap())
@@ -2279,6 +2323,7 @@ impl RetentionCustody {
         }
     }
 }
+#[cfg(any(feature = "native-desktop", test))]
 impl Drop for RetentionCustody {
     fn drop(&mut self) {
         if let Some(pending) = self.pending.take() {

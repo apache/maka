@@ -946,7 +946,7 @@ impl Session {
         #[cfg(not(target_os = "macos"))]
         let frozen_result: Option<CallResult> = None;
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        let linux_observation = if Driver::linux_x11_selected() {
+        let linux_observation = if ax && Driver::linux_x11_selected() {
             Some(
                 Driver::observe_native_window(
                     &self.native,

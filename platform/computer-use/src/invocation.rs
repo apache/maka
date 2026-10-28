@@ -172,14 +172,17 @@ pub trait BrowserHostEffects: Send + Sync {
     }
 }
 
+#[cfg(any(feature = "native-desktop", test))]
 #[derive(Clone)]
 pub(crate) struct BrowserServices {
     pub attachment: Option<Arc<dyn BrowserAttachmentAuthorization>>,
     pub effects: Option<Arc<dyn BrowserHostEffects>>,
     pub settlement: Option<Arc<dyn OperationSettlement>>,
 }
+#[cfg(feature = "native-desktop")]
 pub(crate) type BrowserServicesFuture =
     Pin<Box<dyn Future<Output = Result<BrowserServices, ToolError>> + Send>>;
+#[cfg(feature = "native-desktop")]
 pub(crate) trait BrowserServicesProvider: Send + Sync {
     fn prepare(
         &self,
@@ -509,6 +512,7 @@ pub struct InvocationContext<'a> {
     operation_settlement: Option<Arc<dyn OperationSettlement>>,
     browser_host_effects: Option<Arc<dyn BrowserHostEffects>>,
     app_target: Option<crate::ComputerAppTarget>,
+    #[cfg(feature = "native-desktop")]
     browser_services: Option<Arc<dyn BrowserServicesProvider>>,
     browser_preparation_policy: BrowserPreparationPolicy,
 }
@@ -523,11 +527,13 @@ impl<'a> InvocationContext<'a> {
             operation_settlement: None,
             browser_host_effects: None,
             app_target: None,
+            #[cfg(feature = "native-desktop")]
             browser_services: None,
             browser_preparation_policy: BrowserPreparationPolicy::default(),
         }
     }
 
+    #[cfg(feature = "native-desktop")]
     pub(crate) fn with_browser_services(
         mut self,
         services: Arc<dyn BrowserServicesProvider>,
@@ -535,6 +541,7 @@ impl<'a> InvocationContext<'a> {
         self.browser_services = Some(services);
         self
     }
+    #[cfg(feature = "native-desktop")]
     pub(crate) async fn prepare_browser_services(
         &self,
         access: BrowserAccess,

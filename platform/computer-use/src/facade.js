@@ -712,12 +712,7 @@ const bind = async (method, args) => {
             input.x = position[0];
             input.y = position[1];
           } else input.element_id = String(position);
-          if (distance !== undefined) {
-            const pixels = distance.pixels;
-            if (!Number.isFinite(pixels) || pixels <= 0)
-              throw new ErrorClass('pixels must be a positive finite number.');
-            input.pixels = pixels;
-          }
+          if (distance !== undefined) input.pixels = distance.pixels;
           return action('linuxScroll', { input: parse(stringify(input)) });
         },
       });

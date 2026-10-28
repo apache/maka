@@ -479,12 +479,18 @@ pub(crate) fn with_unknown_guidance(error: ToolError, language: Language) -> Too
 
 async fn http(provider: &BrowserConnection, path: &str) -> Result<Value, ToolError> {
     let url = format!("{}{path}", provider.endpoint.trim_end_matches('/'));
-    let mut response = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(failed)?
+    // Platform trust-store loading is synchronous; keep it off the async poll stack.
+    let client = tokio::task::spawn_blocking(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(5))
+            .build()
+    })
+    .await
+    .map_err(failed)?
+    .map_err(failed)?;
+    let mut response = client
         .get(url)
         .send()
         .await
