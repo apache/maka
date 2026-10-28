@@ -32,7 +32,7 @@ import { uiScale } from './uiScale';
 const markPitch = () => (platform.isTerminal ? 16 : Math.max(24, 16 / uiScale.factor() + 2));
 const railInset = platform.isTerminal ? 0 : 6;
 const railMargin = 32;
-const railWidth = () => (platform.isTerminal ? 24 : markPitch());
+export const railWidth = () => (platform.isTerminal ? 24 : markPitch());
 
 function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) {
   const color = () => (props.active ? C.text : C.line);
