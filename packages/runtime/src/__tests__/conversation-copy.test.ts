@@ -219,6 +219,68 @@ test('collectConversationCopySessionFileRefs gathers source-Session refs across 
   ]);
 });
 
+test('collectConversationCopySessionFileRefs gathers text-embedded attachment refs', () => {
+  // Sentinels published by the assistant's character-image publisher: the
+  // artifact's turnId is the artifact id itself, so only the explicit include
+  // list can carry it, and its only reference site is message text.
+  const stickerId = `assistant_sticker_${'a'.repeat(64)}`;
+  const snapshotId = `assistant_sticker_${'b'.repeat(64)}`;
+  const stickerMarkdown = (artifactId: string) =>
+    `![表情](maka://runtime/attachments/${artifactId})`;
+  const messages: StoredMessage[] = [
+    {
+      type: 'assistant',
+      id: 'assistant-1',
+      turnId: 'turn-1',
+      ts: 2,
+      modelId: 'test-model',
+      text: `here you go\n\n${stickerMarkdown(stickerId)}`,
+    },
+    {
+      type: 'tool_call',
+      id: 'tool-1',
+      turnId: 'turn-1',
+      ts: 2,
+      toolName: 'agent_output',
+      args: {},
+    },
+    {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 3,
+      toolUseId: 'tool-1',
+      content: {
+        kind: 'json',
+        value: {
+          kind: 'maka.agent_output_snapshot',
+          schemaVersion: 1,
+          status: 'completed',
+          text: stickerMarkdown(snapshotId),
+          textTruncated: false,
+          artifactIds: [],
+          omittedArtifactIds: 0,
+        },
+      },
+    } as StoredMessage,
+  ];
+  const runtimeEvents: RuntimeEvent[] = [
+    {
+      author: 'agent',
+      role: 'model',
+      content: { kind: 'text', text: stickerMarkdown(stickerId) },
+    } as RuntimeEvent,
+  ];
+
+  const refs = collectConversationCopySessionFileRefs({
+    sourceSessionId: 'session-source',
+    messages,
+    runtimeEvents,
+  });
+
+  assert.deepEqual([...refs].sort(), [stickerId, snapshotId]);
+});
+
 test('conversation copy snapshots unshared linked children without their identifiers', () => {
   const message: Extract<StoredMessage, { readonly type: 'tool_result' }> = {
     type: 'tool_result',
