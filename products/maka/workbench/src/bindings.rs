@@ -37,6 +37,7 @@ use maka_plugin_core::contract::{Contract, Interface};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use std::{
+    collections::HashMap,
     future::Future,
     sync::{Arc, LazyLock, Mutex as StdMutex},
 };
@@ -62,6 +63,8 @@ struct Owner {
 struct Scope {
     owner: Arc<Owner>,
     session: String,
+    /// Sends reserved by `reserve_send` until `confirm_send` takes them.
+    reserved: StdMutex<HashMap<Uuid, maka_app_client::Mutation>>,
 }
 
 /// Root services and session scopes within the Host admitted by the launcher.
@@ -337,6 +340,7 @@ impl ApplicationHost {
             scope: Arc::new(Scope {
                 owner: self.owner.clone(),
                 session: session_id,
+                reserved: Default::default(),
             }),
         }))
     }
@@ -839,12 +843,13 @@ impl ScopedHost {
         .await
     }
 
-    /// Prepare and confirm one new send from an exact persisted draft revision.
-    pub async fn send(
+    /// Reserve one new send of an exact persisted draft revision. Once this
+    /// returns, saving the draft makes a new revision this send never takes.
+    pub async fn reserve_send(
         this: Instance<Self>,
         draft_revision: u64,
         selection: JsonValue,
-    ) -> Result<JsonValue, String> {
+    ) -> Result<String, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
             let id = Uuid::new_v4();
@@ -853,6 +858,26 @@ impl ScopedHost {
                 .client
                 .send_draft(id, AGENT, &scope.session, EDITOR, draft_revision, selection)
                 .await?;
+            scope.reserved.lock().unwrap().insert(id, mutation);
+            Ok(id.to_string())
+        })
+        .await
+    }
+
+    /// Prepare and confirm a send reserved by `reserve_send`.
+    pub async fn confirm_send(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let mutation = scope
+                .reserved
+                .lock()
+                .unwrap()
+                .remove(&id)
+                .ok_or("send was not reserved by this view")?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))

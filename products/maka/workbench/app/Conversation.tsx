@@ -39,7 +39,8 @@ import {
   host,
   loadDraft,
   saveDraft,
-  sendDraft,
+  reserveSend,
+  confirmSend,
   pendingSends,
   recoverSend,
   abandonSend,
@@ -482,7 +483,7 @@ export function Conversation(props: ConversationProps) {
   let editEpoch = 0;
   let pendingDraft: (AttachmentEdit & { text: string }) | null = null;
   let saveTask: Promise<void> | null = null;
-  // From Enter until the Host reserves the send, the saved draft must stay the
+  // From Enter until the send is reserved, the saved draft must stay the
   // revision being sent. Edits made meanwhile show at once and are saved after.
   let holding = false;
   let heldDraft: (AttachmentEdit & { text: string }) | null = null;
@@ -1350,19 +1351,15 @@ export function Conversation(props: ConversationProps) {
     draft.set(text);
     queueDraft({ text, ...attachments.snapshot() });
   };
-  // Saves what was edited while a send was being reserved. Once `sent` was
-  // reserved, only the text typed after it stays in the composer.
-  const releaseHeld = (sent?: string) => {
+  // Saves what was edited while a send was being reserved; whether there was any.
+  const releaseHeld = () => {
     holding = false;
     const edit = heldDraft;
     heldDraft = null;
-    if (edit === null || !alive) return;
-    if (sent !== undefined && edit.text.startsWith(sent)) {
-      changeDraft(edit.text.slice(sent.length));
-      return;
-    }
+    if (edit === null || !alive) return false;
     pendingDraft = edit;
     startSave();
+    return true;
   };
   const acceptRecoveredDraft = (
     stored: { revision: number; text: string; attachments: DraftAttachment[] },
@@ -1591,11 +1588,16 @@ export function Conversation(props: ConversationProps) {
       // The native journal consumes only this exact revision. New edits keep
       // saving while confirmation waits and never inherit this send attempt.
       receiptsKnown.set(false);
-      const sent = await sendDraft(client, draftRevision, model);
+      const operation = await reserveSend(client, draftRevision, model);
+      const typedAhead = releaseHeld();
+      const sent = await confirmSend(client, operation);
       if (!alive) return;
-      // A rejected send leaves its text in the draft, so keep the whole edit.
-      releaseHeld(acceptedSend(sent.reply, sessionId) ? text : undefined);
       settleReply(sent.reply, text, epoch, files);
+      // Text typed before the send was reserved continues the sent message in
+      // the composer; once it is accepted, only the continuation stays. A
+      // rejected send leaves its text in the draft, so the whole edit stays.
+      if (typedAhead && acceptedSend(sent.reply, sessionId) && draft().startsWith(text))
+        changeDraft(draft().slice(text.length));
     } catch (reason) {
       report(reason);
     } finally {
@@ -1784,8 +1786,8 @@ export function Conversation(props: ConversationProps) {
         notice.set(uiMessage('Wait for the saved draft before switching.'));
         return false;
       }
-      // Text typed while a send is reserved can only be saved once the send
-      // settles; switching now would dispose it.
+      // Text typed while a send is being reserved can only be saved once it
+      // is reserved; switching now would dispose it.
       if (heldDraft !== null) {
         notice.set(uiMessage('Wait for the message to send before switching.'));
         return false;
