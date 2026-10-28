@@ -159,7 +159,9 @@ export function Checklist(props: { sessionId: string; tuck?: number }) {
           props.tuck === undefined
             ? { backgroundColor: C.surface, borderRadius: 8 }
             : {
-                backgroundColor: C.surface,
+                // The composer's fill, so the corners it lays over the dock
+                // show the same colour and only its border divides the two.
+                backgroundColor: C.raised,
                 borderWidth: 1,
                 borderColor: C.line,
                 borderTopLeftRadius: props.tuck,
@@ -184,9 +186,9 @@ export function Checklist(props: { sessionId: string; tuck?: number }) {
             gap: 8,
             ...(props.tuck === undefined ? {} : { borderRadius: 0, paddingHorizontal: 16 }),
           }}
-          hoverStyle={{ backgroundColor: C.raised }}
+          hoverStyle={{ backgroundColor: props.tuck === undefined ? C.raised : C.line }}
           focusStyle={{ backgroundColor: C.line }}
-          activeStyle={{ backgroundColor: C.raised }}
+          activeStyle={{ backgroundColor: props.tuck === undefined ? C.raised : C.line }}
         >
           <Icon name={expanded() ? 'down' : 'right'} color={C.secondary} />
           <Text style={{ ...captionTextStyle, color: C.text }}>
