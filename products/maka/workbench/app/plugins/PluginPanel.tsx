@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { inputAction, Text, View, type YNode } from 'nsh';
+import { inputAction, Text, View, type ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { displayText, tr } from '../locale';
 import { Icon } from '../Icon';
@@ -26,7 +26,7 @@ import { controlsRight, windowDrag } from '../chrome';
 import { PluginView } from './PluginView';
 import { pluginContext } from './context';
 
-export function PluginPanel(props: { docked: boolean; attach?(node: YNode): void }) {
+export function PluginPanel(props: { docked: boolean; attach?(node: ViewRef): void }) {
   const plugins = pluginContext()!;
   return (
     <Each

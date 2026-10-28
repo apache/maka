@@ -20,6 +20,7 @@ mod agent;
 mod animation;
 mod app;
 mod blur;
+mod bottom_bar;
 mod canvas;
 mod component;
 mod decor;

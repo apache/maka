@@ -85,7 +85,7 @@ pub trait JsHost {
     /// Style `v` (an object or an array of them), decoded as a host
     /// element's `style` is; what it does not take is logged as there.
     fn style(&self, v: JsRaw) -> Result<crate::StylePatch, PropError>;
-    /// The node `v` is (a `YNode`, a `ref`).
+    /// The node `v` is (an element, a `ref`: TS `ViewRef`).
     fn node(&self, v: JsRaw) -> Option<crate::NodeId>;
     /// Node `id`'s JS object (`null` when JS let it go), owned.
     fn node_value(&self, id: crate::NodeId) -> JsRaw;

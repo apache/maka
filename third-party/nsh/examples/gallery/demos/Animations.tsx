@@ -6,6 +6,13 @@ import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, isDark, 
 
 /** The tones of the demos' dots and tiles (call in a reactive scope). */
 const tones = () => [colors.accent, colors.info, colors.warn, colors.danger, colors.up];
+/** A tone's raised fill: its color under a soft top light and the knob's
+ * drop (the knob's own finish would paint it white). */
+const toneFill = (color: string) => ({
+  backgroundColor: color,
+  backgroundImage: "linear-gradient(180deg, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 100%)",
+  boxShadow: finish.knob.boxShadow,
+});
 /** Text on a tone's fill. */
 const onTone = () => (isDark() ? colors.onAccent : "#ffffff");
 
@@ -22,7 +29,7 @@ function Api(props: { label: string; api: string }) {
 /** The width of a track, measured once laid out (the dots move by it). */
 function useWidth() {
   const width = signal(0);
-  return [width, (bounds: Bounds) => width.set(bounds.size.width)] as const;
+  return [width, ({ bounds }: { bounds: Bounds }) => width.set(bounds.size.width)] as const;
 }
 
 // --- Hero -------------------------------------------------------------------
@@ -64,7 +71,7 @@ function Hero() {
         rotate: angle,
       }}
     >
-      <View style={{ position: "absolute", left: size / 2 - dot / 2, top: -dot / 2, width: dot, height: dot, borderRadius: dot / 2, backgroundColor: color, ...finish.knob }} />
+      <View style={{ position: "absolute", left: size / 2 - dot / 2, top: -dot / 2, width: dot, height: dot, borderRadius: dot / 2, ...toneFill(color) }} />
     </View>
   );
   return (
@@ -160,7 +167,7 @@ function PresetTile(props: { name: MotionName; tone: string; onPlay: (status: st
       return;
     }
     props.onPlay(props.name);
-    const finished = await m.play(props.name);
+    const { finished } = await m.play(props.name);
     if (kind !== "exit" || !finished) return;
     await pause(450);
     if (mine !== turn) return;
@@ -171,21 +178,27 @@ function PresetTile(props: { name: MotionName; tone: string; onPlay: (status: st
     <BaseButton
       onPress={press}
       accessibilityLabel={props.name}
-      style={{ flexBasis: "30%", flexGrow: 1, borderRadius: 14 }}
+      style={{
+        flexBasis: "30%",
+        flexGrow: 1,
+        borderRadius: 14,
+        borderCurve: "continuous",
+        backgroundColor: colors.raised,
+        ...finish.raised,
+        borderWidth: 1,
+        borderColor: looping() ? props.tone : colors.border,
+        transitionProperty: "background-color, transform",
+        transitionDuration: 120,
+      }}
+      hoverStyle={{ ...finish.hover, borderColor: looping() ? props.tone : finish.hover.borderColor }}
       activeStyle={{ transform: "scale(0.97)" }}
     >
       <View
         style={{
           height: 92,
-          borderRadius: 14,
-          borderCurve: "continuous",
           alignItems: "center",
           justifyContent: "center",
           gap: 12,
-          backgroundColor: colors.raised,
-          ...finish.raised,
-          borderWidth: 1,
-          borderColor: looping() ? props.tone : colors.border,
         }}
       >
         <View
@@ -196,8 +209,7 @@ function PresetTile(props: { name: MotionName; tone: string; onPlay: (status: st
             borderCurve: "continuous",
             alignItems: "center",
             justifyContent: "center",
-            backgroundColor: props.tone,
-            ...finish.knob,
+            ...toneFill(props.tone),
             opacity: m.opacity,
             transform: [{ perspective: 300 }, ...m.transform],
           }}
@@ -350,7 +362,7 @@ function Keyframes() {
       duration: 900,
       easing: Easing.out(Easing.quad),
     });
-    if (await heart.play("popIn", { duration: 360 })) heart.play("heartbeat");
+    if ((await heart.play("popIn", { duration: 360 })).finished) heart.play("heartbeat");
   };
 
   const charge = createAnimatedValue(0);
@@ -756,8 +768,7 @@ function EasingRace() {
                     width: 12,
                     height: 12,
                     borderRadius: 6,
-                    backgroundColor: tones()[i() % tones().length],
-                    ...finish.knob,
+                    ...toneFill(tones()[i() % tones().length]),
                     translate: [dots[i()].mul(Math.max(0, width() - 12)), 0],
                   }}
                 />
@@ -775,21 +786,26 @@ function EasingRace() {
 /** A selectable capsule, a tab of the curves (36 pt, with hit slop up to 44). */
 function Chip(props: { label: string; active?: boolean; onPress: () => void }) {
   return (
-    <Tab selected={props.active} onPress={props.onPress} style={tabPress.style} activeStyle={tabPress.activeStyle}>
-      <View
-        style={{
-          height: 36,
-          paddingHorizontal: 14,
-          borderRadius: 18,
-          justifyContent: "center",
-          backgroundColor: props.active ? colors.light : colors.raised,
-          ...(props.active ? finish.light : finish.raised),
-          borderWidth: props.active ? 0 : 1,
-          borderColor: colors.border,
-        }}
-      >
-        <Text style={{ fontSize: 13, fontWeight: "500", color: props.active ? colors.onLight : colors.text }}>{props.label}</Text>
-      </View>
+    <Tab
+      selected={props.active}
+      onPress={props.onPress}
+      style={{
+        ...tabPress.style,
+        margin: 0,
+        padding: 0,
+        height: 36,
+        paddingHorizontal: 14,
+        borderRadius: 18,
+        justifyContent: "center",
+        backgroundColor: props.active ? colors.light : colors.raised,
+        ...(props.active ? finish.light : finish.raised),
+        borderWidth: props.active ? 0 : 1,
+        borderColor: colors.border,
+      }}
+      hoverStyle={props.active ? undefined : finish.hover}
+      activeStyle={tabPress.activeStyle}
+    >
+      <Text style={{ fontSize: 13, fontWeight: "500", color: props.active ? colors.onLight : colors.text }}>{props.label}</Text>
     </Tab>
   );
 }
@@ -831,7 +847,7 @@ function Composition() {
   cleanup(() => all.forEach((a) => a.stop()));
   const run = (name: string, a: CompositeAnimation) => () => {
     state.set({ label: `${name} running`, tone: "info" });
-    a.start().then((finished) => state.set({ label: `${name} ${finished ? "finished" : "stopped"}`, tone: finished ? "accent" : "warn" }));
+    a.start().then(({ finished }) => state.set({ label: `${name} ${finished ? "finished" : "stopped"}`, tone: finished ? "accent" : "warn" }));
   };
   return (
     <Card icon="components" title="Composition" subtitle="Each step starts as the last one ends" right={<Badge label={state().label} tone={state().tone} />}>
@@ -847,8 +863,7 @@ function Composition() {
                 height: 40,
                 borderRadius: 12,
                 borderCurve: "continuous",
-                backgroundColor: color(),
-                ...finish.knob,
+                ...toneFill(color()),
                 opacity: fade,
                 translate: [0, ys[i()]],
                 rotate: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", `${(i() + 1) * 36}deg`] }),
@@ -981,8 +996,7 @@ function Springs() {
                   width: 24,
                   height: 24,
                   borderRadius: 12,
-                  backgroundColor: colors[s().tone],
-                  ...finish.knob,
+                  ...toneFill(colors[s().tone]),
                   translate: [xs[i()], 0],
                 }}
               />
@@ -1209,8 +1223,7 @@ function Layout() {
                 borderCurve: "continuous",
                 paddingHorizontal: 10,
                 justifyContent: "center",
-                backgroundColor: tones()[id() % tones().length],
-                ...finish.knob,
+                ...toneFill(tones()[id() % tones().length]),
               }}
             >
               <Text style={{ fontSize: 13, fontWeight: "600", color: onTone(), fontVariant: ["tabular-nums"] }}>{id()}</Text>

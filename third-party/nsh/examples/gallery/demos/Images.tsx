@@ -258,7 +258,10 @@ function Info() {
             variant="secondary"
             onPress={() => {
               prefetched.set("loading…");
-              Image.prefetch(big).then((ok) => prefetched.set(ok ? "in memory" : "failed"));
+              Image.prefetch(big).then(
+                () => prefetched.set("in memory"),
+                () => prefetched.set("failed"),
+              );
             }}
           />
         </View>
@@ -305,7 +308,7 @@ function Events() {
           onLoadStart={() => log("onLoadStart")}
           onLoad={(e) => {
             log("onLoad");
-            loaded.set(`${e.width}×${e.height}`);
+            loaded.set(`${e.size.width}×${e.size.height}`);
           }}
           onError={(e) => loaded.set(e.message)}
           onLoadEnd={() => log("onLoadEnd")}

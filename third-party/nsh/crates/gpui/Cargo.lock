@@ -5246,6 +5246,7 @@ dependencies = [
  "regex",
  "resvg",
  "rustc-hash 2.1.3",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -5256,6 +5257,7 @@ dependencies = [
  "unicode-linebreak",
  "unicode-segmentation",
  "url",
+ "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
 ]
 

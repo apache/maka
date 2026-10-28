@@ -62,12 +62,12 @@ export function createComponents(invoke, values, reactive, dom) {
   const state = id => { const node = values.nodes.get(id)?.deref(); return node && states.get(node); };
   return {
     make,
-    component(id, name, value, spread) {
+    component(id, name, value) {
       const current = state(id);
       if (!current) return;
       reactive.batch(() => reactive.runWithOwner(current.owner, () => reactive.untracked(() => reactive.protect(() => {
         const fn = current.props[handler(name)];
-        if (typeof fn === "function") return spread ? fn(...value) : fn(value);
+        if (typeof fn === "function") return fn(value);
       }))));
     },
     children(id, wanted) { state(id)?.lazy.set(wanted); },

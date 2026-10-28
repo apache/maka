@@ -59,7 +59,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             prop(input, 'onPaste', event => {
                 pastes.set([...pastes(), event.uris.length ? event.uris.join(';') : event.text]);
             });
-            prop(input, 'onChange', text => {
+            prop(input, 'onChange', ({ value: text }) => {
                 value.set(text);
                 if (text.endsWith('|ABA')) {
                     other.focus();
@@ -76,7 +76,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             prop(other, 'style', {position: 'absolute', left: 264, top: 16, width: 48, height: 48,
                 backgroundColor: '#302040', color: '#ffffff'});
             bindProp(other, 'value', second);
-            prop(other, 'onChange', text => second.set(text));
+            prop(other, 'onChange', ({ value: text }) => second.set(text));
             append(root, other);
             return root;
         });

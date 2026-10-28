@@ -20,7 +20,7 @@ function App() {
       margin={12}
       popupClass="w-56 gap-2 rounded-xl p-4"
       popupStyle={ui().card}
-      onOpenChange={(open, reason) => events.set([`${open ? "opened" : "closed"} · ${reason}`, ...events()].slice(0, 4))}
+      onOpenChange={({ open, reason }) => events.set([`${open ? "opened" : "closed"} · ${reason}`, ...events()].slice(0, 4))}
       trigger={
         <View {...button("accent")}>
           <Text style={buttonText("accent")}>Order #1024</Text>
@@ -43,7 +43,7 @@ function App() {
       <Text style={buttonText()}>Count · pressed {presses()}×</Text>
     </View>
   );
-  const log = () => <Log title="onOpenChange(open, reason)" lines={events()} minHeight={92} />;
+  const log = () => <Log title="onOpenChange({ open, reason })" lines={events()} minHeight={92} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>

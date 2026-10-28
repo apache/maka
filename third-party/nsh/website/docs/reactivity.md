@@ -200,7 +200,7 @@ effect(move || {
 ```
 
 ```tsx tabs
-let input: YNode | undefined;
+let input: InputRef | undefined;
 effect(() => {
   if (editing()) input?.focus();
 });

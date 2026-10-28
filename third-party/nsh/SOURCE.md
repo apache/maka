@@ -26,7 +26,7 @@ at `de176695240d550f2b303643b8019146c7989e7f`. The upstream project is
 
 `upstream.json` keeps that initial `repository` and `revision`. Its
 `upstream_revision` records the latest integrated `longbridge/nsh` main revision:
-`d4c43ea6bece16881a582275fdbeb754bebb3e4f`. The first upstream synchronization
+`ded545337d66eee244f0b0426198ea4c2d472a9d`. The first upstream synchronization
 starts from `6bb0b7908043132067456e4a21dd57c90a0bdce5`, already included in the
 initial fork import.
 
@@ -331,3 +331,51 @@ composition cancellation while input waits for the engine. Delayed key releases
 follow their presses; reload drains the admitted operations before saving the
 draft. Pending edits have no time-based expiry, and a settled nonediting target
 does not intercept ordinary button activation.
+
+
+The subsequent breaking migration through
+`ded545337d66eee244f0b0426198ea4c2d472a9d` starts from the recorded raw
+`d4c43ea6bece16881a582275fdbeb754bebb3e4f` baseline. Its 610 changed upstream
+paths include 58 additions and no deletions. Import hashes record exact upstream
+bytes; every other historical source record remains unchanged. The integration
+preserves Maka's existing version-30 GPU graph and the later range-aware GPUI
+input queue, focus settlement, control-key ordering and nested indicators.
+
+JavaScript events now carry named objects: Input change uses `{ value }`, layout
+uses `{ bounds }`, image load uses `{ size }`, and Dialog/Popover changes use
+`{ open, reason }`. Animation completion resolves `{ finished }`, stop resolves
+`{ value }`, opening a URL resolves `{ opened }`, and AlertDialog resolves
+`{ action }` with explicit action ids. Animated `getValue()` remains numeric.
+Element-specific refs replace `YNode`; the local replacement method stays on
+`InputRef`. `Window.setTitleBar` takes options, and public Rust element helpers
+come from `nsh_core::element`, not its private `ambient` module. Direct callers
+and retained examples migrate with their actual owner types and payloads;
+declarations and bundles must be rebuilt, without legacy aliases.
+
+RichEditor table geometry extends the owner-thread proxy rather than restoring
+transferable `Rc` payloads. Local dual keyboard tables, source-backed TextView
+selection, List projection/retirement and terminal focus behavior remain.
+Themed input bars receive actual terminal viewport reports, including replacement
+at an unchanged offset; programmatic scrolling does not change selection.
+Canonical mouse events preserve passive hints and held-button modifiers. State
+flags remain 16-bit through retained backends. Regression fixtures deliver real
+component layout callbacks and observe ProjectRoot attachment and transformed
+thumb geometry, rather than substituting an unrelated mount item.
+
+Independent local quality changes clear retired Shader readbacks, invalidate
+static/paused native shader sizes before tick admission, and retire Web shader
+canvases, observers and owned animation frames on delete, reset and stop. The
+Web stop reentrancy guard and browser-host shutdown remain intact. Same-row Plot
+domain updates move anchors through the domain tween alone; pointer springs
+remain for selected-row changes. A terminal shadow guard is simplified without
+changing interpolation. These are local adaptations, not raw import bytes.
+Source preparation does not establish fresh runtime, browser/native-device or
+publication success; validation is tied to its actual source and environment.
+
+Built-in List scrollbars remain independent decoration roots rather than
+recycling cells. Native attachment includes these decorations, and projected
+rows keep the bar as their final following anchor so it stays above content
+across rebinds and theme replacement. Select integration observers account for
+`ProjectRoot` as well as `Insert` while preserving backdrop, focus and geometry
+assertions. These local integration corrections do not change the recorded
+`ded545337d66eee244f0b0426198ea4c2d472a9d` import bytes or source progress.

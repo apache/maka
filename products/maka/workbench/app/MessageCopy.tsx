@@ -17,16 +17,13 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
 import { Clipboard } from 'nsh';
 import { host } from './host';
 import { messageBytes, type Position, type Row } from './history';
-import { C, controlStyle, controlDisabledStyle } from './ui';
-import { Icon } from './Icon';
+import { C, IconButton } from './ui';
 
 type OriginalMessage = {
   sessionId: string;
@@ -151,26 +148,13 @@ export function MessageCopy(props: {
           {notice()}
         </Text>
       </If>
-      <Button
-        accessibilityLabel={
-          props.row().role === 'user' ? tr('Copy user message') : tr('Copy message')
-        }
-        tooltip={textTooltip(() =>
-          busy()
-            ? tr('Reading original message…')
-            : props.row().role === 'user'
-              ? tr('Copy user message')
-              : tr('Copy message'),
-        )}
+      <IconButton
+        label={props.row().role === 'user' ? tr('Copy user message') : tr('Copy message')}
+        tooltip={busy() ? tr('Reading original message…') : undefined}
+        icon={notice() && !failed() ? 'check' : 'copy'}
         disabled={target() === null}
         onPress={inputAction(copy, target())}
-        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-        hoverStyle={{ backgroundColor: C.surface }}
-        focusStyle={{ backgroundColor: C.raised }}
-        disabledStyle={controlDisabledStyle}
-      >
-        <Icon name={notice() && !failed() ? 'check' : 'copy'} color={C.muted} />
-      </Button>
+      />
     </View>
   );
 }

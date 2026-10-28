@@ -4,7 +4,7 @@ import { expect, open, test } from "nsh/test";
 
 test("the Diff demo navigates, reverts and keeps changes, and shows a patch", async () => {
   const app = await open("../App.tsx");
-  await app.press("role:button[Diff]");
+  await app.press("role:button[DiffView]");
   // Five changes: the import, the signature and its body, the view's
   // props, the badge's limit and the step.
   await app.waitFor("+8 −8 · Change 1 of 5");

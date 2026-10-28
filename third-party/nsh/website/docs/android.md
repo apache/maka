@@ -46,6 +46,9 @@ The APK is built with the SDK's build tools, without Gradle, and signed with the
 keystore. Signing for release and icons: [Packaging](./packaging.md#android).
 
 NSH builds `libnsh.so` with 16 KB ELF alignment and packages the uncompressed native libraries on 16 KB ZIP boundaries.
+A release APK carries `libnsh.so` without its symbol tables and debug info. The complete library sits next to the
+runtime in `symbols/<abi>/libnsh.so` (a Rust app's in `.nsh/rust/android-rust-release/symbols/<abi>/`): give it to
+`ndk-stack` or upload it to Play Console as native debug symbols to read native crash stacks.
 
 ## Embedding in an Android app
 
@@ -71,8 +74,9 @@ dist/nsh/embed/android/nsh.aar       release: bundles and signed packages
 dist/nsh/embed/android/nsh-dev.aar   also connects to a `nsh dev` server
 ```
 
-The AAR holds the Java runtime and `libnsh.so` for `arm64-v8a`, `armeabi-v7a` and `x86_64`. It declares the `INTERNET`
-permission and needs **API 28** (Android 9) or newer.
+The AAR holds the Java runtime and `libnsh.so` for `arm64-v8a`, `armeabi-v7a` and `x86_64`, with their symbols: the
+app's Gradle build strips them when it packages the app and keeps the symbols for its crash reports. It declares the
+`INTERNET` permission and needs **API 28** (Android 9) or newer.
 
 Add it to the app module, for example from a `libs` folder:
 

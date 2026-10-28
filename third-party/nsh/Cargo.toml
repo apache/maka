@@ -196,6 +196,10 @@ getrandom-stdlib = { package = "getrandom", version = "0.4", default-features = 
 cap-std = "4.0.3"
 futures-util = { version = "0.3", features = ["sink"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# The TLS crypto provider for the WebSocket client: on Android nothing else selects one (ureq is off there), so
+# rustls 0.23 fails every wss:// handshake with "Could not automatically determine the process-level CryptoProvider".
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
 
 rolldown = "=1.2.13"
 rolldown_common = "=1.2.13"

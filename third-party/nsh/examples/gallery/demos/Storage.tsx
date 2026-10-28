@@ -35,7 +35,7 @@ export function StorageDemo() {
     await refresh();
   })();
 
-  const write = (text: string) => {
+  const write = ({ value: text }: { value: string }) => {
     note.set(text);
     saved.set("saving");
     (text ? Storage.setItem(NOTE, text) : Storage.removeItem(NOTE)).then(
@@ -48,17 +48,17 @@ export function StorageDemo() {
   };
 
   const clearAll = async () => {
-    const action = await AlertDialog.show({
+    const { action } = await AlertDialog.show({
       title: "Clear the storage?",
       description: "Removes every key the gallery keeps, the launch count and the note among them.",
       actions: [
-        { label: "Cancel", role: "cancel" },
-        { label: "Clear", role: "destructive" },
+        { label: "Cancel", role: "cancel", id: "cancel" },
+        { label: "Clear", role: "destructive", id: "clear" },
       ],
       closeOnEscape: true,
       closeOnBackdropPress: true,
     });
-    if (action !== "Clear") return;
+    if (action !== "clear") return;
     await Storage.clear();
     launches.set(0);
     note.set("");

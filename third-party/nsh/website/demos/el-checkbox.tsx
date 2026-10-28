@@ -60,7 +60,7 @@ function App() {
                 Back up everything: {all() ? "checked" : some() ? "indeterminate" : "unchecked"} · [{selected().join(", ")}]
               </Text>
             </Panel>
-            <Log title="onChange(checked)" lines={events()} minHeight={92} />
+            <Log title="onChange({ checked })" lines={events()} minHeight={92} />
           </>
         }
       >
@@ -68,9 +68,9 @@ function App() {
           <Checkbox
             checked={all()}
             indeterminate={some()}
-            onChange={(next) => {
-              selected.set(next ? items.map((i) => i.id) : []);
-              log(`Back up everything → ${next}`);
+            onChange={({ checked }) => {
+              selected.set(checked ? items.map((i) => i.id) : []);
+              log(`Back up everything → ${checked}`);
             }}
             class={row}
             hoverStyle={hoverFill()}
@@ -87,9 +87,9 @@ function App() {
                 {line()}
                 <Checkbox
                   checked={selected().includes(item().id)}
-                  onChange={(next) => {
-                    selected.set(next ? [...selected(), item().id] : selected().filter((id) => id !== item().id));
-                    log(`${item().label} → ${next}`);
+                  onChange={({ checked }) => {
+                    selected.set(checked ? [...selected(), item().id] : selected().filter((id) => id !== item().id));
+                    log(`${item().label} → ${checked}`);
                   }}
                   class={row}
                   hoverStyle={hoverFill()}

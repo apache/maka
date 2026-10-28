@@ -85,7 +85,7 @@ function App() {
             <Panel title="find">
               <Input
                 value={query()}
-                onChange={(v) => query.set(v)}
+                onChange={({ value }) => query.set(value)}
                 onSubmit={() => editor?.run("findNext")}
                 submitBehavior="submit"
                 placeholder="fib"
@@ -121,15 +121,15 @@ function App() {
                 search={{ query: query() }}
                 diagnostics={PROBLEMS[lang]}
                 accessibilityLabel="Code"
-                onChange={(v) => log(`onChange: ${v.length} characters`)}
-                onSelectionChange={(selections) => {
+                onChange={({ value }) => log(`onChange: ${value.length} characters`)}
+                onSelectionChange={({ selections }) => {
                   const head = selections[selections.length - 1].head;
                   caret.set(`${head.line + 1}:${head.column + 1}${selections.length > 1 ? ` (${selections.length} carets)` : ""}`);
                 }}
-                onSearchChange={(result) => found.set(result)}
+                onSearchChange={({ result }) => found.set(result)}
                 onFocus={() => log("onFocus")}
                 onBlur={() => log("onBlur")}
-                onLineNumberPress={(line) => log(`onLineNumberPress: ${line + 1}`)}
+                onLineNumberPress={({ line }) => log(`onLineNumberPress: ${line + 1}`)}
                 onContextMenu={(e) => log(`onContextMenu: ${e.position.line + 1}:${e.position.column + 1}`)}
                 style={{ flex: 1 }}
               />

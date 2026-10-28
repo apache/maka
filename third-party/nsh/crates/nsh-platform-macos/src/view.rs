@@ -115,9 +115,9 @@ pub(crate) struct ViewState {
     /// Touch, accessibility and test properties.
     pub(crate) props: Box<ViewProps>,
     /// States to report (`TrackStates`), and the current ones.
-    pub(crate) tracked: u8,
+    pub(crate) tracked: u16,
     /// Current interaction states (pressed, hovered, focused).
-    pub(crate) states: u8,
+    pub(crate) states: u16,
     /// Extra translation (sticky list cells, screen transitions).
     pub(crate) shift: (f32, f32),
     /// Extra opacity (screen and modal transitions).

@@ -6,12 +6,12 @@
 // each.
 import { Scroll, Text, View, signal } from "nsh";
 
-type At = { x: number; y: number };
+type At = { offset: { x: number; y: number } };
 
 function App() {
   const scroll = signal("none");
   const steps = signal<string[]>([]);
-  const step = (name: string) => (e: At) => steps.update((s) => [...s, `${name} ${e.x},${e.y}`]);
+  const step = (name: string) => ({ offset }: At) => steps.update((s) => [...s, `${name} ${offset.x},${offset.y}`]);
   return (
     <View style={{ flex: 1, paddingTop: 64 }}>
       <Text>Scroll: {scroll()}</Text>

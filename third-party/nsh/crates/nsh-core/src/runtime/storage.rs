@@ -1,7 +1,7 @@
 //! `nsh/storage`: the app's key-value storage, strings by string key kept
 //! on the device (`crate::storage`).
 
-use crate::element::{ambient::with_storage, module};
+use crate::element::{module, with_storage};
 
 /// The app's key-value storage: strings by string key, kept on the device
 /// across launches (up to 5 MB). Calls run in order, so a read after a

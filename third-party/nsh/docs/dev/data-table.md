@@ -38,9 +38,9 @@ remain visible at the fixed boundary.
 Rows come from `RowWindow` (`window.rs`, `reaching(margin, ahead)`), columns from the same with a reach of 1 and 3, so
 a scroll inside the window made commits a few mount items only.
 
-The rows' and the scrolling columns' origins move in whole points (`region`, `view.rs`), as layout rounds frames: at a
-fraction, the cells' texts would round to another point in their cells as the origin moves, and every cell's frame would
-be sent again at each scroll frame.
+The rows' and the scrolling columns' origins move by whole device pixels (`region`, `on_pixel`, `view.rs`), as layout
+rounds frames: at a fraction, the cells' texts would round to another pixel in their cells as the origin moves, and every
+cell's frame would be sent again at each scroll frame.
 
 The rows and the scrolling columns are *slots* (`Slots`, `view.rs`): views made once, each showing the item of the
 window whose index leaves its slot number when divided by their count (the most the window has held). When the window
@@ -120,7 +120,7 @@ methods the ref's. Deliberate differences:
   keyless, once at the end).
 - `onLoadMore` fires once per number of rows and waits while `loading` (gpui-component's `load_more` comes again on
   every range change, for the delegate to guard).
-- One `onSelectionChange` with a `{ row?, column? }` value replaces `SelectRow` / `SelectColumn` / `SelectCell` /
+- One `onSelectionChange` with `{ selection }`, a `{ row?, column? }` or `null`, replaces `SelectRow` / `SelectColumn` / `SelectCell` /
   `ClearSelection`; the arrow keys skip columns that do not select (gpui-component's land on them).
 - No strings and no fixed look: the empty and loading slots are the app's, and every part (the sort button
   among them) takes the app's classes for its appearance (gpui-component draws an inbox icon, a skeleton

@@ -49,7 +49,7 @@ export function UiScaleSettings() {
         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <Input
             value={uiScale.text()}
-            onChange={uiScale.change}
+            onChange={({ value }) => uiScale.change(value)}
             onSubmit={() => uiScale.preview(uiScale.text())}
             accessibilityLabel={tr('Interface scale percentage')}
             readonly={!uiScale.ready() || uiScale.saving()}

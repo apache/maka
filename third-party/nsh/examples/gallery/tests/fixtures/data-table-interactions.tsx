@@ -116,17 +116,17 @@ function App() {
           horizontalScrollbar={hbar()}
           empty={<Text>No rows</Text>}
           loadingView={<Text>Loading rows</Text>}
-          onSelectionChange={(s) => put("sel", s ? `${s.row ?? "-"}:${s.column ?? "-"}` : "none")}
+          onSelectionChange={({ selection: s }) => put("sel", s ? `${s.row ?? "-"}:${s.column ?? "-"}` : "none")}
           onRowPress={(e) => put("press", `${e.row}:${e.column ?? "-"}:${e.clicks}`)}
-          onDoublePress={(t) => put("double", `${t.row ?? "-"}:${t.column ?? "-"}`)}
+          onDoublePress={({ target: t }) => put("double", `${t.row ?? "-"}:${t.column ?? "-"}`)}
           onContextMenu={(e) => put("menu", `${e.row ?? "-"}:${e.column ?? "-"}`)}
-          onSortChange={(next) => {
+          onSortChange={({ sort: next }) => {
             put("sort", next ? `${next.key} ${next.direction}` : "none");
             sort.set(next ?? undefined);
           }}
-          onColumnResize={(key, width) => put("resize", `${key} ${Math.round(width)}`)}
+          onColumnResize={({ key, width }) => put("resize", `${key} ${Math.round(width)}`)}
           onColumnMove={(e) => put("move", `${e.key} ${e.from}>${e.to} ${e.order.join(",")}`)}
-          onVisibleRowsChange={(r) => put("rows", `${r.start}-${r.end}`)}
+          onVisibleRowsChange={({ range: r }) => put("rows", `${r.start}-${r.end}`)}
           onLoadMore={() => put("more", `${Number(log().more ?? 0) + 1}`)}
           style={{ flex: 1 }}
         />

@@ -100,13 +100,13 @@ function App() {
                 {action("Keep", () => diff?.acceptHunk(hunk.index), true)}
               </View>
             )}
-            onChange={(change) => {
+            onChange={({ change }) => {
               oldValue.set(change.oldValue);
               newValue.set(change.newValue);
               log(`onChange: ${change.newValue.split("\n").length - 1} lines`);
               count();
             }}
-            onLineNumberPress={(line) => log(`onLineNumberPress: ${line.side} ${line.line + 1}`)}
+            onLineNumberPress={({ line }) => log(`onLineNumberPress: ${line.side} ${line.line + 1}`)}
             style={{ flex: 1 }}
           />
         </View>

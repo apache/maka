@@ -60,13 +60,14 @@ matching the item-count baseline below. Its minimum initial / press times were 3
 These noisy single-frame timings establish stable work counts rather than a speedup.
 
 
-`onMouseMove` (Desktop and web): Linux x86_64, debug CLI, five interleaved runs of
+The first `onMouseMove` (moves with a button down too, desktops and web; since merged with the hover moves into one
+`onMouseMove`): Linux x86_64, debug CLI, five interleaved runs of
 `echo 'await app.press("+1")' | nsh test examples/counter/App.tsx --trace`, against main `fd772aef`.
 The first commit stays at 56 ops / 49 mount items / 21 nodes; the press stays at 10 ops / 7 items / 24 nodes.
 Minimum first-commit times were 277 → 280 µs, press times 180 → 189 µs (medians 189 → 202 µs for the press).
 Cold-start timings varied widely (277–633 µs), so these runs establish unchanged work counts rather than a speedup.
 Without mouse listeners, each backend skips the new mouse hit test. Mouse moves share the existing 8 ms hover
-coalescing interval, with the latest coordinates kept independently per view and event kind.
+coalescing interval, with the latest coordinates kept independently per view and event kind (one kind since the merge).
 
 
 `Editor` and `DiffView` at 200 000 lines (15 MB of Rust, Linux x86_64, release CLI, headless, `--trace`; the apps

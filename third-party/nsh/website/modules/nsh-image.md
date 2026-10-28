@@ -15,9 +15,9 @@ import { Image, type PixelSize } from "nsh";
 `Image` is a component carrying two functions: `<Image src=…>` renders the native image view (the compiler makes it in place, as it does `<View>`), and `Image.getSize` / `Image.prefetch` are called on it directly.
 
 ```ts
-const Image: ((props: ImageProps) => YNode) & {
+const Image: ((props: ImageProps) => JSX.Element) & {
   getSize(src: string | ImageAsset): Promise<PixelSize>;
-  prefetch(src: string | ImageAsset): Promise<boolean>;
+  prefetch(src: string | ImageAsset): Promise<void>;
 };
 ```
 
@@ -50,14 +50,14 @@ Image.getSize(url).then(({ width, height }) => ratio.set(width / height));
 ## Image.prefetch
 
 ```ts
-prefetch(src: string | ImageAsset): Promise<boolean>;
+prefetch(src: string | ImageAsset): Promise<void>;
 ```
 
-Loads an image ahead of showing it. Resolves with `true` once its bytes are in memory (`false` when it could not be loaded). For an imported image with pixel-density variants, it loads the variant the views load on this screen. Use it for the next page of a gallery or the image behind a tap.
+Loads an image ahead of showing it. Resolves once its bytes are in memory, and rejects with the error when the image cannot be loaded. For an imported image with pixel-density variants, it loads the variant the views load on this screen. Use it for the next page of a gallery or the image behind a tap.
 
 ```ts
 const next = photos.slice(index + 1, index + 4);
-next.forEach((p) => Image.prefetch(p.url));
+next.forEach((p) => Image.prefetch(p.url).catch(() => {})); // the <Image> reports its own error later
 ```
 
 ## Related

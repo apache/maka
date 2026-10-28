@@ -3,7 +3,7 @@
 //! JS call (a `TypeError` or `RangeError` there); the connection and its
 //! reads and writes are tasks of the core, on its tokio runtime.
 
-use crate::element::{JsError, Later, System, class, module};
+use crate::element::{JsError, JsObject, Later, System, class, module};
 
 /// The most one read returns and one write sends.
 const IO_LIMIT: usize = 1024 * 1024;
@@ -23,11 +23,22 @@ const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 #[module]
 pub(crate) struct Net;
 
+/// `connect`'s options, as Node's `net.connect(options)`: one object, so
+/// a timeout or TLS can join them.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+pub(crate) struct ConnectOptions {
+    /// The host name or address.
+    pub(crate) host: String,
+    /// The port.
+    pub(crate) port: u16,
+}
+
 #[module(flat, default)]
 impl Net {
-    /// Connects only to `host:port` pairs granted by
+    /// Connects to `{ host, port }`, only to pairs granted by
     /// capabilities.network.sockets; at most 32 sockets per VM.
-    pub(crate) fn connect(host: String, port: u16, sys: System) -> Result<Later<Socket>, JsError> {
+    pub(crate) fn connect(options: ConnectOptions, sys: System) -> Result<Later<Socket>, JsError> {
+        let ConnectOptions { host, port } = options;
         if !sys.access.allows_socket(&host, port) {
             let host = host.to_ascii_lowercase();
             let host = if host.contains(':') && !host.starts_with('[') {

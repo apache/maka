@@ -11,17 +11,18 @@ use super::{
 };
 use crate::{
     AccessibilityProp, AccessibilityRole, AccessibilityState, AccessibilityValue, Bounds,
-    ContextMenuEvent, EdgeInsets, EventKind, EventPayload, HoverEvent, Hsla, ImageSource,
-    ListContentStyle, NativeProp, NodeId, PointerEvents, Points, Prop, Size, Tag, TouchEvent,
+    ContextMenuEvent, EdgeInsets, EventKind, EventPayload, Hsla, ImageSource, ListContentStyle,
+    MouseEvent, NativeProp, NodeId, PointerEvents, Points, Prop, Size, Tag, TouchEvent,
     geometry::{DevicePixels, Radians},
     style::Color,
 };
 
 /// A handler of `E` on an element: a closure (`move |e: &E| ..`) that
 /// writes the signals it captured. It runs under the owner current when it
-/// was made (the component, region or row whose view made it), so what it
-/// makes (signals, animated values, element refs, tasks) is that owner's
-/// and goes with it; once that owner is disposed it no longer runs.
+/// was made (the component, the run of a region or the row whose view made
+/// it), so what it makes (signals, animated values, element refs, tasks) is
+/// that owner's and goes with it; once that owner is disposed it no longer
+/// runs, not even for an event already queued for its node.
 pub struct Listener<E: ?Sized> {
     f: Rc<dyn Fn(&E)>,
     owner: super::Owner,
@@ -51,6 +52,16 @@ impl<E: ?Sized + 'static> Listener<E> {
                 }),
             );
         }))
+    }
+
+    /// Whether both listeners belong to the same region run or component.
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        self.owner == other.owner
+    }
+
+    /// Whether this is the same installed callback (including its owner).
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.same_owner(other) && Rc::ptr_eq(&self.f, &other.f)
     }
 
     /// Calls it with `event`, under its owner; not once that owner is
@@ -154,10 +165,6 @@ impl<E: Event> super::EventToJs for E {
     fn data_js<'a>(&self, host: &'a dyn super::JsHost) -> Result<super::JsOwned<'a>, PropError> {
         Event::data_js(self, host)
     }
-
-    fn spread(&self) -> bool {
-        Event::spread(self)
-    }
 }
 
 impl<E: Event> AnyEvent for E {
@@ -227,7 +234,7 @@ pub struct Attrs {
     pub(crate) selectable_view: bool,
     /// The states it shows as its control's part
     /// ([`Interactive::project_checked`]).
-    pub(crate) projected_states: u8,
+    pub(crate) projected_states: u16,
     /// Where a JS renderer's content goes (the element is its
     /// placeholder: [`super::Renderer::render`]).
     pub(crate) render: Option<super::renderer::RenderAt>,
@@ -439,7 +446,9 @@ impl ListConfig {
             out.push(Prop::Inverted(self.inverted.unwrap_or(false)));
         }
         if self.scrollbar_visible != old.scrollbar_visible {
-            out.push(Prop::Scrollbar(self.scrollbar_visible.unwrap_or(true)));
+            out.push(Prop::Scrollbar(
+                self.scrollbar_visible.unwrap_or(true).into(),
+            ));
         }
         if self.content != old.content {
             out.push(Prop::ListContent(self.content.unwrap_or_default()));
@@ -1000,6 +1009,90 @@ impl JsValue for Style {
     }
 }
 
+/// The style of a component's part that shows text (a select's rows, a
+/// one-time code's cells): a [`Style`] whose TypeScript type takes the text
+/// styles too (`StyleProp<TextStyle>`: `color`, `fontSize`, `textAlign`),
+/// which the part's texts inherit. A part that edits text takes an
+/// [`InputPartStyle`]. Its setter takes
+/// the typed styles' closure, as a `Style`'s does; the part applies it with
+/// [`Element::inline_style`] (it is `Into<Style>`).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct TextPartStyle(pub Style);
+
+impl From<Style> for TextPartStyle {
+    fn from(style: Style) -> Self {
+        Self(style)
+    }
+}
+
+impl From<StyleRefinement> for TextPartStyle {
+    fn from(style: StyleRefinement) -> Self {
+        Self(Style::from(style))
+    }
+}
+
+impl From<TextPartStyle> for Style {
+    fn from(style: TextPartStyle) -> Self {
+        style.0
+    }
+}
+
+impl JsValue for TextPartStyle {
+    fn ts_type(_types: &mut super::TsTypes) -> String {
+        "StyleProp<TextStyle>".into()
+    }
+
+    fn from_js(value: super::JsIn<'_>) -> Result<Self, PropError> {
+        Style::from_js(value).map(Self)
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn super::JsHost) -> Result<super::JsOwned<'a>, PropError> {
+        self.0.to_js(host)
+    }
+}
+
+/// The style of a component's part that edits text (a number input's
+/// field, a select's search field): a [`Style`] whose TypeScript type takes
+/// the input styles too (`StyleProp<InputStyle>`: the text styles and
+/// `placeholderColor`, `caretColor`, `selectionColor`). As
+/// [`TextPartStyle`], its setter takes the typed styles' closure.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct InputPartStyle(pub Style);
+
+impl From<Style> for InputPartStyle {
+    fn from(style: Style) -> Self {
+        Self(style)
+    }
+}
+
+impl From<StyleRefinement> for InputPartStyle {
+    fn from(style: StyleRefinement) -> Self {
+        Self(Style::from(style))
+    }
+}
+
+impl From<InputPartStyle> for Style {
+    fn from(style: InputPartStyle) -> Self {
+        style.0
+    }
+}
+
+impl JsValue for InputPartStyle {
+    fn ts_type(_types: &mut super::TsTypes) -> String {
+        "StyleProp<InputStyle>".into()
+    }
+
+    fn from_js(value: super::JsIn<'_>) -> Result<Self, PropError> {
+        Style::from_js(value).map(Self)
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn super::JsHost) -> Result<super::JsOwned<'a>, PropError> {
+        self.0.to_js(host)
+    }
+}
+
 impl<T: Element> Styled for T {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.node().style
@@ -1233,37 +1326,32 @@ pub trait Interactive: Element {
         )
     }
 
-    /// The mouse came over it or an element inside it (never on touches).
-    fn on_hover_in<M>(self, listener: impl IntoListener<(), M>) -> Self {
+    /// The mouse came over it or an element inside it (never on touches):
+    /// where (the DOM's `mouseenter`).
+    fn on_mouse_enter<M>(self, listener: impl IntoListener<MouseEvent, M>) -> Self {
         self.on(
-            EventKind::HoverIn,
-            events::typed(listener.into_listener(), events::unit),
+            EventKind::MouseEnter,
+            events::typed(listener.into_listener(), events::mouse),
         )
     }
 
-    /// The mouse left it and the elements inside it, or the window.
-    fn on_hover_out<M>(self, listener: impl IntoListener<(), M>) -> Self {
+    /// The mouse left it and the elements inside it, or the window: where
+    /// it was last (the DOM's `mouseleave`).
+    fn on_mouse_leave<M>(self, listener: impl IntoListener<MouseEvent, M>) -> Self {
         self.on(
-            EventKind::HoverOut,
-            events::typed(listener.into_listener(), events::unit),
+            EventKind::MouseLeave,
+            events::typed(listener.into_listener(), events::mouse),
         )
     }
 
-    /// The mouse moved over it (or an element inside it) with no button
-    /// down: where, in it and in its root view, at most once per frame.
-    fn on_hover_move<M>(self, listener: impl IntoListener<HoverEvent, M>) -> Self {
-        self.on(
-            EventKind::HoverMove,
-            events::typed(listener.into_listener(), events::hover),
-        )
-    }
-
-    /// The mouse moved inside it, including while dragging: local coordinates
-    /// in points, at most once per frame (desktops and web).
-    fn on_mouse_move<M>(self, listener: impl IntoListener<crate::Point<crate::Points>, M>) -> Self {
+    /// The mouse moved over it (or an element inside it), with or without
+    /// a button down ([`MouseEvent::pressed_button`]), or a modifier key
+    /// changed while it rests there with none down: where, in it and in its
+    /// root view, at most once per frame.
+    fn on_mouse_move<M>(self, listener: impl IntoListener<MouseEvent, M>) -> Self {
         self.on(
             EventKind::MouseMove,
-            events::typed(listener.into_listener(), events::mouse_position),
+            events::typed(listener.into_listener(), events::mouse),
         )
     }
 
@@ -1687,6 +1775,16 @@ pub trait Interactive: Element {
         self
     }
 
+    /// An app's style while expanded (`accessibility_state` `expanded`: a
+    /// `Popover`'s or `Menu`'s trigger while its popup is open), as
+    /// `aria-expanded:` classes apply.
+    fn expanded_style(mut self, style: impl IntoReactive<Style>) -> Self {
+        Style::apply(self.node(), style, Variant::EXPANDED, |a, patch| {
+            super::host::set_in(&mut a.props, Prop::ExpandedStyle(patch))
+        });
+        self
+    }
+
     /// Styles it as checked while `checked` holds (its `checked:` classes
     /// and [`Self::checked_style`]), as a part of a control that is: a
     /// switch's track and thumb, a checkbox's mark (`gpui-base`'s
@@ -1736,7 +1834,7 @@ pub trait Interactive: Element {
 }
 
 /// Sets or clears `bit` of the states an element shows as a part.
-fn project(a: &mut Attrs, bit: u8, on: bool) {
+fn project(a: &mut Attrs, bit: u16, on: bool) {
     if on {
         a.projected_states |= bit;
     } else {

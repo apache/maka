@@ -313,10 +313,10 @@ effect(() => console.log("primary is", token("primary"), "radius", token("radius
 ## View、Text、Scroll、Overlay
 
 ```ts
-function View(props: ViewProps): YNode;
-function Text(props: TextProps): YNode;
-function Scroll(props: ScrollProps): YNode;
-function Overlay(props: OverlayProps): YNode;
+function View(props: ViewProps): JSX.Element;
+function Text(props: TextProps): JSX.Element;
+function Scroll(props: ScrollProps): JSX.Element;
+function Overlay(props: OverlayProps): JSX.Element;
 ```
 
 `nsh` 导出的宿主元素，写作标签：`<View>`、`<Text>`、`<Scroll>`、`<Overlay>`（把子元素显示在窗口之上，相对锚点放置：[Overlay](../elements/overlay.md)）。当标签通过导入（包括别名）指向它们之一时，编译器会就地创建原生视图，所以导入它们在运行时没有任何开销。它们也是普通的组件，可以作为值传递（`const Tag = inline ? Text : View`）。`nsh` 以同样的方式导出其他原语：[`List`](./nsh-list.md)、[`Image`](./nsh-image.md)、[`Canvas`](./nsh-canvas.md)、[`WebView`](./nsh-webview.md) 和 [`Video`](./nsh-video.md)，各有自己的参考页面。它们的属性见[元素](../elements/index.md)。文本输入框 `Input` 来自 [`nsh/base`](./nsh-base.md#input)。
@@ -437,7 +437,7 @@ mount(App);
 ```
 
 > [!NOTE]
-> 动画值存在于 UI 线程，每帧都在那里变化，所以应用异步读取它：`await value.getValue()`（或 `stop()` 返回的 Promise）给出那一刻的值，Rust 中在任务里 `value.value().await`。如果代码需要立刻知道目标值，请像上例一样用变量或 signal 自己记录。手势事件会在结束时报告这些值（`PanEvent.valueX` / `valueY`）。
+> 动画值存在于 UI 线程，每帧都在那里变化，所以应用异步读取它：`await value.getValue()`（或 `stop()` resolve 的 `{ value }`）给出那一刻的值，Rust 中在任务里 `value.value().await`。如果代码需要立刻知道目标值，请像上例一样用变量或 signal 自己记录。手势事件会在结束时报告这些值（`PanEvent.value`）。
 
 ### AnimatedValue
 
@@ -445,22 +445,22 @@ mount(App);
 class AnimatedValue extends AnimatedNode {
   constructor(value: number);
   set(value: number): void;
-  stop(): Promise<number>;
+  stop(): Promise<{ value: number }>;
   getValue(): Promise<number>;
   setOffset(offset: number): void;
   flattenOffset(): void;
   extractOffset(): void;
-  timing(to: number, options?: { duration?: number; easing?: Easing; delay?: number }): Promise<boolean>;
-  spring(to: number, options?: { stiffness?: number; damping?: number; mass?: number; velocity?: number }): Promise<boolean>;
-  decay(options?: { velocity?: number; deceleration?: number; clamp?: [number, number]; bounce?: number }): Promise<boolean>;
-  keyframes(keyframes: KeyframeValue[], options?: KeyframeTiming): Promise<boolean>;
+  timing(to: number, options?: { duration?: number; easing?: Easing; delay?: number }): Promise<{ finished: boolean }>;
+  spring(to: number, options?: { stiffness?: number; damping?: number; mass?: number; velocity?: number }): Promise<{ finished: boolean }>;
+  decay(options?: { velocity?: number; deceleration?: number; clamp?: [number, number]; bounce?: number }): Promise<{ finished: boolean }>;
+  keyframes(keyframes: KeyframeValue[], options?: KeyframeTiming): Promise<{ finished: boolean }>;
 }
 ```
 
 | 方法 | Rust | 说明 |
 |---|---|---|
 | `set(value)` | `set(value)` | 直接跳到 `value`，并停止正在运行的动画。 |
-| `stop()` | `stop()`，然后 `value().await` | 让正在运行的动画停在当前位置；resolve 为停下处的值。 |
+| `stop()` | `stop()`，然后 `value().await` | 让正在运行的动画停在当前位置；resolve 为 `{ value }`，即停下处的值。 |
 | `getValue()` | `value().await` | resolve 为当前值（含偏移），在 UI 线程上读取。 |
 | `setOffset(offset)` | `set_offset(offset)` | 加到值上的偏移：绑定看到的是值 + 偏移；`set`、动画和拖动改变的是值本身。 |
 | `flattenOffset()` | `flatten_offset()` | 把偏移加到值上，并把偏移归 0。 |
@@ -470,7 +470,7 @@ class AnimatedValue extends AnimatedNode {
 | `decay(options)` | `decay(velocity, deceleration)`、`decay_within(velocity, deceleration, (min, max), bounce)` | 以 `velocity`（单位/秒）为初速度滑行并逐渐减速，每毫秒保留 `deceleration`（默认 0.998）的速度。适合在快速滑动后使用 `onPanEnd` 给出的速度。设置 `clamp: [min, max]` 时，它在边界处停下，或以 `bounce`（0..1，默认 0）比例的速度反弹。 |
 | `keyframes(frames, options)` | `keyframes(frames, KeyframeTiming)` | 像 CSS 关键帧那样播放[关键帧](#关键帧)：每段有自己的缓动，按 `direction` 播放 `iterations` 次。 |
 
-每个动画方法都返回一个 Promise：动画完成时 resolve 为 `true`，被停止（`stop`、`set` 或同一个值上的另一个动画）时为 `false`。在 Rust 中返回 `AnimationEnd`，在任务中 await 它得到同样的 `bool`。
+每个动画方法都返回一个 Promise，resolve 为 `{ finished }`：动画完成时为 `true`，被停止（`stop`、`set` 或同一个值上的另一个动画）时为 `false`。在 Rust 中返回 `AnimationEnd`，在任务中 await 它得到同样的 `bool`。
 
 ```rust tabs
 let opacity = animated_value(1.0);
@@ -483,7 +483,7 @@ spawn(async move {
 
 ```tsx tabs
 const opacity = createAnimatedValue(1);
-const finished = await opacity.timing(0, { duration: 200 });
+const { finished } = await opacity.timing(0, { duration: 200 });
 if (finished) visible.set(false);
 ```
 
@@ -568,7 +568,7 @@ interface KeyframeTiming {
 }
 ```
 
-`value.keyframes(frames, options)` 让一个值走过一组关键帧，并以是否播放完成兑现；`Animated.keyframes(value, { keyframes, ...options })` 是同样的东西，作为组合动画的一步。Rust：`value.keyframes(frames, KeyframeTiming)` 和 `Animation::keyframes(&value, frames, KeyframeTiming)`，关键帧用 `Keyframe::new(value)`（均匀分布）、`Keyframe::at(offset, value)` 和 `.ease(easing)`，时间参数用 `KeyframeTiming::new(ms)` 配合 `.delay(ms)`、`.easing(e)`、`.iterations(Some(n))`、`.infinite()` 和 `.direction(PlaybackDirection::…)`。
+`value.keyframes(frames, options)` 让一个值走过一组关键帧，并以 `{ finished }`（是否播放完成）兑现；`Animated.keyframes(value, { keyframes, ...options })` 是同样的东西，作为组合动画的一步。Rust：`value.keyframes(frames, KeyframeTiming)` 和 `Animation::keyframes(&value, frames, KeyframeTiming)`，关键帧用 `Keyframe::new(value)`（均匀分布）、`Keyframe::at(offset, value)` 和 `.ease(easing)`，时间参数用 `KeyframeTiming::new(ms)` 配合 `.delay(ms)`、`.easing(e)`、`.iterations(Some(n))`、`.infinite()` 和 `.direction(PlaybackDirection::…)`。
 
 它们的播放方式与 CSS 关键帧一致：缓动作用于一段（关键帧的缓动决定从它开始的那一段，时间参数的缓动决定其余各段）；关键帧缺省的 offset 均匀分布，第一个为 0、最后一个为 1；每次迭代先跳到它的第一个关键帧，没有 offset 为 0 的关键帧时，值从当前位置出发；在 `delay` 期间，值停在第一个关键帧上（CSS `animation-fill-mode: backwards`）；反向的迭代倒着播放各段，曲线也随之反转；值停在最后一次迭代结束的位置。
 
@@ -611,7 +611,7 @@ interface Motion {
   readonly scaleY: AnimatedValue;
   readonly style: { opacity: AnimatedValue; transform: MotionTransform };
   readonly transform: MotionTransform;
-  play(motion: MotionName | MotionSpec, options?: MotionPlayOptions): Promise<boolean>;
+  play(motion: MotionName | MotionSpec, options?: MotionPlayOptions): Promise<{ finished: boolean }>;
   animation(motion: MotionName | MotionSpec, options?: MotionPlayOptions): CompositeAnimation;
   stop(): void;
   reset(): void;
@@ -624,7 +624,7 @@ interface Motion {
 |---|---|---|
 | `opacity`、`translateX`、... `scaleY` | `value(MotionChannel::Opacity)`、... | 各通道的动画值。 |
 | `style`、`transform` | 元素上的 `.bind_motion(&m)` | 绑定。 |
-| `play(motion, options?)` | `play(spec)`、`play_ignoring_reduce_motion(spec)` | 在各通道上播放按名称指定的预设或一个 [`MotionSpec`](#motions)；新的动效会打断正在播放的那个。`options` 修改它的时间参数。播放完成时以 `true` 兑现，被打断时为 `false`（Rust 中为 `AnimationEnd`）。 |
+| `play(motion, options?)` | `play(spec)`、`play_ignoring_reduce_motion(spec)` | 在各通道上播放按名称指定的预设或一个 [`MotionSpec`](#motions)；新的动效会打断正在播放的那个。`options` 修改它的时间参数。以 `{ finished }` 兑现：播放完成时为 `true`，被打断时为 `false`（Rust 中为 `AnimationEnd`）。 |
 | `animation(motion, options?)` | `animation(spec)` | 同一个动效，作为尚未启动的 [`CompositeAnimation`](#animated)，用于组合：`Animated.stagger(60, cards.map((m) => m.animation("fadeInUp")), { from: "center" })`（Rust：`Animation::stagger_from(60.0, StaggerFrom::Center, cards.iter().map(\|m\| m.animation(MotionPreset::FadeInUp)))`）。是否减少动态效果在创建时决定。 |
 | `stop()` | `stop()` | 停在当前位置。 |
 | `reset()` | `reset()` | 停止，并把所有通道放回静止状态。 |
@@ -700,7 +700,7 @@ const Animated: {
 };
 
 interface CompositeAnimation {
-  start(callback?: (result: { finished: boolean }) => void): Promise<boolean>;
+  start(callback?: (result: { finished: boolean }) => void): Promise<{ finished: boolean }>;
   stop(): void;
   reset(): void;
 }
@@ -724,7 +724,7 @@ interface CompositeAnimation {
 
 | 方法 | Rust（`Animation`） | 说明 |
 |---|---|---|
-| `start(callback?)` | `start()`，返回可 await 的 `AnimationEnd` | 运行（或再次运行）。整棵动画树只会 resolve 一次（并调用 `callback`），结果表示它是正常完成还是被停止。 |
+| `start(callback?)` | `start()`，返回可 await 的 `AnimationEnd` | 运行（或再次运行）。整棵动画树只会 resolve 一次（并调用 `callback`），结果为 `{ finished }`，表示它是正常完成还是被停止。 |
 | `stop()` | `stop()` | 停在当前位置。 |
 | `reset()` | `reset()` | 停止，并把各个值恢复到启动时的值。 |
 
@@ -1068,10 +1068,14 @@ const hairline = () => 1 / pixelRatio();
 ### openUrl
 
 ```ts
-function openUrl(url: string): Promise<boolean>;
+function openUrl(url: string): Promise<OpenUrlResult>;
+
+interface OpenUrlResult {
+  opened: boolean;
+}
 ```
 
-在应用之外打开 `url`：网页在浏览器中打开，`mailto:` 链接在邮件应用中打开，`tel:` 链接在电话应用中打开，其他应用注册的 scheme（`maps:`、宿主应用自己的 `lb://` 链接）交给对应的应用。结果表示是否有应用打开了它：没有应用处理该 scheme 时为 `false`。Rust：`nsh_core::prelude` 的 `open_url(url)`，返回可在任务中等待（或直接丢弃）的回答。
+在应用之外打开 `url`：网页在浏览器中打开，`mailto:` 链接在邮件应用中打开，`tel:` 链接在电话应用中打开，其他应用注册的 scheme（`maps:`、宿主应用自己的 `lb://` 链接）交给对应的应用。结果是 `{ opened }`，表示是否有应用打开了它：没有应用处理该 scheme 时为 `false`。Rust：`nsh_core::prelude` 的 `open_url(url)`，返回可在任务中等待（或直接丢弃）的回答，即同样的 `bool`。
 
 ```rust tabs
 button()
@@ -1088,7 +1092,8 @@ button()
 ```tsx tabs
 <Button
   onPress={async () => {
-    if (!(await openUrl("mailto:help@example.com"))) {
+    const { opened } = await openUrl("mailto:help@example.com");
+    if (!opened) {
       console.warn("no mail app");
     }
   }}
@@ -1099,7 +1104,7 @@ button()
 
 - URL 必须是绝对地址（带 scheme）。会执行代码或访问应用自身数据的 URL，即 `javascript:`、`data:`、`blob:`、`file:`、`about:` 和 `asset:`，以及相对地址，会抛出 `TypeError`。
 - 声明了能力的应用需要 `openUrl`：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme；其他 URL 抛出 `TypeError`（见[沙箱与能力](../docs/sandbox-and-capabilities.md)）。
-- 嵌入它的应用先看到这个 URL，可以改由自己的路由处理（Swift `NshAppView.onOpenURL`、Java `NshView.setOpenUrlHandler`、Rust `AppView::host().handle_open_url`；见 [iOS](../docs/ios.md#应用打开的链接) 和 [Android](../docs/android.md#应用打开的链接)），此时结果为 `true`。
+- 嵌入它的应用先看到这个 URL，可以改由自己的路由处理（Swift `NshAppView.onOpenURL`、Java `NshView.setOpenUrlHandler`、Rust `AppView::host().handle_open_url`；见 [iOS](../docs/ios.md#应用打开的链接) 和 [Android](../docs/android.md#应用打开的链接)），此时 `opened` 为 `true`。
 - 各平台用自己的方式打开：iOS 用 `UIApplication.open`（嵌入时是宿主应用的 application），Android 用 `ACTION_VIEW` Intent，macOS 用 `NSWorkspace`，Windows 用 `ShellExecuteW`，Linux 用 `GtkUriLauncher`，GPUI 用它的 `open_url`，Web 在新标签页中打开。`nsh test` 记录这些 URL，而不真正打开。
 - [`TextView`](../elements/text-view.md) 设置 `links="open"` 后，以同样的方式打开其中的链接。
 
@@ -2032,15 +2037,15 @@ use nsh_core::prelude::*; // on_key、on_key_with、KeyOptions、key_label
 ```
 
 ```tsx tabs
-import type { YNode } from "nsh";
+import type { ViewRef } from "nsh";
 import { keymap } from "nsh";
 ```
 
 ```ts
 const keymap: {
-  bind(keystroke: string, handler: (keystroke: string) => void, options?: KeyBindingOptions): () => void;
-  bind(bindings: Record<string, (keystroke: string) => void>, options?: KeyBindingOptions): () => void;
-  focusedWithin(node: YNode): boolean;
+  bind(keystroke: string, handler: (e: { keystroke: string }) => void, options?: KeyBindingOptions): () => void;
+  bind(bindings: Record<string, (e: { keystroke: string }) => void>, options?: KeyBindingOptions): () => void;
+  focusedWithin(node: ViewRef): boolean;
   label(keystroke: string): string;
 };
 
@@ -2048,7 +2053,7 @@ interface KeyBindingOptions {
   when?: "always" | "notEditing";
   repeat?: boolean;
   fallback?: boolean;
-  within?: YNode;
+  within?: ViewRef;
 }
 ```
 
@@ -2066,10 +2071,10 @@ Rust 绑定与创建它的组件（所有者）同生命周期；处理函数收
 ### keymap.bind
 
 ```ts
-bind(keystroke: string, handler: (keystroke: string) => void, options?: KeyBindingOptions): () => void;
+bind(keystroke: string, handler: (e: { keystroke: string }) => void, options?: KeyBindingOptions): () => void;
 ```
 
-按下 `keystroke` 时运行 `handler`，并返回一个移除该绑定的函数。处理函数收到的是你写下的按键组合字符串，大小写保持原样。Rust：`on_key(keystroke, handler)`。
+按下 `keystroke` 时运行 `handler`，并返回一个移除该绑定的函数。处理函数收到 `{ keystroke }`：你写下的按键组合字符串，大小写保持原样。Rust：`on_key(keystroke, handler)`，其处理函数直接收到按键组合。
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -2131,24 +2136,22 @@ function Editor() {
 
 #### 原生焦点范围
 
-在支持原生焦点范围的宿主中，`within` 把绑定限制在指定节点及其后代拥有键盘焦点时。传入当前应用的真实 `YNode`。
+在支持原生焦点范围的宿主中，`within` 把绑定限制在指定节点及其后代拥有键盘焦点时。传入当前应用的真实 `ViewRef`。
 每次收到按键，NSH 都在原生代码中结合 `when`、`repeat` 检查焦点路径。范围不匹配时，会继续尝试相同
 按键组合的较旧绑定，然后执行普通输入处理。范围内没有焦点时（包括范围节点已经移除），这些后续路径仍然有效。
 
 ```tsx
-import { Scroll, Text } from "nsh";
+import { Scroll, Text, type ScrollRef } from "nsh";
 import { keymap } from "nsh";
 
 function ActivityPanel() {
-  const panel = Scroll({
-    style: { height: 160 },
-    children: <Text>Activity</Text>,
-  });
-  keymap.bind("mod+end", () => panel.scrollToEnd({ animated: false }), {
-    within: panel,
-    when: "always",
-  });
-  return panel;
+  const bindPanel = (panel: ScrollRef) => {
+    keymap.bind("mod+end", () => panel.scrollToEnd({ animated: false }), {
+      within: panel,
+      when: "always",
+    });
+  };
+  return <Scroll ref={bindPanel} style={{ height: 160 }}><Text>Activity</Text></Scroll>;
 }
 ```
 
@@ -2157,11 +2160,11 @@ function ActivityPanel() {
 ### keymap.focusedWithin
 
 ```ts
-focusedWithin(node: YNode): boolean;
+focusedWithin(node: ViewRef): boolean;
 ```
 
 读取宿主最新的原生焦点快照，判断 `node` 或其后代是否拥有键盘焦点。没有节点拥有焦点，或者节点
-不在该路径上（包括已经移除）时返回 `false`。参数是当前应用的真实 `YNode`；在不支持原生焦点范围的宿主上调用会抛出 `TypeError`。
+不在该路径上（包括已经移除）时返回 `false`。参数是当前应用的真实 `ViewRef`；在不支持原生焦点范围的宿主上调用会抛出 `TypeError`。
 
 这是一次非响应式快照读取。在 effect 中调用不会订阅焦点；其他响应式读取（如 `windowSize()`）决定 effect
 何时运行。每次调用都会读取宿主最近提供的快照。
@@ -2282,7 +2285,7 @@ import { nativeComponent, nativeModule } from "nsh";
 function nativeComponent<P extends object = {}, E extends object = {}>(
   name: string,
   spec: NativeComponentSpec<P, E>,
-): (props: NativeComponentProps<P, E>) => YNode;
+): (props: NativeComponentProps<P, E>) => JSX.Element;
 
 interface NativeComponentSpec<P, E> {
   /** 组件自己的属性：发送给组件（任意 JSON 值），每个属性在变化时发送。 */
@@ -2309,7 +2312,7 @@ type NativeEventHandlers<E> = { [K in keyof E & string as `on${Capitalize<K>}`]?
 
 #### 命令
 
-它的 `ref` 拿到一个 `YNode`；`ref.command(name, args)` 调用原生组件的 `name` 命令，参数 `args` 为任意 JSON 值。Rust：`ElementRef::command(name, args)`。
+它的 `ref` 拿到一个 `NativeComponentRef`；`ref.command(name, args)` 调用原生组件的 `name` 命令，参数 `args` 为任意 JSON 值。Rust：`ElementRef::command(name, args)`。
 
 ```rust tabs
 map.command("zoomTo", json!({ "level": 3 }));
@@ -2359,7 +2362,7 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, type YNode } from "nsh";
+import { mount, type NativeComponentRef, signal } from "nsh";
 import { nativeComponent } from "nsh";
 import { View } from "nsh";
 
@@ -2370,7 +2373,7 @@ const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: 
 
 function App() {
   const taps = signal(0);
-  let badge: YNode | undefined;
+  let badge: NativeComponentRef | undefined;
   return (
     <View style={{
       flex: 1,
@@ -2529,7 +2532,7 @@ function announce(message: string): void;
 ### setAccessibilityFocus
 
 ```ts
-function setAccessibilityFocus(node: YNode): void;
+function setAccessibilityFocus(node: ViewRef): void;
 ```
 
 把屏幕阅读器的焦点移到 `node`（某个元素的 `ref`）。Rust：`ElementRef::set_accessibility_focus()`。
@@ -2554,11 +2557,11 @@ fn Saved() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { effect, Text, View, type YNode } from "nsh";
+import { effect, Text, View, type ViewRef } from "nsh";
 import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 
 function Saved() {
-  let note!: YNode;
+  let note!: ViewRef;
   const save = () => {
     announce("Saved");
     setAccessibilityFocus(note);
@@ -2586,11 +2589,11 @@ function Saved() {
 | `Context<T>` | `context` 的返回值 |
 | `Component<P>` | `(props: P) => JSX.Element` |
 | `JSX` | JSX 命名空间（`JSX.Element`） |
-| `YNode` | `ref` 拿到的对象：聚焦、滚动等命令。见[元素](../elements/index.md) |
+| `ViewRef`、`InputRef`、`ScrollRef`、`ListRef`、`WebViewRef`、`VideoRef`、`NativeComponentRef` | `ref` 拿到的对象，每个元素有自己的类型（`ViewRef` 及基于它的类型）：聚焦、滚动等命令。`ViewRef` 也是元素本身的类型（`JSX.Element`）。见 [ref 方法](../elements/index.md#ref-方法) |
 | `ViewProps`、`TextProps`、`ImageProps`、`ScrollProps`、`CommonProps`、`TouchProps` | 宿主元素的属性 |
 | `ViewStyle`、`TextStyle`、`InputStyle`、`ImageStyle`、`LayoutStyle`、`StyleProp<T>` | 样式对象；见[样式参考](./style-reference.md) |
 | `ColorValue`、`DimensionValue`、`LengthValue`、`TransformStep` | 样式中的值 |
-| `GestureResponderEvent`、`HoverEvent`、`ContextMenuEvent`、`ScrollEvent`、`PanEvent`、`TouchPoint` | 事件数据 |
+| `GestureResponderEvent`、`MouseEvent`、`MouseButton`、`ContextMenuEvent`、`PressEvent`、`ScrollEvent`、`PanEvent`、`TouchPoint` | 事件数据 |
 | `Point`、`Size`、`Bounds`、`Edges`、`Modifiers` | 事件数据和属性所用的形状，字段与 GPUI 相同（`nsh_core::geometry`） |
 | `PixelSize` | 图片或视频自身的像素尺寸（`onLoad`、`Image.getSize`、剪贴板和照片选择器的图片）；`Size` 的单位是点 |
 | `ImageAsset` | 导入图片文件得到的对象（`{ url, size: Size, scales? }`；`scales` 列出它的[像素密度变体](../docs/images-and-assets.md#像素密度)） |
@@ -2598,9 +2601,9 @@ function Saved() {
 | `AccessibilityRole`、`AccessibilityState` | 无障碍属性 |
 
 ```tsx
-import { type GestureResponderEvent, type YNode, signal } from "nsh";
+import { type GestureResponderEvent, type InputRef, signal } from "nsh";
 
-let field: YNode | undefined;
+let field: InputRef | undefined;
 const onPress = (e: GestureResponderEvent) => field?.focus();
 ```
 

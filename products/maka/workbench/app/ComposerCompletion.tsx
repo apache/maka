@@ -19,7 +19,7 @@
 
 import { cleanup, computed, effect, inputAction, List, Overlay, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { Bounds, CaretEvent, YNode } from 'nsh';
+import type { Bounds, CaretEvent, InputRef, ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
@@ -42,11 +42,11 @@ import { Icon } from './Icon';
 import { createComposerPaste } from './composerPaste';
 
 type Source = 'add' | 'files' | 'skills' | 'commands' | 'slash';
-type Editor = { sessionId: string | null; node: YNode };
+type Editor = { sessionId: string | null; node: InputRef };
 type Read = {
   serial: number;
   owner: ComposerSession;
-  editor: YNode;
+  editor: InputRef;
   text: string;
   selection: Selection;
   token: CompletionToken | null;
@@ -97,7 +97,7 @@ export function createComposerCompletion(options: Options) {
   const composing = signal(false);
   const explicit = signal<Source | null>(null);
   const query = signal('');
-  const queryInput = signal<YNode | null>(null);
+  const queryInput = signal<InputRef | null>(null);
   const querySelection = signal<Selection>({ start: 0, end: 0 });
   const queryComposing = signal(false);
   const opened = signal<Read | null>(null);
@@ -105,8 +105,8 @@ export function createComposerCompletion(options: Options) {
   const selected = signal(0);
   const loading = signal(false);
   const error = createText();
-  let list: YNode | undefined;
-  let addAnchor: YNode | undefined;
+  let list: ListRef | undefined;
+  let addAnchor: ViewRef | undefined;
   let serial = 0;
   let current: Read | null = null;
   let dismissed: Pick<Read, 'owner' | 'editor' | 'text' | 'selection'> | null = null;
@@ -709,10 +709,10 @@ export function createComposerCompletion(options: Options) {
       close();
     },
     anchor: () => (opened()?.explicit ? addAnchor : (caret() ?? editor()?.node)),
-    addButton(node: YNode) {
+    addButton(node: ViewRef) {
       addAnchor = node;
     },
-    attach(sessionId: string | null, node: YNode) {
+    attach(sessionId: string | null, node: InputRef) {
       directoryHint = null;
       editor.set({ sessionId, node });
       selection.set({ start: 0, end: 0 });
@@ -765,10 +765,10 @@ export function createComposerCompletion(options: Options) {
       if (!owner || !options.active() || owner.sessionId !== action.owner) return;
       if (!submitCommand(owner, action.text)) owner.sendRendered(action);
     },
-    list(node: YNode) {
+    list(node: ListRef) {
       list = node;
     },
-    queryInput(node: YNode) {
+    queryInput(node: InputRef) {
       queryInput.set(node);
       querySelection.set({ start: 0, end: 0 });
       node.focus();
@@ -845,7 +845,7 @@ export function ComposerCompletion(props: { state: ComposerCompletionState }) {
           <Input
             ref={state.queryInput}
             value={state.query()}
-            onChange={(text) => state.query.set(text)}
+            onChange={({ value: text }) => state.query.set(text)}
             onSelectionChange={state.querySelection}
             onSubmit={inputAction(state.acceptSelected, { read: state.opened()!.serial })}
             onCompositionChange={state.queryComposition}

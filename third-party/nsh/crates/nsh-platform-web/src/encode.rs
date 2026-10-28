@@ -831,6 +831,12 @@ fn input_json(c: &InputConfig) -> String {
     if c.paste_behavior != nsh_core::PasteBehavior::Insert {
         s.push_str(",\"pasteInserts\":false");
     }
+    if !c.scrollbar_visible {
+        s.push_str(",\"noIndicator\":true");
+    }
+    if c.replaced {
+        s.push_str(",\"replaced\":true");
+    }
     s.push('}');
     s
 }
@@ -1156,6 +1162,7 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
             id,
             horizontal,
             scrollbar_visible,
+            replaced,
             mirrored,
             ..
         } => {
@@ -1164,6 +1171,7 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
                 .bool(*horizontal)
                 .bool(*scrollbar_visible)
                 .bool(*mirrored)
+                .bool(*replaced)
                 .end();
         }
         MountItem::ScrollContent { id, size } => {

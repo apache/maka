@@ -397,6 +397,39 @@ fn a_composition_over_a_selection_replaces_it() {
     see(&mut app, "Sel 3-3");
 }
 
+#[test]
+fn a_composition_in_the_sink_reaches_the_document_only_when_it_commits() {
+    let mut app = start(paragraphs(&["ab"]));
+    focus(&mut app);
+    keys(&mut app, &["end"]);
+    compose(&mut app, true, "n");
+    sink_text(&mut app, "n");
+    compose(&mut app, true, "ni");
+    sink_text(&mut app, "ni");
+    see(&mut app, &tree(r#"doc(paragraph("ab"))"#));
+    sink_text(&mut app, "你");
+    compose(&mut app, false, "");
+    see(&mut app, &tree(r#"doc(paragraph("ab你"))"#));
+    see(&mut app, "Sel 4-4");
+    keys(&mut app, &["mod+z"]);
+    see(&mut app, &tree(r#"doc(paragraph("ab"))"#));
+}
+
+#[test]
+fn a_cancelled_composition_in_the_sink_leaves_the_document() {
+    let mut app = start(paragraphs(&["ab"]));
+    focus(&mut app);
+    keys(&mut app, &["end"]);
+    compose(&mut app, true, "n");
+    sink_text(&mut app, "n");
+    compose(&mut app, true, "ni");
+    sink_text(&mut app, "ni");
+    sink_text(&mut app, "");
+    compose(&mut app, false, "");
+    see(&mut app, &tree(r#"doc(paragraph("ab"))"#));
+    see(&mut app, "Sel 3-3");
+}
+
 // Placeholder and read-only.
 
 #[test]
@@ -492,6 +525,23 @@ fn compose(app: &mut Headless, composing: bool, text: &str) {
                 ("composing", PayloadValue::Bool(composing)),
                 ("text", PayloadValue::Str(text.to_owned())),
             ]),
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
+/// The sink's text changed to `text`, as platforms report it while an
+/// input method composes (the uncommitted text in it). Sent to every node,
+/// as [`compose`] is.
+fn sink_text(app: &mut Headless, text: &str) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::ChangeText,
+            EventPayload::Text {
+                text: text.to_owned(),
+                count: 0,
+            },
         );
     }
     app.wait(Duration::from_millis(50)).unwrap();

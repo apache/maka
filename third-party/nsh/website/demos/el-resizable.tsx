@@ -49,9 +49,9 @@ function App() {
             axis="horizontal"
             handleClass={handle}
             handleAccessibilityLabel="Resize the sidebar"
-            onResize={(sizes) => log(`row: ${round(sizes)}`)}
+            onResize={({ sizes }) => log(`row: ${round(sizes)}`)}
           >
-            <ResizablePanel size={sidebar()} minSize={100} maxSize={320} onResize={(v) => sidebar.set(v)}>
+            <ResizablePanel size={sidebar()} minSize={100} maxSize={320} onResize={({ size }) => sidebar.set(size)}>
               <View style={{ flex: 1, padding: 14, gap: 10, backgroundColor: ui().inset.backgroundColor }}>
                 {label("Files", `${Math.round(sidebar())} pt, 100 to 320`)}
               </View>
@@ -61,7 +61,7 @@ function App() {
                 axis="vertical"
                 handleClass={handle}
                 handleAccessibilityLabel="Resize the console"
-                onResize={(sizes) => log(`column: ${round(sizes)}`)}
+                onResize={({ sizes }) => log(`column: ${round(sizes)}`)}
               >
                 <ResizablePanel minSize={80}>
                   <View style={{ flex: 1, padding: 14 }}>{label("Editor", "Takes the room left")}</View>
@@ -71,7 +71,7 @@ function App() {
                   minSize={60}
                   fixed
                   visible={showConsole() === "Shown"}
-                  onResize={(v) => consoleSize.set(v)}
+                  onResize={({ size }) => consoleSize.set(size)}
                 >
                   <View style={{ flex: 1, padding: 14 }}>{label("Console", "Fixed: keeps its height")}</View>
                 </ResizablePanel>

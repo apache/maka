@@ -54,7 +54,7 @@ function App() {
   return (
     <Switch
       checked={on()}
-      onChange={(next) => on.set(next)}
+      onChange={({ checked }) => on.set(checked)}
       class="flex-row items-center gap-3"
       trackClass="w-11 rounded-full bg-muted p-0.5 transition-colors checked:bg-primary"
       thumbClass="size-5 rounded-full bg-background shadow-sm transition-transform checked:translate-x-5"
@@ -91,7 +91,7 @@ the state methods (`.checked(..)`, `.disabled_style(..)`) that follow the switch
 
 | Event | Rust | Description |
 |---|---|---|
-| `onChange` | `.on_change(\|checked: &bool\| ..)` | The switch was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation. It reports the value the switch asks for, the opposite of `checked`. |
+| `onChange` | `.on_change(\|checked: &bool\| ..)` | The switch was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation. It reports the value the switch asks for as `checked`, the opposite of the `checked` it has. |
 
 A disabled switch reports nothing.
 
@@ -117,7 +117,7 @@ its track and thumb apply, over their `checked:` ones:
 <Switch
   checked={on()}
   disabled={!online()}
-  onChange={(next) => on.set(next)}
+  onChange={({ checked }) => on.set(checked)}
   class="flex-row items-center gap-3 disabled:opacity-50"
   trackClass="w-11 rounded-full bg-muted p-0.5 checked:bg-primary disabled:bg-muted"
   thumbClass="size-5 rounded-full bg-background checked:translate-x-5"

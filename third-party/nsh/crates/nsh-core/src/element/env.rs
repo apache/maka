@@ -1,5 +1,5 @@
 //! What components read from the environment: the surface, system UI, the
-//! user's settings ([`super::ambient::window`] and the like).
+//! user's settings ([`super::window`] and the like).
 
 use crate::{
     EdgeInsets, Points, Size,

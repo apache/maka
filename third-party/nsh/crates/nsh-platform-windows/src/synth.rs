@@ -12,8 +12,16 @@ use crate::{
 };
 
 /// A pointer event of the mouse's `button` (0: primary, 3: back) at `x`,
-/// `y` (points, root coordinates).
-pub(crate) fn pointer(surface: &Rc<Surface>, kind: PointerKind, x: f32, y: f32, button: u8) {
+/// `y` (points, root coordinates), with the buttons `held` after it (bit
+/// `n` for button `n`, as a mouse message's `wparam` tells them).
+pub(crate) fn pointer(
+    surface: &Rc<Surface>,
+    kind: PointerKind,
+    x: f32,
+    y: f32,
+    button: u8,
+    held: u8,
+) {
     crate::input::pointer(
         surface,
         PointerEvent {
@@ -21,6 +29,7 @@ pub(crate) fn pointer(surface: &Rc<Surface>, kind: PointerKind, x: f32, y: f32, 
             x,
             y,
             button,
+            buttons: held,
             pointer: 1,
             touch: false,
             pen: false,
@@ -105,9 +114,14 @@ pub(crate) fn press(surface: &Rc<Surface>, vk: u16, modifiers: Modifiers) {
                 0x20 => Some(' '),
                 0x0D => Some('\r'),
                 0x09 => Some('\t'),
-                0x30..=0x39 => char::from_u32(vk as u32),
-                0x41..=0x5A => char::from_u32(if modifiers.shift { vk } else { vk + 32 } as u32),
-                _ => None,
+                // The US layout's character, Shift's for `shift+8` (`*`).
+                _ => match nsh_core::keymap::Key::from_virtual_key(vk) {
+                    Some(nsh_core::keymap::Key::Char(c)) if modifiers.shift => {
+                        Some(nsh_core::keymap::shifted(c))
+                    }
+                    Some(nsh_core::keymap::Key::Char(c)) => Some(c),
+                    _ => None,
+                },
             };
             if let Some(ch) = ch {
                 crate::text_input::char_input(surface, &ch.to_string());

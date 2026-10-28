@@ -100,7 +100,7 @@ upload(photo).then((url) => {
 | `objectPosition`（样式） | `.object_position(..)`、`.object_top()` 等 | `string` | `"center"` | `objectFit` 确定尺寸后图片在盒子中的位置，同 CSS 的 `object-position`（`"top"`、`"25% 75%"`、`"right 10px bottom 20%"`）；覆盖盒子的图片围绕它裁剪。 |
 | `onLoadStart` | `.on_load_start(..)` | `() => void` | | 开始加载。 |
 | `onProgress` | `.on_progress(..)` | `(e: { loaded: number; total: number }) => void` | | 以字节计的下载进度（未知时 `total` 为 0），最多每 100 ms 一次。 |
-| `onLoad` | `.on_load(..)` | `(e: PixelSize) => void` | | 加载完成；给出源图片的像素尺寸（不是解码、降采样后的尺寸；SVG 为它的点尺寸，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）；带有变体的图片给出所加载变体的尺寸。 |
+| `onLoad` | `.on_load(..)` | `(e: { size: PixelSize }) => void` | | 加载完成；给出源图片的像素尺寸（不是解码、降采样后的尺寸；SVG 为它的点尺寸，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）；带有变体的图片给出所加载变体的尺寸。 |
 | `onError` | `.on_error(..)` | `(e: { message: string }) => void` | | 加载失败。 |
 | `onLoadEnd` | `.on_load_end(..)` | `() => void` | | 在 `onLoad` 或 `onError` 之后。 |
 
@@ -120,7 +120,7 @@ image(ICON).size(px(24.0)).tint_color(rgb(0x0969da))
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | 无 | 开始加载。 |
 | `onProgress` | `.on_progress` | `{ loaded, total }`（`ImageProgress`） | 收到数据（最多每 100 ms 一次）。 |
-| `onLoad` | `.on_load` | `{ width, height }`（`Size<DevicePixels>`） | 图片已显示；给出源图片的像素尺寸（SVG 为点，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）。 |
+| `onLoad` | `.on_load` | `{ size }`（`Size<DevicePixels>`） | 图片已显示；给出源图片的像素尺寸（SVG 为点，[在 Web 上为浏览器测得的尺寸](../docs/images-and-assets.md#svg-图片)）。 |
 | `onError` | `.on_error` | `{ message }`（`&str`） | 加载或解码失败，或主机不在应用的能力范围内。 |
 | `onLoadEnd` | `.on_load_end` | 无 | 在 `onLoad` 或 `onError` 之后。 |
 
@@ -139,7 +139,7 @@ const state = signal("加载中");
 <Image
   src={url}
   style={{ width: "100%", aspectRatio: 16 / 9 }}
-  onLoad={(e) => state.set(`${e.width}×${e.height} px`)}
+  onLoad={({ size }) => state.set(`${size.width}×${size.height} px`)}
   onError={(e) => state.set(e.message)}
 />;
 ```

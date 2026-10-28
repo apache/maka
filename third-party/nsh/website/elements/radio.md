@@ -84,7 +84,7 @@ mount(App);
 
 `Radio` and `RadioGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is
 the app's: the group holds none. Each radio is told whether it is checked; a press on an unchecked radio reports
-`onChange(true)`, the app sets its value, and every radio shows the `checked` the app passes back. In Rust, `radio()`
+`onChange({ checked: true })`, the app sets its value, and every radio shows the `checked` the app passes back. In Rust, `radio()`
 and `radio_group()` make them, with a setter per prop (`.checked(..)`), a listener per event (`.on_change(..)`), the
 typed style methods and `.child(..)` for their content.
 
@@ -113,7 +113,7 @@ typed style methods and `.child(..)` for their content.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onChange` (`Radio`) | `.on_change(\|checked: &bool\| ..)` | An unchecked radio was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation; or an arrow key of its group moved the keyboard focus to it. It asks to be checked, so the value is `true`. It runs before anything changes: the radio shows the `checked` the app passes back. |
+| `onChange` (`Radio`) | `.on_change(\|checked: &bool\| ..)` | An unchecked radio was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation; or an arrow key of its group moved the keyboard focus to it. It asks to be checked, so `checked` is `true`. It runs before anything changes: the radio shows the `checked` the app passes back. |
 
 A checked radio stays checked and reports nothing, as a radio cannot uncheck itself; a disabled radio reports nothing
 either.

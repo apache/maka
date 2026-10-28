@@ -17,10 +17,8 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { displayText, tr } from './locale';
 import { computed, inputAction, platform, Scroll, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
@@ -28,7 +26,14 @@ import { ToolImage } from './ToolImage';
 import { createToolSource, OriginalToolSource, type ToolSourceRef } from './ToolSource';
 import { cardFamily, processFamily, toolArguments, toolResult } from './toolCards';
 import { ToolReader } from './ToolReader';
-import { C, captionTextStyle, controlStyle, disclosureInset } from './ui';
+import {
+  C,
+  captionTextStyle,
+  controlStyle,
+  Disclosure,
+  disclosureTitleStyle,
+  IconButton,
+} from './ui';
 import { Icon } from './Icon';
 import { pluginContext } from './plugins/context';
 import { PluginView } from './plugins/PluginView';
@@ -284,91 +289,70 @@ export function ToolCard(props: {
   };
   return (
     <View style={{ width: '100%', minWidth: 0, gap: detailsGap }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
-        <Button
-          selected={props.expanded()}
-          accessibilityLabel={tr('Toggle tool {name}', {
-            name: tool()?.call?.name ?? tr('Tool details'),
-          })}
-          tooltip={textTooltip(() => title())}
-          onPress={inputAction(props.expand, {
-            sessionId: props.sessionId,
-            key: props.ownerKey(),
-            value: !props.expanded(),
-          })}
-          style={{
-            ...controlStyle,
-            paddingHorizontal: disclosureInset(controlStyle.paddingHorizontal),
-            flex: 1,
-            minWidth: 0,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 8,
-          }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.raised }}
-        >
-          <Icon name={props.expanded() ? 'down' : 'right'} color={C.secondary} />
-          <Text
-            style={[
-              { flex: 1, minWidth: 0, color: C.secondary, fontSize: 13, lineHeight: 16 },
-              { numberOfLines: 1, textOverflow: 'ellipsis' },
-            ]}
-          >
-            {title()}
-          </Text>
-          <If
-            when={
-              family() &&
-              result() &&
-              tool()?.result?.settlement === 'returned' &&
-              !tool()?.result?.isError
-            }
-            else={
-              <Status
-                label={fallbackState()}
-                error={fallbackState() === tr('Error')}
-                warning={fallbackState() === tr('Rejected') || fallbackState() === tr('Unknown')}
-              />
-            }
-          >
-            <Each of={result() ? [result()!] : []} key={(value) => value.key}>
-              {(value) => (
-                <Outcome
-                  reference={value()}
-                  sessionId={props.sessionId}
-                  through={props.row().metadataThrough ?? props.through()}
-                />
-              )}
-            </Each>
+      <Disclosure
+        label={tr('Toggle tool {name}', {
+          name: tool()?.call?.name ?? tr('Tool details'),
+        })}
+        tooltip={title()}
+        open={props.expanded()}
+        terminalInset={controlStyle.paddingHorizontal}
+        onPress={inputAction(props.expand, {
+          sessionId: props.sessionId,
+          key: props.ownerKey(),
+          value: !props.expanded(),
+        })}
+        trailing={
+          <If when={props.expanded()}>
+            <IconButton
+              label={tr('Toggle original tool details')}
+              tooltip={
+                props.original() ? tr('Show readable tool details') : tr('Show original tool data')
+              }
+              icon="code"
+              selected={props.original()}
+              onPress={inputAction(props.showOriginal, {
+                sessionId: props.sessionId,
+                key: props.ownerKey(),
+                value: !props.original(),
+              })}
+            />
           </If>
-        </Button>
-        <If when={props.expanded()}>
-          <Button
-            accessibilityLabel={tr('Toggle original tool details')}
-            tooltip={textTooltip(() =>
-              props.original() ? tr('Show readable tool details') : tr('Show original tool data'),
+        }
+      >
+        <Text
+          style={[
+            { ...disclosureTitleStyle, color: C.secondary },
+            { numberOfLines: 1, textOverflow: 'ellipsis' },
+          ]}
+        >
+          {title()}
+        </Text>
+        <If
+          when={
+            family() &&
+            result() &&
+            tool()?.result?.settlement === 'returned' &&
+            !tool()?.result?.isError
+          }
+          else={
+            <Status
+              label={fallbackState()}
+              error={fallbackState() === tr('Error')}
+              warning={fallbackState() === tr('Rejected') || fallbackState() === tr('Unknown')}
+            />
+          }
+        >
+          <Each of={result() ? [result()!] : []} key={(value) => value.key}>
+            {(value) => (
+              <Outcome
+                reference={value()}
+                sessionId={props.sessionId}
+                through={props.row().metadataThrough ?? props.through()}
+              />
             )}
-            selected={props.original()}
-            onPress={inputAction(props.showOriginal, {
-              sessionId: props.sessionId,
-              key: props.ownerKey(),
-              value: !props.original(),
-            })}
-            style={{
-              ...controlStyle,
-              width: 32,
-              paddingHorizontal: 8,
-              alignItems: 'center',
-              flexShrink: 0,
-            }}
-            hoverStyle={{ backgroundColor: C.raised }}
-            focusStyle={{ backgroundColor: C.line }}
-          >
-            <Icon name="code" color={props.original() ? C.accent : C.muted} />
-          </Button>
+          </Each>
         </If>
-      </View>
+      </Disclosure>
       <If when={props.expanded()}>
         {/* On the desktop the details start under the title, as thinking text does. */}
         <View style={{ paddingLeft: platform.isTerminal ? 16 : 32 }}>

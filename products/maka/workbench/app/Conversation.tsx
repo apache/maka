@@ -31,7 +31,7 @@ import {
   View,
   List,
 } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap, platform } from 'nsh';
 import { AnimatedValue } from 'nsh';
@@ -76,7 +76,7 @@ import type {
   ProcessRow,
   TurnPresentation,
 } from './processGroups';
-import { ReturnToLatest, TurnNavigation } from './TurnNavigation';
+import { railWidth, ReturnToLatest, TurnNavigation } from './TurnNavigation';
 import type { TurnNavigationItem } from './TurnNavigation';
 import type { ConversationStatus } from './sessionStatus';
 import type { ImagePreview } from './ImageThumbnail';
@@ -136,7 +136,7 @@ type ConversationProps = {
   foreground(): boolean;
   browser(): BrowserHeader;
   files(): void;
-  filesOpener(node: YNode): void;
+  filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   attach(handle: ConversationHandle): void;
@@ -181,7 +181,7 @@ function receiptMessage(reply: any): UiText {
 }
 
 export function Conversation(props: ConversationProps) {
-  const root = signal<YNode | null>(null);
+  const root = signal<ViewRef | null>(null);
   effect(() => {
     const stop = props.stopAction();
     const node = root();
@@ -278,7 +278,7 @@ export function Conversation(props: ConversationProps) {
         measured: new Map(),
         lease: 0,
         visibleRows: signal<ReadonlySet<string>>(new Set()),
-        rowNodes: new Map<string, YNode>(),
+        rowNodes: new Map<string, ViewRef>(),
       };
       groupStates.set(key, state);
     }
@@ -464,7 +464,7 @@ export function Conversation(props: ConversationProps) {
     if (entry?.kind === 'process') return entry.group.turnId;
     return entry?.kind === 'row' ? (projection().rowsById.get(entry.rowId)?.turnId ?? null) : null;
   };
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let alive = true;
   let subscription: Subscription | null = null;
   let transcriptTask: Promise<void> | null = null;
@@ -2078,6 +2078,18 @@ export function Conversation(props: ConversationProps) {
     }),
   );
 
+  const railShown = () => ready() && navigationItems().length > 1;
+  const rail = () => (
+    <TurnNavigation
+      items={navigationItems}
+      active={visibleTurn}
+      busy={navigatingTurn}
+      navigate={(item) => {
+        void navigateTurn(item).catch(report);
+      }}
+      cancel={inputAction(cancelNavigation, navigatingTurn())}
+    />
+  );
   return (
     <View
       ref={(node) => root.set(node)}
@@ -2193,205 +2205,214 @@ export function Conversation(props: ConversationProps) {
           flexDirection: 'column',
           minHeight: 0,
           width: '100%',
-          maxWidth: 800,
-          alignSelf: 'center',
-          paddingHorizontal: 16,
+          // Reserve the desktop rail's width so it never overlaps the reading column.
+          paddingHorizontal: !platform.isTerminal && railShown() ? railWidth() + 8 : 0,
         }}
       >
-        <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
-          <List
-            ref={list}
-            onLayout={(frame) => {
-              readingSize.set(frame.size);
-              changedReadExposure();
-            }}
-            each={displayKeys()}
-            onScrollIntent={(event) => {
-              if (event.intent === 'start') void navigateStart().catch(report);
-              else cancelNavigation();
-            }}
-            onBlur={() => {
-              // Latest returns to editing immediately; its expected blur does
-              // not revoke the pending history read or later steal focus back.
-              if (navigation()?.kind !== 'tail') cancelNavigation();
-            }}
-            onViewableItemsChange={(event) => {
-              visibleTurn.set(entryTurn(event.viewableItems[0]?.item ?? ''));
-              visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
-              changedReadExposure();
-            }}
-            estimatedItemSize={96}
-            maintainVisibleContentPosition={
-              atHistoryTail() && innerReader() === null && navigation() === null
-                ? { autoscrollToBottomThreshold: 32 }
-                : {}
-            }
-            contentStyle={{ paddingRight: 8, paddingBottom: platform.isTerminal ? 0 : 16 }}
-            style={{ flex: 1, minHeight: 0 }}
-            onScroll={(event) => {
-              changedReadExposure();
-              awayFromLatest.set(
-                !atHistoryTail() ||
-                  event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
-              );
-              const reader = innerReader();
-              const row = reader === null ? undefined : projection().rowsById.get(reader);
-              const toolReader =
-                reader !== null &&
-                displayByKey().get(reader)?.kind === 'row' &&
-                (row?.tool != null || row?.role === 'tool_call' || row?.role === 'tool_result') &&
-                rowStates.get(reader)?.expanded() === true;
-              if (
-                reader !== null &&
-                !groupStates.get(reader)?.list &&
-                !toolReader &&
-                event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
-              )
-                innerReader.set(null);
-              if (event.offset.y <= 32) void loadOlder();
-              if (event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 32)
-                void loadNewer();
-            }}
-            empty={
-              <Text style={{ color: C.muted, paddingVertical: 32 }}>
-                {tr('Loading session history…')}
-              </Text>
-            }
-          >
-            {(key) => (
-              <Each of={[key()]} key={(id: string) => id}>
-                {(ownedKey) => {
-                  const initial = displayByKey().get(ownedKey());
-                  if (!initial) return <View />;
-                  const entry = () => displayByKey().get(ownedKey()) ?? initial;
-                  const reveal = () =>
-                    list?.scrollToIndex({
-                      index: displayKeys().indexOf(ownedKey()),
-                      viewPosition: 0,
-                      animated: false,
-                    });
-                  if (initial.kind === 'summary') {
-                    const first = projection().turns.get(initial.turnId);
-                    if (!first) return <View />;
-                    const turn = () => projection().turns.get(initial.turnId) ?? first;
-                    return (
-                      <TurnSummary
-                        turn={turn}
-                        expanded={() => turnExpanded(turn())}
-                        canFold={() => canFoldTurn(turn())}
-                        toggle={(open) => {
-                          turnState(initial.turnId).expanded.set({
-                            open,
-                            answerKey: turn().answerKey,
-                          });
-                          if (open) reveal();
-                        }}
-                      />
-                    );
-                  }
-                  if (initial.kind === 'process') {
-                    const group = () => {
-                      const latest = entry();
-                      return latest.kind === 'process' ? latest.group : initial.group;
-                    };
-                    const first = projection().turns.get(initial.group.turnId);
-                    if (!first) return <View />;
-                    const turn = () => projection().turns.get(initial.group.turnId) ?? first;
-                    const tool = () =>
-                      latestToolActivity(
-                        toolActivity().filter((item) => group().toolIds.includes(item.toolUseId)),
-                        invocation(),
-                        group().turnId,
+        <View
+          style={{
+            flex: 1,
+            flexDirection: 'column',
+            minHeight: 0,
+            width: '100%',
+            maxWidth: 800,
+            alignSelf: 'center',
+            paddingHorizontal: 16,
+          }}
+        >
+          <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
+            <List
+              ref={list}
+              onLayout={({ bounds: frame }) => {
+                readingSize.set(frame.size);
+                changedReadExposure();
+              }}
+              each={displayKeys()}
+              onScrollIntent={(event) => {
+                if (event.intent === 'start') void navigateStart().catch(report);
+                else cancelNavigation();
+              }}
+              onBlur={() => {
+                // Latest returns to editing immediately; its expected blur does
+                // not revoke the pending history read or later steal focus back.
+                if (navigation()?.kind !== 'tail') cancelNavigation();
+              }}
+              onViewableItemsChange={(event) => {
+                visibleTurn.set(entryTurn(event.viewableItems[0]?.item ?? ''));
+                visibleRows.set(new Set(event.viewableItems.map((item) => item.item)));
+                changedReadExposure();
+              }}
+              estimatedItemSize={96}
+              maintainVisibleContentPosition={
+                atHistoryTail() && innerReader() === null && navigation() === null
+                  ? { autoscrollToBottomThreshold: 32 }
+                  : {}
+              }
+              contentStyle={{ paddingRight: 8, paddingBottom: platform.isTerminal ? 0 : 16 }}
+              style={{ flex: 1, minHeight: 0 }}
+              onScroll={(event) => {
+                changedReadExposure();
+                awayFromLatest.set(
+                  !atHistoryTail() ||
+                    event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 32,
+                );
+                const reader = innerReader();
+                const row = reader === null ? undefined : projection().rowsById.get(reader);
+                const toolReader =
+                  reader !== null &&
+                  displayByKey().get(reader)?.kind === 'row' &&
+                  (row?.tool != null || row?.role === 'tool_call' || row?.role === 'tool_result') &&
+                  rowStates.get(reader)?.expanded() === true;
+                if (
+                  reader !== null &&
+                  !groupStates.get(reader)?.list &&
+                  !toolReader &&
+                  event.offset.y >= Math.max(0, event.contentSize.height - event.size.height) - 1
+                )
+                  innerReader.set(null);
+                if (event.offset.y <= 32) void loadOlder();
+                if (
+                  event.offset.y >=
+                  Math.max(0, event.contentSize.height - event.size.height) - 32
+                )
+                  void loadNewer();
+              }}
+              empty={
+                <Text style={{ color: C.muted, paddingVertical: 32 }}>
+                  {tr('Loading session history…')}
+                </Text>
+              }
+            >
+              {(key) => (
+                <Each of={[key()]} key={(id: string) => id}>
+                  {(ownedKey) => {
+                    const initial = displayByKey().get(ownedKey());
+                    if (!initial) return <View />;
+                    const entry = () => displayByKey().get(ownedKey()) ?? initial;
+                    const reveal = () =>
+                      list?.scrollToIndex({
+                        index: displayKeys().indexOf(ownedKey()),
+                        viewPosition: 0,
+                        animated: false,
+                      });
+                    if (initial.kind === 'summary') {
+                      const first = projection().turns.get(initial.turnId);
+                      if (!first) return <View />;
+                      const turn = () => projection().turns.get(initial.turnId) ?? first;
+                      return (
+                        <TurnSummary
+                          turn={turn}
+                          expanded={() => turnExpanded(turn())}
+                          canFold={() => canFoldTurn(turn())}
+                          toggle={(open) => {
+                            turnState(initial.turnId).expanded.set({
+                              open,
+                              answerKey: turn().answerKey,
+                            });
+                            if (open) reveal();
+                          }}
+                        />
                       );
+                    }
+                    if (initial.kind === 'process') {
+                      const group = () => {
+                        const latest = entry();
+                        return latest.kind === 'process' ? latest.group : initial.group;
+                      };
+                      const first = projection().turns.get(initial.group.turnId);
+                      if (!first) return <View />;
+                      const turn = () => projection().turns.get(initial.group.turnId) ?? first;
+                      const tool = () =>
+                        latestToolActivity(
+                          toolActivity().filter((item) => group().toolIds.includes(item.toolUseId)),
+                          invocation(),
+                          group().turnId,
+                        );
+                      return (
+                        <TurnPanel
+                          group={group}
+                          turn={turn}
+                          toolActivity={tool}
+                          state={groupState(initial.group.key)}
+                          row={currentRow}
+                          rowState={rowState}
+                          sessionId={sessionId}
+                          through={() => latestKnown}
+                          previewImage={props.previewImage}
+                          openLink={props.openLink}
+                          userScroll={() => cancelNavigation()}
+                          reveal={reveal}
+                          activity={activity}
+                          viewport={readingSize}
+                          reading={(away) => {
+                            changedReadExposure();
+                            if (away) innerReader.set(initial.group.key);
+                            else if (innerReader() === initial.group.key) innerReader.set(null);
+                          }}
+                        />
+                      );
+                    }
+                    const first = currentRow(initial.rowId);
+                    if (!first) return <View />;
+                    const row = () => currentRow(initial.rowId) ?? first;
                     return (
-                      <TurnPanel
-                        group={group}
-                        turn={turn}
-                        toolActivity={tool}
-                        state={groupState(initial.group.key)}
-                        row={currentRow}
-                        rowState={rowState}
+                      <MessageRow
+                        item={row}
+                        repeats={() => {
+                          const item = displayByKey().get(initial.rowId);
+                          return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
+                        }}
+                        toolMaxHeight={() => readingSize().height}
+                        ownerKey={() => initial.rowId}
+                        viewState={rowState(initial.rowId)}
                         sessionId={sessionId}
                         through={() => latestKnown}
                         previewImage={props.previewImage}
                         openLink={props.openLink}
                         userScroll={() => cancelNavigation()}
-                        reveal={reveal}
-                        activity={activity}
-                        viewport={readingSize}
-                        reading={(away) => {
-                          changedReadExposure();
-                          if (away) innerReader.set(initial.group.key);
-                          else if (innerReader() === initial.group.key) innerReader.set(null);
+                        onExpand={reveal}
+                        onToolReading={(key) => {
+                          if (
+                            !alive ||
+                            key !== initial.rowId ||
+                            displayByKey().get(key)?.kind !== 'row' ||
+                            !rowStates.get(key)?.expanded()
+                          )
+                            return;
+                          innerReader.set(key);
                         }}
+                        finalActions={(row, ownerKey) => (
+                          <FinalActions
+                            row={row}
+                            ownerKey={ownerKey}
+                            sessionId={sessionId}
+                            through={() => latestKnown}
+                            fork={props.fork}
+                          />
+                        )}
                       />
                     );
-                  }
-                  const first = currentRow(initial.rowId);
-                  if (!first) return <View />;
-                  const row = () => currentRow(initial.rowId) ?? first;
-                  return (
-                    <MessageRow
-                      item={row}
-                      repeats={() => {
-                        const item = displayByKey().get(initial.rowId);
-                        return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
-                      }}
-                      toolMaxHeight={() => readingSize().height}
-                      ownerKey={() => initial.rowId}
-                      viewState={rowState(initial.rowId)}
-                      sessionId={sessionId}
-                      through={() => latestKnown}
-                      previewImage={props.previewImage}
-                      openLink={props.openLink}
-                      userScroll={() => cancelNavigation()}
-                      onExpand={reveal}
-                      onToolReading={(key) => {
-                        if (
-                          !alive ||
-                          key !== initial.rowId ||
-                          displayByKey().get(key)?.kind !== 'row' ||
-                          !rowStates.get(key)?.expanded()
-                        )
-                          return;
-                        innerReader.set(key);
-                      }}
-                      finalActions={(row, ownerKey) => (
-                        <FinalActions
-                          row={row}
-                          ownerKey={ownerKey}
-                          sessionId={sessionId}
-                          through={() => latestKnown}
-                          fork={props.fork}
-                        />
-                      )}
-                    />
-                  );
-                }}
-              </Each>
-            )}
-          </List>
-          <If when={ready() && navigationItems().length > 1}>
-            <TurnNavigation
-              items={navigationItems}
-              active={visibleTurn}
-              busy={navigatingTurn}
-              navigate={(item) => {
-                void navigateTurn(item).catch(report);
-              }}
-              cancel={inputAction(cancelNavigation, navigatingTurn())}
+                  }}
+                </Each>
+              )}
+            </List>
+            <If when={platform.isTerminal && railShown()}>{rail()}</If>
+            <ReturnToLatest
+              visible={awayFromLatest() || innerReader() !== null}
+              activate={inputAction(ownHandle.jumpLatest, null)}
             />
-          </If>
-          <ReturnToLatest
-            visible={awayFromLatest() || innerReader() !== null}
-            activate={inputAction(ownHandle.jumpLatest, null)}
-          />
+          </View>
+          <Each of={compacting() === null ? [] : [compacting()!]} key={(progress) => progress.id}>
+            {(progress) => (
+              <CompactionDivider state="running" startedAt={() => progress().startedAt} />
+            )}
+          </Each>
         </View>
-        <Each of={compacting() === null ? [] : [compacting()!]} key={(progress) => progress.id}>
-          {(progress) => (
-            <CompactionDivider state="running" startedAt={() => progress().startedAt} />
-          )}
-        </Each>
+        <If when={!platform.isTerminal && railShown()}>
+          <View style={{ position: 'absolute', top: 0, bottom: 0, right: 8, flexDirection: 'row' }}>
+            {rail()}
+          </View>
+        </If>
       </View>
     </View>
   );

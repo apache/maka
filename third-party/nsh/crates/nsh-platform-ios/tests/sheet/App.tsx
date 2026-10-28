@@ -30,7 +30,7 @@ function App() {
         closeOnSwipe={enabled()}
         popupStyle={{ backgroundColor: "#ffffff", borderTopLeftRadius: 18, borderTopRightRadius: 18 }}
         backdropStyle={{ backgroundColor: "rgba(0,0,0,0.6)" }}
-        onOpenChange={(next, why) => {
+        onOpenChange={({ open: next, reason: why }) => {
           reason.set(why);
           if (mode() !== "Decline") open.set(next);
         }}

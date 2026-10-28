@@ -234,14 +234,17 @@ pub(crate) fn StorageDemo() -> impl IntoElement {
             .description(
                 "Removes every key the gallery keeps, the launch count and the note among them.",
             )
-            .cancel("Cancel")
-            .destructive("Clear")
+            .cancel("cancel", "Cancel")
+            .destructive("clear", "Clear")
             .close_on_escape(true)
             .close_on_backdrop_press(true)
             .show();
         owner.run(|| {
             spawn(async move {
-                if chosen.await != Ok(Some("Clear".into())) {
+                if !chosen
+                    .await
+                    .is_ok_and(|r| r.action.as_deref() == Some("clear"))
+                {
                     return;
                 }
                 Storage::clear();

@@ -71,9 +71,9 @@ function App() {
             <Panel title="paused · ripple">
               <Switch
                 checked={paused()}
-                onChange={(next) => {
-                  paused.set(next);
-                  log(next ? "Paused: the clock stands still" : "Running");
+                onChange={({ checked }) => {
+                  paused.set(checked);
+                  log(checked ? "Paused: the clock stands still" : "Running");
                 }}
                 class={`-mx-2 flex-row-reverse items-center justify-between gap-3 rounded-lg px-2 ${desktop ? "py-1" : "py-2"} active:opacity-70`}
                 hoverStyle={hoverFill()}
@@ -99,7 +99,7 @@ function App() {
           paused={paused()}
           uniforms={{ a: colors()[0], b: colors()[1], c: colors()[2], center: [cx, cy], wave }}
           style={{ height: desktop ? 420 : 280, borderRadius: 16, padding: 18, justifyContent: "flex-end" }}
-          onLayout={(bounds) => (box = bounds.size)}
+          onLayout={({ bounds }) => (box = bounds.size)}
           onStartShouldSetResponder={() => true}
           onResponderGrant={(e) => tap(e.locationX / box.width, e.locationY / box.height)}
         >

@@ -4,13 +4,14 @@
 //! through changes and has a [`SelectionBookmark`] that history keeps
 //! without holding a document.
 
-use std::{fmt, sync::Arc};
+use std::{any::Any, fmt, sync::Arc};
 
 use serde_json::{Value, json};
 
 use super::{StateError, transaction::Transaction};
 use crate::rich_editor::{
     model::{Node, ResolvedPos, Slice},
+    tables::{CELL_SELECTION, CellSelection},
     transform::{Mappable, ReplaceAroundStep, ReplaceStep},
 };
 
@@ -268,8 +269,9 @@ impl AllSelection {
 }
 
 /// A selection kind the app defines (a table's cells, a gap cursor, ...).
-/// [`Selection`] calls these where the built-in kinds have their own code.
-pub trait CustomSelection: Send + Sync + fmt::Debug {
+/// [`Selection`] calls these where the built-in kinds have their own code;
+/// [`Selection::as_custom`] finds the kind's own type again.
+pub trait CustomSelection: Any + Send + Sync + fmt::Debug {
     /// The kind's name, the `type` of its JSON form.
     fn json_id(&self) -> &str;
     /// The anchor.
@@ -298,6 +300,13 @@ pub trait CustomSelection: Send + Sync + fmt::Debug {
     /// Whether the view draws it as a selection (the native one).
     fn visible(&self) -> bool {
         true
+    }
+    /// Replaces what it covers with `content` in `tr` its own way and
+    /// places the selection; `false` (the default) leaves it to
+    /// [`Selection::replace`]'s way.
+    fn replace(&self, tr: &mut Transaction, content: &Slice) -> bool {
+        let _ = (tr, content);
+        false
     }
 }
 
@@ -628,6 +637,14 @@ impl Selection {
         }
     }
 
+    /// It as the custom kind `T`.
+    pub fn as_custom<T: CustomSelection>(&self) -> Option<&T> {
+        match &self.kind {
+            SelectionKind::Custom(selection) => (selection.as_ref() as &dyn Any).downcast_ref(),
+            _ => None,
+        }
+    }
+
     /// Whether it is a [`GapCursor`].
     pub fn is_gap_cursor(&self) -> bool {
         matches!(&self.kind, SelectionKind::Custom(s) if s.json_id() == GAP_CURSOR)
@@ -749,6 +766,11 @@ impl Selection {
     /// Replaces what it covers with `content` in `tr` (the other ranges
     /// with nothing) and puts the selection after the inserted content.
     pub fn replace(&self, tr: &mut Transaction, content: Slice) {
+        if let SelectionKind::Custom(selection) = &self.kind
+            && selection.replace(tr, &content)
+        {
+            return;
+        }
         // Where the cursor goes after the insertion: into inline content
         // when the slice ends in it, else into the next block.
         let mut last_node = content.content.last_child().cloned();
@@ -820,7 +842,8 @@ impl Selection {
         }
     }
 
-    /// Reads a built-in kind's JSON form in `doc`.
+    /// Reads a built-in kind's JSON form in `doc` (the gap cursor and the
+    /// table cell selection among them).
     pub fn from_json(doc: &Node, json: &Value) -> Result<Selection, StateError> {
         Self::from_json_with(doc, json, &|_, _, _| None)
     }
@@ -861,6 +884,8 @@ impl Selection {
             "all" => Ok(AllSelection::new(doc).into()),
             GAP_CURSOR => GapCursor::from_json(doc, json)
                 .ok_or_else(|| StateError::Json("a gap cursor's `pos` out of range".into())),
+            CELL_SELECTION => CellSelection::from_json(doc, json)
+                .ok_or_else(|| StateError::Json("a cell selection not on cells".into())),
             other => custom(other, doc, json)
                 .ok_or_else(|| StateError::Json(format!("unknown selection type `{other}`"))),
         }
@@ -1047,7 +1072,9 @@ impl SelectionRegistry {
     /// Registers the kind `id`; fails if a kind (built-in or registered)
     /// has that name.
     pub fn register(&mut self, id: &str, from_json: SelectionFromJson) -> Result<(), StateError> {
-        if matches!(id, "text" | "node" | "all" | GAP_CURSOR) || self.kinds.contains_key(id) {
+        if matches!(id, "text" | "node" | "all" | GAP_CURSOR | CELL_SELECTION)
+            || self.kinds.contains_key(id)
+        {
             return Err(StateError::Json(format!(
                 "selection type `{id}` registered twice"
             )));

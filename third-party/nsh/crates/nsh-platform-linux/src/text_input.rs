@@ -45,7 +45,7 @@ use gtk4::{self as gtk, glib, prelude::*};
 use nsh_core::{
     AutoCapitalize, Bounds, EventKind, EventPayload, InputConfig, KeyboardType, PayloadValue,
     Points, SubmitBehavior, TextAlign,
-    geometry::{Point, Size},
+    geometry::{Point, Size, point, px, size},
     tailwind::state,
 };
 
@@ -314,6 +314,13 @@ impl Ctx {
         self.send(EventKind::KeyPress, || {
             EventPayload::Map(vec![("key", PayloadValue::Str(key.to_owned()))])
         });
+    }
+
+    /// The text scrolled, or its size or the viewport's changed.
+    fn scrolled(&self) {
+        if let Some((surface, view, input)) = self.get() {
+            report_scroll(&surface, &view, &input);
+        }
     }
 
     /// The text changed.
@@ -814,9 +821,13 @@ fn attach(cx: &Ctx, editor: &Editor, input: &InputState) {
             buffer.connect_cursor_position_notify(move |_| c.selection_changed());
             // Scrolling the text moves the caret.
             let c = cx.clone();
-            scroller
-                .vadjustment()
-                .connect_value_changed(move |_| c.caret_moved());
+            let adjustment = scroller.vadjustment();
+            adjustment.connect_value_changed(move |_| c.caret_moved());
+            // And moves a built-in bar's thumb, as the text's size does.
+            let c = cx.clone();
+            adjustment.connect_value_changed(move |_| c.scrolled());
+            let c = cx.clone();
+            adjustment.connect_changed(move |_| c.scrolled());
         }
     }
 
@@ -936,7 +947,14 @@ pub(crate) fn config(_surface: &Rc<Surface>, view: &NshView, config: &InputConfi
             t.set_input_hints(hints);
             t.set_direction(direction);
         }
-        Editor::Area { view, .. } => {
+        Editor::Area { scroller, view } => {
+            // A built-in bar of the app's takes the indicator's place.
+            let bar = if config.scrollbar_visible {
+                gtk::PolicyType::Automatic
+            } else {
+                gtk::PolicyType::External
+            };
+            scroller.set_policy(gtk::PolicyType::Never, bar);
             view.set_editable(config.editable);
             view.set_cursor_visible(config.editable && !config.caret_hidden);
             view.set_justification(match config.align {
@@ -971,12 +989,48 @@ pub(crate) fn config(_surface: &Rc<Surface>, view: &NshView, config: &InputConfi
         *input.css.borrow_mut() = css;
     }
     *input.config.borrow_mut() = config.clone();
+    report_scroll(_surface, view, &input);
     input.update_placeholder();
     let first = !input.configured.replace(true);
     if first && config.auto_focus {
         auto_focus(&input, &editor);
     }
     place(view, &input);
+}
+
+/// Reports how far a multiline input's text scrolled while a built-in bar
+/// takes the place of its indicator (`InputConfig::replaced`).
+fn report_scroll(surface: &Surface, view: &NshView, input: &InputState) {
+    if !input.config.borrow().replaced {
+        return;
+    }
+    let Editor::Area { scroller, .. } = &*input.editor.borrow() else {
+        return;
+    };
+    let v = scroller.vadjustment();
+    let width = px(scroller.width() as f32);
+    let (offset, upper, page) = (v.value() as f32, v.upper() as f32, v.page_size() as f32);
+    surface.control(|c| {
+        c.input_scroll(
+            view.id(),
+            point(Points::ZERO, px(offset)),
+            size(width, px(upper.max(page))),
+            size(width, px(page)),
+        );
+    });
+}
+
+/// `Command::ScrollTo` for a multiline input: scrolls its text (a built-in
+/// bar's drags).
+pub(crate) fn scroll_to(view: &NshView, y: Points) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    if let Editor::Area { scroller, .. } = &*input.editor.borrow() {
+        let v = scroller.vadjustment();
+        let max = (v.upper() - v.page_size()).max(v.lower());
+        v.set_value((y.0 as f64).clamp(v.lower(), max));
+    }
 }
 
 /// Focuses the editor once it is on screen.

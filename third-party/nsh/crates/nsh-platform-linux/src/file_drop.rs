@@ -100,10 +100,6 @@ fn install(surface: &Rc<Surface>) {
         let Some(surface) = weak.upgrade() else {
             return false;
         };
-        let Some(destination) = input::file_drop_target(&surface, x as f32, y as f32) else {
-            set_target(&surface, None);
-            return false;
-        };
         let Ok(files) = value.get::<gdk::FileList>() else {
             set_target(&surface, None);
             return false;
@@ -114,18 +110,7 @@ fn install(surface: &Rc<Surface>) {
             .filter(|file| file.path().is_some_and(|path| path.is_absolute()))
             .map(|file| file.uri().to_string())
             .collect::<Vec<_>>();
-        if uris.is_empty() {
-            set_target(&surface, None);
-            return false;
-        }
-        set_target(&surface, Some(destination.clone()));
-        surface.event(
-            destination.id(),
-            EventKind::FileDrop,
-            EventPayload::FileDrop(uris),
-        );
-        set_target(&surface, None);
-        true
+        drop_uris(&surface, x as f32, y as f32, uris)
     });
     surface.root.add_controller(controller.clone());
     *surface.file_drop.controller.borrow_mut() = Some(controller);
@@ -171,4 +156,29 @@ fn remove_controller(surface: &Surface) {
 pub(crate) fn reset(surface: &Surface) {
     remove_controller(surface);
     *surface.file_drop.destinations.borrow_mut() = Destinations::default();
+}
+
+/// Drops `uris` at `x`, `y` (the root's coordinates) on the view there that
+/// listens, as a drop from a file manager does: whether one took them. The
+/// test agent's `dropFiles` comes here too.
+pub(crate) fn drop_uris(surface: &Surface, x: f32, y: f32, uris: Vec<String>) -> bool {
+    let Some(destination) = input::file_drop_target(surface, x, y) else {
+        set_target(surface, None);
+        return false;
+    };
+    if uris.is_empty() {
+        set_target(surface, None);
+        return false;
+    }
+    set_target(surface, Some(destination.clone()));
+    surface.event(
+        destination.id(),
+        EventKind::FileDrop,
+        EventPayload::FileDropAt {
+            uris,
+            page_position: nsh_core::prelude::point(nsh_core::Points(x), nsh_core::Points(y)),
+        },
+    );
+    set_target(surface, None);
+    true
 }

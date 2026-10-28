@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use nsh_base::{AlertDialogOptions, alert_dialog, dialog};
+use nsh_base::{AlertDialogAction, AlertDialogOptions, alert_dialog, dialog};
 use nsh_core::{
     animation::{Curve, EaseMode},
     element::AnyElement,
@@ -30,8 +30,13 @@ const BAR_STYLES: [(StatusBarStyle, &str, &str); 3] = [
 const POSTS: &str = "https://jsonplaceholder.typicode.com/posts?_limit=3";
 
 /// The label of the action chosen, or `"dismissed"`.
-fn chosen(label: Option<&str>) -> String {
-    label.unwrap_or("dismissed").to_owned()
+fn chosen(action: Option<&AlertDialogAction>) -> String {
+    action.map_or_else(|| "dismissed".to_owned(), |a| a.label.to_string())
+}
+
+/// Whether the action chosen is the one named `id`.
+fn is(action: Option<&AlertDialogAction>, id: &str) -> bool {
+    action.is_some_and(|a| a.id == id)
 }
 
 /// A text and the tone it shows in.
@@ -333,14 +338,17 @@ fn Dialogs() -> impl IntoElement {
     // Pops the answer in each time it changes.
     let pop = animated_value(1.0);
     let owner = Owner::current();
-    // Shows `dialog`, then what `answered` makes of the label chosen (none:
-    // dismissed), popping it in.
-    let ask = move |dialog: AlertDialogOptions, answered: fn(Option<&str>) -> Toned| {
+    // Shows `dialog`, then what `answered` makes of the action chosen
+    // (none: dismissed), popping it in.
+    let ask = move |dialog: AlertDialogOptions,
+                    answered: fn(Option<&AlertDialogAction>) -> Toned| {
+        let actions = dialog.actions.clone();
         let chosen = dialog.show();
         owner.run(|| {
             spawn(async move {
-                let label = chosen.await.ok().flatten();
-                answer.set(Some(answered(label.as_deref())));
+                let id = chosen.await.ok().and_then(|r| r.action);
+                let action = id.and_then(|id| actions.iter().find(|a| a.id == id));
+                answer.set(Some(answered(action)));
                 pop.set(0.85);
                 pop.spring(
                     1.0,
@@ -357,7 +365,7 @@ fn Dialogs() -> impl IntoElement {
         let dialog = alert_dialog()
             .title("Saved")
             .description("Your changes were saved.")
-            .action("OK");
+            .action("ok", "OK");
         ask(dialog, |_| Toned {
             text: "OK".to_owned(),
             tone: Tone::Up,
@@ -367,52 +375,52 @@ fn Dialogs() -> impl IntoElement {
         let dialog = alert_dialog()
             .title("Delete the photo?")
             .description("This cannot be undone.")
-            .cancel("Cancel")
-            .destructive("Delete")
+            .cancel("cancel", "Cancel")
+            .destructive("delete", "Delete")
             .close_on_escape(true)
             .close_on_backdrop_press(true);
-        ask(dialog, |label| Toned {
-            tone: if label == Some("Delete") {
+        ask(dialog, |action| Toned {
+            tone: if is(action, "delete") {
                 Tone::Danger
             } else {
                 Tone::Neutral
             },
-            text: chosen(label),
+            text: chosen(action),
         });
     };
     let three = move |_: &()| {
         let dialog = alert_dialog()
             .title("Update available")
             .description("Install it now?")
-            .action("Later")
-            .cancel("Never")
-            .action("Install");
-        ask(dialog, |label| Toned {
-            tone: if label == Some("Install") {
+            .action("later", "Later")
+            .cancel("never", "Never")
+            .action("install", "Install");
+        ask(dialog, |action| Toned {
+            tone: if is(action, "install") {
                 Tone::Info
             } else {
                 Tone::Neutral
             },
-            text: chosen(label),
+            text: chosen(action),
         });
     };
     let sheet = move |_: &()| {
         let dialog = alert_dialog()
             .title("Share the photo")
             .action_sheet()
-            .cancel("Cancel")
-            .action("Copy link")
-            .action("Save")
-            .destructive("Delete");
+            .cancel("cancel", "Cancel")
+            .action("copy", "Copy link")
+            .action("save", "Save")
+            .destructive("delete", "Delete");
         // Dismissing the sheet is its cancel action (as `ActionSheet.show`
         // answers).
-        ask(dialog, |label| Toned {
-            tone: if label == Some("Delete") {
+        ask(dialog, |action| Toned {
+            tone: if is(action, "delete") {
                 Tone::Danger
             } else {
                 Tone::Accent
             },
-            text: label.unwrap_or("Cancel").to_owned(),
+            text: action.map_or_else(|| "Cancel".to_owned(), |a| a.label.to_string()),
         });
     };
     let shown = when(
@@ -461,7 +469,7 @@ fn Dialogs() -> impl IntoElement {
                     IconName::Star,
                     colors::INFO,
                     "Three buttons",
-                    "Resolves to the index pressed",
+                    "Shows the label of the action pressed",
                     three,
                 ))
                 .child(action_row(

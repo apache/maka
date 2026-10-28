@@ -224,7 +224,7 @@ Rust 应用的包就是它的 runner：用你的 crate 构建，挂载好根组�
 | 目标 | 运行时 | TSX 应用 |
 |---|---|---|
 | iOS | `nsh-ios-app` 可执行文件 | `<Name>.app/nsh/bundle.nshc`、`nsh/assets/…` |
-| Android | `classes.dex`、`lib/<abi>/libnsh.so`（不压缩存储，16 KB 对齐） | `assets/nsh/bundle.nshc`、`assets/nsh/assets/…` |
+| Android | `classes.dex`、`lib/<abi>/libnsh.so`（不带符号，不压缩存储，16 KB 对齐） | `assets/nsh/bundle.nshc`、`assets/nsh/assets/…` |
 | macOS | `nsh-macos-app` 可执行文件，重命名为 `<Name>` | `<Name>.app/Contents/Resources/nsh/bundle.nshc`、`nsh/assets/…` |
 | Linux | `nsh-linux-app` 可执行文件，重命名为 `<Name>` | `<Name>/nsh/bundle.nshc`、`nsh/assets/…` |
 | Windows | `nsh-windows-app.exe` 可执行文件，重命名为 `<Name>.exe` | `<Name>\nsh\bundle.nshc`、`nsh\assets\…` |

@@ -31,7 +31,7 @@ function App() {
   const price = signal<[number, number]>([200, 800]);
   const bands = [signal(0), signal(3), signal(-2)];
   const events = signal<string[]>([]);
-  const log = (name: string) => (next: SliderValue) => events.set([`${name} → ${show(next)}`, ...events()].slice(0, 5));
+  const log = (name: string) => ({ value: next }: { value: SliderValue }) => events.set([`${name} → ${show(next)}`, ...events()].slice(0, 5));
   const line = () => <View style={{ height: 1, marginLeft: desktop ? 12 : 16, backgroundColor: ui().line }} />;
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
@@ -52,7 +52,7 @@ function App() {
                 bands {bands.map((b) => b()).join(" / ")}
               </Text>
             </Panel>
-            <Log title="onChangeEnd(value)" lines={events()} minHeight={92} />
+            <Log title="onChangeEnd({ value })" lines={events()} minHeight={92} />
           </>
         }
       >
@@ -60,7 +60,7 @@ function App() {
           <Row label="Option strength">
             <Slider
               value={strength()}
-              onChange={(next) => strength.set(next as number)}
+              onChange={({ value }) => strength.set(value as number)}
               onChangeEnd={log("strength")}
               accessibilityLabel="Option strength"
               rangeStyle={sliderFill(0, strength() / 100)}
@@ -74,7 +74,7 @@ function App() {
             <Slider
               value={position()}
               max={LENGTH}
-              onChange={(next) => position.set(next as number)}
+              onChange={({ value }) => position.set(value as number)}
               onChangeEnd={log("position")}
               accessibilityLabel="Playback position"
               rangeStyle={sliderFill(0, position() / LENGTH)}
@@ -88,7 +88,7 @@ function App() {
               min={0}
               max={1000}
               step={10}
-              onChange={(next) => price.set(next as [number, number])}
+              onChange={({ value }) => price.set(value as [number, number])}
               onChangeEnd={log("price")}
               startAccessibilityLabel="Minimum price"
               accessibilityLabel="Maximum price"
@@ -112,7 +112,7 @@ function App() {
                     min={-12}
                     max={12}
                     axis="vertical"
-                    onChange={(next) => bands[i].set(next as number)}
+                    onChange={({ value }) => bands[i].set(value as number)}
                     onChangeEnd={log(name.toLowerCase())}
                     accessibilityLabel={name}
                     rangeStyle={sliderFill(0, (bands[i]() + 12) / 24, true)}

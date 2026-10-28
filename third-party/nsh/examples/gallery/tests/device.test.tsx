@@ -7,7 +7,7 @@ const after = (texts: string[], label: string) => texts[texts.indexOf(label) + 1
 
 test("the locale and reduced motion are the test's", async () => {
   const app = await open("../App.tsx", { locale: "de-DE", reducedMotion: true });
-  await app.press("role:button[Components]");
+  await app.press("role:button[Patterns]");
   await app.waitFor("locale()");
   expect(after(app.texts(), "locale()")).toBe("de-DE");
   expect(after(app.texts(), "reduceMotion()")).toBe("true");

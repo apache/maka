@@ -87,7 +87,7 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
                     <Input
                       accessibilityLabel={tr('Search Host plugins')}
                       value={owner.query()}
-                      onChange={(value) => owner.query.set(value)}
+                      onChange={({ value }) => owner.query.set(value)}
                       placeholder={tr('Search plugins…')}
                       style={{
                         ...inputTextStyle,

@@ -16,7 +16,7 @@
   (`nsh_core::animation::Easing::Curve`), never a JS function: the curves, their parameters and defaults are one table
   (`nsh_core::js::animation`), which decodes them, declares their types (`animation::declarations`) and gives `nsh`'s `Easing` its curves (`animation::tables`). `Animated.timing` / `spring` / `decay` / `sequence` / `parallel` / `stagger` /
   `delay` / `loop` build a `Composite` tree that runs entirely natively (`AnimationOp::StartComposite`): each step starts at the exact end
-  time of the previous one (no frame gaps), `stop()` / `reset()` (back to the values at start) / `start(cb)` report `finished` once
+  time of the previous one (no frame gaps), `stop()` / `reset()` (back to the values at start) / `start(cb)` report `{ finished }` once
   for the whole tree; leaf animations get internal ids (`LEAF_IDS`) that never reach JS. Composites are released when JS
   lets go of them (their finalizers queue `ReleaseComposite`); a run goes on after that. A run does not keep its
   composite (or the values it animates) alive: `nsh-js` remembers live composites by key (`Animations::composites`),

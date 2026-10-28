@@ -4,7 +4,7 @@ import { expect, open, test } from "nsh/test";
 
 test("back returns to the demo index", async () => {
   const app = await open("../App.tsx", { clock: {} });
-  await app.press("label:Navigation");
+  await app.press("label:NavStack");
   await app.waitFor("Native stack");
   await app.back();
   expect(app.shows("Native stack")).toBe(false);
@@ -13,7 +13,7 @@ test("back returns to the demo index", async () => {
 
 test("unsaved changes ask before going back", async () => {
   const app = await open("../App.tsx", { clock: {} });
-  await app.press("label:Navigation");
+  await app.press("label:NavStack");
   await app.press("Unsaved changes");
   await app.waitFor("Nothing to lose: back pops");
   await app.type("text:A draft", "Notes");

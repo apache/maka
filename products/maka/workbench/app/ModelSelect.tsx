@@ -31,7 +31,7 @@ import {
   List,
 } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ListRef, ViewRef } from 'nsh';
 import type {
   ModelSelection,
   SettingsModelCursor,
@@ -97,7 +97,7 @@ export function ModelSelect(props: {
   let menu: ModelMenuHandle | null = null;
   const changed = computed(() => {
     const instance = props.instance();
-    return (next: boolean, reason: string) => {
+    return ({ open: next, reason }: { open: boolean; reason: string }) => {
       if (!props.current() || props.instance() !== instance) return;
       if (next) {
         if (instance === null) props.toggle({ sessionId: owner.sessionId, instance });
@@ -250,7 +250,7 @@ function ModelMenu(props: {
   let generation = 0;
   let modelsQueued = false;
   let removeSearchKeys = () => {};
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let focusIntent: 'model' | 'effort' | null = null;
   cleanup(() => {
     alive = false;
@@ -484,7 +484,7 @@ function ModelMenu(props: {
     const choice = choices()[index()];
     if (choice) void submit(modelAction(choice));
   };
-  const focusRoot = (which: 'model' | 'effort', node: YNode) => {
+  const focusRoot = (which: 'model' | 'effort', node: ViewRef) => {
     if (focusIntent !== which) return;
     focusIntent = null;
     node.focus();
@@ -748,7 +748,7 @@ function ModelMenu(props: {
           accessibilityLabel={tr('Search models')}
           value={query()}
           readonly={pending()}
-          onChange={(text) => {
+          onChange={({ value: text }) => {
             batch(() => {
               query.set(text);
               selected.set(0);

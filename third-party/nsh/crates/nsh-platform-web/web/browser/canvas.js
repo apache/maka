@@ -67,7 +67,7 @@ export function createCanvas(invoke, reactive, dom, live, wake) {
     const node=dom.rt.element("canvas");
     dom.rt.spread(node,reactive.split(props,["draw","onLayout"])[1]);
     const size=reactive.signal(null,{equals:(a,b)=>a?.width===b?.width&&a?.height===b?.height});
-    dom.rt.prop(node,"onLayout",bounds=>{size.set({...bounds.size});props.onLayout?.(bounds);});
+    dom.rt.prop(node,"onLayout",e=>{size.set({...e.bounds.size});props.onLayout?.(e);});
     reactive.renderEffect(()=>{
       const dimensions=size();if(!dimensions)return;
       const context=make(CanvasRenderingContext2D.prototype,"context",dimensions);

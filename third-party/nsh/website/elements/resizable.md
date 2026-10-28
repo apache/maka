@@ -51,7 +51,7 @@ function App() {
       handleClass="bg-border group-hover:bg-ring group-active:bg-primary"
       handleAccessibilityLabel="Resize the sidebar"
     >
-      <ResizablePanel size={sidebar()} minSize={160} maxSize={480} onResize={(v) => sidebar.set(v)} class="p-4">
+      <ResizablePanel size={sidebar()} minSize={160} maxSize={480} onResize={({ size }) => sidebar.set(size)} class="p-4">
         <Text class="text-muted-foreground">Files</Text>
       </ResizablePanel>
       <ResizablePanel class="p-4">
@@ -170,8 +170,8 @@ the whole drag, wherever the pointer goes.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onResize` (`ResizablePanelGroup`) | `.on_resize(\|sizes: &Vec<Points>\| ..)` | A drag ended and moved a handle, or a screen reader adjusted one: every visible panel's size, in the order they are laid out (left to right, top to bottom). |
-| `onResize` (`ResizablePanel`) | `.on_resize(\|size: &Points\| ..)` | A drag ended and changed this panel's size: the new one, to pass back as its `size`. |
+| `onResize` (`ResizablePanelGroup`) | `.on_resize(\|sizes: &Vec<Points>\| ..)` | A drag ended and moved a handle, or a screen reader adjusted one: `sizes`, every visible panel's size, in the order they are laid out (left to right, top to bottom). |
+| `onResize` (`ResizablePanel`) | `.on_resize(\|size: &Points\| ..)` | A drag ended and changed this panel's size: `size`, the new one, to pass back as its `size`. |
 
 ## Parts
 

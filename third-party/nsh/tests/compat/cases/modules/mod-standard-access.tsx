@@ -23,7 +23,7 @@ const paths = [
   () => readlink("/compat-denied/file"),
 ];
 const files = fs.readFile === readFile && paths.every(denied);
-const sockets = net.connect === connect && denied(() => connect("compat.invalid", 80))
+const sockets = net.connect === connect && denied(() => connect({ host: "compat.invalid", port: 80 }))
   && denied(() => new (Socket as any)());
 const websocket = denied(() => NativeWebSocket.connect("https://compat.invalid/"))
   && denied(() => new (WebSocketConnection as any)());

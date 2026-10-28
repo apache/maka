@@ -73,7 +73,7 @@ const PATCH = `diff --git a/src/total.rs b/src/total.rs
 
 ## 补丁中的文件
 
-包含多个文件的补丁把每个文件显示在一个标题行之下：默认显示它的路径（重命名时为 `旧 → 新`）、新增和删除的行数，以及 `▾`；点击标题会把文件折叠到只剩标题（`▸`），或重新展开。`renderFileHeader` 按应用的方式绘制标题（只有一个文件的补丁也会显示标题），并告诉它这个文件（`DiffFile`）：`index`、`path`、`oldPath`（重命名或复制的来源）、`status`（`"modified"`、`"added"`、`"deleted"`、`"renamed"`、`"copied"`）、`binary`（补丁中没有它的行）、`added`、`deleted`、`hunks`、`firstHunk` 和 `collapsed`。应用的标题调用 ref 的 `toggleFile(path)`；`collapseFile` 和 `expandFile` 设置折叠状态，每次变化都由 `onFileToggle(file)` 报告。新的 `patch` 仍包含某个已折叠的文件时，它保持折叠。
+包含多个文件的补丁把每个文件显示在一个标题行之下：默认显示它的路径（重命名时为 `旧 → 新`）、新增和删除的行数，以及 `▾`；点击标题会把文件折叠到只剩标题（`▸`），或重新展开。`renderFileHeader` 按应用的方式绘制标题（只有一个文件的补丁也会显示标题），并告诉它这个文件（`DiffFile`）：`index`、`path`、`oldPath`（重命名或复制的来源）、`status`（`"modified"`、`"added"`、`"deleted"`、`"renamed"`、`"copied"`）、`binary`（补丁中没有它的行）、`added`、`deleted`、`hunks`、`firstHunk` 和 `collapsed`。应用的标题调用 ref 的 `toggleFile(path)`；`collapseFile` 和 `expandFile` 设置折叠状态，每次变化都由 `onFileToggle({ file })` 报告。新的 `patch` 仍包含某个已折叠的文件时，它保持折叠。
 
 改动跨文件按顺序计数：一个文件的改动是第 `firstHunk` 到第 `firstHunk + hunks - 1` 处，`goToHunk`、`renderHunkActions` 和 `hunks()` 都用这个序号（`DiffHunk` 的 `file` 是它所在文件的序号，它的行号在该文件中计数），`stats()` 是所有文件之和。`goToHunk` 会先展开已折叠的文件。
 
@@ -167,7 +167,7 @@ let diff!: DiffViewRef;
 
 ## 保留和撤销改动
 
-`renderHunkActions` 把应用的操作放在视野中每处改动的右上角，并告诉它这处改动（`DiffHunk`：`index`、`oldStart`、`oldLines`、`newStart`、`newLines`，行号从 0 开始；以及 `file`，补丁中它所在文件的序号）。这些操作调用 ref：`revertHunk(index)` 把这处改动的旧行放回新文本，`acceptHunk(index)` 让它的新行成为旧文本的内容。视图立即显示结果，并用 `onChange({ oldValue, newValue })` 报告两段文本，由应用把它们设为属性。逐处保留或撤销 AI 的修改就是这样：
+`renderHunkActions` 把应用的操作放在视野中每处改动的右上角，并告诉它这处改动（`DiffHunk`：`index`、`oldStart`、`oldLines`、`newStart`、`newLines`，行号从 0 开始；以及 `file`，补丁中它所在文件的序号）。这些操作调用 ref：`revertHunk(index)` 把这处改动的旧行放回新文本，`acceptHunk(index)` 让它的新行成为旧文本的内容。视图立即显示结果，并用 `onChange({ change })`（`{ oldValue, newValue }`）报告两段文本，由应用把它们设为属性。逐处保留或撤销 AI 的修改就是这样：
 
 ```tsx
 import { signal, Text, View } from "nsh";
@@ -184,7 +184,7 @@ function Proposal(props: { file: string; current: string; proposed: string; onAp
         oldValue={current()}
         newValue={proposed()}
         language={props.file}
-        onChange={({ oldValue, newValue }) => {
+        onChange={({ change: { oldValue, newValue } }) => {
           current.set(oldValue);
           proposed.set(newValue);
           props.onApply(oldValue);
@@ -249,14 +249,14 @@ const stats = signal<DiffStats>({ added: 0, deleted: 0, hunks: 0 });
   <Button onPress={() => diff.previousHunk()}><Text>Previous</Text></Button>
   <Button onPress={() => diff.nextHunk()}><Text>Next</Text></Button>
 </View>
-<DiffView ref={diff} oldValue={before()} newValue={after()} onStatsChange={(s) => stats.set(s)} class="flex-1" />
+<DiffView ref={diff} oldValue={before()} newValue={after()} onStatsChange={(e) => stats.set(e.stats)} class="flex-1" />
 ```
 
 <a id="review-comments"></a>
 
 ## 评审评论
 
-行号用来选中一侧的行：点击选中一行，按住 Shift 点击把选区扩展到这一行，用鼠标在行号上拖动选中经过的各行。`onLineSelectionChange` 报告选中的行（`DiffLineRange`：`{ side, start, end }`，行号从 0 开始，没有选中时为 `null`），点击行号还会报告 `onLineNumberPress({ side, line })`。ref 读取选区（`selectedLines()`、`selectedText()`）并可以设置它。
+行号用来选中一侧的行：点击选中一行，按住 Shift 点击把选区扩展到这一行，用鼠标在行号上拖动选中经过的各行。`onLineSelectionChange` 以 `range` 报告选中的行（`DiffLineRange`：`{ side, start, end }`，行号从 0 开始，没有选中时为 `null`），点击行号还会报告 `onLineNumberPress({ line })`（`{ side, line }`）。ref 读取选区（`selectedLines()`、`selectedText()`）并可以设置它。
 
 `annotations` 把应用的内容放在行的下方：每个 `{ id, side, line }` 由 `renderAnnotation` 绘制，横跨所在行的一侧（合并显示时横跨整个视图），高度就是它布局后的高度，所在的行显示时它也显示。`renderAddAnnotation` 是应用用来添加批注的控件，显示在指针所在行和最后一个选中行的行号栏右侧；所在行被选中时它拿到选中的各行，否则拿到这一行。
 
@@ -367,11 +367,11 @@ const drafting = signal<DiffLineRange | null>(null);
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onChange` | `.on_change(\|change: &DiffChange\| ..)` | 一处改动被保留或撤销：`{ oldValue, newValue }`，现在的两段文本。 |
-| `onLineNumberPress` | `.on_line_number_press(\|line: &DiffLine\| ..)` | 行号被点击：`{ side, line }`。 |
-| `onLineSelectionChange` | `.on_line_selection_change(\|range: &Option<DiffLineRange>\| ..)` | 选中的行变了：`{ side, start, end }`，或 `null`。 |
-| `onStatsChange` | `.on_stats_change(\|stats: &DiffStats\| ..)` | 统计数字变了：`{ added, deleted, hunks }`。视图创建时触发一次，之后每次比较文本得到不同的数字时再触发，用于显示“+8 −8 · 5 处改动”这样的一行。 |
-| `onFileToggle` | `.on_file_toggle(\|file: &DiffFile\| ..)` | 补丁中的一个文件被折叠或展开（通过它的标题或 ref）：现在的 `DiffFile`。 |
+| `onChange` | `.on_change(\|change: &DiffChange\| ..)` | 一处改动被保留或撤销：`{ change }`，现在的两段文本（`{ oldValue, newValue }`）。 |
+| `onLineNumberPress` | `.on_line_number_press(\|line: &DiffLine\| ..)` | 行号被点击：`{ line }`，一个 `{ side, line }`。 |
+| `onLineSelectionChange` | `.on_line_selection_change(\|range: &Option<DiffLineRange>\| ..)` | 选中的行变了：`{ range }`，一个 `{ side, start, end }` 或 `null`。 |
+| `onStatsChange` | `.on_stats_change(\|stats: &DiffStats\| ..)` | 统计数字变了：`{ stats }`，一个 `{ added, deleted, hunks }`。视图创建时触发一次，之后每次比较文本得到不同的数字时再触发，用于显示“+8 −8 · 5 处改动”这样的一行。 |
+| `onFileToggle` | `.on_file_toggle(\|file: &DiffFile\| ..)` | 补丁中的一个文件被折叠或展开（通过它的标题或 ref）：`{ file }`，现在的 `DiffFile`。 |
 
 <a id="related"></a>
 

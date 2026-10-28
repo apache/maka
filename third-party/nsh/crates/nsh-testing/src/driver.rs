@@ -26,7 +26,26 @@ pub(crate) trait Driver: Send {
     fn clear(&mut self, selector: &str) -> Result<(), String>;
     fn scroll(&mut self, selector: &str, distance: Points) -> Result<(), String>;
     fn drag(&mut self, selector: &str, by: Point<Points>) -> Result<(), String>;
+    /// Drops local files (`file:` URLs) on what `selector` names.
+    fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
+        let _ = (selector, uris);
+        Err("`dropFiles` runs headless and on Linux for now".into())
+    }
+    /// Drags without lifting, until [`Driver::drop_held`].
+    fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
+        let _ = (selector, by);
+        Err("`dragAndHold` runs headless and on Linux for now".into())
+    }
+    /// Lifts the finger `drag_and_hold` left down.
+    fn drop_held(&mut self) -> Result<(), String> {
+        Err("`drop` runs headless and on Linux for now".into())
+    }
     fn press_key(&mut self, keys: &str) -> Result<(), String>;
+    /// Holds (`down`) or lets go of modifier keys for the pointer's steps.
+    fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
+        let _ = (keys, down);
+        Err("holding keys (`keyboard.down` / `keyboard.up`) runs headless only for now: run the test without `--target`".into())
+    }
     fn hover(&mut self, selector: &str) -> Result<(), String>;
     fn right_click(&mut self, selector: &str) -> Result<(), String>;
     /// Pastes `content` into the input `selector` names, as the user's
@@ -110,6 +129,18 @@ impl Driver for Headless {
     }
     fn drag(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
         Headless::drag(self, selector, by)
+    }
+    fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
+        Headless::hold_keys(self, keys, down)
+    }
+    fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
+        Headless::drag_and_hold(self, selector, by)
+    }
+    fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
+        Headless::drop_files(self, selector, uris)
+    }
+    fn drop_held(&mut self) -> Result<(), String> {
+        Headless::drop_held(self)
     }
     fn press_key(&mut self, keys: &str) -> Result<(), String> {
         Headless::press_key(self, keys)
@@ -412,6 +443,28 @@ impl Driver for Remote {
     fn press_key(&mut self, keys: &str) -> Result<(), String> {
         self.action(TestStep::PressKey { keys: keys.into() })
     }
+    fn drag_and_hold(&mut self, selector: &str, by: Point<Points>) -> Result<(), String> {
+        self.action(TestStep::DragAndHold {
+            selector: selector.into(),
+            x: by.x.0,
+            y: by.y.0,
+        })
+    }
+    fn drop_held(&mut self) -> Result<(), String> {
+        self.action(TestStep::Drop)
+    }
+    fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
+        self.action(TestStep::DropFiles {
+            selector: selector.into(),
+            uris,
+        })
+    }
+    fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
+        self.action(TestStep::HoldKeys {
+            keys: keys.into(),
+            down,
+        })
+    }
     fn hover(&mut self, selector: &str) -> Result<(), String> {
         self.action(TestStep::Hover {
             selector: selector.into(),
@@ -532,8 +585,26 @@ impl Driver for Remote {
             selector: selector.into(),
         })
     }
-    fn span_style(&mut self, _: &str) -> Result<ResolvedTextStyle, String> {
-        Err(headless_only("Reading a span's style (`app.spanStyle`)"))
+    fn span_style(&mut self, selector: &str) -> Result<ResolvedTextStyle, String> {
+        let span: nsh_dev::protocol::SpanStyle = self.query(TestStep::SpanStyle {
+            selector: selector.into(),
+        })?;
+        Ok(ResolvedTextStyle {
+            color: nsh_core::Color(span.color),
+            font_size: nsh_core::Points(span.font_size),
+            font_weight: span.font_weight,
+            italic: span.italic,
+            decoration: nsh_core::TextDecoration {
+                underline: span.underline,
+                line_through: span.line_through,
+            },
+            background: span.background.map(|color| nsh_core::TextBackground {
+                color: nsh_core::Color(color),
+                radius: nsh_core::Points::ZERO,
+                node: 0,
+            }),
+            ..ResolvedTextStyle::default()
+        })
     }
     fn dialogs(&mut self) -> Result<Vec<Dialog>, String> {
         self.query(TestStep::Dialogs)

@@ -267,7 +267,7 @@ function Overview() {
   return (
     <View class="gap-2 p-4">
       <Text>Balance: {balance()}</Text>
-      <Chart symbol="NSH" range="1M" onSelect={(price) => balance.set(ledger.add(price))} />
+      <Chart symbol="NSH" range="1M" onSelect={(e) => balance.set(ledger.add(e.price))} />
       <View onPress={() => ledger.upload("https://example.com/ledger")} role="button" class="rounded-lg bg-blue-600 px-4 py-2 active:bg-blue-700">
         <Text class="text-white">Upload</Text>
       </View>
@@ -320,8 +320,9 @@ returning a value gives `Promise<T>`. Arguments and results are typed from the s
 `#[derive(JsObject)]` structs and `#[derive(PropEnum)]` enums, instances of your classes, and TSX functions
 (`Callback<A, R>`, which Rust calls at once inside a call, or later with `post` and `call_async`; TS sees
 `(value: number) => void` for a `Callback<f64>`, and `#[args(balance)] listener: Callback<f64>` names the argument,
-`(balance: number) => void`). An event's handler argument is `value` too, and `#[args(index)]` on the event's
-variant names it. An argument of
+`(balance: number) => void`). An event's handler gets one object: a variant's value is its field `value`, which
+`#[args(price)]` on the variant names (`onSelect({ price })`), and `#[args(open, reason)]` names the fields of a
+variant of several. An argument of
 the wrong type throws a `TypeError` in the call, or rejects the Promise of one that returns a Promise; an `Err`
 throws (or rejects) with its message. A class's object owns its Rust value: it is freed when the object is collected, or at
 once with `ledger.dispose()` (also `using ledger = new Ledger()`). Name the TSX entry to run it, `nsh run App.tsx` or `nsh package App.tsx --target …`: TSX edits are hot

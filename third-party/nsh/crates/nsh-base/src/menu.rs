@@ -459,7 +459,7 @@ pub fn MenuItem(props: MenuItemProps, cx: Scope<MenuItemEvent>) -> impl IntoElem
             v.style_when(move || !m.shown(), |s| s.hidden())
         })
         // Over another item, a submenu of its level closes.
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             if let Some(m) = &hover {
                 m.open_sub.set(None);
             }
@@ -583,7 +583,7 @@ pub fn Submenu(props: SubmenuProps, cx: Scope<NoEvent>) -> impl IntoElement {
                     expanded: Some(open_sub.get() == Some(id)),
                     ..AccessibilityState::default()
                 })
-                .on_hover_in(open)
+                .on_mouse_enter(move |_: &MouseEvent| open())
                 .on_press(open)
         }))
         .child(when(

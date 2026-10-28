@@ -1209,6 +1209,7 @@ export const conversationMessages = {
   'Tool failed': ['Tool failed', '工具失败', '工具失敗'],
   Trajectory: ['Trajectory', '执行过程', '執行過程'],
   'Turn activity': ['Turn activity', '轮次活动', '輪次活動'],
+  'Turn finished': ['Turn finished', '本轮已结束', '本輪已結束'],
   'Turn landmarks changed their requested fence.': [
     'Turn landmarks changed their requested fence.',
     '轮次定位的请求边界已变化。',

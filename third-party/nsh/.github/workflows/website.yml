@@ -74,6 +74,12 @@ jobs:
       - name: Test browser scroll indicator behavior
         run: node --test crates/nsh-platform-web/web/scroll.test.mjs
 
+      - name: Test the player's dialogs, input and host channel
+        run: node --test crates/nsh-platform-web/web/nsh.test.mjs
+
+      - name: Test viewport dialogs across iframe boundaries
+        run: node --test crates/nsh-platform-web/web/viewport-browser.test.mjs
+
       - name: Test browser JavaScript bindings against Wasm
         env:
           AR_wasm32_unknown_unknown: llvm-ar

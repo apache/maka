@@ -1298,10 +1298,12 @@ unsafe extern "C" fn canvas_layout(
             qjs::JS_FreeValue(cx, v);
             n
         };
-        // `e` is the view's `Bounds`.
-        let bounds_size = qjs::JS_GetPropertyStr(cx, e, c"size".as_ptr());
+        // `e` is `onLayout`'s `{ bounds }`.
+        let bounds = qjs::JS_GetPropertyStr(cx, e, c"bounds".as_ptr());
+        let bounds_size = qjs::JS_GetPropertyStr(cx, bounds, c"size".as_ptr());
         let (w, h) = (field(bounds_size, c"width"), field(bounds_size, c"height"));
         qjs::JS_FreeValue(cx, bounds_size);
+        qjs::JS_FreeValue(cx, bounds);
         let current = reactive::peek(cx, size);
         let same = qjs::JS_IsObject(current)
             && field(current, c"width") == w
@@ -1435,7 +1437,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         Export::Function(canvas, 1),
         Ts::function(
             "A view drawn with a 2D context (HTML Canvas 2D API). `draw` records the\ndrawing in one go; the platform replays it natively (CGContext, Android\nCanvas), at the screen's resolution.",
-            &["(props: CanvasProps): YNode"],
+            &["(props: CanvasProps): JSX.Element"],
         ),
     ),
     (

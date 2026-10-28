@@ -1179,14 +1179,16 @@ extern "system" fn Java_com_longbridge_nsh_Native_event(
     }
 }
 
-/// `onHoverMove` of view `id` (see `Native.hover`).
+/// A mouse event of view `id` (see `Native.mouse`): `onMouseEnter`,
+/// `onMouseMove` or `onMouseLeave`.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-extern "system" fn Java_com_longbridge_nsh_Native_hover(
+extern "system" fn Java_com_longbridge_nsh_Native_mouse(
     _: JNIEnv<'_>,
     _: JClass<'_>,
     handle: jlong,
     id: jint,
+    kind: jint,
     x: jfloat,
     y: jfloat,
     page_x: jfloat,
@@ -1195,22 +1197,29 @@ extern "system" fn Java_com_longbridge_nsh_Native_hover(
 ) {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
-    let event = nsh_core::HoverEvent {
-        position: point(px(x), px(y)),
-        page_position: point(px(page_x), px(page_y)),
-        modifiers: nsh_core::keymap::Modifiers {
-            ctrl: modifiers & 1 != 0,
-            alt: modifiers & 2 != 0,
-            shift: modifiers & 4 != 0,
-            cmd: modifiers & 8 != 0,
-        },
+    let Some(kind) = encode::kind_from(kind).filter(|k| {
+        matches!(
+            k,
+            EventKind::MouseEnter | EventKind::MouseMove | EventKind::MouseLeave
+        )
+    }) else {
+        return;
     };
+    let modifiers = nsh_core::keymap::Modifiers {
+        ctrl: modifiers & 1 != 0,
+        alt: modifiers & 2 != 0,
+        shift: modifiers & 4 != 0,
+        cmd: modifiers & 8 != 0,
+    };
+    // Android's hover events only come with no button down.
+    let event = nsh_core::MouseEvent::new(
+        point(px(x), px(y)),
+        point(px(page_x), px(page_y)),
+        modifiers,
+        None,
+    );
     if let Some(control) = host.control() {
-        control.dispatch_event(
-            id as NodeId,
-            EventKind::HoverMove,
-            EventPayload::Hover(event),
-        );
+        control.dispatch_event(id as NodeId, kind, EventPayload::Mouse(event));
     }
 }
 
@@ -1653,6 +1662,33 @@ extern "system" fn Java_com_longbridge_nsh_Native_scroll(
     floats(&env, &ui.outputs())
 }
 
+/// A multiline input's text scrolled, or its text or size changed, while a
+/// built-in bar replaces its indicator (`InputConfig::replaced`): the engine
+/// learns the offset, the text's size and the viewport's (points).
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_inputScroll(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    id: jint,
+    y: jfloat,
+    content_width: jfloat,
+    content_height: jfloat,
+    width: jfloat,
+    height: jfloat,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    if let Some(control) = host.control() {
+        control.input_scroll(
+            id as NodeId,
+            point(px(0.0), px(y)),
+            size(px(content_width), px(content_height)),
+            size(px(width), px(height)),
+        );
+    }
+}
+
 /// A vertical scroll view is pulled `distance` (points) past its top: its
 /// pull value learns it. Returns bound values when one changed, else null.
 #[unsafe(no_mangle)]
@@ -1862,7 +1898,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_states(
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
     if let Some(control) = host.control() {
-        control.set_states(id as u32, states as u8);
+        control.set_states(id as u32, states as u16);
     }
 }
 

@@ -21,7 +21,7 @@ import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
-import type { ViewStyle, YNode } from 'nsh';
+import type { ListRef, ViewStyle } from 'nsh';
 import { keymap } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { windowSize } from 'nsh';
@@ -72,7 +72,7 @@ export function Palette(props: {
   const index = () => Math.min(selected(), Math.max(0, matches().length - 1));
   const byId = computed(() => new Map(matches().map((entry) => [entry.id, entry])));
   const ids = computed(() => matches().map((entry) => entry.id));
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   const move = (delta: number) => {
     const next = Math.max(0, Math.min(matches().length - 1, index() + delta));
     selected.set(next);
@@ -152,7 +152,7 @@ export function Palette(props: {
           accessibilityLabel={tr('Search commands')}
           autoFocus
           value={query()}
-          onChange={(text) => {
+          onChange={({ value: text }) => {
             selected.set(0);
             query.set(text);
             list?.scrollToIndex({ index: 0, animated: false });

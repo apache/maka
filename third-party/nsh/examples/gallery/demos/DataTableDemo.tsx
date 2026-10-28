@@ -326,13 +326,13 @@ export function DataTableDemo() {
         rowHeader={false}
         cellSelectable={mode() === "cell"}
         sort={sort()}
-        onSortChange={(next) => {
+        onSortChange={({ sort: next }) => {
           sort.set(next ?? undefined);
           quotes.clear();
           serve(true);
         }}
-        onSelectionChange={(next) => selection.set(next)}
-        onVisibleRowsChange={(range) => {
+        onSelectionChange={({ selection: next }) => selection.set(next)}
+        onVisibleRowsChange={({ range }) => {
           visible.set(range);
           around = range;
           follow();

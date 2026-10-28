@@ -61,7 +61,7 @@ view()
 
 ### 角色
 
-角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如选择框弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出）。
+角色（`.role(AccessibilityRole::Header)`、`role="header"`）告诉用户这是哪一类元素、如何操作。在 Rust 中它是 `AccessibilityRole` 的一个变体（`Button`、`Header`、`Switch` 等）；TSX 的取值有 `"none"`、`"button"`、`"link"`、`"search"`、`"image"`、`"imagebutton"`、`"keyboardkey"`、`"text"`、`"adjustable"`、`"header"`、`"summary"`、`"alert"`、`"checkbox"`、`"combobox"`、`"menu"`、`"menubar"`、`"menuitem"`、`"progressbar"`、`"radio"`、`"radiogroup"`、`"scrollbar"`、`"spinbutton"`、`"switch"`、`"tab"`、`"tablist"`、`"timer"`、`"toolbar"`、`"list"`、`"grid"`、`"table"`、`"rowgroup"`、`"row"`、`"columnheader"`、`"cell"`（[`Table`](../elements/table.md) 各部件的角色），以及 `"listbox"` 和 `"option"`（一组可供选择的选项，例如 [`Select`](../elements/select.md) 弹出的列表，及其中的选项，选中的那项由 `accessibilityState.selected` 标出）。
 
 最常用的几个：
 
@@ -69,6 +69,7 @@ view()
 - `"header"` 用于分区标题：屏幕阅读器用户会在标题之间跳转来快速浏览页面。
 - `"switch"`、`"checkbox"`、`"radio"` 配合 `accessibilityState.checked`。
 - `"adjustable"` 用于滑块和步进器，配合 `accessibilityValue` 以及 `increment` / `decrement` 操作（[`Slider`](../elements/slider.md) 的每个滑块都是）。
+- `"spinbutton"` 用于存放一个数字、也能步进的输入框，配合同样的值和操作（[`NumberInput`](../elements/number-input.md) 的输入框）。
 - `"image"` 用于有意义的图片，并加上标签；装饰性图片应当隐藏。
 
 ```rust tabs
@@ -249,12 +250,12 @@ fn upload() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { signal, Text, View, type YNode } from "nsh";
+import { signal, Text, View, type ViewRef } from "nsh";
 import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 
 function Upload() {
   const done = signal(false);
-  let result!: YNode;
+  let result!: ViewRef;
   const finish = () => {
     done.set(true);
     announce("Upload complete");

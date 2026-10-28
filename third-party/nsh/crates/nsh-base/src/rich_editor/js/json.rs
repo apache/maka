@@ -28,7 +28,7 @@ fn declare_all(types: &mut TsTypes) {
             .into()
     });
     types.declare("RichSelectionJSON", |_| {
-        "/** A selection in ProseMirror's JSON shape (`{ type: \"text\", anchor, head }`, `{ type: \"node\", anchor }`, `{ type: \"all\" }`, or a custom kind's). */\n\
+        "/** A selection in ProseMirror's JSON shape (`{ type: \"text\", anchor, head }`, `{ type: \"node\", anchor }`, `{ type: \"all\" }`, a table's cells `{ type: \"cell\", anchor, head }` (the positions before the anchor and head cells), or a custom kind's). */\n\
          export interface RichSelectionJSON {\n  \
          /** Its kind: `\"text\"`, `\"node\"`, `\"all\"` or a custom kind's id. */\n  type: string;\n  \
          /** Where it starts: the fixed end. */\n  anchor?: number;\n  \

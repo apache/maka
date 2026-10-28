@@ -71,7 +71,7 @@ function Example() {
       <Button onPress={() => open.set(true)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
         <Text class="font-semibold text-white">Open</Text>
       </Button>
-      <Dialog open={open()} presentation="pageSheet" onOpenChange={(next) => open.set(next)} class="flex-1 bg-white">
+      <Dialog open={open()} presentation="pageSheet" onOpenChange={(e) => open.set(e.open)} class="flex-1 bg-white">
         <View
           style={{
             flex: 1,
@@ -115,7 +115,7 @@ and the explicit import takes its place. For the system's alert or action sheet,
 | `onOpen` | `.on_open(..)` | `() => void` | | It finished appearing. |
 | `onClose` | `.on_close(..)` | `() => void` | | It went away: the user closed it, or the app removed it. |
 | `onCancel` | `.on_cancel(..)` | `() => void` | | The user tried to close it (Escape, back, a backdrop press, a swipe down), whether or not a `closeOn*` flag let it close. |
-| `onOpenChange` | `.on_cancel(..)` | `(open: boolean, reason: "cancel" \| "backdropPress" \| "swipe") => void` | | The user closed it: keep `open` in sync here. In Rust, `on_cancel` removes the dialog from the view. |
+| `onOpenChange` | `.on_cancel(..)` | `(e: { open: boolean; reason: "cancel" \| "backdropPress" \| "swipe" }) => void` | | The user closed it: keep `open` in sync here. In Rust, `on_cancel` removes the dialog from the view. |
 | `class`, `style` | `Styled` methods | `string`, `StyleProp<ViewStyle>` | | The popup: the view holding the children. |
 | `backdropClass`, `backdropStyle` | a child view filling the dialog | `string`, `StyleProp<ViewStyle>` | | A backdrop filling the dialog behind the popup, present when either is set. |
 | `children` | `.child(..)` | `JSX.Element` | | The content. |
@@ -132,7 +132,7 @@ and the explicit import takes its place. For the system's alert or action sheet,
 
 The dialog's state is the app's. When the user closes the dialog (Escape, the Android back button, a press on the
 backdrop, a sheet swiped down), it closes natively and tells the app, which sets its state to match: TSX's
-`onOpenChange(false, reason)`, Rust's `on_cancel`. In TSX, while `open` stays `true` the dialog stays closed, and it
+`onOpenChange({ open: false, reason })`, Rust's `on_cancel`. In TSX, while `open` stays `true` the dialog stays closed, and it
 opens again when `open` goes from `false` to `true`.
 
 Each `closeOn*` flag is read natively when the user acts, since the main thread never waits for the app's code. To
@@ -214,7 +214,7 @@ when(confirm, move || {
 <Dialog
   open={confirm()}
   animation="fade"
-  onOpenChange={(next) => confirm.set(next)}
+  onOpenChange={({ open }) => confirm.set(open)}
   backdropClass="bg-black/40"
   class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
 >

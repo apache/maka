@@ -170,16 +170,22 @@ event id:press onPressDown
 expect Press: in
 event id:press onPressUp
 expect Press: in out
-# The mouse comes over, moves with Shift and Command held, and leaves.
-listens id:hover onHoverIn
-event id:hover onHoverIn
-expect Hover: in
-event id:hover onHoverMove position.x=5 position.y=7 modifiers.shift=true modifiers.platform=true
+# The mouse comes over, moves with Shift and Command held, then with
+# Option and Control, drags with the left button down (positions in the
+# view, fractions and outside it too), and leaves from where it was.
+listens id:hover onMouseEnter
+event id:hover onMouseEnter position.x=0 position.y=3
+expect Hover: in 0,3
+event id:hover onMouseMove position.x=5 position.y=7 modifiers.shift=true modifiers.platform=true
 expect Hover: move 5,7 page 25,128 meta shift
-event id:hover onHoverMove position.x=6 position.y=1 modifiers.alt=true modifiers.control=true
+event id:hover onMouseMove position.x=6 position.y=1 modifiers.alt=true modifiers.control=true
 expect Hover: move 6,1 page 26,122 alt ctrl
-event id:hover onHoverOut
-expect Hover: move 6,1 page 26,122 alt ctrl out
+event id:hover onMouseMove position.x=5.5 position.y=7.25 pressedButton=left
+expect Hover: move 5.5,7.25 page 25.5,128.25 left down
+event id:hover onMouseMove position.x=-2 position.y=0 pressedButton=left
+expect Hover: move -2,0 page 18,121 left down
+event id:hover onMouseLeave position.x=-2 position.y=0
+expect Hover: move -2,0 page 18,121 left down out -2,0
 # Files dragged over, away, back and dropped.
 event id:drop onFileDragEnter
 expect Drop: enter
@@ -201,9 +207,9 @@ event id:key-focus onBlur
 expect Key focus: focused blurred
 covers [events] onPressDown
 covers [events] onPressUp
-covers [events] onHoverIn
-covers [events] onHoverMove
-covers [events] onHoverOut
+covers [events] onMouseEnter
+covers [events] onMouseMove
+covers [events] onMouseLeave
 covers [events] onFileDragEnter
 covers [events] onFileDragLeave
 covers [events] onFileDrop
@@ -296,12 +302,3 @@ expect Committed: 腾
 event id:compose onCompositionChange composing=false text=""
 expect Composition: ended []
 covers [events] onCompositionChange
-
-# Mouse motion uses view-local coordinates, including negative positions.
-tap id:case-events-pointer
-listens id:hover onMouseMove
-event id:hover onMouseMove x=5.5 y=7.25
-expect Mouse: 5.5,7.25
-event id:hover onMouseMove x=-2 y=0
-expect Mouse: -2,0
-covers [events] onMouseMove

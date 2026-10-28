@@ -9,7 +9,7 @@ import type { App } from "nsh/test";
 let app: App;
 beforeEach(async () => {
   app = await open("../App.tsx", { clock: {} });
-  await app.press("role:button[Menus]");
+  await app.press("role:button[Menu]");
   await app.waitFor("Menu bar");
 });
 

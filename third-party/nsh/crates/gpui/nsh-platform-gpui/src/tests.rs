@@ -78,7 +78,7 @@ function App() {
     <View style={{ flex: 1, padding: 8 }}>
       <Image
         src="asset:/same-preview.png"
-        onLoad={(e) => loaded.set(`${label}|${policy}|${e.width}x${e.height}`)}
+        onLoad={(e) => loaded.set(`${label}|${policy}|${e.size.width}x${e.size.height}`)}
         onError={(e) => loaded.set(e.message)}
         style={{ width: 32, height: 32 }}
       />
@@ -135,10 +135,10 @@ function App() {
       <Button testID="b" ref={(node) => b = node} onPress={() => record("B")}><Text>B</Text></Button>
       <Button testID="opener" onPress={() => { record("open"); open.set(true); }}><Text>Open dialog</Text></Button>
       <Dialog open={open()} animation="none" onOpen={() => record("shown")}
-        onClose={() => record("closed")} onOpenChange={(next) => open.set(next)}>
+        onClose={() => record("closed")} onOpenChange={({ open: next }) => open.set(next)}>
         <Button testID="modal" onPress={() => record("modal")}><Text>Modal action</Text></Button>
       </Dialog>
-      <Popover open={popup()} onOpenChange={(next) => popup.set(next)}>
+      <Popover open={popup()} onOpenChange={({ open: next }) => popup.set(next)}>
         <Button testID="popup-action" onPress={() => {}}><Text>Popup action</Text></Button>
       </Popover>
     </View>
@@ -254,7 +254,7 @@ function App() {
   return (
     <View style={{ flex: 1, padding: 8, gap: 8 }}>
       <Square style={{ width: 40, height: 20 }} />
-      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -277,7 +277,7 @@ function App() {
       <Input
         autoFocus
         value={text()}
-        onChange={(t) => {
+        onChange={({ value: t }) => {
           log.push("change " + t);
           text.set(t);
         }}
@@ -391,6 +391,7 @@ fn windows(cx: &mut TestAppContext) {
     presses_carry_where_the_pointer_was(cx);
     files_dropped_from_outside_reach_the_view_under_them(cx);
     presses_carry_the_modifier_keys_and_click_count(cx);
+    mouse_events_carry_the_position_button_and_modifiers(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
     configured_assets_stay_with_their_original_load(cx);
@@ -422,7 +423,7 @@ mount(() => <View>
     pasteBehavior={behavior()} readonly={readonly()}
     onFileDrop={() => {}}
     onPaste={(event) => pastes.set([...pastes(), event.uris.length ? event.uris.join(";") : event.text])}
-    onChange={(text) => value.set(text)} style={{ height: 160 }} />
+    onChange={({ value: text }) => value.set(text)} style={{ height: 160 }} />
   <Input testID="report" readonly value={`${behavior()}|${readonly()}|${pastes().join(",")}`}
     style={{ height: 30 }} />
 </View>);
@@ -1109,7 +1110,7 @@ import { keymap } from "nsh";
 function App() {
   const text = signal("");
   keymap.bind("shift+=", () => text.set("shortcut"), { when: "always" });
-  return <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />;
+  return <Input autoFocus value={text()} onChange={({ value: t }) => text.set(t)} style={{ height: 30 }} />;
 }
 mount(App);
 "#;
@@ -1222,13 +1223,14 @@ fn an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx: &mut 
 /// focus the second. Text typed before the engine has handled that key
 /// belongs to the second field.
 const TWO_FIELDS: &str = r#"
-import { keymap, mount, signal, View, type YNode } from "nsh";
+import { keymap, mount, signal, View, type InputRef, type ViewRef } from "nsh";
 import { Input } from "nsh/base";
 
 function App() {
   const first = signal("A");
   const second = signal("");
-  let next!: YNode, outside!: YNode;
+  let next!: InputRef;
+  let outside!: ViewRef;
   const go = () => next.focus();
   keymap.bind("mod+n", go, { when: "always" });
   keymap.bind("mod+k", () => second.set(second() + "!"), { when: "always" });
@@ -1238,12 +1240,12 @@ function App() {
       <Input
         autoFocus
         value={first()}
-        onChange={(t) => first.set(t)}
+        onChange={({ value }) => first.set(value)}
         onSubmit={go}
         submitBehavior="submit"
         style={{ height: 30 }}
       />
-      <Input ref={next} value={second()} onChange={(t) => second.set(t)} style={{ height: 30 }} />
+      <Input ref={next} value={second()} onChange={({ value }) => second.set(value)} style={{ height: 30 }} />
       <Input testID="report" readonly focusable={false} value={second()} style={{ height: 30 }} />
       <View ref={outside} testID="outside" focusable style={{ height: 30 }} />
     </View>
@@ -1641,7 +1643,7 @@ function App() {
   setTimeout(async () => text.set(`${Whose.now()} ${await Whose.later()}`), 0);
   return (
     <View style={{ flex: 1 }}>
-      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -2085,7 +2087,7 @@ function App() {
     },
   ]);
   return (
-    <View style={{ flex: 1 }} onLayout={(e) => height.set(Math.round(e.size.height))}>
+    <View style={{ flex: 1 }} onLayout={({ bounds }) => height.set(Math.round(bounds.size.height))}>
       <Input autoFocus value={`h ${height()}${chosen()}`} style={{ height: 30 }} />
     </View>
   );
@@ -2106,7 +2108,7 @@ fn an_embedded_view_that_owns_its_window_sets_its_title_and_menu(cx: &mut TestAp
         r#"{OWNED_WINDOW}
 import {{ keymap, setColorScheme }} from "nsh";
 keymap.bind("mod+t", () => {{
-  Window.setTitleBar("hidden", 48);
+  Window.setTitleBar({{ style: "hidden", height: 48 }});
   Window.setMenuBar("autoHide");
   setColorScheme("dark");
   void Menu.popup([{{ label: "Retired popup", onSelect: () => {{}} }}]);
@@ -2301,7 +2303,7 @@ function App() {
     { label: "File", submenu: [{ label: "New", onSelect: () => chosen.set(" new") }] },
   ]);
   return (
-    <View style={{ flex: 1 }} onLayout={(e) => height.set(Math.round(e.size.height))}>
+    <View style={{ flex: 1 }} onLayout={({ bounds }) => height.set(Math.round(bounds.size.height))}>
       <Input autoFocus value={`h ${height()}${chosen()}`} style={{ height: 30 }} />
     </View>
   );
@@ -2375,17 +2377,17 @@ function App() {
     <View style={{ flex: 1 }}>
       <Image
         src="asset:/app.png"
-        onLoad={(e) => report("app", `${e.width}x${e.height}`)}
+        onLoad={({ size }) => report("app", `${size.width}x${size.height}`)}
         onError={(e) => report("app", e.message)}
         style={{ width: 10, height: 10 }}
       />
       <Image
         src="asset:/bytes/cover.png"
-        onLoad={(e) => report("cover", `${e.width}x${e.height}`)}
+        onLoad={({ size }) => report("cover", `${size.width}x${size.height}`)}
         onError={(e) => report("cover", e.message)}
         style={{ width: 10, height: 10 }}
       />
-      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -2477,7 +2479,7 @@ function App() {
         autoFocus
         submitBehavior="submit"
         value={text()}
-        onChange={(t) => text.set(t)}
+        onChange={({ value }) => text.set(value)}
         style={{ height: 30 }}
       />
     </View>
@@ -2566,7 +2568,7 @@ function App() {
         }
         style={{ height: 40 }}
       />
-      <Input testID="report" autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input testID="report" autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -2594,6 +2596,83 @@ fn presses_carry_the_modifier_keys_and_click_count(cx: &mut TestAppContext) {
         &view,
         cx,
         "ctrl false shift false alt false meta false clicks 2",
+    );
+}
+
+/// A pad 100 × 40 at (10, 10) over a focused field that shows the pad's
+/// last `onMouseEnter`, `onMouseMove` and `onMouseLeave`: where the mouse
+/// was in the pad and the window, the button held and Shift.
+const MOUSE_EVENTS: &str = r#"
+import { mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+
+const show = (name, e) =>
+  `${name} ${Math.round(e.position.x)} ${Math.round(e.position.y)} in ${Math.round(e.pagePosition.x)} ${Math.round(e.pagePosition.y)} ${e.pressedButton} ${e.modifiers.shift}`;
+
+function App() {
+  const enter = signal("-");
+  const move = signal("-");
+  const leave = signal("-");
+  return (
+    <View style={{ flex: 1 }}>
+      <View
+        onMouseEnter={(e) => enter.set(show("enter", e))}
+        onMouseMove={(e) => move.set(show("move", e))}
+        onMouseLeave={(e) => leave.set(show("leave", e))}
+        style={{ marginLeft: 10, marginTop: 10, width: 100, height: 40 }}
+      />
+      <Input autoFocus value={`${enter()} | ${move()} | ${leave()}`} style={{ height: 30 }} />
+    </View>
+  );
+}
+mount(App);
+"#;
+
+fn mouse_events_carry_the_position_button_and_modifiers(cx: &mut TestAppContext) {
+    let code = nsh_bundler::compile_module("App.tsx", MOUSE_EVENTS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "- | - | -");
+    let none = gpui::Modifiers::default();
+    // The move that brings the mouse in enters the pad and moves over it.
+    cx.simulate_mouse_move(gpui::point(gpui::px(30.0), gpui::px(25.0)), None, none);
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 20 15 in 30 25 null false | -",
+    );
+    // Moves with a button down are moves too, with the button.
+    cx.simulate_mouse_move(
+        gpui::point(gpui::px(40.0), gpui::px(30.0)),
+        gpui::MouseButton::Left,
+        none,
+    );
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 30 20 in 40 30 left false | -",
+    );
+    cx.simulate_mouse_move(gpui::point(gpui::px(50.0), gpui::px(30.0)), None, none);
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 40 20 in 50 30 null false | -",
+    );
+    // A modifier key changing while the mouse rests is a move where it is.
+    cx.simulate_modifiers_change(gpui::Modifiers::shift());
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 40 20 in 50 30 null true | -",
+    );
+    cx.simulate_modifiers_change(none);
+    cx.simulate_mouse_move(gpui::point(gpui::px(120.0), gpui::px(30.0)), None, none);
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 40 20 in 50 30 null false | leave 110 20 in 120 30 null false",
     );
 }
 

@@ -7,8 +7,8 @@
 //!
 //! ```tsx
 //! <ResizablePanelGroup axis="horizontal" handleClass="w-px bg-border group-active:bg-primary"
-//!   onResize={sizes => save(sizes)}>
-//!   <ResizablePanel size={sidebar()} minSize={160} maxSize={480} onResize={setSidebar}>…</ResizablePanel>
+//!   onResize={({ sizes }) => save(sizes)}>
+//!   <ResizablePanel size={sidebar()} minSize={160} maxSize={480} onResize={({ size }) => setSidebar(size)}>…</ResizablePanel>
 //!   <ResizablePanel>…</ResizablePanel>
 //! </ResizablePanelGroup>
 //! ```
@@ -78,8 +78,8 @@
 //!   there is one, keeps none: it takes the rest, which is what the drag
 //!   gives it). Nothing reaches JS
 //!   until the drag ends: then the group reports every visible panel's
-//!   size (`onResize(sizes)`), and each panel whose size changed its own
-//!   (`onResize(size)`), which the app passes back as `size` to keep (a
+//!   size (`onResize({ sizes })`), and each panel whose size changed its own
+//!   (`onResize({ size })`), which the app passes back as `size` to keep (a
 //!   group made again starts from it). Without that, the group keeps the
 //!   sizes the user gave the panels while it lives.
 //! - **[`ResizeHandle`]** is the same band on its own, for a container's

@@ -4,6 +4,7 @@
 // the steps after it are that case's.
 import { type JSX, View, mount, signal } from "nsh";
 import BasePopupsDesktop from "./base-popups-desktop";
+import BaseSelectDesktop from "./base-select-desktop";
 import PropsPlatformWeb from "./props-platform-web";
 import PropsTextScaling from "./props-text-scaling";
 import PropsMediaWebviewDesktop from "./props-media-webview-desktop";
@@ -16,6 +17,7 @@ const cases: Record<string, () => JSX.Element> = {
   "props-text-scaling": PropsTextScaling,
   "props-media-webview-desktop": PropsMediaWebviewDesktop,
   "base-popups-desktop": BasePopupsDesktop,
+  "base-select-desktop": BaseSelectDesktop,
 };
 const shown = signal("");
 

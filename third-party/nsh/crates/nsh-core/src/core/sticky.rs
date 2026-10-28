@@ -57,6 +57,7 @@ impl<M: TextEngine> Core<M> {
                 ranges.push(found);
             }
         }
+        ranges.extend(self.scrollbar_ranges());
         let mut views: Vec<Key> = ranges.iter().map(|r| r.0).collect();
         views.extend_from_slice(&self.sticky_scrollers);
         views.sort_unstable();

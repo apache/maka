@@ -16,23 +16,49 @@ use nsh_core::{
 /// domain, the extent of `[min, max]` (`ScaleLinear`; the extent of what
 /// the plot draws when it has none); and `{ type: "band", … }` gives each
 /// row a band of the axis, in order, for the bars drawn in it
-/// (`ScaleBand`).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// (`ScaleBand`). Each takes `reverse` (visx's scale option, d3's range
+/// written the other way round): the axis runs from its other edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Scale {
     /// One position per row, evenly spaced, the first and last at the
     /// edges (one row: the middle).
-    #[default]
-    Point,
+    Point {
+        /// The rows run the other way: from the right edge leftward on the
+        /// x axis, from the bottom edge up on the y axis.
+        reverse: bool,
+    },
     /// Values in proportion, the domain's smallest at the start of the
     /// range and its largest at the end.
     Linear {
         /// The values at the two ends (in either order); `None`: the
         /// extent of what the plot draws.
         domain: Option<[f64; 2]>,
+        /// The domain runs the other way: its smallest value at the right
+        /// edge on the x axis, at the top edge on the y axis
+        /// (`gpui-base`'s `BarAlignment::Right` and `Top`: bars grow from
+        /// there).
+        reverse: bool,
     },
     /// One band per row, in order, with gaps between them and at the ends
     /// (`ScaleBand`).
     Band(BandScale),
+}
+
+impl Default for Scale {
+    /// `{ type: "point" }`.
+    fn default() -> Self {
+        Scale::Point { reverse: false }
+    }
+}
+
+impl Scale {
+    /// The axis runs from its other edge (`reverse`).
+    pub(crate) fn reversed(&self) -> bool {
+        match *self {
+            Scale::Point { reverse } | Scale::Linear { reverse, .. } => reverse,
+            Scale::Band(band) => band.reverse,
+        }
+    }
 }
 
 /// The options of a band scale (`gpui-base`'s `ScaleBand` builders): the
@@ -59,29 +85,46 @@ pub struct BandScale {
     /// the bars inside a band, as d3's grouped bars nest one (0 by
     /// default).
     pub group_padding: Percentage,
+    /// The bands run the other way (`reverse`): the first row's at the
+    /// right edge on the x axis, at the bottom edge on the y axis.
+    pub reverse: bool,
 }
 
 impl JsValue for Scale {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("Scale", |_| {
-            "/** How an axis of a `Plot` places values: `point` places the rows in order, evenly from one edge to the other; `linear` places a number in proportion to where it lies in its `domain` (the extent of the two values; without one, the extent of what the plot draws); `band` gives each row a band of the axis, in order, for the bars drawn in it: `paddingInner` is the gap between bands and `paddingOuter` the gap at the ends (shares of a band, 0 by default), `maxBandWidth` the widest a band may be (points), `bandCount` the bands the axis is laid out for when more than the rows, and `groupPadding` the gap between the bars side by side in a band (a share of a bar's place). */\nexport type Scale = { type: \"point\" } | { type: \"linear\"; domain?: [number, number] } | { type: \"band\"; paddingInner?: number; paddingOuter?: number; maxBandWidth?: number; bandCount?: number; groupPadding?: number };\n".to_owned()
+            "/** How an axis of a `Plot` places values: `point` places the rows in order, evenly from one edge to the other; `linear` places a number in proportion to where it lies in its `domain` (the extent of the two values; without one, the extent of what the plot draws); `band` gives each row a band of the axis, in order, for the bars drawn in it: `paddingInner` is the gap between bands and `paddingOuter` the gap at the ends (shares of a band, 0 by default), `maxBandWidth` the widest a band may be (points), `bandCount` the bands the axis is laid out for when more than the rows, and `groupPadding` the gap between the bars side by side in a band (a share of a bar's place). `reverse` runs the axis from its other edge (false by default): the first row or the domain's smallest value at the right edge of the x axis, and on the y axis the domain's smallest value at the top edge (bars grow down from it) and the first row at the bottom edge. */\nexport type Scale = { type: \"point\"; reverse?: boolean } | { type: \"linear\"; domain?: [number, number]; reverse?: boolean } | { type: \"band\"; paddingInner?: number; paddingOuter?: number; maxBandWidth?: number; bandCount?: number; groupPadding?: number; reverse?: boolean };\n".to_owned()
         })
     }
 
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
         let kind = value.field("type")?;
+        let reverse = {
+            let field = value.field("reverse")?;
+            let field = field.get();
+            match field.is_nullish() {
+                true => false,
+                false => field
+                    .as_bool()
+                    .ok_or_else(|| field.expected("`reverse`: a boolean"))?,
+            }
+        };
         match kind.get().as_string().as_deref() {
-            Some("point") => Ok(Scale::Point),
+            Some("point") => Ok(Scale::Point { reverse }),
             Some("linear") => {
                 let domain = value.field("domain")?;
                 let domain = domain.get();
                 if domain.is_nullish() {
-                    return Ok(Scale::Linear { domain: None });
+                    return Ok(Scale::Linear {
+                        domain: None,
+                        reverse,
+                    });
                 }
                 let ends = Vec::<f64>::from_js(domain)?;
                 match ends[..] {
                     [a, b] if a.is_finite() && b.is_finite() => Ok(Scale::Linear {
                         domain: Some([a, b]),
+                        reverse,
                     }),
                     _ => Err(PropError(
                         "`domain`: two finite numbers, `[min, max]`".to_owned(),
@@ -111,6 +154,7 @@ impl JsValue for Scale {
                     group_padding: Percentage(
                         number("groupPadding")?.unwrap_or(0.0).min(1.0) as f32
                     ),
+                    reverse,
                 }))
             }
             _ => Err(value
@@ -122,7 +166,7 @@ impl JsValue for Scale {
         let object = JsOwned::new(host, host.new_object()?);
         let raw = object.get().raw();
         let kind = match self {
-            Scale::Point => "point",
+            Scale::Point { .. } => "point",
             Scale::Linear { .. } => "linear",
             Scale::Band(_) => "band",
         };
@@ -130,6 +174,7 @@ impl JsValue for Scale {
         match self {
             Scale::Linear {
                 domain: Some([a, b]),
+                ..
             } => {
                 let ends = vec![*a, *b].to_js(host)?;
                 host.set_field(raw, "domain", ends.into_raw())?;
@@ -149,6 +194,9 @@ impl JsValue for Scale {
                 }
             }
             _ => {}
+        }
+        if self.reversed() {
+            host.set_field(raw, "reverse", host.new_bool(true))?;
         }
         Ok(object)
     }
@@ -188,6 +236,16 @@ impl Linear {
         };
         Some(self.range[0] + ratio as f32 * (self.range[1] - self.range[0]))
     }
+
+    /// The extent of its domain, `[lo, hi]`.
+    pub(crate) fn domain(&self) -> [f64; 2] {
+        [self.start, self.start + self.diff]
+    }
+
+    /// Its range.
+    pub(crate) fn range(&self) -> [f32; 2] {
+        self.range
+    }
 }
 
 /// Bands laid out across a range (`ScaleBand`, over row indices), as
@@ -206,6 +264,8 @@ pub(crate) struct Band {
     max_width: Option<f32>,
     /// The gap between the bars side by side in a band.
     group_padding: f32,
+    /// The first band at the end of the range (`reverse`).
+    reverse: bool,
 }
 
 impl Band {
@@ -219,6 +279,7 @@ impl Band {
             padding_outer: options.padding_outer.0,
             max_width: options.max_band_width.map(|w| w.0),
             group_padding: options.group_padding.0,
+            reverse: options.reverse,
         }
     }
 
@@ -234,6 +295,7 @@ impl Band {
             padding_outer: 0.0,
             max_width: None,
             group_padding: 0.0,
+            reverse: false,
         }
     }
 
@@ -272,16 +334,21 @@ impl Band {
     }
 
     /// Where band `index` starts (`ScaleBand::tick`), a band narrowed by
-    /// `max_width` in the middle of its place.
+    /// `max_width` in the middle of its place; from the end of the range
+    /// when reversed, as d3's band scale over a range written backwards.
     pub(crate) fn start(&self, index: usize) -> Option<f32> {
         if index >= self.len {
             return None;
         }
+        let place = match self.reverse {
+            true => self.len - 1 - index,
+            false => index,
+        };
         let step = self.step();
         // The bands and their inner gaps, in the middle of the range.
         let first = self.start + (self.diff - step * (self.len as f32 - self.padding_inner)) / 2.0;
         let full = self.full_width();
-        Some(first + index as f32 * step + (full - self.width()) / 2.0)
+        Some(first + place as f32 * step + (full - self.width()) / 2.0)
     }
 
     /// The middle of band `index`.
@@ -296,7 +363,16 @@ impl Band {
             return None;
         }
         let first = self.center(0)?;
-        Some(first + value as f32 * self.step())
+        let step = match self.reverse {
+            true => -self.step(),
+            false => self.step(),
+        };
+        Some(first + value as f32 * step)
+    }
+
+    /// The first band is at the end of the range.
+    pub(crate) fn reversed(&self) -> bool {
+        self.reverse
     }
 }
 
@@ -341,6 +417,17 @@ impl AxisMap {
         match *self {
             AxisMap::Band(band) => Some(band),
             _ => None,
+        }
+    }
+
+    /// Its places run back along the axis, toward smaller coordinates as
+    /// the rows or values grow: a reversed scale along x (right to left),
+    /// and along y a linear scale unless reversed (bottom up).
+    pub(crate) fn backward(&self) -> bool {
+        match *self {
+            AxisMap::Point { range, .. } => range[1] < range[0],
+            AxisMap::Linear(map) => map.range()[1] < map.range()[0],
+            AxisMap::Band(band) => band.reversed(),
         }
     }
 }
@@ -497,5 +584,30 @@ mod tests {
         let end = gapped.start(2).unwrap() + gapped.width();
         assert!((end - 30.0).abs() < 1e-4, "{end}");
         assert!(gapped.start(1).unwrap() - gapped.width() > 0.0);
+    }
+
+    /// A reversed band scale (`reverse`, d3's range written backwards):
+    /// the first band at the end of the range, the same widths and gaps,
+    /// and the values between bands running back with them.
+    #[test]
+    fn a_reversed_band_scale_starts_at_the_end() {
+        let reversed = band(3, [0.0, 90.0], |o| o.reverse = true);
+        assert_eq!(reversed.start(0), Some(60.0));
+        assert_eq!(reversed.start(2), Some(0.0));
+        assert_eq!(reversed.center(0), Some(75.0));
+        assert_eq!(reversed.tick(0.5), Some(60.0));
+        assert_eq!(reversed.tick(2.0), Some(15.0));
+        assert!(AxisMap::Band(reversed).backward());
+        // Narrowed bands stay in the middle of their places.
+        let capped = band(2, [0.0, 200.0], |o| {
+            o.max_band_width = Some(Points(30.0));
+            o.reverse = true;
+        });
+        assert_eq!(capped.start(0), Some(135.0));
+        // A reversed range of the other scales runs back too.
+        let x = Linear::new([0.0, 100.0], [200.0, 0.0]);
+        assert!(AxisMap::Linear(x).backward());
+        assert!(!AxisMap::Linear(Linear::new([0.0, 100.0], [0.0, 200.0])).backward());
+        assert_eq!(point_tick(0, 3, [100.0, 0.0]), Some(100.0));
     }
 }

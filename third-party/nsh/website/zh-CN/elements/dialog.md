@@ -67,7 +67,7 @@ function Example() {
       <Button onPress={() => open.set(true)} class="items-center rounded-lg bg-blue-600 px-4 py-3 active:opacity-70">
         <Text class="font-semibold text-white">Open</Text>
       </Button>
-      <Dialog open={open()} presentation="pageSheet" onOpenChange={(next) => open.set(next)} class="flex-1 bg-white">
+      <Dialog open={open()} presentation="pageSheet" onOpenChange={(e) => open.set(e.open)} class="flex-1 bg-white">
         <View
           style={{
             flex: 1,
@@ -106,7 +106,7 @@ function Example() {
 | `onOpen` | `.on_open(..)` | `() => void` | | 已完全出现。 |
 | `onClose` | `.on_close(..)` | `() => void` | | 已离开：用户关闭了它，或应用移除了它。 |
 | `onCancel` | `.on_cancel(..)` | `() => void` | | 用户尝试关闭它（Escape、返回、按下背景层、下滑），无论 `closeOn*` 是否允许关闭。 |
-| `onOpenChange` | `.on_cancel(..)` | `(open: boolean, reason: "cancel" \| "backdropPress" \| "swipe") => void` | | 用户关闭了它：在这里同步 `open`。在 Rust 中，由 `on_cancel` 把对话框移出视图。 |
+| `onOpenChange` | `.on_cancel(..)` | `(e: { open: boolean; reason: "cancel" \| "backdropPress" \| "swipe" }) => void` | | 用户关闭了它：在这里同步 `open`。在 Rust 中，由 `on_cancel` 把对话框移出视图。 |
 | `class`、`style` | `Styled` 方法 | `string`、`StyleProp<ViewStyle>` | | 弹出层：包含子元素的视图。 |
 | `backdropClass`、`backdropStyle` | 铺满对话框的子视图 | `string`、`StyleProp<ViewStyle>` | | 铺满 dialog、位于弹出层后面的背景层，设置其中之一时出现。 |
 | `children` | `.child(..)` | `JSX.Element` | | 内容。 |
@@ -121,7 +121,7 @@ function Example() {
 
 ## 打开与关闭
 
-对话框的状态属于应用。用户关闭 dialog（Escape、Android 返回键、按下背景层、下滑 sheet）时，它在原生侧关闭并通知应用，由应用把状态改成一致：TSX 中是 `onOpenChange(false, reason)`，Rust 中是 `on_cancel`。在 TSX 中，`open` 一直为 `true` 时 dialog 保持关闭，`open` 从 `false` 变为 `true` 时再次打开。
+对话框的状态属于应用。用户关闭 dialog（Escape、Android 返回键、按下背景层、下滑 sheet）时，它在原生侧关闭并通知应用，由应用把状态改成一致：TSX 中是 `onOpenChange({ open: false, reason })`，Rust 中是 `on_cancel`。在 TSX 中，`open` 一直为 `true` 时 dialog 保持关闭，`open` 从 `false` 变为 `true` 时再次打开。
 
 由于主线程从不等待应用代码，每个 `closeOn*` 标志都在用户操作时由原生侧读取。要在关闭前先确认，把这些标志设为 `false`：此时用户的尝试会调用 `onCancel`，由应用自己关闭对话框（TSX 中把 `open` 设为 `false`，Rust 中把它移出视图）：
 
@@ -199,7 +199,7 @@ when(confirm, move || {
 <Dialog
   open={confirm()}
   animation="fade"
-  onOpenChange={(next) => confirm.set(next)}
+  onOpenChange={({ open }) => confirm.set(open)}
   backdropClass="bg-black/40"
   class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
 >

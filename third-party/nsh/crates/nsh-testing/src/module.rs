@@ -1439,6 +1439,20 @@ impl Keyboard {
         let steps = this.with(|k| k.steps.clone());
         steps.run(move |app| app.press_key(&keys)).await
     }
+
+    /// Holds modifier keys down (`"mod"`, `"shift"`, `"alt"`, `"ctrl"`,
+    /// `"meta"`, joined by `+`) until `up`: the presses, drags and hovers
+    /// meanwhile carry them (a Mod-click, a Shift-drag). Headless and on Linux.
+    pub async fn down(this: Instance<Self>, keys: String) -> Result<(), String> {
+        let steps = this.with(|k| k.steps.clone());
+        steps.run(move |app| app.hold_keys(&keys, true)).await
+    }
+
+    /// Lets go of modifier keys `down` held.
+    pub async fn up(this: Instance<Self>, keys: String) -> Result<(), String> {
+        let steps = this.with(|k| k.steps.clone());
+        steps.run(move |app| app.hold_keys(&keys, false)).await
+    }
 }
 
 /// `ms` milliseconds, which a test gives as a number.
@@ -1502,6 +1516,34 @@ impl App {
         step(&this, move |app| app.drag(&selector, by)).await
     }
 
+    /// Drags as `drag` does but keeps the finger down, so the test can look
+    /// at the screen mid-drag (a drag preview, a drop line); `drop()` lifts
+    /// it. Headless only for now.
+    pub async fn drag_and_hold(
+        this: Instance<Self>,
+        selector: String,
+        by: DragBy,
+    ) -> Result<(), String> {
+        let by = nsh_core::geometry::point(by.x, by.y);
+        step(&this, move |app| app.drag_and_hold(&selector, by)).await
+    }
+
+    /// Drops local files (`file:` URLs, as a file manager drags them) on
+    /// the middle of what `selector` names: it, or the nearest view around
+    /// it listening, hears `onFileDrop`. Desktops, headless and on Linux for now.
+    pub async fn drop_files(
+        this: Instance<Self>,
+        selector: String,
+        uris: Vec<String>,
+    ) -> Result<(), String> {
+        step(&this, move |app| app.drop_files(&selector, uris)).await
+    }
+
+    /// Lifts the finger `dragAndHold` left down, where it is.
+    pub async fn drop(this: Instance<Self>) -> Result<(), String> {
+        step(&this, move |app| app.drop_held()).await
+    }
+
     /// The mouse's secondary button over the middle of what `selector`
     /// names: it, or the nearest view around it listening, hears
     /// `onContextMenu`, whose handler shows a menu (`Menu.popup`: read it
@@ -1537,10 +1579,10 @@ impl App {
     }
 
     /// Moves the mouse over the middle of what `selector` names: the views
-    /// under it hear `onHoverIn` (and the ones it left `onHoverOut`), take
-    /// their `hover:` styles and hear `onHoverMove`. Desktops and the web
-    /// (at any width: a browser has a mouse) only: an iOS or Android phone
-    /// has none.
+    /// under it hear `onMouseEnter` (and the ones it left `onMouseLeave`),
+    /// take their `hover:` styles and hear `onMouseMove`, with no button
+    /// down. Desktops and the web (at any width: a browser has a mouse)
+    /// only: an iOS or Android phone has none.
     pub async fn hover(this: Instance<Self>, selector: String) -> Result<(), String> {
         step(&this, move |app| app.hover(&selector)).await
     }

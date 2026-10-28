@@ -17,7 +17,7 @@ fn ui_theme() -> crate::element::Tokens {
     crate::element::tokens::sample()
 }
 
-fn cx(states: u8) -> (ClassEnvironment, u8) {
+fn cx(states: u16) -> (ClassEnvironment, u16) {
     (ClassEnvironment::default(), states)
 }
 
@@ -26,7 +26,7 @@ fn styled_with(
     classes: &str,
     env: ClassEnvironment,
     window: (f32, f32),
-    states: u8,
+    states: u16,
 ) -> (Style, ClassProps) {
     let theme = themed();
     let list = parse(&theme, classes);
@@ -1170,6 +1170,37 @@ fn checked_variants() {
 }
 
 #[test]
+fn expanded_variants() {
+    let theme = themed();
+    let list = parse(
+        &theme,
+        "aria-expanded:bg-black group-aria-expanded:rotate-180",
+    );
+    assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+    assert!(list.deps() & deps::STATE != 0 && list.deps() & deps::GROUP != 0);
+    // The core sets it: nothing for the platform to report.
+    assert_eq!(list.tracked_states(), 0);
+    let env = ClassEnvironment::default();
+    let (s, _) = styled_with(
+        "bg-white aria-expanded:bg-black",
+        env,
+        (390.0, 844.0),
+        state::EXPANDED,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    // Tailwind's `aria-*` variants come after the pseudo-classes: an open
+    // trigger keeps its look while hovered or pressed.
+    let pressed = state::EXPANDED | state::HOVERED | state::PRESSED;
+    let (s, _) = styled_with(
+        "hover:bg-white active:bg-white aria-expanded:bg-black",
+        env,
+        (390.0, 844.0),
+        pressed,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+}
+
+#[test]
 fn indeterminate_variants() {
     let theme = themed();
     let list = parse(
@@ -1591,7 +1622,7 @@ fn object_positions() {
 /// variant decides, then its next highest; one more variant comes later.
 #[test]
 fn variants_sort_as_tailwind_sorts_them() {
-    let pad = |classes: &str, dark: bool, width: f32, states: u8| {
+    let pad = |classes: &str, dark: bool, width: f32, states: u16| {
         let env = ClassEnvironment {
             dark,
             ..Default::default()

@@ -83,15 +83,15 @@ function App() {
             ref={area}
             class="flex-1"
             layout={layout()}
-            onLayoutChange={(next) => {
+            onLayoutChange={({ layout: next }) => {
               layout.set(next);
               log("onLayoutChange");
             }}
-            onDockOpenChange={(placement, open) => {
+            onDockOpenChange={({ placement, open }) => {
               shown.set({ ...shown(), [placement]: open });
               log(`${placement} ${open ? "shown" : "hidden"}`);
             }}
-            onPanelActiveChange={(panel, active) => active && log(`${titles[panel]} shown`)}
+            onPanelActiveChange={({ panel, active }) => active && log(`${titles[panel]} shown`)}
             locked={locked()}
             // The demo's two layouts: the full workspace beside the inspector in a
             // wide window, the phone presentation in one column. Without `compact`

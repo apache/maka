@@ -18,7 +18,7 @@ function App() {
       <Popover
         defaultOpen
         closeOnPressOutside={false}
-        onOpenChange={(open, reason) => log.set(`Log: popover ${open} ${reason}`)}
+        onOpenChange={({ open, reason }) => log.set(`Log: popover ${open} ${reason}`)}
         trigger={<View style={{ height: 30, width: 100 }}><Text>StayTrigger</Text></View>}
       >
         <Text>StayBody</Text>
@@ -48,7 +48,7 @@ function App() {
         tooltip={
           <Tooltip
             delay={2000}
-            onOpenChange={(open, reason) => log.set(`Log: tooltip ${open} ${reason}`)}
+            onOpenChange={({ open, reason }) => log.set(`Log: tooltip ${open} ${reason}`)}
             onOpen={() => lifecycle.set("Tip: open")}
             onClose={() => lifecycle.set("Tip: closed")}
           >

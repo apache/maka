@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { createText } from './text';
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { createAnimatedValue } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
@@ -38,7 +38,7 @@ type ImageControl = 'fit' | 'actual' | 'in' | 'out';
 export function ImageViewerButton(props: { image: ViewerImage; open: OpenImageViewer }) {
   const image = props.image;
   let alive = true;
-  let button: YNode | undefined;
+  let button: ViewRef | undefined;
   cleanup(() => {
     alive = false;
   });
@@ -103,7 +103,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
     x.adjust(1, dx);
     y.adjust(1, dy);
   };
-  const bind = (node: YNode) => {
+  const bind = (node: ViewRef) => {
     unbind();
     unbind = keymap.bind(
       {
@@ -132,7 +132,7 @@ export function ImageViewer(props: { image: ViewerImage; close(): void }) {
           accessibilityLabel={tr('Image viewport')}
           pan={{ x, y }}
           pinch={{ scale }}
-          onLayout={(event) => {
+          onLayout={({ bounds: event }) => {
             const previous = viewport();
             if (previous.width === event.size.width && previous.height === event.size.height)
               return;

@@ -26,7 +26,7 @@ function App() {
         testID="tab-bar"
         items={items()}
         selectedIndex={selected()}
-        onChange={(index) => selected.set(index)}
+        onChange={({ index }) => selected.set(index)}
         style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 60 }}
       />
     </View>

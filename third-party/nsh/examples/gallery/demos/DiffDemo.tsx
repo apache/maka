@@ -1,6 +1,6 @@
 import { signal, Text, View } from "nsh";
 import { Button, DiffView, type DiffStats, type DiffViewRef } from "nsh/base";
-import { colors, finish, Segmented } from "../ui";
+import { colors, finish, hovered, Segmented } from "../ui";
 
 // `nsh/base`'s `DiffView` lays the two texts out, highlights what changed
 // within lines and collapses what did not; the texts are the app's: a
@@ -85,6 +85,7 @@ function Tool(props: { label: string; name: string; onPress: () => void; disable
       onPress={props.onPress}
       disabled={props.disabled}
       accessibilityLabel={props.label}
+      hoverStyle={props.disabled ? undefined : finish.hover}
       class="h-8 items-center justify-center rounded-md border border-border px-3 active:opacity-70 disabled:opacity-40"
       style={{ backgroundColor: colors.raised, ...finish.raised }}
     >
@@ -109,7 +110,7 @@ export function DiffDemo() {
   let diff: DiffViewRef | undefined;
 
   // The counts follow the texts: the view reports them as it diffs.
-  const counted = (s: DiffStats) => {
+  const counted = ({ stats: s }: { stats: DiffStats }) => {
     stats.set(s);
     current.set(Math.min(current(), Math.max(0, s.hunks - 1)));
   };
@@ -183,6 +184,7 @@ export function DiffDemo() {
                   <Button
                     onPress={() => diff?.revertHunk(hunk.index)}
                     accessibilityLabel={`Revert change ${hunk.index + 1}`}
+                    hoverStyle={hovered()}
                     class="rounded border border-border bg-background px-2 py-0.5 active:opacity-70"
                   >
                     <Text class="text-[11px] font-medium text-foreground">Revert</Text>
@@ -190,18 +192,19 @@ export function DiffDemo() {
                   <Button
                     onPress={() => diff?.acceptHunk(hunk.index)}
                     accessibilityLabel={`Keep change ${hunk.index + 1}`}
+                    hoverStyle={{ opacity: 0.88 }}
                     class="rounded bg-primary px-2 py-0.5 active:opacity-70"
                   >
                     <Text class="text-[11px] font-medium text-primary-foreground">Keep</Text>
                   </Button>
                 </View>
               )}
-              onChange={(change) => {
+              onChange={({ change }) => {
                 oldValue.set(change.oldValue);
                 newValue.set(change.newValue);
                 last.set("Changed");
               }}
-              onLineNumberPress={(line) => last.set(`Comment on ${line.side} line ${line.line + 1}`)}
+              onLineNumberPress={({ line }) => last.set(`Comment on ${line.side} line ${line.line + 1}`)}
               class="flex-1"
             />
           ) : (
@@ -215,7 +218,7 @@ export function DiffDemo() {
                   <Text class="font-mono text-[11px] text-muted-foreground">{sep.header ? `@@ ${sep.header.trim()}` : `${sep.lines} lines`}</Text>
                 </View>
               )}
-              onLineNumberPress={(line) => last.set(`Comment on ${line.side} line ${line.line + 1}`)}
+              onLineNumberPress={({ line }) => last.set(`Comment on ${line.side} line ${line.line + 1}`)}
               class="flex-1"
             />
           )

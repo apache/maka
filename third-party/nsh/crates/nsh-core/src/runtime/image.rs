@@ -114,10 +114,11 @@ impl Image {
         })
     }
 
-    /// Loads the image ahead of showing it: true once its bytes are in
-    /// memory. An imported image with variants loads the variant the views
-    /// load at the screen's pixel ratio.
-    pub(crate) async fn prefetch(src: ImageUrl) -> bool {
+    /// Loads the image ahead of showing it: resolves once its bytes are in
+    /// memory, rejects with the error when it cannot load. An imported
+    /// image with variants loads the variant the views load at the
+    /// screen's pixel ratio.
+    pub(crate) async fn prefetch(src: ImageUrl) -> Result<(), String> {
         crate::prelude::prefetch_image(src.pick().0).await
     }
 }

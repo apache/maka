@@ -18,7 +18,7 @@
  */
 
 import { effect } from 'nsh';
-import type { YNode } from 'nsh';
+import type { InputRef } from 'nsh';
 import { keymap } from 'nsh';
 import type { ComposerSession } from './Composer';
 import type { Selection } from './composerCompletionSyntax';
@@ -26,7 +26,7 @@ import { UiError } from './text';
 
 type Target = {
   owner: ComposerSession;
-  node: YNode;
+  node: InputRef;
   text: string;
   selection: Selection;
 };
@@ -34,7 +34,7 @@ type Target = {
 export function createComposerPaste(options: {
   session(): ComposerSession | null;
   active(): boolean;
-  editor(owner: ComposerSession): YNode | null;
+  editor(owner: ComposerSession): InputRef | null;
   selection(): Selection;
   composing(): boolean;
   dismiss(): void;

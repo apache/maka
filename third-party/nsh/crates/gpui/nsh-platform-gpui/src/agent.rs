@@ -84,9 +84,10 @@ impl GpuiNative {
         self.on_main(move |view, _, _| f(&view.surface().clone()))
     }
 
-    /// A press or release of the mouse's `button` at `at`; a press first
-    /// focuses the window's view, as a real one does ([`crate::events`]).
-    fn mouse(&self, kind: PointerKind, at: Point<Points>, button: u8) {
+    /// A press or release of the mouse's `button` at `at`, or a move to it
+    /// with `button` held when `held`; a press first focuses the window's
+    /// view, as a real one does ([`crate::events`]).
+    fn mouse(&self, kind: PointerKind, at: Point<Points>, button: u8, held: bool) {
         let (x, y) = (at.x.0, at.y.0);
         self.on_main(move |view, window, cx| {
             if kind == PointerKind::Down {
@@ -109,15 +110,16 @@ impl GpuiNative {
                     time: surface.clock(),
                     modifiers: Modifiers::default(),
                     clicks: 1,
+                    pressed_button: held.then_some(button),
                 },
             );
         });
     }
 
     fn click(&self, at: Point<Points>, hold: Duration, button: u8) {
-        self.mouse(PointerKind::Down, at, button);
+        self.mouse(PointerKind::Down, at, button, false);
         std::thread::sleep(hold);
-        self.mouse(PointerKind::Up, at, button);
+        self.mouse(PointerKind::Up, at, button, false);
     }
 }
 
@@ -189,16 +191,16 @@ impl Native for GpuiNative {
     }
 
     fn drag(&self, from: Point<Points>, to: Point<Points>) {
-        self.mouse(PointerKind::Move, from, 0);
-        self.mouse(PointerKind::Down, from, 0);
+        self.mouse(PointerKind::Move, from, 0, false);
+        self.mouse(PointerKind::Down, from, 0, false);
         std::thread::sleep(nsh_testing::agent::LANDING);
         let mut last = from;
         for at in nsh_testing::agent::drag_path(from, to) {
             std::thread::sleep(FRAME);
-            self.mouse(PointerKind::Move, at, 0);
+            self.mouse(PointerKind::Move, at, 0, true);
             last = at;
         }
-        self.mouse(PointerKind::Up, last, 0);
+        self.mouse(PointerKind::Up, last, 0, false);
     }
 
     fn type_text(&self, text: &str) {
@@ -243,7 +245,7 @@ impl Native for GpuiNative {
     }
 
     fn hover(&self, at: Point<Points>) -> Result<(), String> {
-        self.mouse(PointerKind::Move, at, 0);
+        self.mouse(PointerKind::Move, at, 0, false);
         Ok(())
     }
 

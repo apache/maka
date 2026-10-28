@@ -187,8 +187,11 @@ jobs:
           for file in device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
             ./target/debug/nsh test "examples/gallery/tests/$file.test.tsx" --target web
           done
+          ./target/debug/nsh test examples/gallery/tests/data-table-interactions.test.tsx --target web --filter "column's classes style"
           ./target/debug/nsh test examples/gallery/tests/environment.test.tsx --target web --filter appearance
+          ./target/debug/nsh test examples/gallery/tests/controls.test.tsx --target web --filter 'one-time code'
           ./target/debug/nsh test examples/gallery/tests/overlays.test.tsx --target web --filter 'Escape cancels'
+          ./target/debug/nsh test examples/gallery/tests/rich-editor.test.tsx --target web --filter 'Backspace after the caret moves'
           # Apps with Rust crates, in their hosts' runtime: a TSX app and a
           # Rust app (its root).
           ./target/debug/nsh test examples/rust-exports --target web

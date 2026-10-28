@@ -30,14 +30,14 @@ function App() {
           handleStyle={{ backgroundColor: "#ff0000" }}
           handleAccessibilityLabel="Resize"
           renderHandle={handle => <Text>{`Grip ${handle.index} ${handle.axis} ${handle.state}`}</Text>}
-          onResize={sizes => reported.set(sizes.map(Math.round).join(", "))}
+          onResize={({ sizes }) => reported.set(sizes.map(Math.round).join(", "))}
         >
           <ResizablePanel
             testID="sidebar"
             size={sidebar()}
             minSize={120}
             maxSize={200}
-            onResize={size => sidebar.set(Math.round(size))}
+            onResize={({ size }) => sidebar.set(Math.round(size))}
           >
             <Text>Sidebar</Text>
           </ResizablePanel>

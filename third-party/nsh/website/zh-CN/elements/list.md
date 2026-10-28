@@ -111,12 +111,12 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | `onRefresh` | `.on_refresh(..)` | `() => void` | | 用户下拉刷新。 |
 | `refreshIndicator` | `.refresh_indicator(Some(height))` | `{ height: number }` | | 应用自己绘制指示器，高 `height` 点：平台的转圈隐藏，下拉到 `height` 即刷新，刷新中在内容上方留出 `height`。`height` 不大于 0 时视为未设。 |
 | `pullValue` | `.pull_value(&value)` | `AnimatedValue` | | 一个动画值，写入列表被拉过顶部的距离（静止为 0，随下拉增大；刷新中为内容上方留出的空间，设了 `refreshIndicator` 时等于 `height`），用来绘制应用的指示器。 |
-| `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 显示滚动条。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](./scrollbar.md#内置滚动条)；对象是该视图自己的主题。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
 | `scrollValue` | `.scroll_value(&value)` | `AnimatedValue` | | 接收滚动偏移的动画值，用于随滚动变化的动画。 |
 | `keyboardDismissMode` | `.keyboard_dismiss_mode(..)` | `"none" \| "on-drag" \| "interactive"` | `"none"` | 拖动时是否收起键盘。 |
 | `style` | `Styled` 方法 | `StyleProp<ViewStyle>` | | 列表自身的样式（需要有确定的尺寸：`flex: 1` 或高度）。 |
 | `testID` | `.test_id(id)` | `string` | | UI 测试查找列表滚动视图所用的 id（`nsh test` 的 `id:`、XCUITest、UI Automator）。 |
-| `ref` | `.element_ref(&handle)` | `YNode \| (node: YNode) => void` | | 列表的节点（见 [ref 方法](#ref-方法)）。 |
+| `ref` | `.element_ref(&handle)` | `ListRef \| (node: ListRef) => void` | | 列表的 ref（见 [ref 方法](#ref-方法)）。 |
 
 列表同样支持 [`Scroll`](./scroll.md#滚动) 的滚动属性（Rust 中为 `Scrollable` 方法）：`pagingEnabled`、`snapToInterval`、`snapToOffsets`、`snapToAlignment`、`disableIntervalMomentum`、`decelerationRate`、`bounces`、`contentInset`、`contentOffset`、`keyboardShouldPersistTaps`、`scrollEventThrottle` 和 `scrollable`。列表保持原有比例。
 
@@ -137,9 +137,9 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 | 事件 | Rust | 载荷 | 时机 |
 |---|---|---|---|
 | `onScroll` | `.on_scroll` | `ScrollEvent` | 偏移发生变化。 |
-| `onScrollDragStart` / `onScrollDragEnd` | `.on_scroll_drag_start` / `.on_scroll_drag_end` | `{ x, y }` | 开始 / 结束拖动。 |
-| `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ x, y }` | 惯性滑动开始 / 结束。 |
-| `onScrollEnd` | `.on_scroll_end` | `{ x, y }` | 滚动停止。 |
+| `onScrollDragStart` / `onScrollDragEnd` | `.on_scroll_drag_start` / `.on_scroll_drag_end` | `{ offset }` | 开始 / 结束拖动。 |
+| `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ offset }` | 惯性滑动开始 / 结束。 |
+| `onScrollEnd` | `.on_scroll_end` | `{ offset }` | 滚动停止。 |
 | `onLoadMore` | `.on_load_more` | 无 | 距末端不足 `loadMoreThreshold` 个视口。 |
 | `onLoadMoreAtStart` | `.on_load_more_at_start` | 无 | 滚动后距开头不足 `loadMoreAtStartThreshold` 个视口，每次接近触发一次。 |
 | `onViewableItemsChange` | `.on_viewable_items_change` | `{ viewableItems, changed }`（`ViewableItems`） | 可见性变化。 |
@@ -184,7 +184,7 @@ virtual_list(move || photos.with(|p| p.len()), move |at| {
 
 ```tsx tabs
 const visible = signal("");
-let list!: YNode;
+let list!: ListRef;
 
 <List
   ref={list}

@@ -176,6 +176,27 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
         // These bindings change in place when the permission changes;
         // children and scroll positions keep their state.
         panel = panel.bind_translate_y(&dragged_y);
-        vec![backdrop.into_element(), panel.into_element()]
+        let layers = vec![backdrop.into_element(), panel.into_element()];
+        if nsh_core::element::os() == nsh_core::platform::Os::Web {
+            // A web modal is a separately sized surface. The player's host
+            // can present it over the viewport, including outside an iframe,
+            // while the sheet keeps its own motion and controlled lifetime.
+            vec![
+                nsh_core::element::modal()
+                    .animation(nsh_core::ModalAnimation::None)
+                    .close_on_escape(false)
+                    .close_on_swipe(false)
+                    .on_cancel(move || {
+                        cx.emit(SheetEvent::Cancel);
+                        if props.close_on_escape.get_untracked() {
+                            change(false, OpenChangeReason::Cancel);
+                        }
+                    })
+                    .children(layers)
+                    .into_element(),
+            ]
+        } else {
+            layers
+        }
     })
 }

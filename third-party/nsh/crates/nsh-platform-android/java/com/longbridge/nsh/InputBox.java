@@ -7,6 +7,7 @@ import android.os.Build;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
+import android.text.Layout;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -52,6 +53,15 @@ final class InputBox extends FrameLayout implements Node {
     };
     /** `pasteBehavior` is `"insert"`: a paste inserts its text. */
     boolean pasteInserts = true;
+    /** Whether the EditText shows a vertical scroll bar of its own by default. */
+    private final boolean defaultVerticalBar;
+    /**
+     * A built-in bar replaces the scroll indicator (`InputConfig::replaced`):
+     * how far the text scrolled is reported to the engine.
+     */
+    private boolean replaced;
+    /** What was last reported (px): offset, text height, viewport width and height; -1 for nothing. */
+    private int reportedY = -1, reportedContent = -1, reportedWidth = -1, reportedHeight = -1;
 
     InputBox(Context context, Mounter mounter, int id) {
         super(context);
@@ -125,13 +135,30 @@ final class InputBox extends FrameLayout implements Node {
             protected void onScrollChanged(int left, int top, int oldLeft, int oldTop) {
                 super.onScrollChanged(left, top, oldLeft, oldTop);
                 reportCaret(this);
+                if (replaced) reportScroll();
             }
 
             @Override
             protected void onSizeChanged(int w, int h, int oldW, int oldH) {
                 super.onSizeChanged(w, h, oldW, oldH);
                 // The text wraps again once laid out at the new size.
-                post(() -> reportCaret(this));
+                post(() -> {
+                    reportCaret(this);
+                    if (replaced) reportScroll();
+                });
+            }
+
+            @Override
+            protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+                super.onLayout(changed, left, top, right, bottom);
+                if (replaced) reportScroll();
+            }
+
+            @Override
+            protected void onTextChanged(CharSequence text, int start, int before, int after) {
+                super.onTextChanged(text, start, before, after);
+                // The text's height is known once it is laid out again.
+                if (replaced) post(InputBox.this::reportScroll);
             }
         };
         edit.setBackground(new ColorDrawable(0));
@@ -141,6 +168,7 @@ final class InputBox extends FrameLayout implements Node {
         // fallback fonts' taller metrics (HyperOS's sans-serif has them) would
         // put the centered text above the middle of the field.
         if (Build.VERSION.SDK_INT >= 28) edit.setFallbackLineSpacing(false);
+        defaultVerticalBar = edit.isVerticalScrollBarEnabled();
         edit.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -560,6 +588,51 @@ final class InputBox extends FrameLayout implements Node {
         edit.setText(text);
         edit.setSelection(Math.min(Math.max(selection, 0), text.length()));
         applying = false;
+    }
+
+    /**
+     * `InputConfig`'s `scrollbarVisible` (whether the text's own scroll bar
+     * shows; the text scrolls either way) and `replaced` (a built-in bar takes
+     * its place: how far the text scrolled is reported, at once and on every
+     * change).
+     */
+    void setScrollbar(boolean visible, boolean replaced) {
+        edit.setVerticalScrollBarEnabled(visible && defaultVerticalBar);
+        this.replaced = replaced;
+        if (!replaced) return;
+        reportedY = reportedContent = reportedWidth = reportedHeight = -1;
+        // After the rest of the config (multiline, font) is applied.
+        post(this::reportScroll);
+    }
+
+    /** The text's scrolled height (px), at least the viewport's. */
+    private int textHeight() {
+        Layout layout = edit.getLayout();
+        int text = (layout == null ? 0 : layout.getHeight()) + edit.getTotalPaddingTop() + edit.getTotalPaddingBottom();
+        return Math.max(text, edit.getHeight());
+    }
+
+    /** Reports how far the text scrolled when that, its height or the viewport changed. */
+    private void reportScroll() {
+        if (!replaced || mounter == null) return;
+        int y = edit.getScrollY(), content = textHeight(), width = edit.getWidth(), height = edit.getHeight();
+        if (y == reportedY && content == reportedContent && width == reportedWidth && height == reportedHeight) {
+            return;
+        }
+        reportedY = y;
+        reportedContent = content;
+        reportedWidth = width;
+        reportedHeight = height;
+        float d = mounter.density;
+        mounter.inputScroll(id, y / d, width / d, content / d, width / d, height / d);
+    }
+
+    /** `Command::ScrollTo` (a built-in bar's drags): scrolls the text to {@code yDp}, within its range. */
+    void scrollTextTo(float yDp) {
+        if (!multiline) return;
+        int max = Math.max(0, textHeight() - edit.getHeight());
+        int y = Math.max(0, Math.min(Math.round(yDp * mounter.density), max));
+        edit.scrollTo(edit.getScrollX(), y);
     }
 
     void setContent(int left, int top, int right, int bottom) {

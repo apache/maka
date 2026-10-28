@@ -19,7 +19,7 @@
 
 import { tr } from './locale';
 import { Text, View } from 'nsh';
-import type { JSX, YNode } from 'nsh';
+import type { JSX, ViewRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
 import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
@@ -130,6 +130,93 @@ export const controlFocusStyle = () => ({ backgroundColor: C.raised, borderColor
 export const controlDisabledStyle = platform.isTerminal
   ? { backgroundColor: C.background }
   : { opacity: 0.4 };
+// Focus styles apply to keyboard focus only, so a ring keeps it apart from hover.
+const quietFocusStyle = () =>
+  platform.isTerminal
+    ? { backgroundColor: C.raised }
+    : {
+        outlineStyle: 'solid' as const,
+        outlineWidth: 2,
+        outlineColor: C.accent,
+        outlineOffset: -2,
+      };
+const quietHoverStyle = () => ({ backgroundColor: C.surface });
+const quietActiveStyle = () => ({ backgroundColor: C.raised });
+
+export function IconButton(props: {
+  label: string;
+  tooltip?: string;
+  icon: Parameters<typeof Icon>[0]['name'];
+  selected?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Button
+      accessibilityLabel={props.label}
+      tooltip={textTooltip(() => props.tooltip ?? props.label)}
+      selected={props.selected}
+      disabled={props.disabled}
+      onPress={props.onPress}
+      style={{
+        ...controlStyle,
+        width: 32,
+        paddingHorizontal: 8,
+        alignItems: 'center',
+        flexShrink: 0,
+      }}
+      hoverStyle={quietHoverStyle()}
+      activeStyle={quietActiveStyle()}
+      focusStyle={quietFocusStyle()}
+      disabledStyle={controlDisabledStyle}
+    >
+      <Icon name={props.icon} color={props.selected ? C.accent : C.muted} />
+    </Button>
+  );
+}
+
+export const disclosureTitleStyle = { ...captionTextStyle, flex: 1, minWidth: 0 } as const;
+
+export function Disclosure(props: {
+  label: string;
+  tooltip?: string;
+  open: boolean;
+  foldable?: boolean;
+  terminalInset?: number;
+  onPress: () => void;
+  children: JSX.Element;
+  trailing?: JSX.Element;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
+      <Button
+        accessibilityLabel={props.label}
+        tooltip={props.tooltip === undefined ? undefined : textTooltip(() => props.tooltip)}
+        disabled={props.foldable === false}
+        selected={props.open}
+        onPress={props.onPress}
+        style={{
+          ...controlStyle,
+          paddingHorizontal: disclosureInset(props.terminalInset ?? 0),
+          flex: 1,
+          minWidth: 0,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+        }}
+        hoverStyle={quietHoverStyle()}
+        activeStyle={quietActiveStyle()}
+        focusStyle={quietFocusStyle()}
+      >
+        <If when={props.foldable !== false}>
+          <Icon name={props.open ? 'down' : 'right'} color={C.secondary} />
+        </If>
+        {props.children}
+      </Button>
+      {props.trailing}
+    </View>
+  );
+}
 export type BrowserHeader = {
   expanded: boolean;
   hidden: boolean;
@@ -142,7 +229,7 @@ export function Header(props: {
   commands(): void;
   browser: BrowserHeader;
   files?(): void;
-  filesOpener?(node: YNode): void;
+  filesOpener?(node: ViewRef): void;
 }) {
   const workspaceName = () => {
     const path = props.workspace;

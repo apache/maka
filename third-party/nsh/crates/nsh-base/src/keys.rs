@@ -1,6 +1,7 @@
 //! Keys a control handles while it has the keyboard focus (a slider's
-//! arrows): bound in the surface's keymap only while the control says it
-//! is focused, so they never take a key from the rest of the app.
+//! arrows, a number input's): bound in the surface's keymap only while the
+//! control says it is focused, so they never take a key from the rest of
+//! the app.
 
 use std::rc::Rc;
 
@@ -17,6 +18,18 @@ pub(crate) fn bind_while<A: Copy + 'static>(
     keys: &'static [(&'static str, bool, A)],
     run: impl Fn(A) + 'static,
 ) {
+    bind_while_when(active, When::NotEditing, keys, run);
+}
+
+/// [`bind_while`] firing as `when` says: [`When::Always`] for a control
+/// whose own text input has the focus (a number input's arrows, which the
+/// input would otherwise take to move its caret).
+pub(crate) fn bind_while_when<A: Copy + 'static>(
+    active: impl Fn() -> bool + 'static,
+    when: When,
+    keys: &'static [(&'static str, bool, A)],
+    run: impl Fn(A) + 'static,
+) {
     let run = Rc::new(run);
     effect(move || {
         if !active() {
@@ -24,14 +37,7 @@ pub(crate) fn bind_while<A: Copy + 'static>(
         }
         for &(keystroke, repeat, action) in keys {
             let run = run.clone();
-            on_key_with(
-                keystroke,
-                KeyOptions {
-                    when: When::NotEditing,
-                    repeat,
-                },
-                move |_| run(action),
-            );
+            on_key_with(keystroke, KeyOptions { when, repeat }, move |_| run(action));
         }
     });
 }

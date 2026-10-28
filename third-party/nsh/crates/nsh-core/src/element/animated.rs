@@ -317,7 +317,7 @@ impl AnimatedNode {
         };
         let first = Cell::new(true);
         super::reactive::render_effect(move || {
-            let output = pick(super::ambient::dark());
+            let output = pick(super::dark());
             if !first.replace(false) {
                 held.act(AnimationOp::SetOutput {
                     node: held.id(),
@@ -362,7 +362,7 @@ impl AnimatedNode {
         };
         let now = dark
             .clone()
-            .filter(|_| super::untracked(super::ambient::dark))
+            .filter(|_| super::untracked(super::dark))
             .map(op);
         self.derive(
             DerivedKey {
@@ -525,7 +525,7 @@ impl Default for Interpolation {
 }
 
 /// A settable, animatable value (made with
-/// [`super::ambient::animated_value`]): set it, animate it, bind it, derive
+/// [`super::animated_value`]): set it, animate it, bind it, derive
 /// from it. A `Copy` handle, kept by the owner it was made under: copies
 /// are the same value, closures share it as they share a signal; used
 /// after the owner is gone, it does nothing (see the module's docs).
@@ -1254,9 +1254,9 @@ impl Motion {
 
     /// Plays `motion` on its channels (a new one interrupts the one
     /// playing). When the user asks for less motion
-    /// ([`super::ambient::reduce_motion`]), it lands where it ends without moving.
+    /// ([`super::reduce_motion`]), it lands where it ends without moving.
     pub fn play(&self, motion: impl Into<MotionSpec>) -> AnimationEnd {
-        self.run(motion.into(), super::ambient::reduce_motion())
+        self.run(motion.into(), super::reduce_motion())
     }
 
     /// Plays `motion` even when the user asks for less motion.
@@ -1270,7 +1270,7 @@ impl Motion {
     /// [`Self::play`], it lands at its end when the user asks for less
     /// motion (as things are when it is made).
     pub fn animation(&self, motion: impl Into<MotionSpec>) -> Animation {
-        self.composed(motion.into(), super::ambient::reduce_motion())
+        self.composed(motion.into(), super::reduce_motion())
     }
 
     fn composed(&self, motion: MotionSpec, reduced: bool) -> Animation {

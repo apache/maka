@@ -7,7 +7,7 @@ const PARAGRAPH = "text:/^Type Markdown as you go/";
 
 async function openDemo() {
   const app = await open("../App.tsx");
-  await app.press("role:button[Rich Editor]");
+  await app.press("role:button[RichEditor]");
   await app.waitFor("Tab indents an item, Shift-Tab outdents it");
   return app;
 }

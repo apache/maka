@@ -763,7 +763,7 @@ fn chat() -> impl IntoElement {
 |---|---|---|
 | `onLinkPress` | `.on_link_press(\|event: &TextViewLinkPressEvent\| ..)` | 链接被点击：`{ url }`，其 URL；标题为 `#anchor`，脚注为 `#footnote-<label>`。 |
 | `onCodeBlockAction` | `.on_code_block_action(\|event: &TextViewCodeActionEvent\| ..)` | 代码块的操作被按下（`copy` 会在复制后报告）。 |
-| `onImagePress` | `.on_image_press(\|image: &Image\| ..)` | 不在链接中的图片被点击：该图片，由应用放大显示（应用自己的可缩放查看器）。 |
+| `onImagePress` | `.on_image_press(\|image: &Image\| ..)` | 不在链接中的图片被点击：`{ image }` 是该图片，由应用放大显示（应用自己的可缩放查看器）。 |
 
 <a id="accessibility"></a>
 

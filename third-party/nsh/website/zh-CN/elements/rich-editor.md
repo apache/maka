@@ -42,7 +42,7 @@ mount(App);
 
 ## 样式
 
-编辑器以应用的外观绘制文档：`classes` 和 `styles` 设置它的各个部件（`root`、`content`、`caret`、`selection`、`placeholder`、`composition`、`selectedNode`、`listMarker`），按类型设置节点（`nodes: { heading: "text-2xl font-bold", "heading[level=2]": "text-xl" }`），以及设置标记（`marks: { bold: "font-bold" }`）。节点规格把 `extra.listMarker` 设为 `"bullet"` 或 `"ordered"` 的列表（starter schema 的列表）中，每一项都在 `listMarker` 部件中显示标记：按层级显示 `•`、`◦`、`▪`，或从列表的 `start` 开始编号，放在列表项之前、列表的缩进中（如浏览器缩进 `ul`，在列表上设置 `pl-6`）。
+编辑器以应用的外观绘制文档：`classes` 和 `styles` 设置它的各个部件（`root`、`content`、`caret`、`selection`、`placeholder`、`composition`、`selectedNode`、`listMarker`，以及表格的 `selectedCell`、`tableGrip`、`tableResizeHandle`、`tableDropIndicator`），按类型设置节点（`nodes: { heading: "text-2xl font-bold", "heading[level=2]": "text-xl" }`），以及设置标记（`marks: { bold: "font-bold" }`）。节点规格把 `extra.listMarker` 设为 `"bullet"` 或 `"ordered"` 的列表（starter schema 的列表）中，每一项都在 `listMarker` 部件中显示标记：按层级显示 `•`、`◦`、`▪`，或从列表的 `start` 开始编号，放在列表项之前、列表的缩进中（如浏览器缩进 `ul`，在列表上设置 `pl-6`）。
 
 ```tsx
 <RichEditor
@@ -273,3 +273,51 @@ editor.run(insertMention(editor.suggestion("mention")!.range, "u1", "Joan"));
 - `withMention(schema, { name?, char? })` 添加 Tiptap 的提及节点：带 `id`、`label` 和触发字符的行内原子节点，在文本中写作 `@label`，在 HTML 中写作 `<span data-type="mention">`。`insertMention(range, id, label?)` 用一个提及和一个空格替换建议的范围。
 
 弹出层属于应用：它读取建议的状态，放在 `coordsAtPos(range.from)` 处，并以自己的方式绘制条目。
+
+## 表格
+
+`TableKit` 提供 Tiptap 的表格：`RichTable`（Tiptap 的 `Table`）、`RichTableRow`、`RichTableHeader` 和 `RichTableCell`。它与 `StarterKit` 一起添加：
+
+```tsx
+import { RichEditor, StarterKit, TableKit, addRowAfter, createRichEditor, insertTable, mergeCells } from "nsh/base";
+
+const editor = createRichEditor({
+  extensions: [StarterKit, TableKit.configure({ table: { cellMinWidth: 40 } })],
+});
+
+editor.run(insertTable({ rows: 3, cols: 3, withHeaderRow: true }));
+editor.run(addRowAfter());
+```
+
+表格接受选项 `resizable`（true）、`cellMinWidth`（25）、`lastColumnResizable`（true）、`allowTableNodeSelection`（false）和 `HTMLAttributes`；`TableKit.configure({ tableHeader: false })` 不包含其中一个扩展。单元格包含块，带有 `colspan`、`rowspan` 和 `colwidth`（其跨越的每一列的宽度，以点为单位）；行带有 `height`。
+
+Tab 与 Shift-Tab 在单元格之间移动，在最后一个单元格按 Tab 会添加一行。在单元格边缘按方向键会进入相邻单元格；Shift 加方向键，或跨单元格拖动，会选中一个矩形区域的单元格（类型为 `"cell"` 的选区，其 `anchor` 与 `head` 是首尾单元格之前的位置）。Backspace 与 Delete 清空选中的单元格，选中全部单元格时删除整个表格。
+
+在编辑器中，表格是由其单元格组成的网格：每列与其单元格的 `colwidth` 一样宽，没有宽度的列分享剩余空间（至少 `cellMinWidth` 宽），每行至少为其 `height` 高。默认外观来自主题：1 点 `border` 网格线，表头单元格使用 `muted` 背景，单元格带内边距，选中的单元格覆盖一层 `selectedCell` 部件，使用选区颜色。`classes.nodes`（`table`、`tableCell`、`tableHeader`）和这些部件可以重新设置全部外观。在单元格的第一行或最后一行按上下方向键，会进入上方或下方的单元格。
+
+文档可编辑时：
+
+- 在桌面平台上，每列的右边框和每行的下边框可以调整尺寸：指针显示调整光标和 `tableResizeHandle` 线条，表格随拖动变化，松开时在一步中设置 `colwidth` 或 `height`，撤销可以一次撤回。`resizable: false` 关闭此功能，`lastColumnResizable: false` 保持最后一列的宽度。
+- 选区所在的表格在其上边框每列上方、左边框每行旁边显示抓手（`tableGrip`）。按下抓手选中该列或该行；在桌面平台上拖动抓手会显示放置位置（`tableDropIndicator`），松开时移动到那里。
+
+```tsx
+<RichEditor
+  editor={editor}
+  classes={{
+    nodes: { tableHeader: "font-semibold", tableCell: "px-3 py-2" },
+    selectedCell: "bg-primary/10",
+    tableGrip: "bg-muted-foreground/60 rounded-full",
+  }}
+/>
+```
+
+这些命令都是 `nsh/base` 的辅助函数：
+
+- `insertTable({ rows, cols, withHeaderRow })`（默认 3 × 3，带表头行）和 `deleteTable()`。
+- `addColumnBefore()`、`addColumnAfter()`、`deleteColumn()`、`addRowBefore()`、`addRowAfter()`、`deleteRow()`。
+- `mergeCells()`、`splitCell()` 和 `mergeOrSplit()`。
+- `toggleHeaderRow()`、`toggleHeaderColumn()` 和 `toggleHeaderCell()`。
+- `setCellAttribute(name, value)`、`setCellSelection({ anchorCell, headCell })`、`goToNextCell()`、`goToPreviousCell()` 和 `fixTables()`（修复缺少或重叠单元格的表格）。
+- `moveTableRow({ from, to, select })` 与 `moveTableColumn({ from, to, select })` 移动一行或一列，连同其合并单元格跨越的行或列；`setColumnWidth({ col, width })` 与 `setRowHeight({ row, height })` 设置尺寸（`null` 表示随内容）。这些命令接受 `table`（表格之前的位置），以作用于选区所在表格之外的表格。
+
+表格可读写 HTML（`<table>` 与 `<th>` / `<td>`、`colspan`、`rowspan` 和 `data-colwidth`）和 Markdown：带表头行且每个单元格只有一个段落的表格写成 GFM 管道表格，其他表格写成其 HTML，读回后保持不变。纯文本中，一行是用制表符分隔的单元格组成的一行文字。

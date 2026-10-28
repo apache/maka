@@ -1,7 +1,7 @@
 // What a platform does besides drawing, as headless runs play it: going
 // back, dialogs, the clipboard, native animations, a dialog, images
 // that never load, and the keyboard focus a ref's `focus()` moves.
-import { Image, mount, signal, Text, View } from "nsh";
+import { Image, mount, signal, Text, View, type ViewRef } from "nsh";
 import { Animated, createAnimatedValue } from "nsh";
 import { Clipboard } from "nsh";
 import { AlertDialog, createNavStack, Dialog, NavPage, NavStack } from "nsh/base";
@@ -25,7 +25,7 @@ function Home() {
   const sheet = signal(false);
   const shown = signal(0);
   const keyFocus = signal("none");
-  let target: YNode | undefined;
+  let target: ViewRef | undefined;
   const x = createAnimatedValue(0);
   return (
     <NavPage title="Home">
@@ -39,26 +39,29 @@ function Home() {
         <Press
           label="Delete"
           onPress={async () => {
-            const chosen = await AlertDialog.show({
+            const { action } = await AlertDialog.show({
               title: "Delete?",
               description: "It is gone after.",
               actions: [
-                { label: "Cancel", role: "cancel" },
-                { label: "Delete", role: "destructive" },
+                { label: "Cancel", role: "cancel", id: "cancel" },
+                { label: "Delete", role: "destructive", id: "delete" },
               ],
             });
-            answer.set(chosen ?? "dismissed");
+            answer.set(action ?? "dismissed");
           }}
         />
         <Press
           label="Update"
           onPress={async () => {
-            const chosen = await AlertDialog.show({
+            const { action } = await AlertDialog.show({
               title: "Update",
               description: "Install it now?",
-              actions: [{ label: "Later" }, { label: "Install" }],
+              actions: [
+                { label: "Later", id: "later" },
+                { label: "Install", id: "install" },
+              ],
             });
-            answer.set(chosen ?? "dismissed");
+            answer.set(action ?? "dismissed");
           }}
         />
         <Press label="Copy" onPress={() => Clipboard.writeText("copied text")} />
@@ -85,7 +88,7 @@ function Home() {
         <Press label="Focus it" onPress={() => target?.focus()} />
         <Text>{`Key focus: ${keyFocus()}`}</Text>
         <Press label="Sheet" onPress={() => sheet.set(true)} />
-        <Dialog open={sheet()} onOpenChange={(open) => sheet.set(open)} onOpen={() => shown.set(shown() + 1)}>
+        <Dialog open={sheet()} onOpenChange={({ open }) => sheet.set(open)} onOpen={() => shown.set(shown() + 1)}>
           <Text>In the sheet</Text>
         </Dialog>
       </View>

@@ -22,7 +22,7 @@ import { errorText, message, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { Button, Dialog, Popover } from 'nsh/base';
 import { windowSize } from 'nsh';
 import { host } from './host';
@@ -48,7 +48,7 @@ import { SessionCompactionPrompt } from './SessionCompactionPrompt';
 type Page = 'actions' | 'rename' | 'fork' | 'remove' | 'compaction_prompt';
 export function SessionActions(props: {
   session: SessionActionTarget;
-  anchor(): YNode | null;
+  anchor(): ViewRef | null;
   current(): boolean;
   close(): void;
   notice(message: UiText): void;
@@ -77,7 +77,7 @@ export function SessionActions(props: {
   const dismiss = (from: Page) => {
     if (active() && !pending() && page() === from) props.close();
   };
-  const menuChanged = (next: boolean) => {
+  const menuChanged = ({ open: next }: { open: boolean }) => {
     if (!next) back('actions');
   };
   effect(() => {
@@ -386,7 +386,7 @@ export function SessionActions(props: {
                     accessibilityLabel={tr('Conversation title')}
                     value={title()}
                     readonly={pending()}
-                    onChange={(value) => title.set(value)}
+                    onChange={({ value }) => title.set(value)}
                     // Enter saves, as the button below does.
                     onSubmit={() =>
                       void submit(

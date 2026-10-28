@@ -60,7 +60,7 @@ impl<E: Event> Scope<E> {
     /// screen's (below the header) or modal's, else the safe area (TS:
     /// `safeAreaInsets()`). Reading subscribes.
     pub fn insets(&self) -> crate::EdgeInsets {
-        super::ambient::insets_of(self.host)
+        super::insets_of(self.host)
     }
 }
 

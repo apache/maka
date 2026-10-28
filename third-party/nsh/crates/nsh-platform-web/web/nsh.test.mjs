@@ -26,6 +26,8 @@ function fakePlayer(options = {}) {
     fileOperations: new Map(),
     requests: new Map(),
     websockets: new Map(),
+    shaderViews: new Set(),
+    shaderFrameRequest: 0,
     environment: () => ({}),
     updateRootClasses() {},
     wasm: {
@@ -290,6 +292,209 @@ test("Return presses a focused pressable, not a focused stop that takes no press
   assert.deepEqual(pressed, [button]);
   assert.equal(key(chart), false);
   assert.deepEqual(pressed, [button]);
+});
+
+/**
+ * Runs `f` in a page with a window of 1280 × 720 whose system UI covers 44
+ * points at the top and 34 at the bottom; `f` gets the `ResizeObserver`s
+ * made meanwhile.
+ */
+function inPage(f) {
+  const observers = [];
+  const page = {
+    innerWidth: 1280,
+    innerHeight: 720,
+    getComputedStyle: () => ({ paddingTop: "44px", paddingRight: "0px", paddingBottom: "34px", paddingLeft: "0px" }),
+    getSelection: () => null,
+    document: { activeElement: null, body: {} },
+    requestAnimationFrame: () => 0,
+    ResizeObserver: class {
+      constructor(callback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe() {}
+      unobserve() {}
+    },
+  };
+  Object.assign(globalThis, page);
+  try {
+    f(observers);
+  } finally {
+    for (const name of Object.keys(page)) delete globalThis[name];
+  }
+}
+
+/**
+ * A player presenting dialogs over the window (`viewportDialogs`) or over
+ * its container: 320 × 240 at (100, 400) in the window. `reported` holds
+ * what `nsh_root_size` got.
+ */
+function dialogPlayer(viewportDialogs) {
+  const { player, sent } = fakePlayer();
+  const reported = [];
+  player.wasm.nsh_root_size = (...args) => {
+    reported.push(args);
+    return -1;
+  };
+  Object.assign(player, {
+    viewportDialogs,
+    size: [320, 240],
+    safeProbe: {},
+    pointers: new Map(),
+    root: {
+      getBoundingClientRect: () => ({ left: 100, top: 400, right: 420, bottom: 640 }),
+      // Moving a popover in the DOM takes it out of the top layer.
+      append: (el) => el.hidePopover(),
+      contains: () => false,
+    },
+    scopeFocus() {},
+    syncHistorySoon() {},
+    dropLeftWith() {},
+  });
+  return { player, sent, reported };
+}
+
+/**
+ * A modal's (or an alert's) element, `width` × `height` while it is in the
+ * top layer, where the CSS sizes it; `shown` logs each time it goes there.
+ */
+function dialogView(id, width, height, shown = []) {
+  const classes = new Set();
+  let open = false;
+  return {
+    _id: id,
+    _kind: "modal",
+    style: {},
+    isConnected: true,
+    listeners: [],
+    classList: { add: (name) => classes.add(name), contains: (name) => classes.has(name) },
+    setAttribute() {},
+    addEventListener(type, _listener, options) {
+      this.listeners.push([type, options]);
+    },
+    get clientWidth() {
+      return open ? width : 0;
+    },
+    get clientHeight() {
+      return open ? height : 0;
+    },
+    matches: (selector) => selector === ":popover-open" && open,
+    showPopover() {
+      open = true;
+      shown.push(id);
+    },
+    hidePopover() {
+      open = false;
+    },
+    resize(w, h) {
+      [width, height] = [w, h];
+    },
+  };
+}
+
+test("a dialog over the window lays out at the window's size and safe area, wherever the container is", () => {
+  inPage(() => {
+    const { player, reported } = dialogPlayer(true);
+    const dialog = dialogView(7, 1280, 720);
+    player.present(dialog);
+    assert.deepEqual(reported, [[7, 1280, 720, 44, 0, 34, 0]]);
+    assert.equal(dialog.popover, "manual");
+    assert.ok(dialog.classList.contains("nsh-viewport"));
+    // The browser waits for blocking wheel listeners only over the boxes of
+    // the elements that have them: the layer needs one of its own.
+    assert.deepEqual(dialog.listeners, [["wheel", { passive: false }]]);
+    // The CSS places it: no frame of the container's.
+    assert.equal(dialog.style.width, undefined);
+    assert.equal(dialog.style.transform, "translateY(720px)", "it slides in from the window's bottom edge");
+  });
+});
+
+test("a dialog over the container keeps the container's size, place and safe area", () => {
+  inPage(() => {
+    const { player, reported } = dialogPlayer(false);
+    const dialog = dialogView(7, 1280, 720);
+    player.present(dialog);
+    assert.deepEqual(reported, [[7, 320, 240, 0, 0, 0, 0]]);
+    assert.equal(dialog.popover, undefined);
+    const s = dialog.style;
+    assert.deepEqual([s.left, s.top, s.width, s.height], ["0px", "0px", "320px", "240px"]);
+    assert.equal(s.transform, "translateY(240px)");
+  });
+});
+
+test("a dialog over the window follows the window's size, scroll bars included", () => {
+  inPage((observers) => {
+    const { player, reported } = dialogPlayer(true);
+    const dialog = dialogView(7, 1280, 720);
+    player.present(dialog);
+    const [observer] = observers;
+    // The page grew a scroll bar: no `resize`, a narrower top layer.
+    dialog.resize(1265, 720);
+    observer.callback([{ target: dialog }]);
+    assert.deepEqual(reported.at(-1), [7, 1265, 720, 44, 0, 34, 0]);
+    observer.callback([{ target: dialog }]);
+    assert.equal(reported.length, 2, "an unchanged size is not reported again");
+    dialog._leaving = true;
+    dialog.resize(800, 600);
+    observer.callback([{ target: dialog }]);
+    assert.equal(reported.length, 2, "nor is a leaving dialog's");
+  });
+});
+
+test("alerts stay above a dialog presented over the window after them", () => {
+  inPage(() => {
+    const shown = [];
+    const { player } = dialogPlayer(true);
+    const alert = dialogView(2, 1280, 720, shown);
+    player.raise(alert);
+    player.dialogs = [alert];
+    player.present(dialogView(7, 1280, 720, shown));
+    assert.deepEqual(shown, [2, 7, 2]);
+  });
+});
+
+test("a press in a dialog over the window reports its place in the window", () => {
+  inPage(() => {
+    for (const [viewport, pagePosition] of [[true, { x: 642, y: 321 }], [false, { x: 542, y: -79 }]]) {
+      const { player, sent } = dialogPlayer(viewport);
+      const dialog = dialogView(7, 1280, 720);
+      const button = {
+        _id: 9,
+        _events: new Set(["onPress"]),
+        _props: {},
+        _tracked: 0,
+        getBoundingClientRect: () => ({ left: 600, top: 300, right: 700, bottom: 340 }),
+        closest: (selector) => (selector === ".nsh-modal.nsh-viewport" ? dialog : null),
+      };
+      player.editable = () => false;
+      player.viewOf = () => button;
+      player.ancestors = () => [button];
+      player.pointerDown({ pointerId: 1, pointerType: "touch", button: 0, clientX: 640, clientY: 320, target: button });
+      // Released elsewhere on the page: still in the dialog's coordinates.
+      player.pointerUp({ pointerId: 1, clientX: 642, clientY: 321, target: {} }, false);
+      const [, payload] = sent.find(([name]) => name === "onPress");
+      assert.deepEqual(payload.position, { x: 42, y: 21 });
+      assert.deepEqual(payload.pagePosition, pagePosition);
+    }
+  });
+});
+
+test("the page does not scroll under a dialog or an alert over the window", () => {
+  const cases = [
+    [true, true, true],
+    [true, false, false],
+    [false, true, false],
+  ];
+  for (const [viewport, onDialog, prevented] of cases) {
+    const { player } = dialogPlayer(viewport);
+    player.scrollChain = () => [];
+    const target = { closest: (selector) => (onDialog && selector === ".nsh-viewport" ? {} : null) };
+    let wasPrevented = false;
+    const e = { deltaX: 0, deltaY: 120, deltaMode: 0, ctrlKey: false, shiftKey: false, target };
+    player.wheel({ ...e, preventDefault: () => (wasPrevented = true) });
+    assert.equal(wasPrevented, prevented, `viewport ${viewport}, on a dialog ${onDialog}`);
+  }
 });
 
 /** A fake engine's `nsh_data`: what was handed over, as `[name, bytes, ok]`. */

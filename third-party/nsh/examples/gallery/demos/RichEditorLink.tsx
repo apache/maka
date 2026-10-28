@@ -80,7 +80,7 @@ export function LinkBubble(props: { menu: LinkMenu }) {
         <Input
           ref={(node: { focus(): void }) => node.focus()}
           value={menu.draft()}
-          onChange={(value) => menu.draft.set(value)}
+          onChange={({ value }) => menu.draft.set(value)}
           onSubmit={menu.apply}
           submitBehavior="submit"
           placeholder="https://"

@@ -84,7 +84,8 @@ Rust 组件（`nsh/base` 的以及应用自己 crate 中的组件）在 TSX 中�
 | `selected:` | 元素处于选中状态（`Button` 的 `selected`、`accessibilityState.selected`） | `.selected_style(..)` |
 | `checked:` | 元素处于勾选状态（`accessibilityState.checked` 为 `true`；`"mixed"` 不算） | `.checked_style(..)` |
 | `indeterminate:` | 元素处于半选状态（`accessibilityState.checked` 为 `"mixed"`） | `.indeterminate_style(..)` |
-| `group-active:`、`group-hover:`、`group-focus:`、`group-focus-within:`、`group-disabled:`、`group-selected:`、`group-checked:`、`group-indeterminate:` | 最近的带 `group` 类的祖先处于该状态 | 祖先上 `.group()`；内部 `.group_active(..)`、`.group_hover(..)`、`.group_focus_within(..)` |
+| `aria-expanded:` | 元素处于展开状态（`accessibilityState.expanded` 为 `true`）：弹出层打开时 `Popover`、`Menu` 的触发器 | `.expanded_style(..)` |
+| `group-active:`、`group-hover:`、`group-focus:`、`group-focus-within:`、`group-disabled:`、`group-selected:`、`group-checked:`、`group-indeterminate:`、`group-aria-expanded:` | 最近的带 `group` 类的祖先处于该状态 | 祖先上 `.group()`；内部 `.group_active(..)`、`.group_hover(..)`、`.group_focus_within(..)` |
 | `group-active/name:` ... | 同上，针对标记为 `group/name` 的祖先 | `.group_named("name")`；`.group_active_named("name", ..)` 等 |
 | `first:`、`last:`、`odd:`、`even:`、`only:` | 元素自身在兄弟节点中的位置。要按行的位置给行内标签上色，把 `last:text-*` 写在行上，标签会继承它 | 根据行的索引用普通 Rust 判断（`at.is_first()`、`at.is_last()`、`at.index() % 2`） |
 | `placeholder:` | 设置输入框占位文字的样式（`placeholder:text-zinc-400`） | `.placeholder_color(..)` |

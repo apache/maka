@@ -48,8 +48,8 @@ use std::{
 };
 
 use nsh_core::{
-    Bounds, Color, EventKind, EventPayload, InputConfig, PayloadValue, Points, SubmitBehavior,
-    TextAlign,
+    Bounds, Color, EventKind, EventPayload, InputConfig, NodeId, PayloadValue, Points,
+    SubmitBehavior, TextAlign,
     geometry::{Point, Size},
     tailwind::state,
     text_edit::{self as model, Composition, Model, Unit, key_of, pasted, utf16_to_byte},
@@ -131,6 +131,8 @@ pub(crate) struct InputState {
     /// The surface's key ([`Surface::by_key`]): `focus()` and `blur()`
     /// come with the view only.
     surface: u64,
+    /// The input view's node (`EngineControl::input_scroll`).
+    id: NodeId,
     model: RefCell<Model>,
     config: RefCell<InputConfig>,
     /// A configuration was applied (auto focus happens on the first).
@@ -165,6 +167,10 @@ pub(crate) struct InputState {
     /// Scroll offset of the text: horizontal for one line, vertical for
     /// several.
     scroll: Cell<f32>,
+    /// The scroll of several lines as last reported to a built-in bar
+    /// (`InputConfig::replaced`): offset, text height, width, viewport
+    /// height. `None` until reported (again).
+    reported_scroll: Cell<Option<(f32, f32, f32, f32)>>,
     /// The x the caret keeps while it moves up and down lines.
     goal_x: Cell<Option<f32>>,
     /// A press is selecting.
@@ -178,9 +184,10 @@ pub(crate) struct InputState {
 }
 
 impl InputState {
-    fn new(surface: u64) -> Self {
+    fn new(surface: u64, id: NodeId) -> Self {
         InputState {
             surface,
+            id,
             model: RefCell::default(),
             config: RefCell::default(),
             configured: Cell::new(false),
@@ -197,6 +204,7 @@ impl InputState {
             active: Cell::new(true),
             caret_on: Cell::new(true),
             scroll: Cell::new(0.0),
+            reported_scroll: Cell::new(None),
             goal_x: Cell::new(None),
             drag: Cell::new(None),
             format: RefCell::new(None),
@@ -465,6 +473,39 @@ impl InputState {
         self.origin(&layout);
     }
 
+    /// Reports how far several lines scrolled, the text's height and the
+    /// viewport's to the built-in bar that takes the place of an
+    /// indicator (`InputConfig::replaced`), when any of them changed since
+    /// last reported. Called with the clamped scroll ([`InputState::origin`]).
+    fn report_scroll(&self, layout: &IDWriteTextLayout) {
+        {
+            let config = self.config.borrow();
+            if !config.replaced || !config.multiline {
+                return;
+            }
+        }
+        let (w, h) = self.size.get();
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let content = metrics(layout).height.max(h);
+        let now = (self.scroll.get(), content, w, h);
+        if self.reported_scroll.replace(Some(now)) == Some(now) {
+            return;
+        }
+        let Some(surface) = Surface::by_key(self.surface) else {
+            return;
+        };
+        surface.control(|c| {
+            c.input_scroll(
+                self.id,
+                Point::new(Points::ZERO, Points(now.0)),
+                Size::new(Points(w), Points(content)),
+                Size::new(Points(w), Points(h)),
+            );
+        });
+    }
+
     /// The caret shows (again) for a whole blink: typing and moving never
     /// leave it hidden.
     fn wake_caret(&self) {
@@ -493,6 +534,9 @@ impl Hosted for InputState {
             cx.push_clip_rect(0.0, -1.0e4, w, 2.0e4);
         }
         let (ox, oy) = self.origin(&layout);
+        // Every change of the scroll, the text or the size draws again, so
+        // a built-in bar hears of each here.
+        self.report_scroll(&layout);
         let config = self.config.borrow();
         let model = self.model.borrow();
         let secure = config.secure;
@@ -1266,7 +1310,7 @@ fn return_key(behavior: SubmitBehavior, multiline: bool, modifiers: Modifiers) -
 
 /// Sets up an input view.
 pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
-    let input = Rc::new(InputState::new(surface.key()));
+    let input = Rc::new(InputState::new(surface.key(), view.id()));
     input.active.set(window_active(surface));
     view.state_mut().input = Some(input);
     // Nothing has the focus yet: typing must not open a composition.
@@ -1312,6 +1356,16 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         auto_focus(surface, view);
     }
     place(view, &input);
+    // A built-in bar (newly) taking the indicator's place hears where the
+    // text is now, once placed (else on the first draw).
+    input.reported_scroll.set(None);
+    if config.replaced
+        && config.multiline
+        && let Some(layout) = input.layout()
+    {
+        input.origin(&layout);
+        input.report_scroll(&layout);
+    }
 }
 
 /// Focuses the field once it is on screen (the batch that made it may
@@ -1648,6 +1702,7 @@ pub(crate) fn wheel(view: &NshView, dy: f32) -> bool {
     let moved = input.scroll.get() != before;
     if moved {
         view.changed();
+        input.report_scroll(&layout);
         if input.focused.get()
             && let Some(surface) = surface_of(view)
         {
@@ -1655,6 +1710,33 @@ pub(crate) fn wheel(view: &NshView, dy: f32) -> bool {
         }
     }
     moved
+}
+
+/// `Command::ScrollTo` for a multiline input: scrolls its text to `y`,
+/// clamped to the lines that do not fit (a built-in bar's drags).
+pub(crate) fn scroll_to(view: &NshView, y: Points) {
+    let Some(input) = input_of(view) else {
+        return;
+    };
+    if !input.multiline() {
+        return;
+    }
+    let Some(layout) = input.layout() else {
+        return;
+    };
+    let before = input.scroll.get();
+    input.scroll.set(y.0);
+    // Clamped to the text.
+    input.origin(&layout);
+    if input.scroll.get() != before {
+        view.changed();
+        input.report_scroll(&layout);
+        if input.focused.get()
+            && let Some(surface) = surface_of(view)
+        {
+            report_caret(&surface, view, &input);
+        }
+    }
 }
 
 /// A right click on field `view`: it takes the focus (keeping its

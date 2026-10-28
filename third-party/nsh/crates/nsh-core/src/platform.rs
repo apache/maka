@@ -377,7 +377,7 @@ impl std::fmt::Display for Locale {
 }
 
 /// An HTTP request for the platform's network stack (made by JS `fetch`
-/// and by Rust components' [`crate::element::ambient::fetch`]).
+/// and by Rust components' [`crate::element::fetch`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     /// Upper-case method (`GET`, `POST`, ...).

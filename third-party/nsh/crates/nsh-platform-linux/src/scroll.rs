@@ -268,9 +268,16 @@ pub(crate) fn config(
     view: &NshView,
     horizontal: bool,
     indicator: bool,
+    replaced: bool,
     mirrored: bool,
 ) {
-    shared::config(&Host::new(surface, view), horizontal, indicator, mirrored);
+    shared::config(
+        &Host::new(surface, view),
+        horizontal,
+        indicator,
+        replaced,
+        mirrored,
+    );
 }
 
 /// The viewport size changed.

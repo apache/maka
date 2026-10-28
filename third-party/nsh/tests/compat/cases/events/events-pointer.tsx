@@ -1,16 +1,15 @@
 // A case of the API's test suite (docs/dev/compatibility.md): what the
 // platform reports of a finger, the mouse, dragged files and assistive
-// technologies: press in and out, hover in, moves over and out, file drags
-// entering, leaving and dropping, accessibility actions, and the keyboard
-// focus reaching and leaving a view that takes presses. Each handler
-// shows what it gets as text. Its script checks
-// each.
+// technologies: press in and out, the mouse coming over, moving (with a
+// button down too) and leaving, file drags entering, leaving and dropping,
+// accessibility actions, and the keyboard focus reaching and leaving a
+// view that takes presses. Each handler shows what it gets as text. Its
+// script checks each.
 import { Text, View, signal } from "nsh";
 
 function App() {
   const press = signal("none");
   const hover = signal("none");
-  const mouse = signal("none");
   const drop = signal("none");
   const action = signal("none");
   const keyFocus = signal("none");
@@ -27,20 +26,19 @@ function App() {
         <View
           testID="hover"
           style={{ height: 40 }}
-          onMouseMove={(e) => mouse.set(`${e.x},${e.y}`)}
-          onHoverIn={() => hover.set("in")}
-          onHoverMove={(e) =>
+          onMouseEnter={(e) => hover.set(`in ${e.position.x},${e.position.y}`)}
+          onMouseMove={(e) =>
             hover.set(
               `move ${e.position.x},${e.position.y} page ${e.pagePosition.x},${e.pagePosition.y}` +
                 `${e.modifiers.alt ? " alt" : ""}${e.modifiers.control ? " ctrl" : ""}` +
-                `${e.modifiers.platform ? " meta" : ""}${e.modifiers.shift ? " shift" : ""}`,
+                `${e.modifiers.platform ? " meta" : ""}${e.modifiers.shift ? " shift" : ""}` +
+                `${e.pressedButton ? ` ${e.pressedButton} down` : ""}`,
             )
           }
-          onHoverOut={() => hover.set(hover() + " out")}
+          onMouseLeave={(e) => hover.set(`${hover()} out ${e.position.x},${e.position.y}`)}
         />
       </View>
       <Text>Hover: {hover()}</Text>
-      <Text>Mouse: {mouse()}</Text>
       <View
         testID="drop"
         style={{ height: 40 }}

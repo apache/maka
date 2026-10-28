@@ -1,4 +1,4 @@
-import { type JSX, mount, signal, Text, View, type YNode } from "nsh";
+import { type InputRef, type JSX, mount, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { button, buttonText, field, Inspector, Panel, Stage, ui, wide } from "./palette";
 
@@ -7,13 +7,13 @@ function App() {
   const password = signal("");
   const notes = signal("");
   const submitted = signal("");
-  let passwordInput!: YNode;
+  let passwordInput!: InputRef;
   const signIn = () => submitted.set(`Signed in as ${name() || "nobody"}`);
   const nameField = () => (
     <Input
       {...field()}
       value={name()}
-      onChange={(text) => name.set(text)}
+      onChange={({ value }) => name.set(value)}
       placeholder="Ada Lovelace"
       autoCapitalize="words"
       maxLength={20}
@@ -27,7 +27,7 @@ function App() {
       ref={passwordInput}
       {...field()}
       value={password()}
-      onChange={(text) => password.set(text)}
+      onChange={({ value }) => password.set(value)}
       masked
       autoComplete="current-password"
       returnKeyType="done"
@@ -39,7 +39,7 @@ function App() {
       {...field({ style: { height: wide() ? 80 : 100 } })}
       multiline
       value={notes()}
-      onChange={(text) => notes.set(text)}
+      onChange={({ value }) => notes.set(value)}
       placeholder="Anything else?"
     />
   );

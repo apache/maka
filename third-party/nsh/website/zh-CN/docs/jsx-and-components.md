@@ -315,7 +315,7 @@ each(todos, |todo| todo.id, |todo, index| {
 
 ## ref
 
-ref 指向一个宿主元素，用于命令式调用：`focus()`、`blur()`、`scroll_to()` / `scrollTo()`、`scroll_to_index()` / `scrollToIndex()`、`measure()`（[视图在哪里](./touch-and-gestures.md)）等。在 Rust 中，`element_ref()` 创建一个 ref，`.element_ref(&handle)` 把它放到元素上；在 TSX 中，`ref` 给你元素的原生节点，即一个 `YNode`：
+ref 指向一个宿主元素，用于命令式调用：`focus()`、`blur()`、`scroll_to()` / `scrollTo()`、`scroll_to_index()` / `scrollToIndex()`、`measure()`（[视图在哪里](./touch-and-gestures.md)）等。在 Rust 中，`element_ref()` 创建一个 ref，`.element_ref(&handle)` 把它放到元素上；在 TSX 中，`ref` 给你元素的 ref，类型是元素自己的（这里是 `InputRef`，`View` 的是 `ViewRef`；见 [ref 方法](../elements/index.md#ref-方法)）：
 
 ```rust tabs
 fn search() -> impl IntoElement {
@@ -327,12 +327,12 @@ fn search() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import type { YNode } from "nsh";
+import type { InputRef } from "nsh";
 import { Text, View } from "nsh";
 import { Input } from "nsh/base";
 
 function Search() {
-  let input: YNode | undefined;
+  let input: InputRef | undefined;
   return (
     <View>
       <Input ref={input} placeholder="Search" />
@@ -351,7 +351,7 @@ Rust 的 ref 是一个 `Copy` 句柄；它的调用发往携带它的元素，�
 - [signal](./reactivity.md) 会被设置为该节点，读取这个 signal 的地方会随之更新；
 - 函数会以节点为参数被调用（`<Scroll ref={(node) => (scroller = node)} />`）。
 
-`const` 或导入的绑定应持有 signal 或函数，例如 `const input = signal<YNode>()` 配合 `<Input ref={input} />` 和 `input()?.focus()`；持有其他内容时，会在元素创建时报告，并说明应该怎么写。
+`const` 或导入的绑定应持有 signal 或函数，例如 `const input = signal<InputRef>()` 配合 `<Input ref={input} />` 和 `input()?.focus()`；持有其他内容时，会在元素创建时报告，并说明应该怎么写。
 
 ref 在元素创建时就被设置，早于组件返回，因此在 [effect](./reactivity.md#effect) 和事件处理函数中都可以使用。调用会按顺序发送给视图，排在它之前的修改之后。基础组件以及你自己 crate 中的 Rust 组件同样接受 `ref`（Rust 中是 `component_ref()`，用 `.component_ref(&r)` 放到元素上：`dialog().component_ref(&r)`）。
 
@@ -375,7 +375,7 @@ function Field(props: InputProps & { label: string }) {
   );
 }
 
-<Field label="Email" value={email()} onChange={(t) => email.set(t)} keyboardType="email-address" />
+<Field label="Email" value={email()} onChange={({ value }) => email.set(value)} keyboardType="email-address" />
 ```
 
 `split(props, keys)` 返回 `[picked, rest]`，两者都仍然读取原始的 props（而解构 `{ label, ...rest } = props` 会把每个 prop 都读取一次）。JSX 中靠后的元素 props 会覆盖靠前的。

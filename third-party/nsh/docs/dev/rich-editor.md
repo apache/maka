@@ -22,7 +22,8 @@ what is ported. A module ported from one names its source in its module doc; kee
 | `state/` | `EditorState`, `Transaction`, `Selection` (text, node, all, custom), plugins and decorations |
 | `commands/` | prosemirror-commands and prosemirror-schema-list: `Command`s over a state and an optional dispatch, `chain_commands`, `base_keymap` |
 | `extensions/` | optional behavior as plugins: `history`, `keymap`, `input_rules`, `markdown` (Markdown shortcuts as you type, Markdown paste and copy, mapped by `MarkdownNames`); `starter`, the optional starter schema (paragraphs, headings, quotes, code, lists, images, the common marks) with its keymap and input rules |
-| `formats/` | `DocFormat`: `JsonFormat`, `PlainTextFormat`, `MarkdownFormat` (names mapped by `MarkdownNames`), the clipboard's `slice_to_text` / `slice_from_text` |
+| `tables/` | prosemirror-tables: `TableMap`, `CellSelection`, `fix_tables`, the `table_editing` plugin, the table commands and Tiptap's table node specs (see "Tables") |
+| `formats/` | `DocFormat`: `JsonFormat`, `PlainTextFormat`, `MarkdownFormat` (names mapped by `MarkdownNames`; GFM task items read as `taskList` / `taskItem`, a run of them splitting a bullet list, and write as `- [x]` / `- [ ]`), the clipboard's `slice_to_text` / `slice_from_text` |
 
 ## Documents defined by the schema
 
@@ -129,7 +130,8 @@ placed in the indent before the item (`•`, `◦`, `▪` by bulleted depth, or 
 `extra.listMarkerStart` attribute, `order` by default), as TextView places its markers; it is not in the document and
 takes no positions; a textblock is one text whose spans are its texts with
 their marks' parts (`classes.marks`), split at inline decorations (their `class`); inline leaves are their one-unit
-`leafText` (a line break) or attachments (their node view, else a box of their part); widget decorations are
+`leafText` (a line break), attachments (their node view), their `renderText` as a span of their part (a mention's
+`@name`, still one position: a press inside it lands on its nearer side), else a box of their part; widget decorations are
 attachments with their spec's `class`. A node view (`node_view.rs`: `NodeView`, registered in `NodeViews` or a
 plugin's `node_views` as an `Arc<dyn NodeView>`) renders a node type's blocks: `create` makes the element, which
 follows `cx.node()` while `update` returns true; `editable_content_slot` puts the editor's rendering of the content
@@ -154,13 +156,39 @@ movement (graphemes, words, line ends, lines and pages by geometry, keeping the 
 Presses: a node view's `handle_event`, the plugins' click hooks (`handle_click_on` per ancestor, then
 `handle_click`, double and triple likewise), then a caret (Shift extends), a word, the textblock or a node selection;
 a drag extends through `create_selection_between`, and past the viewport's top or bottom it scrolls the view on a timer (the code `Editor`'s `AutoScroll` and `edge_speed`) and extends again at each step. Paste: `transform_pasted_text`, `clipboard_text_parser` (else
-`slice_from_text`), `transform_pasted`, `handle_paste`, else a replace of the selection (origin `Paste`). Copy:
+`slice_from_text`), `transform_pasted`, `handle_paste`, else a replace of the selection (origin `Paste`). Files
+(images with their bytes, `file:` URLs from a file manager) go to the app as `onPasteFiles` and insert nothing,
+as Tiptap's file handler leaves them to its `onPaste`. Copy:
 `clipboard_text_serializer`, else `slice_to_text`.
 
 The bubble menu (`bubbleMenu`, a slot): an empty box over the selection's lines (`Rv::selection_box`), inside the
 content box so it scrolls with the text, anchors an `overlay()` holding the app's content (`bubbleMenuPlacement`,
 `bubbleMenuOffset`); the overlay flips and stays on screen as the core's overlays do. Whether it shows is the app's:
 it passes the slot while it wants the menu.
+
+Tables (`view/table.rs`): the tree walk flattens a table (a node whose spec's `extra.tableRole` is `"table"`): its
+cells, row after row, are the table's children; rows have no view. The table's block is a grid (`grid()`): a column
+per column of its `TableMap`, as wide as the cells' `colwidth` (at least `cellMinWidth`), else `minmax(cellMinWidth,
+1fr)`; a row per row, at least its `height`, else `auto`; a table whose columns all have widths is as wide as they are
+(`self-start`), wider than the editor it overflows. Each cell is placed at its map slots (`col-start` / `col-end` /
+`row-start` / `row-end`, so spans and rowspans need no row views) and takes its node part as other blocks do. The
+default look is the theme's: the table's top and left borders and each cell's right and bottom ones (`border`, 1
+point), cells padded 8 × 4, header cells on `muted`. A cell selection paints no text boxes: each selected cell holds a
+box of the `selectedCell` part (the theme's selection color), and `selection_box` is the cells' union.
+
+Presses and keys in tables: a press inside a cell hits that cell's textblocks only (`Geometry::hit_in`: a neighbor
+beside it may be nearer), and a press on a cell's or table's own padding places the caret rather than selecting the
+cell. Up and Down on a cell's first or last visual line go to the cell above or below at the goal x (with no such
+cell, the keymaps' `arrow` leaves the table); Tab and Shift-Tab are the `table` extension's keys. Over the content,
+`controls` draws the tables' handles while the document can be edited: on desktops a 6-point band on each column's
+right border and each row's bottom border (`resizable`; the last column's when `lastColumnResizable`), the column- or
+row-resize cursor, its line (`tableResizeHandle`, the theme's `primary`) on hover and while dragged; a drag previews
+the new size in the grid's tracks and commits `setColumnWidth` / `setRowHeight` once on release (at least
+`cellMinWidth`, rows 16 points). The table the selection is in has grips (a bar of the `tableGrip` part, the theme's
+`muted-foreground`) centered on its top border over each column and on its left border beside each row: a press
+selects the column or row (a cell selection), a drag on desktops shows the drop line (`tableDropIndicator`, `primary`)
+and moves it with `moveTableColumn` / `moveTableRow` on release. Table gestures come before the content box's
+selecting (`Rv::table_target` at the press).
 
 ## The JS API (`rich_editor/js/`)
 
@@ -250,7 +278,18 @@ JS describes.
   `posAtCoords`, `selectionRect`; JS reads them on the revision it subscribes to. The three geometry queries answer
   in points of the editor's content box (the box that scrolls, so its scroll offset is already in them) from the
   last view that mounted the session (`ViewGeometry`, registered by the controller); with no view they answer
-  nothing. The view tells the session its focus (`isFocused`, `focus` / `blur` events) and honors `setEditable`.
+  nothing. `pageCoordsAtPos` / `posAtPageCoords` answer the same in page (root) points, for UI an app places
+  outside the editor (a block handle): the view keeps the content's page offset, measured after each layout of the
+  content and as a handle drag starts, and moved by the scroll since.
+- **Handle drags** (Tiptap's drag handle, ProseMirror's `view.dragging`): `dragBlock(pos, page)` selects the block
+  at `pos` (a table too, though a press does not select one) and carries it closed, or, pressed inside a selection over
+  several of its siblings, all of them, `dragTo(page)` moves the drop
+  cursor and `endDrag()` drops it, removing the source, as one undo step; the app's handle sends its pointer's
+  page points (`ViewRequest::DragBlock` / `DragTo` / `EndDrag`). The drop goes before or after the innermost block
+  at the pointer's height whose parent takes the block, by the half the pointer is over, wherever the pointer is
+  across (the handle sits in the gutter); off every block, beside the nearest block that takes it, so a list item
+  dropped below its list stays in it. A selection dragged with Mod held across blocks covers them whole on release
+  (Tiptap's NodeRange), ready for the handle to carry. The view tells the session its focus (`isFocused`, `focus` / `blur` events) and honors `setEditable`.
 - **Events**: `create`, `update`, `selectionUpdate`, `transaction` (a summary), `focus`, `blur`, `paste`, `drop`,
   `delete`, `destroy`, posted to JS after the fact.
 - **Formats**: JSON (Tiptap's document JSON loads as is), Markdown (each type's form declared by its extension), HTML
@@ -308,6 +347,66 @@ commands of the built-in registry (`register_commands` of each module): `setLink
 The JS face (`js/extensions.rs`): `link`, `characterCount`, `suggestion` (plugin specs of the kinds `Link`,
 `CharacterCount`, `Suggestion` with typed option objects), `withMention`, the command helpers, and the session's
 `suggestion(key)`, `characters(mode)`, `words()` and `characterLimit`.
+
+## Tables (`tables/`)
+
+A port of prosemirror-tables with Tiptap's table extensions on top. Nothing in it knows node names: a type's role
+is its spec's `extra.tableRole` (`"table"`, `"row"`, `"cell"`, `"header_cell"`, `TableRole`), and
+`table_node_types(schema)` finds the four (cached by name in the schema; a cached `NodeType` would hold its schema).
+`tables::nodes` gives Tiptap's specs: `table` (`tableRow+`, isolating, `extra.render = "table"` plus the options the
+view reads: `cellMinWidth`, `resizable`, `lastColumnResizable`), `tableRow` (`height`), `tableCell` / `tableHeader`
+(`block+`, isolating, `colspan`, `rowspan`, `colwidth`: one width per spanned column, 0 for none). HTML is Tiptap's
+(`<table style><colgroup>…<tbody>`, `data-colwidth`).
+
+- `TableMap` (`map.rs`): the grid of a table, each slot the offset of the cell covering it, computed as
+  prosemirror-tables does with its `problems` (`TableProblem`: collisions, missing cells, overlong row spans,
+  disagreeing column widths, zero size). `TableMap::get` caches the last 16 maps by node identity. `find_cell`,
+  `col_count`, `next_cell`, `rect_between`, `cells_in_rect`, `position_at`, and `cells()` (each cell with its
+  `Rect`), which with `column_widths(table)` is what the view lays a table out from.
+- `CellSelection` (`cell_selection.rs`): a `CustomSelection` (JSON `{type: "cell", anchor, head}`, which
+  `Selection::from_json` knows, so chains and stored states keep it) whose ranges are its cells' contents. It maps
+  as prosemirror-tables' (a row or column selection stays one when its table changed), has a bookmark, and its
+  `content()` is the rectangle as rows (`cells_content`). The `replace` hook of `CustomSelection` (added for it,
+  `false` by default) fills the first cell and empties the others, so typing over and pasting into a cell
+  selection work through `Selection::replace`. `cell_selection_between(state, anchor, head)` is the drag:
+  cells of one table (the outer table's for nested ones), none within one cell.
+- `fix_tables` (`fix.rs`): prosemirror-tables' `fixTables`, run on the tables a change touched
+  (`changed_descendants` by identity) by `fix_tables_plugin`'s `append_transaction`, and on all of them by the
+  `fixTables` command.
+- `table_editing` (`editing.rs`): keys (arrows and Shift-arrows, Backspace / Delete on cell selections),
+  `create_selection_between` (drags) and
+  `normalize_selection` in `append_transaction` (selected cells, rows and tables become cell selections, cell
+  boundary and triple-click selections are trimmed as prosemirror-tables', and a text selection whose ends are in
+  two cells of one table becomes a cell selection). The kernel has no view, so where prosemirror-tables asks
+  `endOfTextblock`, `arrow` / `shift_arrow` check that the cursor is at its textblock's first or last position and
+  in the cell's first or last block; the view, which knows visual lines, may call them for Up / Down on the first or
+  last line too.
+- Commands (`commands.rs`), by Tiptap's names in the built-in registry (`table_command_factories`), so every editor
+  resolves them: prosemirror-tables' `addColumnBefore` / `After`, `deleteColumn`, `addRowBefore` / `After`,
+  `deleteRow` (both refuse to delete every column / row), `mergeCells`, `splitCell` (`split_cell_with_type`),
+  `setCellAttribute`, `toggleHeaderRow` / `Column` / `Cell`, `goToNextCell` / `PreviousCell`, `deleteTable`; Tiptap's
+  `insertTable({rows, cols, withHeaderRow})`, `mergeOrSplit`, `fixTables`, `setCellSelection({anchorCell,
+  headCell})`; NSH's for the view: `moveTableRow` / `moveTableColumn({from, to, select, table})` (the moved index
+  grows to the smallest span no merged cell crosses, as does the target; a target inside the moved span is refused;
+  the table is rebuilt and replaced in one step, the moved lines selected as a row / column selection by default),
+  `setColumnWidth({col, width, table})` (each cell covering the column gets the width at its index of `colwidth`) and
+  `setRowHeight({row, height, table})`; `table` is the position before a table, the selection's by default. The
+  Rust API takes `Points`; JSON takes numbers, `null` for none. Tiptap's Tab is `go_to_next_cell_or_add_row`.
+- The kit (`extensions/kit.rs`): `table` (options `HTMLAttributes`, `resizable`, `cellMinWidth`,
+  `lastColumnResizable`, `allowTableNodeSelection`; Tab, Shift-Tab, Backspace / Delete deleting a fully selected
+  table; `fix_tables_plugin` and `table_editing`), `tableRow`, `tableCell`, `tableHeader`, and `table_kit()`
+  (`tableKit`), outside `starter_kit`. In JS: `TableKit`, `RichTable`, `RichTableRow`, `RichTableHeader`,
+  `RichTableCell` (`nsh/base`'s `Table*` names are the `Table` component's) and the command helpers of
+  `js/tables.rs`.
+- Formats: Markdown reads GFM pipe tables (the first row as header cells, short rows filled) and HTML blocks
+  starting with `<table` (through `DomParser`); it writes a pipe table when the table has a header row of header
+  cells only, no merged cells and one paragraph of text per cell, and the table's HTML on one line otherwise, which
+  reads back as it was (tables are not among `MarkdownFormat::losses`). Plain text writes a row as a line of
+  tab-separated cells.
+
+Not ported yet: pasting cells into tables (prosemirror-tables' `clipCells` / `insertCells`; pasting into a cell
+selection replaces the cells' content through the `replace` hook). Column resizing is the view's (above), not a
+plugin.
 
 ## Phases
 

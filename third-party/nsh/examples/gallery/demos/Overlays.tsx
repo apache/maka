@@ -1,8 +1,8 @@
-import { Overlay, signal, Text, View, type YNode } from "nsh";
+import { Overlay, signal, Text, View, type ViewRef } from "nsh";
 import { Popover, Sheet, Tooltip } from "nsh/base";
 import { dismissToast, toast } from "../toast";
 import { platform } from "nsh";
-import { Badge, Button, Caption, Card, colors, DemoPage, finish, mono, radius, Tip } from "../ui";
+import { Badge, Button, Caption, Card, colors, DemoPage, finish, mono, radius, Segmented, Tip } from "../ui";
 
 /** The popups' look: the gallery's, as `nsh/base` draws none. */
 const popup = () => ({
@@ -28,13 +28,29 @@ const sheet = () => ({
 const backdrop = { backgroundColor: "rgba(0,0,0,0.45)" };
 
 /** A pressable chip that opens a popup. */
-function Trigger(props: { label: string }) {
+function Trigger(props: { label: string; open?: boolean }) {
+  // The gallery's secondary button (`Button`), as a plain view: the overlay
+  // and the popover take its presses and anchor to it.
+  const pointer = platform.idiom === "desktop";
   return (
     <View
-      activeStyle={{ backgroundColor: colors.border }}
-      style={{ alignSelf: "flex-start", paddingHorizontal: 14, height: 36, justifyContent: "center", borderRadius: radius.control, backgroundColor: colors.raised, ...finish.raised }}
+      hoverStyle={props.open ? undefined : finish.hover}
+      activeStyle={finish.pressed}
+      style={{
+        alignSelf: "flex-start",
+        height: pointer ? 28 : 40,
+        paddingHorizontal: pointer ? 12 : 16,
+        justifyContent: "center",
+        borderRadius: radius.control,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        // What it opens is open: selected, as the shared `Button`'s.
+        ...(props.open ? finish.pressed : finish.raised),
+        transitionProperty: "background-color, border-color, box-shadow",
+        transitionDuration: 120,
+      }}
     >
-      <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>{props.label}</Text>
+      <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: colors.text }}>{props.label}</Text>
     </View>
   );
 }
@@ -45,22 +61,26 @@ function Trigger(props: { label: string }) {
  * tooltip (and the `tooltip` prop every element has), a sheet, toasts (menus have
  * a demo of their own, `Menus.tsx`).
  */
-export function Overlays() {
+/** The overlays, one demo each in the sidebar. */
+export type OverlayKind = "Overlay" | "Popover" | "Tooltip" | "Sheet" | "Toast";
+
+export function Overlays(props: { show: OverlayKind }) {
   const last = signal("—");
 
   function Primitive() {
     const open = signal(false);
-    let anchor: YNode | undefined;
+    const placement = signal<"bottom" | "top">("bottom");
+    let anchor: ViewRef | undefined;
     return (
       <Card icon="components" title="Overlay" subtitle="A box that clips its content, with an overlay anchored inside it" right={<Badge label="nsh" />}>
-        <View style={{ height: 56, overflow: "hidden", borderRadius: radius.inset, backgroundColor: colors.inset, justifyContent: "center", paddingHorizontal: 12 }}>
+        <View style={{ height: platform.idiom === "desktop" ? 48 : 56, overflow: "hidden", borderRadius: radius.inset, backgroundColor: colors.inset, justifyContent: "center", paddingHorizontal: 10 }}>
           <View ref={anchor} onPress={() => open.set(!open())} style={{ alignSelf: "flex-start" }}>
-            <Trigger label={open() ? "Close" : "Open the overlay"} />
+            <Trigger label={open() ? "Close" : "Open the overlay"} open={open()} />
           </View>
           <If when={open()}>
             <Overlay
               anchor={anchor}
-              placement="bottom"
+              placement={placement()}
               align="start"
               offset={6}
               margin={8}
@@ -73,20 +93,25 @@ export function Overlays() {
             </Overlay>
           </If>
         </View>
-        <Caption label="Scroll the page: it follows its anchor" />
+        <Segmented options={[{ value: "bottom", label: "Below" }, { value: "top", label: "Above" }]} value={placement()} onChange={(p) => placement.set(p)} />
+        <Caption label="Scroll the page: it follows its anchor; a press outside closes it" />
       </Card>
     );
   }
 
   function Popovers() {
+    const shown = signal(false);
     return (
       <Card icon="components" title="Popover" subtitle="Anchored to its trigger on every device">
         <Popover
           offset={6}
           margin={8}
           popupStyle={popup()}
-          onOpenChange={(open, reason) => last.set(`popover ${open ? "opened" : "closed"} (${reason})`)}
-          trigger={<Trigger label="Show the popover" />}
+          onOpenChange={({ open, reason }) => {
+            shown.set(open);
+            last.set(`popover ${open ? "opened" : "closed"} (${reason})`);
+          }}
+          trigger={<Trigger label="Show the popover" open={shown()} />}
         >
           <View style={{ padding: 8, gap: 4, maxWidth: 260 }}>
             <Text style={{ fontSize: 15, fontWeight: "600", color: colors.text }}>Popover</Text>
@@ -112,7 +137,7 @@ export function Overlays() {
             tooltip={
               <Tooltip
                 open={pinned() || hovered()}
-                onOpenChange={(open, reason) => {
+                onOpenChange={({ open, reason }) => {
                   hovered.set(open);
                   last.set(`tooltip ${open ? "shown" : "hidden"} (${reason})`);
                 }}
@@ -124,7 +149,7 @@ export function Overlays() {
               </Tooltip>
             }
           >
-            <Button label={pinned() ? "Unpin the tooltip" : "Pin the tooltip"} variant="secondary" onPress={() => pinned.set(!pinned())} />
+            <Button label={pinned() ? "Unpin the tooltip" : "Pin the tooltip"} variant="secondary" selected={pinned()} onPress={() => pinned.set(!pinned())} />
           </View>
         </View>
       </Card>
@@ -135,10 +160,10 @@ export function Overlays() {
     const open = signal(false);
     return (
       <Card icon="components" title="Sheet" subtitle="A panel at the bottom, over a backdrop">
-        <Button label="Show the sheet" variant="secondary" onPress={() => open.set(true)} />
+        <Button label="Show the sheet" variant="secondary" selected={open()} onPress={() => open.set(true)} />
         <Sheet
           open={open()}
-          onOpenChange={(next, reason) => {
+          onOpenChange={({ open: next, reason }) => {
             open.set(next);
             last.set(`sheet ${next ? "opened" : "closed"} (${reason})`);
           }}
@@ -191,5 +216,12 @@ export function Overlays() {
     );
   }
 
-  return <DemoPage cards={[Primitive, Popovers, Tooltips, Sheets, Toasts, Last]} />;
+  const cards = { Overlay: Primitive, Popover: Popovers, Tooltip: Tooltips, Sheet: Sheets, Toast: Toasts };
+  return <DemoPage cards={[cards[props.show], Last]} />;
 }
+
+export const OverlayDemo = () => <Overlays show="Overlay" />;
+export const PopoverDemo = () => <Overlays show="Popover" />;
+export const TooltipDemo = () => <Overlays show="Tooltip" />;
+export const SheetDemo = () => <Overlays show="Sheet" />;
+export const ToastDemo = () => <Overlays show="Toast" />;

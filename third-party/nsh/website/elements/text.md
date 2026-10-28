@@ -212,8 +212,8 @@ The font is registered before the first frame. See [fonts](../docs/fonts.md).
 | Event | Rust | Payload | When |
 |---|---|---|---|
 | `onTextLayout` | | `{ lines: TextLayoutLine[] }` | After each layout of the paragraph. |
-| `onPress`, `onLongPress`, … | `.on_press`, `.on_long_press`, … | none | As on [view](./view.md#events); on a span, presses on its characters. |
-| `onLayout` | `.on_layout` | `Bounds` | The block's frame changed. |
+| `onPress`, `onLongPress`, … | `.on_press`, `.on_long_press`, … | `PressEvent` (none in Rust) | As on [view](./view.md#events); on a span, presses on its characters. |
+| `onLayout` | `.on_layout` | `{ bounds }` | The block's frame changed. |
 
 `TextLayoutLine` is `{ text, x, y, width, height, ascender, descender, capHeight, xHeight }`, in the text's content box:
 

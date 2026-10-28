@@ -1,4 +1,4 @@
-import { cleanup, computed, effect, List, Scroll, signal, Text, View, type YNode } from "nsh";
+import { cleanup, computed, effect, List, type ListRef, Scroll, signal, Text, View } from "nsh";
 import { reduceMotion } from "nsh";
 import { Animated, type AnimatedNode, createAnimatedValue, Easing, LayoutAnimation } from "nsh";
 import { platform } from "nsh";
@@ -40,7 +40,7 @@ function Grid() {
   const items = Array.from({ length: 90 }, (_, i) => ({ id: i, height: 84 + (i % 4) * 22, tone: tones[i % tones.length] }));
   const first = signal(-1);
   const last = signal(-1);
-  let list!: YNode;
+  let list!: ListRef;
   const wide = desktop();
   const grid = (columns: number) => (
     <List
@@ -315,7 +315,7 @@ function Chat() {
       >
         <Input
           value={draft()}
-          onChange={(v) => draft.set(v)}
+          onChange={({ value }) => draft.set(value)}
           onSubmit={send}
           submitBehavior="submit"
           placeholder="Message"
@@ -681,7 +681,7 @@ function Page() {
   const weeks = recent.flatMap((row, i) => ("week" in row ? [i] : []));
   const indexOf = (id: number) => recent.findIndex((row) => "id" in row && row.id === id);
   const archive = signal(entries(0, 100));
-  let list!: YNode;
+  let list!: ListRef;
   const loadMore = () => {
     if (archive().length < 500) archive.update((a) => [...a, ...entries(a.length, 100)]);
   };

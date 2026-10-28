@@ -330,7 +330,7 @@ function Compose() {
         </View>
       }
     >
-      <Input multiline value={text()} onChange={(t) => text.set(t)} style={{ flex: 1, padding: 16, fontSize: 17 }} />
+      <Input multiline value={text()} onChange={({ value }) => text.set(value)} style={{ flex: 1, padding: 16, fontSize: 17 }} />
     </NavPage>
   );
 }
@@ -386,11 +386,11 @@ fn edit_note(routes: Signal<Vec<Route>>) -> Screen {
         spawn(async move {
             let choice = alert_dialog()
                 .title("Discard your changes?")
-                .cancel("Keep editing")
-                .destructive("Discard")
+                .cancel("keep", "Keep editing")
+                .destructive("discard", "Discard")
                 .show()
                 .await;
-            if choice == Ok(Some("Discard".into())) {
+            if choice.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
                 routes.update(|r| { r.pop(); });
             }
         });
@@ -422,18 +422,18 @@ function EditNote() {
   const text = signal("");
   const dirty = () => text().length > 0;
   const confirm = async () => {
-    const choice = await AlertDialog.show({
+    const { action } = await AlertDialog.show({
       title: "Discard your changes?",
       actions: [
-        { label: "Keep editing", role: "cancel" },
+        { label: "Keep editing", role: "cancel", id: "keep" },
         { label: "Discard", role: "destructive", id: "discard" },
       ],
     });
-    if (choice === "discard") nav.pop();
+    if (action === "discard") nav.pop();
   };
   return (
     <NavPage title="Edit" popOnBack={!dirty()} onBackPress={() => dirty() && confirm()}>
-      <Input value={text()} onChange={(t) => text.set(t)} placeholder="A note" style={{ margin: 16, fontSize: 17 }} />
+      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" style={{ margin: 16, fontSize: 17 }} />
     </NavPage>
   );
 }
@@ -511,7 +511,7 @@ function Files() {
       <Dialog
         open={open()}
         animation="fade"
-        onOpenChange={(next) => open.set(next)}
+        onOpenChange={(e) => open.set(e.open)}
         backdropClass="bg-black/40"
         class="m-auto w-80 gap-3 rounded-2xl bg-white p-5"
       >
@@ -525,7 +525,7 @@ function Files() {
 }
 ```
 
-Escape、Android 返回键、点击背景（TSX 的背景，Rust 中是原生表单的背景）和在表单上下滑都会以原生方式关闭它（`close_on_escape`、`close_on_backdrop_press` 和 `close_on_swipe`，TSX 的 `closeOnEscape`、`closeOnBackdropPress` 和 `closeOnSwipe`，默认都是 true）。在 Rust 中，`on_cancel` 报告每一次尝试，`on_close` 报告关闭，所以在那里把对话框移出视图；应用自己画的背景用它自己的按压处理关闭对话框，如上所示。在 TSX 中，`onOpenChange(false, reason)` 通知你，所以在那里把 `open` 设为 `false`。要先确认，就把对应开关设为 false 并处理取消事件（`on_cancel`、`onCancel`，它报告每一次尝试），然后自己关闭对话框。在 iOS 上，`.presentation(ModalPresentation::PageSheet)` 或 `FormSheet`（`presentation="pageSheet"` 或 `"formSheet"`）呈现一个保留后面内容可见的表单。
+Escape、Android 返回键、点击背景（TSX 的背景，Rust 中是原生表单的背景）和在表单上下滑都会以原生方式关闭它（`close_on_escape`、`close_on_backdrop_press` 和 `close_on_swipe`，TSX 的 `closeOnEscape`、`closeOnBackdropPress` 和 `closeOnSwipe`，默认都是 true）。在 Rust 中，`on_cancel` 报告每一次尝试，`on_close` 报告关闭，所以在那里把对话框移出视图；应用自己画的背景用它自己的按压处理关闭对话框，如上所示。在 TSX 中，`onOpenChange({ open: false, reason })` 通知你，所以在那里把 `open` 设为 `false`。要先确认，就把对应开关设为 false 并处理取消事件（`on_cancel`、`onCancel`，它报告每一次尝试），然后自己关闭对话框。在 iOS 上，`.presentation(ModalPresentation::PageSheet)` 或 `FormSheet`（`presentation="pageSheet"` 或 `"formSheet"`）呈现一个保留后面内容可见的表单。
 
 全部属性见 [Dialog](../elements/dialog.md)。在对话框内部，`env(safe-area-inset-*)` 变量和 inset 都是对话框自己的。系统对话框（带操作的提示框、操作表）请用 `nsh_base`（TSX：`nsh/base`）的 [`AlertDialog`](../modules/nsh-base.md#alertdialog)。
 

@@ -83,6 +83,7 @@ function Editor(props: { panel: string }) {
         <Button
           onPress={() => edits.set(edits() + 1)}
           accessibilityLabel={`Edit ${title(props.panel)}`}
+          hoverStyle={{ opacity: 0.94 }}
           class="h-8 flex-row items-center gap-1.5 rounded-lg px-3 transition active:scale-[0.97]"
           style={{ backgroundColor: colors.accentFill, ...finish.accent }}
         >
@@ -159,6 +160,7 @@ function Tool(props: { label: string; name: string; onPress: () => void; on?: bo
       onPress={props.onPress}
       selected={props.on}
       accessibilityLabel={props.label}
+      hoverStyle={finish.hover}
       class="h-8 flex-row items-center gap-2 rounded-lg border border-border px-3 transition active:scale-[0.97]"
       style={{ backgroundColor: colors.raised, ...finish.raised }}
     >
@@ -234,16 +236,16 @@ export function Dock() {
             ref={area}
             class="flex-1"
             layout={layout()}
-            onLayoutChange={(next) => layout.set(next)}
-            onPanelRemove={(panel) => last.set(`Closed ${title(panel)}`)}
-            onPanelActiveChange={(panel, active) => {
+            onLayoutChange={({ layout: next }) => layout.set(next)}
+            onPanelRemove={({ panel }) => last.set(`Closed ${title(panel)}`)}
+            onPanelActiveChange={({ panel, active }) => {
               if (!active) return;
               current = panel;
               last.set(`Showing ${title(panel)}`);
             }}
-            onZoomChange={(panel) => zoomed.set(panel)}
+            onZoomChange={({ panel }) => zoomed.set(panel)}
             panels={closing() ? [] : Object.keys(TITLES).map((id) => ({ id, closable: false }))}
-            onDockOpenChange={(placement, open) => shown.set({ ...shown(), [placement]: open })}
+            onDockOpenChange={({ placement, open }) => shown.set({ ...shown(), [placement]: open })}
             locked={locked()}
             groupClass="flex-1 bg-inset"
             tabBarClass="flex-row gap-1 border-b border-line"

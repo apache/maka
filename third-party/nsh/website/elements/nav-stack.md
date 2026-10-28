@@ -221,6 +221,7 @@ the props' snake-case names.
 | `title` | `.title(..)` | `string` | none | iOS and Android: the system header's title. |
 | `headerVisible` | `.header_visible(..)` | `boolean` | `true` | iOS and Android: the system header shows. |
 | `headerTransparent` | `.header_transparent(..)` | `boolean` | `false` | iOS and Android: the content extends under a transparent system header. |
+| `hidesBottomBarWhenPushed` | `.hides_bottom_bar_when_pushed(..)` | `boolean` | `false` | iOS: the system tab bar leaves while this page is on top, moving in the transition — the same animation as the page, and the bar is never rebuilt; it comes back when the page pops. |
 | `headerLargeTitle` | `.header_large_title(..)` | `boolean` | `false` | iOS: a large title that shrinks into the bar as the content scrolls; the content scrolls under the header. |
 | `headerBackTitle` | `.header_back_title(..)` | `string` | none | iOS and Android: the label of the back button that leads back to this page (on Android, its description for screen readers). |
 | `headerBackVisible` | `.header_back_visible(..)` | `boolean` | `true` | iOS and Android: the back button shows. |
@@ -312,11 +313,11 @@ fn edit_note(routes: Signal<Vec<u32>>) -> Screen {
         spawn(async move {
             let choice = alert_dialog()
                 .title("Discard your changes?")
-                .cancel("Keep editing")
-                .destructive("Discard")
+                .cancel("keep", "Keep editing")
+                .destructive("discard", "Discard")
                 .show()
                 .await;
-            if choice.ok().flatten().as_deref() == Some("Discard") {
+            if choice.is_ok_and(|r| r.action.as_deref() == Some("discard")) {
                 routes.update(|r| {
                     r.pop();
                 });
@@ -347,18 +348,18 @@ import { AlertDialog, NavPage, Input } from "nsh/base";
 function EditNote() {
   const text = signal("");
   const confirm = async () => {
-    const choice = await AlertDialog.show({
+    const { action } = await AlertDialog.show({
       title: "Discard your changes?",
       actions: [
-        { label: "Keep editing", role: "cancel" },
+        { label: "Keep editing", role: "cancel", id: "keep" },
         { label: "Discard", role: "destructive", id: "discard" },
       ],
     });
-    if (choice === "discard") nav.pop();
+    if (action === "discard") nav.pop();
   };
   return (
     <NavPage title="Edit" popOnBack={text().length === 0} onBackPress={() => text().length > 0 && confirm()}>
-      <Input value={text()} onChange={(v) => text.set(v)} placeholder="A note" />
+      <Input value={text()} onChange={({ value }) => text.set(value)} placeholder="A note" />
     </NavPage>
   );
 }
