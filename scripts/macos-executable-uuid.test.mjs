@@ -88,6 +88,12 @@ describe('expectedExecutableUuid', () => {
     assert.equal(uuids.size, 4);
   });
 
+  // The namespace and name format are part of the shipped identity; a refactor
+  // that changes this value changes the UUID of every Maka executable.
+  test('keeps the shipped UUID of the arm64 main executable', () => {
+    assert.equal(expectedExecutableUuid(base), 'E08E3A84-68A1-5189-9663-A4FEC17A5EE5');
+  });
+
   test('is a well-formed version 5 UUID', () => {
     assert.match(
       expectedExecutableUuid(base),
@@ -145,6 +151,31 @@ describe('stampMachOUuids', () => {
         }),
       /not a 64-bit Mach-O executable/,
     );
+  });
+
+  test('refuses a universal executable with no slices', () => {
+    assert.throws(() => machOUuids(Buffer.from('cafebabe00000000', 'hex')), /has no slices/);
+  });
+
+  test('refuses a universal slice that extends past the file', () => {
+    const fat = fatBinary([machOSlice(CPU_TYPE_ARM64)]);
+    fat.writeUInt32BE(fat.length, 8 + 12);
+    assert.throws(() => machOUuids(fat), /extends past the file/);
+  });
+
+  test('refuses an LC_UUID command of the wrong size', () => {
+    const slice = machOSlice(CPU_TYPE_ARM64);
+    slice.writeUInt32LE(8, 48 + 4);
+    assert.throws(
+      () => stampMachOUuids(slice, { appId: APP_ID, executableName: 'Maka' }),
+      /malformed LC_UUID/,
+    );
+  });
+
+  test('refuses load commands that extend past the slice', () => {
+    const slice = machOSlice(CPU_TYPE_ARM64);
+    slice.writeUInt32LE(4096, 20);
+    assert.throws(() => machOUuids(slice), /extend past the slice/);
   });
 
   test('refuses an executable without an LC_UUID load command', () => {

@@ -21,8 +21,9 @@
 // so every app on the same Electron release carries the same Mach-O LC_UUID.
 // macOS Local Network Privacy (NECP) identifies a program by its main
 // executable's LC_UUID, so a shared UUID lets one app's grant or denial land on
-// another. The packaging hook stamps each executable with a UUID of its own
-// before signing; the release verifier checks the stamp survived.
+// another (Apple TN3178, r. 30421029). The packaging hook stamps each executable
+// with a UUID of its own before signing; the release verifier checks the stamp
+// survived.
 
 import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
@@ -32,17 +33,18 @@ const MH_MAGIC_64 = 0xfeedfacf;
 const FAT_MAGIC = 0xcafebabe;
 const LC_UUID = 0x1b;
 const MACH_HEADER_64_SIZE = 32;
+const FAT_HEADER_SIZE = 8;
 const FAT_ARCH_SIZE = 20;
+const UUID_COMMAND_SIZE = 24;
 
 // Fixed namespace for the UUIDv5 names below. Changing it changes every
 // shipped UUID, which macOS treats as a different program.
 const MAKA_EXECUTABLE_UUID_NAMESPACE = Buffer.from('4195730630d44e84a842a14db6f67a8f', 'hex');
 
 /**
- * The UUID an executable ships with. Deterministic on purpose: it stays the same
- * from one release to the next, so a user's Local Network decision survives an
- * update, while the app id keeps it distinct from every other Electron app and
- * the CPU type keeps the arm64 and x64 builds apart.
+ * The UUID an executable ships with. Deterministic, so the release verifier can
+ * recompute it from the bundle alone; the app id keeps it distinct from every
+ * other Electron app and the CPU type keeps the arm64 and x64 builds apart.
  */
 export function expectedExecutableUuid({ appId, executableName, cputype }) {
   const digest = createHash('sha1')
@@ -60,31 +62,47 @@ function formatUuid(bytes) {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function sliceOffsets(binary) {
-  if (binary.length >= 4 && binary.readUInt32BE(0) === FAT_MAGIC) {
-    const count = binary.readUInt32BE(4);
-    return Array.from({ length: count }, (_, index) =>
-      binary.readUInt32BE(8 + index * FAT_ARCH_SIZE + 8),
-    );
+// Each slice as [start, end) within the file; a thin executable is one slice.
+function slices(binary) {
+  if (binary.length < 4 || binary.readUInt32BE(0) !== FAT_MAGIC) {
+    return [{ start: 0, end: binary.length }];
   }
-  return [0];
+  if (binary.length < FAT_HEADER_SIZE) throw new Error('truncated universal header');
+  const count = binary.readUInt32BE(4);
+  if (count === 0) throw new Error('universal executable has no slices');
+  if (FAT_HEADER_SIZE + count * FAT_ARCH_SIZE > binary.length) {
+    throw new Error('truncated universal header');
+  }
+  return Array.from({ length: count }, (_, index) => {
+    const entry = FAT_HEADER_SIZE + index * FAT_ARCH_SIZE;
+    const start = binary.readUInt32BE(entry + 8);
+    const end = start + binary.readUInt32BE(entry + 12);
+    if (end > binary.length) throw new Error('universal slice extends past the file');
+    return { start, end };
+  });
 }
 
-function uuidCommandOffset(binary, sliceOffset) {
-  if (binary.length < sliceOffset + MACH_HEADER_64_SIZE) {
-    throw new Error('truncated Mach-O header');
-  }
-  if (binary.readUInt32LE(sliceOffset) !== MH_MAGIC_64) {
+function uuidCommandOffset(binary, { start, end }) {
+  if (end < start + MACH_HEADER_64_SIZE) throw new Error('truncated Mach-O header');
+  if (binary.readUInt32LE(start) !== MH_MAGIC_64) {
     throw new Error('not a 64-bit Mach-O executable');
   }
-  const cputype = binary.readUInt32LE(sliceOffset + 4);
-  const commandCount = binary.readUInt32LE(sliceOffset + 16);
-  let cursor = sliceOffset + MACH_HEADER_64_SIZE;
+  const cputype = binary.readUInt32LE(start + 4);
+  const commandCount = binary.readUInt32LE(start + 16);
+  const commandsEnd = start + MACH_HEADER_64_SIZE + binary.readUInt32LE(start + 20);
+  if (commandsEnd > end) throw new Error('Mach-O load commands extend past the slice');
+  let cursor = start + MACH_HEADER_64_SIZE;
   for (let index = 0; index < commandCount; index++) {
+    if (cursor + 8 > commandsEnd) throw new Error('malformed Mach-O load command');
     const command = binary.readUInt32LE(cursor);
     const size = binary.readUInt32LE(cursor + 4);
-    if (command === LC_UUID) return { cputype, offset: cursor + 8 };
-    if (size < 8) throw new Error('malformed Mach-O load command');
+    if (size < 8 || cursor + size > commandsEnd) {
+      throw new Error('malformed Mach-O load command');
+    }
+    if (command === LC_UUID) {
+      if (size !== UUID_COMMAND_SIZE) throw new Error('malformed LC_UUID load command');
+      return { cputype, offset: cursor + 8 };
+    }
     cursor += size;
   }
   throw new Error('Mach-O executable has no LC_UUID load command');
@@ -92,8 +110,8 @@ function uuidCommandOffset(binary, sliceOffset) {
 
 /** Every slice's CPU type and LC_UUID, in file order. */
 export function machOUuids(binary) {
-  return sliceOffsets(binary).map((sliceOffset) => {
-    const { cputype, offset } = uuidCommandOffset(binary, sliceOffset);
+  return slices(binary).map((slice) => {
+    const { cputype, offset } = uuidCommandOffset(binary, slice);
     return { cputype, uuid: formatUuid(binary.subarray(offset, offset + 16)) };
   });
 }
@@ -101,8 +119,8 @@ export function machOUuids(binary) {
 /** A copy of `binary` with each slice's LC_UUID replaced by its expected UUID. */
 export function stampMachOUuids(binary, { appId, executableName }) {
   const stamped = Buffer.from(binary);
-  for (const sliceOffset of sliceOffsets(stamped)) {
-    const { cputype, offset } = uuidCommandOffset(stamped, sliceOffset);
+  for (const slice of slices(stamped)) {
+    const { cputype, offset } = uuidCommandOffset(stamped, slice);
     const uuid = expectedExecutableUuid({ appId, executableName, cputype });
     Buffer.from(uuid.replaceAll('-', ''), 'hex').copy(stamped, offset);
   }
