@@ -366,3 +366,11 @@ remain for selected-row changes. A terminal shadow guard is simplified without
 changing interpolation. These are local adaptations, not raw import bytes.
 Source preparation does not establish fresh runtime, browser/native-device or
 publication success; validation is tied to its actual source and environment.
+
+Built-in List scrollbars remain independent decoration roots rather than
+recycling cells. Native attachment includes these decorations, and projected
+rows keep the bar as their final following anchor so it stays above content
+across rebinds and theme replacement. Select integration observers account for
+`ProjectRoot` as well as `Insert` while preserving backdrop, focus and geometry
+assertions. These local integration corrections do not change the recorded
+`ded545337d66eee244f0b0426198ea4c2d472a9d` import bytes or source progress.

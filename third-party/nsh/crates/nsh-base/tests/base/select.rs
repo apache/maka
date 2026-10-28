@@ -313,7 +313,10 @@ fn start_on(props: HarnessProps, os: Os, idiom: Idiom, screen_reader: bool) -> A
                 MountItem::Frame { id, frame } => {
                     seen.frames.insert(*id, *frame);
                 }
-                MountItem::Insert { parent, child, .. } => {
+                MountItem::Insert { parent, child, .. }
+                | MountItem::ProjectRoot {
+                    parent, id: child, ..
+                } => {
                     seen.parents.insert(*child, *parent);
                     if *parent == 1 {
                         seen.roots.push(*child);

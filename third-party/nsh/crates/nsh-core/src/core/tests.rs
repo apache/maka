@@ -24319,6 +24319,117 @@ mod built_in_scrollbars {
     }
 
     #[test]
+    fn a_list_projects_its_bar_above_rebound_rows_and_replaces_it() {
+        fn rows_below_bar(batch: &MountBatch, bar: NodeId) {
+            let rows: Vec<_> = batch
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    MountItem::ProjectRoot {
+                        parent: 2,
+                        id,
+                        following,
+                    } if *id != bar => Some(following),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !rows.is_empty(),
+                "the native consumer receives projected rows"
+            );
+            for following in rows {
+                assert_eq!(
+                    following.last(),
+                    Some(&bar),
+                    "the bar stays above every row"
+                );
+            }
+        }
+        let mut c = core();
+        let mut registry = Registry::new();
+        registry.scrollbars_from(bars);
+        c.set_components(registry);
+        c.set_builtin_scrollbars(Some(app_theme()));
+        apply(
+            &mut c,
+            vec![
+                Op::Create {
+                    id: 2,
+                    tag: Tag::List,
+                },
+                style_op(
+                    2,
+                    &[
+                        ("width", StyleValue::Number(300.0)),
+                        ("height", StyleValue::Number(200.0)),
+                    ],
+                ),
+                Op::SetProp {
+                    id: 2,
+                    prop: Prop::Count(100),
+                },
+                Op::Insert {
+                    parent: ROOT_ID,
+                    child: 2,
+                    before: None,
+                },
+            ],
+        );
+        let batch = commit_with_native_retirement(&mut c).unwrap();
+        let [bar] = bars_in(&batch)[..] else {
+            panic!("one attached list bar")
+        };
+        assert_eq!(frame_of(&batch, bar), Some(rect(0.0, 0.0, 300.0, 200.0)));
+        assert_eq!(indicator(&batch), Some(false));
+        let (mut next_id, mut cells) = (100, Vec::new());
+        assert!(render_binds(&mut c, &mut next_id, &mut cells, 50.0) > 0);
+        rows_below_bar(&commit_with_native_retirement(&mut c).unwrap(), bar);
+
+        c.set_scroll_offset(2, Point::new(px(0.0), px(1000.0)), 0);
+        commit_with_native_retirement(&mut c);
+        assert!(render_binds(&mut c, &mut next_id, &mut cells, 50.0) > 0);
+        rows_below_bar(&commit_with_native_retirement(&mut c).unwrap(), bar);
+        let key = c.key(2).unwrap();
+        assert!(
+            !c.nodes[key as usize]
+                .list
+                .as_ref()
+                .unwrap()
+                .mounted_cells
+                .contains(&bar)
+        );
+
+        c.set_builtin_scrollbars(Some(app_theme()));
+        let batch = commit_with_native_retirement(&mut c).unwrap();
+        let [replacement] = bars_in(&batch)[..] else {
+            panic!("one replacement list bar")
+        };
+        assert_ne!(replacement, bar);
+        assert!(
+            batch
+                .items
+                .iter()
+                .any(|item| matches!(item, MountItem::Delete { id } if *id == bar))
+        );
+        assert_eq!(
+            frame_of(&batch, replacement),
+            Some(rect(0.0, 0.0, 300.0, 200.0))
+        );
+        c.set_scroll_offset(2, Point::new(px(0.0), px(2000.0)), 0);
+        commit_with_native_retirement(&mut c);
+        assert!(render_binds(&mut c, &mut next_id, &mut cells, 50.0) > 0);
+        rows_below_bar(&commit_with_native_retirement(&mut c).unwrap(), replacement);
+        assert!(
+            !c.nodes[key as usize]
+                .list
+                .as_ref()
+                .unwrap()
+                .mounted_cells
+                .contains(&replacement)
+        );
+    }
+
+    #[test]
     fn a_raised_or_sticky_child_still_goes_below_the_bar() {
         let (mut c, batch) = scroll_view(true, None);
         let [bar] = bars_in(&batch)[..] else {

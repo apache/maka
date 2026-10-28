@@ -4400,7 +4400,9 @@ impl<M: TextEngine> Core<M> {
                 self.ensure_created(child);
                 // Lists attach confirmed cells in item order, independently
                 // of the runtime's stable recycling-slot ownership.
-                if self.nodes[parent as usize].list.is_none() {
+                if self.nodes[parent as usize].list.is_none()
+                    || self.nodes[child as usize].decoration
+                {
                     let before = self.native_before(parent, child);
                     // By the nodes' own ids (the ops may name an alias).
                     self.emit_insert(
@@ -4825,7 +4827,8 @@ impl<M: TextEngine> Core<M> {
             let c = &self.nodes[child as usize];
             if c.layout.is_some() && !c.is_overlay() {
                 self.ensure_created(child);
-                if self.nodes[key as usize].list.is_none() {
+                if self.nodes[key as usize].list.is_none() || self.nodes[child as usize].decoration
+                {
                     let child_id = self.nodes[child as usize].id;
                     self.emit_insert(id, child_id, None);
                 }
@@ -6713,7 +6716,13 @@ impl<M: TextEngine> Core<M> {
                 self.mount.push(MountItem::ProjectRoot {
                     parent,
                     id,
-                    following: cells[index + 1..].to_vec(),
+                    // The bar is a decoration, never a recycling cell, but
+                    // stays above every row projected into this native host.
+                    following: cells[index + 1..]
+                        .iter()
+                        .copied()
+                        .chain(self.nodes[key as usize].bar().map(|(id, _)| *id))
+                        .collect(),
                 });
                 if let Some(at) = at {
                     current.remove(at);
