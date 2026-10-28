@@ -17,19 +17,16 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
-import { Button } from 'nsh/base';
 import { host } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
 import type { Position, Row } from './history';
 import { MessageCopy } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
 import { TurnUsage } from './TurnUsage';
-import { C, controlStyle } from './ui';
-import { Icon } from './Icon';
+import { C, IconButton } from './ui';
 
 type Target = {
   sessionId: string;
@@ -144,30 +141,19 @@ export function FinalActions(props: {
           sessionId={props.sessionId}
           through={props.through}
         />
-        <Button
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          accessibilityLabel={tr('Fork from this turn')}
-          tooltip={textTooltip(() =>
-            pending() ? tr('Creating fork…') : tr('Fork from this turn'),
-          )}
+        <IconButton
+          label={tr('Fork from this turn')}
+          tooltip={pending() ? tr('Creating fork…') : undefined}
+          icon="fork"
           disabled={pending() || target() === null}
           onPress={inputAction(fork, target())}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.raised }}
-        >
-          <Icon name="fork" color={C.muted} />
-        </Button>
-        <Button
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          accessibilityLabel={tr("View this turn's model usage")}
-          tooltip={textTooltip(() => tr("View this turn's model usage"))}
+        />
+        <IconButton
+          label={tr("View this turn's model usage")}
+          icon="activity"
           disabled={target() === null}
           onPress={inputAction(showUsage, target())}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.raised }}
-        >
-          <Icon name="activity" color={C.muted} />
-        </Button>
+        />
         <If when={details()}>
           <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>{details()}</Text>
         </If>

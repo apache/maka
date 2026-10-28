@@ -17,18 +17,22 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
 import { tr } from './locale';
 import { CompactionDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
-import { Button } from 'nsh/base';
 import { platform } from 'nsh';
 import { messageKey, type Row } from './history';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
-import { C, bodyTextStyle, secondaryTextStyle, controlStyle, disclosureInset } from './ui';
-import { Icon } from './Icon';
+import {
+  C,
+  bodyTextStyle,
+  secondaryTextStyle,
+  Disclosure,
+  disclosureTitleStyle,
+  IconButton,
+} from './ui';
 import { HistoryAttachments } from './Attachments';
 import { ToolCard } from './ToolCard';
 import { MessageCopy } from './MessageCopy';
@@ -111,14 +115,9 @@ export function MessageRow({
           expanded.set(action.value);
           if (action.value) onExpand?.(action.key);
         };
-        // A reply's source toggle shows with its final actions; on the
-        // replies between them (while the agent works) it shows only while
-        // the pointer is over the message, it has the focus or the source
-        // shows, so it does not line every paragraph. Terminals have no
-        // hover: there it always shows.
-        const hovered = signal(false);
-        const quietSource = () =>
-          !platform.isTerminal && !row().finalOutput && !hovered() && !sourceMode();
+        // On the desktop the replies between tool calls carry no actions, so
+        // only the final reply (or one already showing its source) has a row.
+        const actionRow = () => platform.isTerminal || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
         const text = computed(() => row().text);
         const preview = computed(() => /\S[^\r\n]*/.exec(text())?.[0].trim() ?? '');
@@ -144,11 +143,7 @@ export function MessageRow({
                 <If
                   when={compact()}
                   else={
-                    <View
-                      onHoverIn={() => hovered.set(true)}
-                      onHoverOut={() => hovered.set(false)}
-                      style={{ gap: 8 }}
-                    >
+                    <View style={{ gap: 8 }}>
                       <If
                         when={sourceMode()}
                         else={
@@ -179,65 +174,56 @@ export function MessageRow({
                           <SourceText row={row} sourceId={sourceId()} />
                         </Text>
                       </If>
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          flexWrap: 'wrap',
-                          width: '100%',
-                          minWidth: 0,
-                          justifyContent: 'flex-start',
-                          alignItems: 'center',
-                          gap: 8,
-                        }}
-                      >
-                        <If
-                          when={
-                            row().finalOutput &&
-                            row().role === 'assistant' &&
-                            row().field === 'body' &&
-                            row().position
-                          }
+                      <If when={actionRow()}>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            flexWrap: 'wrap',
+                            width: '100%',
+                            minWidth: 0,
+                            justifyContent: 'flex-start',
+                            alignItems: 'center',
+                            gap: 8,
+                          }}
                         >
                           <If
-                            when={finalActions}
-                            else={
-                              <MessageCopy
-                                row={row}
-                                ownerKey={() => rowKey(row())}
-                                sessionId={sessionId}
-                                through={through}
-                              />
+                            when={
+                              row().finalOutput &&
+                              row().role === 'assistant' &&
+                              row().field === 'body' &&
+                              row().position
                             }
                           >
-                            {finalActions?.(row, () => rowKey(row()))}
+                            <If
+                              when={finalActions}
+                              else={
+                                <MessageCopy
+                                  row={row}
+                                  ownerKey={() => rowKey(row())}
+                                  sessionId={sessionId}
+                                  through={through}
+                                />
+                              }
+                            >
+                              {finalActions?.(row, () => rowKey(row()))}
+                            </If>
                           </If>
-                        </If>
-                        <Button
-                          accessibilityLabel={
-                            sourceMode() ? tr('Show formatted message') : tr('Show message source')
-                          }
-                          tooltip={textTooltip(() =>
-                            sourceMode() ? tr('Show formatted message') : tr('Show message source'),
-                          )}
-                          selected={sourceMode()}
-                          onPress={inputAction(setSourceMode, {
-                            sessionId,
-                            key: rowKey(row()),
-                            value: !sourceMode(),
-                          })}
-                          style={{
-                            ...controlStyle,
-                            width: 32,
-                            paddingHorizontal: 8,
-                            alignItems: 'center',
-                            opacity: quietSource() ? 0 : 1,
-                          }}
-                          hoverStyle={{ backgroundColor: C.surface }}
-                          focusStyle={{ backgroundColor: C.raised, opacity: 1 }}
-                        >
-                          <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
-                        </Button>
-                      </View>
+                          <IconButton
+                            label={
+                              sourceMode()
+                                ? tr('Show formatted message')
+                                : tr('Show message source')
+                            }
+                            icon={sourceMode() ? 'file' : 'markdown'}
+                            selected={sourceMode()}
+                            onPress={inputAction(setSourceMode, {
+                              sessionId,
+                              key: rowKey(row()),
+                              value: !sourceMode(),
+                            })}
+                          />
+                        </View>
+                      </If>
                     </View>
                   }
                 >
@@ -245,68 +231,42 @@ export function MessageRow({
                     when={isTool()}
                     else={
                       <View>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
-                          <Button
-                            accessibilityLabel={summary()}
-                            selected={expanded()}
-                            onPress={inputAction(setExpanded, {
-                              sessionId,
-                              key: rowKey(row()),
-                              value: !expanded(),
-                            })}
-                            style={{
-                              ...controlStyle,
-                              flex: 1,
-                              minWidth: 0,
-                              paddingHorizontal: disclosureInset(0),
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 8,
-                            }}
-                            hoverStyle={{ backgroundColor: C.raised }}
-                            focusStyle={{ backgroundColor: C.line }}
+                        <Disclosure
+                          label={summary()}
+                          open={expanded()}
+                          onPress={inputAction(setExpanded, {
+                            sessionId,
+                            key: rowKey(row()),
+                            value: !expanded(),
+                          })}
+                          trailing={
+                            <If when={expanded()}>
+                              <IconButton
+                                label={
+                                  sourceMode()
+                                    ? tr('Show formatted thinking')
+                                    : tr('Show thinking source')
+                                }
+                                icon={sourceMode() ? 'file' : 'markdown'}
+                                selected={sourceMode()}
+                                onPress={inputAction(setSourceMode, {
+                                  sessionId,
+                                  key: rowKey(row()),
+                                  value: !sourceMode(),
+                                })}
+                              />
+                            </If>
+                          }
+                        >
+                          <Text
+                            style={[
+                              { ...disclosureTitleStyle, color: C.muted },
+                              { numberOfLines: 1, textOverflow: 'ellipsis' },
+                            ]}
                           >
-                            <Icon name={expanded() ? 'down' : 'right'} color={C.secondary} />
-                            <Text
-                              style={[
-                                { flex: 1, color: C.muted, fontSize: 13, lineHeight: 16 },
-                                { numberOfLines: 1, textOverflow: 'ellipsis' },
-                              ]}
-                            >
-                              {summary()}
-                            </Text>
-                          </Button>
-                          <If when={expanded()}>
-                            <Button
-                              accessibilityLabel={
-                                sourceMode()
-                                  ? tr('Show formatted thinking')
-                                  : tr('Show thinking source')
-                              }
-                              tooltip={textTooltip(() =>
-                                sourceMode()
-                                  ? tr('Show formatted thinking')
-                                  : tr('Show thinking source'),
-                              )}
-                              selected={sourceMode()}
-                              onPress={inputAction(setSourceMode, {
-                                sessionId,
-                                key: rowKey(row()),
-                                value: !sourceMode(),
-                              })}
-                              style={{
-                                ...controlStyle,
-                                width: 32,
-                                paddingHorizontal: 8,
-                                alignItems: 'center',
-                              }}
-                              hoverStyle={{ backgroundColor: C.raised }}
-                              focusStyle={{ backgroundColor: C.line }}
-                            >
-                              <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
-                            </Button>
-                          </If>
-                        </View>
+                            {summary()}
+                          </Text>
+                        </Disclosure>
                         <If when={expanded()}>
                           <View
                             style={{
