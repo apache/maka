@@ -38,9 +38,10 @@ use sqlx::{Connection, SqliteConnection};
 use std::sync::Arc;
 pub(super) mod activity;
 
-// Only the existing Root active-work barrier is extended. There is no new lock
-// or authority state: this dependency ends at source SQL cleanup, before any
-// human wait or physical action. Accepted execution already owns that barrier.
+// Only the existing Root active-work barrier is extended, with no new lock or
+// authority state. App control ends this dependency at source SQL cleanup before
+// any human wait or physical action; a browser service receipt retains it through
+// settlement SQL cleanup. Accepted execution already owns the same barrier.
 struct ControlDependency(Arc<gates::Gates>);
 impl Drop for ControlDependency {
     fn drop(&mut self) {

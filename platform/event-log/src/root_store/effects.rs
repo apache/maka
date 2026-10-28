@@ -63,7 +63,11 @@ impl SessionStore {
         request: Request,
     ) -> Result<BrowserLeaseChildReceipt, StoreError> {
         self.check_session(browser_lease_session(&request)?)?;
-        let log = self.scoped().await?;
+        let dependency = self.control_dependency()?;
+        let mut log = self.scoped().await?;
+        if let Some(dependency) = dependency {
+            log = log.scoped(dependency);
+        }
         let id = log.begin_host_effect(request).await?;
         Ok(BrowserLeaseChildReceipt { log, id })
     }
@@ -238,6 +242,79 @@ mod tests {
             Err(StoreError::EventConflict)
         ));
         drop(log);
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_service_receipt_retains_original_execution_after_parent_finishes() {
+        let (_directory, root, session, source) = fixture().await;
+        let parent = session.execution_scope(None).await.unwrap().accept();
+        let selected = parent.store();
+        let receipt = selected
+            .begin_browser_lease_child(request(session.id(), &source))
+            .await
+            .unwrap();
+        parent.finish();
+        assert!(
+            matches!(
+                root.recover_host_effects().await,
+                Err(StoreError::SessionBusy)
+            ),
+            "the receipt must retain the original execution custody after its parent finishes"
+        );
+        receipt
+            .settle(Outcome::Completed { value: json!(true) })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match root.recover_host_effects().await {
+                    Err(StoreError::SessionBusy) => tokio::task::yield_now().await,
+                    result => break result.unwrap(),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_service_cancelled_before_session_pin_releases_root_dependency() {
+        let (_directory, root, session, source) = fixture().await;
+        let exclusive = root
+            .gates
+            .write([super::super::gates::Key::Session(session.id().to_owned())])
+            .await
+            .unwrap();
+        let mut admission =
+            Box::pin(session.begin_browser_lease_child(request(session.id(), &source)));
+        assert!(futures_util::poll!(&mut admission).is_pending());
+        assert!(
+            matches!(
+                root.recover_host_effects().await,
+                Err(StoreError::SessionBusy)
+            ),
+            "Root recovery must exclude admission while the real Session pin is pending"
+        );
+        drop(admission);
+        drop(exclusive);
+        root.recover_host_effects().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn browser_service_rejected_admission_releases_root_dependency() {
+        let (_directory, root, session, source) = fixture().await;
+        let mut invalid_namespace = request(session.id(), &source);
+        if let Owner::Native(owner) = &mut invalid_namespace.owner {
+            owner.package_id.clear();
+        }
+        assert!(matches!(
+            session.begin_browser_lease_child(invalid_namespace).await,
+            Err(StoreError::InvalidTransition(_))
+        ));
+        root.recover_host_effects().await.unwrap();
         root.shutdown().await.unwrap();
     }
 
