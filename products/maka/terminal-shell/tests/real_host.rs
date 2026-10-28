@@ -4196,9 +4196,9 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
         terminal_client.save_draft("agent", &fixture.session, EDITOR, None, "RECOVERY_ORIGINAL_A".into()).await.unwrap();
         let binary = std::env::var_os("MAKA_TEST_CLI_BINARY").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_maka")));
         let mut terminal = support::pty::Pty::spawn(&binary, &fixture.directory.path().join("host"), Some(&fixture.session));
-        let failed = terminal.wait_for("Retry loading conversation").await;
-        assert!(failed.contains("History unavailable."));
-        assert!(failed.contains("History unavailable. Retrying automatically; your draft is kept."));
+        terminal.wait_for("Retry loading conversation").await;
+        let failed = terminal.wait_for("History unavailable. Retrying automatically; your draft is kept.").await;
+        assert!(failed.contains("Retry loading conversation"), "{failed}");
         terminal.wait_for("RECOVERY_ORIGINAL_A").await;
         support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A").await;
         terminal.click_text("Retry loading conversation");
