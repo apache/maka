@@ -108,6 +108,7 @@ pub(super) fn select(
 enum Phase {
     Setup,
     Idle,
+    Origin(input::Encoded),
     AwaitImage {
         offer: input::Offer,
         image: u32,
@@ -180,6 +181,18 @@ pub(super) fn run(
                         .flushed(at);
                     Phase::Idle
                 }
+                Phase::Origin(encoded) => {
+                    presentation
+                        .state
+                        .lock()
+                        .unwrap()
+                        .pixels
+                        .as_mut()
+                        .unwrap()
+                        .kitty
+                        .flushed(at);
+                    Phase::Origin(encoded)
+                }
                 Phase::Publish { offer, image } => {
                     let mut state = presentation.state.lock().unwrap();
                     if let Some(trace) = &mut state.trace {
@@ -221,7 +234,7 @@ pub(super) fn run(
                 _ => {}
             }
         }
-        if matches!(phase, Phase::AwaitImage { .. }) {
+        if matches!(phase, Phase::Origin(_) | Phase::AwaitImage { .. }) {
             let ready = presentation
                 .state
                 .lock()
@@ -233,6 +246,11 @@ pub(super) fn run(
                 .poll(Instant::now())?;
             if ready {
                 match std::mem::replace(&mut phase, Phase::Idle) {
+                    Phase::Origin(encoded) => {
+                        let (next, cursor) = publish(output, presentation, encoded, tracing)?;
+                        phase = next;
+                        submitted_cursor = Some(cursor);
+                    }
                     Phase::AwaitImage { offer, image } => {
                         presentation
                             .state
@@ -330,10 +348,19 @@ pub(super) fn run(
                 if let Some(wake) = &inbox.wake {
                     wake.unpark();
                 }
+                let kitty = matches!(encoded.frame, input::WireFrame::Kitty(_));
+                if kitty {
+                    inbox.kitty.begin(kitty::Reply::Origin);
+                }
                 drop(state);
-                let (next, cursor) = publish(output, presentation, encoded, tracing)?;
-                phase = next;
-                submitted_cursor = Some(cursor);
+                if kitty {
+                    output.submit([kitty::ORIGIN.to_vec()])?;
+                    phase = Phase::Origin(encoded);
+                } else {
+                    let (next, cursor) = publish(output, presentation, encoded, tracing)?;
+                    phase = next;
+                    submitted_cursor = Some(cursor);
+                }
             } else if submitted_cursor != Some((inbox.cursor, inbox.text_input.ready_nonce()))
                 && inbox.last_fully_written_geometry == Some(inbox.geometry)
                 && inbox.resize.is_none()
@@ -384,7 +411,7 @@ fn publish(
         } else {
             slots.first
         };
-        inbox.kitty.begin(image);
+        inbox.kitty.begin(kitty::Reply::Image(image));
         Some(image)
     } else {
         None

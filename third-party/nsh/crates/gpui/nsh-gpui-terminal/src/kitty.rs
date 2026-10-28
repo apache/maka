@@ -1,7 +1,7 @@
 //! Complete Kitty image transactions; terminal IO belongs to the embedding host.
 //!
-//! [`KittyFrame::into_wire`] positions the cursor and transmits the frame as one
-//! indivisible write. The new image requests a success reply (`q=0`) and sits above
+//! The host confirms the cursor origin before writing [`KittyFrame::into_wire`]
+//! indivisibly. The new image requests a success reply (`q=0`) and sits above
 //! the retained previous placement. Reuse a slot only after the complete write
 //! and matching success reply. Neither receipt proves monitor presentation.
 //! The sole reader ends the graphics session on errors for either owned slot.

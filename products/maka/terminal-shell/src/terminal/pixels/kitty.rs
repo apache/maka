@@ -18,10 +18,22 @@
  */
 
 use std::time::{Duration, Instant};
-use termina::Event;
+use termina::{
+    Event,
+    escape::csi::{Csi, Cursor},
+};
 
+// Otty can anchor an image at the preceding caret unless the cursor move is
+// acknowledged before the image batch, even with CUP inside that batch.
+pub(super) const ORIGIN: &[u8] = b"\x1b[H\x1b[6n";
 // Use the same terminal-response budget as pixel geometry queries, after flush.
 const TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy)]
+pub(super) enum Reply {
+    Origin,
+    Image(u32),
+}
 
 #[derive(Default)]
 pub(super) struct Transfer {
@@ -29,16 +41,16 @@ pub(super) struct Transfer {
 }
 
 struct Pending {
-    image: u32,
+    reply: Reply,
     flushed: Option<Instant>,
     received: Option<Instant>,
 }
 
 impl Transfer {
-    pub fn begin(&mut self, image: u32) {
+    pub fn begin(&mut self, reply: Reply) {
         assert!(self.pending.is_none(), "Kitty transfers must be serialized");
         self.pending = Some(Pending {
-            image,
+            reply,
             flushed: None,
             received: None,
         });
@@ -55,8 +67,19 @@ impl Transfer {
         let Some(pending) = &mut self.pending else {
             return Ok(());
         };
-        let matches = match event {
-            Event::KittyGraphicsResponse(reply) if reply.image_id == pending.image => {
+        let matches = match (pending.reply, event) {
+            (
+                Reply::Origin,
+                Event::Csi(Csi::Cursor(Cursor::ActivePositionReport { line, col })),
+            ) => {
+                if line.get() != 1 || col.get() != 1 {
+                    return Err("terminal did not position the pixel frame at the origin".into());
+                }
+                true
+            }
+            (Reply::Image(image), Event::KittyGraphicsResponse(reply))
+                if reply.image_id == image =>
+            {
                 reply
                     .result
                     .as_ref()
@@ -73,9 +96,9 @@ impl Transfer {
 
     pub fn poll(&mut self, now: Instant) -> Result<bool, String> {
         let Some(Pending {
+            reply,
             flushed: Some(flushed),
             received,
-            ..
         }) = &self.pending
         else {
             return Ok(false);
@@ -86,7 +109,12 @@ impl Transfer {
             return Ok(true);
         }
         if now >= deadline {
-            return Err("terminal did not acknowledge the pixel frame upload".into());
+            // The driver exits: an untagged late CPR must never satisfy a new frame.
+            return Err(match reply {
+                Reply::Origin => "terminal did not acknowledge the pixel frame origin",
+                Reply::Image(_) => "terminal did not acknowledge the pixel frame upload",
+            }
+            .into());
         }
         Ok(false)
     }
@@ -106,16 +134,23 @@ mod tests {
     }
 
     #[test]
-    fn image_replies_require_their_own_completed_write() {
+    fn origin_and_image_replies_require_their_own_completed_write() {
         let mut transfer = Transfer::default();
         let now = Instant::now();
-        transfer.begin(41);
+        transfer.begin(Reply::Origin);
+        response(&mut transfer, b"\x1b_Gi=41;OK\x1b\\", now).unwrap();
+        assert!(!transfer.poll(now).unwrap());
+        response(&mut transfer, b"\x1b[1;1R", now).unwrap();
+        assert!(!transfer.poll(now).unwrap());
+        transfer.flushed(now);
+        assert!(transfer.poll(now).unwrap());
+        transfer.begin(Reply::Image(41));
         transfer.flushed(now);
         response(&mut transfer, b"\x1b_Gi=73;OK\x1b\\\x1b[1;1R", now).unwrap();
         assert!(!transfer.poll(now).unwrap());
         response(&mut transfer, b"\x1b_Gi=41;OK\x1b\\", now).unwrap();
         assert!(transfer.poll(now).unwrap());
-        transfer.begin(73);
+        transfer.begin(Reply::Image(73));
         response(&mut transfer, b"\x1b_Gi=73,p=1;OK\x1b\\", now).unwrap();
         assert!(!transfer.poll(now).unwrap());
         transfer.flushed(now);
@@ -123,16 +158,21 @@ mod tests {
     }
 
     #[test]
-    fn rejected_upload_and_missing_reply_end_the_transfer() {
+    fn incorrect_origin_rejected_upload_and_missing_reply_end_the_transfer() {
         let now = Instant::now();
         let mut transfer = Transfer::default();
-        transfer.begin(41);
-        assert!(response(&mut transfer, b"\x1b_Gi=41;EINVAL:broken\x1b\\", now).is_err());
+        transfer.begin(Reply::Origin);
+        assert!(response(&mut transfer, b"\x1b[3;5R", now).is_err());
         let mut transfer = Transfer::default();
-        transfer.begin(41);
-        transfer.flushed(now);
-        let late = now + TIMEOUT + Duration::from_millis(1);
-        response(&mut transfer, b"\x1b[1;1R\x1b_Gi=41;OK\x1b\\", late).unwrap();
-        assert!(transfer.poll(late).is_err());
+        transfer.begin(Reply::Image(41));
+        assert!(response(&mut transfer, b"\x1b_Gi=41;EINVAL:broken\x1b\\", now).is_err());
+        for reply in [Reply::Origin, Reply::Image(41)] {
+            let mut transfer = Transfer::default();
+            transfer.begin(reply);
+            transfer.flushed(now);
+            let late = now + TIMEOUT + Duration::from_millis(1);
+            response(&mut transfer, b"\x1b[1;1R\x1b_Gi=41;OK\x1b\\", late).unwrap();
+            assert!(transfer.poll(late).is_err());
+        }
     }
 }
