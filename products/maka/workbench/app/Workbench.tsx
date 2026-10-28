@@ -43,16 +43,15 @@ const GAP = platform.isTerminal ? CELL : 0;
 
 export const canDockBrowser = (withPreview = false) =>
   windowSize().width >=
-  CENTER_DOCK_WIDTH +
-    BROWSER_MIN +
-    GAP +
-    (withPreview && canDockPreview() ? PREVIEW_MIN + GAP : 0);
+  CENTER_DOCK_WIDTH + BROWSER_MIN + GAP + (withPreview && canDockPreview() ? PREVIEW_MIN + GAP : 0);
 const canDockPreview = () => windowSize().width >= CENTER_DOCK_WIDTH + PREVIEW_MIN + GAP;
 
 export function Workbench(props: {
   expanded(): boolean;
   browser: WorkspaceBrowserProps;
   resources: Resources;
+  /** Files dropped anywhere in the center column. */
+  dropFiles?(event: { uris: string[] }): void;
   children: JSX.Element;
 }) {
   const plugins = pluginContext()!;
@@ -101,7 +100,9 @@ export function Workbench(props: {
           </If>
         </ResizablePanel>
         <ResizablePanel minSize={CENTER_MIN} style={{ minHeight: 0 }}>
-          {props.children}
+          <View onFileDrop={props.dropFiles} style={{ flex: 1, minHeight: 0 }}>
+            {props.children}
+          </View>
         </ResizablePanel>
         <ResizablePanel
           visible={preview()}

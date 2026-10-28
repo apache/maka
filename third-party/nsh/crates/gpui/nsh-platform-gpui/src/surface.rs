@@ -133,6 +133,8 @@ pub(crate) struct Surface {
     pub(crate) pending_auto_focus: RefCell<Option<NshView>>,
     /// Pointer input state ([`crate::input`]).
     pub(crate) input: crate::input::Input,
+    /// The destination of a file dragged in from another application.
+    pub(crate) file_drop: crate::file_drop::State,
     pub(crate) input_paused: Cell<bool>,
     engine: RefCell<Option<Engine>>,
     control: RefCell<Option<EngineControl>>,
@@ -241,6 +243,7 @@ impl Surface {
             focus_returns: RefCell::default(),
             pending_auto_focus: RefCell::default(),
             input: Default::default(),
+            file_drop: Default::default(),
             input_paused: Cell::new(false),
             engine: RefCell::new(None),
             control: RefCell::new(None),
@@ -406,6 +409,7 @@ impl Surface {
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
         self.rx.borrow_mut().take();
+        crate::file_drop::clear(self);
         crate::chrome::clear(self);
         self.focus_returns.borrow_mut().clear();
         self.pending_auto_focus.borrow_mut().take();

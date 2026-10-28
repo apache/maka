@@ -147,6 +147,7 @@ function App(
   const recovering = signal(false);
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
+  let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   let editor: YNode | undefined;
   const focusComposer = () => editor?.focus();
   let browserRoot: YNode | undefined;
@@ -893,6 +894,7 @@ function App(
           </View>
         </If>
         <Workbench
+          dropFiles={(event) => dropFiles?.(event)}
           expanded={() => sidebarExpanded() && overlay()?.kind !== 'sessions'}
           browser={browserProps}
           resources={resources}
@@ -939,6 +941,9 @@ function App(
             )}
           </Each>
           <Composer
+            dropFiles={(drop) => {
+              dropFiles = drop;
+            }}
             blocked={reloading}
             active={() => overlay() === null && !reloading()}
             session={handle}

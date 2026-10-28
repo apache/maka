@@ -142,6 +142,7 @@ impl Mounter {
         {
             crate::navigation::source_removing(surface, &view);
             crate::focus_return::retiring(surface, &view);
+            crate::file_drop::invalidate(surface, *id);
             crate::input::retire_focus_within(surface, &view);
         }
         match item {
@@ -307,6 +308,7 @@ impl Mounter {
                     view.state_mut().events = *events;
                     crate::input::events_changed(surface, view);
                     crate::access::events_changed(view);
+                    crate::file_drop::events_changed(surface, view);
                 }
             }
             MountItem::Image {

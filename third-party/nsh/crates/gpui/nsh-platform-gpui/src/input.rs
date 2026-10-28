@@ -894,6 +894,21 @@ fn context_menu(surface: &Rc<Surface>, x: f32, y: f32, modifiers: Modifiers) {
     }
 }
 
+/// The closest view under `(x, y)` (root points) that listens to
+/// `onFileDrop`, within its modal ([`crate::file_drop`]).
+pub(crate) fn file_drop_target(surface: &Surface, x: f32, y: f32) -> Option<NshView> {
+    let mut view = pick(&surface.root, x, y, true)?.view;
+    loop {
+        if view.state().events.contains(EventKind::FileDrop) {
+            return Some(view);
+        }
+        if view.kind() == ViewKind::Modal || view.id() == ROOT_ID {
+            return None;
+        }
+        view = view.parent_view()?;
+    }
+}
+
 // --- Events from the window ---------------------------------------------------------
 
 /// A pointer event from the window.

@@ -389,6 +389,7 @@ fn windows(cx: &mut TestAppContext) {
     compositions_are_reported_and_hold_values_until_they_end(cx);
     menu_shortcuts_leave_a_focused_field_the_keys_it_uses(cx);
     presses_carry_where_the_pointer_was(cx);
+    files_dropped_from_outside_reach_the_view_under_them(cx);
     presses_carry_the_modifier_keys_and_click_count(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
@@ -1839,6 +1840,123 @@ mod press_point {
                     .h(px(30.0)),
             )
     }
+}
+
+fn files_dropped_from_outside_reach_the_view_under_them(cx: &mut TestAppContext) {
+    let source = r#"
+import { mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+const log = signal<string[]>([]);
+const add = (entry: string) => log.set([...log(), entry]);
+mount(() => <View style={{ flex: 1 }}>
+  <View
+    onFileDragEnter={() => add("enter outer")}
+    onFileDragLeave={() => add("leave outer")}
+    onFileDrop={(e) => add("drop outer " + e.uris.join(";"))}
+    style={{ height: 100 }}
+  >
+    <View
+      onFileDragEnter={() => add("enter inner")}
+      onFileDragLeave={() => add("leave inner")}
+      onFileDrop={(e) => add("drop inner " + e.uris.join(";"))}
+      style={{ height: 40 }}
+    />
+  </View>
+  <View style={{ height: 100 }} />
+  <Input autoFocus readonly value={log().join(", ") || "none"} style={{ height: 30 }} />
+</View>);
+"#;
+    let code = nsh_bundler::compile_module("App.tsx", source, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| {
+        view.load(App::Js(Bundle::source(code.clone())))
+    });
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "none");
+    let origin = view.read_with(cx, |view, _| view.surface().origin.get());
+    let at = |y: f32| gpui::point(gpui::px(origin.0 + 10.0), gpui::px(origin.1 + y));
+    let send = |cx: &mut VisualTestContext, event: gpui::FileDropEvent| {
+        cx.update(|window, cx| {
+            window.dispatch_event(gpui::PlatformInput::FileDrop(event), cx);
+        });
+        cx.run_until_parked();
+    };
+    let enter = |cx: &mut VisualTestContext, y: f32, paths: &[&str]| {
+        let paths = gpui::ExternalPaths(paths.iter().map(std::path::PathBuf::from).collect());
+        send(
+            cx,
+            gpui::FileDropEvent::Entered {
+                position: at(y),
+                paths,
+            },
+        );
+        // The platform's next report, once the drag's frame has laid the
+        // drop layer over the surface.
+        send(cx, gpui::FileDropEvent::Pending { position: at(y) });
+    };
+    // The innermost listener under the drag is the destination; moving
+    // leaves it for the next one, and the drop goes there, without the
+    // relative path.
+    enter(cx, 20.0, &["/tmp/a b.txt", "b.txt"]);
+    wait_for(&view, cx, "enter inner");
+    send(cx, gpui::FileDropEvent::Pending { position: at(70.0) });
+    wait_for(&view, cx, "enter inner, leave inner, enter outer");
+    send(cx, gpui::FileDropEvent::Submit { position: at(70.0) });
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer",
+    );
+    // Leaving the window leaves the destination.
+    enter(cx, 20.0, &["/tmp/c.txt"]);
+    send(cx, gpui::FileDropEvent::Exited);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
+    // Where no view listens, the drop goes nowhere.
+    enter(cx, 150.0, &["/tmp/d.txt"]);
+    send(
+        cx,
+        gpui::FileDropEvent::Submit {
+            position: at(150.0),
+        },
+    );
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
+    // The same bundle reuses its node ids, but a new load owns its own drag events.
+    enter(cx, 20.0, &["/tmp/reloaded.txt"]);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner, enter inner",
+    );
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    wait_for(&view, cx, "none");
+    send(cx, gpui::FileDropEvent::Pending { position: at(20.0) });
+    wait_for(&view, cx, "enter inner");
+    send(cx, gpui::FileDropEvent::Submit { position: at(20.0) });
+    wait_for(
+        &view,
+        cx,
+        "enter inner, drop inner file:///tmp/reloaded.txt, leave inner",
+    );
+    enter(cx, 20.0, &["/tmp/cancelled.txt"]);
+    send(cx, gpui::FileDropEvent::Exited);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, drop inner file:///tmp/reloaded.txt, leave inner, enter inner, leave inner",
+    );
+    view.update(cx, |view, _| view.stop());
 }
 
 fn presses_carry_where_the_pointer_was(cx: &mut TestAppContext) {
