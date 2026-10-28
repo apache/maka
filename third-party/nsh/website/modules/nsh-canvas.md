@@ -18,7 +18,7 @@ See [Canvas](../docs/canvas.md) for the guide and [`<Canvas>`](../elements/canva
 ## Canvas
 
 ```ts
-function Canvas(props: CanvasProps): YNode;
+function Canvas(props: CanvasProps): JSX.Element;
 
 interface CanvasProps extends ViewProps {
   draw: (cx: CanvasRenderingContext2D, size: CanvasSize) => void;

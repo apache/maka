@@ -335,7 +335,7 @@ impl Dom {
 
 /// The methods of nodes (`ref` objects): each sends a command to the
 /// node's view, in order with the ops before it. Name, `length`, signature
-/// and documentation (the declaration of `YNode`).
+/// and documentation (declared on the refs of `declarations::REFS`).
 pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
     (
         "focus",
@@ -1263,7 +1263,7 @@ fn set_prop(
             return set_prop(cx, content, name, value, prev);
         }
         "activeStyle" | "hoverStyle" | "focusStyle" | "disabledStyle" | "selectedStyle"
-        | "checkedStyle" | "indeterminateStyle" | "headerStyle" => {
+        | "checkedStyle" | "indeterminateStyle" | "expandedStyle" | "headerStyle" => {
             let patch = part_style(cx, name, value)?;
             let prop = match name {
                 "activeStyle" => nsh_core::Prop::ActiveStyle(patch),
@@ -1273,6 +1273,7 @@ fn set_prop(
                 "selectedStyle" => nsh_core::Prop::SelectedStyle(patch),
                 "checkedStyle" => nsh_core::Prop::CheckedStyle(patch),
                 "indeterminateStyle" => nsh_core::Prop::IndeterminateStyle(patch),
+                "expandedStyle" => nsh_core::Prop::ExpandedStyle(patch),
                 _ => nsh_core::Prop::HeaderStyle(patch),
             };
             return dom(cx).push(cx, Op::SetProp { id, prop });

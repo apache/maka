@@ -29,7 +29,7 @@ function App() {
       <Input
         testID="controlled"
         value={name()}
-        onChange={(text) => name.set(text.toUpperCase())}
+        onChange={({ value }) => name.set(value.toUpperCase())}
       />
       <Text>{`Name: ${name()}`}</Text>
       <View testID="reset" onPress={() => name.set("Grace")}>

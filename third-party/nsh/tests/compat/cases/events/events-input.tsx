@@ -31,7 +31,7 @@ function App() {
         onFocus={() => focus.set("focused")}
         onBlur={() => focus.set(focus() + " blurred")}
         onKeyPress={(e) => keys.update((k) => [...k, e.key])}
-        onChange={(t) => text.set(t)}
+        onChange={({ value }) => text.set(value)}
         onSubmit={(e) => submitted.set(e.text)}
         onSelectionChange={(e) => selection.set(`${e.start}-${e.end}`)}
         onCaretMove={(e) => {
@@ -60,7 +60,7 @@ function App() {
         testID="notes"
         multiline
         style={{ width: 100 }}
-        onContentSizeChange={(e) => {
+        onContentSizeChange={({ size: e }) => {
           if (first < 0) first = e.height;
           const typed = typeof e.width === "number" && typeof e.height === "number";
           size.set(
@@ -74,7 +74,7 @@ function App() {
         testID="upper"
         value={upper()}
         style={{ width: 300, height: 40 }}
-        onChange={(t) => upper.set(t.toUpperCase())}
+        onChange={({ value }) => upper.set(value.toUpperCase())}
       />
       <Text>Upper: {upper()}</Text>
       <Input

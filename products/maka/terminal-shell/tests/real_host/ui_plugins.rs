@@ -208,7 +208,7 @@ export function activate(context) {
               accessibilityLabel: 'Custom root editor',
               style: { height: 40, color: '#f0f1f3', fontSize: 14 },
               get value() { return note(); },
-              onChange: (value) => note.set(value)
+              onChange: ({ value }) => note.set(value)
             }),
             Button({
               accessibilityLabel: 'Watch original session',

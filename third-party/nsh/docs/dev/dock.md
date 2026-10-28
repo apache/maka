@@ -153,7 +153,7 @@ Docking has a mobile counterpart, so the dock runs on every platform and adapts 
   `open` says. `toggleDock` / `setDockOpen` present one (dismissing the other) or dismiss it, and a press on its
   backdrop, Escape and back dismiss it. The layout's `open` stays the full presentation's: compact never changes it
   and reports no `onLayoutChange`, so an area that widens again shows the docks as they were.
-  `onDockOpenChange(placement, open)` reports what shows in either presentation (the layout's `open` in the full one, the presented dock in the compact
+  `onDockOpenChange({ placement, open })` reports what shows in either presentation (the layout's `open` in the full one, the presented dock in the compact
   one, and the docks whose shown state changes when the presentation switches; on mount, the docks whose shown state
   differs from the layout's `open`), so a toolbar toggle that starts from the layout's `open` follows both;
   `DockInfo.open` is the same "shown now".
@@ -190,7 +190,7 @@ panel where it was, and the app persists one layout.
 - Drags run in the core: the band claims the touches that go down on it (the touch responder; the desktops' mouse
   drags are touches too), reads the panels' laid out sizes once as the drag starts, and resizes the panel before the
   handle on every move. Nothing reaches JS until the drag ends: when it changed the sizes, the group reports every
-  visible panel's size (`onResize(sizes)`), each changed panel its own.
+  visible panel's size (`onResize({ sizes })`), each changed panel its own.
 - A panel's `size` is what it wants, within its range: unsized panels share what is left (in proportion to the sizes
   when every panel has one), and when the group is too small the panels shrink (`fixed` ones aside) and come back to
   their sizes when room returns. A drag gives the panels it moved the user's sizes until the app passes a new `size`;

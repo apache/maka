@@ -178,7 +178,7 @@ NSH does not need `node_modules`. Instead, every command that builds the app (`i
 | File in `.nsh/types/nsh/` | Declares |
 |---|---|
 | `index.d.ts` | `nsh`: `signal`, `computed`, `effect`, `mount`, `View`, `Text`, ... and re-exports the types below |
-| `types.d.ts` | Styles (`ViewStyle`, `TextStyle`, ...), every element's props and events, `YNode` (what a `ref` receives) |
+| `types.d.ts` | Styles (`ViewStyle`, `TextStyle`, ...), every element's props and events, the refs (`ViewRef`, `InputRef`, ...: what a `ref` receives) |
 | `jsx-runtime.d.ts` | The JSX runtime TypeScript resolves through `jsxImportSource` (the `JSX` namespace) |
 | `globals.d.ts` | `If` and `Each`; `console`, timers, `requestAnimationFrame`, `fetch` and the other [global APIs](../modules/globals.md) |
 | `assets.d.ts` | What importing an image or font gives |

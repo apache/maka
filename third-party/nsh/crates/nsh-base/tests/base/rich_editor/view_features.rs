@@ -40,6 +40,25 @@ fn arrows_reach_the_gap_between_atoms() {
 }
 
 #[test]
+fn a_mention_shows_its_text_and_is_one_position() {
+    let mut app = start(json!({"type": "doc", "content": [
+        {"type": "paragraph", "content": [
+            {"type": "text", "text": "hi "},
+            {"type": "mention", "attrs": {"id": "a", "label": "Alice"}},
+            {"type": "text", "text": "!"},
+        ]},
+    ]}));
+    // Its `render_text`, in the line with the text around it.
+    see(&mut app, "hi @Alice!");
+    focus_start(&mut app);
+    // `hi ` is 1..4, the mention 4..5: the caret steps over it at once.
+    keys(&mut app, &["right", "right", "right"]);
+    see(&mut app, "Sel 4-4");
+    keys(&mut app, &["right"]);
+    see(&mut app, "Sel 5-5");
+}
+
+#[test]
 fn typing_at_a_gap_cursor_opens_a_paragraph() {
     let mut app = start(two_atoms());
     focus_start(&mut app);

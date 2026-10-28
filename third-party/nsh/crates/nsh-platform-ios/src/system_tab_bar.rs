@@ -28,6 +28,10 @@ struct BarIvars {
     /// and draws nothing until the bar is laid out again.
     width: Cell<f64>,
     height: Cell<f64>,
+    visibility: crate::bottom_bar::Visibility,
+    /// The state the transform was last set for: a layout pass must not set it
+    /// again, or it ends a running animation (a snap, not a slide).
+    applied: Cell<bool>,
     context: ComponentContext,
 }
 
@@ -47,6 +51,13 @@ define_class!(
             show(self, &self.ivars().items.borrow(), self.ivars().selected.get());
         }
 
+        /// `hidesBottomBarWhenPushed` (called by the navigation stack inside
+        /// its transition): off the bottom, or back where the app put it.
+        #[unsafe(method(nshSetBottomHidden:))]
+        fn set_bottom_hidden(&self, hidden: bool) {
+            self.put_bottom_hidden(hidden);
+        }
+
         /// A bar makes its item views once it is in a window: the items set
         /// before that draw nothing.
         #[unsafe(method(didMoveToWindow))]
@@ -61,7 +72,13 @@ define_class!(
             // UIKit can give the bar its natural height before the host is
             // sized. Flexible-height autoresizing then adds the host's height
             // to that initial size; fill the host exactly instead.
-            if let Some(host) = self.superview() {
+            // Setting a frame while a transform is applied makes UIKit move the
+            // view somewhere else (frame and transform do not mix): while the
+            // navigation stack keeps the bar out of sight, its frame is already
+            // the host's, so leave it alone.
+            if !self.bottom_bar_hidden()
+                && let Some(host) = self.superview()
+            {
                 let frame = host.bounds();
                 if self.frame() != frame {
                     self.setFrame(frame);
@@ -73,6 +90,9 @@ define_class!(
             let height = self.sizeThatFits(CGSize::new(width, f64::INFINITY)).height;
             if height != self.ivars().height.replace(height) {
                 self.ivars().context.set_size(0.0, height as f32);
+            }
+            if self.bottom_bar_hidden() != self.ivars().applied.get() {
+                self.apply_bottom_hidden();
             }
             if width < 1.0 || width == self.ivars().width.get() {
                 return;
@@ -97,6 +117,52 @@ define_class!(
 );
 
 impl NshTabBar {
+    /// Puts the bar where its element is (`false`) or a screen below the
+    /// bottom of it (`true`), as a layer transform so the frame stays the
+    /// app's.
+    /// Either of the two, as UIKit's bar is hidden while its tab bar
+    /// controller or the page showing says so.
+    /// Navigation updates only its own reason; the app keeps ownership of
+    /// `TabBar.hidden` across pushes, pops and option updates.
+    fn put_bottom_hidden(&self, hidden: bool) {
+        self.ivars().visibility.set_navigation(hidden);
+        self.apply_bottom_hidden();
+    }
+
+    fn bottom_bar_hidden(&self) -> bool {
+        self.ivars().visibility.hidden()
+    }
+
+    fn apply_bottom_hidden(&self) {
+        let hidden = self.bottom_bar_hidden();
+        self.ivars().applied.set(hidden);
+        // Far enough to clear whatever inset the app left below the bar.
+        let offset = if hidden {
+            self.bounds().size.height + 200.0
+        } else {
+            0.0
+        };
+        // The view's own transform, not its layer's: UIKit scrubs a view
+        // animation with an interactive transition (the swipe back follows the
+        // finger) only for view properties.
+        let transform = objc2_core_foundation::CGAffineTransform {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 0.0,
+            ty: offset,
+        };
+        self.setTransform(transform);
+        // Back in place: the frame may have been left stale while hidden.
+        if !hidden
+            && let Some(host) = self.superview()
+            && self.frame() != host.bounds()
+        {
+            self.setFrame(host.bounds());
+        }
+    }
+
     fn new(
         mtm: MainThreadMarker,
         items: Rc<RefCell<Vec<Retained<UITabBarItem>>>>,
@@ -107,6 +173,8 @@ impl NshTabBar {
             selected: Cell::new(0),
             width: Cell::new(0.0),
             height: Cell::new(0.0),
+            visibility: Default::default(),
+            applied: Cell::new(false),
             context,
         });
         // SAFETY: `UITabBar`'s initializer is `UIView`'s `initWithFrame:`;
@@ -179,7 +247,8 @@ define_class!(
         fn did_select(&self, _bar: &UITabBar, item: &UITabBarItem) {
             self.ivars()
                 .context
-                // The index itself: `onChange(index)`.
+                // The index itself (the core's `TabBarEvent::Change`; JS hears
+                // `onChange({ index })`).
                 .emit("change", serde_json::json!(item.tag() as u32));
         }
     }
@@ -242,6 +311,12 @@ impl NativeComponent for SystemTabBar {
                 let items = value.and_then(JsonValue::as_array);
                 self.tabs = items.map(|items| parse_items(items)).unwrap_or_default();
                 self.rebuild();
+            }
+            ("hidden", value) => {
+                let hidden = value.and_then(JsonValue::as_bool).unwrap_or(false);
+                // The visible stack owns the other hiding reason.
+                self.bar.ivars().visibility.set_app(hidden);
+                self.bar.apply_bottom_hidden();
             }
             ("selectedIndex", value) => {
                 // Removed (or not a whole number): the first tab, the default.

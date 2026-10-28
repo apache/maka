@@ -46,6 +46,8 @@ tokio = { workspace = true, features = ["net", "io-util", "sync", "macros"] }
 cap-std.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
 # `process`'s children: their process groups and exits (`runtime/process.rs`).
 libc.workspace = true
 # The image disk cache (`image/cache.rs`).

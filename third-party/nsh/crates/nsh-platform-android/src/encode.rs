@@ -293,6 +293,7 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 id,
                 horizontal,
                 scrollbar_visible,
+                replaced,
                 scroll_value,
                 pull_value,
                 keyboard_dismiss,
@@ -312,6 +313,7 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     id,
                     horizontal,
                     scrollbar_visible,
+                    replaced,
                     scroll_value,
                     pull_value,
                     keyboard_dismiss,
@@ -1271,6 +1273,10 @@ fn input(e: &mut Encoded, c: &InputConfig) {
     e.bool(c.caret_hidden);
     // `pasteBehavior`: whether a paste inserts its text.
     e.bool(c.paste_behavior == nsh_core::PasteBehavior::Insert);
+    // A multiline input's own scroll bar shows; a built-in bar replaces it
+    // (the input then reports how far its text scrolled).
+    e.bool(c.scrollbar_visible);
+    e.bool(c.replaced);
 }
 
 // --- Canvas drawings (`CanvasBox.java`) -------------------------------------

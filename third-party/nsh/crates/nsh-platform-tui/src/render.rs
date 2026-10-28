@@ -4092,6 +4092,51 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_shader_preserves_view_background_and_child_paint() {
+        let mut surface = Surface::new(4, 1, CellMetrics::default());
+        let mut items = mount_node(
+            2,
+            ViewKind::View,
+            ROOT_ID,
+            Bounds::new(Point::default(), Size::new(px(32.0), px(16.0))),
+        );
+        items.extend(mount_node(
+            4,
+            ViewKind::View,
+            2,
+            Bounds::new(Point::new(px(8.0), px(0.0)), Size::new(px(8.0), px(16.0))),
+        ));
+        for (id, color) in [(2, Color(0xff00_00ff)), (4, Color(0x0000_ffff))] {
+            let mut style = ViewStyle::default();
+            style.background_color = color;
+            items.push(MountItem::ViewStyle {
+                id,
+                style: Box::new(style),
+            });
+        }
+        surface.apply(MountBatch { items });
+        let shader = nsh_core::shader::Shader::compile(
+            "fn shade(uv: vec2f) -> vec4f { return vec4f(0.0, 1.0, 0.0, 1.0); }",
+        )
+        .unwrap();
+        let layer = Arc::new(nsh_core::shader::ShaderLayer::new(
+            shader,
+            &[],
+            &mut Vec::new(),
+        ));
+        for layer in [Some(layer), None] {
+            surface.apply(MountBatch {
+                items: vec![MountItem::Shader { id: 2, layer }],
+            });
+            let mut buffer = Buffer::empty(CellRect::new(0, 0, 4, 1));
+            surface.render(buffer.area, &mut buffer);
+            assert_eq!(buffer[(0, 0)].bg, CellColor::Rgb(255, 0, 0));
+            assert_eq!(buffer[(1, 0)].bg, CellColor::Rgb(0, 0, 255));
+            assert_eq!(buffer[(2, 0)].bg, CellColor::Rgb(255, 0, 0));
+        }
+    }
+
+    #[test]
     fn input_keeps_caret_visible_and_masks_selected_password_graphemes() {
         let mut surface = Surface::new(6, 1, CellMetrics::default());
         let mut items = mount_node(

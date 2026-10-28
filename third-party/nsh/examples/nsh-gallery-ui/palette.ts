@@ -22,7 +22,7 @@ export const ui = () => ({
   row: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, ...finish.card },
   inset: { backgroundColor: colors.inset, borderWidth: 1, borderColor: colors.line, ...finish.inset },
   raised: { backgroundColor: colors.raised, borderWidth: 1, borderColor: colors.border, ...finish.raised },
-  primary: { backgroundColor: colors.light, ...finish.light },
+  primary: { backgroundColor: colors.light, borderWidth: 1, ...finish.light },
   accentFill: { backgroundColor: colors.accentFill, borderWidth: 1, borderColor: colors.accent, ...finish.accent },
 });
 

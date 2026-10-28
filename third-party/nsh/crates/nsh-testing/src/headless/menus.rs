@@ -90,4 +90,42 @@ impl Headless {
             .control()
             .dispatch_event(ROOT_ID, EventKind::Menu, EventPayload::Map(fields));
     }
+
+    /// The step `dropFiles(<selector>, <uris>)`: local files (`file:`
+    /// URLs) dragged from a file manager and dropped on the middle of the
+    /// view `selector` names; it, or the nearest view around it listening,
+    /// hears `onFileDrop`. Desktops only, as the platforms report it.
+    pub fn drop_files(&mut self, selector: &str, uris: Vec<String>) -> Result<(), String> {
+        let parsed = Selector::parse(selector)?;
+        self.step(format!("dropFiles({selector})"));
+        if !self.environment.desktop() {
+            return Err("files are dropped on a desktop: open the app as one (`platform`)".into());
+        }
+        let pick = self.screen.view(&parsed);
+        let target = self.picked(pick, selector, "view")?;
+        let Some(id) = self
+            .screen
+            .chain(target)
+            .into_iter()
+            .find(|&id| self.screen.hears(id, EventKind::FileDrop))
+        else {
+            return Err(format!("no view at `{selector}` listens to `onFileDrop`"));
+        };
+        // Let go at the middle of what the selector names, as Linux
+        // reports where.
+        let at = self
+            .screen
+            .match_inside(&parsed, target)
+            .and_then(|inner| self.screen.bounds_in_root(inner))
+            .or_else(|| self.screen.bounds_in_root(target));
+        let payload = match at {
+            Some(b) => EventPayload::FileDropAt {
+                uris,
+                page_position: b.center(),
+            },
+            None => EventPayload::FileDrop(uris),
+        };
+        self.send(id, EventKind::FileDrop, payload);
+        self.done()
+    }
 }

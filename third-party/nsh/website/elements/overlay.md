@@ -49,11 +49,11 @@ fn more_button() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Overlay, signal, Text, View, type YNode } from "nsh";
+import { Overlay, signal, Text, View, type ViewRef } from "nsh";
 
 function MoreButton() {
   const open = signal(false);
-  let anchor: YNode | undefined;
+  let anchor: ViewRef | undefined;
   return (
     <View>
       <View ref={anchor} onPress={() => open.set(!open())} class="px-3 py-2">
@@ -130,7 +130,7 @@ both: that is how [Sheet](./sheet.md) and the phone presentation of [Popover](./
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `anchor` | `.anchor(&element_ref)`, `.anchor_point(point)`, `.anchor_bounds(bounds)` | `YNode \| Point \| Bounds \| null` | none | The view, the point or the box it is placed against. Without one it is a fixed box of its root view. |
+| `anchor` | `.anchor(&element_ref)`, `.anchor_point(point)`, `.anchor_bounds(bounds)` | `ViewRef \| Point \| Bounds \| null` | none | The view, the point or the box it is placed against. Without one it is a fixed box of its root view. |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | The side of the anchor it goes on. |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | How it lines up with the anchor along that side. |
 | `offset` | `.offset(px(..))` | `number` | `0` | The gap between the anchor and the overlay. |

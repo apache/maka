@@ -5,24 +5,24 @@
 // ref got shows it as text, so the script sees that each form received
 // its own element. Its script checks each.
 import { Text, View, signal } from "nsh";
-import type { ViewProps, YNode } from "nsh";
+import type { ViewProps, ViewRef } from "nsh";
 
 function Card(props: ViewProps) {
   return <View ref={props.ref} style={{ width: 150, height: 15 }} />;
 }
 
 function App() {
-  let plain: YNode | undefined;
-  const box = signal<YNode>();
+  let plain: ViewRef | undefined;
+  const box = signal<ViewRef>();
   const calls = signal(0);
-  let called: YNode | undefined;
-  const onRef = (node: YNode) => {
+  let called: ViewRef | undefined;
+  const onRef = (node: ViewRef) => {
     called = node;
     calls.set(calls() + 1);
   };
-  const refs: { field?: YNode; card?: YNode } = {};
+  const refs: { field?: ViewRef; card?: ViewRef } = {};
   const key = "card";
-  let inline: YNode | undefined;
+  let inline: ViewRef | undefined;
   const sizes = signal("none");
   const measure = async () => {
     const nodes = [plain, box(), called, refs.field, refs[key], inline];

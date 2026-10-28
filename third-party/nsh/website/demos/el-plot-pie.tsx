@@ -108,7 +108,7 @@ function App() {
               // it all at once.
               appearGeneration={["Region", "Channel", "None"].indexOf(breakdown())}
               motion={{ appear: { duration: 900, easing: "easeOut" }, update: { duration: 450, easing: "easeInOut" }, enter: { duration: 120 }, exit: { duration: 180 }, pointer: { stiffness: 420, damping: 40 } }}
-              onHoverChange={(index) => {
+              onHoverChange={({ index }) => {
                 hovered.set(index);
                 const p = index == null ? undefined : parts()[index];
                 const line = p ? `${index}: ${p.name}, ${money(p.revenue)} (${percent(share(p))})` : "null: off the slices";

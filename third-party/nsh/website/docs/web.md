@@ -33,7 +33,7 @@ requestAnimationFrame ──────────────┘             
 - **Native animations run in Rust** on `requestAnimationFrame`: `Animated` timing, spring and decay, `interpolate`, animated values bound to `opacity`, `translate`, `rotate`, `scale`, the steps of `transform` and `backgroundColor`, drags bound with `pan`, scroll-linked values and canvas arguments. JS is not involved per frame, as on devices. `LayoutAnimation`, style transitions, the `animate-*` keyframes and screen transitions move as on the desktop backends, and `prefers-reduced-motion` turns them off (screens fade).
 - **Input:** presses with `activeStyle` / `active:` feedback and long presses, the responder system (`onTouch*`, `PanResponder`), native drags and two-finger pinch and rotation, scroll views (the browser's scrolling), pull to refresh, zooming scroll views (pinch, ctrl+wheel and touchpad pinches, `zoomTo`), `<Input>` with controlled values, focus and submit, `Canvas`, `NavStack` and `NavPage` with the page's `header`, `Dialog`.
 - **System UI is drawn in the page:** `AlertDialog` looks like the desktop backends' dialogs on desktop browsers and like iOS's on phones (with the `desktop` idiom, see below). Custom fonts are measured again once the browser has loaded them, and an app waits for the fonts it imports before its first frame shows.
-- **Dialogs** are a layer over the whole app that shows the app's popup and backdrop, as on the desktop backends. Escape, the browser's back button and a press on the backdrop close them (`closeOnEscape`, `closeOnBackdropPress`), and `animation`, `onOpen`, `onClose`, `onCancel` and `onOpenChange` work as on devices.
+- **Dialogs** are a layer over the whole app that shows the app's popup and backdrop, as on the desktop backends. Escape, the browser's back button and a press on the backdrop close them (`closeOnEscape`, `closeOnBackdropPress`), and `animation`, `onOpen`, `onClose`, `onCancel` and `onOpenChange` work as on devices. A page that [embeds the app](#embed-it-in-a-page) in part of its layout can show dialogs and alerts over the whole browser window instead (`dialogs: "viewport"`), as iOS and Android show them over the whole screen.
 
 ## Keyboard, mouse and touch
 
@@ -248,6 +248,7 @@ const player = await createPlayer(document.querySelector("#phone"), {
   // dark: true,            // force an appearance; otherwise it follows the system
   // idiom: "phone",        // force "phone", "pad" or "desktop"; otherwise the pointer and the size decide
   // history: false,        // pages and dialogs as browser history entries; by default only when the app is the page, not in an iframe
+  // dialogs: "viewport",   // Dialog, Sheet and AlertDialog over the whole browser window; by default over the container
 });
 player.run(await (await fetch("./bundle.nshc")).arrayBuffer());
 ```
@@ -261,6 +262,28 @@ A page that runs code it does not own, as an app embedding NSH does, gives it li
 With `nsh-playground.wasm`, `player.runSource(tsx, name, options)` compiles TSX first, runs it with `run`'s options and returns the compile error, or `null`; `player.compile(tsx)` returns `{ code }` or `{ error }`. The website's playground runs its visitors' code with `{ limits: "" }`.
 
 The container's size is the app's window (`windowSize()`); resizing the container resizes the app. `player.setDark(true)` switches the appearance at run time, which apps observe through `colorScheme()` and `dark:` classes.
+
+Dialogs and alerts cover the container. With `dialogs: "viewport"` they cover the whole browser window, as a page's own modal dialogs do, while the app keeps the container as its window: a `Dialog` lays out at the window's size and safe area and slides in from its bottom edge, its backdrop covers the whole page, and the mouse wheel over it leaves the page in place. The dialog shows in the browser's top layer (Chrome 114, Safari 17, Firefox 125 and later), so it is above the rest of the page wherever the container is; in earlier browsers it covers the container.
+
+
+`Sheet` follows the same presentation setting as `Dialog` and `AlertDialog`. In a same-origin iframe,
+viewport presentation automatically covers the outer page, while the app keeps its original layout size.
+The iframe returns to its original position and size when the last popup closes; its engine and state stay alive.
+The documentation demos enable this presentation.
+
+For a cross-origin or sandboxed iframe, the embedding page registers the host before loading the player:
+
+```js
+import { hostPlayerFrame } from "./nsh.js";
+const frame = document.querySelector("iframe");
+const disconnect = hostPlayerFrame(frame);
+frame.src = "https://apps.example.com/player.html"; // player uses dialogs: "viewport"
+// When removing the embedding: disconnect();
+```
+
+The host accepts requests from this iframe's window, keeps the surrounding page inert and locks its scrolling
+while a popup is visible, and restores both on close. Each cross-origin embedding boundary requires its host's
+cooperation; without it, presentation remains within that document and the player reports a warning.
 
 ## The host's functions
 

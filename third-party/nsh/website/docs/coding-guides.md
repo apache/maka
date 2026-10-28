@@ -246,7 +246,7 @@ pub fn Search(props: SearchProps) -> impl IntoElement {
 ```tsx tabs
 function Search(props: { placeholder: string }) {
   const query = signal("");
-  return <Input value={query()} onChange={(text) => query.set(text)} placeholder={props.placeholder} />;
+  return <Input value={query()} onChange={({ value }) => query.set(value)} placeholder={props.placeholder} />;
 }
 ```
 
@@ -307,7 +307,7 @@ switch()
 ```
 
 ```tsx tabs
-<Switch checked={showHidden()} onChange={(next) => showHidden.set(next)}>
+<Switch checked={showHidden()} onChange={({ checked }) => showHidden.set(checked)}>
   <Text>Show hidden files</Text>
 </Switch>
 ```
@@ -425,7 +425,7 @@ function CartRow() {
       max={10}
       decrementLabel="Fewer"
       incrementLabel="More"
-      onChange={(next) => quantity.set(next)}
+      onChange={({ value }) => quantity.set(value)}
     />
   );
 }
@@ -449,7 +449,7 @@ export interface QuantityStepperProps {
   /** What screen readers say for the button that adds one. */
   incrementLabel: string;
   /** The user asked for another quantity; the owner sets `value`. */
-  onChange?: (next: number) => void;
+  onChange?: (e: { value: number }) => void;
 }
 
 export function QuantityStepper(props: QuantityStepperProps) {
@@ -457,7 +457,7 @@ export function QuantityStepper(props: QuantityStepperProps) {
   const max = () => props.max ?? 99;
   const step = (delta: number) => {
     const next = Math.min(max(), Math.max(min(), props.value + delta));
-    if (next !== props.value) props.onChange?.(next);
+    if (next !== props.value) props.onChange?.({ value: next });
   };
   const buttonClass = "size-8 items-center justify-center rounded-(--radius) bg-muted active:opacity-60 disabled:opacity-40";
   return (
@@ -913,7 +913,8 @@ as they are. Apply the same discipline to what an app or a component library exp
 props and events, its crate's exports, the functions a host app's native components and modules receive):
 
 - inputs gain optional members only; types only widen; defaults and behavior stay (new behavior is opt-in);
-- options are one object (`scrollTo({ x, y, animated })`), never a third positional parameter;
+- a function whose parameters may grow takes its options as one object (`scrollTo({ x, y, animated })`), never a
+  further positional parameter; parameters that never will, such as a range's start and end, stay positional;
 - a mode is a string union, which can gain values, rather than a boolean that later needs a third state;
 - a value has one type: `version: string`, never `string | number`;
 - what a function returns is an object, which can gain a field, rather than a tuple or a bare value;
@@ -984,10 +985,10 @@ word (`readonly`, `multiline`).
 | A slot | What it is | `header`, `footer`, `trigger`, `content`, `empty` |
 | Content of the app's | `render<Part>` | `renderCodeBlock` |
 | A dismissal flag | `closeOn<Trigger>`, default `true` | `closeOnEscape`, `closeOnBackdropPress` |
-| A value's change | `on<Value>Change(next, details?)` | `onChange(text)`, `onOpenChange(open, reason)` |
+| A value's change | `on<Value>Change({ <value>, ... })`, one object | `onChange({ value })`, `onOpenChange({ open, reason })` |
 | Any other event | `on<Event>`, present tense, one object | `onPress()`, `onSubmit({ text })` |
 | A phase | `<act>Start`, `<act>End` | `onPanStart`, `onLoadStart` |
-| The pointer over a view | `In` / `Out` | `onHoverIn`, `onHoverOut` |
+| The mouse over a view | `Enter` / `Move` / `Leave`, the DOM's | `onMouseEnter`, `onMouseMove`, `onMouseLeave` |
 | Starting to listen | Returns `() => void` | `keymap.bind(..)` |
 | A value of the environment | An accessor, `set<Value>` beside it | `colorScheme()`, `setColorScheme` |
 | A read-only boolean | `is<Adjective>`, `has<Noun>` | `isAvailable` |
@@ -1041,13 +1042,14 @@ domain term exists.
 
 ### Callback and event wording
 
-- A value's change passes the value first and anything else after it: `onChange(next)`, `onOpenChange(open, reason)`.
-  Every other event passes one object, even with one field (`onLinkPress({ url })`), so a later field is an addition;
-  an event with nothing to report passes nothing.
+- Every event passes one object, even with one field and for a value's change too, its fields named as the props they
+  report: `onChange({ value })`, `onOpenChange({ open, reason })`, `onLinkPress({ url })`. A later field is then an
+  addition. A data type of the API is a field, never the payload itself (`onImagePress({ image })`); an event with
+  nothing to report passes nothing.
 - Name the act, not past tense or a request: `onPress`, `onClose`, `onCancel`, `onBackPress`.
 - Name the intent rather than the geometry when the act has a name: `onLoadMore`, not "the end was reached".
-- Lifecycle pairs are `onOpen` / `onClose`; phases are `Start` / `End`, never `Begin`; the pointer over a view is
-  `onHoverIn` / `onHoverOut`, a file dragged over it `Enter` / `Leave`.
+- Lifecycle pairs are `onOpen` / `onClose`; phases are `Start` / `End`, never `Begin`; the mouse over a view is
+  `onMouseEnter` / `onMouseMove` / `onMouseLeave` (the DOM's names), a file dragged over it `Enter` / `Leave`.
 - Document whether a callback runs before or after the component's own state changes, and whether it may re-enter the
   component.
 

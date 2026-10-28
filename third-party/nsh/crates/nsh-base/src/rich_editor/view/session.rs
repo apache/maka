@@ -100,6 +100,16 @@ pub trait ViewGeometry: Send + Sync {
     fn pos_at_coords(&self, point: Point<Points>) -> Option<usize>;
     /// The box around the selection.
     fn selection_rect(&self) -> Option<Bounds<Points>>;
+    /// The box of the block starting at `pos`, as it is laid out.
+    fn node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
+        let _ = pos;
+        None
+    }
+    /// A content point less the same point in the root view, now (its
+    /// scrolling included), once the pointer has been over the content.
+    fn page_shift(&self) -> Option<Point<Points>> {
+        None
+    }
 }
 
 fn origin_name(origin: Option<&TransactionOrigin>) -> String {
@@ -233,13 +243,31 @@ impl fmt::Debug for NodeViews {
 }
 
 /// What a session asks of the views showing it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ViewRequest {
     /// Take the keyboard focus.
     Focus,
     /// Give the keyboard focus up.
     Blur,
+    /// Start moving the block at `pos` from the page point `page` (a drag
+    /// handle's press, as Tiptap's `DragHandle` starts ProseMirror's
+    /// drag): the block is selected and carried.
+    DragBlock {
+        /// The block's position.
+        pos: usize,
+        /// Where the press is, in the root view.
+        page: Point<Points>,
+    },
+    /// The block drag moved to this page point: the drop cursor follows,
+    /// and the view scrolls at its edges.
+    DragTo(Point<Points>),
+    /// The block drag ended: the block drops at the drop cursor, or stays
+    /// selected when it never left its place.
+    EndDrag,
+    /// Measure where the content is on the page again, for the page
+    /// queries (`page_coords_at_pos`): what is around it may have moved.
+    Place,
 }
 
 /// A view's handler of [`ViewRequest`]s.
@@ -521,6 +549,58 @@ impl EditorSession {
     /// The box around the selection in the view showing the session.
     pub fn selection_rect(&self) -> Option<Bounds<Points>> {
         self.geometry()?.selection_rect()
+    }
+
+    /// The caret's box at `pos` in the root view (page coordinates, as
+    /// ProseMirror's `coordsAtPos` gives the window's). The view measures
+    /// where it is as it lays out and when asked here, so the answer
+    /// follows a move of what is around it a frame later.
+    pub fn page_coords_at_pos(&self, pos: usize) -> Option<Bounds<Points>> {
+        let geometry = self.geometry()?;
+        let shift = geometry.page_shift()?;
+        let b = geometry.coords_at_pos(pos)?;
+        Some(Bounds::new(
+            Point::new(b.origin.x - shift.x, b.origin.y - shift.y),
+            b.size,
+        ))
+    }
+
+    /// The box of the block starting at `pos` in the root view (page
+    /// coordinates, as ProseMirror's `nodeDOM(pos).getBoundingClientRect()`
+    /// gives the window's): where to place what goes around a table or an
+    /// image.
+    pub fn page_node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
+        let geometry = self.geometry()?;
+        let shift = geometry.page_shift()?;
+        let b = geometry.node_rect(pos)?;
+        Some(Bounds::new(
+            Point::new(b.origin.x - shift.x, b.origin.y - shift.y),
+            b.size,
+        ))
+    }
+
+    /// The document position at a point of the root view (page
+    /// coordinates, as ProseMirror's `posAtCoords` takes the window's).
+    pub fn pos_at_page_coords(&self, page: Point<Points>) -> Option<usize> {
+        let geometry = self.geometry()?;
+        let shift = geometry.page_shift()?;
+        geometry.pos_at_coords(Point::new(page.x + shift.x, page.y + shift.y))
+    }
+
+    /// Starts moving the block at `pos` from the page point `page` in the
+    /// views showing the session (a drag handle's press).
+    pub fn drag_block(&self, pos: usize, page: Point<Points>) {
+        self.request(ViewRequest::DragBlock { pos, page });
+    }
+
+    /// A block drag moved to the page point `page`.
+    pub fn drag_to(&self, page: Point<Points>) {
+        self.request(ViewRequest::DragTo(page));
+    }
+
+    /// A block drag ended: the block drops at the drop cursor.
+    pub fn end_drag(&self) {
+        self.request(ViewRequest::EndDrag);
     }
 
     /// Calls `subscriber` with every new state from now on.

@@ -14,7 +14,7 @@ const alerts: { label: string; detail: string; danger?: boolean; options: Option
       title: "Delete the photo?",
       description: "This cannot be undone.",
       actions: [
-        { label: "Cancel", role: "cancel" },
+        { label: "Cancel", role: "cancel", id: "cancel" },
         { label: "Delete", role: "destructive", id: "delete" },
       ],
     },
@@ -27,7 +27,7 @@ const alerts: { label: string; detail: string; danger?: boolean; options: Option
       description: "Your edits to “Trip notes” are not saved yet.",
       actions: [
         { label: "Don't save", role: "destructive", id: "discard" },
-        { label: "Cancel", role: "cancel" },
+        { label: "Cancel", role: "cancel", id: "cancel" },
         { label: "Save", id: "save" },
       ],
       closeOnEscape: true,
@@ -43,7 +43,7 @@ const alerts: { label: string; detail: string; danger?: boolean; options: Option
         { label: "Copy link", id: "copy" },
         { label: "Save", id: "save" },
         { label: "Delete", role: "destructive", id: "delete" },
-        { label: "Cancel", role: "cancel" },
+        { label: "Cancel", role: "cancel", id: "cancel" },
       ],
     },
   },
@@ -54,11 +54,11 @@ function App() {
   const shown = signal(0);
   const show = async (options: Options) => {
     shown.update((n) => n + 1);
-    const choice = await AlertDialog.show(options);
-    answer.set(choice === null ? "null (closed without an action)" : JSON.stringify(choice));
+    const { action } = await AlertDialog.show(options);
+    answer.set(action === null ? "{ action: null } (closed without an action)" : `{ action: ${JSON.stringify(action)} }`);
   };
   const row = () => ({ ...ui().row, borderRadius: 12, padding: 14, gap: 2 });
-  const hint = desktop ? "Escape or a click outside the action sheet closes it with null." : "A tap outside the action sheet closes it with null.";
+  const hint = desktop ? "Escape or a click outside the action sheet closes it with { action: null }." : "A tap outside the action sheet closes it with { action: null }.";
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 12 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>alert-dialog</Text>

@@ -520,6 +520,7 @@ fn builtin_registry() -> CommandRegistry {
     crate::rich_editor::extensions::link::register_commands(&mut r);
     crate::rich_editor::extensions::character_count::register_commands(&mut r);
     crate::rich_editor::extensions::suggestion::register_commands(&mut r);
+    crate::rich_editor::tables::commands::register_commands(&mut r);
     r
 }
 

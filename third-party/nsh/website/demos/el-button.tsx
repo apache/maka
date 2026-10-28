@@ -32,7 +32,7 @@ function App() {
   const disabler = () => (
     <Switch
       checked={disabled()}
-      onChange={(next) => disabled.set(next)}
+      onChange={({ checked }) => disabled.set(checked)}
       class={`flex-row items-center gap-2 active:opacity-70 ${desktop && !wide() ? "self-start" : ""}`}
       trackClass={track}
       trackStyle={disabled() ? ui().accentFill : ui().inset}

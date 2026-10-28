@@ -338,7 +338,7 @@ fn setting_switch(label: &'static str, on: Signal<bool>) -> impl IntoElement {
 import { Text } from "nsh";
 import { Switch } from "nsh/base";
 
-function SettingSwitch(props: { label: string; on: boolean; onChange: (on: boolean) => void }) {
+function SettingSwitch(props: { label: string; on: boolean; onChange: (e: { checked: boolean }) => void }) {
   return (
     <Switch
       checked={props.on}
@@ -389,7 +389,7 @@ fn mark(selected: usize, total: usize) -> &'static str {
 import { Text } from "nsh";
 import { Checkbox } from "nsh/base";
 
-function SelectAll(props: { selected: number; total: number; onChange: (all: boolean) => void }) {
+function SelectAll(props: { selected: number; total: number; onChange: (e: { checked: boolean }) => void }) {
   return (
     <Checkbox
       checked={props.selected === props.total}

@@ -1,25 +1,45 @@
 // The Charts demo: charts an app builds from `nsh/base/plot`'s parts and
 // its own views. A live price streamed a tick a second that pauses and
 // resumes, an order book's depth whose side under the pointer is read out
-// and whose range changes, a drawdown whose day under the pointer is read
-// out over both of its plots, capacity rings by period, a donut of revenue
-// that reports the slice under the pointer (none in its hole) and closes
-// into a pie, and sales as bars side by side or stacked.
+// and whose range changes, a drawdown whose day under the pointer or the
+// arrow keys is read out over both of its plots, capacity rings by period,
+// a donut of revenue that reports the slice under the pointer (none in its
+// hole) or the arrow keys and closes into a pie with its shares written
+// outside, and sales as bars side by side or stacked.
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
 let app: App;
-beforeEach(async () => {
-  // A mouse to hover with, and a manual clock for the stream's ticks.
-  app = await open("../App.tsx", { platform: "macos", width: 1200, height: 1700, clock: {} });
-  await app.press("role:button[Charts]");
+/** The Charts page with a mouse to hover with and a manual clock for the stream's ticks. */
+const start = async (reducedMotion = false) => {
+  app = await open("../App.tsx", { platform: "macos", width: 1200, height: 1700, clock: {}, reducedMotion });
+  await app.press("role:button[Plot]");
   await app.waitFor("Live price");
-});
+};
+beforeEach(() => start());
 
 /** The live price's figure: the text right after the stream's state. */
 const price = () => {
   const texts = app.texts();
   return texts[texts.findIndex((t) => t === "LIVE" || t === "PAUSED") + 1];
+};
+
+/**
+ * Tabs on, pressing Right at each stop, until `shown` is on screen: the
+ * first plot that reads it out has the focus. With reduced motion: in a
+ * desktop window a step waits for the page to settle, which the live
+ * price's pulse never does. A desktop window's sidebar comes first in
+ * its Tab order, so the walk there is long.
+ */
+const tabTo = async (shown: string) => {
+  await start(true);
+  let tabs = 0;
+  while (!app.shows(shown)) {
+    expect(++tabs).toBeLessThan(80);
+    await app.keyboard.press("tab");
+    await app.keyboard.press("right");
+    await app.wait(50);
+  }
 };
 
 test("each chart is one image for screen readers", async () => {
@@ -40,7 +60,8 @@ test("the live price ticks every second until it is paused", async () => {
 });
 
 test("the depth reads out the side under the pointer and changes its range", async () => {
-  expect(app.texts()).toContain("99.58");
+  // The ends' prices under the plot: its axis' labels, which the app writes.
+  await app.waitFor("99.58");
   await app.hover("label:/^Order book depth within 20 ticks/");
   await app.wait(100);
   expect(app.texts().some((t) => t.startsWith("BIDS ≥") || t.startsWith("ASKS ≤"))).toBe(true);
@@ -55,6 +76,21 @@ test("the drawdown reads out the day under the pointer on either plot", async ()
   await app.waitFor("DAY 60");
   expect(app.texts().some((t) => t.endsWith("% from the high"))).toBe(true);
 });
+
+test("Tab reaches the drawdown, whose arrow keys move the day it reads out", async () => {
+  // The first Right on the value plot starts at its first day.
+  await tabTo("DAY 1");
+  await app.keyboard.press("right");
+  await app.waitFor("DAY 2");
+  await app.keyboard.press("end");
+  await app.waitFor("DAY 120");
+  await app.keyboard.press("home");
+  await app.waitFor("DAY 1");
+  // Escape clears the hover: the readout is back on the last day, at a high.
+  await app.keyboard.press("escape");
+  await app.waitFor("at a high");
+  expect(app.texts()).toContain("DAY 120");
+}, 120000);
 
 test("the capacity rings show each period's load", async () => {
   expect(app.texts()).toContain("49%");
@@ -76,6 +112,31 @@ test("a donut reports the slice under the pointer, none in its hole", async () =
   await app.hover(pie);
   await app.waitFor("text:/^(NORTH AMERICA|EMEA|APAC|LATIN AMERICA|OTHER)$/");
 });
+
+test("as a pie, the revenue's shares are written outside its ring", async () => {
+  // The donut has none: its shares are in the legend, to a tenth.
+  expect(app.texts()).not.toContain("39%");
+  await app.press("Show as pie");
+  await app.waitFor("Show as donut");
+  // A label per slice, its share whole.
+  for (const share of ["39%", "25%", "22%", "8%", "6%"]) {
+    await app.waitFor(share);
+  }
+  await app.press("Show as donut");
+  await app.waitFor("Show as pie");
+  expect(app.texts()).not.toContain("39%");
+});
+
+test("the donut's slices step with the arrow keys once Tab reaches it", async () => {
+  await tabTo("NORTH AMERICA");
+  await app.keyboard.press("right");
+  await app.waitFor("EMEA");
+  await app.keyboard.press("end");
+  await app.waitFor("OTHER");
+  // Escape clears the hover: the total is back in the hole.
+  await app.keyboard.press("escape");
+  await app.waitFor("TOTAL");
+}, 120000);
 
 test("bars stand in bands side by side or stacked, a value over each", async () => {
   // A value over each bar, the last month's total in the readout.

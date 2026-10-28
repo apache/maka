@@ -22,7 +22,7 @@ import { createText, errorText, message, UiError } from './text';
 import { tr } from './locale';
 import { batch, cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
-import type { Signal, YNode } from 'nsh';
+import type { ListRef, Signal } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
@@ -111,7 +111,7 @@ export function WorkspacePicker(props: {
   });
   const location = signal(newLocation([]));
   const entries = () => location().entries();
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let removeKeys = () => {};
   let removeSearchKeys = () => {};
   const owns = (read: Location) => alive && props.current() && !managing() && location() === read;
@@ -581,7 +581,7 @@ export function WorkspacePicker(props: {
                   autoFocus
                   accessibilityLabel={tr('Search workspace folders')}
                   value={query()}
-                  onChange={(text) => {
+                  onChange={({ value: text }) => {
                     if (!owns(read)) return;
                     selected.set(0);
                     query.set(text);
@@ -633,7 +633,7 @@ export function WorkspacePicker(props: {
                 footer={() => (
                   <If when={matches().length > 0 && (loading() || error())}>{status()}</If>
                 )}
-                onLayout={(frame) => {
+                onLayout={({ bounds: frame }) => {
                   if (owns(read)) viewportHeight.set(frame.size.height);
                 }}
                 onLoadMore={() => {

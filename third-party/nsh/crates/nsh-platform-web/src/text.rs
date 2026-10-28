@@ -754,7 +754,11 @@ impl TextEngine for WebTextEngine {
                 })
                 .collect();
             let mut width = line.width;
+            // Not drawn, but a caret after them stands past them: the line
+            // reports them in its width, as CoreText's lines do.
+            let mut hanging: f32 = atoms[end..line.end].iter().map(|a| a.width).sum();
             if last && truncated && prepared.ellipsize != EllipsizeMode::Clip {
+                hanging = 0.0;
                 let style = pieces.last().map_or(0, |p| p.style);
                 let ellipsis = self.run_width(&styles[style as usize], "…");
                 // Drop characters from the end until the ellipsis fits.
@@ -922,7 +926,7 @@ impl TextEngine for WebTextEngine {
                 end: line_end,
                 x: Points(x0),
                 y: Points(y),
-                width: Points(width),
+                width: Points(width + hanging),
                 height: Points(line.height),
                 ascender: Points(first.ascent),
                 descender: Points(first.descent),

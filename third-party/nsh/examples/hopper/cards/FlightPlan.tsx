@@ -28,7 +28,7 @@ function Coordinate(props: { axis: Axis; label: string; signed?: boolean }) {
       >
         <Input
           value={plan.target()[props.axis]}
-          onChange={(text) => {
+          onChange={({ value: text }) => {
             const minus = props.signed && text.startsWith("-") ? "-" : "";
             const digits = text.replace(/[^0-9]/g, "").slice(0, 3);
             plan.target.set({ ...plan.target(), [props.axis]: minus + digits });

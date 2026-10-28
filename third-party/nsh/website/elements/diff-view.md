@@ -93,7 +93,7 @@ added and deleted line counts, and `▾`, and a press on it collapses the file t
 (`DiffFile`): `index`, `path`, `oldPath` (renamed or copied from), `status` (`"modified"`, `"added"`, `"deleted"`,
 `"renamed"`, `"copied"`), `binary` (the patch shows no lines of it), `added`, `deleted`, `hunks`, `firstHunk` and
 `collapsed`. The app's header calls the ref's `toggleFile(path)`; `collapseFile` and `expandFile` set the state, and
-every change is reported with `onFileToggle(file)`. A collapsed file stays collapsed while a new `patch` still has it.
+every change is reported with `onFileToggle({ file })`. A collapsed file stays collapsed while a new `patch` still has it.
 
 Changes count across files, in order: a file's changes are `firstHunk` to `firstHunk + hunks - 1`, which
 `goToHunk`, `renderHunkActions` and `hunks()` use (a `DiffHunk`'s `file` is its file's index and its lines count in
@@ -198,7 +198,7 @@ let diff!: DiffViewRef;
 `renderHunkActions` puts the app's actions at the top right of each change in view, told the change (`DiffHunk`:
 `index`, `oldStart`, `oldLines`, `newStart`, `newLines`, lines from 0, and `file`, its file's index in a patch). They call the ref: `revertHunk(index)` puts
 the change's old lines back into the new text, `acceptHunk(index)` makes its new lines the old text's. The view shows
-the result at once and reports both texts with `onChange({ oldValue, newValue })`, which the app sets as the props.
+the result at once and reports both texts with `onChange({ change })` (`{ oldValue, newValue }`), which the app sets as the props.
 Keeping or reverting an AI's edit one change at a time is this:
 
 ```tsx
@@ -216,7 +216,7 @@ function Proposal(props: { file: string; current: string; proposed: string; onAp
         oldValue={current()}
         newValue={proposed()}
         language={props.file}
-        onChange={({ oldValue, newValue }) => {
+        onChange={({ change: { oldValue, newValue } }) => {
           current.set(oldValue);
           proposed.set(newValue);
           props.onApply(oldValue);
@@ -284,15 +284,15 @@ const stats = signal<DiffStats>({ added: 0, deleted: 0, hunks: 0 });
   <Button onPress={() => diff.previousHunk()}><Text>Previous</Text></Button>
   <Button onPress={() => diff.nextHunk()}><Text>Next</Text></Button>
 </View>
-<DiffView ref={diff} oldValue={before()} newValue={after()} onStatsChange={(s) => stats.set(s)} class="flex-1" />
+<DiffView ref={diff} oldValue={before()} newValue={after()} onStatsChange={(e) => stats.set(e.stats)} class="flex-1" />
 ```
 
 ## Review comments
 
 The line numbers select lines of a side: a press selects one, a Shift-press extends the selection to it, and dragging
-the mouse over the numbers selects those it goes over. `onLineSelectionChange` reports the lines (`DiffLineRange`:
+the mouse over the numbers selects those it goes over. `onLineSelectionChange` reports the lines as `range` (`DiffLineRange`:
 `{ side, start, end }`, lines from 0, `null` for none), and a press of a number also reports
-`onLineNumberPress({ side, line })`. The ref reads the selection (`selectedLines()`, `selectedText()`) and sets it.
+`onLineNumberPress({ line })` (`{ side, line }`). The ref reads the selection (`selectedLines()`, `selectedText()`) and sets it.
 
 `annotations` puts the app's content under lines: each `{ id, side, line }` is drawn by `renderAnnotation` across its
 line's side (the whole view when unified), as tall as it lays out, and shows while its line does. `renderAddAnnotation`
@@ -402,11 +402,11 @@ set with `fontFamily`, `fontSize` and `lineHeight`.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onChange` | `.on_change(\|change: &DiffChange\| ..)` | A change was kept or reverted: `{ oldValue, newValue }`, the texts now. |
-| `onLineNumberPress` | `.on_line_number_press(\|line: &DiffLine\| ..)` | A line number was pressed: `{ side, line }`. |
-| `onLineSelectionChange` | `.on_line_selection_change(\|range: &Option<DiffLineRange>\| ..)` | The selected lines changed: `{ side, start, end }`, or `null`. |
-| `onStatsChange` | `.on_stats_change(\|stats: &DiffStats\| ..)` | The counts changed: `{ added, deleted, hunks }`. It fires once when the view is made and again each time the texts are diffed to other counts, for a "+8 −8 · 5 changes" line. |
-| `onFileToggle` | `.on_file_toggle(\|file: &DiffFile\| ..)` | A file of the patch was collapsed or expanded (its header, or the ref): the `DiffFile` now. |
+| `onChange` | `.on_change(\|change: &DiffChange\| ..)` | A change was kept or reverted: `{ change }`, the texts now (`{ oldValue, newValue }`). |
+| `onLineNumberPress` | `.on_line_number_press(\|line: &DiffLine\| ..)` | A line number was pressed: `{ line }`, a `{ side, line }`. |
+| `onLineSelectionChange` | `.on_line_selection_change(\|range: &Option<DiffLineRange>\| ..)` | The selected lines changed: `{ range }`, a `{ side, start, end }` or `null`. |
+| `onStatsChange` | `.on_stats_change(\|stats: &DiffStats\| ..)` | The counts changed: `{ stats }`, a `{ added, deleted, hunks }`. It fires once when the view is made and again each time the texts are diffed to other counts, for a "+8 −8 · 5 changes" line. |
+| `onFileToggle` | `.on_file_toggle(\|file: &DiffFile\| ..)` | A file of the patch was collapsed or expanded (its header, or the ref): `{ file }`, the `DiffFile` now. |
 
 ## Related
 

@@ -485,7 +485,7 @@ pub(crate) const EXPORTS: &[Item] = &[
         "titleBar",
         Export::Value(crate::env::title_bar),
         Ts::value(
-            "The title bar's area while the app hides it (`Window.setTitleBar(\"hidden\")`),\nin points (reactive): its `height`, and the widths the system's window\ncontrols take at its `left` and `right` ends (macOS's traffic lights,\nWindows' caption buttons, GTK's window buttons). All 0 while the system\nshows its title bar, and off desktops.",
+            "The title bar's area while the app hides it (`Window.setTitleBar({ style: \"hidden\" })`),\nin points (reactive): its `height`, and the widths the system's window\ncontrols take at its `left` and `right` ends (macOS's traffic lights,\nWindows' caption buttons, GTK's window buttons). All 0 while the system\nshows its title bar, and off desktops.",
             "Accessor<TitleBarArea>",
         ),
     ),

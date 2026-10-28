@@ -31,7 +31,7 @@ function App() {
       <View onPress={() => log.set("tap")} onLongPress={() => log.set("held")} delayLongPress={200}>
         <Text>Hold me</Text>
       </View>
-      <Input testID="draft" value={draft()} onChange={(t) => draft.set(t)} />
+      <Input testID="draft" value={draft()} onChange={({ value }) => draft.set(value)} />
       <Text>{`Draft: ${draft()}`}</Text>
     </View>
   );

@@ -583,6 +583,12 @@ impl Input {
         self.bind_prop(tokens, Prop::InputTokens)
     }
 
+    /// Whether a multiline input's scroll bar shows (default yes): the
+    /// platform's indicator, or the app's built-in bar once it set one.
+    pub fn scrollbar(self, shows: impl IntoReactive<bool>) -> Self {
+        self.bind_prop(shows, |shows: bool| Prop::Scrollbar(shows.into()))
+    }
+
     /// At most `length` characters.
     pub fn max_length(self, length: impl IntoReactive<u32>) -> Self {
         self.bind_prop(length, |length: u32| Prop::MaxLength(Some(length)))
@@ -714,7 +720,7 @@ impl Scroll {
 
     /// Whether the scroll indicator shows (default yes).
     pub fn scrollbar(self, shows: impl IntoReactive<bool>) -> Self {
-        self.bind_prop(shows, |shows: bool| Prop::Scrollbar(shows))
+        self.bind_prop(shows, |shows: bool| Prop::Scrollbar(shows.into()))
     }
 
     /// Pinch zoom between `min` and `max`.
@@ -773,6 +779,14 @@ impl Screen {
     /// Whether the header shows (default true).
     pub fn header_visible(self, shown: impl IntoReactive<bool>) -> Self {
         self.bind_prop(shown, |v| Prop::Screen(ScreenProp::HeaderVisible(v)))
+    }
+
+    /// Whether the system tab bar leaves while this page is on top (default
+    /// false), moving with the transition (iOS and Android).
+    pub fn hides_bottom_bar_when_pushed(self, hides: impl IntoReactive<bool>) -> Self {
+        self.bind_prop(hides, |v| {
+            Prop::Screen(ScreenProp::HidesBottomBarWhenPushed(v))
+        })
     }
 
     /// A large title (iOS); the content scrolls under the header.
@@ -1494,7 +1508,7 @@ impl<A: super::Animated> From<&A> for CanvasPaint {
 /// may be animated values (the canvas draws again natively as they move);
 /// operations without a method here are built by hand with
 /// [`Painter::num`], [`Painter::paint`] and [`Painter::op`]. Text is
-/// measured with [`super::ambient::measure_text`].
+/// measured with [`super::measure_text`].
 #[derive(Debug, Clone, Default)]
 pub struct Painter {
     drawing: Drawing,

@@ -1223,47 +1223,32 @@ pub unsafe extern "C" fn nsh_event(
         EventKind::Error => EventPayload::Error {
             message: text("message"),
         },
-        EventKind::HoverMove
-        | EventKind::ContextMenu
+        // `{ position, pagePosition, modifiers, pressedButton }`, as handlers
+        // get it.
+        EventKind::MouseEnter | EventKind::MouseLeave | EventKind::MouseMove => {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            let pressed_button = value
+                .get("pressedButton")
+                .and_then(|v| v.as_str())
+                .and_then(mouse_button);
+            EventPayload::Mouse(nsh_core::MouseEvent::new(
+                position,
+                page_position,
+                modifiers,
+                pressed_button,
+            ))
+        }
+        EventKind::ContextMenu
         | EventKind::Press
         | EventKind::LongPress
         | EventKind::PressDown
         | EventKind::PressUp
-            if matches!(kind, EventKind::HoverMove | EventKind::ContextMenu)
-                || value.get("pagePosition").is_some() =>
+            if kind == EventKind::ContextMenu || value.get("pagePosition").is_some() =>
         {
             // `{ position, pagePosition, modifiers }` (presses: and
             // `clicks`), as handlers get it.
-            let at = |k: &str| {
-                let p = value.get(k);
-                let n = |c: &str| {
-                    p.and_then(|p| p.get(c))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0) as f32
-                };
-                point(Points(n("x")), Points(n("y")))
-            };
-            let flag = |k: &str| {
-                value
-                    .get("modifiers")
-                    .and_then(|m| m.get(k))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            };
-            let (position, page_position) = (at("position"), at("pagePosition"));
-            let modifiers = nsh_core::keymap::Modifiers {
-                ctrl: flag("control"),
-                alt: flag("alt"),
-                shift: flag("shift"),
-                cmd: flag("platform"),
-            };
-            if kind == EventKind::HoverMove {
-                EventPayload::Hover(nsh_core::HoverEvent {
-                    position,
-                    page_position,
-                    modifiers,
-                })
-            } else if kind != EventKind::ContextMenu {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            if kind != EventKind::ContextMenu {
                 EventPayload::Press(nsh_core::PressEvent {
                     position,
                     page_position,
@@ -1352,6 +1337,53 @@ pub unsafe extern "C" fn nsh_event(
         },
     };
     send(|app| app.control.dispatch_event(id, kind, payload))
+}
+
+/// The pointer of a mouse or press payload: its `position`, `pagePosition`
+/// and `modifiers`.
+fn pointer_at(
+    value: &serde_json::Value,
+) -> (
+    nsh_core::Point<Points>,
+    nsh_core::Point<Points>,
+    nsh_core::keymap::Modifiers,
+) {
+    let at = |k: &str| {
+        let p = value.get(k);
+        let n = |c: &str| {
+            p.and_then(|p| p.get(c))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32
+        };
+        point(Points(n("x")), Points(n("y")))
+    };
+    let flag = |k: &str| {
+        value
+            .get("modifiers")
+            .and_then(|m| m.get(k))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let modifiers = nsh_core::keymap::Modifiers {
+        ctrl: flag("control"),
+        alt: flag("alt"),
+        shift: flag("shift"),
+        cmd: flag("platform"),
+    };
+    (at("position"), at("pagePosition"), modifiers)
+}
+
+/// The button a mouse payload's `pressedButton` names (`nsh.js` names the
+/// first of the DOM's `buttons` bits held).
+fn mouse_button(name: &str) -> Option<nsh_core::MouseButton> {
+    Some(match name {
+        "left" => nsh_core::MouseButton::Left,
+        "right" => nsh_core::MouseButton::Right,
+        "middle" => nsh_core::MouseButton::Middle,
+        "back" => nsh_core::MouseButton::Back,
+        "forward" => nsh_core::MouseButton::Forward,
+        _ => return None,
+    })
 }
 
 /// `onPaste` of input `id`: what the user pasted, as JSON `{ text, files:
@@ -1630,6 +1662,27 @@ pub extern "C" fn nsh_scroll(id: u32, x: f32, y: f32, applied: u32) -> f64 {
     })
 }
 
+/// The text of multiline input `id` scrolled to `y`, or its height
+/// (`content`) or its viewport's changed, while a built-in bar takes the
+/// place of its indicator.
+#[unsafe(no_mangle)]
+pub extern "C" fn nsh_input_scroll(
+    id: u32,
+    y: f32,
+    width: f32,
+    content: f32,
+    viewport: f32,
+) -> f64 {
+    send(|app| {
+        app.control.input_scroll(
+            id,
+            point(px(0.0), px(y)),
+            size(px(width), px(content.max(viewport))),
+            size(px(width), px(viewport)),
+        );
+    })
+}
+
 /// Vertical scroll view `id` is pulled `distance` past its top: its pull
 /// value (`pullValue`) follows.
 #[unsafe(no_mangle)]
@@ -1773,7 +1826,7 @@ pub extern "C" fn nsh_root_size(
 /// classes).
 #[unsafe(no_mangle)]
 pub extern "C" fn nsh_states(id: u32, states: u32) -> f64 {
-    send(|app| app.control.set_states(id, states as u8))
+    send(|app| app.control.set_states(id, states as u16))
 }
 
 /// The surface was resized (points).

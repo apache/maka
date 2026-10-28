@@ -10,7 +10,7 @@ function Tool(props: {
   placement: "top" | "bottom";
   pinned: boolean;
   onPress: () => void;
-  onOpenChange: (open: boolean, reason: OpenChangeReason) => void;
+  onOpenChange: (e: { open: boolean; reason: OpenChangeReason }) => void;
 }) {
   const hovered = signal(false);
   return (
@@ -26,9 +26,9 @@ function Tool(props: {
             offset={8}
             margin={8}
             delay={400}
-            onOpenChange={(open, reason) => {
-              hovered.set(open);
-              props.onOpenChange(open, reason);
+            onOpenChange={(e) => {
+              hovered.set(e.open);
+              props.onOpenChange(e);
             }}
             style={{ backgroundColor: ui().text, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 6 }}
           >
@@ -47,7 +47,7 @@ function App() {
   const events = signal<string[]>([]);
   const pressed = signal("—");
   const pinned = signal(false);
-  const log = (name: string) => (open: boolean, reason: OpenChangeReason) =>
+  const log = (name: string) => ({ open, reason }: { open: boolean; reason: OpenChangeReason }) =>
     events.set([`${name} ${open ? "shown" : "hidden"} · ${reason}`, ...events()].slice(0, 6));
   const tools = () => (
     <>
@@ -77,7 +77,7 @@ function App() {
       <Text style={{ fontSize: 13, color: ui().text }}>{pressed()}</Text>
     </Panel>
   );
-  const changes = () => <Log title="onOpenChange(open, reason)" lines={events()} minHeight={130} />;
+  const changes = () => <Log title="onOpenChange({ open, reason })" lines={events()} minHeight={130} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>

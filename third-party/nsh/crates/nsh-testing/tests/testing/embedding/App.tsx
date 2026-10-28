@@ -39,7 +39,7 @@ function App() {
       <Press label="Post" onPress={() => host.post("analytics", { screen: "home" })} />
       <Press
         label="Open"
-        onPress={async () => opened.set(`opened ${await openUrl("https://example.com/help")}`)}
+        onPress={async () => opened.set(`opened ${(await openUrl("https://example.com/help")).opened}`)}
       />
       <TextView markdown="Read [the guide](mailto:guide@example.com)." links="open" />
     </View>

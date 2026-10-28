@@ -471,7 +471,7 @@ pub(crate) const IOS_EXPORTS: &[Item] = &[(
     }),
     Ts::function(
         "A bar over the keyboard of the inputs whose `inputAccessoryViewID` is its\n`nativeID` (iOS's `inputAccessoryView`): as wide as the window and as tall\nas its content, moving with the keyboard natively. It renders nothing where\nit is placed in the tree, and nothing at all on Android.",
-        &["(props: InputAccessoryViewProps): YNode | null"],
+        &["(props: InputAccessoryViewProps): JSX.Element"],
     ),
 )];
 
@@ -491,14 +491,15 @@ pub(crate) const WEBVIEW_EXPORTS: &[Item] = &[(
     Export::Value(|cx| dom::host_component(cx, "webview", false)),
     Ts::value(
         "A web page (WKWebView / android.webkit.WebView); its `ref` has\n`reload()`, `goBack()`, `goForward()`, `stopLoading()`,\n`injectJavaScript(script)` and `postMessage(data)`.",
-        "(props: WebViewProps) => YNode",
+        "(props: WebViewProps) => JSX.Element",
     ),
 )];
 
 /// `nsh/webview`'s types.
 pub(crate) const WEBVIEW_TYPES: &str = r#"export type { WebViewNavigation };
 
-export interface WebViewProps extends Omit<ViewProps, "children" | "ios" | "desktop">, WebViewHostProps {
+export interface WebViewProps extends Omit<ViewProps, "children" | "ios" | "desktop" | "ref">, WebViewHostProps {
+  ref?: WebViewRef | ((node: WebViewRef) => void);
   ios?: IOSWebViewHostProps;
   desktop?: DesktopWebViewHostProps;
 }
@@ -510,12 +511,13 @@ pub(crate) const VIDEO_EXPORTS: &[Item] = &[(
     Export::Value(|cx| dom::host_component(cx, "video", false)),
     Ts::value(
         "A video player (AVPlayer / MediaPlayer); its `ref` has `seek(seconds)`.",
-        "(props: VideoProps) => YNode",
+        "(props: VideoProps) => JSX.Element",
     ),
 )];
 
 /// `nsh/video`'s types.
-pub(crate) const VIDEO_TYPES: &str = r#"export interface VideoProps extends Omit<ViewProps, "children">, VideoHostProps {
+pub(crate) const VIDEO_TYPES: &str = r#"export interface VideoProps extends Omit<ViewProps, "children" | "ref">, VideoHostProps {
+  ref?: VideoRef | ((node: VideoRef) => void);
   src: string;
 }
 "#;
@@ -692,7 +694,7 @@ pub(crate) const NATIVE_EXPORTS: &[Item] = &[
         Ts::function(
             "A component for the native component the embedding app registered as\n`name` (Swift `NshAppView.register(component:)`, Java\n`NshView.registerComponent`). It is laid out like a view, at the size its\nstyle gives it, else at the size the component reports. Its `ref` calls\ncommands: `ref.command(\"zoomTo\", { level: 3 })`. Where nothing is\nregistered under `name`, it renders an empty view.",
             &[
-                "<P extends object = {}, E extends object = {}>(name: string, spec: NativeComponentSpec<P, E>): (props: NativeComponentProps<P, E>) => YNode",
+                "<P extends object = {}, E extends object = {}>(name: string, spec: NativeComponentSpec<P, E>): (props: NativeComponentProps<P, E>) => JSX.Element",
             ],
         ),
     ),
@@ -715,7 +717,7 @@ export type NativeEventHandlers<E> = { [K in keyof E & string as `on${Capitalize
  * number or string (color) prop may also be an animated value: the
  * platform then pushes its value (a number or a color) to the component
  * on every frame it changes, without JS. */
-export type NativeComponentProps<P, E> = Omit<ViewProps, "children"> & { [K in keyof P]: NonNullable<P[K]> extends number | string ? P[K] | AnimatedNode : P[K] } & NativeEventHandlers<E>;
+export type NativeComponentProps<P, E> = Omit<ViewProps, "children" | "ref"> & { ref?: NativeComponentRef | ((node: NativeComponentRef) => void) } & { [K in keyof P]: NonNullable<P[K]> extends number | string ? P[K] | AnimatedNode : P[K] } & NativeEventHandlers<E>;
 
 /** What a native component takes and emits. */
 export interface NativeComponentSpec<P, E> {

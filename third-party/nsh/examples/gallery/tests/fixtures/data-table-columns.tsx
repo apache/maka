@@ -24,7 +24,7 @@ function App() {
           columns={columns()}
           data={rows}
           rowCount={rows.length}
-          onColumnResize={(key, width) => widths.set(`${key}=${Math.round(width)}`)}
+          onColumnResize={({ key, width }) => widths.set(`${key}=${Math.round(width)}`)}
           style={{ flex: 1 }}
         />
       </View>

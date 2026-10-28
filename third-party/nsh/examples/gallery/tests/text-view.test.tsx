@@ -17,14 +17,19 @@ test("a chat reply streams in as Markdown, with a table and code to copy", async
 
 test("the Text View demo shows Markdown, HTML and extensions, and streams", async () => {
   const app = await open("../App.tsx", { clock: {} });
-  await app.press("label:Text View");
+  await app.press("label:TextView");
   await app.waitFor("Native Shell");
-  expect(app.shows("NSH 0.1.0: native UI from TSX")).toBe(true);
-  expect(app.shows("@huacnlee")).toBe(true);
-  expect(app.shows("HEADS UP")).toBe(true);
   // A link is a span of its paragraph, pressed by its characters.
   await app.press("the guide");
   await app.waitFor("https://github.com/longbridge/nsh");
+  // One document at a time, a tab each.
+  await app.press("role:tab[HTML]");
+  await app.waitFor("NSH 0.1.0: native UI from TSX");
+  expect(app.shows("@huacnlee")).toBe(true);
+  await app.press("role:tab[Extensions]");
+  await app.waitFor("HEADS UP");
+  await app.press("role:tab[Streaming]");
+  await app.waitFor("Stream it");
   await app.press("Stream it");
   await app.clock.runFor(10_000);
   expect(app.shows("That's it. Ping me if anything looks off.")).toBe(true);

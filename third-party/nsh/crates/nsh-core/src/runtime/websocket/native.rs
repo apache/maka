@@ -6,7 +6,7 @@
 //! socket is driven by a task of its own on the engine's tokio runtime,
 //! which answers pings and keeps up to eight unread messages.
 
-use std::{cell::Cell, collections::VecDeque, rc::Rc, time::Duration};
+use std::{cell::Cell, collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -21,10 +21,7 @@ use super::{
     super::{MAX_WEBSOCKETS, WEBSOCKETS},
     ConnectOptions, Data,
 };
-use crate::element::{
-    Held, JsError, Later, System,
-    ambient::{Spawned, spawn},
-};
+use crate::element::{Held, JsError, Later, Spawned, System, spawn};
 
 /// The largest message one write sends or one read returns.
 const LIMIT: usize = 8 * 1024 * 1024;
@@ -265,9 +262,16 @@ async fn open(
     let stream = connected.ok_or_else(|| {
         format!("WebSocket connection failed: connecting to {operation} failed: {last_error}")
     })?;
+    let connector = if url.scheme() == "wss" {
+        Some(tokio_tungstenite::Connector::Rustls(
+            Arc::new(tls_config()?),
+        ))
+    } else {
+        None
+    };
     let (socket, _) = tokio::time::timeout_at(
         deadline,
-        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), None),
+        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), connector),
     )
     .await
     .map_err(|_| "WebSocket handshake timed out".to_owned())?
@@ -280,6 +284,19 @@ async fn open(
         pending: Rc::default(),
         _driver: driver,
     })
+}
+
+/// Respect the embedding host's provider; otherwise ring is local to this
+/// connection. Selecting a fallback must not configure the host's other TLS clients.
+fn tls_config() -> Result<rustls::ClientConfig, String> {
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|error| format!("WebSocket TLS configuration failed: {error}"))
+        .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
 }
 
 /// Runs the connection's commands and keeps what arrives until it is read.
@@ -376,5 +393,67 @@ async fn drive(mut socket: Socket, mut commands: mpsc::Receiver<Command>, held: 
                 let _ = reply.send(Ok(()));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::Access;
+
+    #[test]
+    fn tls_provider_is_scoped_to_the_connection() {
+        // The default provider is a process-wide OnceLock. Exercise both its
+        // empty and installed states in a fresh process, apart from other tests.
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime::websocket::native::tests::tls_provider_in_fresh_process",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "run by tls_provider_is_scoped_to_the_connection in a fresh process"]
+    async fn tls_provider_in_fresh_process() {
+        use rustls::crypto::CryptoProvider;
+        assert!(CryptoProvider::get_default().is_none());
+        for scheme in ["ws", "wss"] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let peer = std::thread::spawn(move || {
+                drop(listener.accept().unwrap());
+            });
+            let sys = System {
+                access: Arc::new(Access::all()),
+                ..System::default()
+            };
+            let result = WebSocket::connect(format!("{scheme}://127.0.0.1:{port}"), None, sys)
+                .unwrap()
+                .await;
+            assert!(
+                matches!(result, Err(ref error) if error.contains("WebSocket handshake failed"))
+            );
+            peer.join().unwrap();
+            assert!(
+                CryptoProvider::get_default().is_none(),
+                "{scheme} selected the host's provider"
+            );
+        }
+        let mut host = rustls::crypto::ring::default_provider();
+        host.cipher_suites.truncate(1);
+        host.install_default().unwrap();
+        let host = CryptoProvider::get_default().unwrap();
+        let config = tls_config().unwrap();
+        assert!(Arc::ptr_eq(config.crypto_provider(), host));
     }
 }

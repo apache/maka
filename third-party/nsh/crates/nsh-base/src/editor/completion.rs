@@ -1490,7 +1490,7 @@ fn row(
         .gap(px(ROW_GAP))
         .px(px(ROW_PADDING))
         .focusable(false)
-        .on_hover_in(move || hover.mark_completion(i))
+        .on_mouse_enter(move |_: &MouseEvent| hover.mark_completion(i))
         .on(EventKind::PressDown, move |_: &EventPayload| {
             if desktop {
                 down.accept_completion(Some(i));

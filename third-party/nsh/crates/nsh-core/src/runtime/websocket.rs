@@ -296,8 +296,7 @@ impl WebSocketConnection {
                                 }
                             }
                             // Browsers expose pending bytes but no drain event.
-                            crate::element::ambient::timer(std::time::Duration::from_millis(10))
-                                .await;
+                            crate::element::timer(std::time::Duration::from_millis(10)).await;
                         }
                     })
                     .await;
@@ -403,9 +402,7 @@ async fn timeout<T>(
 ) -> Result<T, String> {
     use std::future::Future;
     let mut work = std::pin::pin!(work);
-    let mut timer = std::pin::pin!(crate::element::ambient::timer(
-        std::time::Duration::from_secs(30)
-    ));
+    let mut timer = std::pin::pin!(crate::element::timer(std::time::Duration::from_secs(30)));
     poll_fn(|cx| {
         if let Poll::Ready(result) = work.as_mut().poll(cx) {
             return Poll::Ready(result);
@@ -562,6 +559,38 @@ mod tests {
     }
     fn poll<F: Future>(future: std::pin::Pin<&mut F>) -> Poll<F::Output> {
         future.poll(&mut std::task::Context::from_waker(Waker::noop()))
+    }
+
+    // Android has no other dependency selecting a TLS provider. A peer closing
+    // at once must produce a handshake error, not a missing-provider panic.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_wss_has_a_tls_provider() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(1) {
+                drop(stream);
+            }
+        });
+        let sys = System {
+            access: Arc::new(Access::all()),
+            ..System::default()
+        };
+        let connect = WebSocket::connect(format!("wss://127.0.0.1:{port}"), None, sys).unwrap();
+        let result = std::panic::AssertUnwindSafe(connect.into_future());
+        let outcome = futures_util::FutureExt::catch_unwind(result).await;
+        let message = match outcome {
+            Ok(Ok(_)) => panic!("a peer that closes at once cannot complete a TLS handshake"),
+            Ok(Err(error)) => error.to_string(),
+            Err(panic) => panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_default(),
+        };
+        assert!(!message.contains("CryptoProvider"), "{message}");
+        assert!(message.contains("WebSocket handshake failed"), "{message}");
     }
 
     #[tokio::test]

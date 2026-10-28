@@ -26,7 +26,7 @@ function App() {
         testID="msg"
         autoCapitalize="none"
         value={text()}
-        onChange={(t) => text.set(t)}
+        onChange={({ value }) => text.set(value)}
         style={{ height: 40 }}
       />
       <Text>{`text: ${text()}`}</Text>

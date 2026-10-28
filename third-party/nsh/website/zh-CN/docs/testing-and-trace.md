@@ -329,13 +329,16 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `await app.type(selector, text)` | 在输入框（或该视图内的第一个输入框；`text:` 也匹配输入框的内容或占位文字）已有内容的末尾逐键输入：输入框先获得焦点，然后每个字符触发一次 `onKeyPress` 和一次 `onChange`，不超过 `maxLength`。单行输入框中的 `\n` 相当于回车键。 |
 | `await app.submit(selector)` | 在输入框中按回车键，行为由它的 `submitBehavior` 决定：触发 `onSubmit`（单行输入框随后失去焦点），或者在多行输入框中换行。 |
 | `await app.scroll(selector, distance)` | 沿滚动视图或列表（该视图、它外层的滚动视图，或它内部的第一个）的方向拖动 `distance` 点，每帧 10 点，不超出内容范围，前提是用户可以滚动它（`scrollable`）。负数表示往回滚。 |
-| `await app.hover(selector)` | 把鼠标移到视图中央：鼠标离开的视图收到 `onHoverOut`，移入的视图收到 `onHoverIn` 并应用 `hover:` 样式，监听的视图收到带位置的 `onHoverMove`。用于桌面和任意宽度的 web，包括手机形态的浏览器（headless 时使用桌面或 `"web"` `platform`）；iOS 和 Android 手机没有鼠标，在那里会 reject。 |
+| `await app.hover(selector)` | 把鼠标移到视图中央：鼠标离开的视图收到 `onMouseLeave`，移入的视图收到 `onMouseEnter` 并应用 `hover:` 样式，监听的视图收到带位置、没有按下按键的 `onMouseMove`。用于桌面和任意宽度的 web，包括手机形态的浏览器（headless 时使用桌面或 `"web"` `platform`）；iOS 和 Android 手机没有鼠标，在那里会 reject。 |
 | `await app.rightClick(selector)` | 在视图中央按下鼠标右键：该视图或其外层最近的监听视图收到 `onContextMenu`。用于桌面和 web（headless 时使用桌面 `platform`）；手机没有鼠标，在那里会 reject。 |
-| `await app.paste(selector, { text?, html?, files?, uris? })` | 像剪贴板上有这些内容时用户粘贴一样粘贴到输入框：输入框获得焦点并收到 `onPaste`（`html` 是带格式的同一内容，`files` 是文件路径，其字节以 `File` 交给它，`uris` 是 `file:` URL），然后按 `pasteBehavior` 插入文本。支持 headless、macOS 和 iOS；本机剪贴板保持不变。 |
+| `await app.paste(selector, { text?, html?, files?, uris? })` | 像剪贴板上有这些内容时用户粘贴一样粘贴到输入框：输入框获得焦点并收到 `onPaste`（`html` 是带格式的同一内容，`files` 是文件路径，其字节以 `File` 交给它，`uris` 是 `file:` URL），然后按 `pasteBehavior` 插入文本。支持 headless、macOS、iOS 和 web；本机剪贴板保持不变。 |
 | `app.menu()` | 应用显示的上下文菜单（`Menu.popup`）中的操作：`label`（子菜单中的项写在子菜单名之后，如 `"Share > Mail"`）、`disabled`，可勾选项还有 `checked`；没有打开的菜单时为 `null`。 |
 | `await app.chooseMenuItem(label)` | 选择已打开上下文菜单中的操作，如同点击它：应用收到 `onMenu`（其 `onSelect` 运行），然后菜单关闭。该项被禁用或不存在时 reject。 |
 | `await app.closeMenu()` | 关闭已打开的上下文菜单，不选择任何项，如同按下 Escape。 |
 | `await app.keyboard.press(keys)` | 按下一个带修饰键的按键，写法同 `keymap`（`"mod+k"`、`"shift+/"`、`"escape"`；`mod` 是平台的命令键），如同硬件键盘，在所有平台上都可用（手机和平板也可以接硬件键盘）：由应用的对应快捷键接收（`keymap.bind`、`onKeyCommand`），否则在 macOS 和 Web 上由 Tab 和 Shift+Tab 在输入框和可按压的视图之间移动键盘焦点（`onFocus`、`onBlur`、`focus:` 样式），Return 或空格按下焦点所在的视图，否则由获得焦点的输入框接收字符、Backspace 或回车，否则 Escape 执行返回。 |
+| `await app.keyboard.down(keys)` / `up(keys)` | 按住修饰键（`"mod"`、`"shift"`、`"alt"`、`"ctrl"`、`"meta"`，用 `+` 连接）直到 `up`：期间的按压、拖动和悬停都带着这些键，如同 Mod 加点击或 Shift 加拖动。目前在 headless 和 Linux 上可用。 |
+| `await app.dragAndHold(selector, by)` / `app.drop()` | 像 `drag` 一样拖动，但手指一直按着，直到 `drop()` 在当前位置抬起：其间的步骤可以查看拖动中的画面（拖动预览、放置线）。目前在 headless 和 Linux 上可用。 |
+| `await app.dropFiles(selector, uris)` | 把本地文件（`file:` URL，如同从文件管理器拖来）放到视图中央：它或外层最近一个监听的视图收到 `onFileDrop`。桌面平台，目前在 headless 和 Linux 上可用。 |
 | `await app.drag(selector, { x, y })` | 手指落在视图中央，停留 100 ms，再移动 `x`、`y` 点（每帧 10 点）后抬起，由平台的输入系统处理：pan 跟随手指（`pan={{ x, y }}`、`onPanStart`，以及带松手速度的 `onPanEnd`），监听触摸的视图会收到触摸事件（`onTouchStart`、`PanResponder`），滚动视图随手指滚动，拉过顶部足够远时触发刷新（`onRefresh`），手指移开后其下的按压会被取消。在桌面和 web 上由鼠标完成。 |
 | `await app.wait(ms)` | 让应用运行 `ms` 毫秒：定时器、动画、请求。在手动时钟上，把时钟推进 `ms`（`app.clock.runFor`）。 |
 | `await app.waitFor(selector, options?)` | 有视图匹配时 resolve；传 `{ state: "gone" }` 时，等到没有视图匹配才 resolve；`timeout` 毫秒（5000）后 reject。 |
@@ -345,7 +348,7 @@ expect(app.texts()).toContain("Saved at 09:00:10");
 | `app.enabled(selector)` | 视图是否接受输入：它本身和外层视图都没有被禁用，输入框还要求不是 `readonly`。 |
 | `app.texts()` | 当前屏幕上的文字，按顺序排列。 |
 | `app.value(selector)` | 输入框的内容，没有匹配时为 `null`。 |
-| `app.spanStyle(selector)` | 在无界面测试中，返回匹配到的第一个字符的解析样式：`color`、可选的 `backgroundColor`、`fontSize`、`fontWeight`、`italic`、`underline` 和 `lineThrough`。颜色为 `#rrggbbaa`，字号单位为 pt。 |
+| `app.spanStyle(selector)` | 返回匹配到的第一个字符的解析样式（无界面测试和各个 `--target` 都支持）：`color`、可选的 `backgroundColor`、`fontSize`、`fontWeight`、`italic`、`underline` 和 `lineThrough`。颜色为 `#rrggbbaa`，字号单位为 pt。 |
 | `app.storage()` | 应用存储当前保存的内容。 |
 | `await app.back()` | 像用户那样返回（导航栏的返回按钮、下滑关闭弹出页）：最新的模态窗口里（没有模态窗口时就在整个屏幕上）最内层的导航栈弹出栈顶页面（`onDismiss`），栈顶页面设置了 `preventBack` 时改为询问它（`onBackRequest`）；没有可返回的栈时，最新的模态窗口请求关闭（`onRequestClose`）。没有可返回的内容时 reject。 |
 | `app.onDialog(handler)` | 回答应用之后弹出的对话框（`Alert.alert`、操作表）：`handler` 接收对话框（`title`、`message`、`buttons`、`cancelable`、`sheet`），返回要按的按钮文字，返回 `null` 则不按按钮直接关闭。 |

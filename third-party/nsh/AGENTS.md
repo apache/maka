@@ -49,7 +49,7 @@ crates/
                        the standard modules among them (`runtime/fs.rs`: `fs/promises`, `runtime/process.rs`, `runtime/net.rs`,
                        `runtime/websocket.rs`, `runtime/os.rs`) on the `System` their calls get (capabilities, data directory, quotas, per-VM state)
   nsh-base/            `nsh/base`, NSH's `gpui-base`: unstyled base components (behavior, state, focus, accessibility; the look is the
-                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Collapsible`, `Progress`, `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`), `Input` (a native text input, made by `nsh-js`), the status
+                       app's): navigation (`NavStack`, `NavPage`), `Dialog`, `AlertDialog`, `Button`, `Checkbox`, `Radio` / `RadioGroup`, `Switch`, `Tab` / `Tabs`, `Select` and `Combobox` (`select.rs`, `combobox.rs` on `listbox.rs`, the list's state machine they share), `Collapsible`, `Progress`, `Slider` (a value or a range along a track: `slider.rs`, numbers' rules in `numeric.rs`, a focused control's keys in `keys.rs`), `Scrollbar` (a bar of the app's own over a scroll view or list it names: `scrollbar.rs`, on the core's `watch_scroll`), `NumberInput` (a number typed or stepped: `number_input.rs`), `OtpInput`, `Table` and its parts (`table.rs`: a table's roles, the look the app's), the charts' parts in the submodule `nsh/base/plot` (`Plot`, `Line`, `Area`, `Grid`, `Pie`, `Arc`), `Input` (a native text input, made by `nsh-js`), the status
                        bar, `TextView` (Markdown / HTML documents: `text_view/`, docs/dev/text-view.md), `ResizablePanelGroup` / `ResizablePanel` (`resizable/`), `DockArea` (a dockable workspace: splits, tab groups and edge docks whose layout is
                        data, `dock/`, docs/dev/dock.md), `Editor` (a code editor: highlighting, several carets, folds, search, diagnostics;
                        `editor/`, docs/dev/editor.md), `DiffView` (the changes between two texts or of a patch, split or unified: `diff/`,
@@ -400,6 +400,33 @@ when changing text measurement, clipping, pointer input or scripts (`docs/dev/tu
   type of their own where one is needed, as `LineHeight`), never to strings the core parses again; only a TSX
   `style`'s values are parsed from strings. Frozen with the first recorded release as `docs/dev/styles.md` writes it ("Principles",
   "Extensions").
+- **API shapes: one form per thing, shapes that can grow** (decided by the user before the freeze; details and
+  examples in `docs/dev/api-naming.md` "Conventions", "Shapes that can grow" and "Units"; the API is being brought to
+  them). Names come from `gpui-base` / GPUI and the DOM; React Native is a reference only.
+  - Units: one per quantity. Lengths are points; an image's or a video's own size is pixels, typed `PixelSize`
+    (never `Size`); times are milliseconds; velocities points per second; shares fractions from 0 to 1 (no `Percent`
+    in names). Only media time is seconds (HTML's `currentTime`) and a deceleration the velocity kept per
+    millisecond (UIKit's 0.998 / 0.99).
+  - Events: every handler gets one object, value changes included (`onChange({ value })`, `onOpenChange({ open,
+    reason })`, `onLayout({ bounds })`), its fields named as the props they report; never positional arguments, a
+    bare value or a shared data type passed as the payload itself. An event with nothing to report passes nothing.
+    Only the responder callbacks keep React Native's `(e, gestureState)`.
+  - Mouse events are the DOM's and GPUI's: `onMouseEnter` / `onMouseMove` / `onMouseLeave`, each with a
+    `MouseEvent { position, pagePosition, modifiers, pressedButton }`; `onMouseMove` fires with or without a button
+    down. State styles keep CSS's names (`hover:`, `hoverStyle`).
+  - Returns: an object, never a bare value that may need a second field (`AlertDialog.show` → `{ action }`,
+    animations → `{ finished }`). Failure rejects (or throws) with the error, never resolves `false` (`Image.prefetch`,
+    `getSize`, `fetch`); yes / no questions (`hasText()`, `canUndo()`) return booleans.
+  - Methods whose parameters may grow take their options as one object (`net.connect({ host, port })`,
+    `Window.setTitleBar({ style, height })`); parameters the user judged will not grow stay positional
+    (`setSelection(start, end?)`, `seek(seconds)`, `DockArea.addPanel(panel, placement?, size?)`,
+    `DataTable.scrollToRow(row, animated?)`, `Editor.revealPosition(position, center)`, a range's start and end):
+    decided per method by the user (2026-10-28), not changed on reading this rule.
+  - Identifiers an app matches on are the app's and required, never derived from a label (`AlertDialogAction.id`).
+  - Refs: each element has a ref type of its own (`InputRef`, `ScrollRef`, `VideoRef`, ... over a common `ViewRef`),
+    never one type carrying every element's methods.
+  - Listening: a function that starts listening returns a function that stops it, and what is registered while a
+    component renders goes with the component.
 - **Components are Rust.** Rust components live in `crates/nsh-base` or in an app's own crate (its UI set,
   `#[native_module("…")]`), run in the core and render primitives with typed styles (GPUI-style `Styled` methods,
   never class strings); props and events are derived types, their JS face is made from the specs (`nsh-js`

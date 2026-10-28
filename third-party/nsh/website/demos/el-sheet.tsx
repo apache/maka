@@ -33,7 +33,7 @@ function App() {
       <Text style={buttonText("secondary", { on: () => s === side() })}>side="{s}"</Text>
     </View>
   );
-  const changes = () => <Log title="onOpenChange(open, reason) · onCancel" lines={events()} minHeight={130} />;
+  const changes = () => <Log title="onOpenChange({ open, reason }) · onCancel" lines={events()} minHeight={130} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
@@ -79,7 +79,7 @@ function App() {
         open={open()}
         closeOnSwipe
         side={side()}
-        onOpenChange={(next, reason) => {
+        onOpenChange={({ open: next, reason }) => {
           open.set(next);
           log(`onOpenChange · ${next ? "opened" : "closed"} · ${reason}`);
         }}

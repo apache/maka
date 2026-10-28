@@ -213,6 +213,11 @@ pub(crate) struct Surface {
     /// Frame callbacks of the platform's own animations (scroll glides,
     /// transitions): called on every frame while they return true.
     frame_callbacks: RefCell<Vec<FrameCallback>>,
+    /// How many of the frame callbacks have only cosmetic work left (a
+    /// scroll indicator fading out): what [`Surface::animating`] does not
+    /// count.
+    #[cfg(feature = "dev")]
+    cosmetic_frames: Cell<usize>,
     /// The model of a test session's app (`nsh test --target`).
     #[cfg(feature = "dev")]
     test_model: RefCell<Option<std::sync::Arc<nsh_testing::agent::Model>>>,
@@ -278,6 +283,8 @@ impl Surface {
             js_frame: Cell::new(false),
             queued: RefCell::default(),
             frame_callbacks: RefCell::default(),
+            #[cfg(feature = "dev")]
+            cosmetic_frames: Cell::new(0),
             #[cfg(feature = "dev")]
             test_model: RefCell::default(),
             link: RefCell::new(None),
@@ -383,6 +390,8 @@ impl Surface {
         self.queued.borrow_mut().clear();
         self.resize_late.set(false);
         self.frame_callbacks.borrow_mut().clear();
+        #[cfg(feature = "dev")]
+        self.cosmetic_frames.set(0);
         crate::shader::clear(self);
     }
 
@@ -674,12 +683,27 @@ impl Surface {
         self.ensure_ticking();
     }
 
+    /// A frame callback's work left became cosmetic (`on`: a scroll
+    /// indicator fading out, which shows nothing the app did) or no longer
+    /// is; it ends with `on` false.
+    pub(crate) fn cosmetic_frame(&self, on: bool) {
+        #[cfg(feature = "dev")]
+        {
+            let n = self.cosmetic_frames.get();
+            self.cosmetic_frames
+                .set(if on { n + 1 } else { n.saturating_sub(1) });
+        }
+        #[cfg(not(feature = "dev"))]
+        let _ = on;
+    }
+
     /// Whether a native animation runs: the graph's, or the platform's own
-    /// (scroll glides, zooms); or batches wait for the next frame.
+    /// (scroll glides, zooms; not a scroll indicator's fade, after which
+    /// nothing changes); or batches wait for the next frame.
     #[cfg(feature = "dev")]
     pub(crate) fn animating(&self) -> bool {
         self.anim.borrow().animating()
-            || !self.frame_callbacks.borrow().is_empty()
+            || self.frame_callbacks.borrow().len() > self.cosmetic_frames.get()
             || !self.queued.borrow().is_empty()
     }
 

@@ -50,7 +50,7 @@ export function SettingsEditor(props: SettingsInputProps) {
       autoFocus={props.autoFocus}
       value={props.value}
       placeholder={props.placeholder}
-      onChange={props.change}
+      onChange={({ value }) => props.change(value)}
       multiline
       submitBehavior="newline"
       readonly={props.readonly || props.disabled}
@@ -81,7 +81,7 @@ export function SettingsField(
         autoFocus={props.autoFocus}
         value={props.value}
         placeholder={props.placeholder}
-        onChange={props.change}
+        onChange={({ value }) => props.change(value)}
         masked={props.masked}
         multiline={props.multiline}
         readonly={props.readonly || props.disabled}

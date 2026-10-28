@@ -154,6 +154,7 @@ pub(super) struct AttachmentPickerProps {
 
 #[derive(Clone, Debug, PartialEq, Event)]
 pub(super) enum AttachmentPickerEvent {
+    #[args(event)]
     Status(JsonValue),
 }
 
@@ -187,7 +188,7 @@ pub(super) fn AttachmentPicker(
         let intake = UploadIntake::files(scope, files);
         // Inner views may hide while IO continues. Observe under the component root.
         observer_owner.run(|| {
-            element::ambient::spawn(async move {
+            element::spawn(async move {
                 while let Some(update) = intake.next_update().await {
                     cx.emit(AttachmentPickerEvent::Status(update));
                 }

@@ -69,20 +69,7 @@ impl Sdk {
     /// (`ANDROID_NDK_HOME`, else the newest NDK of the SDK): an app's own
     /// `libnsh.so` (`rust_app.rs`).
     pub(crate) fn ndk_cargo(&self, triple: &str) -> anyhow::Result<Command> {
-        let ndk = match env::var_os("ANDROID_NDK_HOME") {
-            Some(ndk) => PathBuf::from(ndk),
-            None => newest(&self.root.join("ndk"))
-                .context("no NDK in the SDK: install it with `sdkmanager \"ndk;<version>\"`")?,
-        };
-        // The NDK's "darwin-x86_64" toolchain is universal.
-        let host = if cfg!(target_os = "macos") {
-            "darwin-x86_64"
-        } else if cfg!(windows) {
-            "windows-x86_64"
-        } else {
-            "linux-x86_64"
-        };
-        let toolchain = ndk.join("toolchains/llvm/prebuilt").join(host);
+        let toolchain = self.ndk_toolchain()?;
         let bin = toolchain.join("bin");
         // On Windows the NDK's per-target compilers are batch files.
         let script = if cfg!(windows) { ".cmd" } else { "" };
@@ -115,6 +102,36 @@ impl Sdk {
                 ),
             );
         Ok(cmd)
+    }
+
+    /// The NDK's LLVM toolchain (`ANDROID_NDK_HOME`, else the newest NDK of
+    /// the SDK).
+    fn ndk_toolchain(&self) -> anyhow::Result<PathBuf> {
+        let ndk = match env::var_os("ANDROID_NDK_HOME") {
+            Some(ndk) => PathBuf::from(ndk),
+            None => newest(&self.root.join("ndk"))
+                .context("no NDK in the SDK: install it with `sdkmanager \"ndk;<version>\"`")?,
+        };
+        // The NDK's "darwin-x86_64" toolchain is universal.
+        let host = if cfg!(target_os = "macos") {
+            "darwin-x86_64"
+        } else if cfg!(windows) {
+            "windows-x86_64"
+        } else {
+            "linux-x86_64"
+        };
+        Ok(ndk.join("toolchains/llvm/prebuilt").join(host))
+    }
+
+    /// Writes `library` to `to` without the symbols nothing links against
+    /// (the dynamic ones, `JNI_OnLoad` and the natives, stay): an app's
+    /// release `libnsh.so`, which APKs store uncompressed.
+    pub(crate) fn strip(&self, library: &Path, to: &Path) -> anyhow::Result<()> {
+        run(Command::new(self.ndk_toolchain()?.join("bin/llvm-strip"))
+            .arg("--strip-unneeded")
+            .arg("-o")
+            .arg(to)
+            .arg(library))
     }
 
     fn tool(&self, name: &str) -> PathBuf {

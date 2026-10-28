@@ -178,7 +178,7 @@ function drag(onMove: (x: number, y: number) => void) {
   let size = { width: 1, height: 1 };
   const at = (e: { locationX: number; locationY: number }) => onMove(Math.min(Math.max(e.locationX / size.width, 0), 1), Math.min(Math.max(e.locationY / size.height, 0), 1));
   return {
-    onLayout: (bounds: { size: { width: number; height: number } }) => (size = bounds.size),
+    onLayout: ({ bounds }: { bounds: { size: { width: number; height: number } } }) => (size = bounds.size),
     onStartShouldSetResponder: () => true,
     // Keep the touches: the scroll view around must not take them.
     onResponderTerminationRequest: () => false,
@@ -269,7 +269,7 @@ function Ripple() {
           source={RIPPLE}
           uniforms={{ center: [center.x, center.y], wave, tint, speed: speed() }}
           style={{ height: 200, borderRadius: 14, padding: 16, justifyContent: "flex-end" }}
-          onLayout={(bounds) => (size = bounds.size)}
+          onLayout={({ bounds }) => (size = bounds.size)}
           onStartShouldSetResponder={() => true}
           onResponderGrant={(e) => fire(e.locationX / size.width, e.locationY / size.height)}
         >

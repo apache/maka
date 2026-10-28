@@ -18,7 +18,7 @@
  */
 
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { TextViewImage } from 'nsh/base';
 import { host } from './host';
@@ -52,7 +52,7 @@ export function MarkdownImageView(props: {
   const error = createText();
   const viewing = signal(false);
   let reading: Reading | null = null;
-  let button: YNode | undefined;
+  let button: ViewRef | undefined;
   let alive = true;
   const owns = () => alive && props.sessionId === sessionId && props.image().src === target;
   const read = () => {
@@ -125,7 +125,7 @@ export function MarkdownImageView(props: {
               src={captured.uri}
               role="image"
               accessibilityLabel={name()}
-              onLoad={(size) => {
+              onLoad={({ size }) => {
                 if (current()) dimensions.set(size);
               }}
               onError={(reason) => {

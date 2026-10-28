@@ -11,7 +11,7 @@ const row = `flex-row-reverse items-center justify-between gap-3 ${desktop ? "px
 const track = `${desktop ? "w-9" : "w-12"} rounded-full p-0.5 transition-colors motion-reduce:transition-none`;
 const thumb = desktop ? "size-4 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-4" : "size-5.5 rounded-full transition-transform motion-reduce:transition-none checked:translate-x-5";
 
-function Setting(props: { label: string; detail: string; checked: boolean; disabled?: boolean; onChange: (next: boolean) => void }) {
+function Setting(props: { label: string; detail: string; checked: boolean; disabled?: boolean; onChange: (e: { checked: boolean }) => void }) {
   return (
     <Switch
       checked={props.checked}
@@ -38,9 +38,9 @@ function App() {
   const bluetooth = signal(false);
   const ask = signal(true);
   const events = signal<string[]>([]);
-  const change = (name: string, value: { set: (v: boolean) => void }) => (next: boolean) => {
-    value.set(next);
-    events.set([`${name} → ${next}`, ...events()].slice(0, 3));
+  const change = (name: string, value: { set: (v: boolean) => void }) => ({ checked }: { checked: boolean }) => {
+    value.set(checked);
+    events.set([`${name} → ${checked}`, ...events()].slice(0, 3));
   };
   const line = () => <View style={{ height: 1, marginLeft: desktop ? 12 : 16, backgroundColor: ui().line }} />;
   return (
@@ -60,7 +60,7 @@ function App() {
                 {wifi() ? "" : " (disabled)"} · Bluetooth {bluetooth() ? "on" : "off"}
               </Text>
             </Panel>
-            <Log title="onChange(checked)" lines={events()} minHeight={92} />
+            <Log title="onChange({ checked })" lines={events()} minHeight={92} />
           </>
         }
       >

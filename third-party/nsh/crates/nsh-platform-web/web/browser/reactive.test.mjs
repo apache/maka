@@ -36,7 +36,7 @@ async function fixture() {
     const dom = createDom(invoke, values, api, () => live, () => {});
     const components = createComponents(invoke, values, api, dom);
     const close = () => { if (live) { wasm.nsh_browser_dispose(); live = false; values.dispose(); } };
-    return { api, values, invoke, dom, components, modules: () => createModules(invoke, values, () => live, () => {}, components.make), close,
+    return { api, values, invoke, dom, components, mouseEvents: () => values.result(wasm.nsh_browser_test_mouse_events()), fileDropEvents: () => values.result(wasm.nsh_browser_test_file_drop_events()), videoLoadEvent: () => values.result(wasm.nsh_browser_test_video_load_event()), modules: () => createModules(invoke, values, () => live, () => {}, components.make), close,
       restart() { close(); return start(); } };
   };
   return start();
@@ -283,7 +283,7 @@ test("native animation samples and derived-node identity use the Rust graph prot
   let finished;
   const composite=Animated.sequence([Animated.timing(a,{toValue:3}),Animated.delay(5)]);
   const end=composite.start(value=>{finished=value.finished;});animation.finished([[4,true]]);
-  assert.equal(await end,true);assert.equal(finished,true);
+  assert.deepEqual(await end,{finished:true});assert.equal(finished,true);
   animation.dispose();f.close();
 });
 
@@ -296,7 +296,7 @@ test("canvas records paths and gradients through the shared Rust decoder", { ski
     const gradient=cx.createLinearGradient(0,0,10,10);gradient.addColorStop(0,"red");gradient.addColorStop(1,"blue");
     cx.fillStyle=gradient;cx.fill(path);hit=cx.isPointInPath(path,5,5);cx.save();cx.lineWidth=4;cx.restore();
   }});});
-  f.dom.event(f.values.nodeIds.get(node),"onLayout",{size:{width:20,height:20}});
+  f.dom.event(f.values.nodeIds.get(node),"onLayout",{bounds:{origin:{x:0,y:0},size:{width:20,height:20}}});
   assert.equal(f.invoke(602,[[999],null,0,0,undefined,false]),false);
   assert.equal(hit,true);assert.equal(context.lineWidth,1);assert.equal(context.canvas.width,20);
   assert.ok(context instanceof canvas.CanvasRenderingContext2D);
@@ -572,7 +572,7 @@ test("Rust component event callbacks retain their error boundary owner", { skip:
       return node;
     } });
   });
-  components.component(values.nodeIds.get(node), "change", 1, false);
+  components.component(values.nodeIds.get(node), "change", 1);
   const read = value => typeof value === "function" ? read(value()) : value;
   assert.equal(read(output), "component event");
   dispose(); close();
@@ -607,4 +607,35 @@ test("cleanup returns its callback and permits an unowned registration", { skip:
   assert.equal(calls, 1);
   close();
   assert.equal(calls, 1);
+});
+
+
+test("native mouse payloads preserve positions, modifiers and nullable pressed buttons", { skip: !path }, async () => {
+  const f = await fixture();
+  try {
+    assert.deepEqual(f.mouseEvents(), [null, "left", "right", "middle", "back", "forward"].map(pressedButton => ({
+      position: { x: 3, y: 4 }, pagePosition: { x: 30, y: 40 },
+      modifiers: { control: false, alt: false, shift: true, platform: false }, pressedButton,
+    })));
+  } finally { f.close(); }
+});
+
+
+test("native file drops preserve URIs and optional page position", { skip: !path }, async () => {
+  const f = await fixture();
+  try {
+    const uris = ["file:///tmp/hello.txt", "file:///tmp/world.txt"];
+    assert.deepEqual(f.fileDropEvents(), [
+      { uris },
+      { uris, pagePosition: { x: 30, y: 40 } },
+    ]);
+  } finally { f.close(); }
+});
+
+
+test("native video loads nest their size as the native JS host does", { skip: !path }, async () => {
+  const f = await fixture();
+  try {
+    assert.deepEqual(f.videoLoadEvent(), { duration: 12.5, size: { width: 1920, height: 1080 } });
+  } finally { f.close(); }
 });

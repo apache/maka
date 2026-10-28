@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { inputAction, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ListRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionForm } from './ConnectionForm';
@@ -44,9 +44,9 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
   const owner = props.owner;
   const unavailable = () => owner.busy() || !owner.pendingKnown() || owner.pending().length > 0;
   const disabled = () => unavailable() || owner.loading();
-  let connectionsList: YNode | undefined;
-  let providersList: YNode | undefined;
-  let modelsList: YNode | undefined;
+  let connectionsList: ListRef | undefined;
+  let providersList: ListRef | undefined;
+  let modelsList: ListRef | undefined;
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <If when={owner.confirmation()}>
@@ -416,7 +416,7 @@ function Search(props: {
     <Input
       accessibilityLabel={props.label}
       value={props.value()}
-      onChange={props.change}
+      onChange={({ value }) => props.change(value)}
       placeholder={props.placeholder}
       style={{
         ...inputTextStyle,

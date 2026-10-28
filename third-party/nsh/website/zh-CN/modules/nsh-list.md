@@ -17,7 +17,7 @@ import { List, type ListProps, type ReadonlyListSource, type ViewToken, type Vie
 ## List
 
 ```ts
-function List<T>(props: ListProps<T>): YNode;
+function List<T>(props: ListProps<T>): JSX.Element;
 ```
 
 ```tsx
@@ -72,7 +72,7 @@ mount(App);
 | `contentClass` | `string` | | 以类名（`p-*`、`gap-*`）给出的内容内边距和间距；`contentStyle` 优先。 |
 | `style` | `StyleProp<ViewStyle>` | | 列表自身的样式（需要给它尺寸：`flex: 1` 或高度）。 |
 | `testID` | `string` | | UI 测试查找列表滚动视图所用的 id（`nsh test` 的 `id:`、XCUITest、UI Automator）。 |
-| `ref` | `YNode \| ((node: YNode) => void)` | | 见 [ref 方法](#ref-方法)。 |
+| `ref` | `ListRef \| ((node: ListRef) => void)` | | 见 [ref 方法](#ref-方法)。 |
 
 `ListSlot` 是一个组件（`Header`）或一个元素（`<Header />`）。
 
@@ -126,7 +126,7 @@ interface ViewabilityConfig {
 
 | 属性 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `scrollbar` | `boolean` | `true` | 显示滚动条。 |
+| `scrollbar` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用的[内置滚动条](../elements/scrollbar.md#内置滚动条)；对象是该视图自己的主题。 |
 | `scrollable` | `boolean` | `true` | 用户可以滚动。 |
 | `bounces` | `boolean` | `true` | 允许越过边缘回弹。 |
 | `pagingEnabled` | `boolean` | `false` | 按视口长度的整数倍停靠。 |
@@ -147,17 +147,17 @@ interface ViewabilityConfig {
 | 事件 | 数据 | 时机 |
 |---|---|---|
 | `onScroll` | `ScrollEvent`：`{ offset, contentSize, size, zoomScale }` | 滚动过程中。 |
-| `onScrollDragStart` | `{ x, y }` | 开始拖动。 |
-| `onScrollDragEnd` | `{ x, y }` | 手指抬起。 |
-| `onMomentumStart` | `{ x, y }` | 拖动后开始惯性滑动。 |
-| `onMomentumEnd` | `{ x, y }` | 惯性滑动结束（被新的拖动打断时也会触发）。 |
-| `onScrollEnd` | `{ x, y }` | 滚动停止。 |
+| `onScrollDragStart` | `{ offset }` | 开始拖动。 |
+| `onScrollDragEnd` | `{ offset }` | 手指抬起。 |
+| `onMomentumStart` | `{ offset }` | 拖动后开始惯性滑动。 |
+| `onMomentumEnd` | `{ offset }` | 惯性滑动结束（被新的拖动打断时也会触发）。 |
+| `onScrollEnd` | `{ offset }` | 滚动停止。 |
 
 列表也接受所有元素通用的属性（[通用属性](../elements/index.md)）。
 
 ## ref 方法
 
-列表的 `ref` 拿到的 `YNode` 有以下方法：
+列表的 `ref` 拿到一个 `ListRef`，除了 `ViewRef` 的方法还有以下方法：
 
 | 方法 | 说明 |
 |---|---|
@@ -167,9 +167,9 @@ interface ViewabilityConfig {
 | `scrollTo({ x?, y?, animated? })` | 滚动到某个偏移。 |
 
 ```tsx
-import { List, Text, View, type YNode } from "nsh";
+import { List, type ListRef, Text, View } from "nsh";
 
-let list!: YNode;
+let list!: ListRef;
 
 <View style={{ flex: 1 }}>
   <Text onPress={() => list.scrollToIndex({ index: 60, viewPosition: 0.5 })}>Jump to 60</Text>

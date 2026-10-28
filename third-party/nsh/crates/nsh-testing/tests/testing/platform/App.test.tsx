@@ -29,11 +29,11 @@ test("back closes a modal", async () => {
 test("a dialog is cancelled unless the test answers it", async () => {
   const app = await open("./App.tsx");
   await app.press("Delete");
-  await app.waitFor("Answer: Cancel");
+  await app.waitFor("Answer: cancel");
   expect(app.dialogs()[0].message).toBe("It is gone after.");
   app.onDialog((dialog) => (dialog.title === "Delete?" ? "Delete" : null));
   await app.press("Delete");
-  await app.waitFor("Answer: Delete");
+  await app.waitFor("Answer: delete");
   // Closing it without a button is the user's choice only when it can be.
   await expect(() => app.press("Update")).rejects.toThrow("cannot be dismissed");
 });

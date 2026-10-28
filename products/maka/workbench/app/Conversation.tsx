@@ -31,7 +31,7 @@ import {
   View,
   List,
 } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap, platform } from 'nsh';
 import { AnimatedValue } from 'nsh';
@@ -136,7 +136,7 @@ type ConversationProps = {
   foreground(): boolean;
   browser(): BrowserHeader;
   files(): void;
-  filesOpener(node: YNode): void;
+  filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   attach(handle: ConversationHandle): void;
@@ -181,7 +181,7 @@ function receiptMessage(reply: any): UiText {
 }
 
 export function Conversation(props: ConversationProps) {
-  const root = signal<YNode | null>(null);
+  const root = signal<ViewRef | null>(null);
   effect(() => {
     const stop = props.stopAction();
     const node = root();
@@ -278,7 +278,7 @@ export function Conversation(props: ConversationProps) {
         measured: new Map(),
         lease: 0,
         visibleRows: signal<ReadonlySet<string>>(new Set()),
-        rowNodes: new Map<string, YNode>(),
+        rowNodes: new Map<string, ViewRef>(),
       };
       groupStates.set(key, state);
     }
@@ -464,7 +464,7 @@ export function Conversation(props: ConversationProps) {
     if (entry?.kind === 'process') return entry.group.turnId;
     return entry?.kind === 'row' ? (projection().rowsById.get(entry.rowId)?.turnId ?? null) : null;
   };
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let alive = true;
   let subscription: Subscription | null = null;
   let transcriptTask: Promise<void> | null = null;
@@ -2223,7 +2223,7 @@ export function Conversation(props: ConversationProps) {
           <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
             <List
               ref={list}
-              onLayout={(frame) => {
+              onLayout={({ bounds: frame }) => {
                 readingSize.set(frame.size);
                 changedReadExposure();
               }}

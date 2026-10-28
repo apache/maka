@@ -77,7 +77,7 @@ fn scoped_node(cx: Ctx, value: Raw, operation: &str) -> R<NodeId> {
         ));
     }
     crate::dom::node_id(cx, value)
-        .ok_or_else(|| type_error(cx, &format!("{operation}: expected a YNode")))
+        .ok_or_else(|| type_error(cx, &format!("{operation}: expected a ViewRef")))
 }
 
 fn os(cx: Ctx) -> nsh_core::platform::Os {
@@ -298,8 +298,8 @@ fn send(cx: Ctx) -> R<()> {
     crate::dom::push_op(cx, op).map_err(|_| js::Throw)
 }
 
-/// The root's `onKeyCommand(id)`: runs the binding's handler with its
-/// keystroke (as written).
+/// The root's `onKeyCommand(id)`: runs the binding's handler with
+/// `{ keystroke }` (as written; one object, as every event).
 unsafe extern "C" fn on_key_command(
     cx: Ctx,
     _this: Raw,
@@ -320,8 +320,9 @@ unsafe extern "C" fn on_key_command(
         let Some((handler, text)) = found else {
             return Ok(V::undefined());
         };
-        let text = js::string(cx, &text)?;
-        js::call(cx, handler.raw(), UNDEFINED, &[text.raw()])
+        let event = js::new_object(cx)?;
+        js::define(cx, event.raw(), "keystroke", js::string(cx, &text)?, true)?;
+        js::call(cx, handler.raw(), UNDEFINED, &[event.raw()])
     };
     run().map_or(qjs::JS_EXCEPTION, V::take)
 }
@@ -354,7 +355,7 @@ pub(crate) const TYPES: &str = r#"export interface KeyBindingOptions {
   /** Fires while native keyboard focus is on this node or a descendant.
    * A nonmatching scope leaves older bindings and native defaults eligible.
    * Throws when the host does not support native focus scopes. */
-  within?: YNode;
+  within?: ViewRef;
 }
 
 /** The app's keyboard shortcuts: on desktop and terminal backends, the web,
@@ -373,15 +374,15 @@ pub(crate) const TYPES: &str = r#"export interface KeyBindingOptions {
  * binding; when several bindings have its keystroke, the newest that may
  * fire runs. */
 export interface Keymap {
-  /** Runs `handler` when `keystroke` is pressed (it gets the keystroke as
-   * written, in its case); returns a function that removes the binding. A binding made while a component renders is removed
+  /** Runs `handler` when `keystroke` is pressed (it gets `{ keystroke }`,
+   * the keystroke as written, in its case); returns a function that removes the binding. A binding made while a component renders is removed
    * with the component. Throws on an invalid keystroke, or one the platform
    * keeps (Command+Q, Command+H, Command+M, Control+Command+F on Apple
    * platforms; Control+Q, Alt+F4, F11 elsewhere). */
-  bind(keystroke: string, handler: (keystroke: string) => void, options?: KeyBindingOptions): () => void;
-  /** Binds each keystroke of `bindings` to its handler, which gets the
-   * keystroke as written; returns a function that removes them all. */
-  bind(bindings: Record<string, (keystroke: string) => void>, options?: KeyBindingOptions): () => void;
+  bind(keystroke: string, handler: (e: { keystroke: string }) => void, options?: KeyBindingOptions): () => void;
+  /** Binds each keystroke of `bindings` to its handler, which gets
+   * `{ keystroke }` as written; returns a function that removes them all. */
+  bind(bindings: Record<string, (e: { keystroke: string }) => void>, options?: KeyBindingOptions): () => void;
   /** `keystroke` as menus and hints show it where the app runs: `"⇧⌘L"` on
    * Apple platforms (and in a browser on one), `"Ctrl+Shift+L"` elsewhere,
    * for `"mod+shift+l"`. Throws on an invalid keystroke. */
@@ -389,7 +390,7 @@ export interface Keymap {
   /** Reads the latest host-reported native focus path.
    * Includes the node itself and its descendants; false with no focus.
    * This read is not reactive and does not subscribe to focus changes.
-   * Throws without host support or for a value other than YNode. */
-  focusedWithin(node: YNode): boolean;
+   * Throws without host support or for a value other than ViewRef. */
+  focusedWithin(node: ViewRef): boolean;
 }
 "#;

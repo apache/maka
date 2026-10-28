@@ -19,7 +19,7 @@
 
 import { tr } from './locale';
 import { cleanup, effect, signal, untracked } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { createWorkspaceFiles, type WorkspaceFileTarget } from './workspaceFileState';
 import { createCurrentFile, type CurrentFileModel } from './CurrentFile';
 import type { ImagePreview } from './ImageThumbnail';
@@ -52,8 +52,8 @@ export function createResources(options: { selected(): string | null; blocked():
   let nextInstance = 0;
   let session: string | null = null;
   let alive = true;
-  let root: YNode | undefined;
-  let header: { sessionId: string; node: YNode } | undefined;
+  let root: ViewRef | undefined;
+  let header: { sessionId: string; node: ViewRef } | undefined;
   let opener: (() => boolean) | undefined;
   const dispose = (tab: ResourceTab) => {
     if (tab.kind !== 'image') tab.model.dispose();
@@ -271,13 +271,13 @@ export function createResources(options: { selected(): string | null; blocked():
     instance,
     sessionId: options.selected,
     activeTab: () => tabs().find((tab) => tab.instance === active()),
-    attach(node: YNode) {
+    attach(node: ViewRef) {
       root = node;
     },
     root: () => root,
     focusRequest,
     focusHandled: () => focusRequest.set(false),
-    attachOpener(sessionId: string, node: YNode) {
+    attachOpener(sessionId: string, node: ViewRef) {
       if (alive && options.selected() === sessionId) header = { sessionId, node };
     },
   };

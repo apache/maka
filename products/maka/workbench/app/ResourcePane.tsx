@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View, Image } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
 import { Terminal } from './Terminal';
@@ -47,7 +47,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
     sessionId: resources.sessionId()!,
     instance: resources.instance(),
   };
-  let control: YNode | undefined;
+  let control: ViewRef | undefined;
   let unbind = () => {};
   cleanup(() => unbind());
   // Consume only a user-requested focus transfer; a resize/remount alone must

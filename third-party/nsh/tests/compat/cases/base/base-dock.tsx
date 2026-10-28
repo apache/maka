@@ -30,8 +30,8 @@ export default function BaseDock() {
             },
             left: { layout: { type: "tabs", panels: ["files"] }, size: 240 },
           }}
-          onLayoutChange={layout => reported.set(layout.left?.open ? "left open" : "left closed")}
-          onDockOpenChange={(placement, open) => docks.set([...docks(), `${placement} ${open}`])}
+          onLayoutChange={({ layout }) => reported.set(layout.left?.open ? "left open" : "left closed")}
+          onDockOpenChange={({ placement, open }) => docks.set([...docks(), `${placement} ${open}`])}
           class="flex-1"
           tabBarClass="flex-row h-[24px]"
           tabClass="w-[60px]"

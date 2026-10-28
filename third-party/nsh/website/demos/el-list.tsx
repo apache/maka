@@ -1,4 +1,4 @@
-import { List, mount, signal, Text, View, type YNode } from "nsh";
+import { List, type ListRef, mount, signal, Text, View } from "nsh";
 import { button, buttonText, desktop, Inspector, Panel, size, tint, ui, wide } from "./palette";
 
 type Trade = { id: string; symbol: string; shares: number; change: number };
@@ -20,7 +20,7 @@ function App() {
   const loads = signal(0);
   const refreshing = signal(false);
   const visible = signal("");
-  let list!: YNode;
+  let list!: ListRef;
 
   const loadMore = () => {
     if (loading() || trades().length >= LIMIT) return;

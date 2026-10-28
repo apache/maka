@@ -186,6 +186,14 @@ function App() {
     taken.dispatchTransaction = null;
 
     step("Empty", () => `${createRichEditor().isEmpty}`);
+    // Page geometry and handle drags need a mounted view: without one they answer nothing and do nothing.
+    step("Page", () => {
+      const loose = createRichEditor({ content: "ab" });
+      loose.dragBlock(0, { x: 0, y: 0 });
+      loose.dragTo({ x: 0, y: 40 });
+      loose.endDrag();
+      return `${loose.pageCoordsAtPos(1)} ${loose.posAtPageCoords({ x: 0, y: 0 })} ${loose.getText()}`;
+    });
     step("Error", () => {
       try {
         createRichEditor({ schema: tiny, plugins: [keymap({ "Mod-b": toggleMark("bold") })] });

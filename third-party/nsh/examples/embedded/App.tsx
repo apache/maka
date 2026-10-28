@@ -9,7 +9,7 @@
 // host app's part.
 // The theme pill takes the host's brand through setThemeOverrides.
 
-import { mount, signal, Text, View, type YNode } from "nsh";
+import { mount, type NativeComponentRef, signal, Text, View } from "nsh";
 import { nativeComponent } from "nsh";
 import { host } from "nsh";
 import { openUrl } from "nsh";
@@ -29,7 +29,7 @@ function App() {
   const taps = signal(0);
   const message = signal("No message from the host yet");
   const answer = signal("");
-  let badge: YNode | undefined;
+  let badge: NativeComponentRef | undefined;
   // The host app's `send("message", { text })`.
   host.on<{ text: string }>("message", ({ text }) => message.set(text));
   const ask = async () => {

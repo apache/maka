@@ -31,7 +31,7 @@ export const TITLE_BAR_HEIGHT = 48;
 
 // The window's colors follow the system until Settings › General chooses
 // (`appearance.ts`); the system's menus and controls follow them too.
-if (ownTitleBar) Window.setTitleBar('hidden', TITLE_BAR_HEIGHT);
+if (ownTitleBar) Window.setTitleBar({ style: 'hidden', height: TITLE_BAR_HEIGHT });
 
 /** Titles the window (Mission Control, the Dock's and the Window menu's
  * lists) with `title`, else the app's name. */

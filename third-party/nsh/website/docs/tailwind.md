@@ -84,7 +84,8 @@ Rust components (`nsh/base`'s and those of an app's own crate) accept `class` an
 | `selected:` | The element is selected (a `Button`'s `selected`, `accessibilityState.selected`) | `.selected_style(..)` |
 | `checked:` | The element is checked (`accessibilityState.checked` is `true`; `"mixed"` is not checked) | `.checked_style(..)` |
 | `indeterminate:` | The element is indeterminate (`accessibilityState.checked` is `"mixed"`) | `.indeterminate_style(..)` |
-| `group-active:`, `group-hover:`, `group-focus:`, `group-focus-within:`, `group-disabled:`, `group-selected:`, `group-checked:`, `group-indeterminate:` | The nearest ancestor with the `group` class is in that state | `.group()` on the ancestor; `.group_active(..)`, `.group_hover(..)`, `.group_focus_within(..)` inside |
+| `aria-expanded:` | The element is expanded (`accessibilityState.expanded` is `true`): a `Popover`'s or `Menu`'s trigger while its popup is open | `.expanded_style(..)` |
+| `group-active:`, `group-hover:`, `group-focus:`, `group-focus-within:`, `group-disabled:`, `group-selected:`, `group-checked:`, `group-indeterminate:`, `group-aria-expanded:` | The nearest ancestor with the `group` class is in that state | `.group()` on the ancestor; `.group_active(..)`, `.group_hover(..)`, `.group_focus_within(..)` inside |
 | `group-active/name:` ... | The same, for an ancestor marked `group/name` | `.group_named("name")`; `.group_active_named("name", ..)`, ... |
 | `first:`, `last:`, `odd:`, `even:`, `only:` | The element's own position among its siblings. To color a row's label by the row's position, put `last:text-*` on the row: the label inherits it | Plain Rust from the row's index (`at.is_first()`, `at.is_last()`, `at.index() % 2`) |
 | `placeholder:` | Styles an input's placeholder (`placeholder:text-zinc-400`) | `.placeholder_color(..)` |

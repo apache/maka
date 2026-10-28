@@ -222,12 +222,12 @@ view()
 ```tsx tabs
 const width = signal(0);
 
-<View onLayout={(e) => width.set(e.size.width)}>
+<View onLayout={({ bounds }) => width.set(bounds.size.width)}>
   <Text>{width()} points wide</Text>
 </View>
 ```
 
-frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个窗口的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`；两者都跟随旋转和窗口缩放变化，读取它们的样式会随窗口改变：
+frame 的单位是点：Rust 中是 `Bounds<Points>`，TSX 中是 `{ bounds }`，其值是一个 `Bounds`（`{ origin: { x, y }, size: { width, height } }`）。要获取整个窗口的大小，在 Rust 中读取 `window()`，在 TSX 中读取 [`nsh` 的设备 API](../modules/nsh.md#device) 的 `windowSize()`；两者都跟随旋转和窗口缩放变化，读取它们的样式会随窗口改变：
 
 ```rust tabs
 view().style_when(|| window().width > px(600.0), |s| s.flex_row())

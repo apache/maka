@@ -247,6 +247,11 @@ pub struct Headless {
     errors: Receiver<AppError>,
     /// The app's errors seen while waiting, for the next check.
     seen: Vec<AppError>,
+    /// The modifier keys held down (`keyboard.down`), which presses,
+    /// drags and hovers carry.
+    held: nsh_core::keymap::Modifiers,
+    /// The finger a `dragAndHold` left down, until `drop()`.
+    finger: Option<pointer::Finger>,
     screen: Screen,
     animator: Animator,
     dialogs: Dialogs,
@@ -296,6 +301,8 @@ impl Headless {
             batches,
             errors,
             seen: Vec::new(),
+            held: nsh_core::keymap::Modifiers::default(),
+            finger: None,
             screen,
             animator: Animator::new(clock.clone()),
             dialogs: Dialogs::Default,
@@ -1182,7 +1189,7 @@ impl Headless {
     }
 
     /// A press at `at` in `view` (else the view's center), in that view
-    /// and in the root, with no modifier keys. Presses on one view within
+    /// and in the root, with the modifier keys held (`keyboard.down`). Presses on one view within
     /// [`CLICK_INTERVAL`] of each other count up (`clicks` 2 is a double
     /// press), as the platforms count them. `None` when the view has no
     /// bounds.
@@ -1215,7 +1222,7 @@ impl Headless {
                 Points(bounds.origin.x.0 + position.x.0),
                 Points(bounds.origin.y.0 + position.y.0),
             ),
-            modifiers: nsh_core::keymap::Modifiers::default(),
+            modifiers: self.held,
             clicks,
         })
     }
@@ -1729,6 +1736,74 @@ mod tests {
         app.wait_for("seen: at 10 12 in 10 22").unwrap();
         app.press("id:pad").unwrap();
         app.wait_for("seen: at 40 20 in 40 30").unwrap();
+    }
+
+    #[component]
+    fn RetainedLayout() -> impl IntoElement {
+        let count = signal(0_u32);
+        let listener: nsh_core::element::Listener<Bounds<Points>> =
+            (move |_: &Bounds<Points>| count.update(|n| *n += 1)).into();
+        view().child(dynamic(move || {
+            let current = count.get();
+            let width = signal(0.0_f32);
+            view()
+                .w(px(100.0))
+                .h(px(40.0))
+                .on_layout(listener.clone())
+                .on_layout(move |frame: &Bounds<Points>| width.set(frame.size.width.0))
+                .child(text(move || {
+                    format!("count {current} width {}", width.get())
+                }))
+        }))
+    }
+
+    #[test]
+    fn retained_layout_listeners_settle_while_new_runs_learn_the_frame() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<RetainedLayout>())).unwrap();
+        app.first_render().unwrap();
+        app.wait_for("count 1 width 100").unwrap();
+        assert!(!app.shows("count 2 width 100"));
+    }
+
+    /// A box whose layout flips a region in it, whose node keeps its width
+    /// in a signal of the region's run (#448).
+    #[component]
+    fn GrowingBox() -> impl IntoElement {
+        let width = signal(100.0_f32);
+        let wide = signal(false);
+        view()
+            .child(
+                view()
+                    .on_press(move || width.update(|w| *w += 100.0))
+                    .child(text("Grow")),
+            )
+            .child(
+                view()
+                    .w(move || px(width.get()))
+                    .h(px(40.0))
+                    .on_layout(move |b: &Bounds<Points>| wide.set(b.size.width.0 > 150.0))
+                    .child(dynamic(move || {
+                        let is_wide = wide.get();
+                        let size = signal(0.0_f32);
+                        view()
+                            .w_full()
+                            .h(px(20.0))
+                            .on_layout(move |b: &Bounds<Points>| size.set(b.size.width.0))
+                            .child(text(move || format!("wide {is_wide} inner {}", size.get())))
+                    })),
+            )
+    }
+
+    #[test]
+    fn a_region_run_replaced_in_a_layout_pass_misses_its_nodes_layout() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<GrowingBox>())).unwrap();
+        app.first_render().unwrap();
+        app.wait_for("wide false inner 100").unwrap();
+        // The box's layout flips the region before the old node's, from the
+        // same pass, is handed out: its listener, whose `size` went with its
+        // run, no longer runs, and the new run's learns the width.
+        app.press("Grow").unwrap();
+        app.wait_for("wide true inner 200").unwrap();
     }
 
     #[test]
@@ -2533,22 +2608,22 @@ mount(() => {
   prop(held, "testID", "held");
   prop(held, "style", { height: 40 });
   prop(held, "class", "hover:opacity-50");
-  prop(held, "onHoverIn", () => {
+  prop(held, "onMouseEnter", () => {
     record("in");
     setTimeout(() => {
       shown.set(false);
-      prop(held, "onHoverIn", () => record("new-in"));
-      prop(held, "onHoverOut", () => record("new-out"));
+      prop(held, "onMouseEnter", () => record("new-in"));
+      prop(held, "onMouseLeave", () => record("new-out"));
       shown.set(true);
       record("rebound");
     }, 10);
   });
-  prop(held, "onHoverOut", () => record("out"));
+  prop(held, "onMouseLeave", () => record("out"));
   insert(root, () => shown() ? held : null);
   const other = element("view");
   prop(other, "testID", "other");
   prop(other, "style", { height: 40 });
-  prop(other, "onHoverIn", () => record("other-in"));
+  prop(other, "onMouseEnter", () => record("other-in"));
   append(root, other);
   return root;
 });

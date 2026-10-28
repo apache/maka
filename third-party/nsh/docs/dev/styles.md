@@ -60,14 +60,16 @@
   `landscape:`, `ios:` / `android:` / `web:`, `rtl:` / `ltr:`, `motion-safe:` / `motion-reduce:`, `active:` / `hover:` /
   `focus:` / `focus-within:` / `disabled:` / `enabled:` / `selected:` (`accessibilityState.selected`, a `Button`'s
   `selected`) / `checked:` (`accessibilityState.checked`, not mixed) / `indeterminate:` (`accessibilityState.checked`
-  mixed, CSS's `:indeterminate`), `group-*:` (named groups `group/name`), `first:` / `last:` /
+  mixed, CSS's `:indeterminate`) / `aria-expanded:` (`accessibilityState.expanded`: a `Popover`'s or `Menu`'s trigger
+  while its popup is open), `group-*:` (named groups `group/name`), `first:` / `last:` /
   `odd:` / `even:` / `only:`, `placeholder:` / `selection:` (a color only, the pseudo-element's: `placeholder:text-*` / `selection:bg-*`, the
   `placeholderColor` / `selectionColor` style keys; other utilities under them are unknown), `!` (important). The state classes have style props of their own (`activeStyle`, `hoverStyle`,
-  `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, a `Button`'s `selectedStyle`), resolved the same
-  way: later states win, `disabled` over all. `selected`, `checked` and `indeterminate` are value states the core sets
-  from the accessibility state (never reported by the platform), below the interaction states: `checked`, then
-  `indeterminate` (Tailwind's order), then `selected`, then `hover`, `focus`, `active` (gpui-base's order of value
-  states). `disabled` (any element) applies `disabled:` and drops
+  `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`, a `Button`'s `selectedStyle`),
+  resolved the same way: later states win, `disabled` over all. `selected`, `checked`, `indeterminate` and `expanded`
+  are value states the core sets from the accessibility state (never reported by the platform). The first three are
+  below the interaction states: `checked`, then `indeterminate` (Tailwind's order), then `selected`, then `hover`,
+  `focus`, `active` (gpui-base's order of value states); `expanded` is above them, as Tailwind's `aria-*` variants
+  come after its pseudo-classes, so an open popup's trigger keeps its look while hovered or pressed. `disabled` (any element) applies `disabled:` and drops
   the node's press listeners from what is mounted, so it shows no press feedback either. A part of a Rust component
   shows its control's `checked`, `indeterminate` and `disabled` to its own classes and state styles
   (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`, and `project_focused` for the part the keys act on; `Prop::ProjectedStates`): a switch's thumb styled `checked:translate-x-4`, with no accessibility

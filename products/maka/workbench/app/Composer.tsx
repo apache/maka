@@ -23,7 +23,7 @@ import type { ProjectMcp as ProjectMcpOwner } from './projectMcp';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
 import { Input } from 'nsh/base';
-import type { JSX, YNode } from 'nsh';
+import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
@@ -92,7 +92,7 @@ export type ComposerSession = {
 
 export function Composer(props: {
   session(): ComposerSession | null;
-  attach(node: YNode): void;
+  attach(node: InputRef): void;
   commands(): ComposerCommand[];
   active(): boolean;
   blocked?(): boolean;
@@ -128,7 +128,7 @@ export function Composer(props: {
   const primaryStops = () => props.session()?.invocation() != null && cannotSend();
   let unbind = () => {};
   cleanup(() => unbind());
-  const cardRoot = signal<YNode | null>(null);
+  const cardRoot = signal<ViewRef | null>(null);
   effect(() => {
     const owner = props.session();
     const node = cardRoot();
@@ -343,7 +343,7 @@ export function Composer(props: {
           >
             {(session) => {
               const owner = session();
-              let editor: YNode | undefined;
+              let editor: InputRef | undefined;
               const focusEditor = () => {
                 if (owner?.editable()) editor?.focus();
               };
@@ -388,7 +388,7 @@ export function Composer(props: {
                       tokens={skillTokens()}
                       value={owner?.draft() ?? ''}
                       readonly={!owner?.editable()}
-                      onChange={owner ? (text) => completion.change(owner, text) : undefined}
+                      onChange={owner ? ({ value }) => completion.change(owner, value) : undefined}
                       onPaste={owner ? (event) => completion.paste(owner, event) : undefined}
                       onFileDrop={owner ? (event) => completion.drop(owner, event) : undefined}
                       onFocus={owner ? () => completion.pasteFocus(owner) : undefined}

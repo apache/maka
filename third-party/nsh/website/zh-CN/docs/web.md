@@ -33,7 +33,24 @@ requestAnimationFrame ───────────┘                      
 - **原生动画在 Rust 里运行**，由 `requestAnimationFrame` 驱动：`Animated` 的 timing、spring、decay，`interpolate`，绑定到 `opacity`、`translate`、`rotate`、`scale`、`transform` 的步骤和 `backgroundColor` 的动画值，用 `pan` 绑定的拖拽、滚动联动的值和画布参数。和设备上一样，每一帧都不经过 JS。`LayoutAnimation`、样式过渡、`animate-*` 关键帧和页面切换的动效与桌面后端一致；开启 `prefers-reduced-motion` 时它们不再播放（页面切换改为淡入淡出）。
 - **输入**：带 `activeStyle` / `active:` 反馈的按压和长按、响应者系统（`onTouch*`、`PanResponder`）、原生拖拽和双指捏合、旋转、滚动视图（浏览器自身的滚动）、下拉刷新、可缩放的滚动视图（双指捏合、Ctrl+滚轮和触控板捏合、`zoomTo`）、受控的 `<Input>`（焦点、提交）、`Canvas`、带页面 `header` 的 `NavStack` 和 `NavPage`、`Dialog`。
 - **系统界面绘制在页面内**：`AlertDialog` 在桌面浏览器上与桌面后端的对话框外观一致，在手机上与 iOS 一致（即 `desktop` 界面类型，见下文）。自定义字体在浏览器加载完成后会重新测量文本，应用导入的字体加载好之前不显示第一帧。
-- **对话框**与桌面后端一样，是覆盖整个应用的一层，显示应用的弹出层和背景。Escape、浏览器的返回按钮和点击背景会关闭它（`closeOnEscape`、`closeOnBackdropPress`），`animation`、`onOpen`、`onClose`、`onCancel` 和 `onOpenChange` 与设备上一致。
+- **对话框**与桌面后端一样，是覆盖整个应用的一层，显示应用的弹出层和背景。Escape、浏览器的返回按钮和点击背景会关闭它（`closeOnEscape`、`closeOnBackdropPress`），`animation`、`onOpen`、`onClose`、`onCancel` 和 `onOpenChange` 与设备上一致。页面把应用[嵌入](#嵌入到页面)在布局的一部分时，可以让对话框和提示框改为覆盖整个浏览器窗口（`dialogs: "viewport"`），就像 iOS 和 Android 上覆盖整个屏幕一样。
+
+
+`Sheet` 与 `Dialog`、`AlertDialog` 共用这个展示设置。同源 iframe 中的弹层会自动覆盖外层页面，应用保留原有布局尺寸。
+最后一个弹层关闭后，iframe 恢复原来的位置和尺寸，引擎与应用状态继续保留。文档示例已启用这个展示方式。
+
+跨域或沙箱 iframe 由宿主页面在加载播放器前接入：
+
+```js
+import { hostPlayerFrame } from "./nsh.js";
+const frame = document.querySelector("iframe");
+const disconnect = hostPlayerFrame(frame);
+frame.src = "https://apps.example.com/player.html"; // 播放器设置 dialogs: "viewport"
+// 移除嵌入时调用 disconnect();
+```
+
+宿主只接受这个 iframe 窗口的请求。弹层显示期间，外围页面处于 inert 状态并锁定滚动，关闭后恢复。
+每一层跨域嵌入都需要对应宿主配合；宿主尚未接入时，弹层在当前文档内展示，播放器会输出提示。
 
 ## 键盘、鼠标和触摸
 
@@ -225,6 +242,7 @@ const player = await createPlayer(document.querySelector("#phone"), {
   // dark: true,            // 强制外观；不设置时跟随系统
   // idiom: "phone",        // 强制 "phone"、"pad" 或 "desktop"；不设置时由指针和尺寸决定
   // history: false,        // 页面和对话框是否作为浏览器历史记录；默认只在应用占据整个页面时开启，iframe 里不开启
+  // dialogs: "viewport",   // Dialog 和 AlertDialog 覆盖整个浏览器窗口；默认覆盖容器
 });
 player.run(await (await fetch("./bundle.nshc")).arrayBuffer());
 ```
@@ -238,6 +256,8 @@ player.run(await (await fetch("./bundle.nshc")).arrayBuffer());
 使用 `nsh-playground.wasm` 时，`player.runSource(tsx, name, options)` 会先编译 TSX，再用 `run` 的选项运行，返回编译错误或 `null`；`player.compile(tsx)` 返回 `{ code }` 或 `{ error }`。官网的 playground 用 `{ limits: "" }` 运行访客写的代码。
 
 容器的尺寸就是应用的窗口（`windowSize()`），调整容器大小会同步调整应用。`player.setDark(true)` 可在运行时切换外观，应用通过 `colorScheme()` 和 `dark:` 类感知到变化。
+
+Dialog、Sheet 和 AlertDialog 默认覆盖容器。设置 `dialogs: "viewport"` 后，它们像页面自己的模态对话框一样覆盖整个浏览器窗口，应用的窗口仍是容器：`Dialog` 按窗口的尺寸和安全区域布局，从窗口底边滑入，背景覆盖整个页面，在它上面滚动鼠标滚轮时页面保持不动。对话框显示在浏览器的顶层（Chrome 114、Safari 17、Firefox 125 及更新版本），所以无论容器在页面的什么位置，它都在页面其他内容之上；更早的浏览器里它覆盖容器。
 
 ## 宿主的函数
 

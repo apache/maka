@@ -73,7 +73,7 @@ Input                        native gestures -> EngineControl::dispatch_event ->
   kilobytes instead of ICU4X's megabytes; trade-offs and limits in its module doc), in `Environment::locale` by
   default (the platform's region format: `NSLocale.currentLocale`, `Locale.getDefault()`).
 - **Time**: an engine runs on a `nsh_core::time::Clock` (`EngineConfig::clock`), its thread's while it runs
-  (`Clock::enter`): JS's timers, Rust tasks' timers, throttled scroll and hover events and the frames' time read it
+  (`Clock::enter`): JS's timers, Rust tasks' timers, throttled scroll events, mouse moves and the frames' time read it
   through `nsh_core::time::now()`, `Intl` and `Date` through `unix_ms()`. The system's clock is the default. A manual
   one (`Clock::manual`) moves only when told: the loop no longer wakes for timers, and `EngineControl::advance_clock`
   steps it to each time something comes due on the way (timers, task timers, the clock's alarms such as a held-back

@@ -264,10 +264,13 @@ impl<M: TextEngine> Core<M> {
             return EventMask::default();
         }
         self.ensure_slot_target(holder, host, Some(&mut *inst));
-        let Some(target) = self.components.slot_targets.get_mut(&holder) else {
+        let Some(target) = self.components.slot_targets.get(&holder) else {
             return EventMask::default();
         };
         let node = target.node;
+        let old = target.events;
+        let js = target.js_events;
+        self.initialize_layout_listeners(host, node, el, old | js, inst);
         inst.handlers.retain(|(n, _, _)| *n != node && *n != holder);
         inst.responders.retain(|(n, _)| *n != node && *n != holder);
         let mut mask = EventMask::default();
@@ -279,8 +282,11 @@ impl<M: TextEngine> Core<M> {
             mask.set(EventKind::Touch, true);
             inst.responders.push((node, responder.clone()));
         }
-        let old = std::mem::replace(&mut target.events, mask);
-        let js = target.js_events;
+        self.components
+            .slot_targets
+            .get_mut(&holder)
+            .unwrap()
+            .events = mask;
         self.listen_changes(node, old, mask, js);
         mask
     }

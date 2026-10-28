@@ -41,7 +41,7 @@ fn field(label: &'static str, value: Signal<String>, masked: bool) -> impl IntoE
 import { signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 
-function Field(props: { label: string; value: string; onChange: (text: string) => void; masked?: boolean }) {
+function Field(props: { label: string; value: string; onChange: (e: { value: string }) => void; masked?: boolean }) {
   const focused = signal(false);
   return (
     <View class="gap-1">
@@ -103,7 +103,7 @@ function App() {
     <View style={{ flex: 1, padding: 16, paddingTop: 60, gap: 8 }}>
       <Input
         value={name()}
-        onChange={(text) => name.set(text)}
+        onChange={({ value }) => name.set(value)}
         placeholder="Your name"
         style={{ fontSize: 17, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 10, padding: 12 }}
       />
@@ -115,7 +115,7 @@ function App() {
 mount(App);
 ```
 
-既然值由你控制，就可以变换用户输入的内容：`.on_change(move |t: &str| tag.set(t.to_uppercase()))` 转为大写，`onChange={(t) => code.set(t.replace(/[^0-9]/g, ""))}` 只保留数字。
+既然值由你控制，就可以变换用户输入的内容：`.on_change(move |t: &str| tag.set(t.to_uppercase()))` 转为大写，`onChange={({ value }) => code.set(value.replace(/[^0-9]/g, ""))}` 只保留数字。
 
 ### 输入法
 
@@ -147,9 +147,9 @@ const query = signal("");
 let composing = false;
 <Input
   value={query()}
-  onChange={(text) => {
-    query.set(text);
-    if (!composing) search(text);
+  onChange={({ value }) => {
+    query.set(value);
+    if (!composing) search(value);
   }}
   onCompositionChange={(e) => {
     composing = e.composing;
@@ -196,14 +196,14 @@ let composing = false;
 
 | 事件 | 参数 | 触发时机 |
 |---|---|---|
-| `onChange` | `text: string` | 文本改变。 |
+| `onChange` | `{ value }` | 文本改变：`value` 是现在的文本。 |
 | `onSubmit` | `{ text }` | 在会提交的输入框中按下回车键（单行，或 `submitBehavior` 为 `"submit"` / `"blurAndSubmit"`）。 |
 | `onFocus` / `onBlur` | | 获得 / 失去焦点。 |
 | `onSelectionChange` | `{ start, end }` | 光标或选区移动（UTF-16 码元）。 |
 | `onPaste` | `{ text, html, files, uris }` | 用户粘贴了内容：文本、带格式的 HTML（Linux、Web）、作为 `File` 的图片、本地文件的 URL（[粘贴](#粘贴图片和文件)）。 |
 | `onCaretMove` | `{ bounds, pageBounds }` | 光标移动：它在输入框和窗口中的位置（[光标位置](#光标位置)）。 |
 | `onKeyPress` | `{ key }` | 文本改变之前：`key` 是输入的文本、`"Backspace"` 或 `"Enter"`。 |
-| `onContentSizeChange` | `{ width, height }` | 文本尺寸改变（多行时按输入框的宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
+| `onContentSizeChange` | `{ size }` | 文本尺寸（`size`）改变（多行时按输入框的宽度计算），随输入报告；输入框为空时报告一行空行的尺寸，与占位文字无关。 |
 | `onCompositionChange` | `{ composing, text }` | 输入法的组字开始、变化或结束（见[输入法](#输入法)）。 |
 
 输入框的样式与文本相同：`fontSize`、`color`、`fontFamily`、`textAlign`、`letterSpacing` 以及其余[文本样式](./text.md)，再加上边框、内边距和背景。焦点样式（Rust 中是 `.focus(|s| ..)`，TSX 中是 Tailwind 的 `focus:` 变体或 `focusStyle`）在输入框获得焦点时生效。占位文字的颜色是 `.placeholder_color(..)`（样式键 `placeholderColor`，`placeholder:text-*`），光标的颜色是 `.caret_color(..)`（`caretColor`，`caret-*`），选区高亮的颜色是 `.selection_color(..)`（`selectionColor`，`selection:text-*`）；UIKit 用同一种颜色绘制光标和选区，设置了光标颜色时以它为准：
@@ -320,18 +320,18 @@ pub fn sign_in() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, View, type YNode } from "nsh";
+import { type InputRef, mount, signal, View } from "nsh";
 import { Input } from "nsh/base";
 
 function SignIn() {
   const email = signal("");
-  let password!: YNode;
+  let password!: InputRef;
   const submit = () => console.log("sign in", email());
   return (
     <View style={{ flex: 1, padding: 16, paddingTop: 60, gap: 12 }}>
       <Input
         value={email()}
-        onChange={(t) => email.set(t)}
+        onChange={({ value }) => email.set(value)}
         keyboardType="email-address"
         autoCapitalize="none"
         returnKeyType="next"
@@ -420,7 +420,7 @@ const selection = signal<{ start: number; end?: number } | undefined>(undefined)
 
 <Input
   value={text()}
-  onChange={(t) => text.set(t)}
+  onChange={({ value }) => text.set(value)}
   selectedRange={selection()}
   onSelectionChange={(r) => range.set(r)}
 />
@@ -478,7 +478,7 @@ const caret = signal<Bounds | null>(null);
   <Input
     multiline
     value={draft()}
-    onChange={(t) => draft.set(t)}
+    onChange={({ value }) => draft.set(value)}
     onSelectionChange={(e) => end.set(e.end)}
     onCaretMove={(e) => {
       // 光标前的词以 "@" 开头时显示候选。
@@ -561,7 +561,7 @@ const height = signal(0);
 <Input
   multiline
   placeholder="Write a comment"
-  onContentSizeChange={(e) => height.set(Math.min(e.height, 120))}
+  onContentSizeChange={({ size }) => height.set(Math.min(size.height, 120))}
   style={{ fontSize: 16, padding: 10, borderWidth: 1, borderColor: "#d0d7de", borderRadius: 10, height: Math.max(height(), 20) + 20 }}
 />
 ```
@@ -662,7 +662,7 @@ function ChatScreen() {
       >
         <Input
           value={draft()}
-          onChange={(t) => draft.set(t)}
+          onChange={({ value }) => draft.set(value)}
           multiline
           submitBehavior="submit"
           returnKeyType="send"
@@ -742,19 +742,19 @@ pub fn note() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { signal, Text, View, type YNode } from "nsh";
+import { type InputRef, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { InputAccessoryView } from "nsh/mobile";
 
 function Note() {
   const text = signal("");
-  let input!: YNode;
+  let input!: InputRef;
   return (
     <View style={{ padding: 16 }}>
       <Input
         ref={input}
         value={text()}
-        onChange={(t) => text.set(t)}
+        onChange={({ value }) => text.set(value)}
         ios={{ inputAccessoryViewID: "note-bar" }}
         placeholder="A note"
       />

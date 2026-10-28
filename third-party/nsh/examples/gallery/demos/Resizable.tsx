@@ -50,14 +50,14 @@ export function Resizable() {
           onPress={() => shown.set(!shown())}
           selected={shown()}
           accessibilityLabel={shown() ? "Hide the console" : "Show the console"}
-          class="rounded-md border border-border px-3 py-1.5 active:opacity-70 selected:bg-muted"
+          class="rounded-md border border-border px-3 py-1.5 hover:bg-muted/60 active:opacity-70 selected:bg-muted"
         >
           <Text class="text-[13px] font-medium text-foreground">Console</Text>
         </Button>
       </View>
       <View class="flex-1 overflow-hidden rounded-lg border border-border bg-background">
-        <ResizablePanelGroup axis="horizontal" handleClass={across} handleThumbClass={handleThumb} handleAccessibilityLabel="Resize the sidebar" onResize={(sizes) => last.set(`Row: ${round(sizes)}`)}>
-          <ResizablePanel size={sidebar()} minSize={120} maxSize={360} onResize={(size) => sidebar.set(size)}>
+        <ResizablePanelGroup axis="horizontal" handleClass={across} handleThumbClass={handleThumb} handleAccessibilityLabel="Resize the sidebar" onResize={({ sizes }) => last.set(`Row: ${round(sizes)}`)}>
+          <ResizablePanel size={sidebar()} minSize={120} maxSize={360} onResize={({ size }) => sidebar.set(size)}>
             <View class="flex-1 bg-muted">
               <Pane title="Files" detail="120 to 360 pt" size={`Sidebar ${Math.round(sidebar())} pt`} />
             </View>
@@ -68,12 +68,12 @@ export function Resizable() {
               handleClass={along}
               handleThumbClass={handleThumb}
               handleAccessibilityLabel="Resize the console"
-              onResize={(sizes) => last.set(`Column: ${round(sizes)}`)}
+              onResize={({ sizes }) => last.set(`Column: ${round(sizes)}`)}
             >
               <ResizablePanel minSize={80}>
                 <Pane title="Editor" detail="Takes the room the others leave" />
               </ResizablePanel>
-              <ResizablePanel size={consoleSize()} minSize={60} visible={shown()} onResize={(size) => consoleSize.set(size)}>
+              <ResizablePanel size={consoleSize()} minSize={60} visible={shown()} onResize={({ size }) => consoleSize.set(size)}>
                 <View class="flex-1 bg-muted">
                   <Pane title="Console" detail="Hidden, it keeps its size" size={`Console ${Math.round(consoleSize())} pt`} />
                 </View>

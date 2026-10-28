@@ -1,4 +1,4 @@
-import { mount, signal, Text, View, WebView, type WebViewNavigation, type YNode } from "nsh";
+import { mount, signal, Text, View, WebView, type WebViewNavigation, type WebViewRef } from "nsh";
 import { platform, windowSize } from "nsh";
 import { button, buttonText, ui } from "./palette";
 
@@ -43,7 +43,7 @@ function App() {
   const nav = signal<WebViewNavigation | null>(null);
   const sent = signal(0);
   let painted = 0;
-  let web!: YNode;
+  let web!: WebViewRef;
   const wide = () => windowSize().width >= 700;
 
   return (

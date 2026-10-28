@@ -140,7 +140,7 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                   model.position.y = event.offset.y;
                 }
               }}
-              onLayout={(frame) => {
+              onLayout={({ bounds: frame }) => {
                 if (ownsView()) viewportHeight.set(frame.size.height);
               }}
               onLoadMore={() => {

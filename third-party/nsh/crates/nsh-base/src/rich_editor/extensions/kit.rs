@@ -38,6 +38,10 @@ use crate::rich_editor::{
         sink_list_item, split_list_item, tiptap, toggle_mark, wrap_in,
     },
     model::{Attrs, MarkType, NodeType, Schema},
+    tables::{
+        TableEditingOptions, commands as table_commands, fix_tables_plugin, nodes as table_nodes,
+        table_editing,
+    },
 };
 
 // --- Options -----------------------------------------------------------------
@@ -1001,6 +1005,87 @@ pub fn list_keymap() -> Extension {
         .add_keyboard_shortcuts(|_| list_bindings(&ListKeymapOptions::default()))
 }
 
+/// `table` (prosemirror-tables' table, as Tiptap's `Table`) with the
+/// options `HTMLAttributes` (written on `<table>`), `resizable` (true),
+/// `cellMinWidth` (25), `lastColumnResizable` (true) and
+/// `allowTableNodeSelection` (false): Tab and Shift-Tab between cells
+/// (Tab in the last cell adds a row), Backspace and Delete deleting the
+/// table when all its cells are selected, and the plugins repairing tables
+/// and editing in them (`tables::fix_tables_plugin`,
+/// `tables::table_editing`). Its commands (`insertTable`,
+/// `addColumnBefore`, `mergeCells`, ...) are built in (`tables::commands`).
+pub fn table() -> Extension {
+    Extension::node("table", |options| table_nodes::table(options).1)
+        .with_options(json!({
+            "HTMLAttributes": {},
+            "resizable": true,
+            "cellMinWidth": 25,
+            "lastColumnResizable": true,
+            "allowTableNodeSelection": false,
+        }))
+        .add_keyboard_shortcuts(|_| table_keys())
+        .add_plugins(|cx| {
+            let mut options = TableEditingOptions::default();
+            options.allow_table_node_selection =
+                opt_bool(cx.options, "allowTableNodeSelection", false);
+            vec![fix_tables_plugin(), table_editing(options)]
+        })
+}
+
+fn table_keys() -> Vec<(String, BoxCommand)> {
+    let delete = table_commands::delete_table_when_all_cells_selected;
+    vec![
+        ("Tab".into(), table_commands::go_to_next_cell_or_add_row()),
+        ("Shift-Tab".into(), table_commands::go_to_next_cell(-1)),
+        ("Backspace".into(), delete()),
+        ("Mod-Backspace".into(), delete()),
+        ("Delete".into(), delete()),
+        ("Mod-Delete".into(), delete()),
+    ]
+}
+
+/// `tableRow`: a table's row, with its `height`.
+pub fn table_row() -> Extension {
+    Extension::node("tableRow", |_| table_nodes::table_row().1)
+}
+
+/// `tableCell`: a table's cell (`<td>`), with `colspan`, `rowspan` and
+/// `colwidth`.
+pub fn table_cell() -> Extension {
+    Extension::node("tableCell", |_| table_nodes::table_cell().1)
+}
+
+/// `tableHeader`: a table's header cell (`<th>`), as `tableCell`.
+pub fn table_header() -> Extension {
+    Extension::node("tableHeader", |_| table_nodes::table_header().1)
+}
+
+/// The table kit's extensions with their option keys.
+pub fn table_kit_extensions() -> Vec<(&'static str, Extension)> {
+    vec![
+        ("table", table()),
+        ("tableRow", table_row()),
+        ("tableHeader", table_header()),
+        ("tableCell", table_cell()),
+    ]
+}
+
+/// `tableKit` (Tiptap's `TableKit`): `table`, `tableRow`, `tableHeader`
+/// and `tableCell`, each left out with `false` or configured with an
+/// object under its name. Not part of [`starter_kit`].
+pub fn table_kit() -> Extension {
+    Extension::new("tableKit").add_extensions(|options| {
+        table_kit_extensions()
+            .into_iter()
+            .filter_map(|(key, extension)| match options.get(key) {
+                Some(Value::Bool(false)) => None,
+                Some(value @ Value::Object(_)) => Some(extension.configure(value.clone())),
+                _ => Some(extension),
+            })
+            .collect()
+    })
+}
+
 /// The starter kit's extensions with their option keys (Tiptap's
 /// StarterKit names, `document` for the `doc` node), in the order the
 /// starter schema has its types.
@@ -1068,10 +1153,12 @@ pub fn builtin(name: &str) -> Option<Extension> {
         "keymap" => return Some(core_keymap()),
         "doc" | "document" => return Some(document()),
         "undoRedo" => return Some(history()),
+        "tableKit" => return Some(table_kit()),
         _ => {}
     }
     starter_kit_extensions()
         .into_iter()
+        .chain(table_kit_extensions())
         .find(|(key, extension)| *key == name || extension.name == name)
         .map(|(_, extension)| extension)
 }
@@ -1184,6 +1271,27 @@ mod tests {
     }
 
     #[test]
+    fn the_table_kit_adds_tables() {
+        let manager = ExtensionManager::with_core(vec![starter_kit(), table_kit()]).unwrap();
+        let schema = manager.schema();
+        for name in ["table", "tableRow", "tableCell", "tableHeader"] {
+            assert!(schema.node_type(name).is_some(), "{name}");
+        }
+        assert!(crate::rich_editor::tables::table_node_types(schema).is_some());
+        assert!(manager.commands().contains("insertTable"));
+        assert!(manager.commands().contains("mergeCells"));
+        let without_headers = ExtensionManager::with_core(vec![
+            starter_kit(),
+            table_kit().configure(json!({ "tableHeader": false })),
+        ]);
+        // A row's content names `tableHeader`: the schema needs it.
+        assert!(without_headers.is_err());
+        // The starter kit has no tables.
+        let starter = ExtensionManager::with_core(vec![starter_kit()]).unwrap();
+        assert!(starter.schema().node_type("table").is_none());
+    }
+
+    #[test]
     fn builtins_are_found_by_name() {
         for name in [
             "starterKit",
@@ -1192,6 +1300,9 @@ mod tests {
             "doc",
             "undoRedo",
             "listKeymap",
+            "tableKit",
+            "table",
+            "tableCell",
         ] {
             assert!(builtin(name).is_some(), "{name}");
         }

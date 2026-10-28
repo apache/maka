@@ -41,7 +41,7 @@ function App() {
   );
   const measured = (height?: number) => (
     <View
-      onLayout={(e) => size.set(`${Math.round(e.size.width)} × ${Math.round(e.size.height)} pt`)}
+      onLayout={({ bounds }) => size.set(`${Math.round(bounds.size.width)} × ${Math.round(bounds.size.height)} pt`)}
       style={{
         flex: height === undefined ? 1 : undefined,
         height,

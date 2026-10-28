@@ -704,7 +704,7 @@ export function Segmented<T extends string>(props: {
   });
   return (
     <View
-      onLayout={(e) => width.set(e.size.width)}
+      onLayout={({ bounds }) => width.set(bounds.size.width)}
       role="tablist"
       style={{
         height,

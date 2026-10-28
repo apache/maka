@@ -23,7 +23,7 @@ import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
 import { appearance, initializeAppearance } from './appearance';
 import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
-import type { YNode, JSX } from 'nsh';
+import type { InputRef, ViewRef, JSX } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { host } from './host';
 import { keymap } from 'nsh';
@@ -61,6 +61,7 @@ import type { BrowserWorkspace } from './browsing';
 import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
 import { applicationMenu, ownTitleBar, windowTitle } from './chrome';
+import { watchNotifications } from './notifications';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
 import { createWorkbenchPlugins, pluginContext, type PanelRoute } from './plugins/context';
@@ -148,9 +149,9 @@ function App(
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
-  let editor: YNode | undefined;
+  let editor: InputRef | undefined;
   const focusComposer = () => editor?.focus();
-  let browserRoot: YNode | undefined;
+  let browserRoot: ViewRef | undefined;
   let alive = true;
   let controlRead = 0;
   let overlayInstance = restored?.settings ? 1 : 0;
@@ -698,6 +699,11 @@ function App(
     { when: 'always' },
   );
   windowTitle(() => handle()?.title() ?? null);
+  watchNotifications({
+    sessions: browsing.sessions,
+    foreground,
+    open: (sessionId) => void selectBrowsed(sessionId, selected()),
+  });
   const recoverControls = async () => {
     if (recovering()) return;
     recovering.set(true);

@@ -285,8 +285,14 @@ fn hit_layer(dt: Dt, lead: Lead) -> impl IntoElement {
                                 // (a `tab_stop` focus handle): its keys follow.
                                 .on_focus(move || focus.set_focus(true))
                                 .on_blur(move || blur.set_focus(false))
-                                .on_hover_move(move |e: &HoverEvent| hover.hover_at(e.position))
-                                .on_hover_out(move || {
+                                // The hovered row stays put while a drag
+                                // selects or moves.
+                                .on_mouse_move(move |e: &MouseEvent| {
+                                    if e.pressed_button.is_none() {
+                                        hover.hover_at(e.position);
+                                    }
+                                })
+                                .on_mouse_leave(move |_: &MouseEvent| {
                                     if leave.hover.get_untracked().is_some() {
                                         leave.hover.set(None);
                                     }
@@ -620,22 +626,22 @@ fn region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoElement {
             })
             .child(
                 // The rows' origin: the first row of its chunk, scrolled
-                // by the content offsets, in whole points as layout rounds
-                // frames: at a fraction the cells' texts would round to
-                // another point in their cells as it changes, and every
+                // by the content offsets, on the device pixels layout rounds
+                // frames to: at a fraction the cells' texts would round to
+                // another pixel in their cells as it changes, and every
                 // cell's frame would be sent again at each scroll frame.
                 view()
                     .absolute()
                     .top(move || {
                         let g = content_dt.geo();
                         let origin = w.row_origin.get() as f64 * g.row_height as f64;
-                        Length::from(px((origin - g.cy).round() as f32))
+                        on_pixel(origin - g.cy)
                     })
                     .left(move || match which {
                         Region::Scroll => {
                             let g = x_dt.geo();
                             let origin = x_dt.scroll_start(w.col_origin.get());
-                            Length::from(px((origin - g.cx).round() as f32))
+                            on_pixel(origin - g.cx)
                         }
                         _ => Length::from(px(0.0)),
                     })
@@ -1127,7 +1133,7 @@ fn header_region(dt: Dt, which: Region, w: Windows, custom: bool) -> impl IntoEl
                         Region::Scroll => {
                             let g = x_dt.geo();
                             let origin = x_dt.scroll_start(w.col_origin.get());
-                            Length::from(px((origin - g.cx).round() as f32))
+                            on_pixel(origin - g.cx)
                         }
                         _ => Length::from(px(0.0)),
                     })
@@ -1597,4 +1603,12 @@ fn overlays(dt: Dt) -> impl IntoElement {
                 .inset_0()
                 .child(props.loading_view.place(|slot| slot))
         }))
+}
+
+/// `points` on the nearest device pixel, as layout rounds frames
+/// ([`nsh_core::element::pixel_ratio`]); in `f64` up to there, for
+/// the extents of huge tables.
+fn on_pixel(points: f64) -> Length {
+    let ratio = f64::from(nsh_core::element::pixel_ratio().max(f32::MIN_POSITIVE));
+    Length::from(px(((points * ratio).round() / ratio) as f32))
 }

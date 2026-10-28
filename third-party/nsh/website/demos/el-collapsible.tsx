@@ -97,8 +97,8 @@ function App() {
             content={
               <Switch
                 checked={originals()}
-                onChange={(next) => {
-                  originals.set(next);
+                onChange={({ checked }) => {
+                  originals.set(checked);
                 }}
                 class={`flex-row-reverse items-center justify-between gap-3 ${pad} pb-3 active:opacity-70`}
                 hoverStyle={hoverFill()}

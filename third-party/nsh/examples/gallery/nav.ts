@@ -1,4 +1,4 @@
-import { type JSX } from "nsh";
+import { type JSX, signal } from "nsh";
 import { createNavStack } from "nsh/base";
 import type { IconName } from "./icons";
 
@@ -14,3 +14,7 @@ export interface DemoEntry {
 export type Route = { name: "home" } | { name: "demo"; demo: DemoEntry } | { name: "page"; page: () => JSX.Element };
 
 export const nav = createNavStack<Route>([{ name: "home" }]);
+
+/** The demo shown (the desktop layout's selection, the phone's pushed demo):
+ * its page reads the name and what it shows for its header. */
+export const shownDemo = signal<DemoEntry | null>(null);

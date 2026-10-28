@@ -61,7 +61,7 @@ Give every icon-only control a label: a screen reader cannot read a glyph or an 
 
 ### Roles
 
-The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts), `"listbox"` and `"option"` (a list of options to choose from, such as a select's popup, and its options, the chosen one marked by `accessibilityState.selected`).
+The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts), `"listbox"` and `"option"` (a list of options to choose from, such as [`Select`](../elements/select.md)'s list, and its options, the chosen one marked by `accessibilityState.selected`).
 
 The most useful ones:
 
@@ -70,6 +70,8 @@ The most useful ones:
 - `"switch"`, `"checkbox"`, `"radio"` with `accessibilityState.checked`.
 - `"adjustable"` for sliders and steppers, with `accessibilityValue` and the `increment` / `decrement` actions
   (each thumb of a [`Slider`](../elements/slider.md) is one).
+- `"spinbutton"` for a field that holds a number the user can also step, with the same value and actions (the
+  field of a [`NumberInput`](../elements/number-input.md)).
 - `"image"` for meaningful images, with a label; decorative images should be hidden instead.
 
 ```rust tabs
@@ -250,12 +252,12 @@ fn upload() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { signal, Text, View, type YNode } from "nsh";
+import { signal, Text, View, type ViewRef } from "nsh";
 import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 
 function Upload() {
   const done = signal(false);
-  let result!: YNode;
+  let result!: ViewRef;
   const finish = () => {
     done.set(true);
     announce("Upload complete");

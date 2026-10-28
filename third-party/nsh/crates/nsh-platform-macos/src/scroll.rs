@@ -751,12 +751,21 @@ fn ensure_ticking(surface: &Rc<Surface>, view: &NshView) {
         s.live.ticking = true;
     }
     let view = view.clone();
+    // Whether only the indicator's fade is left (the agent of `nsh test`
+    // does not wait for it).
+    let mut fading = false;
     surface.add_frame_callback(move |surface, now| {
-        let busy = tick(surface, &view, now * 1000.0);
-        if !busy && let Some(s) = view.state_mut().scroll.as_mut() {
+        let left = tick(surface, &view, now * 1000.0);
+        if (left == Tick::Fading) != fading {
+            fading = !fading;
+            surface.cosmetic_frame(fading);
+        }
+        if left == Tick::Done
+            && let Some(s) = view.state_mut().scroll.as_mut()
+        {
             s.live.ticking = false;
         }
-        busy
+        left != Tick::Done
     });
 }
 
@@ -775,17 +784,28 @@ pub(crate) fn detached(view: &NshView) {
     }
 }
 
-/// One frame of `view`'s motion; false when there is nothing left to do.
-fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
+/// What a scroll view has left to do after a frame ([`tick`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tick {
+    /// Nothing: its frame callback ends.
+    Done,
+    /// Motion, input it waits for, or the refresh spinner.
+    Busy,
+    /// Only the indicator's fade.
+    Fading,
+}
+
+/// One frame of `view`'s motion.
+fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
     // A retired native subtree may still have its already-scheduled frame
     // callback. It must stop before emitting events into a reused node id.
     if !mapped(view) {
-        return false;
+        return Tick::Done;
     }
     let sampled = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
-            return false;
+            return Tick::Done;
         };
         // Events still come in these phases: hold at the newest until the
         // next one, rather than ending.
@@ -811,7 +831,9 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
     }
     let (phase, pos, (min, max)) = {
         let state = view.state();
-        let Some(s) = &state.scroll else { return false };
+        let Some(s) = &state.scroll else {
+            return Tick::Done;
+        };
         (s.live.phase, main(s), limits(&state))
     };
     match phase {
@@ -868,18 +890,13 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
         _ => {}
     }
     report(surface, view);
-    let (busy, overlays) = {
+    let (left, overlays) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
-            return false;
+            return Tick::Done;
         };
-        let mut busy = !matches!(
-            s.live.phase,
-            Phase::Idle
-                | Phase::Thumb { .. }
-                | Phase::Momentum
-                | Phase::Wheel { gesture: true, .. }
-        ) || s.live.resampled.is_some();
+        let resampling = s.live.resampled.is_some();
+        let mut fading = false;
         let mut overlays = false;
         if matches!(s.live.phase, Phase::Thumb { .. }) {
             // A held thumb stays until it is let go (`thumb_end`).
@@ -890,23 +907,45 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
                 s.live.alpha = alpha;
                 overlays = true;
             }
-            busy |= alpha > 0.0;
+            fading = alpha > 0.0;
         }
-        if !s.horizontal
+        let spinning = !s.horizontal
             && main(s) < 0.0
             && s.live.refreshing
-            && s.behavior.refresh_indicator.is_none()
-        {
+            && s.behavior.refresh_indicator.is_none();
+        if spinning {
             s.live.spin = ((now / 1000.0) as f32 * 2.0 * PI) % (2.0 * PI);
             overlays = true;
-            busy = true;
         }
-        (busy, overlays)
+        (
+            what_is_left(&s.live.phase, resampling, fading, spinning),
+            overlays,
+        )
     };
     if overlays {
         update_overlays(view);
     }
-    busy
+    left
+}
+
+/// What a scroll view in `phase` has left after a frame: its own motion
+/// (an animated scroll, a mouse wheel coming to rest, the wait for
+/// momentum), trackpad offsets still to show (`resampling`) or the
+/// refresh spinner (`spinning`) keep it busy; the phases events drive
+/// (a trackpad gesture, momentum, a held thumb) wait for them; the
+/// indicator's fade (`fading`) is all that may be left.
+fn what_is_left(phase: &Phase, resampling: bool, fading: bool, spinning: bool) -> Tick {
+    let moving = !matches!(
+        phase,
+        Phase::Idle | Phase::Thumb { .. } | Phase::Momentum | Phase::Wheel { gesture: true, .. }
+    );
+    if moving || resampling || spinning {
+        Tick::Busy
+    } else if fading {
+        Tick::Fading
+    } else {
+        Tick::Done
+    }
 }
 
 // The indicator and the refresh spinner.
@@ -1234,6 +1273,7 @@ pub(crate) fn config(
     view: &NshView,
     horizontal: bool,
     indicator: bool,
+    replaced: bool,
     mirrored: bool,
 ) {
     let changed = {
@@ -1244,8 +1284,9 @@ pub(crate) fn config(
         s.horizontal = horizontal;
         // A horizontal view keeps its indicator: it is the mouse's scroll
         // bar, and a mouse without a horizontal wheel has no other way
-        // to move it (mouse drags do not scroll).
-        s.indicator = indicator || horizontal;
+        // to move it (mouse drags do not scroll); a built-in bar of the
+        // app's (`replaced`) is the mouse's then.
+        s.indicator = indicator || (horizontal && !replaced);
         if !indicator {
             s.live.alpha = 0.0;
         }
@@ -2033,6 +2074,34 @@ mod tests {
         let mut rested = Some(0.0);
         assert!(!commit_due(5000.0, 4900.0, false, true, &mut rested));
         assert_eq!(rested, None);
+    }
+
+    /// A keyboard scroll keeps the view busy while it moves; then only its
+    /// indicator's fade is left, which `nsh test`'s agent does not wait for
+    /// (`Surface::animating`); the spinner and resampled offsets stay busy.
+    #[test]
+    fn only_the_indicators_fade_is_cosmetic() {
+        let gliding = Phase::Animate {
+            from: 0.0,
+            to: 40.0,
+            start: 0.0,
+            duration: KEY_ANIMATION,
+            momentum: false,
+            end: true,
+        };
+        assert_eq!(what_is_left(&gliding, false, true, false), Tick::Busy);
+        assert_eq!(what_is_left(&Phase::Idle, false, true, false), Tick::Fading);
+        assert_eq!(what_is_left(&Phase::Idle, false, false, false), Tick::Done);
+        assert_eq!(what_is_left(&Phase::Idle, true, true, false), Tick::Busy);
+        assert_eq!(what_is_left(&Phase::Idle, false, true, true), Tick::Busy);
+        assert_eq!(
+            what_is_left(&Phase::AwaitMomentum { since: 0.0 }, false, true, false),
+            Tick::Busy
+        );
+        assert_eq!(
+            what_is_left(&Phase::Momentum, false, true, false),
+            Tick::Fading
+        );
     }
 
     #[test]

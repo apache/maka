@@ -73,7 +73,7 @@ export function createNavigation(reactive, dom, environment, animation) {
       props.onCancel?.();
       const flag = { backdropPress: "closeOnBackdropPress", swipe: "closeOnSwipe", cancel: "closeOnEscape" }[reason];
       if (props[flag] === false || closedByUser) return;
-      batch(() => { props.onOpenChange?.(false, reason); closedByUser = true; tick.update(n => n + 1); });
+      batch(() => { props.onOpenChange?.({ open: false, reason }); closedByUser = true; tick.update(n => n + 1); });
     };
     return computed(() => {
       tick();

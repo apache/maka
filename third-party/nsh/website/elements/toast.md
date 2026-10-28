@@ -108,7 +108,7 @@ export function toast(title: string) {
 export function Toaster() {
   return (
     <Overlay class="inset-x-0 bottom-0 items-center p-4" style={{ paddingBottom: safeArea().bottom + 16 }}>
-      <ToastStack placement="bottomCenter" class="w-80" onExpandedChange={expanded.set} onCancel={() => {
+      <ToastStack placement="bottomCenter" class="w-80" onExpandedChange={(e) => expanded.set(e.expanded)} onCancel={() => {
         const newest = shown().filter((t) => t.status !== "ending").at(-1);
         if (newest) { manager.dismiss(newest.id); sync(); }
       }}>
@@ -161,7 +161,7 @@ The stack's children are its toasts, oldest first. From its `placement` edge (`"
 anchors lay out upward), collapsed toasts overlap `collapsedPeek` apart, each further one narrower by
 `collapsedScaleStep`, and only `collapsedVisible` show; expanded, they are a list `expandedGap` apart. Toasts that
 arrive or leave, and expansion, move them with critically damped springs. It is expanded while the pointer is on it
-or a finger is down on it (`onExpandedChange(expanded)`; Rust `ToastStackState`, whose `is_expanded()` reads it), so
+or a finger is down on it (`onExpandedChange({ expanded })`; Rust `ToastStackState`, whose `is_expanded()` reads it), so
 the app pauses the timeouts while the user reads or touches the toasts.
 
 The app places the stack: in an [Overlay](./overlay.md) at the edge, inside the safe area. Its `class` and `style`
@@ -198,5 +198,5 @@ out and asks to be dismissed (`onDismissRequest`), short of it, it goes back. Th
 | `motion` | `.motion(..)` | `ToastMotion` | Sonner's | Its motion tokens. |
 | `placement` | `.placement(..)` | `"topLeft" \| "topCenter" \| "topRight" \| "bottomLeft" \| "bottomCenter" \| "bottomRight" \| "leftCenter" \| "rightCenter"` | `"topRight"` | The edge it lays out from. |
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | It hears Escape and back while it holds toasts. |
-| `onExpandedChange` | `.on_expanded_change(..)`, `.state(..)` | `(expanded: boolean) => void` | none | Interaction expanded or collapsed it. |
+| `onExpandedChange` | `.on_expanded_change(..)`, `.state(..)` | `(e: { expanded: boolean }) => void` | none | Interaction expanded or collapsed it. |
 | `onCancel` | `.on_cancel(..)` | `() => void` | none | Escape or back: dismiss the newest. |

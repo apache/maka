@@ -104,7 +104,7 @@ pub(crate) enum Back {
 #[derive(Debug)]
 pub(crate) enum InputResult {
     CancelTouch(u32),
-    SetStates(NodeId, u8),
+    SetStates(NodeId, u16),
     RetireListCell {
         id: NodeId,
         request: u64,
@@ -266,9 +266,9 @@ struct View {
     /// one selection.
     selectable_view: bool,
     /// The interaction states it tracks (`TrackStates`: pressed, hovered).
-    tracked: u8,
+    tracked: u16,
     /// The interaction states it is in (of those it tracks).
-    states: u8,
+    states: u16,
     /// The values its drags, pinches and rotations drive natively.
     gestures: GestureValues,
     /// When a drag on it activates its JS responder (`panActivation`).
@@ -1856,7 +1856,7 @@ impl Screen {
 
     /// View `id`'s interaction states with `bit` set (or cleared), when it
     /// tracks it and they change.
-    pub(crate) fn set_state(&mut self, id: NodeId, bit: u8, on: bool) -> Option<u8> {
+    pub(crate) fn set_state(&mut self, id: NodeId, bit: u16, on: bool) -> Option<u16> {
         let view = self.nodes.get_mut(&id)?;
         let next = nsh_core::input::next_states(view.tracked, view.states, bit, on)?;
         view.states = next;

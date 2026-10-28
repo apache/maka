@@ -43,7 +43,7 @@ function Curve(props: { phase: Phase; onBezier: (b: Bezier) => void; time: Anima
   return (
     <Canvas
       style={{ height: HEIGHT, borderRadius: 14, backgroundColor: color.inset }}
-      onLayout={(e) => width.set(e.size.width)}
+      onLayout={(e) => width.set(e.bounds.size.width)}
       {...track(
         (x, y, first) => {
           const p = props.phase;
@@ -147,7 +147,7 @@ function Timeline() {
   const x = (at: number) => 10 + (at / end()) * (width() - 20);
   const label = 72;
   return (
-    <View style={{ height: 64 }} onLayout={(e) => width.set(e.size.width)}>
+    <View style={{ height: 64 }} onLayout={(e) => width.set(e.bounds.size.width)}>
       <View style={{ position: "absolute", left: 10, right: 10, top: 31, height: 2, borderRadius: 1, backgroundColor: color.lineStrong }} />
       <Each of={phases()} key={(p) => p.id}>
         {(phase, i) => {

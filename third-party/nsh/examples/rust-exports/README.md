@@ -13,7 +13,7 @@ Their TypeScript declarations, doc comments included, are generated from the Rus
 
 | Export | Rust | TSX |
 |---|---|---|
-| A component | `#[component] fn Gauge` with `#[derive(Props)] GaugeProps` (a required `value`, a defaulted `max` and `step`, an optional `label`, `children`) and `#[derive(Event)] GaugeEvent::Change(f64)` (`native/src/gauge.rs`) | `<Gauge value={spent()} step={25} label="Groceries" onChange={(v) => spent.set(v)}>…</Gauge>` |
+| A component | `#[component] fn Gauge` with `#[derive(Props)] GaugeProps` (a required `value`, a defaulted `max` and `step`, an optional `label`, `children`) and `#[derive(Event)] GaugeEvent::Change(f64)` (`native/src/gauge.rs`) | `<Gauge value={spent()} step={25} label="Groceries" onChange={({ value }) => spent.set(value)}>…</Gauge>` |
 | A module | `#[module] impl Ledger` (`native/src/ledger.rs`): `format` (a plain `fn`), `copy` (taking `cx: &mut ModuleCx`, returning a count), `fetch_rate` (an `async fn`) | `Ledger.format(1234.5)` returns a string at once; `await Ledger.copy(text)` and `await Ledger.fetchRate()` are Promises (an op returning `()` would be a plain call, `void`; one returning `Result<(), E>` a `Promise<void>`) |
 | A class | `#[class] struct Account` and its `#[class] impl` (`native/src/account.rs`) | `new Account("Savings", 120)`, `Account.parse("Checking: 40")` (a static), `account.balance` (a getter), `account.name = "…"` (a setter), `deposit` (`&mut self`), `statement` (`&self`), `transfer(other, 30)` (another instance), `await account.accrue(rate)` (an `async` member), `onChange(listener)` (a `Callback` Rust posts to, also from `accrue`'s task), `dispose()` and `using`; `book`, a `fn` without `pub`, is a helper TS does not see |
 

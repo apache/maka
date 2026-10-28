@@ -8,7 +8,7 @@ export function createKeymap(invoke, reactive, dom, platform, wake) {
   const send = list => call(451, [list.map(e => [e.text, e.id, e.when, e.repeat]), !!platform.appleKeyboard]);
   dom.rootProp("onKeyCommand", id => {
     const entry = entries.find(entry => entry.id === id);
-    if (entry) entry.handler(entry.text);
+    if (entry) entry.handler({ keystroke: entry.text });
   });
   return {
     label(text) { return call(450, [String(text), !!platform.appleKeyboard]); },

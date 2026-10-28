@@ -97,25 +97,42 @@ pub(super) fn values(
 }
 
 /// What a mark of `plot` draws: its points, in the plot's space, the rows
-/// without a value skipped (as `gpui-base`'s shapes skip them).
+/// without a value skipped (as `gpui-base`'s shapes skip them), and for a
+/// band (an [`Area`](super::Area) whose `y0` reads the rows, d3's
+/// `area().y0(accessor)`) the points of its bottom edge, one under each.
 #[derive(Clone, Copy)]
 pub(super) struct Series {
     pub(super) points: Memo<Arc<[Point<Points>]>>,
+    /// The bottom edge's points, one at each of `points`' x; empty without
+    /// a `low` accessor.
+    pub(super) lows: Memo<Arc<[Point<Points>]>>,
     pub(super) ys: Signal<Option<Arc<[f64]>>>,
+    low_values: Signal<Option<Arc<[f64]>>>,
+}
+
+/// A series' edges: its points, and its bottom edge's for a band.
+#[derive(Clone, Default, PartialEq)]
+struct Edges {
+    top: Arc<[Point<Points>]>,
+    bottom: Arc<[Point<Points>]>,
 }
 
 impl Series {
     /// The series of rows `data` (the plot's without), placed along the x
     /// axis by `x` (the plot's position of each row without own rows; a
-    /// row's index without `x`), its values `y` (the plot's `y` without).
+    /// row's index without `x`), its values `y` (the plot's `y` without)
+    /// and, for a band, its bottom edge's `low` (a row without one skipped
+    /// as one without a `y`).
     pub(super) fn new(
         plot: PlotContext,
         data: Prop<Option<Rows>>,
         x: Prop<Option<RowAccessor>>,
         y: Prop<Option<RowAccessor>>,
+        low: impl Fn() -> Option<RowAccessor> + Copy + 'static,
     ) -> Self {
         let rows = move || data.get().unwrap_or_else(|| plot.rows.get());
         let ys = values(rows, move || y.get().or_else(|| plot.y.get()));
+        let low_values = values(rows, low);
         let own_x = values(rows, move || {
             data.with(Option::is_some).then(|| x.get()).flatten()
         });
@@ -126,34 +143,61 @@ impl Series {
             let len = data.with(|rows| rows.as_ref().map_or(0, Rows::len));
             plot.x_map.get().ticks(len, own_x.get().as_deref())
         });
-        let points = computed(move || -> Arc<[Point<Points>]> {
+        let edges = computed(move || -> Edges {
             let (xs, y_map) = (xs.get(), plot.y_map.get());
             let Some(ys) = ys.get() else {
-                return Arc::from([]);
+                return Edges::default();
             };
-            xs.iter()
-                .zip(ys.iter())
-                .filter_map(|(&x, &v)| {
-                    let y = y_map.tick(v)?;
-                    x.is_finite().then(|| point(px(x), px(y)))
-                })
-                .collect()
+            let lows = low_values.get();
+            // A band whose bottom values are still coming draws nothing
+            // yet, rather than a shape down to the plot's bottom edge.
+            if lows.is_none() && low().is_some() {
+                return Edges::default();
+            }
+            let mut top = Vec::with_capacity(ys.len());
+            let mut bottom = Vec::with_capacity(lows.as_ref().map_or(0, |_| ys.len()));
+            for (i, (&x, &v)) in xs.iter().zip(ys.iter()).enumerate() {
+                let Some(y) = y_map.tick(v).filter(|_| x.is_finite()) else {
+                    continue;
+                };
+                if let Some(lows) = &lows {
+                    let Some(y0) = lows.get(i).and_then(|&v| y_map.tick(v)) else {
+                        continue;
+                    };
+                    bottom.push(point(px(x), px(y0)));
+                }
+                top.push(point(px(x), px(y)));
+            }
+            Edges {
+                top: top.into(),
+                bottom: bottom.into(),
+            }
         });
-        Self { points, ys }
+        let points = computed(move || edges.with(|e| e.top.clone()));
+        let lows = computed(move || edges.with(|e| e.bottom.clone()));
+        Self {
+            points,
+            lows,
+            ys,
+            low_values,
+        }
     }
 
-    /// Adds the series to `plot` while the mark lives: its values (and
-    /// `also`) in the y domain, and a hover dot, styled by `dot`.
+    /// Adds the series to `plot` while the mark lives: its values, its
+    /// bottom edge's and `also` in the y domain, and a hover dot on its
+    /// points, styled by `dot`.
     pub(super) fn join(
         &self,
         plot: PlotContext,
         also: impl Fn() -> Option<f64> + 'static,
         dot: HoverDot,
     ) {
-        let ys = self.ys;
+        let (ys, lows) = (self.ys, self.low_values);
         let extent = computed(move || {
             let values = ys.get()?;
-            extent(values.iter().copied().chain(also()))
+            let lows = lows.get();
+            let lows = lows.as_deref().unwrap_or_default();
+            extent(values.iter().chain(lows).copied().chain(also()))
         });
         let points = self.points;
         let (dot_x, dot_y) = (animated_value(0.0), animated_value(0.0));

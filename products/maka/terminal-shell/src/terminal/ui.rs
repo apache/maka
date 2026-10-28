@@ -403,6 +403,9 @@ impl Session {
                 }
                 SurfaceEvent::HintObservation(observation) => control.observe_hint(observation),
                 SurfaceEvent::Scroll(id, offset, applied) => control.scroll(id, offset, applied),
+                SurfaceEvent::InputScroll(id, offset, content, viewport) => {
+                    control.input_scroll(id, offset, content, viewport);
+                }
                 SurfaceEvent::ListCellRetired(id, request, retired) => {
                     control.set_focus_path(self.surface.focus_path());
                     control.retire_list_cell(id, request, retired);
@@ -758,7 +761,7 @@ mod tests {
                 const image = element("image");
                 prop(image, "src", "asset:/image.png");
                 prop(image, "style", { width: 64, height: 64, flexShrink: 0 });
-                prop(image, "onLoad", e => status.set("loaded:" + e.width + "x" + e.height));
+                prop(image, "onLoad", e => status.set("loaded:" + e.size.width + "x" + e.size.height));
                 prop(image, "onError", e => status.set("failed:" + e.message));
                 const label = element("text");
                 insert(label, () => status());
@@ -1217,7 +1220,7 @@ mod tests {
                 prop(input, "accessibilityLabel", "Composer");
                 prop(input, "autoFocus", true);
                 bindProp(input, "value", draft);
-                prop(input, "onChange", text => draft.set(text));
+                prop(input, "onChange", ({ value }) => draft.set(value));
                 append(root, input);
                 return root;
             });
@@ -1433,7 +1436,7 @@ mod tests {
                 prop(input, "style", { height: 16 });
                 prop(input, "accessibilityLabel", "Composer");
                 bindProp(input, "value", draft);
-                prop(input, "onChange", text => draft.set(text));
+                prop(input, "onChange", ({ value }) => draft.set(value));
                 append(root, input);
                 return root;
             });
@@ -1505,7 +1508,7 @@ mod tests {
                 prop(input, "autoFocus", true);
                 prop(input, "style", { height: 16 });
                 bindProp(input, "value", draft);
-                prop(input, "onChange", text => draft.set(text));
+                prop(input, "onChange", ({ value }) => draft.set(value));
                 return input;
             });
             "#,
@@ -1615,7 +1618,7 @@ mod tests {
                 prop(input, "style", { height: 16, flexShrink: 0 });
                 prop(input, "autoFocus", true);
                 bindProp(input, "value", draft);
-                prop(input, "onChange", text => draft.set(text));
+                prop(input, "onChange", ({ value }) => draft.set(value));
                 append(root, input);
                 return root;
             });
@@ -1774,7 +1777,7 @@ mod tests {
                 prop(input, "autoFocus", true);
                 prop(input, "style", { height: 16 });
                 bindProp(input, "value", value);
-                prop(input, "onChange", (text) => value.set(text));
+                prop(input, "onChange", ({ value: text }) => value.set(text));
                 return input;
             });
         "#,

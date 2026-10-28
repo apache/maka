@@ -166,14 +166,14 @@ pub fn pager() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, Scroll, signal, Text, View } from "nsh";
+import { mount, type Point, Scroll, signal, Text, View } from "nsh";
 
 const colors = ["#0969da", "#8250df", "#bf3989", "#1a7f37"];
 
 function Pager() {
   const width = signal(0);
   const page = signal(0);
-  const settle = (e: { x: number }) => page.set(Math.round(e.x / width()));
+  const settle = ({ offset }: { offset: Point }) => page.set(Math.round(offset.x / width()));
   return (
     <View style={{ gap: 8, padding: 16 }}>
       <Scroll
@@ -181,7 +181,7 @@ function Pager() {
         pagingEnabled
         scrollbar={false}
         style={{ height: 160, borderRadius: 12 }}
-        onLayout={(e) => width.set(e.size.width)}
+        onLayout={({ bounds }) => width.set(bounds.size.width)}
         onScrollEnd={settle}
       >
         <View style={{ flexDirection: "row" }}>
@@ -240,13 +240,13 @@ Lists take the same snapping props, which makes them the better choice for a lon
 |---|---|---|---|
 | `onScroll` | `.on_scroll(..)` | `ScrollEvent` | The offset changed. At most once per frame; `scrollEventThrottle` spaces them further. |
 | `scrollEventThrottle` | `.event_throttle(ms)` | `number` | Minimum milliseconds between `onScroll` events. |
-| `onScrollDragStart` | `.on_scroll_drag_start(..)` | `{ x, y }` | The user started dragging. |
-| `onScrollDragEnd` | `.on_scroll_drag_end(..)` | `{ x, y }` | The user lifted the finger. |
-| `onMomentumStart` | `.on_momentum_start(..)` | `{ x, y }` | The glide after a fling started. |
-| `onMomentumEnd` | `.on_momentum_end(..)` | `{ x, y }` | The glide ended (also when a new drag catches it). |
-| `onScrollEnd` | `.on_scroll_end(..)` | `{ x, y }` | A user scroll came to rest: after the glide, or at the end of a drag without one. |
+| `onScrollDragStart` | `.on_scroll_drag_start(..)` | `{ offset }` | The user started dragging. |
+| `onScrollDragEnd` | `.on_scroll_drag_end(..)` | `{ offset }` | The user lifted the finger. |
+| `onMomentumStart` | `.on_momentum_start(..)` | `{ offset }` | The glide after a fling started. |
+| `onMomentumEnd` | `.on_momentum_end(..)` | `{ offset }` | The glide ended (also when a new drag catches it). |
+| `onScrollEnd` | `.on_scroll_end(..)` | `{ offset }` | A user scroll came to rest: after the glide, or at the end of a drag without one. |
 
-`ScrollEvent` carries the offset (`offset`, a `Point`; the same in Rust), the content's size, zoomed (`contentSize`, a `Size`; `content_size`), the viewport (`size`) and `zoomScale` (`zoom_scale`). The other events carry the offset (a `Point<Points>` in Rust).
+`ScrollEvent` carries the offset (`offset`, a `Point`; the same in Rust), the content's size, zoomed (`contentSize`, a `Size`; `content_size`), the viewport (`size`) and `zoomScale` (`zoom_scale`). The other events carry the offset: `{ offset }` with a `Point` in TSX, a `Point<Points>` in Rust.
 
 ```rust tabs
 let at_bottom = signal(false);
@@ -507,10 +507,10 @@ pub fn photo() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Image, mount, Scroll, signal, type YNode } from "nsh";
+import { Image, mount, Scroll, type ScrollRef, signal } from "nsh";
 
 function Photo() {
-  let scroll!: YNode;
+  let scroll!: ScrollRef;
   const scale = signal(1);
   return (
     <Scroll
@@ -552,7 +552,7 @@ view().on_press(move || scroller.scroll_to(point(px(0.0), px(0.0)), true))
 ```
 
 ```tsx tabs
-let scroll!: YNode;
+let scroll!: ScrollRef;
 
 <Scroll ref={scroll} style={{ flex: 1 }}>…</Scroll>
 <View onPress={() => scroll.scrollTo({ y: 0 })}>…</View>

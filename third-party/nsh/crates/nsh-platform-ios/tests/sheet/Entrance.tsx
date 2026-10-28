@@ -37,11 +37,11 @@ function App() {
       <View testID="open-dock" style={{ height: 44 }} onPress={() => dock?.toggleDock("bottom")}><Text>Dock</Text></View>
       <View testID="underlying" style={{ height: 44 }} onPress={() => taps.update((n) => n + 1)}><Text>{`taps:${taps()}`}</Text></View>
       <Sheet open={sheet()} closeOnSwipe={mode() !== "Default"} popupStyle={panelStyle} backdropStyle={backdropStyle}
-        onOpenChange={(next) => sheet.set(next)} onOpen={() => opened.update((n) => n + 1)} onClose={() => closed.update((n) => n + 1)}>
+        onOpenChange={({ open }) => sheet.set(open)} onOpen={() => opened.update((n) => n + 1)} onClose={() => closed.update((n) => n + 1)}>
         <Body asynchronous={mode() === "Async"} close={() => sheet.set(false)} />
       </Sheet>
       <Menu open={menu()} popupStyle={panelStyle} backdropStyle={backdropStyle}
-        onOpenChange={(next) => menu.set(next)} onOpen={() => opened.update((n) => n + 1)} onClose={() => closed.update((n) => n + 1)}>
+        onOpenChange={({ open }) => menu.set(open)} onOpen={() => opened.update((n) => n + 1)} onClose={() => closed.update((n) => n + 1)}>
         <Body close={() => menu.set(false)} />
       </Menu>
       <DockArea ref={(value) => dock = value} compact class="flex-1"

@@ -29,16 +29,16 @@ function App() {
         testID="wifi"
         checked={wifi()}
         checkedStyle={{ backgroundColor: "#00ff00" }}
-        onChange={next => {
+        onChange={({ checked }) => {
           changes.set(changes() + 1);
-          wifi.set(next);
+          wifi.set(checked);
         }}
         {...parts}
       >
         <Text>Wi-Fi</Text>
       </Switch>
       <Text>{`Changes: ${changes()}`}</Text>
-      <Switch testID="lights" checked accessibilityLabel="Lights" onChange={next => asked.set(String(next))} {...parts} />
+      <Switch testID="lights" checked accessibilityLabel="Lights" onChange={({ checked }) => asked.set(String(checked))} {...parts} />
       <Text>{`Asked: ${asked()}`}</Text>
       <Switch
         testID="locked"

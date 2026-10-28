@@ -1,4 +1,4 @@
-import { effect, type GestureResponderEvent, type JSX, signal, Text, View, type YNode } from "nsh";
+import { effect, type GestureResponderEvent, type JSX, signal, Text, View, type ViewRef } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
 import { Button, Tab, Tabs } from "nsh/base";
 import { Icon, type IconName } from "./icons";
@@ -17,7 +17,7 @@ export function track(
   end?: () => void,
   accept?: (x: number, y: number) => boolean,
 ) {
-  let node: YNode | undefined;
+  let node: ViewRef | undefined;
   // Touches give page positions; the view's own comes from measuring it
   // when a gesture starts (the page cannot scroll while the view holds the
   // touch). Moves before the answer only update `at`.
@@ -39,7 +39,7 @@ export function track(
   };
   const wants = (e: GestureResponderEvent) => accept?.(e.locationX, e.locationY) ?? true;
   return {
-    ref: (n: YNode) => (node = n),
+    ref: (n: ViewRef) => (node = n),
     onStartShouldSetResponder: wants,
     onMoveShouldSetResponder: wants,
     onResponderGrant: (e: GestureResponderEvent) => {
@@ -399,7 +399,7 @@ export function Slider(props: {
   const low = () => props.value < props.floor;
   return (
     <View
-      onLayout={(e) => width.set(e.size.width)}
+      onLayout={(e) => width.set(e.bounds.size.width)}
       {...track((x) => pick(x))}
       role="adjustable"
       accessibilityLabel={props.label}

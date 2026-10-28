@@ -20,7 +20,7 @@
 //! A session's transferable geometry proxy; its payload stays with the view.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     marker::PhantomData,
     rc::Rc,
@@ -34,15 +34,19 @@ use std::{
 use nsh_core::prelude::*;
 
 use super::{
+    controller::{PageOffset, Tree},
     geometry::{Geometry, Hit},
     session::{EditorSession, SubscriptionId, ViewGeometry},
 };
 use crate::rich_editor::state::{Affinity, EditorState};
 
 #[derive(Clone)]
-struct LocalGeometry {
-    geo: Rc<RefCell<Geometry>>,
-    state: Rc<RefCell<EditorState>>,
+pub(super) struct LocalGeometry {
+    pub(super) geo: Rc<RefCell<Geometry>>,
+    pub(super) state: Rc<RefCell<EditorState>>,
+    pub(super) tree: Rc<RefCell<Tree>>,
+    pub(super) pointer: Rc<Cell<Option<PageOffset>>>,
+    pub(super) scrolled: Rc<Cell<Points>>,
 }
 
 thread_local! {
@@ -75,10 +79,7 @@ const _: fn() = || {
 };
 
 /// The lease belongs to the view's cleanup, never to the shared session.
-pub(super) fn register_geometry(
-    geo: Rc<RefCell<Geometry>>,
-    state: Rc<RefCell<EditorState>>,
-) -> (Arc<dyn ViewGeometry>, GeometryLease) {
+pub(super) fn register_geometry(local: LocalGeometry) -> (Arc<dyn ViewGeometry>, GeometryLease) {
     let id = NEXT_ID
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .expect("RichEditor geometry IDs exhausted");
@@ -88,9 +89,7 @@ pub(super) fn register_geometry(
         _thread: PhantomData,
     };
     GEOMETRIES.with(|entries| {
-        entries
-            .borrow_mut()
-            .insert(id, LocalGeometry { geo, state });
+        entries.borrow_mut().insert(id, local);
     });
     (
         Arc::new(GeometryHandle {
@@ -129,6 +128,27 @@ impl GeometryHandle {
 }
 
 impl ViewGeometry for GeometryHandle {
+    fn page_shift(&self) -> Option<Point<Points>> {
+        self.with(|local| {
+            let (shift, scroll) = local.pointer.get()?;
+            Some(Point::new(
+                shift.x,
+                shift.y + (local.scrolled.get() - scroll),
+            ))
+        })
+    }
+
+    fn node_rect(&self, pos: usize) -> Option<Bounds<Points>> {
+        self.with(|local| {
+            let tree = local.tree.borrow();
+            let geo = local.geo.borrow();
+            let block = tree.children.values().flatten().find(|b| b.pos == pos)?;
+            let origin = geo.origin(block.id)?;
+            let (_, frame) = geo.frames.get(&block.id)?;
+            Some(Bounds::new(origin, frame.size))
+        })
+    }
+
     fn coords_at_pos(&self, pos: usize) -> Option<Bounds<Points>> {
         self.with(|local| local.geo.borrow().caret_rect(pos, Affinity::Downstream))
     }
@@ -177,8 +197,18 @@ mod tests {
             .unwrap();
         let state =
             EditorState::create(EditorStateConfig::new(schema).doc(doc).plugins(plugins)).unwrap();
+        let mut tree = Tree::default();
         let mut geo = Geometry::default();
         for (id, pos, y) in [(1, 1, 0.0), (2, 3, 30.0)] {
+            tree.children
+                .entry(0)
+                .or_default()
+                .push(super::super::controller::BlockItem {
+                    id,
+                    node: state.doc().clone(),
+                    pos: pos - 1,
+                    parent: 0,
+                });
             geo.frames.insert(
                 id,
                 (
@@ -198,6 +228,9 @@ mod tests {
         LocalGeometry {
             geo: Rc::new(RefCell::new(geo)),
             state: Rc::new(RefCell::new(state)),
+            tree: Rc::new(RefCell::new(tree)),
+            pointer: Rc::new(Cell::new(None)),
+            scrolled: Rc::new(Cell::new(px(0.0))),
         }
     }
 
@@ -208,14 +241,29 @@ mod tests {
     #[test]
     fn geometry_queries_read_live_owner_values_only() {
         let local = fixture(10.0, vec![]);
-        let (proxy, _lease) = register_geometry(local.geo.clone(), local.state.clone());
+        let (proxy, _lease) = register_geometry(local.clone());
         assert_eq!(proxy.coords_at_pos(1), Some(caret(10.0, 0.0)));
         assert_eq!(proxy.pos_at_coords(Point::new(px(10.0), px(1.0))), Some(1));
         assert_eq!(proxy.selection_rect(), Some(caret(10.0, 0.0)));
+        assert_eq!(
+            proxy.node_rect(0),
+            Some(Bounds::new(
+                Point::new(px(10.0), px(0.0)),
+                Size::new(px(100.0), px(12.0))
+            ))
+        );
+        assert_eq!(proxy.node_rect(99), None);
 
+        local
+            .pointer
+            .set(Some((Point::new(px(7.0), px(11.0)), px(3.0))));
+        local.scrolled.set(px(5.0));
+        assert_eq!(proxy.page_shift(), Some(Point::new(px(7.0), px(13.0))));
         let foreign = proxy.clone();
         thread::spawn(move || {
             assert_eq!(foreign.coords_at_pos(1), None);
+            assert_eq!(foreign.page_shift(), None);
+            assert_eq!(foreign.node_rect(0), None);
             assert_eq!(foreign.pos_at_coords(Point::default()), None);
             assert_eq!(foreign.selection_rect(), None);
         })
@@ -238,6 +286,13 @@ mod tests {
         assert_eq!(proxy.coords_at_pos(3), Some(caret(50.0, 30.0)));
         assert_eq!(proxy.pos_at_coords(Point::new(px(50.0), px(31.0))), Some(3));
         assert_eq!(proxy.selection_rect(), Some(caret(50.0, 30.0)));
+        assert_eq!(
+            proxy.node_rect(2),
+            Some(Bounds::new(
+                Point::new(px(50.0), px(30.0)),
+                Size::new(px(100.0), px(12.0))
+            ))
+        );
     }
 
     struct DropProbe {
@@ -261,7 +316,7 @@ mod tests {
     #[test]
     fn foreign_unsubscribe_and_drop_leave_payload_destruction_to_the_owner() {
         let other = fixture(90.0, vec![]);
-        let (other_proxy, _other_lease) = register_geometry(other.geo, other.state);
+        let (other_proxy, _other_lease) = register_geometry(other);
         let observed = Arc::new(Mutex::new(Vec::new()));
         let local = fixture(
             10.0,
@@ -273,7 +328,7 @@ mod tests {
         let weak_geo = Rc::downgrade(&local.geo);
         let weak_state = Rc::downgrade(&local.state);
         let session = EditorSession::new(local.state.borrow().clone(), NodeViews::new());
-        let (proxy, lease) = register_geometry(local.geo, local.state);
+        let (proxy, lease) = register_geometry(local);
         let id = session.attach_geometry(proxy);
         thread::spawn(move || {
             assert_eq!(session.coords_at_pos(1), None);
@@ -297,11 +352,11 @@ mod tests {
     fn retired_proxies_do_not_alias_replacements_or_change_view_order() {
         let first = fixture(10.0, vec![]);
         let session = EditorSession::new(first.state.borrow().clone(), NodeViews::new());
-        let (first_proxy, first_lease) = register_geometry(first.geo, first.state);
+        let (first_proxy, first_lease) = register_geometry(first);
         session.attach_geometry(first_proxy.clone());
 
         let second = fixture(20.0, vec![]);
-        let (second_proxy, second_lease) = register_geometry(second.geo, second.state);
+        let (second_proxy, second_lease) = register_geometry(second);
         let second_id = session.attach_geometry(second_proxy);
         assert_eq!(session.coords_at_pos(1), Some(caret(20.0, 0.0)));
         let foreign = session.clone();
@@ -317,8 +372,7 @@ mod tests {
         assert_eq!(session.coords_at_pos(1), None);
 
         let replacement = fixture(30.0, vec![]);
-        let (replacement_proxy, replacement_lease) =
-            register_geometry(replacement.geo, replacement.state);
+        let (replacement_proxy, replacement_lease) = register_geometry(replacement);
         session.attach_geometry(replacement_proxy);
         assert_eq!(session.coords_at_pos(1), Some(caret(30.0, 0.0)));
         assert_eq!(first_proxy.coords_at_pos(1), None);
@@ -348,7 +402,7 @@ mod tests {
     fn retirement_reveals_the_previous_view_before_payload_destructors_run() {
         let first = fixture(10.0, vec![]);
         let session = EditorSession::new(first.state.borrow().clone(), NodeViews::new());
-        let (first_proxy, _first_lease) = register_geometry(first.geo, first.state);
+        let (first_proxy, _first_lease) = register_geometry(first);
         session.attach_geometry(first_proxy);
 
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -359,7 +413,7 @@ mod tests {
                 observed: observed.clone(),
             })],
         );
-        let (second_proxy, second_lease) = register_geometry(second.geo, second.state);
+        let (second_proxy, second_lease) = register_geometry(second);
         let id = session.attach_geometry(second_proxy);
         assert_eq!(session.selection_rect(), Some(caret(20.0, 0.0)));
 
@@ -375,7 +429,7 @@ mod tests {
         let weak_state = Rc::downgrade(&local.state);
         let mut held = None;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proxy, _lease) = register_geometry(local.geo, local.state);
+            let (proxy, _lease) = register_geometry(local);
             held = Some(proxy);
             panic!("exit before registering component cleanup");
         }));

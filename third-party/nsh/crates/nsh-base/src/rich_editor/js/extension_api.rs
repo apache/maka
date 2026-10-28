@@ -740,6 +740,11 @@ extension_classes! {
     TrailingNode => "trailingNode", "Keeps a node (the option `node`, the default block by default) at the document's end.";
     Typography => "typography", "Typographic replacements as you type (`--` to an em dash, quotes, arrows, ...), each turned off with `false` or replaced with a string.";
     ListKeymap => "listKeymap", "Tiptap's list keymap: Backspace and Delete at list items' edges join and lift them.";
+    TableKit => "tableKit", "Tiptap's TableKit: tables (`table`), their rows (`tableRow`), header cells (`tableHeader`) and cells (`tableCell`). `TableKit.configure({ table: { resizable: false } })` configures one, `{ tableHeader: false }` leaves one out. Not part of `StarterKit`.";
+    RichTable => "table", "Tables (`table`, Tiptap's `Table`; options `HTMLAttributes`, `resizable`, `cellMinWidth`, `lastColumnResizable`, `allowTableNodeSelection`): Tab and Shift-Tab between cells (Tab in the last cell adds a row), arrows and Shift-arrows across cells, cell selections; `insertTable`, `addColumnBefore`, `addColumnAfter`, `deleteColumn`, `addRowBefore`, `addRowAfter`, `deleteRow`, `deleteTable`, `mergeCells`, `splitCell`, `mergeOrSplit`, `toggleHeaderColumn`, `toggleHeaderRow`, `toggleHeaderCell`, `setCellAttribute`, `goToNextCell`, `goToPreviousCell`, `fixTables`, `setCellSelection`, `moveTableRow`, `moveTableColumn`, `setColumnWidth`, `setRowHeight`.";
+    RichTableRow => "tableRow", "Table rows (`tableRow`, Tiptap's `TableRow`), with a `height`.";
+    RichTableHeader => "tableHeader", "Table header cells (`tableHeader`, Tiptap's `TableHeader`), with `colspan`, `rowspan` and `colwidth`.";
+    RichTableCell => "tableCell", "Table cells (`tableCell`, Tiptap's `TableCell`), with `colspan`, `rowspan` and `colwidth`.";
 }
 
 // --- The functions -------------------------------------------------------------------

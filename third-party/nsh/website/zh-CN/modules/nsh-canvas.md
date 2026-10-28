@@ -18,7 +18,7 @@ import { Canvas, CanvasGradient, CanvasRenderingContext2D, Path2D } from "nsh";
 ## Canvas
 
 ```ts
-function Canvas(props: CanvasProps): YNode;
+function Canvas(props: CanvasProps): JSX.Element;
 
 interface CanvasProps extends ViewProps {
   draw: (cx: CanvasRenderingContext2D, size: CanvasSize) => void;

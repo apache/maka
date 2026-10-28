@@ -320,6 +320,17 @@ impl ModuleCx {
         answer
     }
 
+    /// Draws the views' bars with the built-in bar `source` makes of
+    /// `theme`, or with the platform's indicator
+    /// ([`set_builtin_scrollbars`](super::set_builtin_scrollbars)).
+    pub fn set_builtin_scrollbars(
+        &mut self,
+        source: super::ScrollbarSource,
+        theme: Option<super::AnyValue>,
+    ) {
+        self.actions.push(Action::BuiltInScrollbars(source, theme));
+    }
+
     /// Unfocuses the focused input, hiding the software keyboard.
     pub fn dismiss_keyboard(&mut self) {
         self.actions.push(Action::Command(ROOT_ID, Command::Blur));

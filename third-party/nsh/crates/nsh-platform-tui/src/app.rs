@@ -641,6 +641,9 @@ impl AppView {
                 SurfaceEvent::Event(id, kind, payload) => control.dispatch_event(id, kind, payload),
                 SurfaceEvent::HintObservation(observation) => control.observe_hint(observation),
                 SurfaceEvent::Scroll(id, offset, count) => control.scroll(id, offset, count),
+                SurfaceEvent::InputScroll(id, offset, content, viewport) => {
+                    control.input_scroll(id, offset, content, viewport);
+                }
                 SurfaceEvent::ListCellRetired(id, request, retired) => {
                     control.set_focus_path(self.surface.focus_path());
                     control.retire_list_cell(id, request, retired);

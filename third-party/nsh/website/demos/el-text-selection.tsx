@@ -34,7 +34,7 @@ function App() {
         <Input
           multiline
           value={pasted()}
-          onChange={(text) => pasted.set(text)}
+          onChange={({ value }) => pasted.set(value)}
           placeholder="Paste here"
           {...field({ style: { height: 110 } })}
         />
