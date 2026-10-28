@@ -136,8 +136,11 @@ impl ModelFailureCause {
 
 #[derive(Clone, Debug, Serialize, Deserialize, thiserror::Error)]
 pub enum ModelError {
-    #[error("model HTTP request failed (status {status})")]
-    Http { status: u16 },
+    #[error("model HTTP request failed (status {status}){detail}", detail = message.as_ref().map(|message| format!(": {message}")).unwrap_or_default())]
+    Http {
+        status: u16,
+        message: Option<String>,
+    },
     #[error("model request cancelled")]
     Cancelled,
     #[error("model transport physical cleanup is unconfirmed")]
@@ -159,7 +162,7 @@ impl ModelError {
     pub fn failure_cause(&self) -> Option<ModelFailureCause> {
         Some(match self {
             Self::Cancelled => return None,
-            Self::Http { status } => ModelFailureCause::Http { status: *status },
+            Self::Http { status, .. } => ModelFailureCause::Http { status: *status },
             Self::TimedOut => ModelFailureCause::TimedOut,
             Self::ContextOverflow { .. } => ModelFailureCause::ContextOverflow,
             Self::Provider(failure) => ModelFailureCause::Provider {

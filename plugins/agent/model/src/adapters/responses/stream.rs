@@ -53,9 +53,9 @@ pub async fn stream(
     let lane = lane.map(|lane| lane.transport);
     run(request, skip, context, lane, transport).await
 }
-fn http_failure(status: u16) -> ModelError {
+fn http_failure(status: u16, message: Option<String>) -> ModelError {
     match (ModelFailureCause::Http { status }).validate() {
-        Ok(()) => ModelError::Http { status },
+        Ok(()) => ModelError::Http { status, message },
         Err(error) => error,
     }
 }
@@ -270,7 +270,7 @@ async fn read_response(
                 true,
                 retry_after,
             )),
-            None if !(200..300).contains(&status) => http_failure(status),
+            None if !(200..300).contains(&status) => http_failure(status, None),
             None => ModelError::Adapter(format!("Responses HTTP {status}: error body interrupted")),
         };
         let mut bytes = Vec::new();
@@ -303,7 +303,10 @@ async fn read_response(
         if let Some(reason) = reason {
             return Err(ModelError::Provider(ProviderFailure::new(
                 reason,
-                format!("Responses HTTP {status}"),
+                value["error"]["message"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("Responses HTTP {status}")),
                 true,
                 retry_after,
             )));
@@ -318,7 +321,10 @@ async fn read_response(
                 "Responses HTTP {status} returned {content_type}, expected text/event-stream: {message}"
             )));
         }
-        return Err(http_failure(status));
+        return Err(http_failure(
+            status,
+            value["error"]["message"].as_str().map(str::to_owned),
+        ));
     }
     let mut sse = maka_provider_protocol::responses::sse::Sse::default();
     let mut received_event = false;

@@ -872,7 +872,7 @@ async fn error_body_deadlines_and_network_loss_keep_distinct_causes() {
                     assert!(matches!(error, ModelError::TimedOut), "headers must not hide the actual deadline: {error:?}");
                 } else {
                     match (status, error) {
-                        (400 | 401, ModelError::Http { status: actual }) => assert_eq!(actual, status),
+                        (400 | 401, ModelError::Http { status: actual, .. }) => assert_eq!(actual, status),
                         (429 | 503, ModelError::Provider(failure)) => assert_eq!(failure.reason(), if status == 429 { ProviderFailureReason::RateLimit } else { ProviderFailureReason::ProviderUnavailable }),
                         (_, error) => panic!("network body loss discarded status evidence: {error:?}"),
                     }

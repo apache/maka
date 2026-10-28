@@ -109,7 +109,7 @@ pub struct Citation {
 }
 #[derive(Debug, Clone)]
 pub struct ProviderError {
-    pub message: String,
+    pub message: Option<String>,
     pub kind: Option<String>,
     pub code: Option<Value>,
     pub status: Option<u16>,
