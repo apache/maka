@@ -1343,11 +1343,11 @@ export const conversationMessages = {
     '正在保存沙箱设置…',
     '正在儲存沙箱設定…',
   ],
-  'Sandbox off': ['Sandbox off', '关闭沙箱', '關閉沙箱'],
+  'Sandbox off': ['Sandbox off', '沙箱已关闭', '沙箱已關閉'],
   'Full access · Sandbox off': [
     'Full access · Sandbox off',
-    '完全访问 · 关闭沙箱',
-    '完整存取 · 關閉沙箱',
+    '完全访问 · 沙箱已关闭',
+    '完整存取 · 沙箱已關閉',
   ],
   'Read files without changing the workspace.': [
     'Read files without changing the workspace.',
