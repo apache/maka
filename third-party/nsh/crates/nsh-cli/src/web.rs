@@ -465,8 +465,8 @@ fn url_path(path: &str) -> String {
 }
 
 /// When the page fetches each font (`fonts`, paths): those only chunks
-/// register (`font("asset:/<path>")` in their code, as the bundler writes
-/// font imports) come with the chunk that needs them, by chunk id; the
+/// register (their logical asset path occurs in the compiled import) come
+/// with the chunk that needs them, by chunk id; the
 /// others (the entry's, the UI sets', which the engine registers as it
 /// starts) before the app starts. Fonts are read synchronously, so each
 /// must be there before the code registering it runs.
@@ -478,10 +478,9 @@ fn font_loads(
     let mut eager = Vec::new();
     let mut by_chunk = serde_json::Map::new();
     for font in fonts {
-        let uri = format!("asset:/{font}");
         let users: Vec<&crate::build::BuiltChunk> =
-            chunks.iter().filter(|c| c.code.contains(&uri)).collect();
-        if entry.contains(&uri) || users.is_empty() {
+            chunks.iter().filter(|c| c.code.contains(font)).collect();
+        if entry.contains(font) || users.is_empty() {
             eager.push(font.clone());
             continue;
         }
@@ -1151,11 +1150,18 @@ mod tests {
         let chunks = [
             chunk(
                 "Text.js",
-                "font(`asset:/b.ttf`, `B`); font(`asset:/a.ttf`, `A`)",
+                "font(assetUrl(`b.ttf`, import.meta.assetBase), `B`); font(assetUrl(`a.ttf`, import.meta.assetBase), `A`)",
             ),
-            chunk("Other.js", "font(`asset:/b.ttf`, `B`)"),
+            chunk(
+                "Other.js",
+                "font(assetUrl(`b.ttf`, import.meta.assetBase), `B`)",
+            ),
         ];
-        let (eager, by_chunk) = font_loads(&fonts, "font(`asset:/a.ttf`, `A`)", &chunks);
+        let (eager, by_chunk) = font_loads(
+            &fonts,
+            "font(assetUrl(`a.ttf`, import.meta.assetBase), `A`)",
+            &chunks,
+        );
         // The entry's, and the UI set's (which no code names), first.
         assert_eq!(eager, ["a.ttf", "@ui/c.ttf"]);
         assert_eq!(

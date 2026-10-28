@@ -98,9 +98,9 @@ pub(in crate::owner::tests) fn generate(
 }
 
 async fn upload(f: &Fixture, session: &str, picture: &mut Picture) -> Value {
-    let snapshot = maka_ui_runtime::file::read_selected(
+    let snapshot = maka_ui_support::file::read_selected(
         &f._dir.path().join(&picture.name),
-        &maka_ui_runtime::budget::NativeBudget::default(),
+        &maka_ui_support::budget::NativeBudget::default(),
     )
     .unwrap();
     let client = f.app.client();

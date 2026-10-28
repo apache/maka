@@ -109,7 +109,7 @@ pub(super) fn spawn(
                 }
             };
             let wake = driver.clone();
-            session.engine.set_wake(Arc::new(move || {
+            session.set_wake(Arc::new(move || {
                 pending.store(true, Ordering::Release);
                 wake.unpark();
             }));
@@ -133,7 +133,10 @@ pub(super) fn spawn(
 }
 
 struct Session {
-    engine: LocalEngine<TerminalTextEngine>,
+    engine: Option<LocalEngine<TerminalTextEngine>>,
+    config: EngineConfig,
+    reloading: Option<tokio::sync::mpsc::UnboundedReceiver<maka_workbench::reload::Request>>,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
     host: nsh_engine::HostChannel,
     surface: Surface,
     environment: Environment,
@@ -146,6 +149,7 @@ struct Session {
     deadline: Option<Instant>,
     frame_requested: bool,
     last_sent_focus_path: Option<Vec<nsh_core::NodeId>>,
+    image_protocol: Option<ImageProtocol>,
 }
 
 impl Session {
@@ -162,15 +166,20 @@ impl Session {
         surface.set_access(access);
         surface.set_host_services_enabled(true);
         config.environment.fallback_key_bindings = true;
-        let assets = config
-            .assets
-            .get_or_insert_with(|| Arc::new(maka_workbench::ApplicationAssets));
-        surface.set_assets(Some(assets.clone()));
+        surface.set_assets(config.assets.clone());
         let sink = Sink::default();
         let environment = config.environment;
         let host = config.host.clone();
-        let engine = LocalEngine::start(config, TerminalTextEngine::new(metrics), sink.clone())
-            .ok_or("NSH UI engine failed to start")?;
+        let reloading = config
+            .context
+            .get::<maka_workbench::reload::UiReload>()
+            .map(|reload| reload.take_requests());
+        let engine = LocalEngine::start(
+            config.clone(),
+            TerminalTextEngine::new(metrics),
+            sink.clone(),
+        )
+        .ok_or("NSH UI engine failed to start")?;
         let terminal = Terminal::with_options(
             CrosstermBackend::new(FrameWriter::default()),
             TerminalOptions {
@@ -179,7 +188,10 @@ impl Session {
         )
         .map_err(|error| error.to_string())?;
         Ok(Self {
-            engine,
+            engine: Some(engine),
+            config,
+            reloading,
+            wake: None,
             host,
             surface,
             environment,
@@ -193,7 +205,86 @@ impl Session {
             deadline: Some(Instant::now()),
             frame_requested: false,
             last_sent_focus_path: None,
+            image_protocol: None,
         })
+    }
+
+    fn engine(&self) -> &LocalEngine<TerminalTextEngine> {
+        self.engine.as_ref().expect("the UI engine is running")
+    }
+
+    fn engine_mut(&mut self) -> &mut LocalEngine<TerminalTextEngine> {
+        self.engine.as_mut().expect("the UI engine is running")
+    }
+
+    fn set_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
+        self.engine_mut().set_wake(wake.clone());
+        self.wake = Some(wake);
+    }
+
+    fn reload_requests(&mut self) -> Result<bool, String> {
+        let mut changed = false;
+        while let Some(request) = self
+            .reloading
+            .as_mut()
+            .and_then(|requests| requests.try_recv().ok())
+        {
+            match request {
+                maka_workbench::reload::Request::Pause(ready) => {
+                    self.surface.set_input_paused(true);
+                    self.engine()
+                        .control()
+                        .advance_clock(std::time::Duration::ZERO, || {});
+                    self.deadline = self.engine_mut().pump();
+                    changed |= self.apply_commits()?;
+                    self.engine()
+                        .control()
+                        .advance_clock(std::time::Duration::ZERO, move || {
+                            let _ = ready.send(Ok(()));
+                        });
+                    self.deadline = self.engine_mut().pump();
+                    changed |= self.apply_commits()?;
+                }
+                maka_workbench::reload::Request::Resume => self.surface.set_input_paused(false),
+                maka_workbench::reload::Request::Reload => {
+                    self.reload()?;
+                    changed = true;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    fn reload(&mut self) -> Result<(), String> {
+        let mut config = self.config.clone();
+        config.viewport = self.surface.viewport();
+        config.environment = self.environment;
+        let metrics = self.surface.metrics();
+        let sink = Sink::default();
+        let mut surface = Surface::new(self.area.width, self.area.height, metrics);
+        surface.set_access(match &config.app {
+            nsh_engine::App::Js(bundle) => bundle.policy.access(),
+            nsh_engine::App::Rust(_) => nsh_engine::Policy::default().access(),
+        });
+        surface.set_host_services_enabled(true);
+        surface.set_assets(config.assets.clone());
+        surface.set_image_protocol(self.image_protocol);
+        // Detach the old VM before another attaches to the same host channel.
+        drop(self.engine.take());
+        let mut engine = LocalEngine::start(config, TerminalTextEngine::new(metrics), sink.clone())
+            .ok_or("NSH UI engine failed to reload")?;
+        if let Some(wake) = &self.wake {
+            engine.set_wake(wake.clone());
+        }
+        self.engine = Some(engine);
+        self.surface = surface;
+        self.sink = sink;
+        self.started = Instant::now();
+        self.last_sent_focus_path = None;
+        self.frame_requested = true;
+        self.deadline = Some(Instant::now());
+        self.dirty = true;
+        Ok(())
     }
 
     fn initial_frame(&mut self) -> Result<Frame, String> {
@@ -210,11 +301,12 @@ impl Session {
         }
         if let Some((columns, rows)) = command.resize {
             self.surface.set_image_protocol(None);
+            self.image_protocol = None;
             self.area = viewport(columns, rows)?;
             self.surface.resize(self.area.width, self.area.height);
             self.sync_focus_path();
             self.environment.window = self.surface.viewport();
-            let control = self.engine.control();
+            let control = self.engine().control();
             control.resize(self.environment.window);
             control.set_environment(self.environment);
             // The supplied area is authoritative. Ratatui's resize path queries
@@ -240,6 +332,7 @@ impl Session {
                 return Err("this shell only negotiates stateless Sixel images".into());
             }
             self.surface.set_image_protocol(Some(protocol));
+            self.image_protocol = Some(protocol);
             changed = true;
         }
         for event in command.inputs {
@@ -261,13 +354,15 @@ impl Session {
             self.forward_events()?;
             // The next physical event sees the ordinary native tree after
             // every callback from this event has reached the application.
-            self.deadline = self.engine.pump();
+            self.deadline = self.engine_mut().pump();
+            changed |= self.reload_requests()?;
             changed |= self.apply_commits()?;
         }
         if command.draw {
             self.begin_frame();
         }
-        self.deadline = self.engine.pump();
+        self.deadline = self.engine_mut().pump();
+        changed |= self.reload_requests()?;
         changed |= self.apply_commits()?;
         changed |= self.surface.tick(self.started.elapsed().as_secs_f64());
         self.forward_events()?;
@@ -289,7 +384,7 @@ impl Session {
         // Paced List overscan and animation callbacks advance once per draw,
         // independently of how often input or engine work needs pumping.
         if std::mem::take(&mut self.frame_requested) {
-            self.engine.control().frame();
+            self.engine().control().frame();
         }
     }
 
@@ -300,7 +395,7 @@ impl Session {
 
     fn dispatch_events(&mut self, events: Vec<SurfaceEvent>) -> Result<(), String> {
         self.sync_focus_path();
-        let control = self.engine.control();
+        let control = self.engine().control();
         for event in events {
             match event {
                 SurfaceEvent::Event(id, event, payload) => {
@@ -346,7 +441,7 @@ impl Session {
     fn sync_focus_path(&mut self) {
         let path = self.surface.focus_path();
         if self.last_sent_focus_path.as_ref() != Some(&path) {
-            self.engine.control().set_focus_path(path.clone());
+            self.engine().control().set_focus_path(path.clone());
             self.last_sent_focus_path = Some(path);
         }
     }
@@ -423,7 +518,7 @@ impl Session {
         Frame {
             bytes,
             quit: self.surface.should_quit(),
-            deadline: if self.engine.needs_pump() {
+            deadline: if self.engine().needs_pump() {
                 Some(Instant::now())
             } else {
                 self.deadline
@@ -591,7 +686,7 @@ mod tests {
                 });
             }
             let mut frame = session.advance(command([])).unwrap();
-            while session.engine.needs_pump() {
+            while session.engine().needs_pump() {
                 assert!(Instant::now() < deadline, "native focus never settled");
                 frame = session.advance(command([])).unwrap();
             }
@@ -641,14 +736,19 @@ mod tests {
     }
 
     #[test]
-    fn packaged_images_load_and_paint_through_the_production_session() {
-        use nsh_engine::Assets as _;
-
-        assert_eq!(
-            maka_workbench::ApplicationAssets.read("asset:/missing.png"),
-            Err("Unknown bundled asset: asset:/missing.png".into())
-        );
-        let mut session = Session::new(config(
+    fn images_load_and_paint_through_the_production_session() {
+        struct ImageAssets;
+        impl nsh_engine::Assets for ImageAssets {
+            fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
+                match uri {
+                    "asset:/image.png" => {
+                        Ok(include_bytes!("../../../workbench/app/assets/maka.png").to_vec())
+                    }
+                    _ => Err(format!("Unknown test image: {uri}")),
+                }
+            }
+        }
+        let mut options = config(
             r#"
             import { mount, signal } from "nsh";
             import { element, prop, insert, append } from "nsh:rt";
@@ -656,7 +756,7 @@ mod tests {
             mount(() => {
                 const root = element("view");
                 const image = element("image");
-                prop(image, "src", "asset:/assets/maka.png");
+                prop(image, "src", "asset:/image.png");
                 prop(image, "style", { width: 64, height: 64, flexShrink: 0 });
                 prop(image, "onLoad", e => status.set("loaded:" + e.width + "x" + e.height));
                 prop(image, "onError", e => status.set("failed:" + e.message));
@@ -667,8 +767,9 @@ mod tests {
                 return root;
             });
         "#,
-        ))
-        .unwrap();
+        );
+        options.assets = Some(Arc::new(ImageAssets));
+        let mut session = Session::new(options).unwrap();
         let mut bytes = session.initial_frame().unwrap().bytes.unwrap_or_default();
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -689,7 +790,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "packaged image did not load:\n{screen}"
+                "fixture image did not load:\n{screen}"
             );
             thread::sleep(std::time::Duration::from_millis(1));
         }

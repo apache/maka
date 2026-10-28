@@ -17,13 +17,10 @@
  * under the License.
  */
 
-//! Build a frozen dirty generation without publishing intermediate tree roots.
-//!
-//! Dirty rows hold groups alive. Their Cartesian links and the traversal stack
-//! live on disk, so a pathological treap height cannot exhaust process memory.
-//! Each owner job performs a fixed number of steps; dropping its caller leaves
-//! all temporary ownership with the original build's bounded retirement path.
+//! Bounded bulk merge with an owner-local execution frontier.
+//! Only final dirty routes and immutable changed nodes are written to SQLite.
 use super::*;
+use runtime::{Generation, InFlight};
 
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
@@ -31,7 +28,7 @@ pub(super) enum Kind {
     Wire,
 }
 impl Kind {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Self::Logical => "build",
             Self::Wire => "wire_view",
@@ -56,24 +53,33 @@ impl Kind {
         }
     }
 }
-#[derive(Default, Serialize, Deserialize)]
-struct State {
+#[derive(Default, Clone)]
+struct Progress {
     cursor: Option<i64>,
-    top: Option<i64>,
-    root: Option<i64>,
     pending: Option<i64>,
-    popped: Option<i64>,
+    carry: Option<i64>,
+    root: Option<i64>,
+    scanned: bool,
     merging: bool,
     ready: bool,
-    depth: i64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Default)]
+pub(super) struct State {
+    progress: Progress,
+    cart: Vec<Cart>,
+    frames: Vec<Frame>,
+}
+struct Cart {
+    sequence: i64,
+    left: Option<i64>,
+}
+#[derive(Clone)]
 struct Span {
     root: Option<String>,
     low: i64,
     high: i64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 struct Frame {
     low: i64,
     high: i64,
@@ -82,6 +88,8 @@ struct Frame {
     phase: u8,
     sequence: i64,
     content: String,
+    left: Option<String>,
+    right: Option<String>,
 }
 impl Frame {
     fn new(low: i64, high: i64, base: Span, dirty: Option<i64>) -> Self {
@@ -93,14 +101,62 @@ impl Frame {
             phase: 0,
             sequence: 0,
             content: String::new(),
+            left: None,
+            right: None,
         }
+    }
+}
+enum Undo {
+    CartPush,
+    CartPop(Cart),
+    FramePush,
+    FramePop(Frame),
+    FrameReplace(Frame),
+}
+impl State {
+    fn push_cart(&mut self, value: Cart, undo: &mut Vec<Undo>) {
+        self.cart.push(value);
+        undo.push(Undo::CartPush);
+    }
+    fn pop_cart(&mut self, undo: &mut Vec<Undo>) -> i64 {
+        let value = self.cart.pop().expect("pending Cartesian frontier");
+        let sequence = value.sequence;
+        undo.push(Undo::CartPop(value));
+        sequence
+    }
+    fn push_frame(&mut self, value: Frame, undo: &mut Vec<Undo>) {
+        self.frames.push(value);
+        undo.push(Undo::FramePush);
+    }
+    fn replace_frame(&mut self, value: Frame, undo: &mut Vec<Undo>) {
+        undo.push(Undo::FrameReplace(std::mem::replace(
+            self.frames.last_mut().expect("active merge frame"),
+            value,
+        )));
+    }
+    fn rollback(&mut self, progress: Progress, undo: Vec<Undo>) {
+        for change in undo.into_iter().rev() {
+            match change {
+                Undo::CartPush => {
+                    self.cart.pop();
+                }
+                Undo::CartPop(value) => self.cart.push(value),
+                Undo::FramePush => {
+                    self.frames.pop();
+                }
+                Undo::FramePop(value) => self.frames.push(value),
+                Undo::FrameReplace(value) => {
+                    *self.frames.last_mut().expect("undo merge frame") = value;
+                }
+            }
+        }
+        self.progress = progress;
     }
 }
 struct Dirty {
     content: String,
     left: Option<i64>,
     right: Option<i64>,
-    parent: Option<i64>,
 }
 async fn dirty(
     db: &mut SqliteConnection,
@@ -109,146 +165,119 @@ async fn dirty(
     sequence: i64,
 ) -> Result<Dirty, StoreError> {
     let q = format!(
-        "SELECT content,cart_left,cart_right,cart_parent FROM {} WHERE {}=? AND group_sequence=?",
+        "SELECT content,cart_left,cart_right FROM {} WHERE {}=? AND group_sequence=?",
         kind.dirty(),
         kind.key()
     );
-    let r = sqlx::query(sqlx::AssertSqlSafe(q))
+    let row = sqlx::query(sqlx::AssertSqlSafe(q))
         .bind(id)
         .bind(sequence)
         .fetch_one(db)
         .await?;
     Ok(Dirty {
-        content: r.try_get("content")?,
-        left: r.try_get("cart_left")?,
-        right: r.try_get("cart_right")?,
-        parent: r.try_get("cart_parent")?,
+        content: row.try_get("content")?,
+        left: row.try_get("cart_left")?,
+        right: row.try_get("cart_right")?,
     })
 }
-async fn link(
+async fn finalize(
     db: &mut SqliteConnection,
     kind: Kind,
     id: &str,
-    sequence: i64,
-    column: &str,
-    target: Option<i64>,
+    cart: &Cart,
+    right: Option<i64>,
 ) -> Result<(), StoreError> {
     let q = format!(
-        "UPDATE {} SET {column}=? WHERE {}=? AND group_sequence=?",
+        "UPDATE {} SET cart_left=?,cart_right=? WHERE {}=? AND group_sequence=?",
         kind.dirty(),
         kind.key()
     );
     sqlx::query(sqlx::AssertSqlSafe(q))
-        .bind(target)
+        .bind(cart.left)
+        .bind(right)
         .bind(id)
-        .bind(sequence)
+        .bind(cart.sequence)
         .execute(db)
         .await?;
     Ok(())
 }
-async fn write_frame(
-    db: &mut SqliteConnection,
-    kind: Kind,
-    id: &str,
-    depth: i64,
-    frame: &Frame,
-) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO context_prepared_frames(kind,owner_id,depth,frame_json) VALUES(?,?,?,?) ON CONFLICT(kind,owner_id,depth) DO UPDATE SET frame_json=excluded.frame_json")
-        .bind(kind.name()).bind(id).bind(depth).bind(encoded(frame)?).execute(db).await?;
-    Ok(())
-}
-async fn read_frame(
-    db: &mut SqliteConnection,
-    kind: Kind,
-    id: &str,
-    depth: i64,
-) -> Result<(Frame, Option<String>, Option<String>), StoreError> {
-    let r=sqlx::query("SELECT frame_json,left_root,right_root FROM context_prepared_frames WHERE kind=? AND owner_id=? AND depth=?")
-        .bind(kind.name()).bind(id).bind(depth).fetch_one(db).await?;
-    Ok((
-        serde_json::from_str(r.try_get("frame_json")?)?,
-        r.try_get("left_root")?,
-        r.try_get("right_root")?,
-    ))
-}
-// Transfer ownership before deleting the child frame, in the same transaction.
 async fn deliver(
     db: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
     kind: Kind,
     id: &str,
     state: &mut State,
+    undo: &mut Vec<Undo>,
     result: Option<String>,
 ) -> Result<(), StoreError> {
-    if state.depth == 0 {
-        let q = format!("UPDATE {} SET root=? WHERE id=?", kind.owner());
-        sqlx::query(sqlx::AssertSqlSafe(q))
-            .bind(&result)
-            .bind(id)
-            .execute(&mut *db)
-            .await?;
-        state.ready = true;
-    } else {
-        let (mut parent, _, _) = read_frame(db, kind, id, state.depth - 1).await?;
-        let column = if parent.phase == 1 {
+    let frame = state.frames.pop().expect("completed merge frame");
+    undo.push(Undo::FramePop(frame));
+    if let Some(parent) = state.frames.last() {
+        let mut parent = parent.clone();
+        if parent.phase == 1 {
             parent.phase = 2;
-            "left_root"
+            parent.left = result;
         } else {
             parent.phase = 4;
-            "right_root"
-        };
-        let q = format!(
-            "UPDATE context_prepared_frames SET frame_json=?,{column}=? WHERE kind=? AND owner_id=? AND depth=?"
-        );
-        sqlx::query(sqlx::AssertSqlSafe(q))
-            .bind(encoded(&parent)?)
-            .bind(result)
-            .bind(kind.name())
+            parent.right = result;
+        }
+        state.replace_frame(parent, undo);
+    } else {
+        let read = format!("SELECT root FROM {} WHERE id=?", kind.owner());
+        let old: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(read))
             .bind(id)
-            .bind(state.depth - 1)
-            .execute(&mut *db)
+            .fetch_one(&mut *db)
             .await?;
+        if old != result {
+            if let Some(root) = &result {
+                refs.change(db, refs::Kind::Node, root, 1).await?;
+            }
+            if let Some(root) = &old {
+                refs.change(db, refs::Kind::Node, root, -1).await?;
+            }
+        }
+        let q = format!("UPDATE {} SET root=? WHERE id=?", kind.owner());
+        sqlx::query(sqlx::AssertSqlSafe(q))
+            .bind(result)
+            .bind(id)
+            .execute(db)
+            .await?;
+        state.progress.ready = true;
     }
-    sqlx::query("DELETE FROM context_prepared_frames WHERE kind=? AND owner_id=? AND depth=?")
-        .bind(kind.name())
-        .bind(id)
-        .bind(state.depth)
-        .execute(db)
-        .await?;
-    state.depth = state.depth.saturating_sub(1);
     Ok(())
 }
 fn order(sequence: i64) -> (String, i64) {
     (tree::priority(sequence as u64), sequence)
 }
 
-/// Run inside a short owner transaction. `true` means the final root is attached.
+/// The in-memory frontier changes atomically with this job's SQL transaction.
 pub(super) async fn advance(
     db: &mut SqliteConnection,
+    in_flight: &mut InFlight,
     kind: Kind,
     id: &str,
 ) -> Result<bool, StoreError> {
-    require_discovered(db, kind, id).await?;
+    let mut tx = db.begin().await?;
+    require_discovered(&mut tx, kind, id).await?;
     let q = format!(
         "SELECT complete FROM {} WHERE id=? AND retiring=0",
         kind.owner()
     );
     if sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(q))
         .bind(id)
-        .fetch_one(&mut *db)
+        .fetch_one(&mut *tx)
         .await?
     {
+        tx.commit().await.map_err(StoreError::CommitUnknown)?;
         return Ok(true);
     }
-    let saved: Option<String> = sqlx::query_scalar(
-        "SELECT state_json FROM context_prepared_assembly WHERE kind=? AND owner_id=?",
-    )
-    .bind(kind.name())
-    .bind(id)
-    .fetch_optional(&mut *db)
-    .await?;
-    let mut state = if let Some(saved) = saved {
-        serde_json::from_str::<State>(&saved)?
-    } else {
+    let key = InFlight::key(kind, id);
+    let generation = in_flight
+        .generations
+        .get_mut(&key)
+        .ok_or_else(|| invalid("prepared execution frontier is missing"))?;
+    let started = matches!(generation, Generation::Rendering);
+    if started {
         let q = format!(
             "SELECT EXISTS(SELECT 1 FROM {} WHERE {}=? AND (done=0 OR content IS NULL))",
             kind.dirty(),
@@ -256,71 +285,120 @@ pub(super) async fn advance(
         );
         if sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(q))
             .bind(id)
-            .fetch_one(&mut *db)
+            .fetch_one(&mut *tx)
             .await?
         {
             return Err(invalid("prepared view has unfinished groups"));
         }
-        State::default()
+        *generation = Generation::Assembling(State::default());
+    }
+    let Generation::Assembling(state) = generation else {
+        return Err(invalid("prepared generation is not ready for assembly"));
     };
+    let progress = state.progress.clone();
+    let mut undo = Vec::new();
+    let mut refs = refs::RefBatch::default();
+    let result = async {
+        let ready = advance_batch(&mut tx, &mut refs, kind, id, state, &mut undo).await?;
+        refs.flush(&mut tx).await?;
+        Ok(ready)
+    }
+    .await;
+    match result {
+        Ok(ready) => {
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            Ok(ready)
+        }
+        Err(cause) => match tx.rollback().await {
+            Ok(()) => {
+                state.rollback(progress, undo);
+                if started {
+                    *generation = Generation::Rendering;
+                }
+                Err(cause)
+            }
+            Err(cleanup) => Err(StoreError::PreparedRollbackFailed {
+                cause: Box::new(cause),
+                cleanup,
+            }),
+        },
+    }
+}
+async fn advance_batch(
+    db: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
+    kind: Kind,
+    id: &str,
+    state: &mut State,
+    undo: &mut Vec<Undo>,
+) -> Result<bool, StoreError> {
     for _ in 0..64 {
-        if state.ready {
+        if state.progress.ready {
             break;
         }
-        if !state.merging {
-            if state.pending.is_none() {
+        if !state.progress.merging {
+            if state.progress.pending.is_none() && !state.progress.scanned {
                 let q = format!(
                     "SELECT group_sequence FROM {} WHERE {}=? AND group_sequence>? ORDER BY group_sequence LIMIT 1",
                     kind.dirty(),
                     kind.key()
                 );
-                state.pending = sqlx::query_scalar(sqlx::AssertSqlSafe(q))
+                state.progress.pending = sqlx::query_scalar(sqlx::AssertSqlSafe(q))
                     .bind(id)
-                    .bind(state.cursor.unwrap_or(-1))
+                    .bind(state.progress.cursor.unwrap_or(-1))
                     .fetch_optional(&mut *db)
                     .await?;
-                if state.pending.is_none() {
-                    let q = format!("SELECT root FROM {} WHERE id=?", kind.owner());
-                    let base = Span {
-                        root: sqlx::query_scalar(sqlx::AssertSqlSafe(q))
-                            .bind(id)
-                            .fetch_one(&mut *db)
-                            .await?,
-                        low: -1,
-                        high: i64::MAX,
-                    };
-                    write_frame(db, kind, id, 0, &Frame::new(-1, i64::MAX, base, state.root))
-                        .await?;
-                    state.merging = true;
-                    continue;
-                }
+                state.progress.scanned = state.progress.pending.is_none();
             }
-            let current = state.pending.expect("pending Cartesian item");
-            if let Some(top) = state.top
-                && order(top) > order(current)
-            {
-                state.popped = Some(top);
-                state.top = dirty(db, kind, id, top).await?.parent;
+            let pop = state.cart.last().is_some_and(|top| {
+                state
+                    .progress
+                    .pending
+                    .is_none_or(|current| order(top.sequence) > order(current))
+            });
+            if pop {
+                finalize(
+                    db,
+                    kind,
+                    id,
+                    state.cart.last().expect("Cartesian top"),
+                    state.progress.carry,
+                )
+                .await?;
+                state.progress.carry = Some(state.pop_cart(undo));
                 continue;
             }
-            link(db, kind, id, current, "cart_left", state.popped).await?;
-            link(db, kind, id, current, "cart_parent", state.top).await?;
-            if let Some(top) = state.top {
-                link(db, kind, id, top, "cart_right", Some(current)).await?;
-            } else {
-                state.root = Some(current);
+            if let Some(sequence) = state.progress.pending.take() {
+                let left = state.progress.carry.take();
+                state.push_cart(Cart { sequence, left }, undo);
+                state.progress.cursor = Some(sequence);
+                continue;
             }
-            state.top = Some(current);
-            state.cursor = Some(current);
-            state.pending = None;
-            state.popped = None;
+            state.progress.root = state.progress.carry.take();
+            let q = format!("SELECT root FROM {} WHERE id=?", kind.owner());
+            let base = Span {
+                root: sqlx::query_scalar(sqlx::AssertSqlSafe(q))
+                    .bind(id)
+                    .fetch_one(&mut *db)
+                    .await?,
+                low: -1,
+                high: i64::MAX,
+            };
+            state.push_frame(Frame::new(-1, i64::MAX, base, state.progress.root), undo);
+            state.progress.merging = true;
             continue;
         }
-        let (mut f, left, right) = read_frame(db, kind, id, state.depth).await?;
+        let mut f = state.frames.last().expect("active merge frame").clone();
+        let (left, right) = (f.left.clone(), f.right.clone());
         if f.phase == 4 {
             let n = tree::compose(db, f.sequence as u64, f.content, left, right).await?;
-            let result = tree::save(db, &n).await?;
-            deliver(db, kind, id, &mut state, Some(result)).await?;
+            let result = tree::save(db, refs, &n).await?;
+            let pinned=sqlx::query("INSERT INTO context_prepared_generation_nodes(kind,owner_id,node_id) VALUES(?,?,?) ON CONFLICT(kind,owner_id,node_id) DO NOTHING")
+                .bind(kind.name()).bind(id).bind(&result).execute(&mut *db).await?.rows_affected()==1;
+            if pinned {
+                refs.change(db, refs::Kind::Node, &result, 1).await?;
+            }
+            deliver(db, refs, kind, id, state, undo, Some(result)).await?;
             continue;
         }
         let base = if let Some(root) = &f.base.root {
@@ -341,13 +419,13 @@ pub(super) async fn advance(
                 if sequence <= f.low {
                     f.base.low = sequence;
                     f.base.root = n.right.clone();
-                    write_frame(db, kind, id, state.depth, &f).await?;
+                    state.replace_frame(f, undo);
                     continue;
                 }
                 if sequence >= f.high {
                     f.base.high = sequence;
                     f.base.root = n.left.clone();
-                    write_frame(db, kind, id, state.depth, &f).await?;
+                    state.replace_frame(f, undo);
                     continue;
                 }
             }
@@ -355,13 +433,13 @@ pub(super) async fn advance(
                 && (sequence <= f.low || sequence >= f.high)
             {
                 f.dirty = if sequence <= f.low { n.right } else { n.left };
-                write_frame(db, kind, id, state.depth, &f).await?;
+                state.replace_frame(f, undo);
                 continue;
             }
             if f.dirty.is_none()
                 && (f.base.root.is_none() || (f.low <= f.base.low && f.high >= f.base.high))
             {
-                deliver(db, kind, id, &mut state, f.base.root).await?;
+                deliver(db, refs, kind, id, state, undo, f.base.root).await?;
                 continue;
             }
             let chosen_dirty = match (&base, f.dirty) {
@@ -405,18 +483,17 @@ pub(super) async fn advance(
         } else {
             Frame::new(f.sequence, f.high, child_base, child_dirty)
         };
-        write_frame(db, kind, id, state.depth, &f).await?;
-        state.depth += 1;
-        write_frame(db, kind, id, state.depth, &child).await?;
+        state.replace_frame(f, undo);
+        state.push_frame(child, undo);
     }
-    sqlx::query("INSERT INTO context_prepared_assembly(kind,owner_id,state_json) VALUES(?,?,?) ON CONFLICT(kind,owner_id) DO UPDATE SET state_json=excluded.state_json")
-        .bind(kind.name()).bind(id).bind(encoded(&state)?).execute(db).await?;
-    Ok(state.ready)
+    Ok(state.progress.ready)
 }
 
 /// Staging is write-once, including retries before finish starts.
 pub(super) async fn stage(
     db: &mut SqliteConnection,
+    refs: &mut refs::RefBatch,
+    in_flight: &InFlight,
     kind: Kind,
     id: &str,
     sequence: u64,
@@ -438,14 +515,7 @@ pub(super) async fn stage(
         }
         return Ok(());
     }
-    let frozen: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM context_prepared_assembly WHERE kind=? AND owner_id=?)",
-    )
-    .bind(kind.name())
-    .bind(id)
-    .fetch_one(&mut *db)
-    .await?;
-    if frozen {
+    if in_flight.assembling(kind, id) {
         return Err(invalid("prepared generation is frozen"));
     }
     let q = format!(
@@ -453,12 +523,17 @@ pub(super) async fn stage(
         kind.dirty(),
         kind.key()
     );
-    sqlx::query(sqlx::AssertSqlSafe(q))
+    let changed = sqlx::query(sqlx::AssertSqlSafe(q))
         .bind(content)
         .bind(id)
         .bind(sequence as i64)
-        .execute(db)
-        .await?;
+        .execute(&mut *db)
+        .await?
+        .rows_affected();
+    if changed != 1 {
+        return Err(invalid("prepared staging row is missing"));
+    }
+    refs.change(db, refs::Kind::Group, content, 1).await?;
     Ok(())
 }
 
@@ -468,7 +543,7 @@ pub(super) async fn require_discovered(
     id: &str,
 ) -> Result<(), StoreError> {
     let q = format!(
-        "SELECT discovery_json IS NULL FROM {} WHERE id=? AND retiring=0",
+        "SELECT discovered FROM {} WHERE id=? AND retiring=0",
         kind.owner()
     );
     if !sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(q))

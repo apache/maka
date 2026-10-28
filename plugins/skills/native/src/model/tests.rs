@@ -552,7 +552,7 @@ async fn bundled_skills_share_model_eligibility_preparation_and_exact_resource_p
         .await
         .unwrap();
     assert_eq!(with_cua["totalEligible"], 2);
-    let original_load = json!({"name":"maka-plugin-authoring","revision":revision,"resource":{"path":"references/sdk/ui.ts"}});
+    let original_load = json!({"name":"maka-plugin-authoring","revision":revision,"resource":{"path":"references/sdk/workbench.ts"}});
     let mut page = library
         .model("load", json!({"tools":tools,"input":original_load}), &call)
         .await
@@ -587,7 +587,7 @@ async fn bundled_skills_share_model_eligibility_preparation_and_exact_resource_p
     }
     assert_eq!(
         all,
-        include_str!("../../../../../packages/plugin-sdk/src/ui.ts")
+        include_str!("../../../../../packages/plugin-sdk/src/workbench.ts")
     );
     for path in ["../secret", "/secret", "references/../../secret"] {
         assert_eq!(

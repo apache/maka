@@ -20,7 +20,7 @@
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
 import { cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
-import type { YNode } from 'nsh';
+import type { Signal, YNode } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
@@ -57,17 +57,17 @@ export type LiveActivity = {
   rowId?: string;
 };
 export type TurnViewState = {
-  expanded: ReturnType<typeof signal<{ open: boolean; answerKey: string | undefined } | null>>;
+  expanded: Signal<{ open: boolean; answerKey: string | undefined } | null>;
 };
 export type GroupViewState = {
-  open: ReturnType<typeof signal<boolean>>;
-  following: ReturnType<typeof signal<boolean>>;
+  open: Signal<boolean>;
+  following: Signal<boolean>;
   offset: AnimatedValue;
   measured: Map<string, { width: number; height: number }>;
   lease: number;
   opening?: 'top' | 'bottom';
   revealRow?: string;
-  visibleRows: ReturnType<typeof signal<ReadonlySet<string>>>;
+  visibleRows: Signal<ReadonlySet<string>>;
   rowNodes: Map<string, YNode>;
   list?: YNode;
   requestFocus?: boolean;

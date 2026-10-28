@@ -369,14 +369,15 @@ fn mac_metadata(
     extern "C" fn read(context: *mut c_void) {
         // SAFETY: the original AppKit queue receives this Box once.
         let pending = unsafe { Box::from_raw(context.cast::<Pending>()) };
+        let Pending { request, reply } = *pending;
         let result = std::panic::catch_unwind(|| {
             let main = platform_macos::geometry::MainThreadMarker::new().ok_or_else(|| {
                 "event_target_unavailable: AppKit main queue is not hosted".to_owned()
             })?;
-            crate::macos::page_scroll::metadata::read(main, pending.request)
+            crate::macos::page_scroll::metadata::read(main, request)
         })
         .unwrap_or_else(|_| Err("event_target_unavailable: metadata query panicked".into()));
-        let _ = pending.reply.send(result);
+        let _ = reply.send(result);
     }
     #[link(name = "System")]
     unsafe extern "C" {

@@ -227,6 +227,7 @@ struct Inner {
 struct RunContext {
     shared: Arc<Inner>,
     log: Arc<SessionStore>,
+    prepared_history: Mutex<Option<Arc<history::PreparedHistory>>>,
 }
 
 impl RunContext {
@@ -239,6 +240,7 @@ impl RunContext {
         Ok(Arc::new(Self {
             shared,
             log: Arc::new(store),
+            prepared_history: Mutex::new(None),
         }))
     }
 }

@@ -76,18 +76,13 @@ async fn activate_worker_mode(
                 manifest.application.as_ref().unwrap().declaration().clone();
             manifest.id = "worker".into();
             if external {
-                manifest_application
-                    .entries
-                    .get_mut(&EntryTarget::Host)
-                    .unwrap()
-                    .imports
-                    .insert(
-                        "executor".into(),
-                        Import {
-                            contract: maka_agent_api::executor::contract(),
-                            cardinality: Cardinality::One,
-                        },
-                    );
+                manifest_application.host.as_mut().unwrap().imports.insert(
+                    "executor".into(),
+                    Import {
+                        contract: maka_agent_api::executor::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                );
             }
             if !matches!(
                 behavior,
@@ -95,13 +90,10 @@ async fn activate_worker_mode(
                     | WorkerBehavior::DeniedQuery(_)
                     | WorkerBehavior::External
             ) {
-                manifest_application
-                    .entries
-                    .get_mut(&EntryTarget::Host)
-                    .unwrap()
-                    .implementation = Implementation::Native {
-                    implementation: "fixture.lost-agent".into(),
-                };
+                manifest_application.host.as_mut().unwrap().implementation =
+                    Implementation::Native {
+                        implementation: "fixture.lost-agent".into(),
+                    };
             }
             Some(
                 Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
@@ -140,10 +132,7 @@ async fn activate_worker_mode(
             let mut manifest = package.manifest().clone();
             let mut manifest_application =
                 manifest.application.as_ref().unwrap().declaration().clone();
-            let entry = manifest_application
-                .entries
-                .get_mut(&EntryTarget::Host)
-                .unwrap();
+            let entry = manifest_application.host.as_mut().unwrap();
             if manifest.id == "agent" {
                 entry.configuration = hub::configuration_schema().into();
                 entry.implementation = Implementation::Native {
@@ -235,10 +224,10 @@ async fn activate_worker_mode(
         }
         if external {
             let package=Package::new(BTreeMap::from([
-                (MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"entries":{"host":{
+                (MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"host":{
                     "implementation":{"kind":"javascript","module":"executor.mjs","realm":"shared"},"configuration":{"type":"object","additionalProperties":false},"imports":{},
                     "exports":{"executor":{"contract":maka_agent_api::executor::contract(),"availability":"required"}}
-                }}}})).unwrap()),
+                }}})).unwrap()),
                 ("executor.mjs".into(),format!(r#"export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input,observation,context){{
                     let suffix='';
                     if(input.message.includes('original upload')) {{
@@ -273,7 +262,7 @@ async fn activate_worker_mode(
                 Node {
                     key: Uuid::from_u128(22),
                     package: package.application_ref().into(),
-                    use_package: PackageUse::Entry,
+                    use_package: PackageUse::Host,
                     configuration: Default::default(),
                     parameters: Default::default(),
                     disabled: false,
@@ -735,15 +724,15 @@ async fn query_import(fixture: &Fixture, import: &str, method: &str, input: Valu
         .start(
             imported(fixture, import).await,
             method.into(),
-            input,
+            input.clone(),
             scope(&fixture.issuer, true),
             Attachments::default().into(),
         )
         .await
-        .unwrap()
+        .unwrap_or_else(|error| panic!("start {import}.{method}({input}) failed: {error:?}"))
         .result()
         .await
-        .unwrap()
+        .unwrap_or_else(|error| panic!("query {import}.{method}({input}) failed: {error:?}"))
 }
 async fn worker_mutation(fixture: &Fixture, method: &str, input: Value) -> Value {
     let client = fixture.app.client();
@@ -1526,6 +1515,13 @@ async fn workhub_session_tool_browses_live_catalog_across_coordinator_turns() {
 
 #[tokio::test]
 async fn workhub_wait_returns_worker_answer_in_the_routing_turn_and_cancels_only_observation() {
+    let _log_guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_test_writer()
+            .with_ansi(false)
+            .finish(),
+    );
     tokio::time::timeout(Duration::from_secs(60), async {
         for cancel in [false, true] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

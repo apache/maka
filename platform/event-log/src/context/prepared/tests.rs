@@ -45,6 +45,111 @@ fn selection(through: u64) -> SemanticSelection {
         prior_unknown: false,
     }
 }
+
+pub(crate) async fn assert_refs(db: &mut SqliteConnection) -> Result<(), StoreError> {
+    let expected: Vec<(String,String,i64)> = sqlx::query_as(r#"
+        WITH edges(kind,id) AS (
+            SELECT 'node',root FROM context_prepared_builds WHERE root IS NOT NULL
+            UNION ALL SELECT 'node',root FROM context_prepared_wire_views WHERE root IS NOT NULL
+            UNION ALL SELECT 'node',discovery_root FROM context_prepared_wire_views WHERE discovery_root IS NOT NULL
+            UNION ALL SELECT 'node',json_extract(node_json,'$.left') FROM context_prepared_nodes WHERE json_extract(node_json,'$.left') IS NOT NULL
+            UNION ALL SELECT 'node',json_extract(node_json,'$.right') FROM context_prepared_nodes WHERE json_extract(node_json,'$.right') IS NOT NULL
+            UNION ALL SELECT 'group',json_extract(node_json,'$.content') FROM context_prepared_nodes WHERE json_extract(node_json,'$.content') IS NOT NULL
+            UNION ALL SELECT 'group',json_extract(group_json,'$.logical_content_id') FROM context_prepared_groups WHERE json_extract(group_json,'$.logical_content_id') IS NOT NULL
+            UNION ALL SELECT 'wire',json_extract(group_json,'$.wire_id') FROM context_prepared_groups WHERE json_extract(group_json,'$.wire_id') IS NOT NULL
+            UNION ALL SELECT 'node',node_id FROM context_prepared_generation_nodes
+            UNION ALL SELECT 'group',content FROM context_prepared_dirty WHERE content IS NOT NULL
+            UNION ALL SELECT 'group',content FROM context_prepared_wire_dirty WHERE content IS NOT NULL
+        ), objects(kind,id) AS (
+            SELECT 'node',id FROM context_prepared_nodes
+            UNION SELECT 'group',id FROM context_prepared_groups
+            UNION SELECT kind,id FROM context_prepared_refs WHERE refs=0
+            UNION SELECT kind,id FROM edges
+        )
+        SELECT objects.kind,objects.id,COUNT(edges.id) FROM objects
+        LEFT JOIN edges ON edges.kind=objects.kind AND edges.id=objects.id
+        GROUP BY objects.kind,objects.id ORDER BY objects.kind,objects.id
+    "#).fetch_all(&mut *db).await?;
+    let actual: Vec<(String, String, i64)> =
+        sqlx::query_as("SELECT kind,id,refs FROM context_prepared_refs ORDER BY kind,id")
+            .fetch_all(db)
+            .await?;
+    assert_eq!(
+        actual, expected,
+        "stored refs must equal actual strong incoming edges, including zero-reference objects and queued empty targets"
+    );
+    Ok(())
+}
+
+async fn assert_log_refs(log: &EventLog) {
+    log.prepared_store()
+        .unwrap()
+        .read_interruptible(|db| Box::pin(async move { assert_refs(db).await }))
+        .await
+        .unwrap();
+}
+
+async fn store_group_fixture(db: &mut SqliteConnection, group: &Group) -> String {
+    let mut tx = db.begin().await.unwrap();
+    let mut refs = refs::RefBatch::default();
+    let content = tree::save_group(&mut tx, &mut refs, group).await.unwrap();
+    refs.flush(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+    content
+}
+
+pub(crate) async fn seed_shared_wire_gc_fixture(
+    db: &mut SqliteConnection,
+) -> Result<(), StoreError> {
+    let mut tx = db.begin().await?;
+    let mut refs = refs::RefBatch::default();
+    sqlx::query("INSERT INTO context_prepared_payloads VALUES('wire','wire')")
+        .execute(&mut *tx)
+        .await?;
+    let group = Group {
+        index_bytes: 0,
+        dependencies: vec![],
+        members: vec![1],
+        manifest: Default::default(),
+        messages: vec![],
+        breakdown: Default::default(),
+    };
+    let content = tree::save_group(&mut tx, &mut refs, &group).await?;
+    let (logical_id, _) = tree::logical_group(&mut tx, &content).await?;
+    let wire_content = tree::save_wire_group(
+        &mut tx,
+        &mut refs,
+        tree::WireGroup::new(logical_id, "wire".into(), 260),
+    )
+    .await?;
+    let node = tree::compose(&mut tx, 1, content, None, None).await?;
+    let root = tree::save(&mut tx, &mut refs, &node).await?;
+    let wire_node = tree::compose(&mut tx, 1, wire_content, None, None).await?;
+    let wire_root = tree::save(&mut tx, &mut refs, &wire_node).await?;
+    for (id, session) in [("parent", "session"), ("child", "child")] {
+        sqlx::query("INSERT INTO context_prepared_builds(id,identity,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,complete) VALUES(?1,?1,?1,?2,1,1,2,0,?3,1)")
+            .bind(id).bind(serde_json::json!({"session":session}).to_string()).bind(&root).execute(&mut *tx).await?;
+        refs.change(&mut tx, refs::Kind::Node, &root, 1).await?;
+        let wire_id = format!("{id}-wire");
+        sqlx::query("INSERT INTO context_prepared_wire_views(id,build_id,codec,format_json,root,complete,discovered) VALUES(?,?,'fixture',?,?,1,1)")
+            .bind(&wire_id).bind(id).bind(encoded(&WireFormat::Responses)?).bind(&wire_root).execute(&mut *tx).await?;
+        refs.change(&mut tx, refs::Kind::Node, &wire_root, 1)
+            .await?;
+        sqlx::query("INSERT INTO context_prepared_heads(session_id,build_id,wire_view_id,touched) VALUES(?,?,?,0)")
+            .bind(session).bind(id).bind(wire_id).execute(&mut *tx).await?;
+    }
+    for index in 0..260 {
+        sqlx::query("INSERT INTO context_prepared_chunks VALUES('wire',?,0,0,1,NULL,?)")
+            .bind(index)
+            .bind(vec![42u8])
+            .execute(&mut *tx)
+            .await?;
+    }
+    refs.flush(&mut tx).await?;
+    assert_refs(&mut tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
 /// Feed extracted semantic metadata directly: the semantic reducer has its own
 /// trigger tests. These tests isolate real prepared APIs and durable storage.
 async fn seed(log: &EventLog, source: u64, revision: u64, assistant: bool) {
@@ -142,7 +247,7 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     }
     async fn publish(log: &EventLog, through: u64, generation: &str) -> PreparedView {
         let build = log
-            .prepare_model_view(selection(through), "single-semantic-read")
+            .prepare_model_view(selection(through), "single-semantic-read", None)
             .await
             .unwrap();
         loop {
@@ -294,8 +399,9 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     const NODE_SQL: &str = "SELECT node_json FROM context_prepared_nodes WHERE id=?";
     const GROUP_SQL: &str = "SELECT group_json FROM context_prepared_groups WHERE id=?";
     let root = view.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::seek(connection, root.as_deref(), 1).await?;
                 Ok(())
@@ -309,10 +415,16 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     );
     first.unwrap().unwrap();
     second.unwrap().unwrap();
-    let before = log.sqlite_resource_stats().await.unwrap();
+    let before = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let root = view.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::seek(connection, root.as_deref(), 1).await?;
                 Ok(())
@@ -320,7 +432,12 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
         })
         .await
         .unwrap();
-    let sought = log.sqlite_resource_stats().await.unwrap();
+    let sought = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let node_reads = run_delta(&before, &sought, NODE_SQL);
     assert!(node_reads > 0);
     assert_eq!(run_delta(&before, &sought, GROUP_SQL), 1);
@@ -331,7 +448,12 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
         .unwrap();
     assert_eq!(read.rows, middle.rows);
     assert_eq!(read.manifest, middle.manifest);
-    let after = log.sqlite_resource_stats().await.unwrap();
+    let after = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let actual_node_reads = run_delta(&sought, &after, NODE_SQL);
     let actual_group_reads = run_delta(&sought, &after, GROUP_SQL);
     assert!(actual_node_reads <= node_reads);
@@ -350,10 +472,11 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     assert_eq!(changed.rows[0].row.revision, 260);
     assert_eq!(changed.manifest, frozen_manifest("new", "1"));
     let registry = log.prepared.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, in_flight| {
             Box::pin(async move {
-                while gc::maintain(connection, &registry).await? {}
+                while gc::maintain(connection, &registry, in_flight).await? {}
                 Ok(())
             })
         })
@@ -394,8 +517,9 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     }
 
     let root = sparse.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::find(connection, root.as_deref(), 1000).await?;
                 Ok(())
@@ -409,10 +533,16 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
     );
     first.unwrap();
     second.unwrap();
-    let before = log.sqlite_resource_stats().await.unwrap();
+    let before = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let root = sparse.root.clone();
-    log.connection
-        .run(move |connection| {
+    log.prepared_store()
+        .unwrap()
+        .run(move |connection, _in_flight| {
             Box::pin(async move {
                 tree::find(connection, root.as_deref(), 1000).await?;
                 Ok(())
@@ -420,14 +550,24 @@ async fn semantic_group_reads_rows_and_frozen_manifest_with_one_tree_seek() {
         })
         .await
         .unwrap();
-    let found = log.sqlite_resource_stats().await.unwrap();
+    let found = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let node_reads = run_delta(&before, &found, NODE_SQL);
     assert!(node_reads > 0);
     assert_eq!(run_delta(&before, &found, GROUP_SQL), 1);
     let read = log.prepared_view_group(&sparse, &group).await.unwrap();
     assert_eq!(read.rows, sparse_read.rows);
     assert_eq!(read.manifest, sparse_read.manifest);
-    let after = log.sqlite_resource_stats().await.unwrap();
+    let after = log
+        .prepared_store()
+        .unwrap()
+        .resource_stats()
+        .await
+        .unwrap();
     let actual_node_reads = run_delta(&found, &after, NODE_SQL);
     let actual_group_reads = run_delta(&found, &after, GROUP_SQL);
     assert!(actual_node_reads <= node_reads);
@@ -491,7 +631,7 @@ async fn encode(
     values: &BTreeMap<String, Vec<Message>>,
 ) -> (PreparedWireView, usize) {
     let build = log
-        .prepare_wire_view(view, format, "fixture-v1")
+        .prepare_wire_view(view, format, "fixture-v1", None)
         .await
         .unwrap();
     let mut encoded = 0;
@@ -550,11 +690,11 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         ("3".into(), vec![Message::user("bc")]),
     ]);
     let build = log
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     let concurrent = log
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     let captured_groups = log
@@ -580,7 +720,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         measure::prompt_breakdown(&values.values().flatten().cloned().collect::<Vec<_>>())
     );
     let slow_wire = log
-        .prepare_wire_view(&view, WireFormat::Responses, "fixture-v1")
+        .prepare_wire_view(&view, WireFormat::Responses, "fixture-v1", None)
         .await
         .unwrap();
     let slow_wire_groups = log
@@ -604,7 +744,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
     );
     let old_bytes = bytes(&log, &wire).await;
     let retry = log
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &retry, &values).await, 0);
@@ -612,7 +752,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
     assert_eq!(encoded, 0);
     seed(&log, 4, 4, false).await;
     let next = log
-        .prepare_model_view(selection(4), "stable-render")
+        .prepare_model_view(selection(4), "stable-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &next, &values).await, 1);
@@ -645,7 +785,8 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
         .unwrap();
     assert!(seek.chunks[0].item_start);
     let maximum: i64 = log
-        .connection
+        .prepared_store()
+        .unwrap()
         .read_interruptible(|connection| {
             Box::pin(async move {
                 Ok(
@@ -673,7 +814,7 @@ async fn stable_preparation_is_delta_only_and_reopen_rebuilds_private_views() {
     );
     assert!(reopened.prepared_prefix_identity(&view, 1).await.is_err());
     let retry = reopened
-        .prepare_model_view(selection(3), "stable-render")
+        .prepare_model_view(selection(3), "stable-render", None)
         .await
         .unwrap();
     assert_eq!(render(&reopened, &retry, &values).await, 2);
@@ -717,7 +858,7 @@ async fn changed_mcp_presence_reencodes_only_referenced_group_and_keeps_old_root
     seed(&log, 3, 3, true).await;
     let mut values = BTreeMap::from([("1".into(), vec![call()]), ("3".into(), vec![result()])]);
     let build = log
-        .prepare_model_view(selection(3), "anthropic-render")
+        .prepare_model_view(selection(3), "anthropic-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &values).await, 2);
@@ -745,7 +886,7 @@ async fn changed_mcp_presence_reencodes_only_referenced_group_and_keeps_old_root
         }],
     );
     let next = log
-        .prepare_model_view(selection(4), "anthropic-render")
+        .prepare_model_view(selection(4), "anthropic-render", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &next, &values).await, 1);
@@ -774,17 +915,17 @@ async fn out_of_order_cut_completion_never_rolls_back_the_reusable_head() {
     }
     let values = BTreeMap::new();
     let base = log
-        .prepare_model_view(selection(1), "policy")
+        .prepare_model_view(selection(1), "policy", None)
         .await
         .unwrap();
     render(&log, &base, &values).await;
     log.finish_prepared(&base).await.unwrap();
     let low = log
-        .prepare_model_view(selection(6), "policy")
+        .prepare_model_view(selection(6), "policy", None)
         .await
         .unwrap();
     let high = log
-        .prepare_model_view(selection(8), "policy")
+        .prepare_model_view(selection(8), "policy", None)
         .await
         .unwrap();
     render(&log, &high, &values).await;
@@ -794,7 +935,7 @@ async fn out_of_order_cut_completion_never_rolls_back_the_reusable_head() {
     assert_eq!(low_view.message_count, 2);
     assert_eq!(high_view.message_count, 3);
     let next = log
-        .prepare_model_view(selection(9), "policy")
+        .prepare_model_view(selection(9), "policy", None)
         .await
         .unwrap();
     assert_eq!(next.previous_revision, 8);
@@ -818,7 +959,7 @@ async fn mcp_role_boundary_and_selection_changes_bind_cached_wire_context() {
         ("3".into(), vec![result()]),
     ]);
     let build = log
-        .prepare_model_view(selection(3), "anthropic")
+        .prepare_model_view(selection(3), "anthropic", None)
         .await
         .unwrap();
     render(&log, &build, &values).await;
@@ -837,7 +978,7 @@ async fn mcp_role_boundary_and_selection_changes_bind_cached_wire_context() {
         }],
     );
     let build = log
-        .prepare_model_view(selection(4), "anthropic")
+        .prepare_model_view(selection(4), "anthropic", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &values).await, 1);
@@ -858,7 +999,10 @@ async fn mcp_role_boundary_and_selection_changes_bind_cached_wire_context() {
     // The cached result must be selected by empty prior-presence context.
     let mut cut = selection(4);
     cut.after = 1;
-    let build = log.prepare_model_view(cut, "anthropic").await.unwrap();
+    let build = log
+        .prepare_model_view(cut, "anthropic", None)
+        .await
+        .unwrap();
     assert_eq!(render(&log, &build, &values).await, 2);
     let cut = log.finish_prepared(&build).await.unwrap();
     assert!(
@@ -965,8 +1109,6 @@ async fn inorder_page_frontier_visits_each_node_once_and_skips_zero_width_groups
             })
             .collect();
         let group = Group {
-            wire_id: None,
-            wire_bytes: 0,
             index_bytes: 0,
             dependencies: Vec::new(),
             members: vec![sequence],
@@ -974,7 +1116,7 @@ async fn inorder_page_frontier_visits_each_node_once_and_skips_zero_width_groups
             messages: refs,
             breakdown: measure::prompt_breakdown(&messages),
         };
-        let content = tree::save_group(&mut db, &group).await.unwrap();
+        let content = store_group_fixture(&mut db, &group).await;
         root = tree::insert(&mut db, root, sequence, content, group)
             .await
             .unwrap();
@@ -1052,13 +1194,13 @@ async fn bounded_worker_wire_pages_preserve_midgroup_pieces_and_metadata_only_it
         ("3".into(), vec![Message::user("last")]),
     ]);
     let build = log
-        .prepare_model_view(selection(3), "worker-pages")
+        .prepare_model_view(selection(3), "worker-pages", None)
         .await
         .unwrap();
     assert_eq!(render(&log, &build, &values).await, 3);
     let view = log.finish_prepared(&build).await.unwrap();
     let build = log
-        .prepare_wire_view(&view, WireFormat::Responses, "worker-pages")
+        .prepare_wire_view(&view, WireFormat::Responses, "worker-pages", None)
         .await
         .unwrap();
     let records = vec![
@@ -1226,6 +1368,80 @@ async fn bounded_worker_wire_pages_preserve_midgroup_pieces_and_metadata_only_it
 mod lifetimes;
 
 #[tokio::test]
+async fn entirely_empty_wire_finishes_without_encoding_and_releases_its_envelopes() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("empty-wire.sqlite"))
+        .await
+        .unwrap();
+    for source in 1..=3 {
+        seed(&log, source, source, false).await;
+    }
+    let values = (1..=3)
+        .map(|source| (source.to_string(), Vec::<Message>::new()))
+        .collect::<BTreeMap<_, _>>();
+    let logical = log
+        .prepare_model_view(selection(3), "empty-wire", None)
+        .await
+        .unwrap();
+    assert_eq!(render(&log, &logical, &values).await, 3);
+    let view = log.finish_prepared(&logical).await.unwrap();
+    assert_eq!(view.message_count, 0);
+    let build = log
+        .prepare_wire_view(&view, WireFormat::Responses, "fixture-v1", None)
+        .await
+        .unwrap();
+    assert!(
+        log.prepared_wire_dirty_groups(&build, None, 8)
+            .await
+            .unwrap()
+            .is_empty(),
+        "empty groups must not require an encoder invocation"
+    );
+    let wire = log.finish_prepared_wire(&build).await.unwrap();
+    assert_eq!(wire.message_count, 0);
+    let page = log
+        .prepared_wire_page(&wire, PreparedWireCursor::default(), 1)
+        .await
+        .unwrap();
+    assert!(page.chunks.is_empty() && page.next_cursor.is_none());
+    let metadata = log
+        .prepared_wire_metadata_page(&wire, PreparedWireCursor::default(), 1)
+        .await
+        .unwrap();
+    assert!(metadata.items.is_empty() && metadata.next_cursor.is_none());
+    let prefix = log.prepared_wire_prefix_identity(&wire, 0).await.unwrap();
+    assert_eq!(
+        log.finish_prepared_wire(&build).await.unwrap().identity,
+        wire.identity
+    );
+    assert_eq!(
+        log.prepared_wire_prefix_identity(&wire, 0).await.unwrap(),
+        prefix
+    );
+    log.prepared_store()
+        .unwrap()
+        .run(|db, _| Box::pin(async move { gc::retire_owner(db, "prepared-test").await }))
+        .await
+        .unwrap();
+    assert!(
+        log.prepared_wire_page(&wire, PreparedWireCursor::default(), 1)
+            .await
+            .unwrap()
+            .chunks
+            .is_empty()
+    );
+    assert_log_refs(&log).await;
+    drop((wire, build, view, logical));
+    lifetimes::drain(&log).await;
+    log.prepared_store().unwrap().read_interruptible(|db|Box::pin(async move {
+        let remaining:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT COUNT(*) FROM context_prepared_builds),(SELECT COUNT(*) FROM context_prepared_wire_views),(SELECT COUNT(*) FROM context_prepared_nodes),(SELECT COUNT(*) FROM context_prepared_groups),(SELECT COUNT(*) FROM context_prepared_refs)").fetch_one(db).await?;
+        assert_eq!(remaining,(0,0,0,0,0));
+        Ok(())
+    })).await.unwrap();
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("events.sqlite"))
@@ -1235,12 +1451,13 @@ async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {
         seed(&log, sequence, sequence, false).await;
     }
     let (a, b) = tokio::join!(
-        log.prepare_model_view(selection(130), "paged"),
-        log.prepare_model_view(selection(130), "paged")
+        log.prepare_model_view(selection(130), "paged", None),
+        log.prepare_model_view(selection(130), "paged", None)
     );
     let a = a.unwrap();
     let b = b.unwrap();
     assert_eq!(a.id, b.id);
+    assert_log_refs(&log).await;
     let values = BTreeMap::from([("7".into(), Vec::new()), ("65".into(), Vec::new())]);
     assert_eq!(render(&log, &a, &values).await, 130);
     let (first, second) = tokio::join!(log.finish_prepared(&a), log.finish_prepared(&b));
@@ -1249,12 +1466,13 @@ async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {
     assert_eq!(first.identity, second.identity);
     assert_eq!(first.message_count, 128);
     let (a, b) = tokio::join!(
-        log.prepare_wire_view(&first, WireFormat::Responses, "fixture-v1"),
-        log.prepare_wire_view(&second, WireFormat::Responses, "fixture-v1")
+        log.prepare_wire_view(&first, WireFormat::Responses, "fixture-v1", None),
+        log.prepare_wire_view(&second, WireFormat::Responses, "fixture-v1", None)
     );
     let a = a.unwrap();
     let b = b.unwrap();
     let (wire, count) = encode(&log, &first, WireFormat::Responses, &values).await;
+    assert_log_refs(&log).await;
     assert_eq!(count, 128, "empty groups are staged during discovery");
     let (one, two) = tokio::join!(log.finish_prepared_wire(&a), log.finish_prepared_wire(&b));
     let one = one.unwrap();
@@ -1265,8 +1483,9 @@ async fn paged_discovery_and_concurrent_finish_share_one_frozen_generation() {
     // Cold wire discovery must include both zero-width nodes, even though they
     // are absent from message-offset pages and require no encoder invocation.
     let id = a.id.clone();
-    let staged:i64=log.connection.run(move |db|Box::pin(async move {Ok(sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_wire_dirty WHERE view_id=? AND content IS NOT NULL").bind(id).fetch_one(db).await?)})).await.unwrap();
+    let staged:i64=log.prepared_store().unwrap().run(move |db, _in_flight|Box::pin(async move {Ok(sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_wire_dirty WHERE view_id=? AND content IS NOT NULL").bind(id).fetch_one(db).await?)})).await.unwrap();
     assert_eq!(staged, 130);
+    assert_log_refs(&log).await;
     log.close().await.unwrap();
 }
 
@@ -1335,6 +1554,28 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
         Arc,
         atomic::{AtomicU64, Ordering},
     };
+    async fn statement_sorts(db: &mut SqliteConnection, reset: bool) -> Result<i64, StoreError> {
+        let mut handle = db.lock_handle().await?;
+        let mut statement = std::ptr::null_mut();
+        let mut sorts = 0;
+        // SAFETY: the locked connection excludes every other SQLite operation.
+        // Only counters are read/reset; no statement or raw pointer escapes.
+        unsafe {
+            loop {
+                statement =
+                    rusqlite::ffi::sqlite3_next_stmt(handle.as_raw_handle().as_ptr(), statement);
+                if statement.is_null() {
+                    break;
+                }
+                sorts += i64::from(rusqlite::ffi::sqlite3_stmt_status(
+                    statement,
+                    rusqlite::ffi::SQLITE_STMTSTATUS_SORT,
+                    i32::from(reset),
+                ));
+            }
+        }
+        Ok(sorts)
+    }
     let directory = tempfile::tempdir().unwrap();
     let log = EventLog::open(&directory.path().join("events.sqlite"))
         .await
@@ -1344,15 +1585,16 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
         for n in [1024i64,8192] {
             let session=format!("dense-{n}");
             sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
-                INSERT INTO context_semantic_rows SELECT ?1,1,0,n,(n%7)+1,0,'target','target',CAST(n AS TEXT),'assistant_part',0,0,1,1,'{}' FROM numbers")
+                INSERT INTO context_semantic_rows SELECT ?1,1,(n-1)%3,(n-1)/3+1,((n-1)/3)%7+1,0,'target','target',CAST(n AS TEXT),'assistant_part',0,0,1,1,'{}' FROM numbers")
                 .bind(&session).bind(n).execute(&mut *db).await?;
             let mut next=selection(n as u64);next.session=session;next.anchor_sequence=Some(1);
             next.replay=Some(semantic::SemanticReplay{base:0,current:"target".into(),route:"route".into(),model:"model".into()});next.prior_unknown=true;
             let mut previous=next.clone();previous.replay.as_mut().unwrap().current="absent".into();previous.prior_unknown=false;
             for kind in 0..4 {
+                if kind==3 { statement_sorts(db,true).await?; }
                 let steps=Arc::new(AtomicU64::new(0));let observed=steps.clone();
                 db.lock_handle().await?.set_progress_handler(1,move ||{observed.fetch_add(1,Ordering::Relaxed);true});
-                let cursor=Some((1,0,n/2,4));
+                let cursor=Some((1,1,n/6,4));
                 let page=match kind {
                     0=>semantic::initial_groups(db,&next,cursor,false,64).await?,
                     1=>semantic::initial_groups(db,&next,cursor,true,64).await?,
@@ -1360,17 +1602,27 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
                     _=>semantic::selection_dirty_groups(db,&previous,&next,4,cursor,64).await?,
                 };
                 db.lock_handle().await?.remove_progress_handler();assert_eq!(page.groups.len(),64);assert!(page.next.is_some());
+                if kind==3 { assert_eq!(statement_sorts(db,false).await?,0,"the forced unknown keyset must not sort"); }
                 measured.push(steps.load(Ordering::Relaxed));
             }
             // Full anchor/unknown pagination must not drop duplicate semantic
             // groups when the storage cursor crosses revision/order boundaries.
             for unknown in [false,true] {
-                let mut cursor=None;let mut groups=Vec::new();
+                let mut expected=(1..=n).map(|r|(1,(r-1)%3,(r-1)/3+1,((r-1)/3)%7+1)).collect::<Vec<_>>();
+                expected.sort_by_key(|point| if unknown {(point.0,point.3,point.1,point.2)}else{(point.0,point.1,point.2,point.3)});
+                let mut cursor=None;
+                let mut offset=0;
+                if unknown { statement_sorts(db,true).await?; }
                 loop {
                     let page=if unknown {semantic::selection_dirty_groups(db,&previous,&next,4,cursor,64).await?}else{semantic::initial_groups(db,&next,cursor,true,64).await?};
-                    groups.extend(page.groups);cursor=page.next;if cursor.is_none(){break;}
+                    let end=offset+page.groups.len();
+                    assert!(end<=expected.len());
+                    assert_eq!(page.groups,expected[offset..end].iter().map(|point|point.3 as u64).collect::<Vec<_>>(),"source/item/revision ties must preserve exact page order");
+                    assert_eq!(page.next,if end<expected.len(){Some(expected[end-1])}else{None},"the physical cursor must retain all four business-key components");
+                    offset=end;cursor=page.next;if cursor.is_none(){break;}
                 }
-                groups.sort_unstable();let mut expected=(1..=n).map(|r|(r%7+1) as u64).collect::<Vec<_>>();expected.sort_unstable();assert_eq!(groups,expected);
+                assert_eq!(offset,expected.len(),"pagination must neither omit nor duplicate tied rows");
+                if unknown { assert_eq!(statement_sorts(db,false).await?,0,"full unknown pagination must stay in index order"); }
             }
             let session=format!("sparse-{n}");
             sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
@@ -1421,13 +1673,13 @@ async fn prior_mcp_lookup_seeks_current_content_without_materializing_old_versio
         ("4".into(), vec![result()]),
     ]);
     let build = log
-        .prepare_model_view(selection(4), "prior-bounded")
+        .prepare_model_view(selection(4), "prior-bounded", None)
         .await
         .unwrap();
     render(&log, &build, &values).await;
     let original = log.finish_prepared(&build).await.unwrap();
     let measured_view = original.clone();
-    let counts=log.connection.run(move |db|Box::pin(async move {
+    let counts=log.prepared_store().unwrap().run(move |db, _in_flight|Box::pin(async move {
         let view=measured_view;
         let content=tree::content_id(db,view.root.as_deref(),1).await?;
         // Same current content has two real producers, one before the role
@@ -1480,7 +1732,7 @@ async fn prior_mcp_lookup_seeks_current_content_without_materializing_old_versio
         ],
     );
     let build = log
-        .prepare_model_view(selection(5), "prior-bounded")
+        .prepare_model_view(selection(5), "prior-bounded", None)
         .await
         .unwrap();
     render(&log, &build, &values).await;
@@ -1529,8 +1781,9 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         })).await.unwrap();
         let counter = Arc::new(AtomicU64::new(0));
         let observed = counter.clone();
-        log.connection
-            .run(move |db| {
+        log.prepared_store()
+            .unwrap()
+            .run(move |db, _in_flight| {
                 Box::pin(async move {
                     db.lock_handle().await?.set_progress_handler(1, move || {
                         observed.fetch_add(1, Ordering::Relaxed);
@@ -1549,11 +1802,12 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         // Count the complete production discovery, including every resumable
         // transaction and neighbor call, before rendering any payload.
         let build = log
-            .prepare_model_view(selected, "window-growth")
+            .prepare_model_view(selected, "window-growth", None)
             .await
             .unwrap();
-        log.connection
-            .run(|db| {
+        log.prepared_store()
+            .unwrap()
+            .run(|db, _in_flight| {
                 Box::pin(async move {
                     db.lock_handle().await?.remove_progress_handler();
                     Ok(())
@@ -1578,8 +1832,9 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         let measured = counter.load(Ordering::Relaxed);
         let cleanup = Arc::new(AtomicU64::new(0));
         let observed = cleanup.clone();
-        log.connection
-            .run(move |db| {
+        log.prepared_store()
+            .unwrap()
+            .run(move |db, _in_flight| {
                 Box::pin(async move {
                     db.lock_handle().await?.set_progress_handler(1, move || {
                         observed.fetch_add(1, Ordering::Relaxed);
@@ -1592,10 +1847,11 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
             .unwrap();
         drop(build);
         let registry = log.prepared.clone();
-        log.connection
-            .run(move |db| {
+        log.prepared_store()
+            .unwrap()
+            .run(move |db, in_flight| {
                 Box::pin(async move {
-                    while gc::maintain(db, &registry).await? {}
+                    while gc::maintain(db, &registry, in_flight).await? {}
                     db.lock_handle().await?.remove_progress_handler();
                     let remaining: i64 =
                         sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_dirty")
@@ -1628,3 +1884,12 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
         );
     }
 }
+
+#[path = "active_head_eviction_tests.rs"]
+mod active_head_eviction_tests;
+
+#[path = "wire_storage_tests.rs"]
+mod wire_storage_tests;
+
+#[path = "newspace_reuse_tests.rs"]
+mod newspace_reuse_tests;

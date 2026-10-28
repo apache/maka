@@ -25,7 +25,7 @@ use maka_agent_ports::session::history::Role;
 use rusqlite::{Connection as RawConnection, params};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fmt::Write,
 };
 use tokio_util::sync::CancellationToken;
@@ -75,11 +75,16 @@ pub(crate) fn fold(text: &str) -> String {
     text.nfc().collect::<String>().to_lowercase()
 }
 
-fn token(chars: &[char]) -> String {
-    let mut result = String::with_capacity(1 + 4 * chars.len());
+const GRAM_BITS: u32 = 21;
+
+fn append_token(result: &mut String, key: u64) {
     result.push('g');
-    for ch in chars {
-        let mut value = *ch as u32;
+    for shift in [2 * GRAM_BITS, GRAM_BITS, 0] {
+        let scalar = (key >> shift) & ((1 << GRAM_BITS) - 1);
+        if scalar == 0 {
+            continue;
+        }
+        let mut value = scalar - 1;
         let mut encoded = [b'0'; 4];
         for digit in encoded.iter_mut().rev() {
             *digit = b"0123456789abcdefghijklmnopqrstuvwxyz"[(value % 36) as usize];
@@ -89,19 +94,35 @@ fn token(chars: &[char]) -> String {
             result.push(char::from(byte));
         }
     }
-    result
+}
+
+fn gram_keys(text: &str, minimum: u32) -> Vec<u64> {
+    let mut keys = {
+        let mut unique = HashSet::<u64>::new();
+        let mut window = 0;
+        let mut available = 0;
+        for scalar in text.chars() {
+            // Three nonzero 21-bit lanes fit in 63 bits, including U+0000 as 1.
+            window = ((window << GRAM_BITS) | (u64::from(u32::from(scalar)) + 1)) & (u64::MAX >> 1);
+            available = (available + 1).min(3);
+            for size in minimum..=available {
+                unique.insert(window & ((1 << (size * GRAM_BITS)) - 1));
+            }
+        }
+        unique.into_iter().collect::<Vec<_>>()
+    };
+    keys.sort_unstable();
+    keys
 }
 
 pub(crate) fn grams(text: &str) -> String {
-    let chars: Vec<_> = text.chars().collect();
+    let keys = gram_keys(text, 1);
     let mut result = String::new();
-    for size in 1..=3.min(chars.len()) {
-        for window in chars.windows(size) {
-            if !result.is_empty() {
-                result.push(' ');
-            }
-            result.push_str(&token(window));
+    for key in keys {
+        if !result.is_empty() {
+            result.push(' ');
         }
+        append_token(&mut result, key);
     }
     result
 }
@@ -130,16 +151,59 @@ pub(crate) fn normalize_query(input: &mut SearchQuery) -> Result<(), StoreError>
     Ok(())
 }
 
-fn expression(terms: &[String]) -> String {
-    terms
-        .iter()
-        .map(|term| {
-            let chars: Vec<_> = term.chars().collect();
-            let tokens: BTreeSet<_> = chars.windows(3.min(chars.len())).map(token).collect();
-            format!("({})", tokens.into_iter().collect::<Vec<_>>().join(" AND "))
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ")
+struct LiteralTerm<'a> {
+    text: &'a str,
+    scalars: usize,
+}
+
+fn expression(terms: &[LiteralTerm<'_>]) -> String {
+    let mut result = String::new();
+    for term in terms {
+        if !result.is_empty() {
+            result.push_str(" OR ");
+        }
+        result.push('(');
+        for (index, key) in gram_keys(term.text, term.scalars.min(3) as u32)
+            .into_iter()
+            .enumerate()
+        {
+            if index != 0 {
+                result.push_str(" AND ");
+            }
+            append_token(&mut result, key);
+        }
+        result.push(')');
+    }
+    result
+}
+
+fn literal_density(
+    folded: &str,
+    terms: &[LiteralTerm<'_>],
+    cancellation: &CancellationToken,
+) -> Result<(Vec<String>, f64), StoreError> {
+    let mut matched = Vec::new();
+    let mut coverage = 0.0;
+    for term in terms {
+        check(cancellation)?;
+        let mut occurrences = 0usize;
+        for _ in folded.matches(term.text) {
+            check(cancellation)?;
+            occurrences += 1;
+        }
+        if occurrences != 0 {
+            matched.push(term.text.to_owned());
+            coverage += occurrences as f64 * term.scalars as f64;
+        }
+    }
+    let score = if matched.is_empty() {
+        0.0
+    } else {
+        check(cancellation)?;
+        coverage / folded.chars().count() as f64
+    };
+    check(cancellation)?;
+    Ok((matched, score))
 }
 
 #[derive(Clone)]
@@ -334,8 +398,16 @@ fn search_on_handle(
             ));
         }
     }
+    let terms: Vec<_> = input
+        .terms
+        .iter()
+        .map(|term| LiteralTerm {
+            text: term,
+            scalars: term.chars().count(),
+        })
+        .collect();
     let query = format!(
-        "SELECT {COLUMNS},d.folded,bm25(recall_terms)
+        "SELECT {COLUMNS},d.folded
          FROM recall_terms CROSS JOIN recall_documents d ON d.id=recall_terms.rowid {VISIBLE}
          AND recall_terms MATCH ?3 AND (?4 IS NULL OR d.session_id=?4)
          AND (?5 IS NULL OR d.timestamp>=?5) AND (?6 IS NULL OR d.timestamp<=?6)
@@ -348,7 +420,7 @@ fn search_on_handle(
     let mut rows = statement.query(params![
         partition as i64,
         prefix,
-        expression(&input.terms),
+        expression(&terms),
         input.session_id,
         input.since.map(number).transpose()?,
         input.until.map(number).transpose()?,
@@ -360,18 +432,13 @@ fn search_on_handle(
     while let Some(row) = rows.next()? {
         check(cancellation)?;
         let folded: String = row.get(9)?;
-        let matched_terms: Vec<_> = input
-            .terms
-            .iter()
-            .filter(|term| folded.contains(term.as_str()))
-            .cloned()
-            .collect();
+        let (matched_terms, score) = literal_density(&folded, &terms, cancellation)?;
         if matched_terms.is_empty() {
             continue;
         }
         let mut found = hit(row, through)?;
         found.matched_terms = matched_terms;
-        found.score = -row.get::<_, f64>(10)?
+        found.score = score
             * if found.role == Role::ToolResult {
                 0.5
             } else {

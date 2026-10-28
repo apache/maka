@@ -30,6 +30,8 @@ import { cardFamily, processFamily, toolArguments, toolResult } from './toolCard
 import { ToolReader } from './ToolReader';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
+import { pluginContext } from './plugins/context';
+import { PluginView } from './plugins/PluginView';
 
 const detailsGap = 8;
 
@@ -151,29 +153,57 @@ function Field(props: {
   through: number;
   original(): boolean;
   userScroll(): void;
+  tool(): HistoryTool;
 }) {
+  const plugins = pluginContext()!;
   const source = createToolSource(props.reference, props.sessionId, props.through);
   const family = cardFamily(source.original.presentation);
+  const renderer = () => plugins.renderer(source.original.presentation);
+  const value = computed(() => (source.format() === 'json' ? source.json() : source.content()));
   const projection = computed(() =>
     props.reference.field === 'arguments'
-      ? toolArguments(family, source.json())
-      : toolResult(family, source.json()),
+      ? toolArguments(family, value())
+      : toolResult(family, value()),
   );
   return (
     <If
-      when={!props.original() && projection() !== null}
+      when={!props.original() && !!renderer() && source.complete() && !source.error()}
       else={
-        <OriginalToolSource
-          source={source}
-          label={
-            props.reference.field === 'arguments' ? tr('Original arguments') : tr('Original result')
+        <If
+          when={!props.original() && projection() !== null}
+          else={
+            <OriginalToolSource
+              source={source}
+              label={
+                props.reference.field === 'arguments'
+                  ? tr('Original arguments')
+                  : tr('Original result')
+              }
+            />
           }
-        />
+        >
+          <View selectable>
+            <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
+          </View>
+        </If>
       }
     >
-      <View selectable>
-        <ToolReader value={projection()!} source={source} userScroll={props.userScroll} />
-      </View>
+      <Each of={renderer() ? [renderer()!] : []} key={(item) => item.key}>
+        {(item) => (
+          <PluginView
+            contribution={item()}
+            sessionId={() => props.sessionId}
+            tool={() => ({
+              field: props.reference.field,
+              value: value(),
+              sessionId: props.sessionId,
+              through: props.through,
+              tool: props.tool(),
+              userScroll: props.userScroll,
+            })}
+          />
+        )}
+      </Each>
     </If>
   );
 }
@@ -367,6 +397,7 @@ export function ToolCard(props: {
                   through={props.row().metadataThrough ?? props.through()}
                   original={props.original}
                   userScroll={props.userScroll}
+                  tool={() => tool()!}
                 />
               )}
             </Each>

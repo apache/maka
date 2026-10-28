@@ -24,10 +24,8 @@ publish.workspace = true
 
 [dependencies]
 maka-app-client.workspace = true
-maka-ui-authoring.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
-maka-transport.workspace = true
 maka-agent-api.workspace = true
 maka-event-log.workspace = true
 maka-interactions-api.workspace = true
@@ -35,7 +33,6 @@ maka-plugin-core.workspace = true
 maka-host-runtime.workspace = true
 maka-settings-native.workspace = true
 maka-skills-api.workspace = true
-maka-ui-runtime.workspace = true
 maka-web-api.workspace = true
 maka-workspace-api.workspace = true
 serde_json.workspace = true

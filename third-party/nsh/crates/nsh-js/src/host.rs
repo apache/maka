@@ -529,9 +529,10 @@ impl Host {
     /// Gives the VM chunk `id` of a split bundle (an ES module as
     /// `nsh-bundler` makes it), before the bundle is evaluated or when it
     /// was asked for ([`Host::take_chunk_requests`]); the imports waiting
-    /// for it continue.
-    pub fn add_chunk_source(&self, id: &str, source: String) {
-        self.add_chunk(id, crate::modules::ChunkCode::Source(source));
+    /// for it continue. `asset_base` is this module's imported-resource
+    /// directory (`import.meta.assetBase`); `None` uses the app's root.
+    pub fn add_chunk_source(&self, id: &str, source: String, asset_base: Option<String>) {
+        self.add_chunk(id, crate::modules::ChunkCode::Source(source), asset_base);
     }
 
     /// [`Host::add_chunk_source`] for a chunk compiled with
@@ -541,14 +542,28 @@ impl Host {
     ///
     /// As [`Host::eval_bytecode`]: bytecode from this QuickJS build, from a
     /// trusted source (QuickJS does not validate it).
-    pub unsafe fn add_chunk_bytecode(&self, id: &str, bytecode: Vec<u8>) {
-        self.add_chunk(id, crate::modules::ChunkCode::Bytecode(bytecode));
+    pub unsafe fn add_chunk_bytecode(
+        &self,
+        id: &str,
+        bytecode: Vec<u8>,
+        asset_base: Option<String>,
+    ) {
+        self.add_chunk(
+            id,
+            crate::modules::ChunkCode::Bytecode(bytecode),
+            asset_base,
+        );
     }
 
-    fn add_chunk(&self, id: &str, code: crate::modules::ChunkCode) {
+    fn add_chunk(&self, id: &str, code: crate::modules::ChunkCode, asset_base: Option<String>) {
         self.guarded(Phase::Call, || {
-            self.cx
-                .with(|cx| crate::chunks::add(cx.as_raw().as_ptr(), id, code));
+            self.cx.with(|cx| {
+                crate::chunks::add(
+                    cx.as_raw().as_ptr(),
+                    id,
+                    crate::modules::ChunkModule { code, asset_base },
+                )
+            });
             self.run_jobs();
         });
     }
@@ -1514,6 +1529,8 @@ declare var performance: {
 };
 
 interface ImportMeta {
+  /** Asset directory supplied by the embedding host for a runtime module. */
+  readonly assetBase?: string;
   /** The module's own URL: `file:` in the app's directory on desktop hosts,
    * the page's on the web, `asset:/` in packaged mobile apps, so
    * `new URL("./data.json", import.meta.url)` names a file beside it. */

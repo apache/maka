@@ -101,11 +101,7 @@ async fn configured_settings_app(fixture: &Fixture, locale: &str) -> (Uuid, Appl
     let previous = package.application_ref();
     let mut manifest = package.manifest().clone();
     let mut declaration = manifest.application.as_ref().unwrap().declaration().clone();
-    declaration
-        .entries
-        .get_mut(&EntryTarget::Host)
-        .unwrap()
-        .configuration = maka_settings_native::native().configuration;
+    declaration.host.as_mut().unwrap().configuration = maka_settings_native::native().configuration;
     manifest.application =
         Some(maka_plugin_core::package::CheckedDeclaration::new(declaration).unwrap());
     let mut files = package.files().clone();

@@ -24,7 +24,10 @@ mod dependencies;
 mod discovery;
 pub(crate) mod gc;
 pub(crate) mod lifetime;
+mod refs;
+pub(crate) mod runtime;
 mod stats;
+pub(crate) mod store;
 mod tree;
 mod wire;
 use super::semantic::{self, SemanticSelection};
@@ -137,12 +140,18 @@ impl EventLog {
         &self,
         selection: SemanticSelection,
         policy: &str,
+        prior: Option<&PreparedView>,
     ) -> Result<PreparedBuild, StoreError> {
         self.validate_root()?;
         self.check_bound_session(&selection.session)?;
+        if let Some(prior) = prior {
+            prior.lease.validate(&self.prepared)?;
+            self.check_bound_session(&prior.selection.session)?;
+        }
+        let prior = prior.cloned();
         let policy = policy.to_owned();
         let registry = self.prepared.clone();
-        let build = self.connection.run(move |connection| Box::pin(async move {
+        let build = self.prepared_store()?.run(move |connection, in_flight| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let key = hash(encoded(&(&selection.session, &selection.lineage, selection.after, selection.anchor_sequence, &policy))?.as_bytes());
             let identity = hash(encoded(&(&key, &selection))?.as_bytes());
@@ -153,13 +162,21 @@ impl EventLog {
                     .bind(parent).fetch_optional(&mut *tx).await?;
                 let base = parent.as_deref().map(|id| registry.acquire("build",id,None)).transpose()?;
                 let lease = registry.acquire("build",&id,base)?;
-                tx.commit().await?;
+                tx.commit().await.map_err(StoreError::CommitUnknown)?;
                 return Ok(PreparedBuild { key, previous_revision:previous as u64, captured_revision:selection.captured_through, id, selection, lease });
             }
-            let parent = sqlx::query("SELECT b.id,b.root,b.selection_json FROM context_prepared_heads h JOIN context_prepared_builds b ON b.id=h.build_id
-                WHERE h.session_id=? AND b.cache_key=? AND b.complete=1 AND b.retiring=0 AND b.through_sequence<=? AND b.captured_revision<=? AND b.before_sequence<=?")
-                .bind(&selection.session).bind(&key).bind(selection.through as i64).bind(selection.captured_through as i64)
-                .bind(selection.before.min(i64::MAX as u64) as i64).fetch_optional(&mut *tx).await?;
+            let explicit = if let Some(prior) = &prior {
+                sqlx::query("SELECT id,root,selection_json FROM context_prepared_builds
+                    WHERE id=? AND cache_key=? AND complete=1 AND retiring=0 AND through_sequence<=? AND captured_revision<=? AND before_sequence<=?")
+                    .bind(&prior.build_id).bind(&key).bind(selection.through as i64).bind(selection.captured_through as i64)
+                    .bind(selection.before.min(i64::MAX as u64) as i64).fetch_optional(&mut *tx).await?
+            } else { None };
+            let parent = if explicit.is_some() { explicit } else {
+                sqlx::query("SELECT b.id,b.root,b.selection_json FROM context_prepared_heads h JOIN context_prepared_builds b ON b.id=h.build_id
+                    WHERE h.session_id=? AND b.cache_key=? AND b.complete=1 AND b.retiring=0 AND b.through_sequence<=? AND b.captured_revision<=? AND b.before_sequence<=?")
+                    .bind(&selection.session).bind(&key).bind(selection.through as i64).bind(selection.captured_through as i64)
+                    .bind(selection.before.min(i64::MAX as u64) as i64).fetch_optional(&mut *tx).await?
+            };
             let (parent_id,root,previous,previous_selection) = if let Some(parent) = parent {
                 let old: SemanticSelection = serde_json::from_str(parent.try_get("selection_json")?)?;
                 let since = old.through.min(old.captured_through).min(old.before.saturating_sub(1));
@@ -168,24 +185,25 @@ impl EventLog {
             let id = uuid::Uuid::new_v4().to_string();
             let base = parent_id.as_deref().map(|id| registry.acquire("build",id,None)).transpose()?;
             let lease = registry.acquire("build",&id,base)?;
-            sqlx::query("INSERT INTO context_prepared_builds(id,identity,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,parent_id,discovery_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+            sqlx::query("INSERT INTO context_prepared_builds(id,identity,cache_key,selection_json,through_sequence,captured_revision,before_sequence,previous_revision,root,parent_id) VALUES(?,?,?,?,?,?,?,?,?,?)")
                 .bind(&id).bind(identity).bind(&key).bind(encoded(&selection)?).bind(selection.through as i64)
                 .bind(selection.captured_through as i64).bind(selection.before.min(i64::MAX as u64) as i64)
-                .bind(previous as i64).bind(&root).bind(parent_id).bind(encoded(&discovery::Logical::new(previous_selection))?).execute(&mut *tx).await?;
-            tx.commit().await?;
+                .bind(previous as i64).bind(&root).bind(parent_id).execute(&mut *tx).await?;
+            let mut refs=refs::RefBatch::default();
+            if let Some(root)=&root { refs.change(&mut tx,refs::Kind::Node,root,1).await?; }
+            refs.flush(&mut tx).await?;
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            in_flight.insert(assembly::Kind::Logical,&id,runtime::Generation::Logical(discovery::Logical::new(previous_selection)));
             registry.wake();
             Ok(PreparedBuild { key, previous_revision:previous, captured_revision:selection.captured_through, id, selection, lease })
         })).await?;
         loop {
             let chunk_build = build.clone();
             let ready = self
-                .connection
-                .run(move |connection| {
+                .prepared_store()?
+                .run(move |connection, in_flight| {
                     Box::pin(async move {
-                        let mut tx = connection.begin().await?;
-                        let ready = discovery::logical(&mut tx, &chunk_build).await?;
-                        tx.commit().await?;
-                        Ok(ready)
+                        discovery::logical(connection, in_flight, &chunk_build).await
                     })
                 })
                 .await?;
@@ -217,7 +235,7 @@ impl EventLog {
             return Err(invalid("prepared page limit must be positive"));
         }
         let lease = build.lease.clone();
-        self.connection.read_interruptible(move |connection|Box::pin(async move {
+        self.prepared_store()?.read_interruptible(move |connection|Box::pin(async move {
             let mut scope_transaction = connection.begin().await?;
             let connection = &mut *scope_transaction;
             require_build_session(connection, expected_session.as_deref(), &scope_id).await?;
@@ -243,7 +261,7 @@ impl EventLog {
         let id = build.id.clone();
         let group = group_number(group)?;
         let lease = build.lease.clone();
-        self.connection
+        self.prepared_store()?
             .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut scope_transaction = connection.begin().await?;
@@ -273,16 +291,12 @@ impl EventLog {
             let lease = build.lease.clone();
             let expected = expected_session.clone();
             let ready = self
-                .connection
-                .run(move |connection| {
+                .prepared_store()?
+                .run(move |connection, in_flight| {
                     Box::pin(async move {
                         let _lease = lease;
-                        let mut tx = connection.begin().await?;
-                        require_build_session(&mut tx, expected.as_deref(), &id).await?;
-                        let ready =
-                            assembly::advance(&mut tx, assembly::Kind::Logical, &id).await?;
-                        tx.commit().await?;
-                        Ok(ready)
+                        require_build_session(connection, expected.as_deref(), &id).await?;
+                        assembly::advance(connection, in_flight, assembly::Kind::Logical, &id).await
                     })
                 })
                 .await?;
@@ -291,7 +305,7 @@ impl EventLog {
             }
         }
         let build = build.clone();
-        self.connection.run(move |connection| Box::pin(async move {
+        self.prepared_store()?.run(move |connection, in_flight| Box::pin(async move {
             let mut tx = connection.begin().await?;
             require_build_session(&mut tx, expected_session.as_deref(), &scope_id).await?;
             let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_dirty WHERE build_id=? AND done=0)").bind(&build.id).fetch_one(&mut *tx).await?;
@@ -303,7 +317,8 @@ impl EventLog {
                 let weight = tree::weight(&mut tx,root.as_deref()).await?;
                 gc::publish_logical(&mut tx,&build.selection,&build.id,weight).await?;
             }
-            tx.commit().await?;
+            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            in_flight.remove("build",&build.id);
             build.lease.wake();
             Ok(PreparedView { identity:root.clone().unwrap_or_else(||hash(b"empty prepared prefix")), message_count, breakdown, root, selection:build.selection, build_id:build.id, lease:build.lease })
         })).await
@@ -325,7 +340,7 @@ impl EventLog {
             return Err(invalid("invalid prepared semantic cursor"));
         }
         let view = view.clone();
-        self.connection
+        self.prepared_store()?
             .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut scope_transaction = connection.begin().await?;
@@ -366,7 +381,7 @@ impl EventLog {
         self.check_bound_session(&view.selection.session)?;
         let view = view.clone();
         let sequence = group_number(group)?;
-        self.connection
+        self.prepared_store()?
             .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut scope_transaction = connection.begin().await?;
@@ -406,7 +421,7 @@ impl EventLog {
         }
         let root = view.root.clone();
         let lease = view.lease.clone();
-        self.connection
+        self.prepared_store()?
             .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut scope_transaction = connection.begin().await?;
@@ -485,7 +500,7 @@ fn joins(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "prepared/assembly_tests.rs"]

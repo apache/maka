@@ -94,7 +94,7 @@ async fn interrupted_streaming_tool_ancestry_and_later_model_step_replay_exactly
     let db = Connection::open(&path).unwrap();
 
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "a"))
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
             .await
             .len(),
         4
@@ -181,7 +181,7 @@ async fn interrupted_streaming_tool_ancestry_and_later_model_step_replay_exactly
     prepared.expect("append-accepted evidence must preserve the selected-boundary contract");
 
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
         expected
     );
     drop(db);

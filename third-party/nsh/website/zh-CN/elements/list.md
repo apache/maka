@@ -122,12 +122,12 @@ virtual_list(move || messages.with(|m| m.len()), move |at| {
 
 所有元素通用的属性（[通用属性](./index.md#通用属性)）原样传给列表的滚动视图：`testID`、`accessibilityLabel` 等无障碍属性、样式、`onLayout`、触摸和响应者属性。UI 测试按 `testID` 找到列表，和找其他视图一样。
 
-`ViewabilityConfig`（Rust：`Viewability { item_visible_percent, view_area_percent }` 与 `.minimum_view_time(..)`）：
+`ViewabilityConfig`（Rust：`Viewability { item_visible_threshold, view_area_coverage_threshold }` 与 `.minimum_view_time(..)`）：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `itemVisiblePercentThreshold` | `number` | 条目可见部分须达到的百分比。 |
-| `viewAreaCoveragePercentThreshold` | `number` | 条目须覆盖视口的百分比。两个阈值都不设时，露出任何一个像素都算可见。 |
+| `itemVisibleThreshold` | `number` | 条目可见部分须达到的比例，0 到 1。 |
+| `viewAreaCoverageThreshold` | `number` | 条目须覆盖视口的比例，0 到 1。两个阈值都不设时，露出任何一个像素都算可见。 |
 | `minimumViewTime` | `number` | 条目须保持可见多少毫秒才会上报。 |
 
 `ViewToken<T>` 为 `{ item, key, index, isViewable }`。Rust 的监听器收到 `ViewableItems`：`indices()` 是可见行的范围，`changed()` 是出现或离开的行。
@@ -171,7 +171,7 @@ virtual_list(move || photos.with(|p| p.len()), move |at| {
 .content_padding(px(12.0))
 .row_gap(px(8.0))
 .column_gap(px(8.0))
-.viewability(Viewability { item_visible_percent: Some(50.0), ..Viewability::default() })
+.viewability(Viewability { item_visible_threshold: Some(Percentage(0.5)), ..Viewability::default() })
 .on_viewable_items_change(move |items: &ViewableItems| {
     visible.set(format!("{} 项可见", items.indices().count()).into())
 })
@@ -192,7 +192,7 @@ let list!: YNode;
   numColumns={3}
   estimatedItemSize={120}
   contentStyle={{ padding: 12, gap: 8 }}
-  viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+  viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
   onViewableItemsChange={({ viewableItems }) => visible.set(`${viewableItems.length} 项可见`)}
   header={<Text onPress={() => list.scrollToIndex({ index: 60, viewPosition: 0.5 })}>跳到第 60 项</Text>}
   style={{ flex: 1 }}

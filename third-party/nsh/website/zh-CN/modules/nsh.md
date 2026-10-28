@@ -203,6 +203,27 @@ function App() {
 mount(App);
 ```
 
+## importModule
+
+```ts
+function importModule<T = Record<string, unknown>>(
+  id: string,
+  dependencies?: readonly string[],
+): Promise<T>;
+```
+
+加载嵌入宿主在运行时提供的模块。模块 id 和它静态依赖的 id 都是 `plugin.js` 这样的平面 chunk 文件名。
+Promise 兑现为模块的导出。同一个 id 的重复导入共享求值结果和状态；更新代码时使用新 id。
+
+模块运行在应用的 VM 中，使用应用已注册的原生模块和能力。将它导出的组件渲染在应用树中，组件和订阅随其响应式
+owner 清理；已求值的模块会在该 VM 的生命周期内保留缓存。源码读取失败会拒绝 Promise，之后再次导入会重新读取。
+
+原生嵌入宿主通过 `EngineConfig::chunk_loader` 异步提供源码，Web 宿主使用其拆分 bundle 加载器。
+通过 `Bundle::with_chunks` 提供的模块可以直接导入。
+
+源码加载器可以通过 `ChunkSource::with_asset_base` 为模块指定自己的资源目录。导入的图片和字体会自动在其中解析，
+也支持像素密度变体。宿主在源码之外保存这个目录，因此内容寻址的包可以在资源 URL 中使用自己的身份。
+
 ## mount
 
 ```ts
@@ -1100,8 +1121,8 @@ view().direction(LayoutDirection::Rtl).flex_row().gap_2().child(text("First")).c
 
 ### 相关内容
 
-- 安全区域（Rust 的 `safe_area()`；TSX 的 `safeArea()`、`safeAreaInsets()`）和软键盘（Rust 的 `keyboard_height()`；TSX 的 `keyboardFrame()`）属于 [`nsh/base`](./nsh-base.md#safearea-and-safeareainsets)。
-- 屏幕阅读器和减弱动态效果的设置在 [`nsh`](./nsh-accessibility.md) 中。
+- 安全区域（Rust 的 `safe_area()`；TSX 的 `safeArea()`、`safeAreaInsets()`）和软键盘（Rust 的 `keyboard_height()`；TSX 的 `keyboardFrame()`）由 `nsh` 导出，见[安全区域与键盘](#安全区域与键盘)。
+- 屏幕阅读器和减弱动态效果的设置在 [`nsh` 的 Accessibility API](#accessibility) 中。
 
 ## PanResponder
 
@@ -1155,7 +1176,7 @@ pub fn App() -> impl IntoElement {
                 pos.set((x + e.gesture.delta.x.0, y + e.gesture.delta.y.0));
             })
             .on_responder_release(move |e: &ResponderEvent| {
-                log::info!("released at {:.2} pt/ms", e.gesture.vx);
+                log::info!("released at {:.0} pt/s", e.gesture.vx);
             }),
     )
 }
@@ -1172,7 +1193,7 @@ function App() {
     onStartShouldSetPanResponder: () => true,
     onPanResponderGrant: () => (start = pos()),
     onPanResponderMove: (_, g) => pos.set({ x: start.x + g.dx, y: start.y + g.dy }),
-    onPanResponderRelease: (_, g) => console.log(`released at ${g.vx.toFixed(2)} pt/ms`),
+    onPanResponderRelease: (_, g) => console.log(`released at ${g.vx.toFixed(0)} pt/s`),
   });
   return (
     <View style={{ flex: 1 }}>
@@ -1228,7 +1249,7 @@ interface PanResponderGestureState {
   y0: number;
   dx: number;                  // 成为响应者以来移动的距离
   dy: number;
-  vx: number;                  // 速度，点/毫秒
+  vx: number;                  // 速度，点/秒
   vy: number;
   numberActiveTouches: number;
 }
@@ -1242,7 +1263,7 @@ Rust：`PanGesture`，位置为 `Point<Points>`。
 | `moveX`、`moveY` | `position` | 触点中心的最新位置，界面坐标（点）。 |
 | `x0`、`y0` | `origin` | 成为响应者时触点中心的位置。 |
 | `dx`、`dy` | `delta` | 成为响应者以来移动的距离。 |
-| `vx`、`vy` | `vx`、`vy` | 速度，单位为点/毫秒。 |
+| `vx`、`vy` | `vx`、`vy` | 速度，单位为点/秒。 |
 | `numberActiveTouches` | `active_touches` | 按下的手指数。 |
 
 ### 在滚动视图中
@@ -1301,7 +1322,7 @@ const Clipboard: {
 
 interface ClipboardImage {
   url: string; // data:image/png;base64,…
-  size: { width: number; height: number }; // 像素
+  size: PixelSize;
 }
 ```
 
@@ -1569,7 +1590,7 @@ interface PickImagesOptions {
 
 interface PickedImage {
   file: File; // 文件名、类型、字节数和字节
-  size: { width: number; height: number }; // 像素，方向已摆正
+  size: PixelSize; // 方向已摆正
 }
 ```
 
@@ -2570,6 +2591,7 @@ function Saved() {
 | `ColorValue`、`DimensionValue`、`LengthValue`、`TransformStep` | 样式中的值 |
 | `GestureResponderEvent`、`HoverEvent`、`ContextMenuEvent`、`ScrollEvent`、`PanEvent`、`TouchPoint` | 事件数据 |
 | `Point`、`Size`、`Bounds`、`Edges`、`Modifiers` | 事件数据和属性所用的形状，字段与 GPUI 相同（`nsh_core::geometry`） |
+| `PixelSize` | 图片或视频自身的像素尺寸（`onLoad`、`Image.getSize`、剪贴板和照片选择器的图片）；`Size` 的单位是点 |
 | `ImageAsset` | 导入图片文件得到的对象（`{ url, size: Size, scales? }`；`scales` 列出它的[像素密度变体](../docs/images-and-assets.md#像素密度)） |
 | `OS` | `"ios" \| "android" \| "macos" \| "windows" \| "linux" \| "web"` |
 | `AccessibilityRole`、`AccessibilityState` | 无障碍属性 |

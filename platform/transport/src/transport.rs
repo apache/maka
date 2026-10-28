@@ -17,10 +17,8 @@
  * under the License.
  */
 
-//! UI adapters for authenticated independent Host sessions.
-pub mod ipc;
-pub mod native;
+//! Authenticated Host session and channel contracts.
 pub use maka_host_runtime::application::transport::{
-    Call, Catalogue, Description, Endpoint, Endpoints, NativeGrant, Peer, PeerPolicy, Peers, Reply,
-    Selection, Server, Source,
+    Call, Catalogue, Description, Endpoint, Endpoints, Grant, NativeGrant, Peer, PeerPolicy, Peers,
+    Reply, Selection, Server, Source,
 };

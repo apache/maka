@@ -70,7 +70,7 @@ function App() {
         loadMoreThreshold={0.5}
         refreshing={refreshing()}
         onRefresh={refresh}
-        viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+        viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
         onViewableItemsChange={viewable}
         header={
           <View style={{ ...ui().card, borderRadius: 14, padding: 14, gap: 10, marginBottom: 4 }}>
@@ -155,7 +155,7 @@ function App() {
             loadMoreThreshold={0.5}
             refreshing={refreshing()}
             onRefresh={refresh}
-            viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+            viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
             onViewableItemsChange={viewable}
             footer={<Text style={{ color: ui().faint, fontSize: 13, textAlign: "center", paddingVertical: 12 }}>{status()}</Text>}
           >

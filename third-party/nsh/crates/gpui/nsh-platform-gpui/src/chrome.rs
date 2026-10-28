@@ -168,6 +168,8 @@ pub(crate) struct Chrome {
     height: Cell<Option<f32>>,
     /// The window's title (drawn in the title rows).
     title: RefCell<String>,
+    /// The embedding app's title, restored when the loaded app stops.
+    host_title: RefCell<String>,
     /// The application menu.
     menu: RefCell<Option<Arc<[MenuItem]>>>,
     /// The native menus (macOS) must be set again.
@@ -214,7 +216,37 @@ pub(crate) fn set_standalone(surface: &Surface, title: &str, window: AnyWindowHa
     c.window.set(Some(window));
     c.active.set(true);
     *c.title.borrow_mut() = title.to_owned();
+    *c.host_title.borrow_mut() = title.to_owned();
     c.menu_changed.set(true);
+}
+
+/// Removes the stopped app's chrome while retaining its embedding window.
+pub(crate) fn clear(surface: &Surface) {
+    let c = &surface.chrome;
+    c.open.borrow_mut().take();
+    c.menu.borrow_mut().take();
+    c.entries.borrow_mut().clear();
+    c.bar_items.borrow_mut().clear();
+    c.ops.borrow_mut().clear();
+    let title = c.host_title.borrow().clone();
+    *c.title.borrow_mut() = title.clone();
+    c.style.set(TitleBarStyle::default());
+    c.height.set(None);
+    if c.standalone.get() {
+        // A second stop before the next paint must retain these physical resets.
+        c.ops.borrow_mut().push(Op::Title(title));
+        c.ops.borrow_mut().push(Op::TitleBar);
+    }
+    c.menu_bar.set(MenuBarMode::default());
+    c.alt_down.set(false);
+    c.alt_armed.set(false);
+    c.revealed.set(false);
+    c.drag.set(None);
+    c.menu_changed.set(true);
+    let mut environment = surface.environment.get();
+    environment.title_bar = Insets::default();
+    surface.set_environment(environment);
+    surface.invalidate();
 }
 
 /// What a GPUI window gets for its title bar when an [`crate::AppView`]
@@ -1202,6 +1234,8 @@ fn resize_edges() -> Vec<AnyElement> {
 struct MenuCommand {
     /// The surface ([`Surface::by_key`]).
     surface: u64,
+    /// The engine load that installed this native menu item.
+    generation: u64,
     /// The item, in [`Chrome::entries`].
     index: usize,
 }
@@ -1302,6 +1336,7 @@ fn gpui_keystroke(s: &Shortcut) -> String {
 
 fn native_items(
     surface: u64,
+    generation: u64,
     items: &[MenuItem],
     entries: &mut Vec<(u32, Option<MenuRole>)>,
     bindings: &mut Vec<gpui::KeyBinding>,
@@ -1313,6 +1348,7 @@ fn native_items(
             MenuItem::Action(a) => {
                 let action = MenuCommand {
                     surface,
+                    generation,
                     index: entries.len(),
                 };
                 entries.push((a.id, a.role));
@@ -1333,7 +1369,7 @@ fn native_items(
                 items,
             } => gpui::MenuItem::submenu(gpui::Menu {
                 name: label.clone().into(),
-                items: native_items(surface, items, entries, bindings),
+                items: native_items(surface, generation, items, entries, bindings),
                 disabled: !enabled,
             }),
         })
@@ -1347,7 +1383,9 @@ fn set_native_menus(surface: &Surface, cx: &mut App) {
     }
     if !LISTENING.with(|l| l.replace(true)) {
         cx.on_action(|command: &MenuCommand, cx| {
-            if let Some(surface) = Surface::by_key(command.surface) {
+            if let Some(surface) = Surface::by_key(command.surface)
+                .filter(|surface| surface.load_generation() == command.generation)
+            {
                 let entry = surface.chrome.entries.borrow().get(command.index).copied();
                 if let Some((id, role)) = entry {
                     choose(&surface, id, role);
@@ -1375,7 +1413,13 @@ fn set_native_menus(surface: &Surface, cx: &mut App) {
                 items,
             } => Some(gpui::Menu {
                 name: label.clone().into(),
-                items: native_items(surface.key(), items, &mut entries, &mut bindings),
+                items: native_items(
+                    surface.key(),
+                    surface.load_generation(),
+                    items,
+                    &mut entries,
+                    &mut bindings,
+                ),
                 disabled: !enabled,
             }),
             _ => None,

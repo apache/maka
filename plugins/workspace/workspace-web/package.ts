@@ -28,8 +28,6 @@ export default {
     'zh-CN': { displayName: '网页工具', description: '为助手搜索网络并读取网页。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.workspaceWeb),
-    },
+    host: native(sdk.nativeImplementations.workspaceWeb),
   },
 };

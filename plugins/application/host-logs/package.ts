@@ -28,5 +28,5 @@ export default {
     'zh-CN': { displayName: 'Host 日志', description: '查看和跟随所连接 Host 的已捕获日志。' },
     'zh-TW': { displayName: 'Host 日誌', description: '查看和跟隨所連線 Host 的已擷取日誌。' },
   },
-  application: { entries: { host: native(sdk.nativeImplementations.hostLogs) } },
+  application: { host: native(sdk.nativeImplementations.hostLogs) },
 };

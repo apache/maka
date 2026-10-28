@@ -11182,7 +11182,7 @@ mod touch {
             &touch(TouchPhase::End, &path, 40.0, 32.0),
         );
         let batch = c.commit().unwrap();
-        assert!(log(&batch).unwrap().ends_with("|touch End|release 0.88"));
+        assert!(log(&batch).unwrap().ends_with("|touch End|release 875.00"));
         assert_eq!(commands(&batch), [(ROOT_ID, Command::ClearJsResponder)]);
     }
 
@@ -22877,7 +22877,7 @@ fn env_with_keyboard(height: f32, duration: f32) -> crate::element::Environment 
 #[test]
 fn keyboard_inset_height_pads_and_animates_with_the_keyboard() {
     let mut c = core();
-    c.set_environment(env_with_keyboard(0.0, 0.25));
+    c.set_environment(env_with_keyboard(0.0, 250.0));
     apply(
         &mut c,
         vec![
@@ -22917,7 +22917,7 @@ fn keyboard_inset_height_pads_and_animates_with_the_keyboard() {
     assert!(!matches!(batch.items[0], MountItem::LayoutAnimation(_)));
 
     // The keyboard shows: the padding follows, animated with its curve.
-    c.set_environment(env_with_keyboard(40.0, 0.25));
+    c.set_environment(env_with_keyboard(40.0, 250.0));
     let batch = c.commit().unwrap();
     assert_eq!(frame_of(&batch, 3).map(|f| f.size.height.0), Some(60.0));
     assert!(
@@ -22952,7 +22952,7 @@ fn keyboard_inset_height_pads_and_animates_with_the_keyboard() {
     );
     c.commit();
     assert!(c.env_styled.is_empty());
-    c.set_environment(env_with_keyboard(40.0, 0.25));
+    c.set_environment(env_with_keyboard(40.0, 250.0));
     assert!(c.commit().is_none());
 }
 

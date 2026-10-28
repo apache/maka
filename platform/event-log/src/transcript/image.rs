@@ -41,7 +41,7 @@ impl EventLog {
         }
         let (session, id) = (session.to_owned(), id.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let chunk = crate::artifacts::read_attachment_image(
@@ -75,12 +75,12 @@ impl EventLog {
         let (source_sequence, item_index) = sql_position(position)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::check_read(tx, &session, through).await?;
                     super::bodycache::ensure(tx, &session, position).await?;
                     let raw: String = sqlx::query_scalar(
-                        "SELECT a.value FROM transcript_cache.rows r, json_each(r.payload, '$.attachments') a
+                        "SELECT a.value FROM temp.transcript_rows r, json_each(r.payload, '$.attachments') a
                          WHERE r.session_id = ?1 AND r.source_sequence = ?2 AND r.item_index = ?3
                          AND json_extract(r.payload, '$.type') = 'user' AND a.key = ?4",
                     )
@@ -137,13 +137,13 @@ impl EventLog {
         sql_number(offset)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::check_read(tx, &session, through).await?;
                     super::bodycache::ensure(tx, &session, position).await?;
                     let raw: String = sqlx::query_scalar(
                         "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')
-                 FROM transcript_cache.rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+                 FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
                  AND json_extract(payload, '$.content.kind') = 'image'
                  AND length(CAST(json_extract(payload, '$.content') AS BLOB)) <= 16384",

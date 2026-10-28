@@ -23,11 +23,9 @@ use serde_json::json;
 
 use super::*;
 use crate::{
-    composition::{
-        Configuration, Environment, ExecutionLocation, Input, Node, PackageUse, Target, Template,
-    },
+    composition::{Configuration, Input, Node, PackageUse, Target, Template},
     contract::{Availability, Cardinality, Export, Import, Interface, Transport},
-    package::{Declaration, EntryDeclaration, EntryTarget, Implementation, PackageRef, Packages},
+    package::{Declaration, EntryDeclaration, Implementation, PackageRef, Packages},
     plan::{RemoteCapability, RemoteExports},
 };
 
@@ -44,7 +42,6 @@ fn contract() -> Contract {
 
 fn entry(provider: bool) -> EntryDeclaration {
     EntryDeclaration {
-        scene: None,
         implementation: Implementation::Native {
             implementation: "example.native".into(),
         },
@@ -92,7 +89,7 @@ fn node(name: &str, key: u128, provider: bool) -> Node {
     Node {
         key: Uuid::from_u128(key),
         package: reference(name).into(),
-        use_package: PackageUse::Entry,
+        use_package: PackageUse::Host,
         configuration: Configuration::default(),
         parameters: Configuration::default(),
         bindings: if provider {
@@ -118,7 +115,8 @@ impl Fixture {
                 .insert(
                     reference(name),
                     Declaration {
-                        entries: BTreeMap::from([(EntryTarget::Host, entry(provider))]),
+                        host: Some(entry(provider)),
+                        ui: None,
                         composition: None,
                     },
                 )
@@ -127,17 +125,12 @@ impl Fixture {
         Self {
             packages,
             input: Input {
-                environment: Environment {
-                    location: ExecutionLocation::Host,
-                    presentation: None,
-                },
+                ui: None,
                 instances: BTreeMap::from([
                     ("p".into(), node("provider", 1, true)),
                     ("a".into(), node("consumer", 2, false)),
                     ("b".into(), node("consumer", 3, false)),
                 ]),
-                recovery: None,
-                launch: None,
             },
         }
     }
@@ -379,7 +372,8 @@ fn structural_owner_waits_for_children_without_requiring_native_exports() {
         .insert(
             reference("product"),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(Template {
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::new(),
@@ -425,7 +419,8 @@ fn structural_routing_does_not_turn_a_child_dependency_into_whole_product_retire
         .insert(
             reference("product"),
             Declaration {
-                entries: BTreeMap::new(),
+                host: None,
+                ui: None,
                 composition: Some(Template {
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::from([(
@@ -458,6 +453,165 @@ fn structural_routing_does_not_turn_a_child_dependency_into_whole_product_retire
     assert!(stopped.contains(&consumer));
     assert_eq!(runtime.status(&parent).unwrap().phase, Phase::Active);
     assert_eq!(runtime.status(&independent).unwrap().phase, Phase::Active);
+}
+
+#[test]
+fn ui_root_switch_and_ui_only_upgrade_preserve_host_work_but_host_upgrade_retires_it() {
+    use crate::composition::{Override, UiTarget};
+    use crate::package::{UiContribution, UiEntry, UiText};
+
+    let mut fixture = Fixture::new();
+    let ui_v1 = reference("ui");
+    let ui_v2 = PackageRef {
+        revision: format!("sha256-{:064x}", 2),
+        ..ui_v1.clone()
+    };
+    for (package, module) in [(&ui_v1, "first.js"), (&ui_v2, "second.js")] {
+        fixture
+            .packages
+            .insert(
+                package.clone(),
+                Declaration {
+                    host: None,
+                    ui: Some(UiEntry {
+                        module: module.into(),
+                        configuration: json!({"type":"object"}).into(),
+                        imports: BTreeMap::new(),
+                        contributions: BTreeMap::from([
+                            ("app".into(), UiContribution::Root),
+                            (
+                                "details".into(),
+                                UiContribution::Panel {
+                                    title: UiText {
+                                        fallback: "Details".into(),
+                                        translations: BTreeMap::new(),
+                                    },
+                                },
+                            ),
+                        ]),
+                    }),
+                    composition: None,
+                },
+            )
+            .unwrap();
+    }
+    let host_children = std::mem::take(&mut fixture.input.instances);
+    let product = |ui_package: &PackageRef| {
+        let mut children = host_children.clone();
+        let mut ui = node("ui", 200, true);
+        ui.package = ui_package.clone().into();
+        ui.use_package = PackageUse::Ui;
+        children.insert("details".into(), ui);
+        let mut steady = node("ui", 201, true);
+        steady.use_package = PackageUse::Ui;
+        children.insert("steady".into(), steady);
+        Declaration {
+            host: None,
+            ui: None,
+            composition: Some(Template {
+                parameters: BTreeMap::new(),
+                imports: BTreeMap::new(),
+                exports: BTreeMap::new(),
+                children,
+            }),
+        }
+    };
+    let product_v1 = reference("product");
+    let product_v2 = PackageRef {
+        revision: format!("sha256-{:064x}", 2),
+        ..product_v1.clone()
+    };
+    fixture
+        .packages
+        .insert(product_v1.clone(), product(&ui_v1))
+        .unwrap();
+    fixture
+        .packages
+        .insert(product_v2.clone(), product(&ui_v2))
+        .unwrap();
+    let mut root = node("product", 100, true);
+    root.use_package = PackageUse::Composition;
+    fixture.input.instances.insert("product".into(), root);
+    fixture.input.ui = Some(UiTarget {
+        path: vec!["product".into(), "details".into()],
+        id: "app".into(),
+    });
+    let steady = fixture.id("steady");
+    let plan = fixture.plan();
+    let steady_basis = plan.binding_basis(&steady).unwrap();
+    let mut runtime = Runtime::new(plan);
+    let parent = fixture.activate(&mut runtime, "product", BTreeMap::new());
+    let provider = fixture.activate(&mut runtime, "p", published("retained host state"));
+    let consumer = fixture.activate(&mut runtime, "a", BTreeMap::new());
+    let capability = runtime.bind(&consumer, "action").unwrap().pop().unwrap();
+    let running = runtime.admit(&capability).unwrap();
+    let resource = runtime
+        .own_resource(&provider, "live provider resource")
+        .unwrap();
+
+    fixture.input.ui = Some(UiTarget {
+        path: vec!["product".into(), "steady".into()],
+        id: "app".into(),
+    });
+    let next = fixture.plan();
+    assert_eq!(next.binding_basis(&steady).unwrap(), steady_basis);
+    assert!(runtime.install(next).is_empty());
+    assert_eq!(runtime.desired().ui().unwrap().instance, steady);
+    assert_eq!(runtime.status(&provider).unwrap().calls, 1);
+    assert_eq!(runtime.status(&provider).unwrap().resources, 1);
+    assert_eq!(*running.value(), "retained host state");
+
+    fixture.input.instances.get_mut("product").unwrap().package = product_v2.into();
+    let next = fixture.plan();
+    assert_eq!(next.binding_basis(&steady).unwrap(), steady_basis);
+    assert!(runtime.install(next).is_empty());
+    assert_eq!(runtime.status(&parent).unwrap().phase, Phase::Active);
+    assert_eq!(runtime.status(&provider).unwrap().phase, Phase::Active);
+    assert_eq!(runtime.status(&provider).unwrap().calls, 1);
+    assert_eq!(runtime.status(&provider).unwrap().resources, 1);
+    let continued = runtime.admit(&capability).unwrap();
+    assert_eq!(*continued.value(), "retained host state");
+    runtime.settle(&continued, Ok(())).unwrap();
+    runtime.settle(&running, Ok(())).unwrap();
+    assert!(
+        runtime
+            .complete_resource(&resource, Ok(()))
+            .unwrap()
+            .is_empty()
+    );
+
+    let host_v2 = PackageRef {
+        revision: format!("sha256-{:064x}", 2),
+        ..reference("provider")
+    };
+    fixture
+        .packages
+        .insert(
+            host_v2.clone(),
+            Declaration {
+                host: Some(entry(true)),
+                ui: None,
+                composition: None,
+            },
+        )
+        .unwrap();
+    fixture
+        .input
+        .instances
+        .get_mut("product")
+        .unwrap()
+        .overrides
+        .push(Override {
+            path: vec!["p".into()],
+            package: Some(host_v2),
+            ..Default::default()
+        });
+    let retired = runtime.install(fixture.plan());
+    assert_eq!(retired.len(), 2);
+    assert!(retired.contains(&provider));
+    assert!(retired.contains(&consumer));
+    assert_eq!(runtime.status(&parent).unwrap().phase, Phase::Active);
+    assert!(runtime.admit(&capability).is_err());
 }
 
 #[test]
@@ -558,6 +712,125 @@ fn consumer_configuration_changes_do_not_retire_shared_provider() {
 }
 
 #[test]
+fn ui_consumers_track_effective_provider_changes_and_keep_original_work_through_retirement() {
+    use crate::package::UiEntry;
+
+    let mut fixture = Fixture::new();
+    let mut relay = entry(false);
+    relay.exports = entry(true).exports;
+    fixture
+        .packages
+        .insert(
+            reference("relay"),
+            Declaration {
+                host: Some(relay),
+                ui: None,
+                composition: None,
+            },
+        )
+        .unwrap();
+    fixture
+        .input
+        .instances
+        .insert("relay".into(), node("relay", 5, false));
+    fixture
+        .packages
+        .insert(
+            reference("ui"),
+            Declaration {
+                host: None,
+                ui: Some(UiEntry {
+                    module: "ui.js".into(),
+                    configuration: json!({"type":"object"}).into(),
+                    imports: BTreeMap::from([(
+                        "action".into(),
+                        Import {
+                            contract: contract(),
+                            cardinality: Cardinality::One,
+                        },
+                    )]),
+                    contributions: BTreeMap::new(),
+                }),
+                composition: None,
+            },
+        )
+        .unwrap();
+    let mut ui = node("ui", 4, false);
+    ui.use_package = PackageUse::Ui;
+    ui.bindings.insert("action".into(), vec![target("relay")]);
+    fixture.input.instances.insert("ui".into(), ui);
+    let ui_id = fixture.id("ui");
+    let plan = fixture.plan();
+    let basis = plan.binding_basis(&ui_id).unwrap();
+    let mut runtime = Runtime::new(plan);
+    let ui = runtime.begin_ui_consumer(&ui_id).unwrap();
+    assert!(matches!(
+        runtime.publish(&ui, BTreeMap::new()).unwrap_err().error,
+        Error::NotReady(_)
+    ));
+    assert_eq!(runtime.status(&ui).unwrap().phase, Phase::Loading);
+    let provider = fixture.activate(&mut runtime, "p", published("base service"));
+    let relay = fixture.activate(&mut runtime, "relay", published("bound plugin service"));
+    runtime.publish(&ui, BTreeMap::new()).unwrap();
+    let capability = runtime.bind(&ui, "action").unwrap().pop().unwrap();
+    let accepted = runtime.admit(&capability).unwrap();
+    assert_eq!(*accepted.value(), "bound plugin service");
+
+    fixture
+        .input
+        .instances
+        .get_mut("b")
+        .unwrap()
+        .configuration
+        .values
+        .insert("unrelated".into(), json!(true));
+    let unrelated = fixture.plan();
+    assert_eq!(unrelated.binding_basis(&ui_id).unwrap(), basis);
+    assert!(runtime.install(unrelated).is_empty());
+
+    let original_package = reference("provider");
+    let upgraded_package = PackageRef {
+        revision: format!("sha256-{:064x}", 2),
+        ..original_package.clone()
+    };
+    fixture
+        .packages
+        .insert(
+            upgraded_package.clone(),
+            Declaration {
+                host: Some(entry(true)),
+                ui: None,
+                composition: None,
+            },
+        )
+        .unwrap();
+    fixture.input.instances.get_mut("p").unwrap().package = upgraded_package.into();
+    assert_ne!(fixture.plan().binding_basis(&ui_id).unwrap(), basis);
+    fixture.input.instances.get_mut("p").unwrap().package = original_package.into();
+    fixture
+        .input
+        .instances
+        .get_mut("p")
+        .unwrap()
+        .configuration
+        .values
+        .insert("changed".into(), json!(true));
+    let changed = fixture.plan();
+    assert_ne!(changed.binding_basis(&ui_id).unwrap(), basis);
+    let retired = runtime.install(changed);
+    assert_eq!(retired.len(), 3);
+    assert!(retired.contains(&provider));
+    assert!(retired.contains(&relay));
+    assert!(retired.contains(&ui));
+    assert!(matches!(runtime.admit(&capability), Err(Error::Retired)));
+    assert_eq!(*accepted.value(), "bound plugin service");
+    runtime.settle(&accepted, Ok(())).unwrap();
+    runtime.finish_cleanup(&ui).unwrap();
+    runtime.finish_cleanup(&relay).unwrap();
+    runtime.finish_cleanup(&provider).unwrap();
+}
+
+#[test]
 fn required_imports_must_be_live_before_atomic_publication() {
     let fixture = Fixture::new();
     let mut runtime = Runtime::<usize>::new(fixture.plan());
@@ -613,7 +886,8 @@ fn remote_metadata_does_not_count_as_an_actual_registration() {
         .insert(
             reference("remote-consumer"),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Host, remote_entry)]),
+                host: Some(remote_entry),
+                ui: None,
                 composition: None,
             },
         )
@@ -657,220 +931,6 @@ fn remote_metadata_does_not_count_as_an_actual_registration() {
     ));
 }
 
-fn component_fixture() -> Fixture {
-    let mut fixture = Fixture::new();
-    fixture.input.environment = Environment {
-        location: ExecutionLocation::Ui,
-        presentation: Some(crate::composition::PresentationTarget::Tui),
-    };
-    fixture.input.launch = Some(target("p"));
-    fixture.packages = Packages::default();
-    for (name, provider) in [("provider", true), ("consumer", false)] {
-        let mut declaration = entry(provider);
-        for export in declaration.exports.values_mut() {
-            export.contract = component_contract();
-        }
-        for import in declaration.imports.values_mut() {
-            import.contract = component_contract();
-        }
-        fixture
-            .packages
-            .insert(
-                reference(name),
-                Declaration {
-                    entries: BTreeMap::from([(EntryTarget::Tui, declaration)]),
-                    composition: None,
-                },
-            )
-            .unwrap();
-    }
-    fixture
-}
-fn component_contract() -> Contract {
-    Contract {
-        name: "example.Component".into(),
-        version: 1,
-        transport: Transport::Local,
-        interface: Interface::Component {
-            props: json!({"type":"object"}).into(),
-            events: BTreeMap::new(),
-            captures: BTreeMap::new(),
-        },
-    }
-}
-fn component_export() -> BTreeMap<String, Published<()>> {
-    BTreeMap::from([(
-        "action".into(),
-        Published {
-            contract: component_contract(),
-            value: (),
-        },
-    )])
-}
-
-#[test]
-fn mount_close_and_accepted_work_are_independent_cleanup_obligations() {
-    let fixture = component_fixture();
-    let mut runtime = Runtime::new(fixture.plan());
-    let provider = fixture.activate(&mut runtime, "p", component_export());
-    let a = runtime.mount_launch().unwrap();
-    let b = runtime.mount_launch().unwrap();
-    runtime.publish_mount(&a).unwrap();
-    runtime.publish_mount(&b).unwrap();
-    let accepted = runtime.admit_mount(&a).unwrap();
-    runtime.retire_mount(&a).unwrap();
-    assert!(runtime.admit_mount(&a).is_err());
-    let other = runtime.admit_mount(&b).unwrap();
-    runtime.settle(&other, Ok(())).unwrap();
-    assert_eq!(runtime.status(&provider).unwrap().phase, Phase::Active);
-    assert!(
-        runtime
-            .complete_mount(&a, Err("unknown native close".into()))
-            .is_err()
-    );
-    runtime.retire(&provider).unwrap();
-    assert!(runtime.admit_mount(&b).is_err());
-    assert!(matches!(
-        runtime.finish_cleanup(&provider),
-        Err(Error::CleanupPending)
-    ));
-    runtime.complete_mount(&a, Ok(())).unwrap();
-    runtime.complete_mount(&b, Ok(())).unwrap();
-    assert!(matches!(
-        runtime.finish_cleanup(&provider),
-        Err(Error::CleanupPending)
-    ));
-    runtime.settle(&accepted, Ok(())).unwrap();
-    runtime.finish_cleanup(&provider).unwrap();
-    let replacement = fixture.activate(&mut runtime, "p", component_export());
-    assert_ne!(provider, replacement);
-    assert!(runtime.admit_mount(&a).is_err());
-}
-
-#[test]
-fn owned_mount_children_close_before_parent_without_retiring_providers() {
-    let mut fixture = component_fixture();
-    // Root P explicitly imports an independent Q component. Ownership attaches
-    // to the mounted child, not Q's reusable provider registration.
-    fixture.input.instances.retain(|name, _| name == "p");
-    fixture
-        .input
-        .instances
-        .insert("q".into(), node("child", 4, true));
-    fixture
-        .input
-        .instances
-        .get_mut("p")
-        .unwrap()
-        .bindings
-        .insert("action".into(), vec![target("q")]);
-    let mut parent = entry(false);
-    parent.imports.get_mut("action").unwrap().contract = component_contract();
-    parent.exports.insert(
-        "action".into(),
-        crate::contract::Export {
-            contract: component_contract(),
-            availability: Availability::Required,
-        },
-    );
-    let mut child = entry(true);
-    child.exports.get_mut("action").unwrap().contract = component_contract();
-    // Use fresh identities for immutable package declarations.
-    fixture.input.instances.get_mut("p").unwrap().package = reference("parent").into();
-    for (name, entry) in [("parent", parent), ("child", child)] {
-        fixture
-            .packages
-            .insert(
-                reference(name),
-                Declaration {
-                    entries: BTreeMap::from([(EntryTarget::Tui, entry)]),
-                    composition: None,
-                },
-            )
-            .unwrap();
-    }
-    let mut runtime = Runtime::new(fixture.plan());
-    let q = fixture.activate(&mut runtime, "q", component_export());
-    let p = fixture.activate(&mut runtime, "p", component_export());
-    let root = runtime.mount_launch().unwrap();
-    runtime.publish_mount(&root).unwrap();
-    let capability = runtime.bind(&p, "action").unwrap().remove(0);
-    let child = runtime.mount_component(&capability, Some(&root)).unwrap();
-    runtime.publish_mount(&child).unwrap();
-    assert_eq!(runtime.retire_mount(&root).unwrap().len(), 2);
-    assert!(runtime.admit_mount(&child).is_err());
-    assert!(matches!(
-        runtime.complete_mount(&root, Ok(())),
-        Err(Error::CleanupPending)
-    ));
-    runtime.complete_mount(&child, Ok(())).unwrap();
-    runtime.complete_mount(&root, Ok(())).unwrap();
-    assert_eq!(runtime.status(&p).unwrap().phase, Phase::Active);
-    assert_eq!(runtime.status(&q).unwrap().phase, Phase::Active);
-}
-
-#[test]
-fn launch_changes_retire_existing_roots_without_retiring_unchanged_providers() {
-    let mut fixture = component_fixture();
-    let mut runtime = Runtime::new(fixture.plan());
-    let provider = fixture.activate(&mut runtime, "p", component_export());
-    let root = runtime.mount_launch().unwrap();
-    runtime.publish_mount(&root).unwrap();
-    fixture.input.launch = None;
-    assert!(runtime.install(fixture.plan()).is_empty());
-    assert!(runtime.admit_mount(&root).is_err());
-    assert_eq!(runtime.status(&provider).unwrap().phase, Phase::Active);
-    runtime.complete_mount(&root, Ok(())).unwrap();
-    assert!(runtime.mount_launch().is_err());
-}
-
-#[test]
-fn recovery_root_remains_independent_of_failed_work_and_launch_selection() {
-    use crate::composition::RootKind;
-    let mut fixture = component_fixture();
-    fixture
-        .input
-        .instances
-        .insert("recovery".into(), node("provider", 4, true));
-    fixture.input.recovery = Some(target("recovery"));
-    let mut runtime = Runtime::new(fixture.plan());
-    let primary = fixture.activate(&mut runtime, "p", component_export());
-    let recovery = fixture.activate(&mut runtime, "recovery", component_export());
-    let root = runtime.mount_launch().unwrap();
-    runtime.publish_mount(&root).unwrap();
-    let work = runtime.admit_mount(&root).unwrap();
-    runtime
-        .settle(&work, Err("original cleanup unknown".into()))
-        .unwrap();
-    assert!(runtime.admit_mount(&root).is_err());
-    runtime.complete_mount(&root, Ok(())).unwrap();
-    let fallback = runtime.mount_root(RootKind::Recovery).unwrap();
-    runtime.publish_mount(&fallback).unwrap();
-    let input = runtime.admit_mount(&fallback).unwrap();
-    runtime.settle(&input, Ok(())).unwrap();
-    assert_eq!(
-        runtime.root_kind(&fallback).unwrap(),
-        Some(RootKind::Recovery)
-    );
-    assert!(matches!(
-        runtime.finish_cleanup(&primary),
-        Err(Error::CleanupFailed(_))
-    ));
-    assert_eq!(runtime.status(&primary).unwrap().calls, 1);
-    fixture.input.launch = None;
-    runtime.install(fixture.plan());
-    let input = runtime.admit_mount(&fallback).unwrap();
-    runtime.settle(&input, Ok(())).unwrap();
-    fixture.input.recovery = None;
-    runtime.install(fixture.plan());
-    assert!(runtime.admit_mount(&fallback).is_err());
-    assert_eq!(runtime.status(&recovery).unwrap().phase, Phase::Active);
-    assert!(matches!(
-        runtime.finish_cleanup(&primary),
-        Err(Error::CleanupFailed(_))
-    ));
-}
-
 fn remote_plan(optional: bool) -> (Fixture, RemoteCapability, Contract, Plan) {
     let mut fixture = Fixture::new();
     let mut declared = contract();
@@ -887,7 +947,8 @@ fn remote_plan(optional: bool) -> (Fixture, RemoteCapability, Contract, Plan) {
         .insert(
             reference("remote-consumer"),
             Declaration {
-                entries: BTreeMap::from([(EntryTarget::Host, declaration)]),
+                host: Some(declaration),
+                ui: None,
                 composition: None,
             },
         )
@@ -1094,7 +1155,6 @@ fn optional_remote_metadata_is_empty_and_actual_mismatch_does_not_become_ready()
         .unwrap();
     let capability = runtime.bind(&consumer, "action").unwrap().remove(0);
     assert_eq!(*runtime.inspect(&capability).unwrap(), 9);
-    assert!(runtime.mount_component(&capability, None).is_err());
 }
 
 #[test]

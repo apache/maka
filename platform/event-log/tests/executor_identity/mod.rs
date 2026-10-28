@@ -125,7 +125,7 @@ fn raw(db: &Connection) -> Vec<(String, Vec<u8>)> {
         .unwrap()
 }
 fn cached_rows(db: &Connection) -> Vec<(i64, i64, String, Vec<u8>)> {
-    db.prepare("SELECT source_sequence,item_index,message_id,payload FROM transcript_cache.rows WHERE session_id='session' ORDER BY source_sequence,item_index")
+    db.prepare("SELECT source_sequence,item_index,message_id,payload FROM temp.transcript_rows WHERE session_id='session' ORDER BY source_sequence,item_index")
         .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
         .unwrap().collect::<Result<_, _>>().unwrap()
 }
@@ -335,12 +335,12 @@ async fn executor_closing_rejects_prior_client_result_identity_and_rolls_back() 
         log.close().await.unwrap();
         let log = EventLog::open(&path).await.unwrap();
         assert!(
-            crate::test_store::inspect(&log, cached_rows)
+            crate::test_store::inspect_cache(&log, cached_rows)
                 .await
                 .is_empty(),
             "canonical guard does not depend on transcript cache"
         );
-        let before = crate::test_store::inspect(&log, snapshot).await;
+        let before = crate::test_store::inspect_cache(&log, snapshot).await;
         assert_eq!(before.receipts.len(), 1);
         assert!(
             before.raw.is_empty(),
@@ -360,12 +360,15 @@ async fn executor_closing_rejects_prior_client_result_identity_and_rolls_back() 
                 .unwrap_err(),
         );
         assert_eq!(
-            crate::test_store::inspect(&log, snapshot).await,
+            crate::test_store::inspect_cache(&log, snapshot).await,
             before,
             "canonical bytes, receipt and transaction prefix must roll back"
         );
         rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(crate::test_store::inspect(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         assert_eq!(
             log.message_submit_receipt("epoch", "session", &id)
                 .await
@@ -421,11 +424,11 @@ async fn client_source_rejects_executor_result_identity_after_reopen() {
         log.close().await.unwrap();
         let log = EventLog::open(&path).await.unwrap();
         assert!(
-            crate::test_store::inspect(&log, cached_rows)
+            crate::test_store::inspect_cache(&log, cached_rows)
                 .await
                 .is_empty()
         );
-        let before = crate::test_store::inspect(&log, snapshot).await;
+        let before = crate::test_store::inspect_cache(&log, snapshot).await;
         assert_eq!(before.receipts.len(), 1);
         assert_eq!(before.pending.len(), 1);
         preflight_rejected(
@@ -441,9 +444,15 @@ async fn client_source_rejects_executor_result_identity_after_reopen() {
                 .await
                 .unwrap_err(),
         );
-        assert_eq!(crate::test_store::inspect(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(crate::test_store::inspect(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         assert_eq!(
             log.message_submit_receipt("epoch", "session", "receipt-control")
                 .await
@@ -534,7 +543,7 @@ async fn executor_result_identity_reserves_only_actual_pending_slots() {
             log.append(&claim(&other, &occupied)).await.unwrap();
         }
         materialize_all(&log, through).await;
-        let synthetic: Vec<String> = crate::test_store::inspect(&log, move |db| { db.prepare("SELECT message_id FROM transcript_cache.rows WHERE session_id='session' AND source_sequence=? AND json_extract(payload,'$.type')='tool_result' ORDER BY item_index").unwrap()
+        let synthetic: Vec<String> = crate::test_store::inspect_cache(&log, move |db| { db.prepare("SELECT message_id FROM temp.transcript_rows WHERE session_id='session' AND source_sequence=? AND json_extract(payload,'$.type')='tool_result' ORDER BY item_index").unwrap()
             .query_map([i64::try_from(complete_sequence).unwrap()], |row| row.get(0)).unwrap().collect::<Result<_,_>>().unwrap() }).await;
         assert_eq!(
             synthetic,
@@ -623,11 +632,11 @@ async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
         log.close().await.unwrap();
         let log = EventLog::open(&path).await.unwrap();
         assert!(
-            crate::test_store::inspect(&log, cached_rows)
+            crate::test_store::inspect_cache(&log, cached_rows)
                 .await
                 .is_empty()
         );
-        let before = crate::test_store::inspect(&log, snapshot).await;
+        let before = crate::test_store::inspect_cache(&log, snapshot).await;
         assert_eq!(before.receipts.len(), 1);
         if !source_first {
             preflight_rejected(
@@ -642,9 +651,15 @@ async fn executor_tool_call_identity_is_atomic_session_scoped_and_reopens() {
                 .await
                 .unwrap_err(),
         );
-        assert_eq!(crate::test_store::inspect(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         rejected(log.append(&target).await.unwrap_err());
-        assert_eq!(crate::test_store::inspect(&log, snapshot).await, before);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, snapshot).await,
+            before
+        );
         assert_eq!(
             log.message_submit_receipt("epoch", "session", &receipt_id)
                 .await

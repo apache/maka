@@ -215,20 +215,20 @@ async fn app_stop_is_user_only_and_streams_settled_activity_without_native_input
                     Attachments::new().into(),
                 )
                 .await;
-            if let Ok(prepared) = prepared {
-                if let Ok(result) = client.mutate_owned(prepared).await {
-                    let result = result.result().await;
-                    assert!(
-                        !matches!(
-                            result.receipt,
-                            Receipt::Recorded {
-                                outcome: OperationOutcome::Returned { .. },
-                                ..
-                            }
-                        ),
-                        "non-user scope returned a Stop result"
-                    );
-                }
+            if let Ok(prepared) = prepared
+                && let Ok(result) = client.mutate_owned(prepared).await
+            {
+                let result = result.result().await;
+                assert!(
+                    !matches!(
+                        result.receipt,
+                        Receipt::Recorded {
+                            outcome: OperationOutcome::Returned { .. },
+                            ..
+                        }
+                    ),
+                    "non-user scope returned a Stop result"
+                );
             }
             assert_eq!(
                 fixture

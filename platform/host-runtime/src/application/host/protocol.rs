@@ -134,6 +134,11 @@ pub struct Opening {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Connect,
+    ConnectUi {
+        owner: Uuid,
+        source: DeploymentRef,
+        instance: InstanceId,
+    },
     /// Trusted current-account launcher approval; remote principals cannot use it.
     ConnectPeer {
         source: DeploymentRef,
@@ -218,6 +223,14 @@ pub struct Connected {
     pub source: DeploymentRef,
     pub consumers: BTreeMap<String, InstanceId>,
     pub catalogue: Catalogue,
+    pub ui: Option<UiConnection>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiConnection {
+    pub instance: InstanceId,
+    pub imports: BTreeMap<String, Vec<String>>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

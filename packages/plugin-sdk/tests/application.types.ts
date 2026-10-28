@@ -18,9 +18,6 @@
  */
 
 import type {
-  EditorObservation,
-  EditorSnapshot,
-  InputProps,
   ModelSelection,
   AgentSend,
   AgentResume,
@@ -51,102 +48,19 @@ import type {
   SettingsProvidersRead,
   CredentialMutationResult,
   CatalogMutationResult,
-  Action,
-  Capture,
-  ActionOutcome,
-  CallerHistoryPage,
-  CallerIntent,
-  Component,
-  ComponentOutput,
-  ComponentInput,
-  ComponentValues,
-  UiExport,
-  Contract,
   HostRequest,
   RequestContext,
   ServiceMethods,
   RecoveryRef,
-  Surface,
 } from '@maka-agent/plugin-sdk';
 
-function originalReceiptQuery(reference: RecoveryRef): Action {
-  // Explicitly bind the original reader independently of the business import.
-  return {
-    key: 'receipt',
-    binding: 'receipts',
-    member: 0,
-    method: 'read',
-    input: reference,
-    resources: {},
-  };
-}
 function forgedReceiptReference(reference: RecoveryRef) {
   // @ts-expect-error A reference cannot select a Root or convey a recovery grant.
   const forged = { ...reference, root: '/other', grant: 'approved' } satisfies RecoveryRef;
   void forged;
 }
-void [originalReceiptQuery, forgedReceiptReference];
+void forgedReceiptReference;
 
-function originalUiReceipt(outcome: ActionOutcome) {
-  if (outcome.status !== 'operation') return;
-  const original = outcome.reply.reference;
-  // @ts-expect-error Unavailable/not-recorded receipts do not describe an outcome.
-  const premature = outcome.reply.receipt.outcome;
-  if (outcome.reply.receipt.kind === 'recorded') {
-    const known = outcome.reply.receipt.outcome;
-    void known;
-  }
-  void [original, premature];
-}
-void originalUiReceipt;
-
-const historyPage = { after: 0, limit: 16 } satisfies CallerHistoryPage;
-// @ts-expect-error The kernel selects the actual caller namespace.
-const forgedHistoryPage = { after: 0, limit: 16, consumer: ['other'] } satisfies CallerHistoryPage;
-function originalCallerIntent(intent: CallerIntent) {
-  const original = intent.reference;
-  // Local correlation accepts scalar JSON too, and readers must validate it.
-  const scalar: Action['recovery'] = 'draft-version';
-  const list: Action['recovery'] = [1, null, { revision: 2 }];
-  // @ts-expect-error Persisted correlation has no trusted product shape.
-  const uncheckedRevision = intent.recovery.editor.revision;
-  // @ts-expect-error Caller history does not assert business journal facts.
-  const businessOutcome = intent.receipt;
-  // @ts-expect-error Observation data contains no dispatch authorization token.
-  const token = intent.token;
-  void [original, scalar, list, uncheckedRevision, businessOutcome, token];
-}
-void [historyPage, forgedHistoryPage, originalCallerIntent];
-
-const terminal = { kind: 'terminal', binding: 'surface' } satisfies Surface;
-// @ts-expect-error Terminal surfaces have no pixel width.
-const badTerminal = { kind: 'terminal', binding: 'surface', width: 400 } satisfies Surface;
-// @ts-expect-error The removed window presentation is not a terminal surface.
-const badWindow = { kind: 'window', binding: 'surface' } satisfies Surface;
-// @ts-expect-error Component notifications carry the exact child and event name.
-const incompleteEvent = { kind: 'component', key: 'changed', event: {} } satisfies ComponentInput;
-
-const callbacks: Component = {
-  // @ts-expect-error Foreground callbacks cannot return promises.
-  async mount() {
-    return {
-      frame: {
-        revision: 0,
-        state: {},
-        surface: terminal,
-        view: { kind: 'button', key: 'ok', label: 'OK' },
-      },
-      events: [],
-      actions: [],
-    };
-  },
-  update() {
-    throw Error('unused');
-  },
-  event() {
-    throw Error('unused');
-  },
-};
 const fabricated = {
   operation: 'read',
   slot: 'text',
@@ -176,17 +90,7 @@ async function unknownResult(context: RequestContext) {
   // @ts-expect-error An unchecked service result is not consumer-selected T.
   const text: string = result;
 }
-void [
-  terminal,
-  badTerminal,
-  badWindow,
-  incompleteEvent,
-  callbacks,
-  fabricated,
-  incompleteCall,
-  missingSlots,
-  unknownResult,
-];
+void [fabricated, incompleteCall, missingSlots, unknownResult];
 
 const mutation = {
   operation: 'mutate',
@@ -238,22 +142,6 @@ const incompleteRecovery = { operation: 'recover' } as const;
 const missingReference: HostRequest = incompleteRecovery;
 void [durableReceipt, missingReference];
 
-function immutableValueExports(contract: Contract, values: ComponentValues) {
-  const value = { kind: 'value', contract, value: { tone: 'sage' } } satisfies UiExport;
-  // @ts-expect-error All exports use the explicit tagged ABI.
-  const old = { contract, component: ['app'] } satisfies UiExport;
-  // @ts-expect-error Value exports carry data rather than a callback path.
-  const wrong = { kind: 'value', contract, component: ['app'] } satisfies UiExport;
-  // @ts-expect-error Captured import members cannot be reassigned.
-  values.brand = [];
-  if (values.brand) {
-    // @ts-expect-error The supplied member list is read-only.
-    values.brand.push('replacement');
-  }
-  void [value, old, wrong];
-}
-void immutableValueExports;
-
 async function publishSubscriptionItem(context: RequestContext) {
   const published: null = await context.invoke({ operation: 'emit', value: { delta: 'hello' } });
   const forged = {
@@ -265,26 +153,6 @@ async function publishSubscriptionItem(context: RequestContext) {
   void [published, forged];
 }
 void publishSubscriptionItem;
-
-const desiredStream = {
-  key: 'timeline',
-  binding: 'tasks',
-  member: 0,
-  method: 'watch',
-  input: { task: 'current' },
-  resources: {},
-} satisfies Action;
-function streamingOutput(output: ComponentOutput, outcome: ActionOutcome) {
-  const desired: ComponentOutput = { ...output, subscriptions: [desiredStream] };
-  if (outcome.status === 'updated') {
-    const item: unknown = outcome.value;
-    // @ts-expect-error Original stream request identity is private to the kernel.
-    const token = outcome.request;
-    void [item, token];
-  }
-  return desired;
-}
-void streamingOutput;
 
 const selectedModel: ModelSelection = {
   connectionId: 'observed-connection',
@@ -346,24 +214,6 @@ void [
   missingDefaultProjection,
   implicitSend,
 ];
-
-// Absence is distinct from the explicit no-composition/no-receipt observation.
-function nativeEditorMetadata(snapshot: EditorSnapshot, props: InputProps) {
-  const observed: EditorObservation = { revision: 0, snapshot, receipt: null };
-  const selection = snapshot.selection;
-  const required: EditorSnapshot = {
-    text: { owner: 'native', revision: 0, bytes: 0 },
-    selection,
-    reversed: false,
-    marked: null,
-  };
-  // @ts-expect-error Metadata must explicitly declare whether there is a receipt.
-  const missingReceipt: EditorObservation = { revision: 0, snapshot };
-  // @ts-expect-error Metadata must explicitly declare whether IME is composing.
-  const missingMarked: EditorSnapshot = { text: required.text, selection, reversed: false };
-  void [observed, required, missingReceipt, missingMarked, props.command];
-}
-void nativeEditorMetadata;
 
 // Basic editing must not require resending hidden model inventories.
 const nameOnly: ConnectionCatalogEntryUpdate = { name: 'Personal' };
@@ -481,31 +331,6 @@ const exactHistoryRow = {
   field: 'thinking',
 } satisfies HistoryPosition;
 void [historyWindow, missingHistoryBoundary, removedHistoryPosition, exactHistoryRow];
-
-const nativeContinuation = {
-  input: { type: 'null' },
-  output: { kind: 'continuation' },
-} satisfies Capture;
-const capturedResource = {
-  input: {},
-  output: { kind: 'resource', resource: { name: 'text', version: 1 } },
-} satisfies Capture;
-const removedCapture: Capture = {
-  input: {},
-  // @ts-expect-error Removed resource-only capture declaration has no output kind.
-  resource: { name: 'text', version: 1 },
-};
-const stalePresentation = { status: 'stale' } satisfies ActionOutcome;
-const guardedQuery = {
-  key: 'history-1',
-  binding: 'history',
-  member: 0,
-  method: 'read',
-  input: null,
-  resources: {},
-  continuations: [{ child: 'reader', method: 'reading', input: null }],
-} satisfies Action;
-void [nativeContinuation, capturedResource, removedCapture, stalePresentation, guardedQuery];
 
 const sessionWindow = {
   revision: 'catalog',

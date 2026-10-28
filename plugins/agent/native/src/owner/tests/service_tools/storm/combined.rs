@@ -416,9 +416,9 @@ async fn upload(
     session: &str,
     picture: &mut Picture,
 ) -> OperationReply {
-    let snapshot = maka_ui_runtime::file::read_selected(
+    let snapshot = maka_ui_support::file::read_selected(
         &f._dir.path().join(&picture.name),
-        &maka_ui_runtime::budget::NativeBudget::default(),
+        &maka_ui_support::budget::NativeBudget::default(),
     )
     .unwrap();
     let resources = BTreeMap::from([(

@@ -252,7 +252,7 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
             .bytes,
         bytes[..8192]
     );
-    let copied_id: String = crate::test_store::inspect(&log, move |db| { db.query_row("SELECT json_extract(payload,'$.content.ref.relativePath') FROM transcript_cache.rows WHERE session_id='copy' AND source_sequence=? AND item_index=?",[copied_sequence.source_sequence as i64, copied_sequence.item_index as i64],|row|row.get(0)).unwrap() }).await;
+    let copied_id: String = crate::test_store::inspect_cache(&log, move |db| { db.query_row("SELECT json_extract(payload,'$.content.ref.relativePath') FROM temp.transcript_rows WHERE session_id='copy' AND source_sequence=? AND item_index=?",[copied_sequence.source_sequence as i64, copied_sequence.item_index as i64],|row|row.get(0)).unwrap() }).await;
     assert!(!dir.path().join(&artifact.id).exists());
     log.close().await.unwrap();
     let log = EventLog::open(&path).await.unwrap();

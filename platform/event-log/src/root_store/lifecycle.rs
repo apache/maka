@@ -44,7 +44,7 @@ impl Lifecycle {
                     Ok(runtime) => runtime,
                     Err(error) => {
                         for log in &logs {
-                            log.connection.request_shutdown();
+                            log.request_shutdown();
                         }
                         let reason = error.to_string();
                         let _ = ready.send(Err(reason.clone()));
@@ -59,7 +59,7 @@ impl Lifecycle {
                 }
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let (unconfirmed, premature_close) = runtime.block_on(async {
-                        let receipts = logs.iter().map(|log| log.connection.close_receipt()).collect::<Vec<_>>();
+                        let receipts = logs.iter().map(|log| log.close_receipt()).collect::<Vec<_>>();
                         tokio::select! {
                             failed = gates.wait_for_shutdown() => (failed, None),
                             (closed, _, _) = futures_util::future::select_all(receipts) => {
@@ -79,7 +79,7 @@ impl Lifecycle {
                         // can still persist known results before quarantining.
                         return Err("accepted Root work cleanup is unconfirmed".into());
                     }
-                    for log in &logs { log.connection.request_shutdown(); }
+                    for log in &logs { log.request_shutdown(); }
                     let results = runtime.block_on(futures_util::future::join_all(logs.iter().map(|log| log.shutdown())));
                     let mut failures: Vec<String> = results.into_iter().filter_map(Result::err).map(|error| error.to_string()).collect();
                     if let Some(error) = premature_close { failures.push(error); }

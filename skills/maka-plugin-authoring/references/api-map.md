@@ -23,13 +23,13 @@ In the bundled skill, `references/sdk/` contains the SDK sources from the same b
 
 | Need | File within the SDK |
 | --- | --- |
-| `Component`, `HostService`, `RequestContext` | `index.ts` |
-| Native terminal scene helpers | `ui.ts` |
-| Package/composition types, wire values and native props | `generated/runtime.ts` |
-| Public service and component contracts | `contracts.ts` index, then `contracts/<name>.ts` in bundled resources |
+| `HostService`, `RequestContext` and public exports | `index.ts` |
+| `UiContext`, `UiExports` and contribution props | `workbench.ts` |
+| Package, composition, catalog and wire types | `generated/runtime.ts` |
+| Public service contracts | `contracts.ts`, or `contracts/<name>.ts` in bundled resources |
 | Native configuration schemas | `configurations.ts` |
-| Native implementation definitions | `native.ts` |
+| Native Host implementation definitions | `native.ts` |
 
-`maka application schema` emits the executable's catalog. In a checkout, `npm --workspace @maka-agent/plugin-sdk run schema:generate` regenerates the SDK through `tools/schema`; `schema:check` checks for drift. Types help authoring, while Rust validates runtime values, resource slots, compatibility and permission.
+`maka application schema` emits the executable's catalog. In a checkout, `npm --workspace @maka-agent/plugin-sdk run schema:generate` regenerates the SDK through `tools/schema`; `schema:check` checks for drift. Rust declarations are the source of package and management wire types. The NSH component API is supplied by NSH, independently of those Host service contracts.
 
-The bundled contract map is split into one resource per contract to fit the reader’s file budget. Its values come directly from the generated SDK; checkout `contracts.ts` remains the source of truth.
+The bundled contract map is split into one resource per contract. Its values come from the generated SDK; checkout `contracts.ts` remains the source of truth.

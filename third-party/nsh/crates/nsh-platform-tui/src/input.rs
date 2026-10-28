@@ -730,6 +730,14 @@ impl Surface {
     /// Handles an event in this surface's terminal coordinates. Embedded
     /// hosts translate mouse coordinates to the surface before forwarding.
     pub fn handle_event(&mut self, event: Event) -> bool {
+        if self.input_paused
+            && !matches!(
+                event,
+                Event::Resize(..) | Event::FocusGained | Event::FocusLost
+            )
+        {
+            return false;
+        }
         if let Event::Mouse(mouse) = &event
             && matches!(
                 mouse.kind,
@@ -2023,6 +2031,9 @@ impl Surface {
     /// do nothing. Host components accept only one detent per call, allowing the
     /// host to dispatch their events before admitting more input.
     pub fn handle_wheel(&mut self, mouse: MouseEvent, mut steps: u16) -> u16 {
+        if self.input_paused {
+            return 0;
+        }
         if steps == 0
             || !matches!(
                 mouse.kind,

@@ -83,7 +83,7 @@ test('bundle command regenerates development identity after TypeScript edits', a
       join(source, 'package.ts'),
       `export default {
       schemaVersion: 1, id: 'example.fingerprint',
-      application: { entries: { host: { implementation: { kind: 'javascript', module: 'entry.js', realm: 'shared' }, configuration: { type: 'object' } } } }
+      application: { host: { implementation: { kind: 'javascript', module: 'entry.js', realm: 'shared' }, configuration: { type: 'object' } } }
     };`,
     );
     await writeFile(join(source, 'entry.ts'), 'export function main() { return "before"; }');

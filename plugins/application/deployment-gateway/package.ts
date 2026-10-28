@@ -28,13 +28,11 @@ export default {
     'zh-CN': { displayName: '插件管理连接', description: '将插件设置连接到主机的插件管理器。' },
   },
   application: {
-    entries: {
-      host: {
-        ...native(sdk.nativeImplementations.gateway),
-        imports: {
-          management: one(sdk.contracts.deploymentManager),
-          receipts: one(sdk.contracts.receiptReader),
-        },
+    host: {
+      ...native(sdk.nativeImplementations.gateway),
+      imports: {
+        management: one(sdk.contracts.deploymentManager),
+        receipts: one(sdk.contracts.receiptReader),
       },
     },
   },

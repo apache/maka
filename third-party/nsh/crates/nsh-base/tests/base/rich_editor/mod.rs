@@ -132,11 +132,12 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
 }
 
 fn start(doc: Value) -> Headless {
-    let session = session(doc);
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(900.0)),
+        // Made in the engine, so its keymaps are the platform's the engine
+        // says (Linux), not the machine's.
         ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
-            session: Some(session.clone()),
+            session: Some(session(doc.clone())),
         }))
     };
     config.environment.os = Os::Linux;
