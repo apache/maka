@@ -124,6 +124,8 @@ export type ConversationHandle = ComposerSession & {
   reveal(anchor: ConversationAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
+  /** The title its header shows. */
+  title(): string;
 };
 type ConversationProps = {
   client: ScopedHost;
@@ -1742,6 +1744,7 @@ export function Conversation(props: ConversationProps) {
   };
   const ownHandle: ConversationHandle = {
     sessionId,
+    title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
     computerApps,
