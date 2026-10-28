@@ -221,8 +221,11 @@ type SavedDraft = ClientDraft & Required<Pick<ClientDraft, 'attachments'>>;
 export const loadDraft = (scope: ScopedHost) => scope.loadDraft() as Promise<SavedDraft>;
 export const saveDraft = (scope: ScopedHost, revision: number, edit: ClientDraftEdit) =>
   scope.saveDraft(revision, edit) as Promise<SavedDraft>;
-export async function sendDraft(scope: ScopedHost, revision: number, selection: unknown) {
-  return attempt(await scope.send(revision, selection));
+// Once the returned operation id resolves, new draft saves never join this send.
+export const reserveSend = (scope: ScopedHost, revision: number, selection: unknown) =>
+  scope.reserveSend(revision, selection) as Promise<string>;
+export async function confirmSend(scope: ScopedHost, id: string) {
+  return attempt(await scope.confirmSend(id));
 }
 export const pendingSends = (scope: ScopedHost) => scope.pending() as Promise<ClientOperation[]>;
 export const recoverSend = (scope: ScopedHost, id: string) =>
