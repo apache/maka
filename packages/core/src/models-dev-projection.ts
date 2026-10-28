@@ -143,6 +143,10 @@ export interface ModelsDevModel {
   readonly knowledge?: string;
   readonly last_updated?: string;
   readonly status?: string;
+  // Provider-owned model family (e.g. `kimi-k3`). Wire builders read it to
+  // pick request shapes a model id alone does not identify, so it must
+  // survive the projection instead of being re-derived from the id.
+  readonly family?: string;
   readonly reasoning: boolean;
   readonly tool_call: boolean;
   readonly structured_output?: boolean;
@@ -284,6 +288,7 @@ export function projectModelsDevModel(
   if (
     (model.description !== undefined && typeof model.description !== 'string') ||
     (model.knowledge !== undefined && typeof model.knowledge !== 'string') ||
+    (model.family !== undefined && typeof model.family !== 'string') ||
     (model.limit?.input !== undefined &&
       (typeof model.limit.input !== 'number' || !Number.isFinite(model.limit.input))) ||
     (model.structured_output !== undefined && typeof model.structured_output !== 'boolean') ||
@@ -321,6 +326,7 @@ export function projectModelsDevModel(
     displayName: model.name,
     ...(model.description !== undefined ? { description: model.description } : {}),
     lifecycle,
+    ...(model.family !== undefined ? { family: model.family } : {}),
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(inputLimit === undefined ? {} : { inputLimit }),
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
