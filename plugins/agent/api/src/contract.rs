@@ -28,60 +28,42 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[path = "contract_mcp.rs"]
 mod mcp;
 pub use mcp::*;
-#[path = "contract_context.rs"]
 mod context;
 pub use context::*;
-#[path = "contract_files.rs"]
 mod files;
 pub use files::*;
-#[path = "contract_fork.rs"]
 mod fork;
 pub use fork::*;
-#[path = "contract_git.rs"]
 mod git;
 pub use git::*;
-#[path = "contract_goal.rs"]
 mod goal;
-#[path = "contract_imports.rs"]
 mod imports;
-#[path = "contract_plan.rs"]
 mod plan;
 pub use goal::*;
 pub use maka_agent_facts::execution::CollaborationMode;
 pub use plan::*;
-#[path = "contract_todo.rs"]
 mod todo;
 pub use todo::*;
-#[path = "contract_recap.rs"]
 mod recap;
 pub use recap::*;
-#[path = "contract_scheduler.rs"]
 mod scheduler;
 pub use scheduler::*;
-#[path = "contract_recall.rs"]
 mod recall;
 pub use imports::*;
 pub use recall::*;
-#[path = "contract_projects.rs"]
 mod projects;
 pub use projects::*;
-#[path = "contract_execution.rs"]
 mod execution;
 pub use execution::*;
-#[path = "contract_compaction.rs"]
 mod compaction;
 pub use compaction::*;
 
-#[path = "contract_interactions.rs"]
 mod interaction;
 pub use interaction::*;
-#[path = "contract_computer_apps.rs"]
 mod computer_apps;
 pub use computer_apps::*;
-#[path = "contract_permissions.rs"]
 mod permissions;
 pub use maka_agent_facts::configuration::ModelSelection;
 pub use permissions::*;

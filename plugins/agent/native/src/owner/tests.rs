@@ -17,136 +17,87 @@
  * under the License.
  */
 
-#[path = "tests/http.rs"]
 mod http_fixture;
 
-#[path = "tests/plan.rs"]
 mod plan_tests;
 
-#[path = "tests/goal.rs"]
 mod goal_tests;
 
-#[path = "tests/recap.rs"]
 mod recap_tests;
 
-#[path = "tests/title.rs"]
 mod title_tests;
 
-#[path = "tests/todo.rs"]
 mod todo_tests;
 
-#[path = "tests/computer.rs"]
 mod computer;
-#[path = "tests/computer_controls.rs"]
 mod computer_controls;
 
-#[path = "tests/request_capture.rs"]
 mod request_capture;
-#[path = "tests/service_tools.rs"]
 mod service_tools;
-#[path = "tests/skill_preparation.rs"]
 mod skill_preparation;
-#[path = "tests/skills.rs"]
 mod skills;
 
-#[path = "tests/attachments.rs"]
 mod attachments;
 
-#[path = "tests/fork.rs"]
 mod fork;
 
-#[path = "tests/files.rs"]
 mod files;
 
-#[path = "tests/file_browsing.rs"]
 mod file_browsing;
-#[path = "tests/file_reconciliation.rs"]
 mod file_reconciliation;
 
-#[path = "tests/health.rs"]
 mod health;
-#[path = "tests/processes.rs"]
 mod processes;
 
-#[path = "tests/protocol_processes.rs"]
 mod protocol_processes;
 
-#[path = "tests/terminal.rs"]
 mod terminal;
 
-#[path = "tests/interactions.rs"]
 mod interactions;
 
-#[path = "tests/catalog.rs"]
 mod catalog;
 
-#[path = "tests/session_availability.rs"]
 mod session_availability;
 
-#[path = "tests/history_search.rs"]
 mod history_search;
 
-#[path = "tests/compaction.rs"]
 mod compaction;
 
-#[path = "tests/metrics.rs"]
 mod metrics;
 
-#[path = "tests/execution.rs"]
 mod execution;
-#[path = "tests/executor.rs"]
 mod executor;
 
-#[path = "tests/prompt_language.rs"]
 mod prompt_language;
-#[path = "tests/session_context.rs"]
 mod session_context;
-#[path = "tests/tool_schemas.rs"]
 mod tool_schemas;
-#[path = "tests/workhub.rs"]
 mod workhub;
 
-#[path = "tests/scale.rs"]
 #[cfg(unix)]
 mod scale;
 
-#[path = "tests/queue.rs"]
 mod queue;
 
-#[path = "tests/large_messages.rs"]
 mod large_messages;
 
-#[path = "tests/mcp.rs"]
 mod mcp;
-#[path = "tests/selection.rs"]
 mod selection;
 
-#[path = "tests/git.rs"]
 mod git;
-#[path = "tests/jev.rs"]
 mod jev_tests;
-#[path = "tests/web.rs"]
 mod web_tests;
 
-#[path = "tests/worktrees.rs"]
 mod worktrees;
 
-#[path = "tests/settings.rs"]
 mod settings;
 
-#[path = "tests/images.rs"]
 mod images;
 
-#[path = "tests/imports.rs"]
 mod imports;
-#[path = "tests/projects.rs"]
 mod projects;
-#[path = "tests/recall.rs"]
 mod recall_tests;
-#[path = "tests/scheduler.rs"]
 mod scheduler_tests;
 
-#[path = "tests/workspaces.rs"]
 mod workspaces;
 
 use super::*;
@@ -1441,6 +1392,7 @@ async fn cleanup_case(panic: bool) {
     let fixture = Fixture::new("http://127.0.0.1:1/v1", Some(model)).await;
 
     let session = fixture.create("Physical lifetime").await;
+    let physical_session = fixture.session(&session).await;
 
     *fault.database.lock().unwrap() = Some(fixture.session_database(&session));
     fixture.send(&session).await.unwrap();
@@ -1528,6 +1480,13 @@ async fn cleanup_case(panic: bool) {
     );
     assert_eq!(fixture.owner.stop.is_cancelled(), !panic);
 
+    if panic {
+        assert!(matches!(
+            physical_session.execution_scope(None).await,
+            Err(maka_event_log::StoreError::ConnectionClosed)
+        ));
+    }
+    drop(physical_session);
     let close = fixture.app.shutdown().await;
 
     assert_eq!(close.is_err(), panic);

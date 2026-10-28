@@ -158,7 +158,6 @@ impl SessionStore {
 
 impl RootStore {
     /// Observe canonical owners once: control first, then partition order.
-    /// Disposable prepared actors are excluded.
     pub async fn sqlite_resource_stats(
         &self,
     ) -> Result<Vec<crate::connection::ConnectionResourceStats>, StoreError> {

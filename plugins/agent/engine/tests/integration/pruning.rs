@@ -291,8 +291,9 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             usize::from(interrupted)
         );
         if interrupted {
-            assert!(prefix.events.iter().any(|stored| matches!(&stored.event.fact,
-                Fact::ModelObserved { event, .. } if serde_json::to_string(event).unwrap().contains("partial-summary-must-not-replay"))));
+            assert!(!prefix.events.iter().any(|stored| matches!(&stored.event.fact,
+                Fact::ModelObserved { event, .. } if serde_json::to_string(event).unwrap().contains("partial-summary-must-not-replay"))),
+                "unfinished private summary prose has no durable history representation");
             assert_eq!(
                 prefix
                     .events

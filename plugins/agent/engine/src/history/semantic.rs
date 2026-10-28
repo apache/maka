@@ -17,129 +17,14 @@
  * under the License.
  */
 
-//! Render a complete dirty semantic group before the SessionStore publishes it.
-//! Ordinary requests replay the immutable prepared group, including captured media.
+//! Pure projection for explicit owned-history callers and golden oracles.
 use crate::RunError;
 use maka_agent_facts::{
     history::semantic::{Payload, ResolvedRow, SemanticKind},
     language::Language,
     model::{ModelPart, TextKind},
 };
-use maka_event_log::root_store::SessionStore;
-use maka_model::{
-    ProviderKind,
-    prompt::{AssistantPart, Message, ToolOutput},
-};
-use tokio_util::sync::CancellationToken;
-
-pub(crate) struct RenderContext<'a> {
-    pub session: &'a str,
-    pub vision: bool,
-    pub language: Language,
-    pub provider: &'a ProviderKind,
-    pub replay: Option<&'a maka_event_log::context::semantic::SemanticReplay>,
-}
-
-pub(crate) async fn render(
-    log: &SessionStore,
-    rows: &[ResolvedRow],
-    context: RenderContext<'_>,
-    cancellation: &CancellationToken,
-    snapshot: Option<&maka_agent_facts::history::media::MediaManifest>,
-) -> Result<
-    (
-        Vec<Message>,
-        maka_agent_facts::history::media::MediaManifest,
-    ),
-    RunError,
-> {
-    let RenderContext {
-        session,
-        vision,
-        language,
-        provider,
-        replay,
-    } = context;
-    if let Some(replay) = replay {
-        for resolved in rows {
-            if let SemanticKind::AssistantPart {
-                model_id,
-                route_identity,
-                ..
-            } = &resolved.row.kind
-                && matches!(
-                    &resolved.payload,
-                    Some(Payload::Part(ModelPart::Text {
-                        text_kind: TextKind::Thinking,
-                        ..
-                    }))
-                )
-                && (model_id != &replay.model || route_identity != &replay.route)
-            {
-                return Err(RunError::ReconciliationRequired(
-                    "continuation reasoning belongs to another provider route or model".into(),
-                ));
-            }
-        }
-    }
-    let mut references = Vec::new();
-    for row in rows {
-        match row.payload.as_ref() {
-            Some(Payload::User(input)) => references.extend(
-                input
-                    .attachments
-                    .iter()
-                    .flatten()
-                    .map(|item| &item.storage_ref),
-            ),
-            Some(Payload::Tool(
-                maka_agent_facts::tool_output::DurableToolProjection::Content { parts },
-            )) => {
-                references.extend(
-                    parts
-                        .iter()
-                        .filter_map(|part| part.media().map(|(reference, _)| reference)),
-                );
-            }
-            _ => {}
-        }
-    }
-    let resources = match snapshot {
-        Some(snapshot) => super::resources::Resources::from_manifest(session, &snapshot.aliases),
-        None => {
-            super::resources::Resources::load_references(log, session, references, cancellation)
-                .await?
-        }
-    };
-    let (messages, targets) = render_rows(rows, &resources, vision, language)?;
-    let (messages, media) = super::images::materialize_targets(
-        log,
-        session,
-        messages,
-        targets,
-        &resources,
-        cancellation,
-        language,
-        snapshot.map(|snapshot| snapshot.media.as_slice()),
-    )
-    .await?;
-    let messages = if vision
-        && matches!(
-            provider,
-            ProviderKind::OpenaiChatCompletions | ProviderKind::OpenaiCompatible { .. }
-        ) {
-        super::chat::project(messages, language)
-    } else {
-        messages
-    };
-    Ok((
-        maka_model::reasoning::project(super::compatible::project(messages, provider), provider),
-        maka_agent_facts::history::media::MediaManifest {
-            aliases: resources.aliases(),
-            media,
-        },
-    ))
-}
+use maka_model::prompt::{AssistantPart, Message, ToolOutput};
 
 pub(super) fn project(
     rows: &[ResolvedRow],
@@ -147,16 +32,14 @@ pub(super) fn project(
     language: Language,
 ) -> Result<Vec<Message>, RunError> {
     let resources = super::resources::Resources::native(session);
-    Ok(render_rows(rows, &resources, false, language)?.0)
+    render_rows(rows, &resources, language)
 }
 
-fn render_rows<'a>(
-    rows: &'a [ResolvedRow],
+fn render_rows(
+    rows: &[ResolvedRow],
     resources: &super::resources::Resources<'_>,
-    vision: bool,
     language: Language,
-) -> Result<(Vec<Message>, Vec<super::images::Target<'a>>), RunError> {
-    let mut targets = Vec::new();
+) -> Result<Vec<Message>, RunError> {
     let mut messages = Vec::new();
     let mut assistant_group = None;
     for resolved in rows {
@@ -171,13 +54,7 @@ fn render_rows<'a>(
                     return Err(invalid());
                 };
                 messages.push(super::user::project(
-                    content,
-                    resources,
-                    *steering,
-                    messages.len(),
-                    &mut targets,
-                    vision,
-                    language,
+                    content, resources, *steering, language,
                 )?);
             }
             SemanticKind::ImportedUser { .. } => {
@@ -239,13 +116,7 @@ fn render_rows<'a>(
                             ToolOutput::Json(value)
                         }
                     }
-                    Some(Payload::Tool(projection)) => super::output::project(
-                        projection,
-                        messages.len(),
-                        &mut targets,
-                        vision,
-                        language,
-                    ),
+                    Some(Payload::Tool(projection)) => super::output::project(projection, language),
                     _ => return Err(invalid()),
                 };
                 let mut message = Message::tool(call_id, name, output);
@@ -282,7 +153,7 @@ fn render_rows<'a>(
             }
         }
     }
-    Ok((messages, targets))
+    Ok(messages)
 }
 
 fn text(payload: Option<&Payload>) -> Result<&str, RunError> {

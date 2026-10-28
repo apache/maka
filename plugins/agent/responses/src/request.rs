@@ -556,8 +556,7 @@ pub fn encode_message(
     Ok(items)
 }
 
-/// Version every semantic wire change; persisted pieces are valid only for the
-/// captured language, reasoning contract, and effective reference policy.
+/// Fingerprint frozen language, reasoning and effective reference policy.
 pub fn wire_codec(
     language: maka_agent_facts::language::Language,
     plaintext: Option<PlaintextResponses>,
@@ -568,7 +567,7 @@ pub fn wire_codec(
     } else {
         "openai"
     };
-    json!({"responses":3,"language":language,"plaintext":plaintext,"store":options[namespace]["store"] != false}).to_string()
+    json!({"responses":1,"language":language,"plaintext":plaintext,"store":options[namespace]["store"] != false}).to_string()
 }
 
 #[cfg(test)]

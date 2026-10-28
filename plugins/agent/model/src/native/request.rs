@@ -69,6 +69,8 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 "captured prompt is missing its prepared Anthropic wire projection".into(),
             ));
         };
+        let document_count = wire.source.document_count();
+        let documents = super::anthropic_documents::Documents::new(wire.source.clone())?;
         let metadata = super::anthropic_body::metadata(&wire, stream_options).await?;
         let context = metadata.context.clone();
         let tools = request
@@ -119,7 +121,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             None,
         )
         .map_err(failure)?;
-        let prepared = anthropic::request::prepare_streaming(
+        let mut prepared = anthropic::request::prepare_streaming(
             anthropic::request::Request {
                 model: request.provider.model,
                 messages: &[],
@@ -143,6 +145,10 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             metadata,
         )
         .map_err(failure)?;
+        if document_count > 0 {
+            prepared.response.documents =
+                anthropic::citations::DocumentReferences::deferred(document_count);
+        }
         anthropic_source = Some((wire, context));
         headers.insert("anthropic-version".into(), "2023-06-01".into());
         if !prepared.betas.is_empty() {
@@ -156,7 +162,10 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             .remove("messages");
         (
             fields,
-            Decoder::Anthropic(Box::new(anthropic::stream::Stream::new(prepared.response))),
+            Decoder::Anthropic {
+                stream: Box::new(anthropic::stream::Stream::new(prepared.response)),
+                documents,
+            },
             "messages",
         )
     } else {

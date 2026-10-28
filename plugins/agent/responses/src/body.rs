@@ -206,7 +206,7 @@ impl NativeBody {
                     }
                     state.last_message = Some(chunk.message_index);
                     state.inside_item = !chunk.item_end;
-                    let bytes = http::Bytes::from(chunk.bytes);
+                    let bytes = chunk.bytes;
                     if chunk.item_start {
                         if state.comma {
                             state.pending = Some(bytes);

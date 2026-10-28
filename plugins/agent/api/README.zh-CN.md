@@ -23,7 +23,7 @@
 
 包含 Agent、Session、Executor、WorkHub 的协议声明以及 Agent 配置 schema。原生服务与 SDK 生成共用这些定义。调用方只需要公开契约时，可以依赖这里，无需引入 Agent 执行引擎。
 
-独立 Desktop 通过同一个 Root 绑定的[公共 Host client](../../../platform/host-runtime/src/application/host/client.rs)使用持久 Agent 服务，不直接打开 Agent 存储，也不嵌入执行引擎。字段及 schema 以 [Agent 契约](src/contract.rs)和[交互契约](src/contract_interactions.rs)为准。
+独立 Desktop 通过同一个 Root 绑定的[公共 Host client](../../../platform/host-runtime/src/application/host/client.rs)使用持久 Agent 服务，不直接打开 Agent 存储，也不嵌入执行引擎。字段及 schema 以 [Agent 契约](src/contract.rs)和[交互契约](src/contract/interaction.rs)为准。
 
 `history` 分页保持同一个 `through` 边界，`watch` 从最后的 `nextAfter` 继续，并发布队列与待处理交互更新。`send` 接受工作并返回其身份，`stop` 指定该次 invocation。重连后通过 `pendingInteractions`、`interaction` 和 `respond` 重建并回答原请求。修改保留原操作回执；丢失响应不代表可以重新发送。参见[原生接入验收](../native/README.zh-CN.md)及[传输所有权与退出方式](../../../platform/transport/README.zh-CN.md)。
 
@@ -33,15 +33,15 @@
 
 Executor 的 `execute` 通过名为 `attachments` 的单个可选二进制资源接收不可变文件。资源 metadata 是按顺序排列的 `{ name, mimeType, bytes, digest }` 数组；资源内容按同一顺序连接各文件的原始字节，偏移由前项长度累加得到。必须通过实际请求资源读取，Host 字节预算和清理责任仍归原请求所有；metadata 本身不授予访问权限。
 
-`fork` 根据来源版本，从完整一轮或全部当前历史创建旁支会话。所包含的工作必须已结算；后续轮次仍在运行时，也可分叉更早的完整轮次。新 Session 保留这段历史和附件，共享已验证的工作区，收窄权限且不带入运行中的工作；`branch` 标明来源。丢失响应后使用原操作引用恢复；Host 结果仍未知时，`forkReceipt` 可查找已发布的分叉。返回 null 不代表操作未发生，也不授权创建替代分叉。字段见[分叉声明](src/contract_fork.rs)。
+`fork` 根据来源版本，从完整一轮或全部当前历史创建旁支会话。所包含的工作必须已结算；后续轮次仍在运行时，也可分叉更早的完整轮次。新 Session 保留这段历史和附件，共享已验证的工作区，收窄权限且不带入运行中的工作；`branch` 标明来源。丢失响应后使用原操作引用恢复；Host 结果仍未知时，`forkReceipt` 可查找已发布的分叉。返回 null 不代表操作未发生，也不授权创建替代分叉。字段见[分叉声明](src/contract/fork.rs)。
 
 `diagnostics` 在固定的 `through` 边界内，从新到旧分页读取执行、模型步骤及自动标题失败。`watchDiagnostics` 在订阅时及变化后发送当前诊断版本；重连后重新读取最新页。这些会话范围内的运行记录保留原 invocation/event 标识和安全的类型化原因，不包含提供方响应正文或复制来源会话的失败。诊断版本独立于对话历史，因此回答结束后才发生的标题失败仍可发现。
 
-`context` 返回所选 Session 最近一次已准备的 Main 请求，包括运行中或已中断的请求。它按消息角色和工具定义展示原始 Host 输入构成；token 数为估算，提供方报告的实际输入用量单独返回。固定 `through` 可在重连后读取同一结果。不存在的请求或缺失的测量保持 null，复制的历史不算新 Session 自己执行的请求。字段见[上下文声明](src/contract_context.rs)。
+`context` 返回所选 Session 最近一次已准备的 Main 请求，包括运行中或已中断的请求。它按消息角色和工具定义展示原始 Host 输入构成；token 数为估算，提供方报告的实际输入用量单独返回。固定 `through` 可在重连后读取同一结果。不存在的请求或缺失的测量保持 null，复制的历史不算新 Session 自己执行的请求。字段见[上下文声明](src/contract/context.rs)。
 
 `gitStatus` 和 `gitDiff` 通过同一个 Agent 服务读取所选 Session 的仓库，也适用于 WorkHub 协调者会话。状态区分已暂存、工作区和未跟踪的变化；同一路径可以同时出现在已暂存和工作区部分。diff 分别比较 HEAD 与索引、索引与工作文件，或空文件与未跟踪文件。尚无提交的仓库返回 null `head`；没有仓库的工作区返回 null。路径以 `bytesBase64` 保留 Git 文件名的原始字节，重命名呈现为删除加新增。
 
-这些查询提供当前的只读观察，不是仓库快照。状态完整返回已暂存、工作区和未跟踪的条目列表。单文件 diff 读取完整输入，区分文本、二进制、未变化和不支持的情况；文本补丁完整返回。仓库元数据、control 文件、状态条目、diff 输入和补丁在内存中缓冲。取消采用协作方式；这些查询不承诺有界内存或固定执行时限。所选工作区必须是仓库根目录；外部过滤器、稀疏检出、子模块等不支持的仓库特性会明确失败，不执行配置中的命令。工作区或比较基准变化后应重新查询。协议类型见 [Git 声明](src/contract_git.rs)；`snapshotPatch` 在工作区写者全部结清后捕获已完成工作的不可变补丁。捕获会读取完整源内容，并在发布前将完整补丁缓冲在内存中；`readPatch` 分页读取该原始产物，后续执行和 Host 重启不会改变它。
+这些查询提供当前的只读观察，不是仓库快照。状态完整返回已暂存、工作区和未跟踪的条目列表。单文件 diff 读取完整输入，区分文本、二进制、未变化和不支持的情况；文本补丁完整返回。仓库元数据、control 文件、状态条目、diff 输入和补丁在内存中缓冲。取消采用协作方式；这些查询不承诺有界内存或固定执行时限。所选工作区必须是仓库根目录；外部过滤器、稀疏检出、子模块等不支持的仓库特性会明确失败，不执行配置中的命令。工作区或比较基准变化后应重新查询。协议类型见 [Git 声明](src/contract/git.rs)；`snapshotPatch` 在工作区写者全部结清后捕获已完成工作的不可变补丁。捕获会读取完整源内容，并在发布前将完整补丁缓冲在内存中；`readPatch` 分页读取该原始产物，后续执行和 Host 重启不会改变它。
 
 `listFiles` 列出所选 Session 工作区中一个目录的直接子项，`watchFiles` 通知该目录需要重新读取；也适用于 WorkHub 协调者会话。`path` 为 null 表示工作区根目录，其他路径使用 `WorkspacePath`，以 `bytesBase64` 保留相对文件名的原始字节。符号链接作为叶子展示，不进入其目标；排除 `.git`、工作区标记及 Host 私有状态/control 目录，模型配置为无限制访问时也不例外。私有状态内仅允许读取 Session 已验证的受管 worktree。每页最多 128 项，以 512 KiB 为软字节目标，完整首项始终可以推进；路径保留完整相对字节。平台无法表示的文件名明确报错，不做有损转换。
 

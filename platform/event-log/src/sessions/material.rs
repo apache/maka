@@ -67,7 +67,6 @@ impl EventLog {
     ) -> Result<MaterialCollection, StoreError> {
         self.validate_root()?;
         let after = after.map(str::to_owned);
-        let prepared = self.prepared_store()?.cleanup();
         let observations = self.connection.observations();
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
@@ -105,7 +104,6 @@ impl EventLog {
             // No live owner remains. Retained facts/membership, not UI metadata,
             // remain the material-collection authority; descendants were checked above.
             // Also covers imported owners that never had a local retirement.
-            prepared.retire_owner(session.clone()).await?;
             crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
             for table in ["transcript_directory", "transcript_failures"] {
                 let sql = format!("DELETE FROM {table} WHERE session_id=?");

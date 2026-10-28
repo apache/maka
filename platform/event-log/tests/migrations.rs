@@ -317,3 +317,54 @@ async fn interrupted_initial_migration_remains_openable_under_the_rust_applicati
     );
     assert!(!migration_checksums(&connection).is_empty());
 }
+
+#[tokio::test]
+async fn terminated_tool_migration_preserves_facts_and_exposes_the_unknown_outcome() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    let opening = seed_session_and_event(&log).await;
+    for fact in [
+        Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: "write".into(),
+            call: maka_agent_facts::tool_call::ToolCallIdentity::standalone("call".into()),
+            name: "write_file".into(),
+            input: json!({"path":"effect.txt"}),
+        },
+        Fact::InvocationEnded {
+            outcome: maka_agent_facts::event::InvocationOutcome::Failed {
+                class: "tool_execution".into(),
+                message: Some("result persistence failed".into()),
+                model_failure: None,
+            },
+        },
+    ] {
+        log.append(
+            &EventWrite::plain(RuntimeEvent::new(opening.invocation.clone(), fact)).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+    let before = serde_json::to_vec(&log.prefix(10, 16384).await.unwrap()).unwrap();
+    log.close().await.unwrap();
+    // Version 1 stored this closed dispatch as an unsealed obligation.
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("UPDATE context_obligations SET sealed_unknown=0 WHERE kind='tool'; DELETE FROM _sqlx_migrations WHERE version=2;").unwrap();
+    drop(db);
+    let log = EventLog::open(&path).await.unwrap();
+    assert!(log.check_manual_message_history("session").await.unwrap());
+    assert!(matches!(
+        log.read_model_view("session", None).await,
+        Err(StoreError::HistoryUnsettled)
+    ));
+    assert_eq!(
+        serde_json::to_vec(&log.prefix(10, 16384).await.unwrap()).unwrap(),
+        before
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    assert!(log.check_manual_message_history("session").await.unwrap());
+    log.close().await.unwrap();
+}

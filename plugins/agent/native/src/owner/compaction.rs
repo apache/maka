@@ -95,7 +95,7 @@ impl Owner {
         if session.archived {
             return rejected(CompactRejection::Archived);
         }
-        if runs.controls.contains_key(&input.session_id)
+        if runs.busy(&input.session_id)
             || !self
                 .store
                 .session(&input.session_id)

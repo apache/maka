@@ -96,13 +96,18 @@ pub(super) async fn run(
                         continuation_base,
                         &intent.successor_invocation_id,
                         prior_unknown,
+                        model_attempt::rendered_system(input),
+                        maka_agent_facts::context::ModelPurpose::Main,
                     )
                     .await
                     .ok()?;
                     let checkpoint = match tools.checkpoint() {
                         Ok(checkpoint) => checkpoint,
                         Err(error) => {
-                            handoff_cleanup = Some(error.into());
+                            handoff_cleanup = Some(match prompt.close().await {
+                                Err(cleanup) => crate::cleanup::preparation_failed(cleanup),
+                                Ok(()) => error.into(),
+                            });
                             return None;
                         }
                     };
@@ -160,6 +165,10 @@ pub(super) async fn run(
             }
             let mut context =
                 model_attempt::read_source(inner, input, prior_unknown, cancellation).await?;
+            tools.set_model(input.provider.tool_context());
+            let (mut request_tools, mut surface) =
+                capture_surface(inner, input, &tools, &context, prior_unknown, cancellation)
+                    .await?;
             let mut prompt = model_attempt::prompt(
                 inner,
                 input,
@@ -168,6 +177,8 @@ pub(super) async fn run(
                 continuation_base,
                 &input.invocation.invocation_id,
                 prior_unknown,
+                surface.system(),
+                maka_agent_facts::context::ModelPurpose::Main,
             )
             .await?;
             let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
@@ -179,8 +190,14 @@ pub(super) async fn run(
                         && pending.is_none()
                         && (needs_compaction || auto_context::due(input, &context))))
             {
+                prompt
+                    .close()
+                    .await
+                    .map_err(crate::cleanup::preparation_failed)?;
                 drop(prompt);
                 drop(context);
+                drop(request_tools);
+                drop(surface);
                 compaction = CompactionBudget::Failed;
                 let candidate = match pending.take() {
                     Some(candidate) => Some(candidate),
@@ -211,6 +228,10 @@ pub(super) async fn run(
                 input.refresh_model(cancellation).await?;
                 context =
                     model_attempt::read_source(inner, input, prior_unknown, cancellation).await?;
+                tools.set_model(input.provider.tool_context());
+                (request_tools, surface) =
+                    capture_surface(inner, input, &tools, &context, prior_unknown, cancellation)
+                        .await?;
                 prompt = model_attempt::prompt(
                     inner,
                     input,
@@ -219,34 +240,17 @@ pub(super) async fn run(
                     continuation_base,
                     &input.invocation.invocation_id,
                     prior_unknown,
+                    surface.system(),
+                    maka_agent_facts::context::ModelPurpose::Main,
                 )
                 .await?;
             }
-            tools.set_model(input.provider.tool_context());
-            let request_tools = tools
-                .capture(&input.configuration.cwd, cancellation.clone())
-                .await?;
-            let unknown_notice = prior_unknown.then(|| {
-                model_attempt::prior_unknown_notice(&context, input.configuration.language)
-            });
-            if unknown_notice.as_deref() == Some("") {
-                return Err(RunError::ReconciliationRequired(
-                    "unknown prior tool is missing from model context".into(),
-                ));
-            }
-            let surface = Arc::new(crate::request_composition::Surface::capture(
-                &request_tools,
-                &inner.shared.model,
-                input,
-                &context,
-                unknown_notice.as_deref(),
-            )?);
             let initial_high_water = context.source_evidence.high_water;
             let (high_water, result) = model_attempt::execute_main(
                 inner,
                 input,
                 context,
-                surface.apply(prompt),
+                prompt,
                 model_attempt::Main {
                     lane: lane.clone(),
                     continuation_base,
@@ -350,21 +354,32 @@ pub(super) async fn run(
                     continuation_base,
                     &input.invocation.invocation_id,
                     prior_unknown,
+                    surface.system(),
+                    maka_agent_facts::context::ModelPurpose::Main,
                 )
                 .await?;
                 let ids: Vec<_> = local_calls.iter().map(|call| call.id.as_str()).collect();
-                let mut replay = surface.apply(replay);
+                let mut replay = replay;
+                let confirmation = async {
+                    replay
+                        .compile_wire(
+                            input.configuration.language,
+                            &input.provider,
+                            &input.provider_options,
+                            &request_tools.definitions(),
+                            cancellation,
+                        )
+                        .await?;
+                    lane.confirm(&replay.model(), &ids, output.response_id.as_deref())
+                        .await;
+                    Ok::<_, RunError>(())
+                }
+                .await;
                 replay
-                    .compile_wire(
-                        input.configuration.language,
-                        &input.provider,
-                        &input.provider_options,
-                        &request_tools.definitions(),
-                        cancellation,
-                    )
-                    .await?;
-                lane.confirm(&replay.model(), &ids, output.response_id.as_deref())
-                    .await;
+                    .close()
+                    .await
+                    .map_err(crate::cleanup::preparation_failed)?;
+                confirmation?;
             }
             main_progress = true;
         }
@@ -419,4 +434,38 @@ pub(super) async fn run(
             })?;
     }
     result
+}
+
+async fn capture_surface<'tools>(
+    inner: &RunContext,
+    input: &RunSettings,
+    tools: &'tools RunTools,
+    context: &maka_event_log::context::ContextView,
+    prior_unknown: bool,
+    cancellation: &CancellationToken,
+) -> Result<
+    (
+        maka_tools::RequestTools<'tools>,
+        Arc<crate::request_composition::Surface>,
+    ),
+    RunError,
+> {
+    let request_tools = tools
+        .capture(&input.configuration.cwd, cancellation.clone())
+        .await?;
+    let unknown_notice = prior_unknown
+        .then(|| model_attempt::prior_unknown_notice(context, input.configuration.language));
+    if unknown_notice.as_deref() == Some("") {
+        return Err(RunError::ReconciliationRequired(
+            "unknown prior tool is missing from model context".into(),
+        ));
+    }
+    let surface = Arc::new(crate::request_composition::Surface::capture(
+        &request_tools,
+        &inner.shared.model,
+        input,
+        context,
+        unknown_notice.as_deref(),
+    )?);
+    Ok((request_tools, surface))
 }

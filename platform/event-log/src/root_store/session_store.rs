@@ -22,7 +22,6 @@
 use super::SessionStore;
 use crate::archive::{PruneCandidates, PruneCursor};
 use crate::artifacts::{ArtifactChunk, ArtifactEntry, ArtifactReadScope, ImageChunk};
-use crate::context::prepared::*;
 use crate::context::semantic::SemanticSelection;
 use crate::context::{ContextReport, ContextUsage, ContextView, LatestMainContext, SourceEvidence};
 use crate::interactions::{InteractionCommit, PermissionGrant};
@@ -42,19 +41,15 @@ use crate::{SessionSubscription, StoreError};
 use maka_agent_facts::artifact::Artifact;
 use maka_agent_facts::attachment::StorageRef;
 use maka_agent_facts::composition::RequestComposition;
-use maka_agent_facts::context::{CheckpointMode, PreparedContextBreakdown};
+use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::continuation::RunBoundary;
 use maka_agent_facts::event::{
     CommitError, CommitFuture, EventSink, EventWrite, Invocation, StoredEvent,
 };
 use maka_agent_facts::history::RowPosition;
-use maka_agent_facts::history::media::MediaManifest;
-use maka_agent_facts::history::semantic::ResolvedRow;
 use maka_agent_facts::interaction::{
     ClosureReason, GrantTarget, InteractionOutcome, InteractionRecord, SessionGrant,
 };
-use maka_agent_facts::model::prompt::Message;
-use maka_agent_facts::model::prompt_source::{WireFormat, WireGroup};
 use maka_agent_facts::read::ResourceAddress;
 use maka_agent_facts::shell_run::{ShellPatch, ShellRun};
 use maka_agent_facts::workspace::PermissionBasis;
@@ -65,6 +60,15 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 impl SessionStore {
+    pub async fn capture_source(
+        &self,
+        selection: SemanticSelection,
+    ) -> Result<crate::context::semantic::CapturedSource, StoreError> {
+        self.check_session(&selection.session)?;
+        let (log, execution) = self.capture_source_log()?;
+        crate::context::semantic::CapturedSource::capture(log, execution, selection).await
+    }
+
     pub async fn list_artifacts(
         &self,
         session: &str,
@@ -624,62 +628,6 @@ impl SessionStore {
             .await
     }
 
-    pub async fn prepare_model_view(
-        &self,
-        selection: SemanticSelection,
-        policy: &str,
-        prior: Option<&PreparedView>,
-    ) -> Result<PreparedBuild, StoreError> {
-        self.check_session(&selection.session)?;
-        self.scoped()
-            .await?
-            .prepare_model_view(selection, policy, prior)
-            .await
-    }
-
-    pub async fn prepared_dirty_groups(
-        &self,
-        build: &PreparedBuild,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<PreparedGroup>, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_dirty_groups(build, after, limit)
-            .await
-    }
-
-    pub async fn prepared_group_rows(
-        &self,
-        build: &PreparedBuild,
-        group: &PreparedGroup,
-    ) -> Result<Vec<ResolvedRow>, StoreError> {
-        self.scoped().await?.prepared_group_rows(build, group).await
-    }
-
-    pub async fn finish_prepared(&self, build: &PreparedBuild) -> Result<PreparedView, StoreError> {
-        self.scoped().await?.finish_prepared(build).await
-    }
-
-    pub async fn prepared_semantic_group(
-        &self,
-        view: &PreparedView,
-        cursor: usize,
-    ) -> Result<Option<PreparedSemanticGroup>, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_semantic_group(view, cursor)
-            .await
-    }
-
-    pub async fn prepared_view_group(
-        &self,
-        view: &PreparedView,
-        group: &PreparedGroup,
-    ) -> Result<PreparedSemanticGroup, StoreError> {
-        self.scoped().await?.prepared_view_group(view, group).await
-    }
-
     pub async fn context_report(
         &self,
         session: &str,
@@ -997,111 +945,6 @@ impl SessionStore {
         self.scoped()
             .await?
             .session_stream_events(session_id, after, through, max_events, max_bytes)
-            .await
-    }
-
-    pub async fn prepared_prior_mcp_ids(
-        &self,
-        view: &PreparedView,
-        group: &PreparedGroup,
-        wanted: &[String],
-    ) -> Result<Vec<String>, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_prior_mcp_ids(view, group, wanted)
-            .await
-    }
-
-    pub async fn put_prepared_group(
-        &self,
-        build: &PreparedBuild,
-        group: &PreparedGroup,
-        messages: Vec<Message>,
-        breakdown: PreparedContextBreakdown,
-        manifest: MediaManifest,
-    ) -> Result<(), StoreError> {
-        self.scoped()
-            .await?
-            .put_prepared_group(build, group, messages, breakdown, manifest)
-            .await
-    }
-
-    pub async fn prepare_wire_view(
-        &self,
-        view: &PreparedView,
-        format: WireFormat,
-        codec: &str,
-        prior: Option<&PreparedWireView>,
-    ) -> Result<PreparedWireBuild, StoreError> {
-        self.scoped()
-            .await?
-            .prepare_wire_view(view, format, codec, prior)
-            .await
-    }
-
-    pub async fn prepared_wire_dirty_groups(
-        &self,
-        build: &PreparedWireBuild,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<PreparedGroup>, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_wire_dirty_groups(build, after, limit)
-            .await
-    }
-
-    pub async fn put_prepared_wire_group(
-        &self,
-        build: &PreparedWireBuild,
-        group: &PreparedGroup,
-        wire: WireGroup,
-    ) -> Result<(), StoreError> {
-        self.scoped()
-            .await?
-            .put_prepared_wire_group(build, group, wire)
-            .await
-    }
-
-    pub async fn finish_prepared_wire(
-        &self,
-        build: &PreparedWireBuild,
-    ) -> Result<PreparedWireView, StoreError> {
-        self.scoped().await?.finish_prepared_wire(build).await
-    }
-
-    pub async fn prepared_wire_page(
-        &self,
-        view: &PreparedWireView,
-        cursor: PreparedWireCursor,
-        limit: usize,
-    ) -> Result<PreparedWirePage, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_wire_page(view, cursor, limit)
-            .await
-    }
-
-    pub async fn prepared_wire_metadata_page(
-        &self,
-        view: &PreparedWireView,
-        cursor: PreparedWireCursor,
-        limit: usize,
-    ) -> Result<PreparedWireMetadataPage, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_wire_metadata_page(view, cursor, limit)
-            .await
-    }
-
-    pub async fn prepared_wire_prefix_identity(
-        &self,
-        view: &PreparedWireView,
-        count: usize,
-    ) -> Result<Option<String>, StoreError> {
-        self.scoped()
-            .await?
-            .prepared_wire_prefix_identity(view, count)
             .await
     }
 

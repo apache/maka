@@ -32,6 +32,7 @@ use maka_agent_facts::{
             SemanticRow,
         },
     },
+    tool_output::DurableToolProjection,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::sqlite::SqliteWorkerConnection;
@@ -103,21 +104,24 @@ impl Write for Pieces<'_, '_> {
 async fn fragment(
     db: &mut SqliteWorkerConnection<'_>,
     fragment: &Fragment,
-    canonical_json: Option<&str>,
+    canonical: Option<(&str, &DurableToolProjection)>,
 ) -> Result<(), StoreError> {
-    let source = match &fragment.source {
-        FragmentSource::Payload(_) => SemanticPayloadSource::Pieces,
+    let (source, normalized_projection) = match &fragment.source {
+        FragmentSource::Payload(_) => (SemanticPayloadSource::Pieces, None),
         FragmentSource::CanonicalToolProjection => {
             if fragment.key.item_index != 0 {
                 return Err(invalid(
                     "canonical Tool projection has a nonzero fragment index",
                 ));
             }
-            SemanticPayloadSource::CanonicalToolProjection(CanonicalToolProjectionSpan::locate(
-                fragment.key.source_sequence,
-                canonical_json
-                    .ok_or_else(|| invalid("canonical Tool projection lacks its event JSON"))?,
-            )?)
+            let (json, projection) = canonical
+                .ok_or_else(|| invalid("canonical Tool projection lacks its typed source"))?;
+            let span = CanonicalToolProjectionSpan::locate(fragment.key.source_sequence, json)?;
+            if span.matches_projection(json, projection)? {
+                (SemanticPayloadSource::CanonicalToolProjection(span), None)
+            } else {
+                (SemanticPayloadSource::Pieces, Some(projection))
+            }
         }
     };
     let (storage_kind, offset, len) = match source {
@@ -138,9 +142,15 @@ async fn fragment(
         .bind(len)
         .execute(&mut *db)
         .await?;
-    let FragmentSource::Payload(payload) = &fragment.source else {
+    if matches!(&fragment.source, FragmentSource::CanonicalToolProjection)
+        && normalized_projection.is_none()
+    {
         return Ok(());
-    };
+    }
+    #[derive(Serialize)]
+    enum BorrowedPayload<'a> {
+        Tool(&'a DurableToolProjection),
+    }
     let mut pieces = Pieces {
         db,
         key: fragment.key,
@@ -148,7 +158,13 @@ async fn fragment(
         buffer: Vec::with_capacity(PIECE_BYTES),
         failure: None,
     };
-    let serialized = serde_json::to_writer(&mut pieces, payload);
+    let serialized = match (&fragment.source, normalized_projection) {
+        (FragmentSource::Payload(payload), _) => serde_json::to_writer(&mut pieces, payload),
+        (FragmentSource::CanonicalToolProjection, Some(projection)) => {
+            serde_json::to_writer(&mut pieces, &BorrowedPayload::Tool(projection))
+        }
+        (FragmentSource::CanonicalToolProjection, None) => return Ok(()),
+    };
     if let Some(error) = pieces.failure.take() {
         return Err(error);
     }
@@ -674,8 +690,18 @@ pub(crate) async fn record(
             return Ok(());
         }
     };
+    let canonical_projection = match &stored.event.fact {
+        Fact::ToolSettled {
+            outcome:
+                maka_agent_facts::event::ToolOutcome::Succeeded {
+                    model_projection, ..
+                },
+            ..
+        } => Some((canonical_json, model_projection)),
+        _ => None,
+    };
     for fragment_value in &transition.fragments {
-        fragment(db, fragment_value, Some(canonical_json)).await?;
+        fragment(db, fragment_value, canonical_projection).await?;
     }
     for (row, event_id, inherited) in hidden {
         save_row(

@@ -282,7 +282,6 @@ fn tool_selection(through: u64) -> crate::context::semantic::SemanticSelection {
         session: "session".into(),
         lineage: None,
         after: 0,
-        anchor_sequence: None,
         through,
         before: through + 1,
         captured_through: through,

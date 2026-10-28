@@ -70,9 +70,11 @@ impl Events {
             Event::ToolCall(call) => &call.extensions,
             Event::ToolResult(result) => &result.extensions,
             Event::Finish(finish) => &finish.extensions,
-            Event::Source(Source::Url { extensions, .. } | Source::Document { extensions, .. }) => {
-                extensions
-            }
+            Event::Source(
+                Source::Url { extensions, .. }
+                | Source::Document { extensions, .. }
+                | Source::DeferredDocument { extensions, .. },
+            ) => extensions,
             _ => &None,
         };
         let has_metadata = extension.as_ref().is_some_and(|v| !v.is_empty());
@@ -215,6 +217,11 @@ impl Events {
                 provider_options: options(result.extensions),
             },
             Event::Source(source) => ModelEvent::Source(match source {
+                Source::DeferredDocument { .. } => {
+                    return Err(ModelError::Adapter(
+                        "deferred citation document reached the owned output boundary".into(),
+                    ));
+                }
                 Source::Url {
                     id,
                     url,

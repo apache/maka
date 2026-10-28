@@ -431,11 +431,8 @@ async fn real_host_agent_scale() {
     println!("MAKA_AGENT_SCALE {result}");
 }
 
-#[path = "scale/flowing.rs"]
 mod flowing;
 
-#[path = "scale/compaction.rs"]
 pub(in crate::owner::tests) mod compaction;
 
-#[path = "scale/image_upload.rs"]
 pub(in crate::owner::tests) mod image_upload;

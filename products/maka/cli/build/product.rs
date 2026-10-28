@@ -18,8 +18,7 @@
  */
 use std::{env, fs, path::Path, process::Command};
 
-#[path = "ui.rs"]
-mod ui;
+use super::ui;
 
 fn files(directory: &Path, output: &mut Vec<std::path::PathBuf>) {
     let mut entries = fs::read_dir(directory)
@@ -51,7 +50,7 @@ pub fn bundle() {
         .unwrap()
         .parent()
         .unwrap();
-    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/main.rs");
     println!("cargo:rerun-if-changed=build/product.rs");
     println!("cargo:rerun-if-changed=build/ui.rs");
     let output = std::path::PathBuf::from(env::var_os("OUT_DIR").unwrap());

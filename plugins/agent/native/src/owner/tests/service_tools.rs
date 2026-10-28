@@ -29,14 +29,11 @@ use maka_plugin_core::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[path = "service_tools/continuation_ancestry.rs"]
 mod continuation_ancestry;
 
-#[path = "service_tools/continuation_observations.rs"]
 mod continuation_observations;
 
 #[cfg(unix)]
-#[path = "service_tools/storm.rs"]
 mod storm;
 
 fn counter_contract() -> Contract {

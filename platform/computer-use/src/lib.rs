@@ -23,16 +23,14 @@
 //! pinned native implementation. Perception and driver administration are absent.
 
 mod activity;
+#[cfg(not(feature = "native-desktop"))]
+mod bridge_driver;
 #[cfg(feature = "native-desktop")]
 mod browser;
-#[path = "browser/clipboard.rs"]
 mod browser_clipboard;
 pub mod cursor;
 pub mod desktop;
 #[cfg(feature = "native-desktop")]
-mod driver;
-#[cfg(not(feature = "native-desktop"))]
-#[path = "bridge_driver.rs"]
 mod driver;
 #[cfg(feature = "native-desktop")]
 mod identity;
@@ -57,7 +55,10 @@ pub mod protocol;
 #[cfg(feature = "native-desktop")]
 mod session;
 
+#[cfg(not(feature = "native-desktop"))]
+pub use bridge_driver::Driver;
 pub use desktop::{NativeEpochId, Session, SessionOwner};
+#[cfg(feature = "native-desktop")]
 pub use driver::Driver;
 pub use invocation::{
     AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,

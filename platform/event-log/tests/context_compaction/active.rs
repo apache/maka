@@ -101,7 +101,7 @@ async fn checkpoint(log: &EventLog, id: &str, mode: CheckpointMode) -> EventWrit
 }
 
 #[tokio::test]
-async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
+async fn midturn_checkpoint_excludes_covered_history_after_next_turn_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("active.sqlite");
     let log = EventLog::open(&path).await.unwrap();
@@ -181,7 +181,7 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
         .capture_model_context("session", Some("active"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
-    assert_eq!(source.anchor.unwrap().event, *anchor.event());
+    assert_eq!(source.baseline.as_ref().unwrap().checkpoint.mode, mode);
     assert!(source.tail.is_empty());
     assert!(
         log.unfinished_invocations(0, 10)
@@ -241,7 +241,7 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
         );
     }
     log.append(&valid_request).await.unwrap();
-    assert_eq!(source.anchor.unwrap().event, *anchor.event());
+    assert_eq!(source.baseline.as_ref().unwrap().checkpoint.mode, mode);
     assert!(
         source
             .tail
@@ -251,13 +251,9 @@ async fn active_anchor_is_atomic_bounded_and_survives_next_turn_and_reopen() {
     log.close().await.unwrap();
 }
 
-#[path = "active_safety.rs"]
 mod active_safety;
-#[path = "latest.rs"]
 mod latest;
-#[path = "lineage.rs"]
 mod lineage;
-#[path = "provider_history.rs"]
 mod provider_history;
 
 #[tokio::test]

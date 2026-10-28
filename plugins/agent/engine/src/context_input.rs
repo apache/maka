@@ -70,6 +70,35 @@ pub(super) async fn fit_prepared_summary(
     language: Language,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<crate::prepared_prompt::PreparedPrompt, crate::RunError> {
+    if prompt.breakdown().estimated_tokens() <= tokens {
+        return Ok(prompt.clone());
+    }
+    if prompt.is_generated() {
+        return fit_generated_summary(prompt, tokens, language, cancellation).await;
+    }
+    let active = prompt.active().ok_or_else(|| {
+        crate::RunError::Internal("summary source was not promoted to its full envelope".into())
+    })?;
+    crate::history::source_summary::fit(prompt, tokens, language, cancellation, &active)
+        .await
+        .map_err(|error| match error {
+            crate::history::source_summary::FitError::Run(error) => error,
+            error @ crate::history::source_summary::FitError::NeedsBacking { .. } => {
+                crate::RunError::Preparation(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    error,
+                ))
+            }
+        })
+}
+
+/// Explicit small generated input retains the owned-message test/UI boundary.
+async fn fit_generated_summary(
+    prompt: &crate::prepared_prompt::PreparedPrompt,
+    tokens: u64,
+    language: Language,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<crate::prepared_prompt::PreparedPrompt, crate::RunError> {
     use std::collections::VecDeque;
     if prompt.breakdown().estimated_tokens() <= tokens {
         return Ok(prompt.clone());
@@ -243,7 +272,14 @@ pub(super) async fn fit_prepared_summary(
             if let Some(provider) = prompt.model().normalization() {
                 body = body.with_normalization(provider.clone());
             }
-            return Ok(crate::prepared_prompt::PreparedPrompt::new(body));
+            let mut fitted = crate::prepared_prompt::PreparedPrompt::new(body);
+            if let Some(resources) = prompt.resources() {
+                fitted = fitted.with_resources(resources.clone());
+            }
+            if let Some(arena) = prompt.arena() {
+                fitted = fitted.with_arena(arena.clone());
+            }
+            return Ok(fitted.with_preparation_from(prompt));
         }
         if text_bytes > 0 {
             text_bytes = text_bytes

@@ -37,6 +37,7 @@ pub(super) struct Job {
     prompt: crate::prepared_prompt::PreparedPrompt,
     surface: Arc<crate::request_composition::Surface>,
     definitions: Vec<maka_model::ToolDefinition>,
+    instruction: crate::prepared_prompt::OwnedOverlay,
 }
 
 pub(super) async fn run(
@@ -65,7 +66,7 @@ pub(super) async fn capture(
     continuation_base: Option<u64>,
 ) -> Result<Option<Job>, RunError> {
     input.refresh_model(cancellation).await?;
-    let source = tokio::select! {
+    let source = Arc::new(tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RunError::Cancelled),
         source = inner.log.prepare_compaction_view(
@@ -73,21 +74,9 @@ pub(super) async fn capture(
             Some(&input.invocation.invocation_id),
             mode,
         ) => source?,
-    };
+    });
     let has_new_history = source.has_new_history;
-    let prompt = model_attempt::prompt(
-        inner,
-        input,
-        &source,
-        cancellation,
-        continuation_base,
-        &input.invocation.invocation_id,
-        false,
-    )
-    .await?;
-    if !has_new_history
-        && (source.baseline.is_none() || !context_input::needs_compaction(input, &prompt))
-    {
+    if !has_new_history && source.baseline.is_none() {
         return Ok(None);
     }
     let adapter = inner.shared.model.binding(&input.provider)?;
@@ -154,15 +143,55 @@ pub(super) async fn capture(
         composition,
         context_input::summary_output_budget(input),
     )?);
-    let prompt = surface.apply(prompt);
-    Ok(Some(Job {
-        input: captured,
-        source: model_attempt::RequestSource::from(&source),
-        mode: mode.clone(),
-        prompt,
-        surface,
-        definitions,
-    }))
+    let prompt = model_attempt::prompt(
+        inner,
+        &captured,
+        &source,
+        cancellation,
+        continuation_base,
+        &input.invocation.invocation_id,
+        false,
+        surface.system(),
+        maka_agent_facts::context::ModelPurpose::Summary,
+    )
+    .await?;
+    let arena = prompt.arena().cloned();
+    let result = async {
+        if !has_new_history && !context_input::needs_compaction(&captured, &prompt) {
+            return Ok(None);
+        }
+        let instruction = prompt
+            .freeze_summary_instruction(Arc::new(
+                captured
+                    .configuration
+                    .compaction_prompt
+                    .clone()
+                    .unwrap_or_else(|| {
+                        default_compaction_prompt(captured.configuration.language).into()
+                    }),
+            ))
+            .await?;
+        Ok(Some(Job {
+            input: captured,
+            source: model_attempt::RequestSource::from(source.as_ref()),
+            mode: mode.clone(),
+            prompt,
+            surface,
+            definitions,
+            instruction,
+        }))
+    }
+    .await;
+    if !matches!(&result, Ok(Some(_)))
+        && !result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed)
+        && let Some(arena) = arena
+    {
+        arena
+            .close()
+            .await
+            .map_err(crate::cleanup::preparation_failed)?;
+    }
+    result
 }
 
 impl Job {
@@ -178,84 +207,174 @@ impl Job {
             prompt,
             surface,
             definitions,
+            instruction,
         } = self;
-        let instruction = maka_model::prompt::Message::user(
-            input
-                .configuration
-                .compaction_prompt
-                .clone()
-                .unwrap_or_else(|| default_compaction_prompt(input.configuration.language).into()),
-        );
-        let mut input_budget = context_input::summary_budget(&input)
-            .saturating_sub(context_input::estimate(std::slice::from_ref(&instruction)))
-            .saturating_sub(context_input::json_tokens(&definitions));
-        let mut overflowed = false;
-        loop {
-            let mut request = if overflowed {
-                context_input::fit_prepared_summary(
-                    &prompt,
-                    input_budget,
-                    input.configuration.language,
-                    cancellation,
-                )
-                .await?
-            } else {
-                prompt.clone()
-            };
-            request.push(instruction.clone());
-            let result = model_attempt::execute_once(
-                inner,
+        let arena = prompt.arena().cloned();
+        let result = async {
+            let mut input_budget = context_input::summary_budget(&input)
+                .saturating_sub(instruction.breakdown().estimated_tokens())
+                .saturating_sub(context_input::json_tokens(&definitions));
+            reserve_summary(
+                &prompt,
+                &instruction,
                 &input,
-                &source,
-                request,
-                definitions.clone(),
-                model_attempt::Attempt::Summary {
-                    surface: surface.clone(),
-                },
+                &definitions,
+                input_budget,
                 cancellation,
-                &mut false,
-                &mut None,
             )
-            .await;
-            let (step_id, output) = match result {
-                Ok(output) => output,
-                Err(RunError::Model(maka_model::ModelError::ContextOverflow {
-                    observed_output: false,
-                })) if input_budget > 256 => {
-                    input_budget = input_budget
-                        .min(prompt.breakdown().estimated_tokens())
-                        .max(1)
-                        / 2;
-                    overflowed = true;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            let summary = match TextSummary::from_model_step(&output) {
-                Ok(summary) => summary,
-                Err(defect) => return Ok(failed(&defect.to_string())),
-            };
-            let checkpoint = RuntimeEvent::new(
-                input.invocation.clone(),
-                Fact::ContextCheckpointRecorded {
-                    checkpoint: ContextCheckpoint {
-                        mode: mode.clone(),
-                        covered_through: source.evidence.high_water,
-                        source_digest: source.evidence.digest.clone(),
-                        previous_checkpoint_id: source.checkpoint.clone(),
-                        summary,
-                        summary_step_id: step_id,
+            .await?;
+            let mut overflowed = false;
+            loop {
+                let mut request = if overflowed {
+                    context_input::fit_prepared_summary(
+                        &prompt,
+                        input_budget,
+                        input.configuration.language,
+                        cancellation,
+                    )
+                    .await?
+                } else {
+                    prompt.clone()
+                };
+                request.push(instruction.clone());
+                let result = model_attempt::execute_once(
+                    inner,
+                    &input,
+                    &source,
+                    request,
+                    definitions.clone(),
+                    model_attempt::Attempt::Summary {
+                        surface: surface.clone(),
                     },
-                },
-            );
-            return Ok((
-                CompactOutcome::Compacted {
-                    checkpoint_id: checkpoint.id.clone(),
-                },
-                Some(checkpoint),
-            ));
+                    cancellation,
+                    &mut false,
+                    &mut None,
+                )
+                .await;
+                let (step_id, output) = match result {
+                    Ok(output) => output,
+                    Err(RunError::Model(maka_model::ModelError::ContextOverflow {
+                        observed_output: false,
+                    })) if input_budget > 256 => {
+                        input_budget = input_budget
+                            .min(prompt.breakdown().estimated_tokens())
+                            .max(1)
+                            / 2;
+                        overflowed = true;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                let summary = match TextSummary::from_model_step(&output) {
+                    Ok(summary) => summary,
+                    Err(defect) => return Ok(failed(&defect.to_string())),
+                };
+                let checkpoint = RuntimeEvent::new(
+                    input.invocation.clone(),
+                    Fact::ContextCheckpointRecorded {
+                        checkpoint: ContextCheckpoint {
+                            mode: mode.clone(),
+                            covered_through: source.evidence.high_water,
+                            source_digest: source.evidence.digest.clone(),
+                            previous_checkpoint_id: source.checkpoint.clone(),
+                            summary,
+                            summary_step_id: step_id,
+                        },
+                    },
+                );
+                return Ok((
+                    CompactOutcome::Compacted {
+                        checkpoint_id: checkpoint.id.clone(),
+                    },
+                    Some(checkpoint),
+                ));
+            }
         }
+        .await;
+        if !result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed)
+            && let Some(arena) = arena
+        {
+            arena
+                .close()
+                .await
+                .map_err(crate::cleanup::preparation_failed)?;
+        }
+        result
     }
+}
+async fn reserve_summary(
+    prompt: &crate::prepared_prompt::PreparedPrompt,
+    instruction: &crate::prepared_prompt::OwnedOverlay,
+    input: &RunSettings,
+    definitions: &[maka_model::ToolDefinition],
+    tokens: u64,
+    cancellation: &CancellationToken,
+) -> Result<(), RunError> {
+    let resources = prompt
+        .resources()
+        .ok_or_else(|| RunError::Internal("summary lacks Host preparation resources".into()))?
+        .clone();
+    let mut first = prompt.clone();
+    first.push(instruction.clone());
+    let encoding = maka_model::WireEncoding::new(
+        input.configuration.language,
+        &input.provider,
+        &input.provider_options,
+        definitions,
+    )?;
+    let logical = first.model();
+    let plan = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(RunError::Cancelled),
+        plan = encoding.count_prompt(&logical, resources.clone()) => plan?,
+    };
+    let fitted = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(RunError::Cancelled),
+        fitted = encoding.count_summary_fit_bound(&plan, prompt.model().len(), resources.clone()) => fitted?,
+    };
+    let fit_peak = crate::history::source_summary::peak_bytes(
+        prompt,
+        tokens,
+        input.configuration.language,
+        cancellation,
+    )
+    .await
+    .map_err(|error| match error {
+        crate::history::source_summary::FitError::Run(error) => error,
+        error => RunError::Preparation(std::io::Error::new(std::io::ErrorKind::Unsupported, error)),
+    })?;
+    let source_bytes = prompt
+        .resident_bytes()
+        .checked_add(first.overlay_bytes())
+        .ok_or_else(|| {
+            RunError::Preparation(std::io::Error::other(
+                "summary source allocation peak overflow",
+            ))
+        })?;
+    let wire_header = crate::prepared_prompt::PreparedPrompt::backed_wire_bytes();
+    let resident_peak = fit_peak
+        .checked_add(fitted.allocation().max(wire_header))
+        .map(|fitted| fitted.max(plan.allocation().max(wire_header)))
+        .and_then(|wire| source_bytes.checked_add(wire));
+    let peak = match resident_peak {
+        Some(peak) if peak <= resources.policy().resident_bytes => peak,
+        _ => source_bytes
+            .checked_add(
+                crate::history::source_summary::backed_peak_bytes(input.configuration.language)
+                    .map_err(RunError::Preparation)?,
+            )
+            .and_then(|source| {
+                source.checked_add(crate::prepared_prompt::PreparedPrompt::backed_wire_bytes())
+            })
+            .ok_or_else(|| {
+                RunError::Preparation(std::io::Error::other("summary allocation peak overflow"))
+            })?,
+    };
+    drop(plan);
+    drop(first);
+    drop(logical);
+    prompt.promote(peak, cancellation).await
 }
 fn failed(reason: &str) -> (CompactOutcome, Option<RuntimeEvent>) {
     (

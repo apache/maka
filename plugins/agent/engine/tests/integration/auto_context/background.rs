@@ -21,6 +21,7 @@ use super::*;
 use crate::support::agent_loop;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::Engine;
+use serde_json::json;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
@@ -248,6 +249,21 @@ async fn background_summary_drains_before_terminal_handoff_and_retirement() {
             if ending == "summary-tool" {
                 assert!(prefix.events.iter().any(|e| matches!(&e.event.fact,
                     Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class, .. } } if class == "reconciliation_required")));
+            }
+            let summary_step = prefix.events.iter().find_map(|event| match &event.event.fact {
+                Fact::ModelRequested { step_id, purpose: ModelPurpose::Summary, .. } => Some(step_id),
+                _ => None,
+            }).unwrap();
+            assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
+                Fact::ModelObserved { step_id, event: maka_agent_facts::model::ModelEvent::PartDelta { text, .. } }
+                    if step_id == summary_step && text.contains("private unfinished summary"))),
+                "cancel/drain cannot publish private unfinished summary prose");
+            if ending == "summary-tool" {
+                assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
+                    Fact::ModelObserved { step_id, event: maka_agent_facts::model::ModelEvent::ToolCall(_) }
+                        if step_id == summary_step)), "summary tool attempt remains durable after drain and seal");
+                assert!(!prefix.events.iter().any(|event| matches!(&event.event.fact,
+                    Fact::ToolDispatched { .. } if event.event.invocation.invocation_id == "invocation-next")));
             }
             let mut view = maka_presentation::InvocationView::new();
             let mut rows = Vec::new();

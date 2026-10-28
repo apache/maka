@@ -17,7 +17,6 @@
  * under the License.
  */
 
-#[path = "support/plan.rs"]
 mod support;
 
 use maka_assistant::plan::{

@@ -171,10 +171,12 @@ impl<'a> InvocationContext<'a> {
         self
     }
 
+    #[cfg(feature = "native-desktop")]
     pub(crate) fn operation_settlement(&self) -> Option<Arc<dyn OperationSettlement>> {
         self.operation_settlement.clone()
     }
 
+    #[cfg(feature = "native-desktop")]
     pub(crate) fn browser_host_effects(&self) -> Option<Arc<dyn BrowserHostEffects>> {
         self.browser_host_effects.clone()
     }

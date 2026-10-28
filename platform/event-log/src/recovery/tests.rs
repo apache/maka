@@ -323,5 +323,4 @@ async fn pending_call_recovery_preserves_accepted_input_and_unknown_effects() {
     assert_eq!(work(&mut db, query, "run".to_owned().into()).await.0, 0);
 }
 
-#[path = "pagination_tests.rs"]
 mod pagination;

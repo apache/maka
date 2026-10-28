@@ -77,7 +77,6 @@ async fn database() -> SqliteConnection {
     db
 }
 
-#[path = "execution.rs"]
 mod execution;
 
 async fn append(db: &mut SqliteConnection, kind: &str, op: Option<&str>, fact: Value) -> u64 {
@@ -108,6 +107,10 @@ fn fixture_fact(kind: &str, op: Option<&str>, mut fields: Value) -> Fact {
         return Fact::InvocationEnded {
             outcome: if matches!(class, "succeeded" | "completed") {
                 InvocationOutcome::Completed
+            } else if class == "cancelled" {
+                InvocationOutcome::Cancelled {
+                    source: "fixture".into(),
+                }
             } else {
                 InvocationOutcome::Failed {
                     class: class.into(),
@@ -334,39 +337,41 @@ async fn ended(db: &mut SqliteConnection, class: &str) -> u64 {
 
 #[tokio::test]
 async fn unknown_end_keeps_tool_obligation_and_late_settlement_does_not_fix_old_cut() {
-    let mut db = database().await;
-    append(&mut db, "invocation_opened", None, json!({})).await;
-    append(&mut db, "tool_dispatched", Some("cell"), json!({})).await;
-    let unknown_cut = ended(&mut db, "outcome_unknown").await;
-    assert!(matches!(
-        require_safe(&mut db, "session", None).await,
-        Err(StoreError::HistoryUnsettled)
-    ));
-    assert!(
-        require_manual_message_safe(&mut db, "session", None)
+    for class in ["outcome_unknown", "tool_execution", "cancelled"] {
+        let mut db = database().await;
+        append(&mut db, "invocation_opened", None, json!({})).await;
+        append(&mut db, "tool_dispatched", Some("cell"), json!({})).await;
+        let unknown_cut = ended(&mut db, class).await;
+        assert!(matches!(
+            require_safe(&mut db, "session", None).await,
+            Err(StoreError::HistoryUnsettled)
+        ));
+        assert!(
+            require_manual_message_safe(&mut db, "session", None)
+                .await
+                .unwrap()
+        );
+        append(
+            &mut db,
+            "tool_settled",
+            Some("cell"),
+            json!({"outcome":{"kind":"succeeded"}}),
+        )
+        .await;
+        require_safe(&mut db, "session", None).await.unwrap();
+        assert!(
+            !require_manual_message_safe(&mut db, "session", None)
+                .await
+                .unwrap()
+        );
+        assert!(matches!(
+            require_safe_through(&mut db, "session", None, unknown_cut).await,
+            Err(StoreError::HistoryUnsettled)
+        ));
+        require_safe_through_policy(&mut db, "session", None, unknown_cut, true)
             .await
-            .unwrap()
-    );
-    append(
-        &mut db,
-        "tool_settled",
-        Some("cell"),
-        json!({"outcome":{"kind":"succeeded"}}),
-    )
-    .await;
-    require_safe(&mut db, "session", None).await.unwrap();
-    assert!(
-        !require_manual_message_safe(&mut db, "session", None)
-            .await
-            .unwrap()
-    );
-    assert!(matches!(
-        require_safe_through(&mut db, "session", None, unknown_cut).await,
-        Err(StoreError::HistoryUnsettled)
-    ));
-    require_safe_through_policy(&mut db, "session", None, unknown_cut, true)
-        .await
-        .unwrap();
+            .unwrap();
+    }
 }
 
 #[tokio::test]

@@ -46,14 +46,6 @@ async fn initialize(db: &mut SqliteConnection) {
     .execute(&mut *db)
     .await
     .unwrap();
-    sqlx::query("ATTACH ':memory:' AS prepared_cache")
-        .execute(&mut *db)
-        .await
-        .unwrap();
-    sqlx::raw_sql(include_str!("../prepared/schema.sql"))
-        .execute(db)
-        .await
-        .unwrap();
 }
 
 async fn database() -> SqliteConnection {
@@ -127,7 +119,6 @@ fn selection(through: u64) -> SemanticSelection {
         session: "session".into(),
         lineage: None,
         after: 0,
-        anchor_sequence: None,
         through,
         before: through + 1,
         captured_through: through,
@@ -899,71 +890,6 @@ async fn owner_retirement_keeps_copied_fragments_until_source_collection() {
 }
 
 #[tokio::test]
-async fn prepared_gc_keeps_shared_roots_and_drains_dead_wire_bodies_in_bounded_jobs() {
-    let mut db = database().await;
-    let registry = crate::context::prepared::lifetime::PreparedRegistry::new();
-    crate::context::prepared::tests::seed_shared_wire_gc_fixture(&mut db)
-        .await
-        .unwrap();
-    crate::context::prepared::gc::retire_owner(&mut db, "session")
-        .await
-        .unwrap();
-    assert!(
-        !crate::context::prepared::gc::maintain(
-            &mut db,
-            &registry,
-            &mut crate::context::prepared::runtime::InFlight::default()
-        )
-        .await
-        .unwrap()
-    );
-    let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_chunks")
-        .fetch_one(&mut db)
-        .await
-        .unwrap();
-    assert_eq!(retained, 260);
-    crate::context::prepared::tests::assert_refs(&mut db)
-        .await
-        .unwrap();
-    crate::context::prepared::gc::retire_owner(&mut db, "child")
-        .await
-        .unwrap();
-    assert!(
-        crate::context::prepared::gc::maintain(
-            &mut db,
-            &registry,
-            &mut crate::context::prepared::runtime::InFlight::default()
-        )
-        .await
-        .unwrap()
-    );
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_prepared_chunks")
-        .fetch_one(&mut db)
-        .await
-        .unwrap();
-    assert_eq!(remaining, 132);
-    crate::context::prepared::tests::assert_refs(&mut db)
-        .await
-        .unwrap();
-    while crate::context::prepared::gc::maintain(
-        &mut db,
-        &registry,
-        &mut crate::context::prepared::runtime::InFlight::default(),
-    )
-    .await
-    .unwrap()
-    {}
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM context_prepared_chunks)")
-        .fetch_one(&mut db)
-        .await
-        .unwrap();
-    assert!(!exists);
-    crate::context::prepared::tests::assert_refs(&mut db)
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
 async fn storage_failure_rolls_back_the_explicit_transaction_instead_of_marking_projection_available()
  {
     let mut db = database().await;
@@ -1043,7 +969,7 @@ async fn group_and_page_queries_seek_the_order_index_instead_of_rescanning_the_o
 }
 
 #[tokio::test]
-async fn imported_conversation_counts_as_new_compaction_history_but_the_anchor_does_not() {
+async fn imported_conversation_counts_as_new_compaction_history_but_covered_rows_do_not() {
     use maka_agent_facts::import::{Content, Record, Source};
     let mut db = database().await;
     for (sequence, content) in [
@@ -1107,13 +1033,12 @@ async fn imported_conversation_counts_as_new_compaction_history_but_the_anchor_d
             &mut db,
             &SemanticSelection {
                 after: 2,
-                anchor_sequence: Some(1),
                 ..selection(3)
             }
         )
         .await
         .unwrap(),
-        "an already covered user anchor and a ledger note do not create new conversation history"
+        "covered user history and a ledger note do not create new conversation history"
     );
 }
 
@@ -1529,13 +1454,8 @@ async fn reopening_notifications_pages_latest_sources_without_losing_pending_row
     );
 }
 
-mod neighbor_window {
+mod selected_rows {
     use super::*;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    };
-
     fn user(source: u64, revision: u64, order: u64) -> SemanticRow {
         let id = RowPosition {
             source_sequence: source,
@@ -1562,9 +1482,9 @@ mod neighbor_window {
             SemanticKind::ToolResult { .. } => "tool_result",
             SemanticKind::UnknownTool { .. } => "unknown_tool",
             SemanticKind::AssistantPart { .. } => "assistant_part",
-            other => panic!("unsupported neighbor fixture kind: {other:?}"),
+            other => panic!("unsupported selected-row fixture kind: {other:?}"),
         };
-        sqlx::query("INSERT INTO context_semantic_rows VALUES('session',?,0,?,?,0,?,?,'neighbor-fixture',?,0,0,1,0,?)")
+        sqlx::query("INSERT INTO context_semantic_rows VALUES('session',?,0,?,?,0,?,?,'selected-row-fixture',?,0,0,1,0,?)")
             .bind(row.id.source_sequence as i64)
             .bind(row.revision as i64)
             .bind(row.order.source_sequence as i64)
@@ -1577,28 +1497,8 @@ mod neighbor_window {
             .unwrap();
     }
 
-    async fn measured_neighbor(
-        db: &mut SqliteConnection,
-        selected: &SemanticSelection,
-        group: u64,
-        before: bool,
-    ) -> (Option<SemanticRow>, u64) {
-        let steps = Arc::new(AtomicU64::new(0));
-        let observed = steps.clone();
-        db.lock_handle()
-            .await
-            .unwrap()
-            .set_progress_handler(1, move || {
-                observed.fetch_add(1, Ordering::Relaxed);
-                true
-            });
-        let result = neighbor(db, selected, group, before).await;
-        db.lock_handle().await.unwrap().remove_progress_handler();
-        (result.unwrap(), steps.load(Ordering::Relaxed))
-    }
-
     #[tokio::test]
-    async fn neighbors_preserve_source_selection_and_revision_filters() {
+    async fn selected_rows_preserve_source_selection_and_revision_filters() {
         let mut db = database().await;
         insert(&mut db, &user(1, 1, 1)).await;
         insert(&mut db, &user(2, 2, 2)).await;
@@ -1650,7 +1550,6 @@ mod neighbor_window {
 
         let selected = SemanticSelection {
             after: 10,
-            anchor_sequence: Some(1),
             captured_through: 18,
             before: 19,
             ..selection(16)
@@ -1658,11 +1557,11 @@ mod neighbor_window {
         // An eligible newer invisible archive hides its old visible revision.
         // A newer publication outside the capture must leave that old row visible.
         for (captured, before, unknown, replay, expected) in [
-            (16, 19, false, false, vec![1, 11, 12, 15, 16]),
-            (18, 18, false, false, vec![1, 11, 12, 15, 16]),
-            (18, 19, false, false, vec![1, 11, 12, 16]),
-            (18, 19, true, false, vec![1, 11, 12, 13, 16]),
-            (18, 19, true, true, vec![1, 11, 12, 13]),
+            (16, 19, false, false, vec![11, 12, 15, 16]),
+            (18, 18, false, false, vec![11, 12, 15, 16]),
+            (18, 19, false, false, vec![11, 12, 16]),
+            (18, 19, true, false, vec![11, 12, 13, 16]),
+            (18, 19, true, true, vec![11, 12, 13]),
         ] {
             let selected = SemanticSelection {
                 captured_through: captured,
@@ -1685,38 +1584,8 @@ mod neighbor_window {
                 expected,
                 "capture={captured}, unknown={unknown}, replay={replay}"
             );
-            for anchor in [None, Some(1), Some(12), Some(17)] {
-                let selected = SemanticSelection {
-                    anchor_sequence: anchor,
-                    ..selected.clone()
-                };
-                let candidates = rows(&mut db, &selected, None, 64, None).await.unwrap().rows;
-                // Use row selection as the oracle for neighbor filtering
-                // and full semantic ordering, including rows ordered before `after`.
-                for group in [0, 1, 2, 3, 10, 19, 20, 21, 22, 23, 24] {
-                    for before in [true, false] {
-                        let expected = if before {
-                            candidates
-                                .iter()
-                                .rev()
-                                .find(|row| row.order.source_sequence < group)
-                        } else {
-                            candidates
-                                .iter()
-                                .find(|row| row.order.source_sequence > group)
-                        };
-                        assert_eq!(
-                            neighbor(&mut db, &selected, group, before)
-                                .await
-                                .unwrap()
-                                .as_ref(),
-                            expected,
-                            "group={group}, before={before}, anchor={anchor:?}, capture={captured}, unknown={unknown}, replay={replay}"
-                        );
-                    }
-                }
-            }
         }
+
         insert(&mut db, &user(18, 18, 25)).await;
         sqlx::query(
             "UPDATE context_semantic_rows SET row_json='invalid JSON' WHERE source_sequence=18",
@@ -1725,150 +1594,8 @@ mod neighbor_window {
         .await
         .unwrap();
         assert!(
-            neighbor(&mut db, &selection(18), 24, false).await.is_err(),
-            "neighbor decoding must preserve malformed projection errors"
+            rows(&mut db, &selection(18), None, 64, None).await.is_err(),
+            "selected-row decoding must preserve malformed projection errors"
         );
-    }
-
-    #[tokio::test]
-    async fn neighbor_gap_work_is_bounded_by_selected_sources() {
-        let mut db = database().await;
-        let template = serde_json::to_string(&user(1, 1, 1)).unwrap();
-        let mut previous = 0_i64;
-        let mut samples = Vec::new();
-        for through in [128_i64, 16_384] {
-            sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT ?1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
-                INSERT INTO context_semantic_rows
-                SELECT 'session',n,0,n,n,0,'invocation','invocation','neighbor-fixture','user',0,0,1,0,
-                    json_set(?3,'$.id.sourceSequence',n,'$.order.sourceSequence',n,'$.revision',n)
-                FROM numbers")
-                .bind(previous + 1).bind(through).bind(&template)
-                .execute(&mut db).await.unwrap();
-            let selected = SemanticSelection {
-                after: (through - 16) as u64,
-                anchor_sequence: Some(1),
-                ..selection(through as u64)
-            };
-            let mut costs = Vec::new();
-            // Both directions cross the compacted gap. Also measure no neighbor
-            // and an overlapping anchor so no path can scan all owner history.
-            for (group, before, anchor, expected) in [
-                ((through - 15) as u64, true, Some(1), Some(1)),
-                (1, false, Some(1), Some((through - 15) as u64)),
-                ((through - 15) as u64, true, None, None),
-                (through as u64, false, Some(1), None),
-                (
-                    1,
-                    false,
-                    Some((through - 15) as u64),
-                    Some((through - 15) as u64),
-                ),
-            ] {
-                let selected = SemanticSelection {
-                    anchor_sequence: anchor,
-                    ..selected.clone()
-                };
-                let (found, cost) = measured_neighbor(&mut db, &selected, group, before).await;
-                assert_eq!(
-                    found.map(|row| row.id.source_sequence),
-                    expected,
-                    "history={through}, group={group}, before={before}, anchor={anchor:?}"
-                );
-                costs.push(cost);
-            }
-            samples.push(costs);
-            previous = through;
-        }
-        for (case, (small, large)) in samples[0].iter().zip(&samples[1]).enumerate() {
-            assert!(
-                *large <= small * 2,
-                "neighbor case {case} scanned covered history: H=128 {small} -> H=16384 {large}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn neighbor_pages_keep_revision_in_both_physical_cursors() {
-        let mut db = database().await;
-        insert(&mut db, &user(1, 1, 1)).await;
-        for revision in 1001..=1128 {
-            insert(&mut db, &user(1001, revision, 3)).await;
-        }
-        sqlx::query("UPDATE context_semantic_rows SET archived=1 WHERE source_sequence=1001")
-            .execute(&mut db)
-            .await
-            .unwrap();
-        let selected = SemanticSelection {
-            after: 1000,
-            anchor_sequence: Some(1),
-            captured_through: 1064,
-            before: 1129,
-            ..selection(1001)
-        };
-        // The first reverse order page contains only future publications.
-        let found = neighbor(&mut db, &selected, 4, true)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!((found.id.source_sequence, found.revision), (1001, 1064));
-        let selected = SemanticSelection {
-            captured_through: 1128,
-            ..selected
-        };
-        // The first forward order page contains only superseded revisions.
-        let found = neighbor(&mut db, &selected, 2, false)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!((found.id.source_sequence, found.revision), (1001, 1128));
-
-        let template = serde_json::to_string(&user(1, 1, 1)).unwrap();
-        sqlx::query(
-            "WITH RECURSIVE numbers(n) AS (SELECT 2 UNION ALL SELECT n+1 FROM numbers WHERE n<1000)
-            INSERT INTO context_semantic_rows
-            SELECT 'session',n,0,n,n,0,'invocation','invocation','covered','user',0,0,1,0,
-                json_set(?1,'$.id.sourceSequence',n,'$.order.sourceSequence',n,'$.revision',n)
-            FROM numbers",
-        )
-        .bind(template)
-        .execute(&mut db)
-        .await
-        .unwrap();
-        // Long covered order history leaves the source scan to find its winner
-        // beyond the first physical source page, at the same source and index.
-        let found = neighbor(&mut db, &selected, 1000, true)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!((found.id.source_sequence, found.revision), (1001, 1128));
-    }
-
-    #[tokio::test]
-    async fn dense_first_neighbor_does_not_evaluate_a_full_order_page() {
-        let mut db = database().await;
-        let mut previous = 0;
-        let mut samples = Vec::new();
-        for through in [2, 128] {
-            for source in previous + 1..=through {
-                insert(&mut db, &user(source, source, source)).await;
-            }
-            let selected = selection(through);
-            let mut costs = Vec::new();
-            for before in [true, false] {
-                let group = if before { through + 1 } else { 1 };
-                let expected = if before { through } else { 2 };
-                let (found, cost) = measured_neighbor(&mut db, &selected, group, before).await;
-                assert_eq!(found.map(|row| row.id.source_sequence), Some(expected));
-                costs.push(cost);
-            }
-            samples.push(costs);
-            previous = through;
-        }
-        for (direction, (small, large)) in samples[0].iter().zip(&samples[1]).enumerate() {
-            assert!(
-                *large <= small * 2,
-                "dense first-hit direction {direction} evaluated trailing candidates: H=2 {small} -> H=128 {large}"
-            );
-        }
     }
 }

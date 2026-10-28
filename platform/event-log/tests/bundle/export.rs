@@ -34,17 +34,12 @@ use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::session::CopyPurpose;
 use maka_event_log::{EventLog, StoreError, bundle::BundleError, sessions::SessionCopy};
 use serde_json::{Value, json};
-#[path = "fixtures.rs"]
 mod fixtures;
-#[path = "frames.rs"]
 mod frames;
-#[path = "image.rs"]
 mod image;
-#[path = "import.rs"]
 mod import;
-#[path = "materials.rs"]
 mod materials;
-#[path = "tamper.rs"]
+mod normalization;
 mod tamper;
 use frames::records;
 

@@ -42,7 +42,7 @@ node scripts/rust/notices.mjs check
 
 检查生成的清单和许可证文本。[notices-sources.json](notices-sources.json)记录已审查的上游例外。发布组装还包含实际 V8 构建与 Rust 标准库的 notices。TSV 清单不能替代完整许可证文本。
 
-终端行为使用当前 [terminal-shell 真实 Host 测试](../../products/maka/terminal-shell/tests/real_host.rs)，包含生产 PTY 生命周期。通过 `cargo test -p maka-cli --no-default-features --test terminal_real_host` 运行。比较保留的 release 产物时，使用相同渲染器、终端协议、视口和负载；分别报告输入延迟、帧编码和输出传输。
+终端行为使用当前 [terminal-shell 真实 Host 测试](../../products/maka/terminal-shell/tests/real_host/main.rs)，包含生产 PTY 生命周期。通过 `cargo test -p maka-cli --no-default-features --test terminal_real_host` 运行。比较保留的 release 产物时，使用相同渲染器、终端协议、视口和负载；分别报告输入延迟、帧编码和输出传输。
 
 长任务对比使用两个版本保留的 release 测试可执行文件，基准夹具必须相同。
 通过 `cargo test --release --no-run` 构建 `maka-event-log --test archive`

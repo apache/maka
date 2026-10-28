@@ -21,15 +21,12 @@
 use super::*;
 use maka_agent_facts::model::prompt::{AssistantPart, Message as PromptMessage};
 use maka_agent_facts::model::prompt_source::{
-    Next, NextWire, NextWireMetadata, PrefixIdentity, Prompt, PromptCursor, PromptSource,
-    WireChunk, WireCursor, WireFormat, WireMetadata, WireMetadataCursor, WireSource,
+    Next, NextWire, PrefixIdentity, Prompt, PromptCursor, PromptSource, WireCursor, WireFormat,
+    WireMetadataCursor, WireSource,
 };
-use std::{
-    hash::{Hash, Hasher},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 #[derive(Default)]
@@ -57,115 +54,104 @@ impl PromptCursor for ForbiddenCursor {
     }
 }
 struct Stored {
-    chunks: Arc<Vec<WireChunk>>,
-    prefixes: Vec<String>,
+    wire: Arc<dyn WireSource>,
     counters: Arc<Counters>,
 }
 struct Cursor {
-    chunks: Arc<Vec<WireChunk>>,
-    index: usize,
+    inner: Box<dyn WireCursor>,
     counters: Arc<Counters>,
 }
-fn copy(chunk: &WireChunk) -> WireChunk {
-    WireChunk {
-        bytes: chunk.bytes.clone(),
-        item_start: chunk.item_start,
-        item_end: chunk.item_end,
-        message_index: chunk.message_index,
-        metadata: chunk.metadata.clone(),
-    }
-}
 impl WireCursor for Cursor {
+    fn budget(
+        &self,
+    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>> {
+        self.inner.budget()
+    }
     fn next(&mut self) -> NextWire<'_> {
         Box::pin(async move {
-            let chunk = self.chunks.get(self.index).map(copy);
+            let chunk = self.inner.next().await?;
             if chunk.is_some() {
-                self.index += 1;
                 self.counters.reads.fetch_add(1, Ordering::SeqCst);
             }
             Ok(chunk)
         })
     }
 }
-impl WireMetadataCursor for Cursor {
-    fn next(&mut self) -> NextWireMetadata<'_> {
-        Box::pin(async move {
-            while let Some(chunk) = self.chunks.get(self.index) {
-                self.index += 1;
-                if let Some(metadata) = &chunk.metadata {
-                    return Ok(Some(WireMetadata {
-                        position: maka_agent_facts::model::prompt_source::WirePosition {
-                            message_index: chunk.message_index,
-                            piece_index: self.index - 1,
-                        },
-                        message_index: chunk.message_index,
-                        metadata: metadata.clone(),
-                    }));
-                }
-            }
-            Ok(None)
-        })
-    }
-}
 impl WireSource for Stored {
+    fn source_identities(
+        &self,
+    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::SourceIdentityLookup>> {
+        self.wire.source_identities()
+    }
+    fn document_count(&self) -> usize {
+        self.wire.document_count()
+    }
+    fn document(
+        &self,
+        index: usize,
+        budget: Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>,
+    ) -> maka_agent_facts::model::prompt_source::NextWireDocument<'_> {
+        self.wire.document(index, budget)
+    }
+    fn budget_factory(
+        &self,
+    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudgetFactory>> {
+        self.wire.budget_factory()
+    }
+    fn acquire_budget(&self) -> maka_agent_facts::model::prompt_source::AcquireWireBudget<'_> {
+        self.wire.acquire_budget()
+    }
     fn open(&self, start: usize) -> Box<dyn WireCursor> {
         self.counters.opens.lock().unwrap().push(start);
         Box::new(Cursor {
-            chunks: self.chunks.clone(),
-            index: self
-                .chunks
-                .partition_point(|chunk| chunk.message_index < start),
+            inner: self.wire.open(start),
             counters: self.counters.clone(),
         })
     }
     fn open_metadata(&self, start: usize) -> Option<Box<dyn WireMetadataCursor>> {
         self.counters.metadata_opens.lock().unwrap().push(start);
-        Some(Box::new(Cursor {
-            chunks: self.chunks.clone(),
-            index: self
-                .chunks
-                .partition_point(|chunk| chunk.message_index < start),
-            counters: self.counters.clone(),
-        }))
+        self.wire.open_metadata(start)
     }
-    fn prefix_identity(&self, messages: usize) -> PrefixIdentity<'_> {
-        Box::pin(async move { Ok(self.prefixes.get(messages).cloned()) })
+    fn prefix_identity(&self, count: usize) -> PrefixIdentity<'_> {
+        self.wire.prefix_identity(count)
     }
 }
-fn prepared(
+fn resources() -> maka_model::ModelPreparationResources {
+    maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy {
+        staging_bytes: 8 * 1024 * 1024,
+        resident_bytes: 8 * 1024 * 1024,
+        progress_bytes: 256 * 1024,
+        work_bytes: 256 * 1024,
+    })
+    .unwrap()
+}
+async fn prepared(
     request: &ModelRequest,
     messages: Vec<PromptMessage>,
     counters: Arc<Counters>,
 ) -> Prompt {
     let breakdown = maka_agent_facts::context::measure::prompt_breakdown(&messages);
-    let group = maka_model::WireEncoding::new(
+    let encoding = maka_model::WireEncoding::new(
         request.language,
         &request.provider,
         &request.provider_options,
         &request.tools,
     )
-    .unwrap()
-    .prepare_group(messages, &maka_model::PreparationContext::default());
-    let count = group.message_count;
-    let chunks = group.chunks.collect::<Result<Vec<_>, _>>().unwrap();
-    // This fixture simulates the storage prefix index, prepared once. Production
-    // prefix lookups use persisted roots; no hashing occurs in the request path.
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    let mut prefixes = vec![format!("fixture-prefix-{}", hash.finish())];
-    for index in 0..count {
-        for chunk in chunks.iter().filter(|chunk| chunk.message_index == index) {
-            chunk.bytes.hash(&mut hash);
-            chunk.item_start.hash(&mut hash);
-            chunk.item_end.hash(&mut hash);
-            chunk
-                .metadata
-                .as_ref()
-                .map(Value::to_string)
-                .hash(&mut hash);
-        }
-        prefixes.push(format!("fixture-prefix-{}", hash.finish()));
-    }
-    let identity = prefixes.last().unwrap().clone();
+    .unwrap();
+    let codec = encoding.codec().to_owned();
+    let count = messages.len();
+    let wire = encoding
+        .prepare_source(
+            Arc::new(
+                maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(
+                    &messages,
+                ),
+            ),
+            resources(),
+        )
+        .await
+        .unwrap();
+    let identity = wire.identity;
     Prompt::new(
         Arc::new(Forbidden(counters.clone())),
         identity.clone(),
@@ -174,11 +160,10 @@ fn prepared(
     )
     .with_wire(
         WireFormat::Responses,
-        group.codec,
+        codec,
         identity,
         Arc::new(Stored {
-            chunks: Arc::new(chunks),
-            prefixes,
+            wire: wire.source,
             counters,
         }),
     )
@@ -247,7 +232,7 @@ async fn prepared_responses_http_redirect_replays_without_semantic_history() {
             // introduce an extra comma or shift the following message offset.
             PromptMessage::Assistant { content:vec![AssistantPart::Reasoning { text:"not replayable".into(),provider_options:None }],provider_options:None },
             PromptMessage::user(text),
-        ], counters.clone());
+        ], counters.clone()).await;
         generate(&ModelExecutor::new(Duration::from_secs(10)).unwrap(), &Conversation::default(), input).await;
         server.await.unwrap();
         assert_eq!(counters.semantic.load(Ordering::SeqCst), 0);
@@ -296,13 +281,13 @@ async fn indexed_prefixes_repeat_deltas_and_changed_roots_force_full_replay() {
         let counters = Arc::new(Counters::default());
         let mut input = request(&base, "unused");
         let mut messages = vec![PromptMessage::user("first")];
-        input.prompt = prepared(&input, messages.clone(), counters.clone());
+        input.prompt = prepared(&input, messages.clone(), counters.clone()).await;
         let first = generate_step(&executor, &lane, input).await;
         assert_eq!(first.response_id.as_deref(), Some("resp_1"));
         assert_eq!(first.parts.len(), 2, "both provider messages must survive acceptance");
         let mut input = request(&base, "unused");
         messages.push(assistant(&first));
-        let confirmation = prepared(&input, messages.clone(), counters.clone());
+        let confirmation = prepared(&input, messages.clone(), counters.clone()).await;
         let reads = counters.reads.load(Ordering::SeqCst);
         assert!(
             lane.confirm(&confirmation, &[], first.response_id.as_deref())
@@ -310,11 +295,11 @@ async fn indexed_prefixes_repeat_deltas_and_changed_roots_force_full_replay() {
         );
         assert_eq!(counters.reads.load(Ordering::SeqCst), reads);
         messages.push(PromptMessage::user("second"));
-        input.prompt = prepared(&input, messages.clone(), counters.clone());
+        input.prompt = prepared(&input, messages.clone(), counters.clone()).await;
         let second = generate_step(&executor, &lane, input).await;
         let mut input = request(&base, "unused");
         messages.push(assistant(&second));
-        let confirmation = prepared(&input, messages.clone(), counters.clone());
+        let confirmation = prepared(&input, messages.clone(), counters.clone()).await;
         let reads = counters.reads.load(Ordering::SeqCst);
         assert!(
             lane.confirm(&confirmation, &[], second.response_id.as_deref())
@@ -323,7 +308,7 @@ async fn indexed_prefixes_repeat_deltas_and_changed_roots_force_full_replay() {
         assert_eq!(counters.reads.load(Ordering::SeqCst), reads);
         messages[0] = PromptMessage::user("compacted");
         messages.push(PromptMessage::user("third"));
-        input.prompt = prepared(&input, messages, counters.clone());
+        input.prompt = prepared(&input, messages, counters.clone()).await;
         generate(&executor, &lane, input).await;
         server.await.unwrap();
         assert_eq!(counters.semantic.load(Ordering::SeqCst), 0);

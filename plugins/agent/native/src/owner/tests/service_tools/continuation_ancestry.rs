@@ -137,7 +137,7 @@ async fn resume_repeated_cancellations_preserves_settled_effects() {
             let context = fixture.session(&(source.boundary).invocation.session_id).await.capture_lineage_context(&source.boundary, 1_000, 1024 * 1024)
                 .await.unwrap();
             assert!(context.baseline.is_none());
-            let context_events = context.tail.len() + usize::from(context.anchor.is_some());
+            let context_events = context.tail.len();
             assert!(context_events < 1_000);
             assert!(pending_prompt_bytes < 128 * 1024);
             let resumed = fixture.mutation(2, "resume", json!({

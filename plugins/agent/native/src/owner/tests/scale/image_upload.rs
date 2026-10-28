@@ -34,7 +34,6 @@ use std::{cell::Cell, io::Read, panic::AssertUnwindSafe};
 const INPUT: &str = "K45 inspect these exact uploaded images";
 const ANSWER: &str = "K45_EXACT_IMAGES_CONFIRMED";
 
-#[path = "image_upload/protocol.rs"]
 mod protocol;
 use protocol::Options;
 

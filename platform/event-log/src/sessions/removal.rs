@@ -224,7 +224,6 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         let commits = self.commits.session(&session);
-        let prepared = self.prepared_store()?.cleanup();
         let observations = self.connection.observations();
         self.connection
             .run(move |connection| {
@@ -236,7 +235,6 @@ impl EventLog {
                     if !state.pending() {
                         tx.rollback().await?;
                         if state == SessionRetirement::Removed {
-                            prepared.retire_owner(session.clone()).await?;
                             observations.purge_session(session).await?;
                         }
                         return Ok(state);
@@ -259,10 +257,6 @@ impl EventLog {
                     // Membership is retained proof, not a disposable UI projection:
                     // descendants may pin an archive whose writer inherited its target.
                     // Verifying that archive/checkpoint still needs the writer's cut.
-                    // The caller's physical-drain contract above releases this
-                    // owner's lazy prepared views. Other owners' copied metadata
-                    // and immutable shared payloads remain independently pinned.
-                    prepared.retire_owner(session.clone()).await?;
                     crate::context::semantic::gc::retire_owner(&mut tx, &session).await?;
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",

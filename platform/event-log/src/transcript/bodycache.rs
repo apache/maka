@@ -308,5 +308,4 @@ pub(super) async fn ensure_on_worker(
 }
 
 #[cfg(test)]
-#[path = "bodycache_tests.rs"]
 mod tests;

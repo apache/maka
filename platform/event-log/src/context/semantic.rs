@@ -19,12 +19,16 @@
 
 //! Indexed semantic metadata with extracted pieces or canonical projection spans.
 #[cfg(test)]
-#[path = "semantic/age_tests.rs"]
 mod age_tests;
+mod captured;
 pub(crate) mod gc;
+pub use captured::{
+    ArtifactCapture, ArtifactIdentityValidity, ArtifactLookup, ArtifactLookupResult,
+    CapturedLocalResource, CapturedRow, CapturedSource, PayloadEncoding, PayloadSource,
+    SourceChunk, SourceDomain, SourcePage, SourcePosition, close_request_file, create_request_file,
+};
 mod source;
 #[cfg(test)]
-#[path = "semantic/tests.rs"]
 mod tests;
 mod write;
 pub(crate) use write::{copy_member, record};
@@ -44,7 +48,6 @@ pub struct SemanticSelection {
     /// The authenticated selection's immutable {base,run} descriptor.
     pub lineage: Option<String>,
     pub after: u64,
-    pub anchor_sequence: Option<u64>,
     pub through: u64,
     /// Exclusive visibility boundary for archives owned by this Session.
     pub before: u64,
@@ -194,7 +197,6 @@ pub(crate) async fn rows(
         .bind(point.id.item_index as i64)
         .bind(group.map(|value| value as i64))
         .bind(limit + 1)
-        .bind(selection.anchor_sequence.map(|value| value as i64))
         .bind(
             selection
                 .replay
@@ -231,7 +233,7 @@ fn rows_query(group: bool) -> String {
     };
     // A source window can contain rows ordered before its source cutoff (for
     // example a late tool result). Seek each source range first, then sort only
-    // that window. The anchor branch is disjoint even if it lies in the window.
+    // that window.
     let (window, from) = if group {
         (
             String::new(),
@@ -242,101 +244,25 @@ fn rows_query(group: bool) -> String {
             "WITH window AS MATERIALIZED (
             SELECT * FROM context_semantic_rows WHERE owner_session_id=?1
               AND source_sequence>?2 AND source_sequence<=?3
-            UNION ALL
-            SELECT * FROM context_semantic_rows WHERE owner_session_id=?1
-              AND source_sequence=?13 AND source_sequence<=?2 AND source_sequence<=?3
         ) "
             .to_owned(),
             "window r",
         )
     };
-    format!("{window}SELECT r.row_json FROM {from}
-        WHERE r.owner_session_id=?1 AND (r.source_sequence>?2 OR r.source_sequence=?13) AND r.source_sequence<=?3
-          AND {} AND r.visible=1 AND {} AND (?15=1 OR (r.kind!='unknown_tool' AND r.unknown_only=0))
+    format!(
+        "{window}SELECT r.row_json FROM {from}
+        WHERE r.owner_session_id=?1 AND r.source_sequence>?2 AND r.source_sequence<=?3
+          AND {} AND r.visible=1 AND {} AND (?14=1 OR (r.kind!='unknown_tool' AND r.unknown_only=0))
           AND (r.order_sequence,r.order_index,r.source_sequence,r.source_index)>(?7,?8,?9,?10)
           AND {group_filter}
           AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n
             WHERE n.owner_session_id=r.owner_session_id AND n.source_sequence=r.source_sequence
               AND n.source_index=r.source_index AND n.revision>r.revision AND {})
         ORDER BY r.order_sequence,r.order_index,r.source_sequence,r.source_index LIMIT ?12",
-        eligible("r"),replay_predicate("r","?14"),eligible("n"))
-}
-
-/// A cold projection starts from the selected source window, not from the
-/// first change ever published by this Session. The anchor is a separate seek.
-/// Discovery pages the source primary key, not DISTINCT semantic order. Dirty
-/// insertion owns deduplication; repeating a source window for each order page
-/// would turn cold preparation into quadratic work.
-pub(crate) type GroupCursor = (i64, i64, i64, i64);
-pub(crate) struct GroupPage {
-    pub groups: Vec<u64>,
-    pub next: Option<GroupCursor>,
-}
-fn group_page(rows: Vec<sqlx::sqlite::SqliteRow>, limit: usize) -> Result<GroupPage, StoreError> {
-    let more = rows.len() > limit;
-    let mut groups = Vec::with_capacity(limit);
-    let mut last = None;
-    for row in rows.into_iter().take(limit) {
-        groups.push(crate::sequence_number(row.try_get("order_sequence")?)?);
-        last = Some((
-            row.try_get("source_sequence")?,
-            row.try_get("source_index")?,
-            row.try_get("revision")?,
-            row.try_get("order_sequence")?,
-        ));
-    }
-    Ok(GroupPage {
-        groups,
-        next: if more { last } else { None },
-    })
-}
-pub(crate) async fn initial_groups(
-    connection: &mut SqliteConnection,
-    selection: &SemanticSelection,
-    cursor: Option<GroupCursor>,
-    anchor: bool,
-    limit: usize,
-) -> Result<GroupPage, StoreError> {
-    available_at(connection, &selection.session, selection.captured_through).await?;
-    let floor = if anchor {
-        let Some(anchor) = selection.anchor_sequence else {
-            return Ok(GroupPage {
-                groups: Vec::new(),
-                next: None,
-            });
-        };
-        anchor
-    } else {
-        selection.after.saturating_add(1)
-    };
-    let lower = if anchor {
-        "r.source_sequence=?2 AND (r.source_index,r.revision)>(?8,?9)"
-    } else {
-        "(r.source_sequence,r.source_index,r.revision)>(?7,?8,?9)"
-    };
-    let query = format!(
-        "SELECT r.source_sequence,r.source_index,r.revision,r.order_sequence
-        FROM context_semantic_rows r WHERE r.owner_session_id=?1 AND {lower}
-        AND r.source_sequence<=?3 AND {}
-        ORDER BY r.source_sequence,r.source_index,r.revision LIMIT ?10",
-        eligible("r")
-    );
-    let point = cursor.unwrap_or((floor as i64, -1, -1, -1));
-    let limit = limit.clamp(1, 256);
-    let rows = sqlx::query(sqlx::AssertSqlSafe(query))
-        .bind(&selection.session)
-        .bind(floor as i64)
-        .bind(selection.through as i64)
-        .bind(selection.captured_through as i64)
-        .bind(selection.before.min(i64::MAX as u64) as i64)
-        .bind(&selection.lineage)
-        .bind(point.0)
-        .bind(point.1)
-        .bind(point.2)
-        .bind((limit + 1) as i64)
-        .fetch_all(connection)
-        .await?;
-    group_page(rows, limit)
+        eligible("r"),
+        replay_predicate("r", "?13"),
+        eligible("n")
+    )
 }
 
 pub(crate) async fn changes(
@@ -354,7 +280,7 @@ pub(crate) async fn changes(
     });
     let query=format!("SELECT r.change_id,r.revision,r.source_sequence,r.source_index,r.order_sequence,r.order_index,r.deleted
         FROM context_semantic_changes r WHERE r.owner_session_id=?1
-        AND (r.source_sequence>?2 OR r.source_sequence=?11) AND r.source_sequence<=?3 AND {}
+        AND r.source_sequence>?2 AND r.source_sequence<=?3 AND {}
         AND r.revision>?7 AND (r.revision,r.change_id)>(?8,?9)
         ORDER BY r.revision,r.change_id LIMIT ?10",eligible("r"));
     let records = sqlx::query(sqlx::AssertSqlSafe(query))
@@ -368,7 +294,6 @@ pub(crate) async fn changes(
         .bind(point.revision as i64)
         .bind(point.change_id as i64)
         .bind(limit + 1)
-        .bind(selection.anchor_sequence.map(|value| value as i64))
         .fetch_all(connection)
         .await?;
     let more = records.len() > limit as usize;
@@ -399,163 +324,6 @@ pub(crate) async fn changes(
     })
 }
 
-type NeighborKey = (i64, i64, i64, i64, i64);
-
-async fn neighbor_row(
-    connection: &mut SqliteConnection,
-    session: &str,
-    key: NeighborKey,
-) -> Result<SemanticRow, StoreError> {
-    let json: String = sqlx::query_scalar("SELECT row_json FROM context_semantic_rows WHERE owner_session_id=? AND source_sequence=? AND source_index=? AND revision=?")
-        .bind(session).bind(key.2).bind(key.3).bind(key.4)
-        .fetch_one(connection).await?;
-    serde_json::from_str(&json).map_err(StoreError::from)
-}
-
-pub(crate) async fn neighbor(
-    connection: &mut SqliteConnection,
-    selection: &SemanticSelection,
-    group: u64,
-    before: bool,
-) -> Result<Option<SemanticRow>, StoreError> {
-    // Race ordered seeks against a source-window scan. Dense windows finish
-    // from the order index; compacted gaps finish from the source primary key.
-    // Neither path can force every neighbor to scan the entire other range.
-    const PAGE: usize = 64;
-    let (comparison, direction) = if before { ("<", "DESC") } else { (">", "ASC") };
-    let predicate = format!(
-        "(r.source_sequence>?2 OR r.source_sequence=?9) AND r.source_sequence<=?3
-        AND {} AND {} AND r.visible=1 AND (?8=1 OR (r.kind!='unknown_tool' AND r.unknown_only=0))
-        AND r.order_sequence {comparison} ?10
-        AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n WHERE n.owner_session_id=r.owner_session_id
-            AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision AND {})",
-        eligible("r"), replay_predicate("r", "?7"), eligible("n")
-    );
-    let columns = format!(
-        "r.order_sequence,r.order_index,r.source_sequence,r.source_index,r.revision,
-        CASE WHEN {predicate} THEN 1 ELSE 0 END AS selected"
-    );
-    let order_query = format!("SELECT {columns} FROM context_semantic_rows r INDEXED BY context_semantic_row_order
-        WHERE r.owner_session_id=?1
-        AND (r.order_sequence,r.order_index,r.source_sequence,r.source_index,r.revision) {comparison} (?11,?12,?13,?14,?15)
-        ORDER BY r.order_sequence {direction},r.order_index {direction},r.source_sequence {direction},r.source_index {direction},r.revision {direction} LIMIT ?16");
-    let replay = selection
-        .replay
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-    let mut ordered: NeighborKey = if before {
-        (group as i64, 0, 0, 0, 0)
-    } else {
-        (group as i64, i64::MAX, i64::MAX, i64::MAX, i64::MAX)
-    };
-    let mut anchor = selection
-        .anchor_sequence
-        .is_some_and(|value| value <= selection.after && value <= selection.through);
-    let mut source = if anchor {
-        (
-            selection.anchor_sequence.expect("anchor selected") as i64,
-            -1,
-            -1,
-        )
-    } else {
-        (selection.after.saturating_add(1) as i64, -1, -1)
-    };
-    let mut best: Option<NeighborKey> = None;
-    let mut order_limit = 1;
-    loop {
-        let records = sqlx::query(sqlx::AssertSqlSafe(order_query.as_str()))
-            .bind(&selection.session)
-            .bind(selection.after as i64)
-            .bind(selection.through as i64)
-            .bind(selection.captured_through as i64)
-            .bind(selection.before.min(i64::MAX as u64) as i64)
-            .bind(&selection.lineage)
-            .bind(&replay)
-            .bind(selection.prior_unknown)
-            .bind(selection.anchor_sequence.map(|value| value as i64))
-            .bind(group as i64)
-            .bind(ordered.0)
-            .bind(ordered.1)
-            .bind(ordered.2)
-            .bind(ordered.3)
-            .bind(ordered.4)
-            .bind(order_limit as i64)
-            .fetch_all(&mut *connection)
-            .await?;
-        for record in &records {
-            ordered = neighbor_key(record)?;
-            if record.try_get::<bool, _>("selected")? {
-                return neighbor_row(connection, &selection.session, ordered)
-                    .await
-                    .map(Some);
-            }
-        }
-        if records.len() < order_limit {
-            return Ok(None);
-        }
-        order_limit = PAGE;
-        let lower = if anchor {
-            "r.source_sequence=?9 AND r.source_sequence<=?2 AND r.source_sequence<=?3
-             AND (r.source_index,r.revision)>(?12,?13)"
-        } else {
-            "(r.source_sequence,r.source_index,r.revision)>(?11,?12,?13) AND r.source_sequence<=?3"
-        };
-        let source_query = format!(
-            "SELECT {columns} FROM context_semantic_rows r WHERE r.owner_session_id=?1 AND {lower}
-            ORDER BY r.source_sequence,r.source_index,r.revision LIMIT {PAGE}"
-        );
-        let records = sqlx::query(sqlx::AssertSqlSafe(source_query))
-            .bind(&selection.session)
-            .bind(selection.after as i64)
-            .bind(selection.through as i64)
-            .bind(selection.captured_through as i64)
-            .bind(selection.before.min(i64::MAX as u64) as i64)
-            .bind(&selection.lineage)
-            .bind(&replay)
-            .bind(selection.prior_unknown)
-            .bind(selection.anchor_sequence.map(|value| value as i64))
-            .bind(group as i64)
-            .bind(source.0)
-            .bind(source.1)
-            .bind(source.2)
-            .fetch_all(&mut *connection)
-            .await?;
-        for record in &records {
-            let key = neighbor_key(record)?;
-            source = (key.2, key.3, key.4);
-            if record.try_get::<bool, _>("selected")?
-                && best.is_none_or(|current| if before { key > current } else { key < current })
-            {
-                best = Some(key);
-            }
-        }
-        if records.len() < PAGE {
-            if anchor {
-                anchor = false;
-                source = (selection.after.saturating_add(1) as i64, -1, -1);
-            } else {
-                return match best {
-                    Some(key) => neighbor_row(connection, &selection.session, key)
-                        .await
-                        .map(Some),
-                    None => Ok(None),
-                };
-            }
-        }
-    }
-}
-
-fn neighbor_key(record: &sqlx::sqlite::SqliteRow) -> Result<NeighborKey, StoreError> {
-    Ok((
-        record.try_get("order_sequence")?,
-        record.try_get("order_index")?,
-        record.try_get("source_sequence")?,
-        record.try_get("source_index")?,
-        record.try_get("revision")?,
-    ))
-}
-
 pub(crate) async fn meaningful_history(
     connection: &mut SqliteConnection,
     selection: &SemanticSelection,
@@ -583,131 +351,6 @@ pub(crate) async fn meaningful_history(
         .fetch_one(connection)
         .await
         .map_err(StoreError::from)
-}
-
-async fn cut_sequence(
-    connection: &mut SqliteConnection,
-    owner: &str,
-    invocation: &str,
-    through: u64,
-) -> Result<u64, StoreError> {
-    let cut:Option<i64>=sqlx::query_scalar("SELECT cut_sequence FROM context_semantic_cuts WHERE owner_session_id=? AND invocation_id=? AND revision<=? ORDER BY revision DESC LIMIT 1")
-        .bind(owner).bind(invocation).bind(through as i64).fetch_optional(connection).await?;
-    Ok(cut.unwrap_or(0) as u64)
-}
-
-/// Selector changes touch only the formerly/currently inherited unstable tail.
-/// A provider-policy switch can affect historical reasoning and deliberately
-/// invalidates those candidate groups; unchanged policy never scans them.
-pub(crate) async fn selection_dirty_groups(
-    connection: &mut SqliteConnection,
-    previous: &SemanticSelection,
-    next: &SemanticSelection,
-    branch: u8,
-    cursor: Option<GroupCursor>,
-    limit: usize,
-) -> Result<GroupPage, StoreError> {
-    let all_assistant = match (&previous.replay, &next.replay) {
-        (Some(a), Some(b)) => a.route != b.route || a.model != b.model,
-        (None, None) => false,
-        _ => true,
-    };
-    let mut floor = next.after.saturating_add(1);
-    let mut through = next.through;
-    let mut invocation = None;
-    let unknown = branch == 4;
-    let active = match branch {
-        0 => all_assistant,
-        1 | 2 => {
-            if let (Some(a), Some(b)) = (&previous.replay, &next.replay) {
-                if !all_assistant && a.current != b.current {
-                    let current = if branch == 1 { &a.current } else { &b.current };
-                    let old_cut =
-                        cut_sequence(connection, &previous.session, current, previous.through)
-                            .await?;
-                    let new_cut =
-                        cut_sequence(connection, &next.session, current, next.through).await?;
-                    floor = old_cut
-                        .min(new_cut)
-                        .max(a.base.min(b.base).saturating_add(1))
-                        .max(floor);
-                    invocation = Some(current);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        3 => {
-            if let (Some(a), Some(b)) = (&previous.replay, &next.replay) {
-                if !all_assistant && a.base != b.base {
-                    floor = a.base.min(b.base).max(next.after).saturating_add(1);
-                    through = a.base.max(b.base).min(next.through);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        4 => previous.prior_unknown != next.prior_unknown,
-        _ => false,
-    };
-    if !active || floor > through {
-        return Ok(GroupPage {
-            groups: Vec::new(),
-            next: None,
-        });
-    }
-    let point = cursor.unwrap_or((floor as i64, -1, -1, -1));
-    let limit = limit.clamp(1, 256);
-    // Preserve each branch's equality/partial-index predicate. Optional ORs
-    // would lose the invocation/unknown seek and scan unrelated old history.
-    let predicate = if unknown {
-        "unknown_only=1"
-    } else if invocation.is_some() {
-        "kind='assistant_part' AND invocation_id=?6"
-    } else {
-        "kind='assistant_part'"
-    };
-    let index = if unknown {
-        "INDEXED BY context_semantic_unknown_rows"
-    } else if invocation.is_some() {
-        "INDEXED BY context_semantic_invocation_rows"
-    } else {
-        ""
-    };
-    let (position, order) = if unknown {
-        (
-            "(source_sequence,order_sequence,source_index,revision)>(?7,?11,?8,?9)",
-            "source_sequence,order_sequence,source_index,revision",
-        )
-    } else {
-        (
-            "(source_sequence,source_index,revision)>(?7,?8,?9)",
-            "source_sequence,source_index,revision",
-        )
-    };
-    let query=format!("SELECT source_sequence,source_index,revision,order_sequence FROM context_semantic_rows {index}
-        WHERE owner_session_id=?1 AND source_sequence<=?3 AND revision<=?4 AND {predicate} AND {position}
-        ORDER BY {order} LIMIT ?10");
-    let query = sqlx::query(sqlx::AssertSqlSafe(query))
-        .bind(&next.session)
-        .bind(floor as i64)
-        .bind(through as i64)
-        .bind(next.captured_through as i64)
-        .bind(unknown)
-        .bind(invocation)
-        .bind(point.0)
-        .bind(point.1)
-        .bind(point.2)
-        .bind((limit + 1) as i64);
-    let query = if unknown { query.bind(point.3) } else { query };
-    let rows = query.fetch_all(connection).await?;
-    group_page(rows, limit)
 }
 
 async fn payload(

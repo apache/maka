@@ -455,6 +455,7 @@ CREATE TABLE "project_locations" (
 ) STRICT;
 
 CREATE TABLE "artifacts" (
+    lookup_digest BLOB NOT NULL CHECK(length(lookup_digest) = 32),
     session_id TEXT NOT NULL REFERENCES session_control(id),
     id TEXT NOT NULL,
     created_at INTEGER NOT NULL CHECK(created_at >= 0),
@@ -470,6 +471,8 @@ CREATE TABLE "artifacts" (
 );
 
 CREATE TABLE "session_history_artifacts" (
+    lookup_digest BLOB NOT NULL CHECK(length(lookup_digest) = 32),
+    target_digest BLOB NOT NULL CHECK(length(target_digest) = 32),
     session_id TEXT NOT NULL REFERENCES session_history_copies(session_id),
     source_session_id TEXT NOT NULL,
     source_artifact_id TEXT NOT NULL,
@@ -1277,3 +1280,7 @@ INSERT INTO session_catalog_revision VALUES(1,0);
 INSERT INTO plugin_composition VALUES(1,'{"generation":0,"packageLayers":[],"overlays":[]}');
 
 PRAGMA user_version = 1;
+
+CREATE INDEX artifacts_lookup_digest ON artifacts(lookup_digest);
+CREATE INDEX history_artifacts_lookup_digest ON session_history_artifacts(lookup_digest);
+CREATE INDEX history_artifacts_target_digest ON session_history_artifacts(target_digest);

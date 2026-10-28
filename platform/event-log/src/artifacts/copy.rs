@@ -87,8 +87,8 @@ pub(crate) async fn copy_in_transaction(
         };
     }
     let inserted = sqlx::query(
-        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload, canonical_at)
-         SELECT ?3, ?4, ?5, ?6, content_sha256, payload, canonical_at FROM artifacts
+        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload, canonical_at, lookup_digest)
+         SELECT ?3, ?4, ?5, ?6, content_sha256, payload, canonical_at, ?8 FROM artifacts
          WHERE session_id = ?1 AND id = ?2 AND length(payload) = ?7",
     )
     .bind(source_session)
@@ -98,6 +98,7 @@ pub(crate) async fn copy_in_transaction(
     .bind(created_at as i64)
     .bind(encoded)
     .bind(artifact.size_bytes as i64)
+    .bind(super::identity::artifact_lookup_digest(target_session, target_id).as_slice())
     .execute(&mut *tx)
     .await?
     .rows_affected();

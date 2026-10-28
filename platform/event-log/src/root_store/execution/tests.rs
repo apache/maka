@@ -22,6 +22,12 @@ use futures_util::poll;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+fn captured_artifact<T>(value: crate::context::semantic::ArtifactLookupResult<T>) -> T {
+    match value {
+        crate::context::semantic::ArtifactLookupResult::Captured(value) => value,
+        _ => panic!("expected captured artifact"),
+    }
+}
 async fn open(path: &std::path::Path) -> RootStore {
     let owner = root::RootOwner::create(&path.join("root"), &namespaces(path)).unwrap();
     RootStore::open(Arc::new(owner)).await.unwrap()
@@ -40,6 +46,306 @@ fn invocation() -> Invocation {
         run_id: "run".into(),
         invocation_id: "invocation".into(),
     }
+}
+
+#[tokio::test]
+async fn captured_source_keeps_original_custody_after_parent_release_until_real_close() {
+    use crate::context::semantic::SemanticSelection;
+    use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    assert!(
+        session
+            .capture_source(SemanticSelection {
+                session: "session".into(),
+                lineage: None,
+                after: 0,
+                through: 0,
+                before: u64::MAX,
+                captured_through: 0,
+                replay: None,
+                prior_unknown: false,
+            })
+            .await
+            .is_err()
+    );
+    let scope = session.execution_scope(None).await.unwrap();
+    let stale_parent = scope.store();
+    let parent = scope.accept();
+    let source = stale_parent
+        .capture_source(SemanticSelection {
+            session: "session".into(),
+            lineage: None,
+            after: 0,
+            through: 0,
+            before: u64::MAX,
+            captured_through: 0,
+            replay: None,
+            prior_unknown: false,
+        })
+        .await
+        .unwrap();
+    parent.finish();
+    assert!(matches!(
+        stale_parent.get::<Value>().await,
+        Err(StoreError::ConnectionClosed)
+    ));
+    let mut shutdown = Box::pin(root.shutdown());
+    assert!(poll!(&mut shutdown).is_pending());
+    let page = source
+        .metadata_page(None, ChargedBuffer::new(vec![0; 1024], ()))
+        .await
+        .unwrap();
+    assert!(page.is_empty());
+    drop(page);
+    drop(source);
+    shutdown.await.unwrap();
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn captured_metadata_pages_exclude_covered_rows_and_preserve_replay_filters() {
+    use crate::context::semantic::{SemanticReplay, SemanticSelection};
+    use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    session.owner().unwrap().connection.run(|db| Box::pin(async move {
+        for (sequence, order, invocation, kind) in [
+            (1_i64, 1_i64, "current", "assistant_part"),
+            (2, 1, "earlier", "assistant_part"),
+            (3, 3, "current", "assistant_part"),
+            (4, 4, "other", "assistant_part"),
+            (5, 5, "current", "unknown_tool"),
+        ] {
+            let payload = if kind == "unknown_tool" {
+                json!({"UnknownTool": {}})
+            } else {
+                json!({"AssistantPart": {"payload": {"Text": {
+                    "part": {"sourceSequence": sequence, "itemIndex": 0}, "end": sequence
+                }}}})
+            };
+            let metadata = json!({"revision": sequence, "kind": payload});
+            sqlx::query("INSERT INTO context_semantic_rows VALUES('session',?,0,?,?,0,?,?,'metadata-window',?,0,0,1,0,?)")
+                .bind(sequence).bind(sequence).bind(order).bind(invocation).bind(invocation)
+                .bind(kind).bind(metadata.to_string()).execute(&mut *db).await?;
+        }
+        Ok(())
+    })).await.unwrap();
+    let scope = session.execution_scope(None).await.unwrap();
+    let running = scope.store();
+    let parent = scope.accept();
+    for (prior_unknown, expected) in [(false, vec![2, 3]), (true, vec![2, 3, 5])] {
+        let source = running
+            .capture_source(SemanticSelection {
+                session: "session".into(),
+                lineage: None,
+                after: 1,
+                through: 5,
+                before: 6,
+                captured_through: 5,
+                replay: Some(SemanticReplay {
+                    base: 2,
+                    current: "current".into(),
+                    route: "route".into(),
+                    model: "model".into(),
+                }),
+                prior_unknown,
+            })
+            .await
+            .unwrap();
+        let mut cursor = None;
+        let mut selected = Vec::new();
+        loop {
+            let mut page = source
+                .metadata_page(cursor, ChargedBuffer::new(vec![0; 128], ()))
+                .await
+                .unwrap();
+            for index in 0..page.len() {
+                selected.push(page.row(index).unwrap().id.source_sequence);
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(selected, expected, "prior_unknown={prior_unknown}");
+    }
+    parent.finish();
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn artifact_capture_copies_deletable_bytes_and_metadata_from_one_snapshot() {
+    use crate::context::semantic::SemanticSelection;
+    use maka_agent_facts::artifact::{Artifact, ArtifactKind, ArtifactSource, content_digest};
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    let original = b"original bytes";
+    let artifact = Artifact {
+        id: "upload".into(),
+        session_id: "session".into(),
+        turn_id: "upload".into(),
+        created_at: 1,
+        name: "original.bin".into(),
+        kind: ArtifactKind::File,
+        size_bytes: original.len() as u64,
+        mime_type: Some("application/octet-stream".into()),
+        source: ArtifactSource::UserUpload,
+        summary: Some(content_digest(original)),
+    };
+    session
+        .commit_artifact(artifact.clone(), original.to_vec())
+        .await
+        .unwrap();
+    let scope = session.execution_scope(None).await.unwrap();
+    let running = scope.store();
+    let parent = scope.accept();
+    let source = running
+        .capture_source(SemanticSelection {
+            session: "session".into(),
+            lineage: None,
+            after: 0,
+            through: 0,
+            before: u64::MAX,
+            captured_through: 0,
+            replay: None,
+            prior_unknown: false,
+        })
+        .await
+        .unwrap();
+    let lookup = source
+        .artifact_lookup_fixture(br#"["session","upload"]"#.to_vec(), 1..10, 11..19)
+        .await;
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let read = tokio::spawn(async move {
+        captured_artifact(
+            source
+                .with_artifact_capture(lookup, move |captured, metadata, body| {
+                    assert!(captured.protected_source.is_none());
+                    assert!(captured.protected_metadata.is_none());
+                    let metadata: Artifact = serde_json::from_reader(metadata)?;
+                    started.send(()).unwrap();
+                    wait.recv().unwrap();
+                    let mut bytes = Vec::new();
+                    std::io::Read::read_to_end(body, &mut bytes)?;
+                    Ok((metadata, bytes, captured.digest))
+                })
+                .await
+                .unwrap(),
+        )
+    });
+    observed.await.unwrap();
+    assert_eq!(
+        running
+            .delete_user_artifact("session", "upload")
+            .await
+            .unwrap(),
+        crate::artifacts::ArtifactDeletion::Deleted
+    );
+    let replacement_bytes = b"replacement!!!";
+    let mut replacement = artifact.clone();
+    replacement.name = "replacement.bin".into();
+    replacement.size_bytes = replacement_bytes.len() as u64;
+    replacement.summary = Some(content_digest(replacement_bytes));
+    running
+        .commit_artifact(replacement, replacement_bytes.to_vec())
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    let (metadata, copied, digest) = read.await.unwrap();
+    assert_eq!(metadata, artifact);
+    assert_eq!(copied, original);
+    assert_eq!(
+        format!("sha256:{}", hex::encode(digest)),
+        content_digest(original)
+    );
+    parent.finish();
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn captured_artifact_sources_cannot_cross_session_or_snapshot_authority() {
+    use crate::context::semantic::SemanticSelection;
+    use maka_agent_facts::artifact::{Artifact, ArtifactKind, ArtifactSource};
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    session
+        .commit_artifact(
+            Artifact {
+                id: "protected".into(),
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                created_at: 1,
+                name: "proof.bin".into(),
+                kind: ArtifactKind::File,
+                size_bytes: 3,
+                mime_type: Some("application/octet-stream".into()),
+                source: ArtifactSource::ToolResultProjection,
+                summary: None,
+            },
+            b"abc".to_vec(),
+        )
+        .await
+        .unwrap();
+    let scope = session.execution_scope(None).await.unwrap();
+    let running = scope.store();
+    let parent = scope.accept();
+    let selection = SemanticSelection {
+        session: "session".into(),
+        lineage: None,
+        after: 0,
+        through: 0,
+        before: u64::MAX,
+        captured_through: 0,
+        replay: None,
+        prior_unknown: false,
+    };
+    let mut foreign = selection.clone();
+    foreign.session = "foreign".into();
+    assert!(running.capture_source(foreign).await.is_err());
+    let first = running.capture_source(selection.clone()).await.unwrap();
+    let second = running.capture_source(selection).await.unwrap();
+    let lookup = first
+        .artifact_lookup_fixture(br#"["session","protected"]"#.to_vec(), 1..10, 11..22)
+        .await;
+    let artifact = captured_artifact(
+        first
+            .with_artifact_capture(lookup, |capture, _, _| {
+                Ok(capture.protected_source.unwrap())
+            })
+            .await
+            .unwrap(),
+    );
+    assert!(second.byte_source(&artifact).is_err());
+    assert!(first.byte_range(&artifact, 0, 4).is_err());
+    let original = first.byte_source(&artifact).unwrap();
+    assert_eq!(original.len(), Some(3));
+    drop(original);
+    drop(artifact);
+    drop(first);
+    drop(second);
+    parent.finish();
+    root.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -458,4 +764,164 @@ async fn quarantined_child_keeps_sql_for_accepted_parent_without_reopening_admis
     );
     // The original uncertain owner still owns live SQL and its filesystem.
     let _ = directory.keep();
+}
+
+#[tokio::test]
+async fn artifact_lookup_streams_long_local_alias_and_target_ids_and_rejects_collisions() {
+    use crate::artifacts::identity::{artifact_lookup_digest, history_lookup_digest};
+    use crate::context::semantic::SemanticSelection;
+    use maka_agent_facts::artifact::{Artifact, ArtifactKind, ArtifactSource, content_digest};
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let owner = "owner_".to_owned() + &"a".repeat(4096);
+    let target = "target_".to_owned() + &"b".repeat(70000);
+    let remote = "remote_".to_owned() + &"c".repeat(5000);
+    let original = "original_".to_owned() + &"d".repeat(80000);
+    let session = root
+        .create_session(&owner, "long identities", &json!({}), 1)
+        .await
+        .unwrap();
+    for (id, body) in [
+        ("wrong", b"wrong".as_slice()),
+        (target.as_str(), b"right".as_slice()),
+    ] {
+        session
+            .commit_artifact(
+                Artifact {
+                    id: id.into(),
+                    session_id: owner.clone(),
+                    turn_id: "upload".into(),
+                    created_at: 1,
+                    name: "file.bin".into(),
+                    kind: ArtifactKind::File,
+                    size_bytes: body.len() as u64,
+                    mime_type: None,
+                    source: ArtifactSource::UserUpload,
+                    summary: Some(content_digest(body)),
+                },
+                body.to_vec(),
+            )
+            .await
+            .unwrap();
+    }
+    let raw = session.owner().unwrap();
+    let digest = artifact_lookup_digest(&owner, &target);
+    raw.connection
+        .run(move |db| {
+            Box::pin(async move {
+                sqlx::query("UPDATE artifacts SET lookup_digest=? WHERE id='wrong'")
+                    .bind(digest.as_slice())
+                    .execute(db)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    let scope = session.execution_scope(None).await.unwrap();
+    let running = scope.store();
+    let parent = scope.accept();
+    let source = running
+        .capture_source(SemanticSelection {
+            session: owner.clone(),
+            lineage: None,
+            after: 0,
+            through: 0,
+            before: u64::MAX,
+            captured_through: 0,
+            replay: None,
+            prior_unknown: false,
+        })
+        .await
+        .unwrap();
+    async fn lookup(
+        source: &crate::context::semantic::CapturedSource,
+        session: &str,
+        id: &str,
+    ) -> crate::context::semantic::ArtifactLookup<
+        maka_agent_facts::model::prompt_source::source::ChargedBuffer,
+    > {
+        // Alternate escape spelling crosses multiple stored Pieces; work remains 64 bytes.
+        let session = format!("\"\\u{:04x}{}\"", session.as_bytes()[0], &session[1..]);
+        let id = serde_json::to_string(id).unwrap();
+        let first = 1..1 + session.len() as u64;
+        let second = first.end + 1..first.end + 1 + id.len() as u64;
+        let json = format!("[{session},{id}]").into_bytes();
+        source.artifact_lookup_fixture(json, first, second).await
+    }
+    let local = lookup(&source, &owner, &target).await;
+    let body = captured_artifact(
+        source
+            .with_artifact_capture(local, |capture, _, body| {
+                assert!(capture.protected_source.is_none());
+                let mut bytes = Vec::new();
+                body.read_to_end(&mut bytes)?;
+                Ok(bytes)
+            })
+            .await
+            .unwrap(),
+    );
+    assert_eq!(body, b"right");
+    let alias_hash = history_lookup_digest(&owner, &remote, &original);
+    let target_hash = artifact_lookup_digest(&owner, &target);
+    let (o, r) = (owner.clone(), remote.clone());
+    raw.connection.run(move |db|Box::pin(async move {
+        sqlx::query("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES(?,?,1,0,0,'{}','{}','committed')").bind(&o).bind(&r).execute(&mut *db).await?;
+        // Wrong alias and wrong target are deliberately earlier fixed-key collision candidates.
+        sqlx::query("INSERT INTO session_history_artifacts(session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,'wrong','wrong',?,?)").bind(&o).bind(&r).bind(alias_hash.as_slice()).bind(target_hash.as_slice()).execute(&mut *db).await?;
+        Ok(())
+    })).await.unwrap();
+    let local = lookup(&source, &owner, &target).await;
+    captured_artifact(
+        source
+            .with_artifact_capture(local, |capture, _, _| {
+                assert!(
+                    capture.protected_source.is_none(),
+                    "wrong alias target fingerprint cannot protect this artifact"
+                );
+                Ok(())
+            })
+            .await
+            .unwrap(),
+    );
+    let (o, r, i, t) = (
+        owner.clone(),
+        remote.clone(),
+        original.clone(),
+        target.clone(),
+    );
+    raw.connection.run(move |db|Box::pin(async move {
+        sqlx::query("INSERT INTO session_history_artifacts(session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,?,?,?,?)").bind(&o).bind(&r).bind(&i).bind(&t).bind(alias_hash.as_slice()).bind(target_hash.as_slice()).execute(db).await?;Ok(())
+    })).await.unwrap();
+    let alias = lookup(&source, &remote, &original).await;
+    let body = captured_artifact(
+        source
+            .with_artifact_capture(alias, |capture, _, body| {
+                assert!(capture.protected_source.is_some());
+                let mut bytes = Vec::new();
+                body.read_to_end(&mut bytes)?;
+                Ok(bytes)
+            })
+            .await
+            .unwrap(),
+    );
+    assert_eq!(body, b"right");
+    // A fingerprint alone cannot authorize a different source identity.
+    let absent_digest = history_lookup_digest(&owner, &remote, "absent");
+    raw.connection.run(move |db|Box::pin(async move {
+        sqlx::query("UPDATE session_history_artifacts SET lookup_digest=? WHERE source_artifact_id='wrong'").bind(absent_digest.as_slice()).execute(db).await?;Ok(())
+    })).await.unwrap();
+    let absent = lookup(&source, &remote, "absent").await;
+    assert!(matches!(
+        source
+            .with_artifact_capture(absent, |_, _, _| Ok(()))
+            .await
+            .unwrap(),
+        crate::context::semantic::ArtifactLookupResult::Missing
+    ));
+    drop(source);
+    drop(running);
+    parent.finish();
+    drop(raw);
+    root.close().await.unwrap();
 }

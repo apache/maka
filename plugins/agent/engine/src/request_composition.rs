@@ -22,7 +22,6 @@ use maka_agent_facts::language::Language;
 use crate::{RunError, RunInput, RunSettings};
 use maka_agent_facts::composition::FrozenComposition;
 use maka_agent_facts::composition::RequestComposition;
-use maka_model::prompt::Message;
 use maka_tools::RequestTools;
 use std::sync::Arc;
 
@@ -56,11 +55,15 @@ pub(super) fn render_system(system: Option<&str>, context: &[String]) -> Option<
 pub(super) struct Surface {
     pub adapter: maka_agent_ports::model::Binding,
     pub max_output_tokens: Option<u64>,
-    system: Option<String>,
+    system: Option<Arc<String>>,
     pub evidence: Arc<FrozenComposition>,
 }
 
 impl Surface {
+    pub fn system(&self) -> Option<Arc<String>> {
+        self.system.clone()
+    }
+
     pub fn capture(
         tools: &RequestTools<'_>,
         models: &maka_model::ModelExecutor,
@@ -108,7 +111,7 @@ impl Surface {
         Ok(Self {
             adapter,
             max_output_tokens,
-            system: rendered,
+            system: rendered.map(Arc::new),
             evidence: Arc::new(evidence),
         })
     }
@@ -125,23 +128,13 @@ impl Surface {
             system: render_system(
                 composition.system_prompt.as_deref(),
                 &composition.dynamic_context,
-            ),
+            )
+            .map(Arc::new),
             evidence: Arc::new(
                 composition
                     .freeze()
                     .map_err(|error| RunError::Internal(error.into()))?,
             ),
         })
-    }
-
-    pub fn apply(
-        &self,
-        mut history: crate::prepared_prompt::PreparedPrompt,
-    ) -> crate::prepared_prompt::PreparedPrompt {
-        history.set_system(self.system.as_ref().map(|system| Message::System {
-            content: system.clone(),
-            provider_options: None,
-        }));
-        history
     }
 }

@@ -160,11 +160,6 @@ pub enum StoreError {
     ConnectionClosed,
     #[error("accepted database operation outcome is unknown")]
     OperationUnknown,
-    #[error("prepared operation failed: {cause}; rollback failed: {cleanup}")]
-    PreparedRollbackFailed {
-        cause: Box<StoreError>,
-        cleanup: sqlx::Error,
-    },
     #[error("database close failed: {0}")]
     CloseFailed(String),
     #[error("database startup failed: {cause}; cleanup unconfirmed: {cleanup}")]
@@ -182,8 +177,6 @@ pub struct EventLog {
     connection: OwnedConnection,
     root_owner: Option<Arc<root::RootOwner>>,
     commits: commits::CommitHub,
-    prepared: context::prepared::lifetime::PreparedRegistry,
-    prepared_store: Option<context::prepared::store::PreparedStore>,
     shell_changes: tokio::sync::broadcast::Sender<shell_runs::ShellChange>,
 }
 
@@ -195,7 +188,7 @@ enum OpenPurpose {
 }
 
 impl EventLog {
-    /// Observe canonical SQLite actors; disposable prepared actors are excluded.
+    /// Observe canonical SQLite actors.
     pub async fn sqlite_resource_stats(
         &self,
     ) -> Result<connection::ConnectionResourceStats, StoreError> {
@@ -210,8 +203,6 @@ impl EventLog {
             expected_session: self.expected_session.clone(),
             root_owner: self.root_owner.clone(),
             commits: self.commits.clone(),
-            prepared: self.prepared.clone(),
-            prepared_store: self.prepared_store.clone(),
             shell_changes: self.shell_changes.clone(),
         }
     }
@@ -352,24 +343,11 @@ impl EventLog {
                 .query_planner_stability(true),
             OpenPurpose::ApplicationInspection => application_inspection::options(&path)?,
         };
-        let cache = if purpose == OpenPurpose::Execution {
-            Some(context::prepared::lifetime::PreparedCache::new(&path)?)
-        } else {
-            None
-        };
-        let prepared = cache
-            .as_ref()
-            .map(|cache| cache.registry())
-            .unwrap_or_else(|| {
-                let registry = context::prepared::lifetime::PreparedRegistry::new();
-                registry.close();
-                registry
-            });
         let initialize_control = control.clone();
-        let connection = OwnedConnection::open_with_cache(
+        let connection = OwnedConnection::open_with_control(
             options,
             ConnectionAuthority::Writer {
-                lease: lease.clone(),
+                lease,
                 root: root_owner.clone(),
             },
             move |connection| {
@@ -391,37 +369,9 @@ impl EventLog {
                     }
                 })
             },
-            None,
-            control.clone(),
+            control,
         )
         .await?;
-        let prepared_store = if let Some(cache) = cache {
-            match context::prepared::store::PreparedStore::open(
-                &path,
-                lease,
-                root_owner.clone(),
-                cache,
-                control,
-            )
-            .await
-            {
-                Ok(store) => {
-                    connection.install_prepared(store.clone())?;
-                    Some(store)
-                }
-                Err(cause) => {
-                    if let Err(cleanup) = connection.shutdown().await {
-                        return Err(StoreError::StartupCleanupFailed {
-                            cause: Box::new(cause),
-                            cleanup: Box::new(cleanup),
-                        });
-                    }
-                    return Err(cause);
-                }
-            }
-        } else {
-            None
-        };
         let high_water = connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -453,19 +403,7 @@ impl EventLog {
             connection,
             root_owner,
             commits: commits::CommitHub::new(high_water),
-            prepared,
-            prepared_store,
             shell_changes: tokio::sync::broadcast::channel(256).0,
-        })
-    }
-
-    fn prepared_store(&self) -> Result<context::prepared::store::PreparedStore, StoreError> {
-        let store = self.prepared_store.as_ref().ok_or_else(|| {
-            StoreError::InvalidTransition("store has no prepared projection owner".into())
-        })?;
-        Ok(match self.connection.scope_custody() {
-            Some(custody) => store.scoped(custody),
-            None => store.clone(),
         })
     }
 
@@ -535,26 +473,18 @@ fn sequence_number(value: i64) -> Result<u64, StoreError> {
 #[cfg(test)]
 extern crate self as maka_event_log;
 #[cfg(test)]
-#[path = "../tests/compact_presentation/mod.rs"]
 mod compact_presentation_tests;
 #[cfg(test)]
-#[path = "../tests/executor_identity/mod.rs"]
 mod executor_identity_tests;
 #[cfg(test)]
-#[path = "../tests/row_directory/mod.rs"]
 mod row_directory_tests;
 #[cfg(test)]
-#[path = "../tests/session_copy/mod.rs"]
 mod session_copy_tests;
 #[cfg(test)]
-#[path = "../tests/support/owner.rs"]
 mod test_store;
 #[cfg(test)]
-#[path = "../tests/support/transcript.rs"]
 mod transcript_cache;
 #[cfg(test)]
-#[path = "../tests/transcript_index/mod.rs"]
 mod transcript_index_tests;
 #[cfg(test)]
-#[path = "../tests/transcript_tools/mod.rs"]
 mod transcript_tools_tests;

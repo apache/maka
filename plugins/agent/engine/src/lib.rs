@@ -93,6 +93,10 @@ pub enum RunError {
     CleanupUnconfirmed,
     #[error("execution worker failed: {0}")]
     Internal(String),
+    #[error("model input preparation failed: {0}")]
+    Preparation(#[from] std::io::Error),
+    #[error("model input cleanup was not confirmed: {0}")]
+    PreparationCleanup(#[source] std::io::Error),
 }
 
 impl RunError {
@@ -102,6 +106,7 @@ impl RunError {
         matches!(
             self,
             Self::CleanupUnconfirmed
+                | Self::PreparationCleanup(_)
                 | Self::Model(ModelError::CleanupUnconfirmed)
                 | Self::Tool(
                     ToolError::CleanupUnconfirmed(_)
@@ -216,6 +221,7 @@ pub enum RunWork {
 
 struct Inner {
     pricing: Option<Arc<dyn pricing::Pricing>>,
+    preparation_resources: maka_model::ModelPreparationResources,
     model: ModelExecutor,
     cells: CodeExecutor,
     session_backend: maka_session_state::Backend,
@@ -227,7 +233,6 @@ struct Inner {
 struct RunContext {
     shared: Arc<Inner>,
     log: Arc<SessionStore>,
-    prepared_history: Mutex<Option<Arc<history::PreparedHistory>>>,
 }
 
 impl RunContext {
@@ -240,7 +245,6 @@ impl RunContext {
         Ok(Arc::new(Self {
             shared,
             log: Arc::new(store),
-            prepared_history: Mutex::new(None),
         }))
     }
 }
@@ -301,8 +305,24 @@ impl Engine {
         cells: CodeExecutor,
         pricing: Option<Arc<dyn pricing::Pricing>>,
     ) -> Result<Self, RunError> {
+        let resources =
+            maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy::default())
+                .map_err(|error| {
+                    RunError::Internal(format!("create preparation resources: {error}"))
+                })?;
+        Self::with_resources(model, cells, pricing, resources)
+    }
+
+    /// Host engines share one explicit preparation allocation capability.
+    pub fn with_resources(
+        model: ModelExecutor,
+        cells: CodeExecutor,
+        pricing: Option<Arc<dyn pricing::Pricing>>,
+        preparation_resources: maka_model::ModelPreparationResources,
+    ) -> Result<Self, RunError> {
         Ok(Self(Arc::new(Inner {
             pricing,
+            preparation_resources,
             model,
             cells,
             session_backend: maka_session_state::Backend::temporary()?,
@@ -333,26 +353,47 @@ impl Engine {
         input: &RunInput,
         cancellation: &CancellationToken,
     ) -> Result<(), RunError> {
-        let (RunWork::Continuation { source, tools, .. } | RunWork::Handoff { source, tools, .. }) =
-            &input.work
-        else {
+        if !matches!(
+            input.work,
+            RunWork::Continuation { .. } | RunWork::Handoff { .. }
+        ) {
             return Err(RunError::InvalidInput("not a continuation request".into()));
-        };
-        let context = RunContext::new(self.0.clone(), store.clone(), &input.invocation)?;
-        context
-            .log
-            .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+        }
+        let execution = store
+            .execution_scope(permission_basis(&input.configuration))
             .await?;
-        continuation::inspect(
-            &context,
-            input,
-            source,
-            tools,
-            cancellation,
-            &self.0.loaded_snapshot(&input.invocation.session_id)?,
-        )
-        .await
-        .map(|_| ())
+        let shared = self.0.clone();
+        let input = input.clone();
+        let cancellation = cancellation.child_token();
+        let observer = cancellation.clone().drop_guard();
+        let evidence = cleanup::current();
+        let worker = self.0.workers.spawn(evidence.scope(async move {
+            let (RunWork::Continuation { source, tools, .. }
+            | RunWork::Handoff { source, tools, .. }) = &input.work
+            else {
+                unreachable!()
+            };
+            let context = RunContext::new(shared.clone(), execution.store(), &input.invocation)?;
+            context
+                .log
+                .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+                .await?;
+            continuation::inspect(
+                &context,
+                &input,
+                source,
+                tools,
+                &cancellation,
+                &shared.loaded_snapshot(&input.invocation.session_id)?,
+            )
+            .await
+            .map(|_| ())
+        }));
+        let result = worker
+            .await
+            .map_err(|error| cleanup::preparation_failed(std::io::Error::other(error)))?;
+        observer.disarm();
+        result
     }
 
     pub async fn prepare_continuation(
@@ -361,23 +402,45 @@ impl Engine {
         input: RunInput,
         cancellation: &CancellationToken,
     ) -> Result<PreparedContinuation, RunError> {
-        let (RunWork::Continuation { source, tools, .. } | RunWork::Handoff { source, tools, .. }) =
-            &input.work
-        else {
+        if !matches!(
+            input.work,
+            RunWork::Continuation { .. } | RunWork::Handoff { .. }
+        ) {
             return Err(RunError::InvalidInput("not a continuation request".into()));
-        };
-        let context = RunContext::new(self.0.clone(), store.clone(), &input.invocation)?;
-        context
-            .log
-            .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+        }
+        let execution = store
+            .execution_scope(permission_basis(&input.configuration))
             .await?;
-        let claim = continuation::prepare(&context, &input, source, tools, cancellation).await?;
-        Ok(PreparedContinuation {
-            engine: Arc::downgrade(&self.0),
-            store,
-            input,
-            claim,
-        })
+        let shared = self.0.clone();
+        let engine = Arc::downgrade(&self.0);
+        let cancellation = cancellation.child_token();
+        let observer = cancellation.clone().drop_guard();
+        let evidence = cleanup::current();
+        let worker = self.0.workers.spawn(evidence.scope(async move {
+            let (RunWork::Continuation { source, tools, .. }
+            | RunWork::Handoff { source, tools, .. }) = &input.work
+            else {
+                unreachable!()
+            };
+            let context = RunContext::new(shared, execution.store(), &input.invocation)?;
+            context
+                .log
+                .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+                .await?;
+            let claim =
+                continuation::prepare(&context, &input, source, tools, &cancellation).await?;
+            Ok(PreparedContinuation {
+                engine,
+                store,
+                input,
+                claim,
+            })
+        }));
+        let result = worker
+            .await
+            .map_err(|error| cleanup::preparation_failed(std::io::Error::other(error)))?;
+        observer.disarm();
+        result
     }
 
     pub async fn start_continuation(

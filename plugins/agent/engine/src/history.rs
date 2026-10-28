@@ -23,18 +23,33 @@ use maka_agent_facts::event::LogPrefix;
 use maka_model::prompt::Message;
 
 use crate::RunError;
+mod arena_directory;
+pub(super) mod arena_recipes;
+pub(super) mod capture_arena;
+#[cfg(test)]
 mod chat;
+mod chat_source;
+#[cfg(test)]
 mod compatible;
+pub(super) mod frozen;
 mod images;
+mod joined_source;
+pub(super) mod measure_source;
 mod output;
+mod part_text;
+pub(super) mod preparation;
 mod prepared;
-pub(super) use prepared::{PreparedHistory, capture as prepare_view};
+pub(crate) mod request_backing;
+pub(super) mod serialize_source;
+mod source_json;
+mod source_projector;
+pub(super) mod source_summary;
+pub(super) use prepared::{FrozenHistory, capture as prepare_view};
 mod user;
 
 mod references;
 mod resources;
 mod semantic;
-pub(super) use semantic::render as render_semantic_group;
 
 /// Only committed semantic facts produce provider input. No UI transcript or
 /// previous isolate state is read, including after process restart.

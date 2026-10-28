@@ -91,5 +91,7 @@ pub(crate) fn run_cause(error: &RunError) -> &'static str {
         RunError::Tool(_) if error.is_cleanup_unconfirmed() => "cleanup_unconfirmed",
         RunError::Tool(_) => "tool_error",
         RunError::Internal(_) => "internal_error",
+        RunError::Preparation(_) => "model_preparation",
+        RunError::PreparationCleanup(_) => "cleanup_unconfirmed",
     }
 }

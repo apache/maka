@@ -22,10 +22,10 @@
 use super::invalid;
 use crate::StoreError;
 use maka_agent_facts::{history::semantic::Payload, tool_output::DurableToolProjection};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sqlx::sqlite::SqliteWorkerConnection;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 
 const READ_BUFFER_BYTES: usize = 32 * 1024;
 
@@ -103,6 +103,21 @@ impl CanonicalToolProjectionSpan {
     pub(super) fn len(self) -> i64 {
         self.byte_len as i64
     }
+    pub(super) fn matches_projection(
+        self,
+        json: &str,
+        projection: &DurableToolProjection,
+    ) -> Result<bool, StoreError> {
+        let start = self.byte_offset as usize;
+        let end = start
+            .checked_add(self.byte_len as usize)
+            .ok_or_else(|| invalid("canonical projection span overflows"))?;
+        let expected = json
+            .as_bytes()
+            .get(start..end)
+            .ok_or_else(|| invalid("canonical projection exceeds its event"))?;
+        serialized_matches(expected, projection)
+    }
 
     pub(super) fn read(
         self,
@@ -143,6 +158,35 @@ impl CanonicalToolProjectionSpan {
             }
         }
     }
+}
+
+fn serialized_matches(expected: &[u8], value: &impl Serialize) -> Result<bool, StoreError> {
+    struct Compare<'a> {
+        expected: &'a [u8],
+        position: usize,
+        equal: bool,
+    }
+    impl Write for Compare<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let end = self
+                .position
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("serialized projection length overflows"))?;
+            self.equal &= self.expected.get(self.position..end) == Some(bytes);
+            self.position = end;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut compare = Compare {
+        expected,
+        position: 0,
+        equal: true,
+    };
+    serde_json::to_writer(&mut compare, value)?;
+    Ok(compare.equal && compare.position == expected.len())
 }
 
 impl SemanticPayloadSource {

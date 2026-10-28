@@ -51,7 +51,7 @@ async fn control(path: &Path) -> SqliteConnection {
 async fn partition(path: &Path, control: ReadOnlyControl) -> OwnedConnection {
     let lease = Arc::new(crate::root::FileLease::acquire(&path.with_extension("lock")).unwrap());
     let initialize_control = control.clone();
-    OwnedConnection::open_with_cache(
+    OwnedConnection::open_with_control(
         SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true),
@@ -67,7 +67,6 @@ async fn partition(path: &Path, control: ReadOnlyControl) -> OwnedConnection {
                 .await
             })
         },
-        None,
         Some(control),
     )
     .await
@@ -377,7 +376,7 @@ async fn invalid_attachment_fails_closed_and_releases_only_after_cleanup() {
     let lease = Arc::new(crate::root::FileLease::acquire(&lock).unwrap());
     let original = Arc::downgrade(&lease);
     let captured = attachment.clone();
-    let result = OwnedConnection::open_with_cache(
+    let result = OwnedConnection::open_with_control(
         SqliteConnectOptions::new()
             .filename(directory.path().join("data.sqlite"))
             .create_if_missing(true),
@@ -387,7 +386,6 @@ async fn invalid_attachment_fails_closed_and_releases_only_after_cleanup() {
                 crate::schema::initialize_connection_with_control(connection, Some(&captured)).await
             })
         },
-        None,
         Some(attachment),
     )
     .await;
@@ -412,7 +410,7 @@ async fn attached_reader_real_close_retains_original_root_authority() {
     let attachment = ReadOnlyControl::new(&path).unwrap();
     let captured = attachment.clone();
     let owner = Arc::new(
-        OwnedConnection::open_with_cache(
+        OwnedConnection::open_with_control(
             SqliteConnectOptions::new()
                 .filename(root_path.join(crate::root::ROOT_DATABASE))
                 .create_if_missing(true),
@@ -423,7 +421,6 @@ async fn attached_reader_real_close_retains_original_root_authority() {
                         .await
                 })
             },
-            None,
             Some(attachment),
         )
         .await
@@ -497,7 +494,7 @@ async fn initialization_cannot_silently_discard_control_view() {
     let lock = directory.path().join("owner.lock");
     let lease = Arc::new(crate::root::FileLease::acquire(&lock).unwrap());
     let original = Arc::downgrade(&lease);
-    let result = OwnedConnection::open_with_cache(
+    let result = OwnedConnection::open_with_control(
         SqliteConnectOptions::new()
             .filename(directory.path().join("data.sqlite"))
             .create_if_missing(true),
@@ -512,7 +509,6 @@ async fn initialization_cannot_silently_discard_control_view() {
                 Ok(())
             })
         },
-        None,
         Some(attachment),
     )
     .await;

@@ -83,7 +83,9 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
         .await
         .unwrap();
     let source = log.read_model_view("session", None).await.unwrap();
-    let checkpoint = source.baseline.unwrap().event_id;
+    let baseline = source.baseline.unwrap();
+    assert_eq!(baseline.checkpoint.summary.text, SUMMARY);
+    let checkpoint = baseline.event_id;
     worker
         .run(
             log.store(),
@@ -178,6 +180,43 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
             )
         })
         .unwrap();
+    let Fact::ModelRequested {
+        step_id: summary_step,
+        ..
+    } = &summary.event.fact
+    else {
+        unreachable!()
+    };
+    assert!(
+        !prefix.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelObserved { step_id, event } if step_id == summary_step
+            && !matches!(event, maka_agent_facts::model::ModelEvent::Finished { .. }))),
+        "successful summary prose has only its completed durable representation"
+    );
+    let completed = prefix
+        .events
+        .iter()
+        .find_map(|event| match &event.event.fact {
+            Fact::ModelCompleted { step_id, output } if step_id == summary_step => Some(output),
+            _ => None,
+        })
+        .unwrap();
+    let text: String = completed
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            maka_agent_facts::model::ModelPart::Text {
+                text_kind: maka_agent_facts::model::TextKind::Text,
+                text,
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, SUMMARY,
+        "completed summary content survives reopening exactly"
+    );
     let composition = log
         .request_composition("session", &summary.event.id)
         .await
@@ -408,6 +447,11 @@ async fn incomplete_summary_fails_without_repair_and_main_retains_incomplete_tex
             .iter()
             .any(|event| matches!(event.event.fact, Fact::ModelCompleted { .. }))
     );
+    assert!(truncated.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelObserved { event: maka_agent_facts::model::ModelEvent::PartDelta { text, .. }, .. }
+            if text.contains("truncated-main"))),
+        "main partial prose remains durable despite summary filtering");
+
     worker.drain().await;
 }
 
@@ -621,7 +665,8 @@ async fn summary_advertised_tools_never_execute() {
             "choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"forbidden","type":"function",
             "function":{"name":"echo","arguments":"{}"}}]},"finish_reason":null}]});
         let end = serde_json::json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
-            "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]});
+            "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
         let body = format!("data: {call}\n\ndata: {end}\n\ndata: [DONE]\n\n");
         socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
     });
@@ -662,6 +707,69 @@ async fn summary_advertised_tools_never_execute() {
             .is_none()
     );
     let events = log.prefix(100, 256 * 1024).await.unwrap();
+    let summary_step = events
+        .events
+        .iter()
+        .find_map(|event| match &event.event.fact {
+            Fact::ModelRequested {
+                step_id,
+                purpose: maka_agent_facts::context::ModelPurpose::Summary,
+                ..
+            } => Some(step_id),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        events.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelObserved { step_id, event: maka_agent_facts::model::ModelEvent::ToolCall(call) }
+            if step_id == summary_step && call.id == "forbidden" && call.name == "echo")),
+        "attempted summary tool effects must remain durable safety evidence"
+    );
+    assert!(
+        !events.events.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelCompleted { step_id, .. } if step_id == summary_step)),
+        "invalid tool output has no completed summary to supply usage"
+    );
+    let summary_request = events
+        .events
+        .iter()
+        .find(|event| {
+            matches!(&event.event.fact,
+        Fact::ModelRequested { step_id, .. } if step_id == summary_step)
+        })
+        .unwrap();
+    let usage = log
+        .root()
+        .usage_activity(
+            maka_event_log::root_store::UsageQuery {
+                from: 0.0,
+                to: f64::MAX,
+                session_id: Some("session".into()),
+                through: None,
+            },
+            maka_agent_facts::accounting::Selection::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    let attempt = usage
+        .attempts
+        .iter()
+        .find_map(|activity| match activity {
+            maka_agent_facts::accounting::Activity::Model(attempt)
+                if attempt.request_id == summary_request.event.id =>
+            {
+                Some(attempt)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(attempt.usage.input_tokens, Some(13));
+    assert_eq!(
+        attempt.usage.output_tokens,
+        Some(7),
+        "Finished usage remains accountable without ModelCompleted"
+    );
     assert!(
         !events
             .events

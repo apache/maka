@@ -445,3 +445,453 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn queue_preparation_does_not_hold_the_global_lifecycle_and_close_waits_for_original_sql() {
+    use sqlx::{Connection, Executor};
+
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
+        let a = fixture.create("Recovered queue preparation").await;
+        let blocked_database = fixture.session_database(&a);
+        let c = loop {
+            let session = fixture.create("Independent running Session").await;
+            if fixture.session_database(&session) != blocked_database {
+                break session;
+            }
+        };
+        let running = fixture.send(&c).await.unwrap();
+        let (mut running_socket, _) = listener.accept().await.unwrap();
+        request(&mut running_socket).await;
+
+        // Leave the original admitted message durable, without starting a Run.
+        let database = rusqlite::Connection::open(&blocked_database).unwrap();
+        database.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
+        assert!(fixture.send(&a).await.is_err());
+        let original = fixture.session(&a).await.pending_messages(&a).await.unwrap();
+        assert_eq!(original.len(), 1);
+        database.execute_batch("DROP TRIGGER hold_opening").unwrap();
+        drop(database);
+
+        // Capture a real create before gating SQL. Choose a different physical
+        // Session writer so the test isolates the Agent lifecycle boundary.
+        let create_input = fixture.create_input("Independent creation").await;
+        let client = fixture.app.client();
+        let create = loop {
+            let prepared = client.prepare_mutation(fixture.binding(2).await, "create".into(), create_input.clone(), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+            let id = fixture.owner.operation_id(prepared.reference());
+            let mut hash = Sha256::new();
+            hash.update(b"session\0");
+            hash.update(id.as_bytes());
+            let partition = usize::from(hash.finalize()[0]) % maka_event_log::root_store::PARTITION_COUNT;
+            let path = fixture.root.join("runtime-partitions").join(format!("{partition:02}.sqlite"));
+            if path != blocked_database {
+                break prepared.reference().clone();
+            }
+        };
+        let stop = client.prepare_mutation(fixture.binding(2).await, "stop".into(), json!({"sessionId":c,"invocationId":running["invocationId"]}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+        let stop_reference = stop.reference().clone();
+        drop(stop);
+
+        let b = fixture.owner.operation_id(&create);
+        let selection = fixture.selection().await;
+        let send = client.prepare_mutation(fixture.binding(2).await, "send".into(), json!({"sessionId":b,"message":"Independent admission","model":selection}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+        let send_reference = send.reference().clone();
+        drop(send);
+        let mut writer = sqlx::SqliteConnection::connect_with(&sqlx::sqlite::SqliteConnectOptions::new().filename(&blocked_database)).await.unwrap();
+        writer.execute("BEGIN IMMEDIATE").await.unwrap();
+        let scheduling = fixture.owner.schedule_pending();
+        tokio::pin!(scheduling);
+        let mut scheduled = false;
+        let preparing = loop {
+            tokio::select! {
+                result = &mut scheduling, if !scheduled => { result.unwrap(); scheduled = true; },
+                () = tokio::task::yield_now() => {},
+            }
+            let runs = fixture.owner.runs.lock().await;
+            if let Some(preparing) = runs.preparing.get(&a) {
+                break preparing.clone();
+            }
+        };
+        let mut same_session = Box::pin(fixture.owner.runs.session(&a));
+        assert!(futures_util::poll!(same_session.as_mut()).is_pending());
+        let parent = scope(&fixture.issuer, true);
+        let created = fixture.owner.create(serde_json::from_value(create_input).unwrap(), &create, &parent).await.unwrap();
+        let Created::Created { session } = created else { panic!("independent creation was refused"); };
+        assert_eq!(session.id, b);
+        let admitted = fixture.owner.send(Send {
+            session_id: b.clone(), message: "Independent admission".into(),
+            model: selection, thinking_level: None, attachments: vec![],
+        }, &send_reference, &parent).await.unwrap();
+        assert!(matches!(admitted, SendResult::Started { .. }));
+        let (mut independent_socket, _) = listener.accept().await.unwrap();
+        request(&mut independent_socket).await;
+        assert!(fixture.owner.stop_run(&c, running["invocationId"].as_str().unwrap(), &stop_reference).await.unwrap());
+        assert!(!preparing.is_cancelled());
+        assert!(futures_util::poll!(same_session.as_mut()).is_pending());
+        drop(same_session);
+
+        let mut close = fixture.owner.close();
+        assert!(futures_util::poll!(close.as_mut()).is_pending());
+        assert!(preparing.is_cancelled(), "close must fence the original preparing worker first");
+        assert!(futures_util::poll!(close.as_mut()).is_pending(), "a cancelled observer cannot settle the held SQL writer");
+        writer.execute("ROLLBACK").await.unwrap();
+        close.await.unwrap();
+        if !scheduled {
+            scheduling.await.unwrap();
+        }
+        let runs = fixture.owner.runs.lock().await;
+        assert!(runs.preparing.is_empty());
+        assert!(runs.controls.is_empty());
+        drop(runs);
+        let queue = fixture.session(&a).await.pending_messages(&a).await.unwrap();
+        assert!(queue.len() <= 1);
+        if let Some(pending) = queue.first() {
+            assert_eq!(pending, &original[0], "cancellation must preserve the original accepted identity");
+        }
+        drop((running_socket, independent_socket));
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn notification_admission_orders_submissions_and_close_retains_the_original_sql() {
+    use sqlx::{Connection, Executor};
+
+    for closing in [false, true] {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let fixture = Fixture::new(
+                &format!("http://{}/v1", listener.local_addr().unwrap()),
+                None,
+            )
+            .await;
+            let session = fixture.create("Notification coordinator").await;
+            fixture.send(&session).await.unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            request(&mut socket).await;
+            let source = fixture.owner.runs.state().await.controls[&session]
+                .invocation
+                .clone();
+            let route = fixture.owner.return_route(&source).await.unwrap();
+            response(&mut socket).await;
+            fixture.drained().await;
+            let admission = fixture
+                .owner
+                .prepare_notification(
+                    &source,
+                    &route,
+                    "notification_ordering",
+                    |_| "Original worker observation: finished".into(),
+                    maka_agent_facts::message::MessageOrigin::WorkhubTask {
+                        task_id: "original-task".into(),
+                    },
+                )
+                .await
+                .unwrap()
+                .unwrap();
+
+            let database = fixture.session_database(&session);
+            let independent = loop {
+                let other = fixture.create("Independent notification neighbor").await;
+                if fixture.session_database(&other) != database {
+                    break other;
+                }
+            };
+            let running = fixture.send(&independent).await.unwrap();
+            let (mut independent_socket, _) = listener.accept().await.unwrap();
+            request(&mut independent_socket).await;
+            let selection = fixture.selection().await;
+            let client = fixture.app.client();
+            let prepared = client.prepare_mutation(
+                fixture.binding(2).await, "send".into(),
+                json!({"sessionId":session,"message":"Follow the notification","model":selection}),
+                scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into(),
+            ).await.unwrap();
+            let stop = client
+                .prepare_mutation(
+                    fixture.binding(2).await,
+                    "stop".into(),
+                    json!({"sessionId":independent,"invocationId":running["invocationId"]}),
+                    scope(&fixture.issuer, true),
+                    Uuid::new_v4(),
+                    Attachments::new().into(),
+                )
+                .await
+                .unwrap();
+
+            let mut writer = sqlx::SqliteConnection::connect_with(
+                &sqlx::sqlite::SqliteConnectOptions::new().filename(&database),
+            )
+            .await
+            .unwrap();
+            writer.execute("BEGIN IMMEDIATE").await.unwrap();
+            let owner = fixture.owner.clone();
+            let original = admission.clone();
+            let (completed, completion) = tokio::sync::oneshot::channel();
+            fixture.owner.background(move |_| async move {
+                let result = owner.admit_notification(&original).await;
+                let _ = completed.send(result);
+            });
+            loop {
+                if fixture
+                    .owner
+                    .runs
+                    .state()
+                    .await
+                    .preparing
+                    .contains_key(&session)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            let parent = scope(&fixture.issuer, true);
+            let mut contender = Box::pin(fixture.owner.send(
+                Send {
+                    session_id: session.clone(),
+                    message: "Follow the notification".into(),
+                    model: selection,
+                    thinking_level: None,
+                    attachments: vec![],
+                },
+                prepared.reference(),
+                &parent,
+            ));
+            assert!(futures_util::poll!(contender.as_mut()).is_pending());
+            assert!(
+                fixture
+                    .owner
+                    .stop_run(
+                        &independent,
+                        running["invocationId"].as_str().unwrap(),
+                        stop.reference(),
+                    )
+                    .await
+                    .unwrap(),
+                "notification SQL must not retain the global lifecycle gate"
+            );
+            drop(stop);
+
+            if closing {
+                let mut close = fixture.owner.close();
+                assert!(
+                    futures_util::poll!(close.as_mut()).is_pending(),
+                    "close must wait for the accepted notification SQL"
+                );
+                writer.execute("ROLLBACK").await.unwrap();
+                assert!(completion.await.unwrap().unwrap());
+                assert!(matches!(contender.await, Err(error) if error == "agent_closed"));
+                drop(prepared);
+                close.await.unwrap();
+                let pending = fixture
+                    .session(&session)
+                    .await
+                    .pending_messages(&session)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    pending,
+                    vec![admission],
+                    "close preserves the original notification for recovery"
+                );
+            } else {
+                writer.execute("ROLLBACK").await.unwrap();
+                assert!(completion.await.unwrap().unwrap());
+                assert!(
+                    matches!(contender.await.unwrap(), SendResult::Queued { .. }),
+                    "a later submission must follow the original notification"
+                );
+                drop(prepared);
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let input = request(&mut socket).await;
+                assert!(
+                    input["messages"]
+                        .to_string()
+                        .contains("Original worker observation: finished")
+                );
+                response(&mut socket).await;
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let input = request(&mut socket).await;
+                assert!(
+                    input["messages"]
+                        .to_string()
+                        .contains("Follow the notification")
+                );
+                response(&mut socket).await;
+                fixture.drained().await;
+            }
+            drop(independent_socket);
+            fixture.app.shutdown().await.unwrap();
+            fixture.config.shutdown().await.unwrap();
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn stop_retraction_rejects_a_selected_successor_without_closing_independent_sessions() {
+    selected_entry_after_stop(false).await;
+}
+
+#[tokio::test]
+async fn stop_retraction_rejects_selected_failure_recording_without_closing_independent_sessions() {
+    selected_entry_after_stop(true).await;
+}
+
+async fn selected_entry_after_stop(disable_model: bool) {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+        )
+        .await;
+        let a = fixture.create("Original stop owner").await;
+        let original = fixture.send(&a).await.unwrap();
+        let (mut original_socket, _) = listener.accept().await.unwrap();
+        request(&mut original_socket).await;
+        let followup = fixture.send(&a).await.unwrap();
+        assert_eq!(followup["kind"], "queued");
+        let c = fixture.create("Independent original Run").await;
+        let independent = fixture.send(&c).await.unwrap();
+        let (mut independent_socket, _) = listener.accept().await.unwrap();
+        request(&mut independent_socket).await;
+
+        // Freeze the exact real queue-read result, then commit Stop before
+        // processing that selection. Its observer token deliberately stays live.
+        let selected = fixture
+            .session(&a)
+            .await
+            .message_queue(&a)
+            .await
+            .unwrap()
+            .entries
+            .remove(0);
+        assert_eq!(selected.source.message.message_id, followup["messageId"]);
+        let cancellation = CancellationToken::new();
+        assert_eq!(
+            fixture
+                .mutation(
+                    2,
+                    "stop",
+                    json!({"sessionId":a,"invocationId":original["invocationId"]}),
+                    Uuid::new_v4()
+                )
+                .await
+                .unwrap(),
+            json!({"requested":true})
+        );
+        loop {
+            if !fixture.owner.runs.state().await.controls.contains_key(&a) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            fixture
+                .session(&a)
+                .await
+                .message_cancelled(&a, &selected.source.message.message_id)
+                .await
+                .unwrap()
+        );
+        if disable_model {
+            let row = fixture
+                .config
+                .catalog()
+                .await
+                .unwrap()
+                .connections
+                .remove(0);
+            let result = fixture
+                .config
+                .update_connection(UpdateCatalogConnectionInput {
+                    expected: ConnectionVersionBasis {
+                        connection_id: row.connection_id,
+                        revision: row.revision,
+                    },
+                    changes: ConnectionCatalogEntryUpdate {
+                        name: None,
+                        configuration: None,
+                        enabled: Some(false),
+                        enabled_model_ids: None,
+                        model_overrides: Patch::Keep,
+                        request_body_overlay: Patch::Keep,
+                    },
+                })
+                .await
+                .unwrap();
+            assert!(matches!(result, CatalogMutationResult::Committed { .. }));
+        }
+        assert!(
+            fixture
+                .owner
+                .prepare_selected(&a, &selected, &cancellation)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !cancellation.is_cancelled(),
+            "the durable retraction must work before observer cancellation"
+        );
+        let identity = hex::encode(Sha256::digest(
+            selected.source.message.message_id.as_bytes(),
+        ));
+        assert!(
+            fixture
+                .session(&a)
+                .await
+                .invocation_boundary(&a, &format!("i_{identity}"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let runs = fixture.owner.runs.state().await;
+        assert!(!runs.closing);
+        assert_eq!(
+            runs.controls[&c].invocation.invocation_id,
+            independent["invocationId"]
+        );
+        assert!(!runs.controls[&c].cancellation.is_cancelled());
+        drop(runs);
+        fixture
+            .mutation(
+                2,
+                "stop",
+                json!({"sessionId":c,"invocationId":independent["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        fixture.drained().await;
+        drop((original_socket, independent_socket));
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn selected_message_without_a_durable_retraction_preserves_admission_rejection() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+        let session = fixture.create("Rejected original selection").await;
+        let database = rusqlite::Connection::open(fixture.session_database(&session)).unwrap();
+        database.execute_batch("CREATE TRIGGER reject_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening rejection'); END;").unwrap();
+        assert!(fixture.send(&session).await.is_err());
+        let selected = fixture.session(&session).await.message_queue(&session).await.unwrap().entries.remove(0);
+        let result = fixture.owner.prepare_selected(&session, &selected, &CancellationToken::new()).await;
+        assert!(matches!(result, Err(RunError::Commit(maka_agent_facts::event::CommitError::Rejected(_)))));
+        assert!(!fixture.session(&session).await.message_cancelled(&session, &selected.source.message.message_id).await.unwrap());
+        database.execute_batch("DROP TRIGGER reject_opening").unwrap();
+        drop(database);
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}

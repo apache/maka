@@ -29,7 +29,6 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::model::ModelStep;
 use maka_event_log::context::ContextView;
-use maka_model::prompt::Message;
 use maka_model::{ModelError, ModelEvent, ModelRequest, StepBuilder, ToolDefinition};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -68,11 +67,13 @@ impl From<(String, ModelStep)> for Outcome {
 pub(super) async fn prompt<W>(
     inner: &RunContext,
     input: &RunInput<W>,
-    source: &ContextView,
+    source: &Arc<ContextView>,
     cancellation: &CancellationToken,
     continuation_base: Option<u64>,
     current: &str,
     prior_unknown: bool,
+    system: Option<Arc<String>>,
+    purpose: ModelPurpose,
 ) -> Result<PreparedPrompt, RunError> {
     let route = route_identity(input)?;
     let mut selection = source.selection.clone();
@@ -84,11 +85,11 @@ pub(super) async fn prompt<W>(
             model: input.provider.model.clone(),
         });
     selection.prior_unknown = prior_unknown;
-    let prior = inner
-        .prepared_history
-        .lock()
-        .expect("prepared history lock poisoned")
-        .clone();
+    let overlay_bytes = PreparedPrompt::overlay_plan_bytes(
+        system.is_some(),
+        source.baseline.is_some(),
+        purpose == ModelPurpose::Summary,
+    );
     let body = history::prepare_view(
         &inner.log,
         selection,
@@ -96,42 +97,50 @@ pub(super) async fn prompt<W>(
         input.supports_vision,
         &input.provider.kind,
         cancellation,
-        prior.as_deref(),
+        inner.shared.preparation_resources.clone(),
+        overlay_bytes,
     )
     .await?;
-    *inner
-        .prepared_history
-        .lock()
-        .expect("prepared history lock poisoned") = Some(body.clone());
     let mut prompt = PreparedPrompt::from_history(body);
-    if let Some(baseline) = &source.baseline {
-        let label = match input.configuration.language {
-            Language::En => {
-                "Earlier-history checkpoint. Following history may repeat the active turn's opening; reconcile later corrections and results with this snapshot before continuing:\n"
-            }
-            Language::ZhCn => {
-                "较早历史的检查点。后续历史可能重现当前轮次的开头消息；继续前请结合后来的纠正和结果更新此快照中的状态：\n"
-            }
-            Language::ZhTw => {
-                "較早歷史的檢查點。後續歷史可能重現目前回合的開頭訊息；繼續前請結合後來的修正和結果更新此快照中的狀態：\n"
-            }
-        };
-        let text = format!("{label}\n{}", baseline.checkpoint.summary.text);
-        prompt.prepend(Message::user(text));
+    let label = match input.configuration.language {
+        Language::En => {
+            "Historical checkpoint, not a new user request. Reconcile the following messages with this snapshot, then continue the remaining work:\n\n"
+        }
+        Language::ZhCn => {
+            "历史检查点，不是新的用户请求。请结合后续消息更新此快照中的状态，然后继续尚未完成的工作：\n\n"
+        }
+        Language::ZhTw => {
+            "歷史檢查點，不是新的使用者請求。請結合後續訊息更新此快照中的狀態，然後繼續尚未完成的工作：\n\n"
+        }
+    };
+    if let Err(error) = prompt
+        .initialize_overlays(
+            system,
+            source.clone(),
+            label,
+            purpose == ModelPurpose::Summary,
+        )
+        .await
+    {
+        prompt
+            .close()
+            .await
+            .map_err(crate::cleanup::preparation_failed)?;
+        return Err(error);
     }
-    let system_text = crate::request_composition::render_system(
+    Ok(prompt)
+}
+
+pub(super) fn rendered_system<W>(input: &RunInput<W>) -> Option<Arc<String>> {
+    crate::request_composition::render_system(
         input
             .configuration
             .system_prompt
             .as_ref()
             .map(|system| system.text.as_str()),
         &crate::request_composition::session_context(input),
-    );
-    prompt.set_system(system_text.map(|content| Message::System {
-        content,
-        provider_options: None,
-    }));
-    Ok(prompt)
+    )
+    .map(Arc::new)
 }
 
 pub(super) fn prior_unknown_notice(source: &ContextView, language: Language) -> String {
@@ -192,7 +201,7 @@ pub(super) async fn read_source(
     input: &RunSettings,
     prior_unknown: bool,
     cancellation: &CancellationToken,
-) -> Result<ContextView, RunError> {
+) -> Result<Arc<ContextView>, RunError> {
     // Only abandon the read reply. Its snapshot remains owned by the log's
     // independent reader until completion; no append or external effect is raced.
     tokio::select! {
@@ -210,14 +219,14 @@ pub(super) async fn read_source(
                     Some(&input.invocation.invocation_id),
                 ).await
             }
-        } => Ok(source?),
+        } => Ok(Arc::new(source?)),
     }
 }
 
 pub(super) async fn execute_main(
     inner: &Arc<RunContext>,
     input: &RunSettings,
-    context: ContextView,
+    context: Arc<ContextView>,
     prompt: PreparedPrompt,
     main: Main<'_>,
     cancellation: &CancellationToken,
@@ -229,7 +238,7 @@ pub(super) async fn execute_main(
         tools,
         prior_unknown,
     } = main;
-    let mut source = RequestSource::from(&context);
+    let mut source = RequestSource::from(context.as_ref());
     let mut high_water = source.evidence.high_water;
     drop(context);
     let mut retry = Some(prompt);
@@ -298,22 +307,22 @@ pub(super) async fn execute_main(
             if progressed {
                 // Accepted progress replaces the frozen retry prompt. Release it
                 // before materializing the next canonical source.
-                drop(retry.take());
+                close_retry(&mut retry).await?;
                 let context = read_source(inner, input, prior_unknown, cancellation).await?;
                 high_water = context.source_evidence.high_water;
-                source = RequestSource::from(&context);
-                let prompt = surface.apply(
-                    self::prompt(
-                        inner,
-                        input,
-                        &context,
-                        cancellation,
-                        continuation_base,
-                        &input.invocation.invocation_id,
-                        prior_unknown,
-                    )
-                    .await?,
-                );
+                source = RequestSource::from(context.as_ref());
+                let prompt = self::prompt(
+                    inner,
+                    input,
+                    &context,
+                    cancellation,
+                    continuation_base,
+                    &input.invocation.invocation_id,
+                    prior_unknown,
+                    surface.system(),
+                    ModelPurpose::Main,
+                )
+                .await?;
                 drop(context);
                 retry = Some(prompt);
             }
@@ -327,7 +336,25 @@ pub(super) async fn execute_main(
         }
     }
     .await;
+    let result = if result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed) {
+        result
+    } else {
+        match close_retry(&mut retry).await {
+            Ok(()) => result,
+            Err(error) => Err(error),
+        }
+    };
     (high_water, result)
+}
+
+async fn close_retry(retry: &mut Option<PreparedPrompt>) -> Result<(), RunError> {
+    if let Some(prompt) = retry.take() {
+        prompt
+            .close()
+            .await
+            .map_err(crate::cleanup::preparation_failed)?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -363,6 +390,9 @@ pub(super) async fn execute_once(
             cancellation,
         )
         .await?;
+    if purpose == ModelPurpose::Main && retry.is_some() {
+        *retry = Some(prompt.clone());
+    }
     let prepared = prepare_request(
         input,
         prompt,
@@ -437,7 +467,7 @@ pub(super) async fn execute_once(
     .await?;
     if !item_acceptance && let Some(tools) = tools {
         // The successful request no longer needs its retry payload while tools run.
-        drop(retry.take());
+        close_retry(retry).await?;
         use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
         let mut step = tools.clone().into_step(&accepted.0);
         let tool_cancellation = cancellation.child_token();
@@ -578,6 +608,7 @@ async fn receive(
     let mut builder = StepBuilder::for_step(step_id)?;
     let tool_cancellation = cancellation.child_token();
     let mut running = FuturesUnordered::new();
+    let mut retired_prompt = None;
     let result: Result<_, RunError> = async {
         loop {
             tokio::select! {
@@ -589,7 +620,24 @@ async fn receive(
                         stream.next().now_or_never().flatten()
                     });
                     use maka_agent_facts::event::{EventWrite, RuntimeEvent};
-                    let writes = observations.events.iter().map(|event| {
+                    // Summary prose is private until completion. Tool observations
+                    // still record possible effects and provider-reported usage.
+                    let writes = observations.events.iter().filter(|event| match purpose {
+                        ModelPurpose::Main => true,
+                        ModelPurpose::Summary => match event {
+                            ModelEvent::ToolCall(_)
+                            | ModelEvent::ProviderToolResult { .. }
+                            | ModelEvent::Finished { .. } => true,
+                            ModelEvent::Source(_)
+                            | ModelEvent::PartStarted { .. }
+                            | ModelEvent::PartDelta { .. }
+                            | ModelEvent::PartFinished { .. }
+                            | ModelEvent::ToolInputStarted { .. }
+                            | ModelEvent::ToolInputDelta { .. }
+                            | ModelEvent::ToolInputFinished { .. }
+                            | ModelEvent::ResponseMetadata { .. } => false,
+                        },
+                    }).map(|event| {
                         EventWrite::plain(RuntimeEvent::new(input.invocation.clone(), Fact::ModelObserved {
                                 step_id: step_id.to_owned(), event: event.clone(),
                         }))
@@ -600,9 +648,11 @@ async fn receive(
                     drop(observations.reservations);
                     if tools.is_some() && observations.accepted_item {
                         *progressed = true;
-                        // Any retry now rebuilds from accepted progress. Release
-                        // the obsolete prompt before dispatching dependent work.
-                        drop(retry.take());
+                        // Keep the obsolete request until its upload and readers
+                        // physically settle, including an early provider reply.
+                        if retired_prompt.is_none() {
+                            retired_prompt = retry.take();
+                        }
                     }
                     // Every call's acceptance is durable before dispatch, even
                     // when a later ready event failed validation or cancelled.
@@ -641,6 +691,7 @@ async fn receive(
         }
     }
     stream_cleanup.map_err(|_| crate::cleanup::unconfirmed())?;
+    close_retry(&mut retired_prompt).await?;
     cleanup?;
     let output = result?;
     if purpose == ModelPurpose::Summary

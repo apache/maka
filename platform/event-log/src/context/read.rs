@@ -19,7 +19,7 @@
 
 use super::selection::Selection;
 use super::{
-    ContextBaseline, ContextView, ModelContextSource, boundary, invalid, latest_main, proof, safety,
+    ContextBaseline, ContextView, ModelContextSource, boundary, invalid, latest_main, safety,
 };
 use crate::{EventLog, StoreError};
 use maka_agent_facts::context::CheckpointMode;
@@ -249,7 +249,6 @@ pub(super) async fn selected_view(
     let before = before.min(captured.saturating_add(1));
     let (baseline, source_evidence) =
         latest_with_evidence(connection, selection, high_water).await?;
-    let anchor = anchor(connection, baseline.as_ref()).await?;
     let semantic = super::semantic::SemanticSelection {
         session: session.to_owned(),
         lineage: selection.lineage.clone(),
@@ -259,7 +258,6 @@ pub(super) async fn selected_view(
         through: high_water,
         before,
         captured_through: captured,
-        anchor_sequence: anchor.as_ref().map(|anchor| anchor.sequence),
         replay: None,
         prior_unknown,
     };
@@ -276,7 +274,6 @@ pub(super) async fn selected_view(
         source_evidence,
         effective_source_digest,
         baseline,
-        anchor,
         latest_main,
         selection: semantic,
         has_new_history,
@@ -303,19 +300,6 @@ async fn unknown_tools(
     Ok((rows, crate::sequence_number(count)?))
 }
 
-async fn anchor(
-    connection: &mut SqliteConnection,
-    baseline: Option<&ContextBaseline>,
-) -> Result<Option<StoredEvent>, StoreError> {
-    if let Some(ContextBaseline { checkpoint, .. }) = baseline
-        && let CheckpointMode::MidTurn { anchor_event_id } = &checkpoint.mode
-    {
-        let (sequence, event) = proof::by_id(connection, anchor_event_id).await?;
-        return Ok(Some(StoredEvent { sequence, event }));
-    }
-    Ok(None)
-}
-
 pub(super) async fn materialize_selected(
     connection: &mut SqliteConnection,
     selection: &Selection,
@@ -327,29 +311,11 @@ pub(super) async fn materialize_selected(
 ) -> Result<ModelContextSource, StoreError> {
     let (baseline, source_evidence) =
         latest_with_evidence(connection, selection, high_water).await?;
-    let anchor = anchor(connection, baseline.as_ref()).await?;
-    let anchor_bytes = anchor
-        .as_ref()
-        .map(|anchor| serde_json::to_vec(&anchor.event).map(|bytes| bytes.len()))
-        .transpose()?
-        .unwrap_or(0);
-    let remaining_bytes = max_bytes
-        .checked_sub(anchor_bytes)
-        .ok_or(StoreError::PrefixTooLarge)?;
-    let remaining_events = max_events
-        .checked_sub(usize::from(anchor.is_some()))
-        .ok_or(StoreError::PrefixTooLarge)?;
     let after = baseline
         .as_ref()
         .map_or(0, |baseline| baseline.checkpoint.covered_through);
     let tail = super::tail::read(
-        connection,
-        selection,
-        after,
-        high_water,
-        before,
-        remaining_events,
-        remaining_bytes,
+        connection, selection, after, high_water, before, max_events, max_bytes,
     )
     .await?;
     let effective_source_digest =
@@ -358,7 +324,6 @@ pub(super) async fn materialize_selected(
         source_evidence,
         effective_source_digest,
         baseline,
-        anchor,
         tail,
         latest_main,
     })
