@@ -17,7 +17,10 @@
  * under the License.
  */
 
-use super::{Decoder, failure, prompt};
+use super::{
+    http::{Decoder, failure},
+    prompt,
+};
 use crate::{ModelError, ProviderKind};
 use maka_agent_ports::model::{Credentials, Request};
 use maka_provider_protocol::{anthropic, chat_completions};
@@ -59,7 +62,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             }
             wire.clone()
         } else if request.prompt.memory_messages().is_some() {
-            super::anthropic_body::direct_wire(
+            super::anthropic::direct_wire(
                 request.prompt.clone(),
                 request.language,
                 stream_options.clone(),
@@ -69,7 +72,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 "captured prompt is missing its prepared Anthropic wire projection".into(),
             ));
         };
-        let metadata = super::anthropic_body::metadata(&wire, stream_options).await?;
+        let metadata = super::anthropic::metadata(&wire, stream_options).await?;
         let context = metadata.context.clone();
         let tools = request
             .tools
@@ -163,7 +166,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
         let namespace = match request.provider.kind {
             ProviderKind::OpenaiCompatible { name } => name,
             ProviderKind::OpenaiChatCompletions => "openai".into(),
-            _ => return Err(ModelError::Adapter("unsupported native protocol".into())),
+            _ => return Err(ModelError::Adapter("unsupported provider protocol".into())),
         };
         let tools = request
             .tools

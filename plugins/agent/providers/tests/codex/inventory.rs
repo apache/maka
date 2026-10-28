@@ -21,7 +21,7 @@ use super::*;
 
 #[tokio::test]
 async fn subscription_capacity_survives_discovery_and_older_saved_models() {
-    let provider = Codex::default();
+    let provider = Codex;
     let discovered = maka_providers::codex::decode_model_inventory(
         br#"{"models":[{"slug":"gpt-6-luna","context_window":272000}]}"#,
     )
@@ -74,7 +74,7 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
         }]}),
     });
     transport.release.notify_one();
-    let provider = Codex::default();
+    let provider = Codex;
     use base64::Engine;
     let access = format!(
         "header.{}.signature",
@@ -201,14 +201,13 @@ async fn discovery_and_preparation_share_account_facts_and_explicit_policy() {
 }
 
 fn wire(model: &maka_agent_ports::provider::Model) -> serde_json::Value {
-    maka_responses::request::Request {
-        language: maka_agent_facts::language::Language::En,
+    maka_provider_protocol::responses::request::Request {
         model: &model.info.id,
-        prompt: &[],
+        input: &[],
         tools: &[],
         options: &model.provider_options,
         max_output_tokens: None,
-        plaintext: None,
+        reasoning: maka_provider_protocol::responses::ReasoningMode::Encrypted,
     }
     .encode()
     .unwrap()

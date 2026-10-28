@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Consume canonical projections into native protocol input without a JSON bridge.
+//! Consume canonical projections into provider protocol input without a JSON bridge.
 use crate::{ModelError, prompt as facts};
 use maka_agent_facts::model::ToolInput;
 use maka_provider_protocol::input as wire;

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{error::Evidence, failure};
+use super::{error::Evidence, http::failure};
 use crate::ModelError;
 use maka_agent_facts::model::{
     self, ModelEvent, ModelFinishReason, ModelToolCall, ModelUsage, ToolInput,

@@ -23,7 +23,9 @@
 
 Builds model requests and streams responses through provider adapters. `ModelExecutor` manages requests, `Conversation` builds conversation input, and `reasoning` handles reasoning configuration. Provider credentials arrive through `AuthResolver`; the caller supplies authorized network and accounting context.
 
-Chat Completions compatible and Anthropic Messages use the pure Rust [protocol core](../provider-protocol/README.md). The native adapter releases request bodies after dispatch; an open stream holds no input-size admission quota. Queued output shares a 32 MiB byte window until consumed. One larger atomic event owns the whole window while its journal fragments drain, so this is backpressure rather than a response-size cap. The idle deadline covers network waits, excluding output backpressure.
+[`adapters`](src/adapters.rs) owns Responses, Chat Completions, Anthropic Messages and the Codex subscription execution profile. It projects canonical facts into the pure Rust [protocol core](../provider-protocol/README.md) and maps protocol events back into model events. Provider definitions, authentication and discovery remain in [providers](../providers/README.md).
+
+Adapters own HTTP/WebSocket transport and disposable connection state. Requests consume immutable prepared wire chunks; retries reopen the same captured source. Codex prepares its instructions from the complete prompt before a Responses lane selects a continuation suffix. Queued output shares a 32 MiB byte window until consumed. One larger atomic event owns the whole window while its journal fragments drain, so this is backpressure rather than a response-size cap. The idle deadline covers network waits, excluding output backpressure.
 
 Canonical response items and text remain complete across HTTP, SSE, WebSocket and durable reconstruction. Chunking and bounded channels apply backpressure without a separate whole-response quota. Disposable continuation caches may be evicted; canonical history remains the recovery source. Request token selection, provider protocol validation and owned idle/cancellation cleanup stay separate from content retention.
 

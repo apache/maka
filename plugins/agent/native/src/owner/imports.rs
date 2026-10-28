@@ -350,6 +350,7 @@ impl Owner {
                         &transcript.source,
                         &StoredSessionConfiguration {
                             backend: None,
+                            compaction_prompt: None,
                             collaboration_mode: CollaborationMode::Agent,
                             tools: None,
                             title,

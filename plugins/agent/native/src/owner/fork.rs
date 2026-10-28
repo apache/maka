@@ -155,6 +155,7 @@ impl Owner {
             .map_err(fork_failure)?;
         let configuration = StoredSessionConfiguration {
             backend: parent.backend,
+            compaction_prompt: parent.compaction_prompt,
             collaboration_mode: CollaborationMode::Agent,
             tools,
             title: input.title,

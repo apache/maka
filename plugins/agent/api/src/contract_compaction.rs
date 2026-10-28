@@ -25,8 +25,23 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCompactionPrompt")]
 pub struct CompactionPrompt {
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub revision: u64,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub prompt: Option<String>,
     pub compaction_prompt: String,
     pub default_compaction_prompt: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSetCompactionPrompt")]
+pub struct SetCompactionPrompt {
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
+    pub expected_revision: u64,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub prompt: Option<String>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -36,7 +51,7 @@ pub struct Compact {
     pub session_id: String,
     pub model: ModelSelection,
     pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-    /// One invocation only; omission uses the global preference.
+    /// One invocation only; omission uses the Session's effective preference.
     pub prompt: Option<String>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]

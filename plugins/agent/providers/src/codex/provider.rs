@@ -82,7 +82,7 @@ impl Codex {
                 anonymous: false,
                 discovery: true,
             },
-            Arc::new(Self::default()),
+            Arc::new(Self),
         )
         .map_err(|e| maka_capabilities::Error::Invalid(e.to_string()))
     }
@@ -181,8 +181,7 @@ impl Provider for Codex {
         Box::pin(async move {
             configuration(&connection)?;
             let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
-            let headers = super::request_headers(&tokens.access_token, &session_id)
-                .map_err(|_| Error::Invalid("invalid subscription request identity".into()))?;
+            let headers = super::request_headers(&tokens.access_token, &session_id)?;
             Ok(Credentials::RequestHeaders(headers))
         })
     }
@@ -224,8 +223,7 @@ impl Provider for Codex {
             } = request;
             let base_url = configuration(&connection)?;
             let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
-            let mut headers = super::request_headers(&tokens.access_token, &connection.id)
-                .map_err(|_| Error::Invalid("invalid connection identity".into()))?;
+            let mut headers = super::request_headers(&tokens.access_token, &connection.id)?;
             for (name, value) in request_headers {
                 if headers
                     .iter()

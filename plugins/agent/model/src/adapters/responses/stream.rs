@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Native Responses dispatch. Protocol code never enters the model V8 isolate.
-use crate::{
+//! Responses dispatch. Protocol code never enters the model V8 isolate.
+use super::{
     decode::Decoder,
     transport::{Exchange, ResponsesLane, Shared},
 };
@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 pub async fn stream(
     mut request: ModelRequest,
     context: Context,
-    lane: Option<crate::Lane>,
+    lane: Option<super::Lane>,
     transport: Arc<Shared>,
 ) -> Result<(), ModelError> {
     let skip = if let Some(lane) = &lane {
@@ -156,7 +156,7 @@ async fn run(
         ProviderKind::OpenResponses(p) => Some(p),
         _ => None,
     };
-    let mut body = crate::body::NativeBody::new(&request, plaintext, skip).map_err(failure)?;
+    let mut body = super::body::RequestBody::new(&request, plaintext, skip).map_err(failure)?;
     let mut url = reqwest::Url::parse(&request.provider.base_url)
         .map_err(|_| ModelError::Adapter("invalid Responses endpoint".into()))?;
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
@@ -179,7 +179,7 @@ async fn run(
         )
         .await?
         .map_err(|error| match error {
-            crate::Error::Interrupted(message) => {
+            super::Error::Interrupted(message) => {
                 interruption(&decoder, ProviderFailureReason::Network, message)
             }
             error => failure(error),
@@ -189,7 +189,7 @@ async fn run(
                 while let Some(frame) = wait(idle_timeout, &decoder, &cancellation, exchange.next())
                     .await?
                     .map_err(|error| match error {
-                        crate::Error::Interrupted(message) => {
+                        super::Error::Interrupted(message) => {
                             interruption(&decoder, ProviderFailureReason::StreamTruncated, message)
                         }
                         error => failure(error),
@@ -320,7 +320,7 @@ async fn read_response(
         }
         return Err(http_failure(status));
     }
-    let mut sse = crate::sse::Sse::default();
+    let mut sse = maka_provider_protocol::responses::sse::Sse::default();
     let mut received_event = false;
     let missing_events = || {
         ModelError::Adapter(format!(
@@ -352,7 +352,7 @@ async fn read_response(
         })?
     {
         for byte in chunk {
-            if let Some(value) = sse.push(byte).map_err(failure)? {
+            if let Some(value) = sse.push(byte).map_err(|error| failure(error.into()))? {
                 received_event = true;
                 emit(decoder, value, sender, cancellation).await?;
                 if decoder.finished() {
@@ -407,8 +407,8 @@ fn context_overflow(code: &str) -> bool {
         "context_length_exceeded" | "model_context_window_exceeded" | "request_too_large"
     )
 }
-fn failure(error: crate::Error) -> ModelError {
-    use crate::Error;
+fn failure(error: super::Error) -> ModelError {
+    use super::Error;
     match error {
         Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
         Error::Truncated {

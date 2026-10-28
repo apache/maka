@@ -17,8 +17,8 @@
  * under the License.
  */
 
+use super::super::{body::RequestBody, budget};
 use super::{Result, error};
-use crate::{body::NativeBody, budget};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -26,18 +26,18 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub(super) const CACHE_LIMIT: u32 = 32 * 1024 * 1024;
 
 /// Connection metadata only. Full replay always comes from the immutable
-/// canonical prompt held by NativeBody, never from a second wire history.
+/// canonical prompt held by RequestBody, never from a second wire history.
 pub(super) struct Baseline {
     properties: Value,
     pub response_id: Option<String>,
     _permit: OwnedSemaphorePermit,
 }
 pub(super) struct Prepared {
-    pub full: NativeBody,
-    pub delta: Option<NativeBody>,
+    pub full: RequestBody,
+    pub delta: Option<RequestBody>,
 }
 impl Prepared {
-    pub fn new(body: NativeBody, baseline: Option<Baseline>) -> Result<Self> {
+    pub fn new(body: RequestBody, baseline: Option<Baseline>) -> Result<Self> {
         let previous = body
             .properties
             .get("previous_response_id")

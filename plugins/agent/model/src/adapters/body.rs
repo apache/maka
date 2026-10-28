@@ -80,7 +80,7 @@ pub(super) async fn validate(
     let mut messages = ChatMessages::new(source, language);
     while let Some(message) = messages.next().await? {
         let message = prompt::messages(vec![message])?;
-        request::messages(&message, options).map_err(super::failure)?;
+        request::messages(&message, options).map_err(super::http::failure)?;
     }
     Ok(())
 }
@@ -146,12 +146,19 @@ pub(super) fn chat(
                 state.first = false;
                 continue;
             }
-            match state.messages.next().await.map_err(super::upload_error)? {
+            match state
+                .messages
+                .next()
+                .await
+                .map_err(super::http::upload_error)?
+            {
                 Some(message) => {
-                    let messages = prompt::messages(vec![message]).map_err(super::upload_error)?;
+                    let messages =
+                        prompt::messages(vec![message]).map_err(super::http::upload_error)?;
                     state.pending.extend(
-                        request::messages(&messages, &state.options)
-                            .map_err(|error| super::upload_error(super::failure(error)))?,
+                        request::messages(&messages, &state.options).map_err(|error| {
+                            super::http::upload_error(super::http::failure(error))
+                        })?,
                     );
                 }
                 None => {
@@ -212,7 +219,12 @@ pub(super) fn prepared(fields: Value, wire: PreparedWire, key: &'static str) -> 
                     return Ok(Some((http::Bytes::from(bytes), state)));
                 }
 
-                match state.cursor.next().await.map_err(super::upload_error)? {
+                match state
+                    .cursor
+                    .next()
+                    .await
+                    .map_err(super::http::upload_error)?
+                {
                     Some(chunk) => {
                         if chunk.bytes.is_empty() {
                             continue;

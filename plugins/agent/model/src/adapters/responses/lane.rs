@@ -29,7 +29,7 @@ use std::{
 
 #[derive(Clone, Default)]
 pub struct Lane {
-    pub(crate) transport: crate::transport::ResponsesLane,
+    pub(crate) transport: super::transport::ResponsesLane,
     semantic: Arc<Mutex<Semantic>>,
 }
 #[derive(Default)]

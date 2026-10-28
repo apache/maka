@@ -1548,6 +1548,7 @@ mod tests {
                 "fixture",
                 &StoredSessionConfiguration {
                     backend: None,
+                    compaction_prompt: None,
                     collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
                     tools: None,
                     title: "fixture".into(),

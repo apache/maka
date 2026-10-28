@@ -179,7 +179,11 @@ impl Owner {
         let mut basis = MessageBasis {
             mcp_revision,
             language,
-            compaction_prompt: Some(self.effective_compaction_prompt(&snapshot, language)),
+            compaction_prompt: Some(self.effective_compaction_prompt(
+                session.configuration.compaction_prompt.as_deref(),
+                &snapshot,
+                language,
+            )),
             graph: None,
             collaboration_mode: CollaborationMode::Agent,
             background_kind: kind,
@@ -414,6 +418,7 @@ impl Owner {
                             &basis.fingerprint,
                             &StoredSessionConfiguration {
                                 backend: None,
+                                compaction_prompt: None,
                                 collaboration_mode: CollaborationMode::Agent,
                                 tools: basis.allowed_tools.clone(),
                                 title: fire.title.clone(),

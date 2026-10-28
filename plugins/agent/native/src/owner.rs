@@ -784,6 +784,7 @@ impl Owner {
                 &operation.fingerprint,
                 &StoredSessionConfiguration {
                     backend: None,
+                    compaction_prompt: None,
                     collaboration_mode: CollaborationMode::Agent,
                     tools,
                     title: input.title,
@@ -1164,7 +1165,11 @@ impl Owner {
         let mut basis = MessageBasis {
             mcp_revision,
             language,
-            compaction_prompt: Some(self.effective_compaction_prompt(&snapshot, language)),
+            compaction_prompt: Some(self.effective_compaction_prompt(
+                session.configuration.compaction_prompt.as_deref(),
+                &snapshot,
+                language,
+            )),
             graph: None,
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,

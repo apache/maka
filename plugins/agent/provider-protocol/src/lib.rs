@@ -28,6 +28,7 @@ pub use field::Field;
 pub mod anthropic;
 pub mod chat_completions;
 pub mod output;
+pub mod responses;
 pub mod sse;
 
 use serde::{Deserialize, Serialize};

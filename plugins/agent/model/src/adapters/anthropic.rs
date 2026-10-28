@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Native Anthropic input cursors. Every lane reopens the same captured view.
+//! Anthropic input cursors. Every lane reopens the same captured view.
 use super::{media, prompt};
 use crate::{
     ModelError,
@@ -135,7 +135,10 @@ impl DirectParts {
         loop {
             if let Some((message, index, next, count)) = &mut self.active {
                 if *next < *count {
-                    let part = self.encoder.part(message, *next).map_err(super::failure)?;
+                    let part = self
+                        .encoder
+                        .part(message, *next)
+                        .map_err(super::http::failure)?;
                     let part_index = *next;
                     *next += 1;
                     return Ok(Some((*index, part_index, part)));
@@ -145,7 +148,7 @@ impl DirectParts {
             let Some(message) = self.messages.next().await? else {
                 return Ok(None);
             };
-            let count = self.encoder.begin(&message).map_err(super::failure)?;
+            let count = self.encoder.begin(&message).map_err(super::http::failure)?;
             self.active = Some((message, self.index, 0, count));
             self.index += 1;
         }
@@ -243,7 +246,7 @@ pub(super) async fn metadata(
             index = next_index;
             next_index += 1;
         }
-        prepass.push(index, &part).map_err(super::failure)?;
+        prepass.push(index, &part).map_err(super::http::failure)?;
     }
     Ok(prepass.finish())
 }
@@ -299,7 +302,7 @@ impl Lane {
         let decision = self
             .replay
             .part(&metadata, self.selection)
-            .map_err(super::failure)?;
+            .map_err(super::http::failure)?;
         Ok(Some(Record {
             position: record.position,
             logical: (self.index, metadata.part_index),
@@ -336,7 +339,7 @@ impl Payload {
         })?;
         let bytes = self.overlay.push(&chunk.bytes);
         if chunk.item_end {
-            self.overlay.finish().map_err(super::failure)?;
+            self.overlay.finish().map_err(super::http::failure)?;
             self.ended = true;
         }
         Ok(Some(bytes))
@@ -559,7 +562,7 @@ pub(super) fn body(
     Ok(http::RequestBody::stream(futures_util::stream::try_unfold(
         state,
         |mut state| async move {
-            match state.next().await.map_err(super::upload_error)? {
+            match state.next().await.map_err(super::http::upload_error)? {
                 Some(bytes) => Ok(Some((http::Bytes::from(bytes), state))),
                 None => Ok(None),
             }

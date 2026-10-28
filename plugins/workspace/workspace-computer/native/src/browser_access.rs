@@ -711,6 +711,7 @@ mod tests {
             };
             let configuration = StoredSessionConfiguration {
                 backend: None,
+                compaction_prompt: None,
                 collaboration_mode: Default::default(),
                 tools: Some(vec!["cua_repl".into()]),
                 title: "Clipboard authority fixture".into(),

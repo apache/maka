@@ -32,12 +32,12 @@ pub(super) enum ReadError {
 }
 
 impl ReadError {
-    pub fn into_error(self) -> crate::Error {
+    pub fn into_error(self) -> super::super::Error {
         match self {
-            Self::CleanupUnconfirmed => crate::Error::CleanupUnconfirmed,
+            Self::CleanupUnconfirmed => super::super::Error::CleanupUnconfirmed,
             Self::Cancelled => error("Responses WebSocket cancelled"),
-            Self::Interrupted(message) => crate::Error::Interrupted(message),
-            Self::Invalid(message) => crate::Error::Invalid(message),
+            Self::Interrupted(message) => super::super::Error::Interrupted(message),
+            Self::Invalid(message) => super::super::Error::Invalid(message),
         }
     }
 }

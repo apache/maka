@@ -337,4 +337,21 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
             "settled {list:?}"
         );
     }
+    let mut prompt = operation(List::Controls, 200_000, &host, &key);
+    prompt.method = "setCompactionPrompt".into();
+    prompt.session_id = Some(key.session_id.clone());
+    prompt.correlation = json!({"kind":CONTROL_KIND,"expectedRevision":42});
+    journal.reserve(&prompt).await.unwrap();
+    journal.pool.close().await;
+    drop(journal);
+    let journal = Journal::open(&path).await.unwrap();
+    assert_eq!(
+        List::Controls.read(&journal, &key, &host).await,
+        vec![prompt.id]
+    );
+    journal
+        .observe(&prompt, &returned(OperationCleanup::Confirmed))
+        .await
+        .unwrap();
+    assert!(List::Controls.read(&journal, &key, &host).await.is_empty());
 }

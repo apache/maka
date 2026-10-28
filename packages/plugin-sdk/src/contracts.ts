@@ -2027,7 +2027,8 @@ export const contracts = {
                 ],
               },
               prompt: {
-                description: 'One invocation only; omission uses the global preference.',
+                description:
+                  "One invocation only; omission uses the Session's effective preference.",
                 type: ['string', 'null'],
               },
             },
@@ -2167,6 +2168,15 @@ export const contracts = {
             title: 'AgentCompactionPrompt',
             type: 'object',
             properties: {
+              revision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              prompt: {
+                type: ['string', 'null'],
+              },
               compactionPrompt: {
                 type: 'string',
               },
@@ -2175,7 +2185,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['compactionPrompt', 'defaultCompactionPrompt'],
+            required: ['revision', 'prompt', 'compactionPrompt', 'defaultCompactionPrompt'],
           },
           resources: {},
         },
@@ -18726,6 +18736,455 @@ export const contracts = {
               SkillSource: {
                 type: 'string',
                 enum: ['maka', 'agents', 'custom'],
+              },
+            },
+          },
+          resources: {},
+        },
+        setCompactionPrompt: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSetCompactionPrompt',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              expectedRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 1,
+                maximum: 9007199254740991,
+              },
+              prompt: {
+                type: ['string', 'null'],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedRevision', 'prompt'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMetadataResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'committed',
+                  },
+                  session: {
+                    $ref: '#/$defs/AgentSession',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'session'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'revision_conflict',
+                  },
+                  expected: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  actual: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'expected', 'actual'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentSession: {
+                type: 'object',
+                properties: {
+                  branch: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentSessionBranch',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  backend: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentBackendPreference',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  collaborationMode: {
+                    $ref: '#/$defs/CollaborationMode',
+                    default: 'agent',
+                  },
+                  tools: {
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  dataSource: {
+                    $ref: '#/$defs/AgentDataSource',
+                  },
+                  permissions: {
+                    $ref: '#/$defs/AgentWorkspacePermissions',
+                  },
+                  boundaryRevision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  binding: {
+                    $ref: '#/$defs/BindingStamp',
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                  title: {
+                    type: 'string',
+                  },
+                  labels: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  workspace: {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  updatedAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  archived: {
+                    type: 'boolean',
+                  },
+                  hasUnread: {
+                    type: 'boolean',
+                  },
+                  tailMessageId: {
+                    description:
+                      'Exact durable visible tail accepted by markRead; independent of preview clocks.',
+                    type: ['string', 'null'],
+                  },
+                  activity: {
+                    $ref: '#/$defs/AgentSessionActivity',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'branch',
+                  'dataSource',
+                  'permissions',
+                  'boundaryRevision',
+                  'binding',
+                  'id',
+                  'title',
+                  'labels',
+                  'workspace',
+                  'revision',
+                  'updatedAt',
+                  'archived',
+                  'hasUnread',
+                  'tailMessageId',
+                  'activity',
+                ],
+              },
+              AgentSessionBranch: {
+                description:
+                  'Frozen conversation ancestry for presentation, not authority over the source.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  turnId: {
+                    type: ['string', 'null'],
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId'],
+              },
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+              },
+              CollaborationMode: {
+                type: 'string',
+                enum: ['agent', 'plan'],
+              },
+              AgentDataSource: {
+                description:
+                  'Stable business-data origin, independent of package or activation revisions.',
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'namespace'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              AgentWorkspacePermissions: {
+                type: 'object',
+                properties: {
+                  access: {
+                    $ref: '#/$defs/AgentWorkspaceAccess',
+                  },
+                  requestPermissions: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['access', 'requestPermissions'],
+              },
+              AgentWorkspaceAccess: {
+                description:
+                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                type: 'string',
+                enum: ['read_only', 'workspace_write', 'danger_full_access'],
+              },
+              BindingStamp: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  permissionEpoch: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'permissionEpoch'],
+              },
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+              },
+              AgentSessionActivity: {
+                type: 'string',
+                enum: ['idle', 'working', 'waiting'],
+              },
+              AgentRejection: {
+                type: 'string',
+                enum: [
+                  'title_invalid',
+                  'labels_invalid',
+                  'tools_unavailable',
+                  'busy',
+                  'workspace_unavailable',
+                  'session_unavailable',
+                  'history_unavailable',
+                  'managed_session',
+                  'closed',
+                ],
               },
             },
           },

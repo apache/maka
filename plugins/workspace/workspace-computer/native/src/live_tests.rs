@@ -301,6 +301,7 @@ impl Run {
         };
         let configuration = StoredSessionConfiguration {
             backend: None,
+            compaction_prompt: None,
             collaboration_mode: CollaborationMode::Agent,
             tools: Some(vec!["cua_repl".into(), "cua_reset".into()]),
             title: "Isolated native epoch".into(),

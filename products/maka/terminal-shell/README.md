@@ -53,6 +53,8 @@ Use **Connections & models** on Home or **Settings** in the sidebar to add a con
 
 **Settings → General** also provides scrollable multiline editors for the assistant’s global **AGENTS.md** and the compaction prompt. Save to apply document edits; **Use default prompt** selects the Host default for the compaction prompt.
 
+The conversation actions menu also provides **Compaction prompt** for a persistent conversation override. The editor opens with the complete effective text; **Use global settings** restores inheritance and displays the global prompt. Newly accepted work and manual compaction use this preference, while already accepted work retains its captured settings; the manual compaction dialog can still override it for one invocation.
+
 The header provides the sidebar toggle and **Commands** (Ctrl+P). The sidebar toggle uses a neutral icon at rest and shows the expand or collapse direction on hover or keyboard focus. Open **Search conversations** from the sidebar or with Ctrl+O to search titles and message contents across readable conversations, including archives.
 
 **Sessions** uses a collapsible sidebar when the terminal has room for both it and the conversation; smaller windows use a dialog. **New conversation** sits above the compact workspace scope, conversation search and filters; **Settings** sits below the list. Drag the divider to adjust the sidebar. Choose **All workspaces**, the current session's exact workspace, or a project. A project's **+** creates in its Host-authorized directory. An isolated worktree is not necessarily part of its parent project. Keyboard controls remain available without persistent help rows.

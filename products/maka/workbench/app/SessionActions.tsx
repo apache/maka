@@ -43,8 +43,9 @@ import {
 } from './ui';
 import { Icon } from './Icon';
 import { dialogTop } from './chrome';
+import { SessionCompactionPrompt } from './SessionCompactionPrompt';
 
-type Page = 'actions' | 'rename' | 'fork' | 'remove';
+type Page = 'actions' | 'rename' | 'fork' | 'remove' | 'compaction_prompt';
 export function SessionActions(props: {
   session: SessionActionTarget;
   anchor(): YNode | null;
@@ -187,6 +188,21 @@ export function SessionActions(props: {
                 </Text>
               </Button>
               <Button
+                disabled={pending() || session().archived}
+                accessibilityLabel={tr('Edit conversation compaction prompt')}
+                role="menuitem"
+                style={menuRowStyle()}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+                disabledStyle={controlDisabledStyle}
+                onPress={inputAction(edit, { to: 'compaction_prompt', original: session() })}
+              >
+                <Icon name="edit" color={C.secondary} />
+                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
+                  {tr('Compaction prompt')}
+                </Text>
+              </Button>
+              <Button
                 disabled={pending()}
                 accessibilityLabel={tr('Fork conversation')}
                 role="menuitem"
@@ -264,7 +280,15 @@ export function SessionActions(props: {
           </Scroll>
         </Popover>
       </If>
-      <If when={page() !== 'actions'}>
+      <If when={page() === 'compaction_prompt'}>
+        <SessionCompactionPrompt
+          session={session()}
+          current={() => active() && page() === 'compaction_prompt'}
+          close={props.close}
+          change={props.change}
+        />
+      </If>
+      <If when={page() !== 'actions' && page() !== 'compaction_prompt'}>
         <Dialog
           animation="none"
           closeOnEscape={false}

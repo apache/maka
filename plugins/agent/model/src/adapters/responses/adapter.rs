@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{Lane, transport::Shared};
+use super::{Lane, transport::Shared};
 use futures_util::future::BoxFuture;
 use maka_agent_facts::model::prompt_source::Prompt;
 use maka_agent_ports::model::Context;
@@ -28,7 +28,7 @@ use maka_agent_ports::model::Request;
 use maka_agent_ports::model::Session;
 use std::sync::Arc;
 
-/// Native protocol implementation; all network capabilities come from Host.
+/// Responses execution; all network capabilities come from Host.
 #[derive(Default)]
 pub struct Adapter {
     transport: Arc<Shared>,
@@ -46,18 +46,18 @@ impl ProviderAdapter for Adapter {
         lifetime: Lifetime,
         _: tokio_util::sync::CancellationToken,
     ) -> BoxFuture<'_, Result<Arc<dyn Session>, Error>> {
-        let session = Native {
+        let session = ResponsesSession {
             transport: self.transport.clone(),
             lane: matches!(lifetime, Lifetime::Conversation).then(Lane::default),
         };
         Box::pin(async { Ok(Arc::new(session) as Arc<dyn Session>) })
     }
 }
-struct Native {
+struct ResponsesSession {
     transport: Arc<Shared>,
     lane: Option<Lane>,
 }
-impl Session for Native {
+impl Session for ResponsesSession {
     fn try_switch_fallback_transport(&self) -> bool {
         self.lane.as_ref().is_some_and(|lane| {
             lane.transport
@@ -66,7 +66,7 @@ impl Session for Native {
     }
 
     fn stream(&self, request: Request, context: Context) -> BoxFuture<'static, Result<(), Error>> {
-        Box::pin(crate::stream(
+        Box::pin(super::stream(
             request,
             context,
             self.lane.clone(),

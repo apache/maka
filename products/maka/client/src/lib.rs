@@ -48,11 +48,12 @@ use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, String>;
 
-const CONTROL_METHODS: [&str; 12] = [
+const CONTROL_METHODS: &[&str] = &[
     "create",
     "trustProjectMcp",
     "selectBackend",
     "compact",
+    "setCompactionPrompt",
     "markRead",
     "stop",
     "stopComputerApp",
@@ -109,7 +110,10 @@ fn control_correlation(method: &str, input: &Value) -> Result<Value> {
             })?;
         correlation[key] = Value::String(target.to_owned());
     }
-    if matches!(method, "metadata" | "changeSession" | "fork") {
+    if matches!(
+        method,
+        "metadata" | "setCompactionPrompt" | "changeSession" | "fork"
+    ) {
         let revision = input
             .get("expectedRevision")
             .and_then(Value::as_u64)

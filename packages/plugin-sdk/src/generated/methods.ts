@@ -330,7 +330,7 @@ export interface ServiceMethods {
         model: Runtime.ModelSelection;
         thinkingLevel?: Runtime.ThinkingLevel | null;
         /**
-         * One invocation only; omission uses the global preference.
+         * One invocation only; omission uses the Session's effective preference.
          */
         prompt?: string | null;
       };
@@ -348,6 +348,8 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentSessionRead;
       output: {
+        revision: number;
+        prompt: string | null;
         compactionPrompt: string;
         defaultCompactionPrompt: string;
       };
@@ -644,6 +646,15 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentSend;
       output: Runtime.AgentSendResult;
+    };
+    setCompactionPrompt: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        expectedRevision: number;
+        prompt: string | null;
+      };
+      output: Runtime.AgentMetadataResult;
     };
     skillCandidates: {
       mode: 'query';

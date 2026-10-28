@@ -17,24 +17,24 @@
  * under the License.
  */
 
-//! Native Responses protocol and disposable connection state.
+//! Responses execution, canonical projection, and disposable connection state.
+mod adapter;
 mod body;
 mod budget;
-mod replay;
-mod stream;
-pub use stream::stream;
+mod decode;
 mod lane;
-pub use lane::Lane;
-mod adapter;
-pub mod decode;
-pub use adapter::Adapter;
-pub mod request;
-pub mod sse;
-pub mod transport;
+pub(super) mod request;
+mod stream;
+mod transport;
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(super) use adapter::Adapter;
+use lane::Lane;
+use stream::stream;
+
+pub(super) type Result<T> = std::result::Result<T, Error>;
+
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub(super) enum Error {
     #[error("Responses resource cleanup is unconfirmed")]
     CleanupUnconfirmed,
     #[error("Responses stream ended without completion")]
@@ -52,9 +52,38 @@ pub enum Error {
     },
     #[error("{0}")]
     Invalid(String),
-    /// Network interruption; replay safety belongs to the shared decoder.
+    /// Network interruption; replay safety belongs to the protocol decoder.
     #[error("{0}")]
     Interrupted(String),
     #[error("{0}")]
     Transport(String),
+}
+
+impl From<maka_provider_protocol::responses::Error> for Error {
+    fn from(error: maka_provider_protocol::responses::Error) -> Self {
+        use maka_provider_protocol::responses::Error as ProtocolError;
+        match error {
+            ProtocolError::Invalid(message) => Self::Invalid(message),
+            ProtocolError::Truncated {
+                replay_safe,
+                retained_output_safe,
+            } => Self::Truncated {
+                replay_safe,
+                retained_output_safe,
+            },
+            ProtocolError::Provider {
+                code,
+                message,
+                observed_output,
+                replay_safe,
+                retained_output_safe,
+            } => Self::Provider {
+                code,
+                message,
+                observed_output,
+                replay_safe,
+                retained_output_safe,
+            },
+        }
+    }
 }
