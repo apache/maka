@@ -119,7 +119,7 @@ export {
   SessionMetadataConflictError,
   SessionMetadataVersionConflictError,
 } from './session-store-contract.js';
-export { StoredSessionMessageIncompatibleError } from './sqlite-session-metadata-store.js';
+export { StoredSessionMessageIncompatibleError } from './session-store-contract.js';
 
 export type {
   AdmitRootTurnInput,
