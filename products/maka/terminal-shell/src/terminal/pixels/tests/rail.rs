@@ -114,7 +114,7 @@ fn check_marks(source: &str) {
     let received = frames.clone();
     let platform = TerminalPlatform::new(
         Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-        Box::new(move |frame| received.borrow_mut().push(frame)),
+        Box::new(move |frame| received.borrow_mut().push(frame.submit().unwrap())),
         Arc::new(|| {}),
     )
     .unwrap();

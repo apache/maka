@@ -39,6 +39,8 @@ At startup, the shell negotiates image transport and display geometry. On Linux 
 
 In **Settings → General**, **Interface scale** previews a preset or a percentage entered with Enter. **Save** keeps the chosen scale; **Reset to 100%** previews 100%, and **Cancel** or leaving the page restores the saved scale. Ctrl+0 or Ctrl+Alt+0 resets and saves 100% (Cmd+0 or Cmd+Alt+0 on macOS). Pixel layout and text are rasterized again at the new scale. For Unicode rendering, use your terminal’s font size.
 
+Input, CPU layout, painting and GPU command encoding remain on the native UI path. Owned GPU commands move to the existing background executor for submission and readback. The next scene waits for the preceding submission to return, preserving GPU queue-write order; readback, image encoding and terminal output can still overlap native work and later frames.
+
 Kitty prepares complete lossless snapshots while GPU rendering continues. The sole writer selects the alternate image slot after the preceding receipt, retains the acknowledged image underneath, and publishes only after both a complete flush and the matching success reply. Waiting snapshots can coalesce; a started transaction finishes intact. These receipts do not prove display vsync. Any negative reply for either session-owned slot ends the graphics session. Resize immediately revokes old pointer geometry.
 
 Adjacent unpressed mouse moves with the same modifiers coalesce to the latest position. Clicks, drags, wheel events, keys and IME events retain their order and separate those move sequences.

@@ -1,8 +1,8 @@
 //! A terminal platform for the same GPUI scene used by NSH desktop apps.
 //!
 //! The embedding host owns terminal input, protocol negotiation and output.
-//! Drawing produces a [`SubmittedFrame`] whose owned readback completes away
-//! from the native input thread. Only the sole output owner's receipt
+//! Drawing produces a [`PreparedFrame`] whose owned commands are submitted and
+//! read back away from the native input thread. Only the sole output owner's receipt
 //! may call [`TerminalPlatform::mark_presented`]. GPU completion is not terminal
 //! presentation. Input follows GPUI's ordinary native route independently.
 //!
@@ -27,8 +27,8 @@ pub use platform::TerminalPlatform;
 
 /// An authentic draw's identity in one terminal viewport generation.
 ///
-/// The default token is inert. A token is issued after successful GPU
-/// submission, and does not grant input authority or prove output flush.
+/// The default token is inert. A token is issued after successful scene
+/// preparation, and does not prove GPU submission or output flush or grant input authority.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct FrameToken {
@@ -71,6 +71,41 @@ impl Hash for FrameToken {
     }
 }
 
+/// A prepared scene whose commands belong to the receiving host.
+///
+/// Move this ticket to a background executor and submit it before allowing the
+/// next draw. Submission preserves the candidate identity; it is not a receipt.
+#[non_exhaustive]
+pub struct PreparedFrame {
+    pub(crate) token: FrameToken,
+    pub(crate) readback: gpui_wgpu::PreparedReadback,
+}
+
+impl PreparedFrame {
+    /// The identity paired with this immutable prepared scene.
+    pub fn token(&self) -> FrameToken {
+        self.token.clone()
+    }
+
+    /// The prepared GPU target's actual dimensions.
+    pub fn size(&self) -> gpui::Size<gpui::DevicePixels> {
+        self.readback.size()
+    }
+
+    /// The tightly packed RGBA8 length produced by a successful readback.
+    pub fn pixel_len(&self) -> usize {
+        self.readback.pixel_len()
+    }
+
+    /// Submits the owned GPU commands on the calling background thread.
+    pub fn submit(self) -> anyhow::Result<SubmittedFrame> {
+        Ok(SubmittedFrame {
+            token: self.token,
+            readback: self.readback.submit()?,
+        })
+    }
+}
+
 /// An authentic GPU submission whose readback belongs to the receiving host.
 ///
 /// Move this ticket to a background executor. Completion retains the draw's
@@ -82,7 +117,12 @@ pub struct SubmittedFrame {
 }
 
 impl SubmittedFrame {
-    /// The identity paired with the scene at its original GPU submission.
+    /// The wall-clock boundaries captured by the authentic GPU submission.
+    pub fn submission_timings(&self) -> gpui_wgpu::SubmissionTimings {
+        self.readback.submission_timings()
+    }
+
+    /// The unchanged identity chosen when the scene was prepared.
     pub fn token(&self) -> FrameToken {
         self.token.clone()
     }

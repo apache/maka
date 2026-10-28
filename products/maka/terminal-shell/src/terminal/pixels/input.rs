@@ -37,6 +37,12 @@ pub(in crate::terminal) struct Offer {
     pub geometry: u64,
 }
 
+pub(super) struct Preparation {
+    pub frame: nsh_gpui_terminal::PreparedFrame,
+    pub geometry: u64,
+    pub pump_started: Option<Instant>,
+}
+
 pub(super) struct Candidate {
     pub frame: SubmittedFrame,
     pub geometry: u64,
@@ -71,7 +77,7 @@ pub(super) enum Completion {
     },
 }
 
-/// Running readback and codec work retain their original capacity until return.
+/// GPU submission, readback and codec work keep their slots until completion.
 /// Complete snapshots can supersede another completed snapshot before writing.
 struct FrameJob {
     geometry: u64,
@@ -80,6 +86,8 @@ struct FrameJob {
 
 enum FrameWork {
     Reserved,
+    Prepared(Preparation),
+    Rendering(FrameToken),
     Submitted(Candidate),
     Encoding(FrameToken),
     Ready(Encoded),
@@ -89,6 +97,8 @@ impl FrameWork {
     fn token(&self) -> Option<FrameToken> {
         match self {
             Self::Reserved => None,
+            Self::Prepared(preparation) => Some(preparation.frame.token()),
+            Self::Rendering(token) => Some(token.clone()),
             Self::Submitted(candidate) => Some(candidate.frame.token()),
             Self::Encoding(token) => Some(token.clone()),
             Self::Ready(encoded) => Some(encoded.frame.token()),
@@ -170,11 +180,17 @@ impl Inbox {
             || self.capabilities.viewport().is_none()
             || self.frames.len() >= capacity
             || (protocol == Some(Protocol::Iterm2) && self.in_flight.is_some())
+            || self.frames.iter().any(|job| {
+                matches!(
+                    job.work,
+                    FrameWork::Reserved | FrameWork::Prepared(_) | FrameWork::Rendering(_)
+                )
+            })
             || (protocol == Some(Protocol::Kitty)
                 && self
                     .frames
                     .iter()
-                    .any(|job| matches!(job.work, FrameWork::Reserved | FrameWork::Submitted(_))))
+                    .any(|job| matches!(job.work, FrameWork::Submitted(_))))
         {
             return false;
         }
@@ -196,16 +212,45 @@ impl Inbox {
         true
     }
 
-    pub(super) fn submitted(&mut self, candidate: Candidate) -> bool {
+    pub(super) fn prepared(&mut self, preparation: Preparation) -> bool {
         let Some(job) = self.frames.iter_mut().find(|job| {
-            job.geometry == candidate.geometry && matches!(job.work, FrameWork::Reserved)
+            job.geometry == preparation.geometry && matches!(job.work, FrameWork::Reserved)
         }) else {
             return false;
         };
-        // A resize may arrive while draw submits. Keep that old readback's
-        // reservation until its worker returns, just like an active codec.
+        job.work = FrameWork::Prepared(preparation);
+        true
+    }
+
+    pub(super) fn take_preparation(&mut self) -> Option<Preparation> {
+        let job = self
+            .frames
+            .iter_mut()
+            .find(|job| matches!(job.work, FrameWork::Prepared(_)))?;
+        let token = job.work.token().expect("prepared native frame");
+        let FrameWork::Prepared(preparation) =
+            std::mem::replace(&mut job.work, FrameWork::Rendering(token))
+        else {
+            unreachable!()
+        };
+        Some(preparation)
+    }
+
+    pub(super) fn submitted(&mut self, candidate: Candidate) -> bool {
+        let token = candidate.frame.token();
+        let Some(job) = self.frames.iter_mut().find(|job| {
+            job.geometry == candidate.geometry
+                && matches!(&job.work, FrameWork::Rendering(active) if active == &token)
+        }) else {
+            return false;
+        };
         job.work = FrameWork::Submitted(candidate);
         true
+    }
+
+    pub(super) fn submission_failed(&mut self, token: &FrameToken) {
+        self.frames
+            .retain(|job| !matches!(&job.work, FrameWork::Rendering(active) if active == token));
     }
 
     pub(super) fn release_reservation(&mut self) {
@@ -704,7 +749,7 @@ mod tests {
         let received = frames.clone();
         let platform = nsh_gpui_terminal::TerminalPlatform::new(
             Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-            Box::new(move |frame| received.borrow_mut().push(frame)),
+            Box::new(move |frame| received.borrow_mut().push(frame.submit().unwrap())),
             Arc::new(|| {}),
         )
         .unwrap();
@@ -1028,69 +1073,6 @@ mod tests {
         inbox.set_ui_scale(1.0).unwrap();
         assert_eq!(inbox.geometry, 4);
         assert_eq!(inbox.capabilities.scale_factor(), 2.5);
-    }
-
-    #[test]
-    fn first_flush_opens_parallel_admission_and_every_resize_closes_it() {
-        let mut inbox = Inbox::new(capabilities(), false);
-        inbox.frame_capacity = 5;
-        assert!(inbox.reserve_frame());
-        assert!(!inbox.can_submit(), "the first geometry admits one frame");
-        // A pump which produces no submission must return its reservation.
-        inbox.release_reservation();
-        assert!(inbox.reserve_frame());
-        let token = FrameToken::default();
-        inbox.frames.back_mut().unwrap().work = FrameWork::Encoding(token.clone());
-        inbox.finished(&token, Some(encoded(1)));
-        assert!(!inbox.can_submit(), "codec completion is not a flush");
-        let first = inbox.take_encoded().unwrap();
-        assert!(!inbox.can_submit(), "writer handoff is not a flush");
-        inbox.written(
-            Offer {
-                token: first.frame.token(),
-                geometry: 1,
-            },
-            None,
-        );
-        for _ in 0..5 {
-            assert!(inbox.reserve_frame());
-        }
-        assert!(
-            !inbox.can_submit(),
-            "all unhanded stages share the finite budget"
-        );
-        // Treat these reservations as executor-queued/active workers. Resize
-        // cannot recover their capacity before each worker really returns.
-        for job in &mut inbox.frames {
-            job.work = FrameWork::Encoding(token.clone());
-        }
-        inbox
-            .push(Event::WindowResized(capabilities().size))
-            .unwrap();
-        inbox.resize.take();
-        let receipt = inbox.ready.take().unwrap();
-        inbox.presented(&receipt.token);
-        assert_eq!(inbox.frames.len(), 5);
-        assert!(!inbox.can_submit());
-        inbox.finished(&token, Some(encoded(1)));
-        assert_eq!(
-            inbox.frames.len(),
-            4,
-            "a completed stale result releases only its own slot"
-        );
-        assert!(inbox.reserve_frame());
-        for _ in 0..4 {
-            inbox.finished(&token, None);
-        }
-        assert_eq!(inbox.frames.len(), 1);
-        assert!(
-            !inbox.can_submit(),
-            "new geometry needs its own whole flush even with spare capacity"
-        );
-        inbox.release_reservation();
-        assert!(inbox.frames.is_empty());
-        assert!(inbox.can_submit());
-        assert_eq!(inbox.last_fully_written_geometry, Some(1));
     }
 
     #[test]

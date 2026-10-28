@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod submission;
+
 use super::{
     super::{
         Presentation,
@@ -152,7 +154,7 @@ fn run(
                         None
                     };
                 }
-                admitted = inbox.submitted(super::input::Candidate {
+                admitted = inbox.prepared(super::input::Preparation {
                     frame,
                     geometry: drawn_geometry.get(),
                     pump_started: timing.as_ref().map(|(start, ..)| *start),
@@ -164,7 +166,7 @@ fn run(
                 let sample = trace.record(
                     &token,
                     drawn_geometry.get(),
-                    "pump_until_submission",
+                    "pump_until_prepared",
                     start,
                     end,
                 );
@@ -604,6 +606,7 @@ fn run(
             if let Some(started) = &pump_started {
                 started.set(None);
             }
+            worked |= submission::submit_pending(presentation, &background);
             if inputs_before_draw == 0 {
                 worked |= encode_pending(presentation, &background);
             }

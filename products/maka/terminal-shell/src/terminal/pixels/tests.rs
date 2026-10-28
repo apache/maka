@@ -92,7 +92,11 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
         Box::new(move |frame| {
             submitted.set(submitted.get() + 1);
-            received.borrow_mut().push(frame);
+            let submitted_frame = std::thread::spawn(move || frame.submit())
+                .join()
+                .expect("GPU submission panicked")
+                .unwrap();
+            received.borrow_mut().push(submitted_frame);
         }),
         Arc::new(move || {
             if std::thread::current().id() == owner {
