@@ -160,7 +160,7 @@ export function Composer(props: {
         alignSelf: 'center',
         paddingHorizontal: 16,
         paddingTop: hero() || platform.isTerminal ? 0 : 12,
-        paddingBottom: hero() ? 16 : 8,
+        paddingBottom: hero() || !platform.isTerminal ? 16 : 8,
       }}
     >
       {props.request}
@@ -492,11 +492,16 @@ export function Composer(props: {
           </View>
           <ComposerCompletion state={completion} />
         </View>
-        <View style={{ minHeight: 24, paddingTop: 8 }}>
-          <If when={blocked()}>
-            <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{blocked()}</Text>
-          </If>
-        </View>
+        {/* The terminal reserves the warning row so the composer never jumps; the
+            desktop shows it only when there is a warning, so no empty band sits
+            under the box. */}
+        <If when={platform.isTerminal || blocked()}>
+          <View style={{ minHeight: 24, paddingTop: 8 }}>
+            <If when={blocked()}>
+              <Text style={{ color: C.warning, fontSize: 12, lineHeight: 16 }}>{blocked()}</Text>
+            </If>
+          </View>
+        </If>
         <If when={props.session()?.metrics()}>
           <Text style={[{ color: C.muted, fontSize: 12, paddingTop: 4 }, { numberOfLines: 1 }]}>
             {props.session()?.metrics()}

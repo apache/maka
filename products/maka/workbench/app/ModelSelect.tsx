@@ -78,6 +78,10 @@ type ModelsPage = {
 type ModelMenuHandle = { instance: number; back(): void; dismiss(): void };
 type ModelTarget = { sessionId: string; instance: number | null };
 const modelRowHeight = platform.isTerminal ? 48 : 40;
+// Notes under the model list start where the rows' text does.
+const listTextInset = {
+  paddingHorizontal: platform.isTerminal ? 0 : controlStyle.paddingHorizontal,
+};
 
 export function ModelSelect(props: {
   owner: ConversationHandle;
@@ -128,8 +132,10 @@ export function ModelSelect(props: {
       trigger={
         <Button
           accessibilityLabel={tr('Choose model and effort')}
-          tooltip={textTooltip(
-            () => `${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`,
+          tooltip={textTooltip(() =>
+            props.instance() !== null
+              ? undefined
+              : `${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`,
           )}
           onPress={inputAction(props.toggle, {
             sessionId: owner.sessionId,
@@ -832,11 +838,11 @@ function ModelMenu(props: {
           )}
         </List>
         <If when={!loading() && !error() && choices().length === 0}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
+          <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
             {tr('No models match this search and connection.')}
           </Text>
         </If>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
+        <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
           {loading()
             ? tr('Loading…')
             : choices().length === 1

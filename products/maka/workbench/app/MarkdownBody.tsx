@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, signal, Text, View } from 'nsh';
+import { cleanup, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
 import { hasCompletePrefix, type Row } from './history';
 import { MarkdownImageView } from './MarkdownImage';
@@ -122,7 +122,10 @@ export function MarkdownBody(props: {
               borderRadius: props.compact ? 8 : 12,
             },
             codeBlockCode: { ...codeTextStyle, color },
-            codeBlockHeader: { color: C.muted },
+            // The desktop starts the actions where the code starts.
+            codeBlockHeader: platform.isTerminal
+              ? { color: C.muted }
+              : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
             tableCell: { ...readingStyle, color, borderColor: C.line },
             tableHeaderCell: { ...readingStyle, color, fontWeight: '600', borderColor: C.line },
             tableHead: { backgroundColor: C.raised },

@@ -122,8 +122,13 @@ function PermissionsMenu(props: { owner: SessionPermissions }) {
         <Button
           disabled={disabled()}
           accessibilityLabel={tr('Sandbox and approvals')}
+          // The open menu names itself; its trigger's tooltip would cover the menu.
           tooltip={textTooltip(() =>
-            owner.snapshot() ? tr('Sandbox and approvals') : tr('Loading sandbox settings…'),
+            open()
+              ? undefined
+              : owner.snapshot()
+                ? tr('Sandbox and approvals')
+                : tr('Loading sandbox settings…'),
           )}
           onPress={inputAction(changeOpen, !open())}
           style={{

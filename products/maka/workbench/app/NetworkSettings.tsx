@@ -30,6 +30,7 @@ import {
   C,
   controlStyle,
   controlHoverStyle,
+  fieldBoxStyle,
   controlFocusStyle,
   controlDisabledStyle,
 } from './ui';
@@ -61,6 +62,7 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
               })}
               style={{
                 ...controlStyle,
+                ...fieldBoxStyle,
                 minHeight: 40,
                 flexDirection: 'row',
                 alignItems: 'center',
@@ -135,6 +137,7 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
               })}
               style={{
                 ...controlStyle,
+                ...fieldBoxStyle,
                 minHeight: 40,
                 flexDirection: 'row',
                 alignItems: 'center',
@@ -271,7 +274,7 @@ export function NetworkSettings(props: { owner: NetworkSettingsOwner }) {
               disabled={disabled()}
               accessibilityLabel={tr('Reload network settings')}
               onPress={inputAction(owner.reload, owner.action())}
-              style={{ ...controlStyle, alignSelf: 'flex-start' }}
+              style={{ ...controlStyle, ...fieldBoxStyle, alignSelf: 'flex-start' }}
               hoverStyle={controlHoverStyle}
               focusStyle={controlFocusStyle}
               disabledStyle={controlDisabledStyle}
