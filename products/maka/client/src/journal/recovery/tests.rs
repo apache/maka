@@ -19,7 +19,7 @@
 
 use super::*;
 use crate::journal::{DraftEdit, DraftKey, DraftReference, Journal, Operation, UploadReference};
-use crate::{CONTROL_KIND, CONTROL_METHODS, SETTINGS_KIND, SETTINGS_METHODS};
+use crate::{CONTROL_KIND, CONTROL_METHODS, SETTINGS_KIND, SETTINGS_METHODS, ServiceOwner};
 use maka_plugin_core::{
     composition::InstanceId,
     deployment::DeploymentRef,
@@ -62,9 +62,13 @@ impl List {
         let operations = match self {
             Self::Drafts => journal.pending(host, key).await,
             Self::Uploads => journal.pending_uploads(host, key).await,
-            Self::Controls => journal.pending_controls(host).await,
-            Self::Terminals => journal.pending_terminals(host, &key.session_id).await,
-            Self::Settings => journal.pending_settings(host).await,
+            Self::Controls => journal.pending_controls(host, &service_owner(key)).await,
+            Self::Terminals => {
+                journal
+                    .pending_terminals(host, &key.session_id, &service_owner(key))
+                    .await
+            }
+            Self::Settings => journal.pending_settings(host, &[service_owner(key)]).await,
         }
         .unwrap();
         operations
@@ -83,15 +87,16 @@ impl List {
             Self::Controls => {
                 query = query.bind(serde_json::to_string(&CONTROL_METHODS).unwrap());
                 for _ in 0..7 {
-                    query = query.bind(json!({"kind":CONTROL_KIND}).to_string());
+                    query = query
+                        .bind(json!({"kind":CONTROL_KIND,"owner":service_owner(key)}).to_string());
                 }
                 query
             }
             Self::Terminals => query
                 .bind(&key.session_id)
-                .bind(json!({"kind":"terminal"}).to_string()),
+                .bind(json!({"kind":"terminal","owner":service_owner(key)}).to_string()),
             Self::Settings => query
-                .bind(json!({"kind":SETTINGS_KIND}).to_string())
+                .bind(json!([{"kind":SETTINGS_KIND,"owner":service_owner(key)}]).to_string())
                 .bind(serde_json::to_string(&SETTINGS_METHODS).unwrap()),
         };
         query
@@ -142,6 +147,12 @@ fn owner() -> (DeploymentRef, DraftKey) {
     };
     (host, key)
 }
+fn service_owner(key: &DraftKey) -> ServiceOwner {
+    ServiceOwner {
+        namespace: key.namespace.clone(),
+        export: key.export.clone(),
+    }
+}
 fn operation(list: List, id: u128, host: &DeploymentRef, key: &DraftKey) -> Operation {
     let mut operation = Operation {
         id: Uuid::from_u128(id),
@@ -175,16 +186,18 @@ fn operation(list: List, id: u128, host: &DeploymentRef, key: &DraftKey) -> Oper
                 digest: "digest".into(),
             });
         }
-        List::Controls => operation.correlation = json!({"kind":CONTROL_KIND}),
+        List::Controls => {
+            operation.correlation = json!({"kind":CONTROL_KIND,"owner":service_owner(key)})
+        }
         List::Terminals => {
             operation.endpoint = "terminal".into();
             operation.method = "start".into();
             operation.session_id = Some(key.session_id.clone());
-            operation.correlation = json!({"kind":"terminal"});
+            operation.correlation = json!({"kind":"terminal","owner":service_owner(key)});
         }
         List::Settings => {
             operation.endpoint = "settings".into();
-            operation.correlation = json!({"kind":SETTINGS_KIND});
+            operation.correlation = json!({"kind":SETTINGS_KIND,"owner":service_owner(key)});
         }
     }
     operation
@@ -261,7 +274,7 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
         if matches!(list, List::Controls) {
             original.method = "stopComputerApp".into();
             original.session_id = Some(key.session_id.clone());
-            original.correlation = json!({"kind":CONTROL_KIND,"operationId":"native-effect-A"});
+            original.correlation = json!({"kind":CONTROL_KIND,"owner":service_owner(&key),"operationId":"native-effect-A"});
         }
         journal.reserve(&original).await.unwrap();
         let mut other_domain = original.clone();
@@ -340,7 +353,8 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
     let mut prompt = operation(List::Controls, 200_000, &host, &key);
     prompt.method = "setCompactionPrompt".into();
     prompt.session_id = Some(key.session_id.clone());
-    prompt.correlation = json!({"kind":CONTROL_KIND,"expectedRevision":42});
+    prompt.correlation =
+        json!({"kind":CONTROL_KIND,"owner":service_owner(&key),"expectedRevision":42});
     journal.reserve(&prompt).await.unwrap();
     journal.pool.close().await;
     drop(journal);
@@ -354,4 +368,49 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
         .await
         .unwrap();
     assert!(List::Controls.read(&journal, &key, &host).await.is_empty());
+
+    let create = operation(List::Controls, 200_001, &host, &key);
+    journal.reserve(&create).await.unwrap();
+    let mut peer_key = key.clone();
+    peer_key.namespace = InstanceId(vec![Uuid::from_u128(3)]);
+    assert_eq!(
+        List::Controls.read(&journal, &key, &host).await,
+        vec![create.id]
+    );
+    assert!(
+        List::Controls
+            .read(&journal, &peer_key, &host)
+            .await
+            .is_empty()
+    );
+    let settings = operation(List::Settings, 200_002, &host, &key);
+    journal.reserve_settings(&settings).await.unwrap();
+    let mut same_target = settings.clone();
+    same_target.id = Uuid::from_u128(200_003);
+    assert_eq!(
+        journal.reserve_settings(&same_target).await.unwrap_err(),
+        "settings operation already exists or has an unresolved original"
+    );
+    let peer_settings = operation(List::Settings, 200_004, &host, &peer_key);
+    journal.reserve_settings(&peer_settings).await.unwrap();
+    assert_eq!(
+        List::Settings.read(&journal, &key, &host).await,
+        vec![settings.id]
+    );
+    assert_eq!(
+        List::Settings.read(&journal, &peer_key, &host).await,
+        vec![peer_settings.id]
+    );
+    let terminal = operation(List::Terminals, 200_005, &host, &key);
+    journal.reserve(&terminal).await.unwrap();
+    assert_eq!(
+        List::Terminals.read(&journal, &key, &host).await,
+        vec![terminal.id]
+    );
+    assert!(
+        List::Terminals
+            .read(&journal, &peer_key, &host)
+            .await
+            .is_empty()
+    );
 }

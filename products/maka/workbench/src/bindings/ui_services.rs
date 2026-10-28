@@ -141,6 +141,13 @@ impl Services {
 
     async fn capture(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Binding>>, String> {
         let mut binding = self.binding.lock().await;
+        self.ensure_open()?;
+        if binding
+            .as_ref()
+            .is_some_and(|bound| !bound.client.binding_retired())
+        {
+            return Ok(binding);
+        }
         loop {
             let source = self.current_source()?;
             if binding
@@ -179,6 +186,15 @@ impl Services {
             .expect("UI session captured above")
             .client
             .clone())
+    }
+
+    pub(super) async fn local_client(&self) -> Result<Client, String> {
+        let binding = self.binding.lock().await;
+        if let Some(bound) = binding.as_ref() {
+            return Ok(bound.client.clone());
+        }
+        drop(binding);
+        self.client().await
     }
 
     pub(super) async fn mutation_context(
@@ -230,8 +246,15 @@ impl Services {
         self.closed.store(true, Ordering::Release);
         self.cleanup
             .get_or_init(|| async {
-                if let Some(binding) = self.binding.lock().await.take() {
-                    binding.client.retire().await?;
+                let client = self
+                    .binding
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|bound| bound.client.clone());
+                if let Some(client) = client {
+                    // Keep the captured journal owner for already admitted local IO.
+                    client.retire().await?;
                 }
                 Ok(())
             })

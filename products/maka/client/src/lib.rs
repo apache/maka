@@ -34,6 +34,7 @@ use maka_plugin_core::{
     deployment::DeploymentRef,
     operation::{OperationReply, RecoveryContract, receipt_reader_contract},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -65,6 +66,27 @@ const CONTROL_METHODS: &[&str] = &[
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
+const TERMINAL_KIND: &str = "terminal";
+const TERMINAL_METHODS: [&str; 4] = ["start", "stop", "control", "release"];
+const SETTINGS_ENDPOINTS: [&str; 5] =
+    ["settings", "agent", "setup", "management", "authentication"];
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ServiceOwner {
+    pub namespace: InstanceId,
+    pub export: String,
+}
+impl ServiceOwner {
+    fn from_description(description: &Description) -> Self {
+        Self {
+            namespace: description.provider.clone(),
+            export: description.export.clone(),
+        }
+    }
+    fn correlation(&self, kind: &str) -> Value {
+        serde_json::json!({"kind":kind,"owner":self})
+    }
+}
 const SETTINGS_METHODS: [&str; 10] = [
     "create",
     "update",
@@ -84,14 +106,14 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "management" && matches!(method, "setEnabled" | "configure"))
         || (endpoint == "authentication" && method == "loginCredential")
 }
-fn settings_owner(operation: &Operation) -> bool {
+fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {
     operation.draft.is_none()
         && operation.session_id.is_none()
         && settings_route(&operation.endpoint, &operation.method)
-        && operation.correlation == serde_json::json!({"kind": SETTINGS_KIND})
+        && operation.correlation == owner.correlation(SETTINGS_KIND)
 }
-fn control_correlation(method: &str, input: &Value) -> Result<Value> {
-    let mut correlation = serde_json::json!({"kind": CONTROL_KIND});
+fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Result<Value> {
+    let mut correlation = owner.correlation(CONTROL_KIND);
     let key = match method {
         "stop" => Some("invocationId"),
         "respond" => Some("requestId"),
@@ -273,6 +295,12 @@ impl Client {
             .catalogue()
             .describe(endpoint)?
             .clone())
+    }
+
+    async fn service_owner(&self, endpoint: &str) -> Result<ServiceOwner> {
+        Ok(ServiceOwner::from_description(
+            &self.describe(endpoint).await?,
+        ))
     }
 
     pub async fn refresh(&self) -> Result<()> {
@@ -458,6 +486,20 @@ impl Client {
                 Some(operation.id),
             )
             .await?;
+        if matches!(
+            operation.correlation.get("kind").and_then(Value::as_str),
+            Some(CONTROL_KIND | SETTINGS_KIND | TERMINAL_KIND)
+        ) && let Some(owner) = operation.correlation.get("owner")
+            && *owner
+                != serde_json::to_value(ServiceOwner::from_description(&description))
+                    .map_err(error)?
+        {
+            let mut state = request.state.lock().await;
+            let closed = state.call.close().await;
+            self.release_if_clean(&request, &state).await;
+            closed?;
+            return Err("client operation target changed before opening its original call".into());
+        }
         Ok(Mutation {
             client: self.clone(),
             request,
@@ -513,13 +555,14 @@ impl Client {
         } else if !resources.is_empty() {
             return Err("settings mutation does not accept resources".into());
         }
+        let owner = self.service_owner(endpoint).await?;
         let operation = Operation {
             id,
             host: self.0.source.clone(),
             endpoint: endpoint.into(),
             method: method.into(),
             session_id: None,
-            correlation: serde_json::json!({"kind": SETTINGS_KIND}),
+            correlation: owner.correlation(SETTINGS_KIND),
             draft: None,
             upload: None,
             abandoned: false,
@@ -629,7 +672,8 @@ impl Client {
         if !CONTROL_METHODS.contains(&method) {
             return Err("unsupported agent control method".into());
         }
-        let correlation = control_correlation(method, &input)?;
+        let owner = self.service_owner("agent").await?;
+        let correlation = control_correlation(method, &input, &owner)?;
         let session_id = if method == "create" {
             None
         } else {
@@ -649,6 +693,29 @@ impl Client {
             Attachments::new(),
             session_id,
             correlation,
+        )
+        .await
+    }
+
+    pub async fn terminal_mutation(
+        &self,
+        id: Uuid,
+        method: &str,
+        input: Value,
+        session: &str,
+    ) -> Result<Mutation> {
+        if !TERMINAL_METHODS.contains(&method) {
+            return Err("unsupported terminal mutation method".into());
+        }
+        let owner = self.service_owner("terminal").await?;
+        self.mutation(
+            id,
+            "terminal",
+            method,
+            input,
+            Attachments::new(),
+            Some(session.into()),
+            owner.correlation(TERMINAL_KIND),
         )
         .await
     }
@@ -770,7 +837,8 @@ impl Client {
     /// A settled or abandoned original still retains its control owner.
     pub async fn operation_for_control(&self, id: Uuid) -> Result<Operation> {
         let operation = self.operation(id).await?;
-        let correlation = control_correlation(&operation.method, &operation.correlation);
+        let owner = self.service_owner("agent").await?;
+        let correlation = control_correlation(&operation.method, &operation.correlation, &owner);
         if operation.draft.is_some()
             || operation.endpoint != "agent"
             || !CONTROL_METHODS.contains(&operation.method.as_str())
@@ -782,26 +850,58 @@ impl Client {
     }
     /// Only this shell's unsettled Agent controls on the current Host deployment.
     pub async fn pending_controls(&self) -> Result<Vec<Operation>> {
-        self.0.journal.pending_controls(&self.0.source).await
+        let owner = self.service_owner("agent").await?;
+        self.0
+            .journal
+            .pending_controls(&self.0.source, &owner)
+            .await
     }
     /// A settled or abandoned Settings attempt retains its original owner.
     pub async fn operation_for_settings(&self, id: Uuid) -> Result<Operation> {
         let operation = self.operation(id).await?;
-        if !settings_owner(&operation) {
+        let owner = self.service_owner(&operation.endpoint).await?;
+        if !settings_owner(&operation, &owner) {
             return Err("original client operation belongs to another settings owner".into());
         }
         Ok(operation)
     }
     /// Unsettled terminal attempts for this exact Host and immutable Agent session.
     pub async fn pending_terminals(&self, session: &str) -> Result<Vec<Operation>> {
+        let owner = self.service_owner("terminal").await?;
         self.0
             .journal
-            .pending_terminals(&self.0.source, session)
+            .pending_terminals(&self.0.source, session, &owner)
             .await
+    }
+
+    pub async fn operation_for_terminal(&self, id: Uuid, session: &str) -> Result<Operation> {
+        let operation = self.operation(id).await?;
+        let owner = self.service_owner("terminal").await?;
+        if operation.endpoint != "terminal"
+            || operation.session_id.as_deref() != Some(session)
+            || operation.draft.is_some()
+            || operation.upload.is_some()
+            || !TERMINAL_METHODS.contains(&operation.method.as_str())
+            || operation.correlation != owner.correlation(TERMINAL_KIND)
+        {
+            return Err("original terminal action belongs to another owner".into());
+        }
+        Ok(operation)
     }
     /// Unsettled Settings attempts for this exact Host deployment.
     pub async fn pending_settings(&self) -> Result<Vec<Operation>> {
-        self.0.journal.pending_settings(&self.0.source).await
+        let owners = {
+            let host = self.0.host.lock().await;
+            SETTINGS_ENDPOINTS
+                .iter()
+                .filter_map(|endpoint| host.catalogue().describe(endpoint).ok())
+                .map(ServiceOwner::from_description)
+                .collect::<Vec<_>>()
+        };
+        self.0
+            .journal
+            .pending_settings(&self.0.source, &owners)
+            .await
     }
     /// Pending plugin operations belong to a stable UI instance, across package
     /// and binding updates. Endpoint aliases are never recovery identities.

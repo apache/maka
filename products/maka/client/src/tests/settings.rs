@@ -118,7 +118,8 @@ async fn settings_admission_and_original_secret_receipt_survive_independent_clie
         for client in [&first, &second] {
             let pending = client.pending_settings().await.unwrap();
             assert_eq!(pending.iter().map(|operation| operation.id).collect::<Vec<_>>(), [original_id]);
-            assert_eq!(pending[0].correlation, json!({"kind":"settings"}));
+            let target = client.describe(&pending[0].endpoint).await.unwrap();
+            assert_eq!(pending[0].correlation, json!({"kind":"settings","owner":{"namespace":target.provider,"export":target.export}}));
             assert_eq!(client.recover(original_id).await.unwrap_err(), "client attempt has no confirmed preparation; it cannot be replayed");
         }
         let restarted = fixture.client().await;

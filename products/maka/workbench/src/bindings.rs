@@ -90,6 +90,13 @@ impl ApplicationClient {
         }
     }
 
+    async fn local(&self, owner: &Owner) -> Result<Client, String> {
+        match self {
+            Self::Root => Ok(owner.client.clone()),
+            Self::Ui(services) => services.local_client().await,
+        }
+    }
+
     async fn refresh(&self, owner: &Owner) -> Result<(), String> {
         match self {
             Self::Root => owner.client.refresh().await,
@@ -658,7 +665,7 @@ impl ApplicationHost {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
+            let client = source.local(&owner).await?;
             let operations = client.pending_settings().await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
         })
@@ -674,7 +681,7 @@ impl ApplicationHost {
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
+            let client = source.local(&owner).await?;
             client.operation_for_settings(id).await?;
             let reply = client.recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
@@ -691,7 +698,7 @@ impl ApplicationHost {
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
+            let client = source.local(&owner).await?;
             client.operation_for_settings(id).await?;
             let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
@@ -704,7 +711,7 @@ impl ApplicationHost {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
+            let client = source.local(&owner).await?;
             let operations = client.pending_controls().await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
         })
@@ -720,7 +727,7 @@ impl ApplicationHost {
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
+            let client = source.local(&owner).await?;
             client.operation_for_control(id).await?;
             let reply = client.recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
@@ -737,7 +744,7 @@ impl ApplicationHost {
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
+            let client = source.local(&owner).await?;
             client.operation_for_control(id).await?;
             let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
@@ -796,7 +803,7 @@ impl ScopedHost {
     pub async fn load_draft(this: Instance<Self>) -> Result<JsonValue, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             match client.load_draft(AGENT, &scope.session, EDITOR).await? {
                 Some(draft) => serde_json::to_value(draft).map_err(|error| error.to_string()),
                 None => Ok(serde_json::json!({"revision": 0, "text": "", "attachments": []})),
@@ -815,7 +822,7 @@ impl ScopedHost {
         let edit: maka_app_client::DraftEdit =
             serde_json::from_value(edit).map_err(|_| "Invalid complete draft edit")?;
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             let draft = client
                 .save_draft(
                     AGENT,
@@ -853,7 +860,7 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             let operation = client.find_upload(&scope.session, EDITOR, id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })
@@ -868,7 +875,7 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             client
                 .operation_for_upload(&scope.session, EDITOR, id)
                 .await?;
@@ -889,7 +896,7 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             client
                 .operation_for_upload(&scope.session, EDITOR, id)
                 .await?;
@@ -944,7 +951,7 @@ impl ScopedHost {
     pub async fn pending(this: Instance<Self>) -> Result<JsonValue, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             let operations = client
                 .pending_operations(AGENT, &scope.session, EDITOR)
                 .await?;
@@ -958,7 +965,7 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             scope.owned_operation(&client, id).await?;
             let reply = client.recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
@@ -974,7 +981,7 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             scope.owned_operation(&client, id).await?;
             let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())

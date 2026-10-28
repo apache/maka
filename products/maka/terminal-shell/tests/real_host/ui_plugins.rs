@@ -277,7 +277,7 @@ export function activate(context) {
               accessibilityLabel: 'Dynamic private editor',
               style: { height: 40, color: '#f0f1f3', fontSize: 14 },
               get value() { return panelNote(); },
-              onChange: (value) => panelNote.set(value)
+              onChange: ({ value }) => panelNote.set(value)
             }),
             text(() => 'PANEL_PRIVATE:' + panelNote()),
             Button({
@@ -718,7 +718,16 @@ export function activate(context) {
       <Button accessibilityLabel="Send bound draft" disabled={!loaded() || !!sent()} onPress={() => { void send().catch(report); }}><Text>Send bound draft</Text></Button>
       <Button accessibilityLabel="Read bound history" disabled={!scope()} onPress={() => { void readHistory().catch(report); }}><Text>Read bound history</Text></Button>
     </View>;
-  } } }, async prepareReload() { return null; } };
+  } } }, async prepareReload() {
+    const client = scope();
+    if (client) {
+      const draft = await client.loadDraft();
+      await client.saveDraft(draft.revision, {
+        text: draft.text, attachments: draft.attachments, settledUploads: []
+      });
+    }
+    return null;
+  } };
 }
 "#;
         let module = tokio::task::spawn_blocking(move || nsh_bundler::compile_module("bound-application.tsx", source,

@@ -20,6 +20,7 @@
 //! Native intake snapshots files and images; upload observations contain only metadata.
 
 use super::{EDITOR, Scope, ScopedHost, execute};
+use maka_app_client::Client;
 use maka_capabilities::call::ReadResource;
 use maka_ui_support::{
     budget::Kind,
@@ -101,7 +102,7 @@ impl UploadSubscription {
         updates.receiver.borrow_and_update();
         drop(updates);
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             let operations = client.pending_uploads(&scope.session, EDITOR).await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
         })
@@ -369,6 +370,7 @@ async fn intake(
     updates: &Updates,
     clipboard_id: Uuid,
 ) -> Result<(), String> {
+    let client = scope.client.local(&scope.owner).await?;
     let budget = scope.owner.budget.clone();
     let _job = budget
         .reserve(Kind::Job, 1)
@@ -393,14 +395,16 @@ async fn intake(
         }
     };
     match selected {
-        crate::clipboard::Selection::Files(files) => upload_files(scope, files, updates).await,
+        crate::clipboard::Selection::Files(files) => {
+            upload_files(scope, client, files, updates).await
+        }
         crate::clipboard::Selection::Image(snapshot) => {
             let name = snapshot.metadata()["name"]
                 .as_str()
                 .map(clean_name)
                 .unwrap_or_else(|| "Clipboard image".into());
             updates.emit(status(clipboard_id, "reading", &name, None));
-            settle(scope, snapshot, clipboard_id, &name, updates).await;
+            settle(scope, client, snapshot, clipboard_id, &name, updates).await;
         }
         crate::clipboard::Selection::Text(text) => {
             updates.emit(serde_json::json!({"kind": "text", "text": text}));
@@ -410,7 +414,7 @@ async fn intake(
     Ok(())
 }
 
-async fn upload_files(scope: Arc<Scope>, files: Vec<String>, updates: &Updates) {
+async fn upload_files(scope: Arc<Scope>, client: Client, files: Vec<String>, updates: &Updates) {
     for selected in files {
         let id = Uuid::new_v4();
         let name = display_name(&selected);
@@ -433,7 +437,7 @@ async fn upload_files(scope: Arc<Scope>, files: Vec<String>, updates: &Updates) 
                     .as_str()
                     .map(clean_name)
                     .unwrap_or(name);
-                settle(scope.clone(), snapshot, id, &name, updates).await;
+                settle(scope.clone(), client.clone(), snapshot, id, &name, updates).await;
             }
             Err(error) => updates.emit(status(id, "failed", &name, Some(&error))),
         }
@@ -442,12 +446,13 @@ async fn upload_files(scope: Arc<Scope>, files: Vec<String>, updates: &Updates) 
 
 async fn settle(
     scope: Arc<Scope>,
+    client: Client,
     snapshot: Arc<FileSnapshot>,
     id: Uuid,
     name: &str,
     updates: &Updates,
 ) {
-    let result = upload(scope, snapshot, id, name, updates).await;
+    let result = upload(scope, client, snapshot, id, name, updates).await;
     match result {
         Ok(()) => updates.emit(status(id, "complete", name, None)),
         Err(error) => updates.emit(status(id, "failed", name, Some(&error))),
@@ -455,13 +460,13 @@ async fn settle(
 }
 async fn upload(
     scope: Arc<Scope>,
+    client: Client,
     snapshot: Arc<FileSnapshot>,
     id: Uuid,
     name: &str,
     updates: &Updates,
 ) -> Result<(), String> {
     updates.emit(status(id, "uploading", name, None));
-    let client = scope.client.resolve(&scope.owner).await?;
     let mutation = client
         .upload_attachment(id, &scope.session, EDITOR, snapshot)
         .await?;

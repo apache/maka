@@ -47,10 +47,10 @@ mod plugin_settings;
 mod queue;
 #[path = "real_host/request_metrics.rs"]
 mod request_metrics;
-#[path = "real_host/session_lifecycle.rs"]
-mod session_lifecycle;
 #[path = "real_host/send_hold.rs"]
 mod send_hold;
+#[path = "real_host/session_lifecycle.rs"]
+mod session_lifecycle;
 mod support;
 #[cfg(unix)]
 #[path = "real_host/terminal_workbench.rs"]
