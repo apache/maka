@@ -46,11 +46,22 @@ const LIMITS = {
   workspacePhysicalBytes: BYTES.length,
 };
 
-async function seedImage(root: string, kind: 'inline' | 'managed_file', refId: string) {
+async function seedImage(
+  root: string,
+  kind: 'inline' | 'managed_file',
+  refId: string,
+  bytes: Buffer = BYTES,
+) {
   trackControlDirectory(await resolveStorageRoot({ path: root, kind: 'interactive' }));
   const sessions = createSessionStore(root);
   const store = new SqliteContextOffloadStore(join(root, CONTEXT_OFFLOAD_DATABASE_NAME), {
-    limits: LIMITS,
+    limits: {
+      ...LIMITS,
+      ownerMaxBytes: {
+        ...LIMITS.ownerMaxBytes,
+        read_image_snapshot: Math.max(LIMITS.ownerMaxBytes.read_image_snapshot, bytes.length),
+      },
+    },
     idFactory: () => refId,
     now: () => 1_000,
   });
@@ -64,7 +75,7 @@ async function seedImage(root: string, kind: 'inline' | 'managed_file', refId: s
     const put = await store.put({
       sessionId: session.id,
       owner: { kind: 'read_image_snapshot', ownerId: 'image' },
-      bytes: BYTES,
+      bytes,
       mediaType: 'image/png',
     });
     assert.equal(put.ok, true);
@@ -85,7 +96,7 @@ async function seedImage(root: string, kind: 'inline' | 'managed_file', refId: s
           .prepare(
             "UPDATE context_blobs SET storage_kind = 'inline', payload = ? WHERE blob_id = ?",
           )
-          .run(BYTES, Buffer.from(blobId, 'hex'));
+          .run(bytes, Buffer.from(blobId, 'hex'));
       } finally {
         database.close();
       }
@@ -104,7 +115,7 @@ async function seedImage(root: string, kind: 'inline' | 'managed_file', refId: s
         ref: { kind: 'session_context', sessionId: session.id, refId },
       },
     });
-    return { sessionId: session.id, refId, valuePath };
+    return { sessionId: session.id, refId, valuePath, blobId };
   } finally {
     store.close();
     await sessions.close?.();
@@ -225,6 +236,66 @@ for (const [column, value] of [
     }
   });
 }
+
+test('a refused context import does not leave its declared payload files in the target', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-context-import-orphan-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourceRoot = join(base, 'source');
+  const targetRoot = join(base, 'target');
+  const bundleBytes = Buffer.alloc(32 * 1024, 0xa5);
+  const source = await seedImage(sourceRoot, 'managed_file', 'source-ref', bundleBytes);
+  trackControlDirectory(await resolveStorageRoot({ path: targetRoot, kind: 'interactive' }));
+  const store = new SqliteContextOffloadStore(join(targetRoot, CONTEXT_OFFLOAD_DATABASE_NAME), {
+    limits: LIMITS,
+    idFactory: () => source.refId,
+    now: () => 1_000,
+  });
+  try {
+    // A residual reference for the same identity naming different bytes makes
+    // the import a conflict -- after the bundle's declared payload was copied.
+    assert.equal(
+      (
+        await store.put({
+          sessionId: source.sessionId,
+          owner: { kind: 'read_image_snapshot', ownerId: 'image' },
+          bytes: Buffer.alloc(16 * 1024, 0x3c),
+          mediaType: 'image/png',
+        })
+      ).ok,
+      true,
+    );
+    const orphanPath = join(
+      targetRoot,
+      CONTEXT_OFFLOAD_VALUES_DIRECTORY_NAME,
+      'sha256',
+      source.blobId.slice(0, 2),
+      source.blobId,
+    );
+    const context = new DatabaseSync(join(targetRoot, CONTEXT_OFFLOAD_DATABASE_NAME));
+    try {
+      const before = context.prepare('SELECT * FROM context_refs').all();
+      await assert.rejects(
+        importSessionBundleState({ stateRoot: targetRoot, bundleStateRoot: sourceRoot }),
+        { code: 'conflict' },
+      );
+      assert.deepEqual(context.prepare('SELECT * FROM context_refs').all(), before);
+    } finally {
+      context.close();
+    }
+    // The rollback removes the blob row that would have named the copy, and
+    // collection only starts from committed rows, so a file left behind here is
+    // unreachable by every reader and by cleanup alike.
+    await assert.rejects(stat(orphanPath), { code: 'ENOENT' });
+    const runtime = new DatabaseSync(join(targetRoot, 'runtime.sqlite'));
+    try {
+      assert.equal(runtime.prepare('SELECT count(*) AS n FROM session_metadata').get()?.n, 0);
+    } finally {
+      runtime.close();
+    }
+  } finally {
+    store.close();
+  }
+});
 
 for (const shared of [false, true]) {
   test(`a failed runtime import releases context references with shared image = ${shared}`, async (t) => {
