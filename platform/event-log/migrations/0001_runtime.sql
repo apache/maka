@@ -398,7 +398,7 @@ CREATE TABLE recall_documents (
 CREATE INDEX recall_document_turn ON recall_documents(session_id, turn_id, source_sequence, item_index);
 CREATE INDEX recall_document_context ON recall_documents(session_id, source_sequence, item_index)
     WHERE body<>'' OR role IN ('tool_call','tool_result');
-CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=full);
+CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=none);
 CREATE TRIGGER recall_document_deleted AFTER DELETE ON recall_documents BEGIN
     DELETE FROM recall_terms WHERE rowid=old.id;
 END;

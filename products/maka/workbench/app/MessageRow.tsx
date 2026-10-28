@@ -92,6 +92,14 @@ export function MessageRow({
           expanded.set(action.value);
           if (action.value) onExpand?.(action.key);
         };
+        // A reply's source toggle shows with its final actions; on the
+        // replies between them (while the agent works) it shows only while
+        // the pointer is over the message, it has the focus or the source
+        // shows, so it does not line every paragraph. Terminals have no
+        // hover: there it always shows.
+        const hovered = signal(false);
+        const quietSource = () =>
+          !platform.isTerminal && !row().finalOutput && !hovered() && !sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
         const text = computed(() => row().text);
         const preview = computed(() => /\S[^\r\n]*/.exec(text())?.[0].trim() ?? '');
@@ -117,7 +125,11 @@ export function MessageRow({
                 <If
                   when={compact()}
                   else={
-                    <View style={{ gap: 8 }}>
+                    <View
+                      onHoverIn={() => hovered.set(true)}
+                      onHoverOut={() => hovered.set(false)}
+                      style={{ gap: 8 }}
+                    >
                       <If
                         when={sourceMode()}
                         else={
@@ -199,11 +211,12 @@ export function MessageRow({
                             width: 32,
                             paddingHorizontal: 8,
                             alignItems: 'center',
+                            opacity: quietSource() ? 0 : 1,
                           }}
                           hoverStyle={{ backgroundColor: C.surface }}
-                          focusStyle={{ backgroundColor: C.raised }}
+                          focusStyle={{ backgroundColor: C.raised, opacity: 1 }}
                         >
-                          <Icon name={sourceMode() ? 'file' : 'code'} color={C.muted} />
+                          <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
                         </Button>
                       </View>
                     </View>
@@ -271,7 +284,7 @@ export function MessageRow({
                               hoverStyle={{ backgroundColor: C.raised }}
                               focusStyle={{ backgroundColor: C.line }}
                             >
-                              <Icon name={sourceMode() ? 'file' : 'code'} color={C.muted} />
+                              <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
                             </Button>
                           </If>
                         </View>
