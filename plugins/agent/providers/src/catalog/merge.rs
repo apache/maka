@@ -20,36 +20,41 @@
 use super::ModelInfo;
 use std::collections::BTreeMap;
 
-pub(super) fn fill_description(model: &mut ModelInfo, description: &ModelInfo) {
+pub(super) fn fill_metadata(model: &mut ModelInfo, shared: &ModelInfo) {
     model.display_name = model
         .display_name
         .take()
-        .or_else(|| description.display_name.clone());
+        .or_else(|| shared.display_name.clone());
     model.description = model
         .description
         .take()
-        .or_else(|| description.description.clone());
+        .or_else(|| shared.description.clone());
     model.knowledge_cutoff = model
         .knowledge_cutoff
         .take()
-        .or_else(|| description.knowledge_cutoff.clone());
+        .or_else(|| shared.knowledge_cutoff.clone());
+    model.context_window = model.context_window.or(shared.context_window);
+    model.input_limit = model.input_limit.or(shared.input_limit);
+    model.max_output_tokens = model.max_output_tokens.or(shared.max_output_tokens);
 }
 
 /// Only an exact models.dev OpenRouter entry may connect a live OpenRouter ID
 /// to the canonical ID shared by another models.dev route. Slugs are not IDs.
-pub(super) fn shared_descriptions(
+pub(super) fn shared_metadata(
     bridges: &BTreeMap<String, String>,
     router: &[ModelInfo],
 ) -> BTreeMap<String, ModelInfo> {
     let mut groups: BTreeMap<&str, Vec<&ModelInfo>> = BTreeMap::new();
     for model in router {
-        if let Some(canonical) = bridges.get(model.id.as_str()) {
-            groups.entry(canonical).or_default().push(model);
-        }
+        let canonical = bridges
+            .get(&model.id)
+            .map_or(model.id.as_str(), String::as_str);
+        groups.entry(canonical).or_default().push(model);
     }
     groups
         .into_iter()
         .map(|(id, models)| {
+            let exact = models.iter().find(|model| model.id == id);
             (
                 id.to_owned(),
                 ModelInfo {
@@ -57,6 +62,15 @@ pub(super) fn shared_descriptions(
                     display_name: unanimous(&models, |model| model.display_name.as_ref()),
                     description: unanimous(&models, |model| model.description.as_ref()),
                     knowledge_cutoff: unanimous(&models, |model| model.knowledge_cutoff.as_ref()),
+                    context_window: exact
+                        .and_then(|model| model.context_window)
+                        .or_else(|| unanimous(&models, |model| model.context_window.as_ref())),
+                    input_limit: exact
+                        .and_then(|model| model.input_limit)
+                        .or_else(|| unanimous(&models, |model| model.input_limit.as_ref())),
+                    max_output_tokens: exact
+                        .and_then(|model| model.max_output_tokens)
+                        .or_else(|| unanimous(&models, |model| model.max_output_tokens.as_ref())),
                     ..Default::default()
                 },
             )
@@ -64,10 +78,10 @@ pub(super) fn shared_descriptions(
         .collect()
 }
 
-fn unanimous(
+fn unanimous<T: Clone + PartialEq>(
     models: &[&ModelInfo],
-    field: impl Fn(&ModelInfo) -> Option<&String>,
-) -> Option<String> {
+    field: impl Fn(&ModelInfo) -> Option<&T>,
+) -> Option<T> {
     let mut values = models.iter().filter_map(|model| field(model));
     let first = values.next()?;
     values.all(|value| value == first).then(|| first.clone())

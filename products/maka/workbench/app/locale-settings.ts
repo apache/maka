@@ -60,6 +60,16 @@ import {
 
 export const settingsMessages = {
   'Context & output': ['Context & output', '上下文与输出', '上下文與輸出'],
+  'Input and output capacity.': [
+    'Input and output capacity.',
+    '输入与输出的总容量。',
+    '輸入與輸出的總容量。',
+  ],
+  'Automatically compact when context reaches this size.': [
+    'Automatically compact when context reaches this size.',
+    '上下文达到此大小时自动压缩。',
+    '上下文達到此大小時自動壓縮。',
+  ],
   'Enter a model ID to see defaults.': [
     'Enter a model ID to see defaults.',
     '输入模型 ID 后显示默认值。',
@@ -94,33 +104,6 @@ export const settingsMessages = {
     'Compaction threshold (tokens)',
     '上下文压缩阈值（token）',
     '上下文壓縮閾值（token）',
-  ],
-  'Total input and output capacity. Empty uses the model default.': [
-    'Total input and output capacity. Empty uses the model default.',
-    '输入与输出的总容量。留空使用模型默认值。',
-    '輸入與輸出的總容量。留空使用模型預設值。',
-  ],
-  'Independent input ceiling. Empty uses the model default.': [
-    'Independent input ceiling. Empty uses the model default.',
-    '独立的输入容量上限。留空使用模型默认值。',
-    '獨立的輸入容量上限。留空使用模型預設值。',
-  ],
-  'Requested output budget per step, capped by the provider and remaining capacity. Empty uses the model default.':
-    [
-      'Requested output budget per step, capped by the provider and remaining capacity. Empty uses the model default.',
-      '每步请求的输出额度，受提供商与剩余容量限制。留空使用模型默认值。',
-      '每步請求的輸出額度，受供應商與剩餘容量限制。留空使用模型預設值。',
-    ],
-  'Retained tokens that trigger automatic compaction. Empty uses 85% of the smaller context window and input limit.':
-    [
-      'Retained tokens that trigger automatic compaction. Empty uses 85% of the smaller context window and input limit.',
-      '触发自动压缩的保留 token 数。留空使用上下文窗口与输入上限中较小值的 85%。',
-      '觸發自動壓縮的保留 token 數。留空使用上下文視窗與輸入上限中較小值的 85%。',
-    ],
-  'Effective context: {context} · input: {input} · provider output limit: {output}': [
-    'Effective context: {context} · input: {input} · provider output limit: {output}',
-    '生效上下文：{context} · 输入：{input} · 提供方输出上限：{output}',
-    '生效上下文：{context} · 輸入：{input} · 提供方輸出上限：{output}',
   ],
   '{field} must be a positive whole number of tokens.': [
     '{field} must be a positive whole number of tokens.',
@@ -189,28 +172,12 @@ export const settingsMessages = {
     '编辑当前模型设置',
     '編輯目前模型設定',
   ],
-  'Run tool calls through Code Mode. Model default follows the built-in policy for this model.': [
-    'Run tool calls through Code Mode. Model default follows the built-in policy for this model.',
-    '通过 Code Mode 执行工具调用。模型默认策略使用此模型的内置策略。',
-    '透過 Code Mode 執行工具呼叫。模型預設策略使用此模型的內建策略。',
-  ],
-  'Use apply_patch for file edits. Disabled uses structured edit and write tools. Independent of Code Mode.':
-    [
-      'Use apply_patch for file edits. Disabled uses structured edit and write tools. Independent of Code Mode.',
-      '使用 apply_patch 编辑文件。关闭时使用结构化编辑和写入工具，此设置独立于 Code Mode。',
-      '使用 apply_patch 編輯檔案。關閉時使用結構化編輯和寫入工具，此設定獨立於 Code Mode。',
-    ],
   'Code Mode language: {language}': [
     'Code Mode language: {language}',
     'Code Mode 语言：{language}',
     'Code Mode 語言：{language}',
   ],
   'Code Mode language': ['Code Mode language', 'Code Mode 语言', 'Code Mode 語言'],
-  'Used when Code Mode is enabled. Applies to newly submitted messages.': [
-    'Used when Code Mode is enabled. Applies to newly submitted messages.',
-    '启用 Code Mode 时使用，设置对新提交的消息生效。',
-    '啟用 Code Mode 時使用，設定對新提交的訊息生效。',
-  ],
   'A provider credential is stored. Leave blank to keep it; enter a key to replace it.': [
     'A provider credential is stored. Leave blank to keep it; enter a key to replace it.',
     '已保存提供商凭据。留空可保留，输入密钥可替换。',
@@ -595,11 +562,6 @@ export const settingsMessages = {
     '請在瀏覽器中開啟此 URL。正在等待登入…',
   ],
   Optional: ['Optional', '选填', '選填'],
-  'Optional. Empty uses the provider’s name.': [
-    'Optional. Empty uses the provider’s name.',
-    '可选。留空则使用提供商的名称。',
-    '選填。留空則使用供應商的名稱。',
-  ],
   'Original settings action receipts checked.': [
     'Original settings action receipts checked.',
     '已检查原始设置操作的回执。',
@@ -799,12 +761,6 @@ export const settingsMessages = {
   'No matching models.': ['No matching models.', '没有匹配的模型。', '沒有符合的模型。'],
   'No matching providers.': ['No matching providers.', '没有匹配的提供商。', '沒有符合的供應商。'],
   'Search plugins…': ['Search plugins…', '搜索插件…', '搜尋外掛…'],
-  'Select the reasoning efforts supported by this model. They will be available in conversations.':
-    [
-      'Select the reasoning efforts supported by this model. They will be available in conversations.',
-      '选择此模型支持的推理强度，这些选项将在会话中可用。',
-      '選擇此模型支援的推理強度，這些選項將可在對話中使用。',
-    ],
   'Set default {id}': ['Set default {id}', '将 {id} 设为默认', '將 {id} 設為預設'],
   'Set null': ['Set null', '设为 null', '設為 null'],
   'Settings section {section}': [
@@ -903,11 +859,6 @@ export const settingsMessages = {
     'The connection catalog revision is missing.',
     '缺少连接目录的修订版本。',
     '缺少連線目錄的修訂版本。',
-  ],
-  'The exact API model ID, including its provider prefix when required.': [
-    'The exact API model ID, including its provider prefix when required.',
-    '准确的 API 模型 ID，必要时包含提供商前缀。',
-    '正確的 API 模型 ID，必要時包含供應商前綴。',
   ],
   'The model catalog keeps changing. Retry to read the current choices.': [
     'The model catalog keeps changing. Retry to read the current choices.',

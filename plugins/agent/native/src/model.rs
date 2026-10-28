@@ -324,10 +324,8 @@ fn request_context(
         tracing::warn!(stage = "request_context", cause = "input_limit_exceeds_context", connection_id = %row.connection_id, "Model preparation failed");
         return Err(unavailable());
     }
-    let input = match (model.context_window, model.input_limit) {
-        (Some(capacity), Some(input)) => Some(capacity.min(input)),
-        (capacity, input) => capacity.or(input),
-    };
+    let input =
+        maka_agent_facts::context::effective_input_limit(model.context_window, model.input_limit);
     let context = ModelRequestContext {
         provider_id: row.provider.name.clone(),
         context_window: input,

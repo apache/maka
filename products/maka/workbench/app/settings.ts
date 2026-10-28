@@ -70,22 +70,20 @@ export const modelLimitFields = [
   {
     key: 'contextWindow',
     label: 'Context window (tokens)',
-    hint: 'Total input and output capacity. Empty uses the model default.',
+    hint: 'Input and output capacity.',
   },
   {
     key: 'inputLimit',
     label: 'Input limit (tokens)',
-    hint: 'Independent input ceiling. Empty uses the model default.',
   },
   {
     key: 'maxOutputTokens',
     label: 'Maximum output (tokens)',
-    hint: 'Requested output budget per step, capped by the provider and remaining capacity. Empty uses the model default.',
   },
   {
     key: 'compactionThreshold',
     label: 'Compaction threshold (tokens)',
-    hint: 'Retained tokens that trigger automatic compaction. Empty uses 85% of the smaller context window and input limit.',
+    hint: 'Automatically compact when context reaches this size.',
   },
 ] as const;
 export type ModelEditor = {

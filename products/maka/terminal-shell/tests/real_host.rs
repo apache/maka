@@ -698,15 +698,15 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(discovered_choice["defaultThinkingLevel"], "high");
         let discovered_target = json!({"connectionId":discovered_choice["selection"]["connectionId"],"modelId":"fixture-discovered-model"});
         let inherited = client.query("settings", "resolveModel", discovered_target.clone()).await.unwrap();
-        assert_eq!(inherited["defaults"], json!({"label":"Discovered UI Model","contextWindow":131072,"inputLimit":null,"maxOutputTokens":null,"compactionThreshold":111411,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":["max","high","low","off"],"defaultThinkingLevel":"high"}));
+        assert_eq!(inherited["defaults"], json!({"label":"Discovered UI Model","contextWindow":131072,"inputLimit":131072,"maxOutputTokens":4096,"compactionThreshold":111411,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":["max","high","low","off"],"defaultThinkingLevel":"high"}));
         assert_eq!(inherited["choice"]["limits"]["maxOutputTokens"], 4096,
-            "a provider ceiling must not become an implicit requested output budget");
+            "a known catalog output capacity supplies the default request budget");
         activate(&mut view, "Edit model fixture-discovered-model").await;
         for (label, default) in [
             ("Model display name", "Discovered UI Model"),
             ("Context window (tokens)", "131072"),
-            ("Input limit (tokens)", "Provider controlled"),
-            ("Maximum output (tokens)", "Provider controlled"),
+            ("Input limit (tokens)", "131072"),
+            ("Maximum output (tokens)", "4096"),
             ("Compaction threshold (tokens)", "111411"),
         ] {
             assert_default_input(&mut view, label, default).await;
@@ -735,7 +735,8 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
             "overrides":{"contextWindow":6000,"inputLimit":4000}
         })).await.unwrap();
         assert_eq!(preview["defaults"]["contextWindow"], 131072);
-        assert_eq!(preview["defaults"]["inputLimit"], Value::Null);
+        assert_eq!(preview["defaults"]["inputLimit"], 6000);
+        assert_eq!(preview["defaults"]["maxOutputTokens"], 4096);
         assert_eq!(preview["defaults"]["compactionThreshold"], 3400);
         assert_eq!(preview["choice"]["limits"]["contextWindow"], 6000);
         assert_eq!(preview["choice"]["limits"]["inputLimit"], 4000);
@@ -853,7 +854,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(observed["session"]["backend"], json!({"kind":"model","connectionId":basis["connectionId"],"modelId":"manual-ui-agent","thinkingLevel":null}));
         let saved_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
         assert_eq!(saved_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
-        assert_eq!(saved_policy["defaults"], json!({"label":"manual-ui-agent","contextWindow":null,"inputLimit":null,"maxOutputTokens":null,"compactionThreshold":27852,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":[],"defaultThinkingLevel":null}),
+        assert_eq!(saved_policy["defaults"], json!({"label":"manual-ui-agent","contextWindow":null,"inputLimit":65536,"maxOutputTokens":8000,"compactionThreshold":27852,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":[],"defaultThinkingLevel":null}),
             "saved display, limits, tools, and efforts must not masquerade as inherited defaults");
         activate(&mut view, "Choose model and effort").await;
         activate(&mut view, "Edit current model settings").await;
@@ -862,6 +863,8 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         for (label, value) in [("Context window (tokens)", "65536"), ("Input limit (tokens)", "32768"), ("Maximum output (tokens)", "2048"), ("Compaction threshold (tokens)", "18000")] {
             assert_input(&mut view, label, value).await;
         }
+        fill(&mut view, "Maximum output (tokens)", "").await;
+        assert_default_input(&mut view, "Maximum output (tokens)", "8000").await;
         for label in ["Code Mode: Enabled", "Apply Patch: Disabled", "Code Mode language: Python"] {
             tab_to_label(&mut view, label).await;
             assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "current model settings must show the saved tool policy");
@@ -874,6 +877,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         let cancelled_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
         assert_eq!(cancelled_policy["choice"]["selection"], saved_policy["choice"]["selection"], "closing settings must not commit the unsaved tool policy");
         assert_eq!(cancelled_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
+        assert_eq!(cancelled_policy["choice"]["limits"], saved_policy["choice"]["limits"], "closing the editor must retain the saved explicit output budget");
         tab_to_label(&mut view, "Message composer").await;
         editable(&mut view, "Message composer").await;
         view.handle_event(Event::Paste("Use my new connection exactly once".into()));

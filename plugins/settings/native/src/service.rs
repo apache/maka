@@ -133,7 +133,10 @@ fn model_choice_from_metadata(
                 compaction_threshold: overrides.and_then(|value| value.compaction_threshold),
             },
             context_window: info.context_window,
-            input_limit: info.input_limit,
+            input_limit: maka_agent_facts::context::effective_input_limit(
+                info.context_window,
+                info.input_limit,
+            ),
             max_output_tokens: info.max_output_tokens,
         }),
         tools: Some(ModelToolPreferences {
@@ -207,11 +210,27 @@ async fn model_defaults(
             return None;
         }
     };
+    let max_output_tokens = resolved.info.max_output_tokens.unwrap_or_else(|| {
+        let reply = maka_agent_facts::context::effective_output_limit(resolved.main_output_limit);
+        let thinking = &resolved.provider_options["anthropic"]["thinking"];
+        if matches!(
+            resolved.protocol,
+            maka_agent_ports::model::ProviderKind::Anthropic
+        ) && thinking["type"] == "enabled"
+        {
+            reply + thinking["budgetTokens"].as_u64().unwrap_or(0)
+        } else {
+            reply
+        }
+    });
     Some(ModelDefaults {
         label: metadata.info.display_name.unwrap_or_else(|| model.into()),
         context_window: metadata.info.context_window,
-        input_limit: metadata.info.input_limit,
-        max_output_tokens: resolved.main_output_limit,
+        input_limit: maka_agent_facts::context::effective_input_limit(
+            resolved.info.context_window,
+            metadata.info.input_limit,
+        ),
+        max_output_tokens: Some(max_output_tokens),
         compaction_threshold: maka_agent_facts::context::default_compaction_threshold(
             resolved.info.context_window,
             resolved.info.input_limit,
