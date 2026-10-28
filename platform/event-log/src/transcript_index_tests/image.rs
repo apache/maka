@@ -208,7 +208,7 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
                 target_session_id: "copy".into(),
                 expected_source_revision: source.revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },
@@ -507,7 +507,7 @@ async fn borrowed_upload_is_frozen_at_settlement_before_any_history_copy() {
             target_session_id: "borrowed-copy".into(),
             expected_source_revision: source.revision,
             purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                turn_id: None,
+                position: maka_agent_facts::session::ForkPosition::End,
                 side_conversation: false,
             },
         },

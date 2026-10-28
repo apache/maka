@@ -1,10 +1,13 @@
-// The Controls demo: `nsh/base`'s switches in a settings list (one that
+// The control demos, one per control: `nsh/base`'s switches in a settings list (one that
 // needs another on), checkboxes under a "select all" that shows a partial
 // selection, a plan picker of radios with a disabled plan, tabs that switch
 // a section, collapsible sections whose content is kept while collapsed,
 // progress bars of a transfer the app drives and of one of unknown size,
-// sliders of a level and of a price range.
-// Every row is the control, its label included. Also the
+// sliders of a level and of a price range, number inputs of seats and a
+// price, a one-time code typed or pasted into its cells.
+// Every row is the control, its label included; on a desktop the plans
+// and the tabs are one stop of Tab each, moved through with the arrow
+// keys. Also the
 // gallery's own `Toggle` (a `Switch`) and `Segmented` (`Tabs`).
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
@@ -12,11 +15,16 @@ import type { App } from "nsh/test";
 let app: App;
 beforeEach(async () => {
   app = await open("../App.tsx", { clock: {} });
-  await app.press("role:button[Controls]");
-  await app.waitFor("Select all");
 });
 
+/** Opens the demo of the control `name`, once `text` shows. */
+async function show(name: string, text: string) {
+  await app.press(`role:button[${name}]`);
+  await app.waitFor(text);
+}
+
 test("a switch turns a setting on and off, and one that needs it is disabled while it is off", async () => {
+  await show("Switch", "Notifications");
   expect(app.count("role:switch")).toBe(4);
   await app.press("Notifications");
   await app.waitFor("Notifications: off");
@@ -34,6 +42,7 @@ test("a switch turns a setting on and off, and one that needs it is disabled whi
 });
 
 test("select all checks every item, from a partial selection, and unchecks them all", async () => {
+  await show("Checkbox", "Select all");
   expect(app.count("role:checkbox")).toBe(5);
   expect(app.texts()).toContain("3 of 4");
   expect(app.texts()).toContain("Showing 1,338 items");
@@ -57,6 +66,7 @@ test("select all checks every item, from a partial selection, and unchecks them 
 });
 
 test("a radio picks one plan of the set, and a disabled plan takes no press", async () => {
+  await show("Radio", "Free");
   expect(app.count("role:radio")).toBe(4);
   expect(app.texts()).toContain("Continue with Plus");
   await app.press("Team");
@@ -73,6 +83,7 @@ test("a radio picks one plan of the set, and a disabled plan takes no press", as
 });
 
 test("tabs show the section the app selects, and a disabled tab takes no press", async () => {
+  await show("Tabs", "Overview");
   expect(app.count("role:tab")).toBe(4);
   expect(app.texts()).toContain("Visitors");
   await app.press("Activity");
@@ -90,6 +101,7 @@ test("tabs show the section the app selects, and a disabled tab takes no press",
 });
 
 test("a collapsible shows its content while the app has it open, and keeps it while collapsed", async () => {
+  await show("Collapsible", "Advanced");
   // Both start collapsed.
   expect(app.texts()).not.toContain("Apps");
   expect(app.texts()).not.toContain("Keep originals");
@@ -114,6 +126,7 @@ test("a collapsible shows its content while the app has it open, and keeps it wh
 });
 
 test("a progress bar shows the transfer's value the app drives, and one of unknown size has none", async () => {
+  await show("Progress", "Upload");
   expect(app.count("role:progressbar")).toBe(2);
   expect(app.texts()).toContain("0%");
   expect(app.texts()).toContain("—");
@@ -135,6 +148,7 @@ test("a progress bar shows the transfer's value the app drives, and one of unkno
 });
 
 test("a slider reports the value the app owns, a range's thumbs never cross, and a disabled one takes no drag", async () => {
+  await show("Slider", "Volume");
   expect(app.count("role:adjustable")).toBe(3);
   expect(app.texts()).toContain("60%");
   expect(app.texts()).toContain("$100 – $400");
@@ -157,8 +171,58 @@ test("a slider reports the value the app owns, a range's thumbs never cross, and
   expect(app.texts()).toContain("100%");
 });
 
+test("a number input steps with the keys, holds a typed number to its range, and a locked one takes neither", async () => {
+  await show("NumberInput", "Seats");
+  expect(app.count("role:spinbutton")).toBe(2);
+  await app.type("label:Seats", "");
+  await app.keyboard.press("up");
+  await app.waitFor("Seats: 3");
+  // Typed past the maximum: reported as typed, then held to it when the
+  // field is left for the price's (a phone's Tab moves nothing).
+  await app.type("label:Seats", "0");
+  await app.waitFor("Seats: 30");
+  await app.type("label:Price", "");
+  await app.waitFor("Seats: 8");
+  // A page down is ten steps, stopped at the minimum.
+  await app.type("label:Seats", "");
+  await app.keyboard.press("pagedown");
+  await app.waitFor("Seats: 1");
+  await app.type("label:Price", "");
+  await app.keyboard.press("down");
+  await app.waitFor("Price: 24");
+  // Locked: the seats' field takes nothing.
+  await app.press("Lock seats");
+  await app.waitFor("Seats: locked");
+  expect(app.enabled("label:Seats")).toBe(false);
+  await app.press("Unlock seats");
+  await app.waitFor("Seats: unlocked");
+  expect(app.enabled("label:Seats")).toBe(true);
+});
+
+test("a one-time code takes digits up to its length, and a pasted code fills it", async () => {
+  await show("OtpInput", "The code is 246810");
+  const code = "label:Verification code, 6 digits";
+  expect(app.texts()).toContain("The code is 246810");
+  expect(app.enabled("Clear")).toBe(false);
+  // Digits only, one cell each.
+  await app.type(code, "13a5");
+  await app.waitFor("Code: 135");
+  expect(app.texts()).toContain("5");
+  expect(app.texts()).not.toContain("a");
+  await app.press("Clear");
+  await app.waitFor("Code: cleared");
+  // A pasted code replaces the code; the app checks it once it is full.
+  await app.paste(code, { text: "246 810" });
+  await app.waitFor("Code complete: 246810");
+  expect(app.texts()).toContain("Verified");
+  // Full: another digit changes nothing.
+  await app.type(code, "9");
+  await app.wait(50);
+  expect(app.texts()).toContain("Code complete: 246810");
+  expect(app.texts()).not.toContain("9");
+});
+
 test("the gallery's segmented control is a tab list", async () => {
-  await app.back();
   await app.press("role:button[System]");
   await app.waitFor("Status bar");
   expect(app.texts()).toContain('foreground: "dark"');
@@ -169,7 +233,6 @@ test("the gallery's segmented control is a tab list", async () => {
 });
 
 test("the gallery's toggle is a switch", async () => {
-  await app.back();
   await app.press("role:button[Styles]");
   await app.waitFor("Clipping and layers");
   expect(app.texts()).toContain("overflow: hidden");
@@ -177,4 +240,59 @@ test("the gallery's toggle is a switch", async () => {
   await app.waitFor("overflow: visible");
   await app.press("label:Clip");
   await app.waitFor("overflow: hidden");
+});
+
+test("the keyboard moves through the plans and the tabs, each one stop of Tab", async () => {
+  // A desktop: Tab stops at the views that take presses. A manual clock:
+  // the gallery's live demos never settle, and in a real window each key
+  // would wait for them.
+  const desk = await open("../App.tsx", { platform: "macos", clock: {} });
+  await desk.press("role:button[Radio]");
+  await desk.waitFor("Continue with Plus");
+  // Tab from stop to stop until the plans, entered at the checked one
+  // (Plus): Down there checks the plan after it.
+  let tabs = 0;
+  while (!desk.shows("Plan: Team")) {
+    expect(++tabs).toBeLessThan(40);
+    await desk.keyboard.press("tab");
+    await desk.keyboard.press("down");
+    await desk.wait(50);
+  }
+  // Enterprise is disabled: Down goes around to Free, Up back to Team.
+  await desk.keyboard.press("down");
+  await desk.waitFor("Plan: Free");
+  await desk.keyboard.press("up");
+  await desk.waitFor("Plan: Team");
+  await desk.keyboard.press("right");
+  await desk.waitFor("Plan: Free");
+  await desk.keyboard.press("left");
+  await desk.waitFor("Plan: Team");
+  // One Tab leaves the group: Return presses the button after it.
+  await desk.keyboard.press("tab");
+  await desk.keyboard.press("enter");
+  await desk.waitFor("Continue: Team, $12 / mo");
+  // On to the tabs, entered at the selected one (Overview): the arrows
+  // select as they move.
+  await desk.back();
+  await desk.press("role:button[Tabs]");
+  await desk.waitFor("Visitors");
+  tabs = 0;
+  while (!desk.shows("Tab: Activity")) {
+    expect(++tabs).toBeLessThan(10);
+    await desk.keyboard.press("tab");
+    await desk.keyboard.press("right");
+    await desk.wait(50);
+  }
+  expect(desk.texts()).toContain("Deployed to production");
+  // Billing is disabled: End stops at Members, Right goes around.
+  await desk.keyboard.press("end");
+  await desk.waitFor("Tab: Members");
+  await desk.waitFor("Grace Hopper");
+  await desk.keyboard.press("right");
+  await desk.waitFor("Tab: Overview");
+  expect(desk.texts()).toContain("Visitors");
+  await desk.keyboard.press("left");
+  await desk.waitFor("Tab: Members");
+  await desk.keyboard.press("home");
+  await desk.waitFor("Tab: Overview");
 });

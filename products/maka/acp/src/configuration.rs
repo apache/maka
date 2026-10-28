@@ -44,7 +44,7 @@ fn selected<'a>(
             .find(|choice| catalog::identity(choice) == *id)
             .ok_or_else(|| "Selected model is unavailable".into()),
         None => match &models.default {
-            DefaultModel::Ready { choice } => Ok(choice),
+            DefaultModel::Ready { choice, .. } => Ok(choice),
             _ => Err("Configure a default model or select an available model".into()),
         },
     }

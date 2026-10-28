@@ -12,9 +12,11 @@ demo: counter
 
 `nsh package --target web` 把应用发布成可放在任何 Web 服务器或 CDN 上的静态站点（[发布应用](#发布应用)），`nsh run --target web` 在你编辑时把它运行在浏览器里（[在浏览器里开发](#在浏览器里开发)）。本站每一个实时演示都使用这个 Web 后端。
 
+发布的 TSX 应用使用浏览器的 JavaScript 引擎。打包时，仅使用轻量运行时所支持的基础组件和标准 API 的应用会自动选择轻量运行时，其余应用使用完整运行时。语法高亮数据在首次高亮代码时加载。
+
 ## 各部分在哪里运行
 
-页面由 HTML 元素和 CSS 样式构成。NSH 将组件更新转换为批量 DOM 操作，浏览器负责界面显示、滚动、文字选择和输入。WebAssembly 承载共享的 Rust 引擎，负责组件状态、布局计算和更新：Rust 应用的 crate 编译在其中，TSX 应用则带着 QuickJS。
+页面由 HTML 元素和 CSS 样式构成。NSH 将组件更新转换为批量 DOM 操作，浏览器负责界面显示、滚动、文字选择和输入。WebAssembly 承载共享的 Rust 引擎，负责组件状态、布局计算和更新：Rust 应用的 crate 编译在其中，发布的 TSX 应用由浏览器 JavaScript 引擎执行，开发和嵌入式播放器使用 QuickJS。
 
 在每个原生平台上，引擎都有自己的线程，每次提交把一个 `MountBatch` 交给主线程。浏览器页面只有一个线程，所以 Web 版由页面的事件循环一步步驱动同一个引擎（`nsh_engine::LocalEngine`）：
 
@@ -31,7 +33,24 @@ requestAnimationFrame ───────────┘                      
 - **原生动画在 Rust 里运行**，由 `requestAnimationFrame` 驱动：`Animated` 的 timing、spring、decay，`interpolate`，绑定到 `opacity`、`translate`、`rotate`、`scale`、`transform` 的步骤和 `backgroundColor` 的动画值，用 `pan` 绑定的拖拽、滚动联动的值和画布参数。和设备上一样，每一帧都不经过 JS。`LayoutAnimation`、样式过渡、`animate-*` 关键帧和页面切换的动效与桌面后端一致；开启 `prefers-reduced-motion` 时它们不再播放（页面切换改为淡入淡出）。
 - **输入**：带 `activeStyle` / `active:` 反馈的按压和长按、响应者系统（`onTouch*`、`PanResponder`）、原生拖拽和双指捏合、旋转、滚动视图（浏览器自身的滚动）、下拉刷新、可缩放的滚动视图（双指捏合、Ctrl+滚轮和触控板捏合、`zoomTo`）、受控的 `<Input>`（焦点、提交）、`Canvas`、带页面 `header` 的 `NavStack` 和 `NavPage`、`Dialog`。
 - **系统界面绘制在页面内**：`AlertDialog` 在桌面浏览器上与桌面后端的对话框外观一致，在手机上与 iOS 一致（即 `desktop` 界面类型，见下文）。自定义字体在浏览器加载完成后会重新测量文本，应用导入的字体加载好之前不显示第一帧。
-- **对话框**与桌面后端一样，是覆盖整个应用的一层，显示应用的弹出层和背景。Escape、浏览器的返回按钮和点击背景会关闭它（`closeOnEscape`、`closeOnBackdropPress`），`animation`、`onOpen`、`onClose`、`onCancel` 和 `onOpenChange` 与设备上一致。
+- **对话框**与桌面后端一样，是覆盖整个应用的一层，显示应用的弹出层和背景。Escape、浏览器的返回按钮和点击背景会关闭它（`closeOnEscape`、`closeOnBackdropPress`），`animation`、`onOpen`、`onClose`、`onCancel` 和 `onOpenChange` 与设备上一致。页面把应用[嵌入](#嵌入到页面)在布局的一部分时，可以让对话框和提示框改为覆盖整个浏览器窗口（`dialogs: "viewport"`），就像 iOS 和 Android 上覆盖整个屏幕一样。
+
+
+`Sheet` 与 `Dialog`、`AlertDialog` 共用这个展示设置。同源 iframe 中的弹层会自动覆盖外层页面，应用保留原有布局尺寸。
+最后一个弹层关闭后，iframe 恢复原来的位置和尺寸，引擎与应用状态继续保留。文档示例已启用这个展示方式。
+
+跨域或沙箱 iframe 由宿主页面在加载播放器前接入：
+
+```js
+import { hostPlayerFrame } from "./nsh.js";
+const frame = document.querySelector("iframe");
+const disconnect = hostPlayerFrame(frame);
+frame.src = "https://apps.example.com/player.html"; // 播放器设置 dialogs: "viewport"
+// 移除嵌入时调用 disconnect();
+```
+
+宿主只接受这个 iframe 窗口的请求。弹层显示期间，外围页面处于 inert 状态并锁定滚动，关闭后恢复。
+每一层跨域嵌入都需要对应宿主配合；宿主尚未接入时，弹层在当前文档内展示，播放器会输出提示。
 
 ## 键盘、鼠标和触摸
 
@@ -57,10 +76,10 @@ nsh run --target web               # 开发服务器的页面；修改 Rust 代�
 当 `nsh.json` 指定了应用的根组件（`"root"`）时，页面只包含应用的 Rust 代码和 NSH 的页面脚本：`nsh.wasm` 包含引擎、组件和应用的
 crate，不含 QuickJS；站点里没有 `app.nshc` 和 `harden.nshc`；运行时和字体加载完后，页面直接挂载根组件。整个 Rust gallery 为
 3.3 MB（gzip 后 1.06 MB，brotli 后 0.75 MB），比 TSX 应用的运行时还小。通过 TSX 入口（`nsh package App.tsx --target web`）时，
-同一个应用像 TSX 应用一样运行在 QuickJS 上，并导入 crate 的组件和模块。
+同一个应用由浏览器 JavaScript 引擎执行 TSX，并导入 crate 的组件和模块。
 
 两种方式下，crate 的资源（`assets!()`）都会随应用的资源一起发布，其中的字体在第一帧之前加载。`nsh run --target web`
-期间，修改 crate 的 Rust 代码会重新构建运行时，已打开的页面会自动加载新的运行时；TSX 的修改仍然是热更新。
+期间，修改 crate 的 Rust 代码会重新构建运行时，已打开的页面会自动加载新的运行时；TSX 的修改仍然是热更新。开发运行时以增量方式构建，修改 crate 后约一秒即可就绪；`nsh package` 构建的发布版运行时则针对体积进行优化。
 
 要在包括 Web 在内的所有平台上运行的 Rust 代码，使用引擎提供的服务：`fetch(url).await` 通过与 JS `fetch` 相同的网络栈发出 HTTP
 请求（这里是浏览器的网络栈，遵循它的 CORS 规则）；`timer`、`set_timeout` 和 `set_interval` 用于等待；`nsh_core::time::Instant`
@@ -138,13 +157,13 @@ nsh package App.tsx --target web --run
 | `index.html` | 应用的页面：以应用名作为标题，带图标、按 `appearance` 设定的颜色、加载指示，以及应用无法加载或启动时的提示 |
 | `manifest.webmanifest` | 浏览器安装应用时使用的名称、id、图标和颜色 |
 | `nsh.<digest>.js` | DOM 运行时，已压缩（79 KB，brotli 后 22.5 KB） |
-| `nsh.<digest>.wasm` | Rust 应用：引擎、组件和你的 crate（整个 Rust gallery 为 3.3 MB，brotli 后 0.75 MB）。TSX 应用：引擎、核心、运行时的模块和不含编译器的 QuickJS（约 3.5 MB，gzip 后 1.2 MB，brotli 后 0.93 MB） |
+| `nsh.<digest>.wasm` | Rust 引擎、布局和组件，以及 Rust 应用自己的 crate。TSX 应用使用浏览器 JS；打包时根据应用导入的 API 选择轻量或完整运行时。 |
+| `nsh-syntaxes.<digest>.bin` | 代码高亮用的语法定义（bat 的语法集：0.92 MB，brotli 后 0.8 MB），代码块、`Editor` 或 `DiffView` 第一次显示某种语言的代码时下载 |
 | `nsh-bindgen.<digest>.js` | 应用的 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 时所需的 wasm-bindgen 胶水代码，已压缩 |
 | `snippets.<digest>/<crate>-<hash>/…` | 胶水代码导入的这些 crate 的 JS（`inline_js`、`module = "/js/…"`），保留 wasm-bindgen 给它们的路径 |
-| `app.<digest>.nshc` | TSX 应用本身，构建方式与 `nsh build --release --split` 相同，并编译成 QuickJS 字节码：浏览器里不再编译，启动更快 |
-| `harden.<digest>.nshc` | TSX 应用的[沙箱](./sandbox-and-capabilities.md)的加固脚本，同样编译成字节码（1.4 KB） |
+| `app.<digest>.js` | TSX 应用编译后的 ES 模块，由浏览器加载。 |
 | `host.<digest>.js` | 页面的宿主，即 `nsh.json` 的 `web.host`（[宿主的函数](#宿主的函数)） |
-| `chunks/<name>.<digest>.nshc` | TSX 应用中 `import()` 加载的代码，同样是字节码，第一次导入时才下载（[拆分 bundle](#拆分-bundle)） |
+| `<name>.<digest>.js` | `import()` 按需加载的 ES 模块。 |
 | `assets/<path>.<digest>.<ext>` | 应用导入的每个资源，用到时才从其 URL 加载（字体在注册它们的代码运行前加载，因为文本要用它们测量：在应用启动前，或随导入它们的分块一起加载） |
 | `icons/<size>.<digest>.png` | `nsh.json` 中的图标，尺寸为 32（favicon）、180（`apple-touch-icon`）、192 和 512 像素 |
 
@@ -192,7 +211,8 @@ cargo xtask web --out target/play     # 输出到其他目录
 
 | 文件 | 内容 |
 |---|---|
-| `gallery/nsh.<digest>.wasm` | 已发布应用使用的运行时（约 3.5 MB，gzip 后 1.2 MB，brotli 后 0.93 MB；用 `web` profile 构建），播放器和示例应用共用 |
+| `gallery/nsh.<digest>.wasm` | 已发布应用使用的运行时（约 15.1 MB，gzip 后 4.6 MB，brotli 后 3.4 MB；用 `web` profile 构建），播放器和示例应用共用 |
+| `gallery/nsh-syntaxes.<digest>.bin` | 运行时高亮代码用的语法定义，演示第一次显示某种语言的代码时下载 |
 | `nsh-playground.wasm` | 同上，另含 NSH 的 TSX 编译器，供[在线试用](#在线试用)使用（约 8 MB，gzip 后 2.4 MB） |
 | `gallery/nsh.<digest>.js` | DOM 运行时（已压缩）：加载 wasm，应用批次，把输入转成事件 |
 | `index.html` | 播放器页面：根据 `#<name>` 运行 `demos/<name>.nshc` |
@@ -222,11 +242,12 @@ const player = await createPlayer(document.querySelector("#phone"), {
   // dark: true,            // 强制外观；不设置时跟随系统
   // idiom: "phone",        // 强制 "phone"、"pad" 或 "desktop"；不设置时由指针和尺寸决定
   // history: false,        // 页面和对话框是否作为浏览器历史记录；默认只在应用占据整个页面时开启，iframe 里不开启
+  // dialogs: "viewport",   // Dialog 和 AlertDialog 覆盖整个浏览器窗口；默认覆盖容器
 });
 player.run(await (await fetch("./bundle.nshc")).arrayBuffer());
 ```
 
-`assets`（从 `asset:/` 路径到 URL 的映射）可代替 `assetBase`，`readAsset(uri)` 返回引擎需要立即读取的资源（字体）的字节，或 `null`，`glue` 是 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 的运行时的 wasm-bindgen 胶水代码的 URL（`nsh-bindgen.<digest>.js`），播放器会随运行时一起加载它；`player.run(code, { release: true, capabilities })` 以发布模式、在应用声明的能力下运行应用包（默认是开发模式）；运行字节码时，发布模式还要传入加固脚本的字节码（`harden`，即 `harden.<digest>.nshc` 的字节）。`nsh package --target web` 写出的页面都用到了。
+`assets`（从 `asset:/` 路径到 URL 的映射）可代替 `assetBase`，`readAsset(uri)` 返回引擎需要立即读取的资源（字体）的字节，或 `null`，`data` 把运行时第一次需要时才下载的文件映射到 URL（`syntaxes`：`nsh-syntaxes.<digest>.bin`；默认是 `nsh.js` 旁边的 `nsh-<name>.bin`），`glue` 是 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 的运行时的 wasm-bindgen 胶水代码的 URL（`nsh-bindgen.<digest>.js`），播放器会随运行时一起加载它；`player.run(code, { release: true, capabilities })` 以发布模式、在应用声明的能力下运行应用包（默认是开发模式）；运行字节码时，发布模式还要传入加固脚本的字节码（`harden`，即 `harden.<digest>.nshc` 的字节）。`nsh package --target web` 写出的页面都用到了。
 
 `run(code, { chunks, chunkBase })` 还可以指定[拆分 bundle](#拆分-bundle) 的 chunk 所在位置。
 
@@ -235,6 +256,8 @@ player.run(await (await fetch("./bundle.nshc")).arrayBuffer());
 使用 `nsh-playground.wasm` 时，`player.runSource(tsx, name, options)` 会先编译 TSX，再用 `run` 的选项运行，返回编译错误或 `null`；`player.compile(tsx)` 返回 `{ code }` 或 `{ error }`。官网的 playground 用 `{ limits: "" }` 运行访客写的代码。
 
 容器的尺寸就是应用的窗口（`windowSize()`），调整容器大小会同步调整应用。`player.setDark(true)` 可在运行时切换外观，应用通过 `colorScheme()` 和 `dark:` 类感知到变化。
+
+Dialog、Sheet 和 AlertDialog 默认覆盖容器。设置 `dialogs: "viewport"` 后，它们像页面自己的模态对话框一样覆盖整个浏览器窗口，应用的窗口仍是容器：`Dialog` 按窗口的尺寸和安全区域布局，从窗口底边滑入，背景覆盖整个页面，在它上面滚动鼠标滚轮时页面保持不动。对话框显示在浏览器的顶层（Chrome 114、Safari 17、Firefox 125 及更新版本），所以无论容器在页面的什么位置，它都在页面其他内容之上；更早的浏览器里它覆盖容器。
 
 ## 宿主的函数
 

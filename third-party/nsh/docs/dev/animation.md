@@ -16,7 +16,7 @@
   (`nsh_core::animation::Easing::Curve`), never a JS function: the curves, their parameters and defaults are one table
   (`nsh_core::js::animation`), which decodes them, declares their types (`animation::declarations`) and gives `nsh`'s `Easing` its curves (`animation::tables`). `Animated.timing` / `spring` / `decay` / `sequence` / `parallel` / `stagger` /
   `delay` / `loop` build a `Composite` tree that runs entirely natively (`AnimationOp::StartComposite`): each step starts at the exact end
-  time of the previous one (no frame gaps), `stop()` / `reset()` (back to the values at start) / `start(cb)` report `finished` once
+  time of the previous one (no frame gaps), `stop()` / `reset()` (back to the values at start) / `start(cb)` report `{ finished }` once
   for the whole tree; leaf animations get internal ids (`LEAF_IDS`) that never reach JS. Composites are released when JS
   lets go of them (their finalizers queue `ReleaseComposite`); a run goes on after that. A run does not keep its
   composite (or the values it animates) alive: `nsh-js` remembers live composites by key (`Animations::composites`),
@@ -111,19 +111,13 @@ interpolation to numbers, colors and angles, arithmetic and `diffClamp`; `decay`
 (`pan`, `pinch`, `rotation`) and scroll offsets (`scrollValue`) writing values directly; layout animations of a
 commit's frames, insertions and removals; and a library of ready-made motions as data.
 
-## Shaders and generative fills (decision)
+## Shaders
 
-NSH does not take app-written shaders. There is no shading language common to its backends: Metal on iOS and macOS,
-AGSL `RuntimeShader` only on Android 13 and later, HLSL Direct2D effects on Windows, GTK 4's `GskGLShader` deprecated
-since 4.16, no user shaders in GPUI, WebGL / WebGPU on the web. Apps are sandboxed plugins whose limits are enforced
-natively, and an arbitrary GPU program escapes those limits (its cost, hangs of the GPU). And a shader is a look,
-which NSH leaves to apps.
+Apps draw generative fills (mesh gradients, noise, grain, plasma) with shader views: `<Shader source={wgsl}>`, a
+WGSL `fn shade(uv: vec2f) -> vec4f` that the core checks with naga and the platforms render on the GPU (wgpu on the
+native backends, WebGL 2 on the web) under the view's children. Animated values among its `uniforms` are value slots
+bound as `AnimationProp::CanvasArg`, as a canvas drawing's are, so they move it with no JS per frame; a shader reading
+`nsh.time` draws every frame while it is in sight. See [shaders.md](shaders.md).
 
-What apps use today for gradient-art surfaces (getgradients.com's style): layered `linear-gradient` /
-`radial-gradient` / `conic-gradient` backgrounds, `filter: blur()`, `maskImage`, `mixBlendMode`, moved by motions and
-animated values (the gallery's animated aurora background is built that way), and Canvas drawings bound to animated
-values.
-
-A possible direction (a design decision to take, not planned work): parameterized generative fills in the core
-(mesh gradients, noise / grain) that each backend draws, or a constrained shader subset compiled per platform (for
-example WGSL through naga to MSL, HLSL, GLSL and SPIR-V) with a fallback fill where a platform cannot run it.
+Layered CSS gradients, `filter: blur()`, `maskImage` and `mixBlendMode` moved by motions and animated values, and
+Canvas drawings bound to animated values, remain the tools for fills built from shapes.

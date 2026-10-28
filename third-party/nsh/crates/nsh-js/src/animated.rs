@@ -70,8 +70,21 @@ struct End {
     callback: JsValue,
     /// The composite's key (0: none).
     composite: u32,
-    /// Resolves with the value read rather than with `finished`.
-    read: bool,
+    /// What it resolves with.
+    settles: Settles,
+}
+
+/// What a promise of [`End`] resolves with: one object, as every result
+/// that may need a second field (`docs/dev/api-naming.md` "Shapes that can
+/// grow"), or the value a read asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Settles {
+    /// An animation: `{ finished }`.
+    Finished,
+    /// `stop()`: `{ value }`, where it stopped.
+    Stopped,
+    /// `getValue()`: the value itself.
+    Value,
 }
 
 #[derive(Clone, Copy)]
@@ -713,7 +726,7 @@ unsafe extern "C" fn value_stop(
     if let Err(e) = send(cx, vec![int(ANIMATION_STOP), int(id)]) {
         return e;
     }
-    read(cx, id)
+    read(cx, id, Settles::Stopped)
 }
 
 /// `getValue()`: a promise of the node's current value, read on the UI
@@ -725,14 +738,14 @@ unsafe extern "C" fn value_get(
     _argv: *mut JsValue,
 ) -> JsValue {
     match this_node(cx, this) {
-        Ok(id) => read(cx, id),
+        Ok(id) => read(cx, id, Settles::Value),
         Err(e) => e,
     }
 }
 
 /// A promise of node `node`'s value, answered by the graph
 /// (`AnimationOp::Read`, reported as a `Finished` with the value).
-fn read(cx: *mut JsContext, node: u32) -> JsValue {
+fn read(cx: *mut JsContext, node: u32, settles: Settles) -> JsValue {
     let request = next_animation(cx);
     if let Err(e) = send(cx, vec![int(ANIMATION_READ), int(node), int(request)]) {
         return e;
@@ -744,7 +757,7 @@ fn read(cx: *mut JsContext, node: u32) -> JsValue {
             resolve,
             callback: UNDEFINED,
             composite: 0,
-            read: true,
+            settles,
         },
     );
     p
@@ -826,7 +839,7 @@ fn start(cx: *mut JsContext, this: JsValue, config: JsValue) -> JsValue {
             resolve,
             callback: UNDEFINED,
             composite: 0,
-            read: false,
+            settles: Settles::Finished,
         },
     );
     p
@@ -888,7 +901,7 @@ pub(crate) fn finished(
         resolve,
         callback,
         composite,
-        read,
+        settles,
     }) = a.ends.borrow_mut().remove(&id)
     else {
         return Ok(false);
@@ -922,13 +935,28 @@ pub(crate) fn finished(
                 qjs::JS_FreeValue(cx, v);
             }
         }
-        let mut args = [match (read, done) {
-            (true, _) => qjs::JS_NewFloat64(f.value.unwrap_or(0.0) as f64),
-            (false, true) => qjs::JS_TRUE,
-            (false, false) => qjs::JS_FALSE,
+        let value = || qjs::JS_NewFloat64(f.value.unwrap_or(0.0) as f64);
+        let mut args = [match settles {
+            Settles::Value => value(),
+            Settles::Stopped => {
+                let r = qjs::JS_NewObject(cx);
+                qjs::JS_SetPropertyStr(cx, r, c"value".as_ptr(), value());
+                r
+            }
+            Settles::Finished => {
+                let r = qjs::JS_NewObject(cx);
+                qjs::JS_SetPropertyStr(
+                    cx,
+                    r,
+                    c"finished".as_ptr(),
+                    if done { qjs::JS_TRUE } else { qjs::JS_FALSE },
+                );
+                r
+            }
         }];
         let v = qjs::JS_Call(cx, resolve, UNDEFINED, 1, args.as_mut_ptr());
         qjs::JS_FreeValue(cx, v);
+        qjs::JS_FreeValue(cx, args[0]);
         for x in [resolve, callback] {
             qjs::JS_FreeValue(cx, x);
         }
@@ -1038,7 +1066,7 @@ unsafe extern "C" fn composite_start(
             resolve,
             callback: dup(cx, arg(argc, argv, 0)),
             composite: key,
-            read: false,
+            settles: Settles::Finished,
         },
     );
     promise
@@ -2142,9 +2170,9 @@ pub(crate) const EXPORTS: &[Item] = &[
   /** Adjusts the base value to value * factor + offset on the UI thread,
    * stopping its animation and retaining the offset from `setOffset`. */
   adjust(factor: number, offset: number): void;
-  /** Stops the running animation where it is; resolves with the value
-   * there. */
-  stop(): Promise<number>;
+  /** Stops the running animation where it is; resolves with `{ value }`,
+   * the value there. */
+  stop(): Promise<{ value: number }>;
   /** The current value (with its offset), read where it moves (the UI
    * thread): settles within a frame. */
   getValue(): Promise<number>;
@@ -2156,18 +2184,18 @@ pub(crate) const EXPORTS: &[Item] = &[
   /** Moves the value into the offset and makes the value 0 (a drag then
    * starts from where the last one left it). */
   extractOffset(): void;
-  /** Animates to `to` over `duration` ms. Resolves with `finished`. */
-  timing(to: number, options?: { duration?: number; easing?: Easing; delay?: number }): Promise<boolean>;
-  /** Springs to `to`. Resolves with `finished`. */
-  spring(to: number, options?: { stiffness?: number; damping?: number; mass?: number; velocity?: number }): Promise<boolean>;
+  /** Animates to `to` over `duration` ms. Resolves with `{ finished }`. */
+  timing(to: number, options?: { duration?: number; easing?: Easing; delay?: number }): Promise<{ finished: boolean }>;
+  /** Springs to `to`. Resolves with `{ finished }`. */
+  spring(to: number, options?: { stiffness?: number; damping?: number; mass?: number; velocity?: number }): Promise<{ finished: boolean }>;
   /** Coasts from `velocity` (units per second) and slows down; within
    * `clamp` it stops at a bound, or bounces back keeping `bounce` (0..1) of
    * its speed. */
-  decay(options?: DecayConfig): Promise<boolean>;
+  decay(options?: DecayConfig): Promise<{ finished: boolean }>;
   /** Plays `keyframes` (numbers spread evenly, or `{ offset, value, easing }`)
    * as CSS keyframes play: each segment with its easing (CSS `ease` by
-   * default), `iterations` times in `direction`. Resolves with `finished`. */
-  keyframes(keyframes: KeyframeValue[], options?: KeyframeTiming): Promise<boolean>;
+   * default), `iterations` times in `direction`. Resolves with `{ finished }`. */
+  keyframes(keyframes: KeyframeValue[], options?: KeyframeTiming): Promise<{ finished: boolean }>;
 }"#,
         ),
     ),
@@ -2365,8 +2393,8 @@ export interface Motion {
   /** The transform alone, to spread into a list with steps of your own. */
   readonly transform: MotionTransform;
   /** Plays a preset or a motion of your own; a new one interrupts the one
-   * playing. Resolves with whether it finished. */
-  play(motion: MotionName | MotionSpec, options?: MotionPlayOptions): Promise<boolean>;
+   * playing. Resolves with `{ finished }`: whether it finished. */
+  play(motion: MotionName | MotionSpec, options?: MotionPlayOptions): Promise<{ finished: boolean }>;
   /** The same motion as an animation to compose, not started:
    * `Animated.stagger(60, cards.map((m) => m.animation("fadeInUp")), { from:
    * "center" })`. */
@@ -2381,7 +2409,7 @@ export interface Motion {
 export interface CompositeAnimation {
   /** Runs it (again). Resolves (and calls `callback`) with whether it
    * finished rather than being stopped. */
-  start(callback?: (result: { finished: boolean }) => void): Promise<boolean>;
+  start(callback?: (result: { finished: boolean }) => void): Promise<{ finished: boolean }>;
   /** Stops it where it is. */
   stop(): void;
   /** Stops it and puts its values back where they were when it started. */
@@ -2445,10 +2473,10 @@ mod tests {
             import { text } from "nsh:rt";
             const v = new AnimatedValue(0);
             globalThis.log = [];
-            v.timing(1, { duration: 10 }).then((f) => log.push(`timing ${f}`));
+            v.timing(1, { duration: 10 }).then(({ finished }) => log.push(`timing ${finished}`));
             Animated.sequence([Animated.delay(5), Animated.timing(v, { toValue: 0 })])
                 .start((r) => log.push(`callback ${r.finished}`))
-                .then((f) => log.push(`sequence ${f}`));
+                .then(({ finished }) => log.push(`sequence ${finished}`));
             globalThis.report = () => text(log.join("|"));
             globalThis.keep = v;
             "#,
@@ -2525,7 +2553,7 @@ mod tests {
             v.flattenOffset();
             v.adjust(2, -3);
             v.getValue().then((x) => log.push(`value ${x}`));
-            v.stop().then((x) => log.push(`stopped ${x}`));
+            v.stop().then(({ value }) => log.push(`stopped ${value}`));
             globalThis.report = () => text(log.join("|"));
             globalThis.keep = v;
             "#,

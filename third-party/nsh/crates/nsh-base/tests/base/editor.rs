@@ -141,11 +141,12 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                 ))
                 .child(button(
                     "replace-all",
-                    Box::new(move |a| replaced.set(a.replace_all("baz".into()))),
+                    Box::new(move |a| replaced.set(a.replace_all("baz".into()).count)),
                 ))
                 .child(button("fold-0", Box::new(|a| a.fold(0))))
                 .child(button("unfold-0", Box::new(|a| a.unfold(0))))
-                .child(button("to-4000", Box::new(|a| a.scroll_to_line(4000)))),
+                .child(button("to-4000", Box::new(|a| a.scroll_to_line(4000))))
+                .child(button("to-2000", Box::new(|a| a.scroll_to_line(2000)))),
         )
 }
 
@@ -411,6 +412,41 @@ fn a_read_only_editor_moves_but_does_not_edit() {
     assert!(app.shows(&value("locked")));
     assert!(app.shows("Changes 0"));
     assert!(app.shows("locked"));
+}
+
+/// Scrolling far moves the rows already made to the lines it shows (their
+/// text and place), rather than making the views of new rows and deleting
+/// the old ones: a window of rows moves by a screen or more at a time, and
+/// hundreds of views made and deleted in one frame dropped it.
+#[test]
+fn scrolling_far_shows_the_new_rows_in_the_views_already_made() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let text: Vec<String> = (0..5000).map(|i| format!("line {i}")).collect();
+    let mut app = start(props(&text.join("\n")));
+    see(&mut app, "line 0");
+    // The first move into the text makes the rows above the viewport,
+    // which the top has none of.
+    app.press("id:to-4000").unwrap();
+    see(&mut app, "line 4000");
+    let made = Arc::new(AtomicUsize::new(0));
+    let counter = made.clone();
+    app.observe(move |_, batch| {
+        let creates = batch
+            .items
+            .iter()
+            .filter(|item| matches!(item, nsh_core::MountItem::Create { .. }))
+            .count();
+        counter.fetch_add(creates, Ordering::Relaxed);
+    });
+    app.press("id:to-2000").unwrap();
+    see(&mut app, "line 2000");
+    see(&mut app, "2001");
+    assert!(!app.shows("line 4000"));
+    let made = made.load(Ordering::Relaxed);
+    assert!(made < 10, "{made} views made to scroll");
 }
 
 #[test]

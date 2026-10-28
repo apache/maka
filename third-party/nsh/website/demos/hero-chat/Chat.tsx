@@ -1,4 +1,4 @@
-import { batch, computed, effect, List, Scroll, signal, Text, View, type YNode } from "nsh";
+import { batch, computed, effect, List, type ListRef, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { createAnimatedValue, LayoutAnimation } from "nsh";
 import { Clipboard } from "nsh";
@@ -67,7 +67,7 @@ export function Chat(props: { autoplay?: string } = {}) {
   /** Whether the user is at the bottom (the list then follows the stream
    * natively, `maintainVisibleContentPosition`); scrolling up clears it. */
   const following = signal(true);
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let dragging = false;
 
   type Run = { id: string; model: Model; script: string; cancelled: boolean; md: string; reason: string; thinkStart: number; thinkSeconds: number | null };
@@ -718,11 +718,11 @@ export function Chat(props: { autoplay?: string } = {}) {
           >
             <Input
               value={draft()}
-              onChange={(v) => draft.set(v)}
+              onChange={({ value }) => draft.set(value)}
               multiline
               placeholder={`Message ${model()}`}
               onFocus={() => menu.set(false)}
-              onContentSizeChange={(e) => inputHeight.set(Math.min(100, Math.max(20, e.height)))}
+              onContentSizeChange={({ size }) => inputHeight.set(Math.min(100, Math.max(20, size.height)))}
               style={{ height: inputHeight() + 20, fontSize: 15, lineHeight: 20, color: colors.text, placeholderColor: colors.faint, selectionColor: colors.accent, paddingHorizontal: 10, paddingVertical: 10 }}
             />
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

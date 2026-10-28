@@ -96,6 +96,7 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
     use maka_agent_facts::event::Fact;
     use maka_agent_facts::interaction::InteractionRequest;
     const SECRET: &str = "SECRET_MAIN_PROVIDER_BODY_SENTINEL";
+    const DETAIL: &str = "tool choice is unsupported for this model";
 
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -145,7 +146,7 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
         if stop {
             assert_eq!(fixture.mutation(2, "stop", json!({"sessionId":session,"invocationId":sent["invocationId"]}), Uuid::new_v4()).await.unwrap()["requested"], true);
         } else {
-            let body = json!({"error":{"message":SECRET,"type":"invalid_request_error","code":"invalid_request"}}).to_string();
+            let body = json!({"error":{"message":DETAIL,"type":"invalid_request_error","code":"invalid_request"},"private":SECRET}).to_string();
             socket.write_all(format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         }
         drop(socket);
@@ -153,6 +154,15 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
         let source = fixture.query("execution", json!({"sessionId":session,"invocationId":sent["invocationId"]})).await.unwrap()["execution"].clone();
         assert_eq!(source["state"], if stop { "cancelled" } else { "failed" }, "{source}");
         let failed_invocation=fixture.session(&session).await.invocation_boundary(&session,sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0.invocation;
+        if !stop {
+            let history = fixture.query("history", json!({"sessionId":session,"position":{"kind":"tail"}})).await.unwrap();
+            let failures: Vec<_> = history["chunks"].as_array().unwrap().iter().filter(|chunk| chunk["role"] == "failure").collect();
+            assert!(!failures.is_empty(), "the existing conversation history must expose the rejected request");
+            for failure in failures {
+                assert!(failure["text"].as_str().unwrap().contains(DETAIL), "{failure}");
+            }
+            assert!(!history.to_string().contains(SECRET));
+        }
         let diagnostics=fixture.query("diagnostics",json!({"sessionId":session,"position":{"kind":"latest"}})).await;
 
         // A later message must not replace the selected source's original input.
@@ -219,6 +229,9 @@ async fn computer_resume_replays_original_input_without_duplicate_effects(stop: 
             let ended=facts.iter().find(|fact|matches!(fact,Fact::InvocationEnded {outcome:maka_agent_facts::event::InvocationOutcome::Failed {..}})).unwrap();
             assert_eq!(serde_json::to_value(interrupted).unwrap()["model_failure"],json!({"kind":"http","status":400}));
             assert_eq!(serde_json::to_value(ended).unwrap()["outcome"]["model_failure"],json!({"kind":"http","status":400}));
+            assert!(serde_json::to_value(interrupted).unwrap()["diagnostic"].as_str().unwrap().contains(DETAIL));
+            assert!(serde_json::to_value(ended).unwrap()["outcome"]["message"].as_str().unwrap().contains(DETAIL));
+            assert!(!serde_json::to_string(&facts).unwrap().contains(SECRET));
             assert!(!diagnostics.to_string().contains(SECRET),"safe diagnostics must not expose provider response bodies");
         }
     }).await.unwrap();

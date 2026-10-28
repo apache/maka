@@ -19,6 +19,34 @@ use nsh_core::{
 use super::Headless;
 
 impl Headless {
+    /// The steps `keyboard.down(<keys>)` / `keyboard.up(<keys>)`: holds or
+    /// lets go of modifier keys (`"mod"`, `"shift"`, `"alt"`, `"ctrl"`,
+    /// `"meta"`, joined by `+`), which the presses, drags and hovers until
+    /// then carry, as a hand on the keyboard does while the pointer acts.
+    pub fn hold_keys(&mut self, keys: &str, down: bool) -> Result<(), String> {
+        self.step(format!(
+            "keyboard.{}({keys})",
+            if down { "down" } else { "up" }
+        ));
+        let apple = matches!(self.environment.os, Os::MacOs | Os::Ios);
+        for name in keys.split('+') {
+            let flag = match name.trim().to_ascii_lowercase().as_str() {
+                "mod" if apple => &mut self.held.cmd,
+                "mod" | "ctrl" | "control" => &mut self.held.ctrl,
+                "alt" | "option" => &mut self.held.alt,
+                "shift" => &mut self.held.shift,
+                "meta" | "cmd" | "command" => &mut self.held.cmd,
+                other => {
+                    return Err(format!(
+                        "`{other}` is no modifier key: mod, shift, alt, ctrl or meta"
+                    ));
+                }
+            };
+            *flag = down;
+        }
+        self.done()
+    }
+
     /// The step `keyboard.press(<keys>)`: presses `keys`, a keystroke as
     /// `nsh/keymap` names it (`"mod+k"`, `"shift+tab"`, `"escape"`; `mod` is
     /// the app's platform's command key). A binding of the app's keymap

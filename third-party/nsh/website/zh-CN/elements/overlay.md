@@ -44,11 +44,11 @@ fn more_button() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { Overlay, signal, Text, View, type YNode } from "nsh";
+import { Overlay, signal, Text, View, type ViewRef } from "nsh";
 
 function MoreButton() {
   const open = signal(false);
-  let anchor: YNode | undefined;
+  let anchor: ViewRef | undefined;
   return (
     <View>
       <View ref={anchor} onPress={() => open.set(!open())} class="px-3 py-2">
@@ -117,7 +117,7 @@ function MoreButton() {
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `anchor` | `.anchor(&element_ref)`、`.anchor_point(point)`、`.anchor_bounds(bounds)` | `YNode \| Point \| Bounds \| null` | 无 | 它相对放置的视图、点或矩形。没有时，它是根视图中的固定定位盒子。 |
+| `anchor` | `.anchor(&element_ref)`、`.anchor_point(point)`、`.anchor_bounds(bounds)` | `ViewRef \| Point \| Bounds \| null` | 无 | 它相对放置的视图、点或矩形。没有时，它是根视图中的固定定位盒子。 |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"bottom"` | 它位于锚点的哪一侧。 |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | 它沿这一侧如何与锚点对齐。 |
 | `offset` | `.offset(px(..))` | `number` | `0` | 锚点与浮层之间的间距。 |

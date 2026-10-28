@@ -33,6 +33,9 @@ impl Manager {
             .map(|(instance, entry)| {
                 Ok(UiInstance {
                     instance: instance.identity.clone(),
+                    definition_basis: plan
+                        .definition_basis(&instance.identity)
+                        .map_err(|error| error.to_string())?,
                     binding_basis: plan
                         .binding_basis(&instance.identity)
                         .map_err(|error| error.to_string())?,

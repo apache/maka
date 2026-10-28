@@ -584,7 +584,7 @@ async fn idle_http_reads_keep_protocol_safety_and_explicit_rejections() {
             if mode == "untyped" {
                 assert!(matches!(error, ModelError::Adapter(message) if message.contains("missing Content-Type and no SSE events")));
             } else if status == 401 {
-                assert!(matches!(error, ModelError::Http { status: 401 }));
+                assert!(matches!(error, ModelError::Http { status: 401, .. }));
             } else {
                 let ModelError::Provider(failure) = error else { panic!("expected recoverable evidence: {error}") };
                 assert_eq!(failure.reason(), match status { 429 => ProviderFailureReason::RateLimit, 503 => ProviderFailureReason::ProviderUnavailable, _ => ProviderFailureReason::TimedOut });

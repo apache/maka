@@ -40,8 +40,8 @@ function App() {
         value={volume()}
         step={5}
         accessibilityLabel="Volume"
-        onChange={next => volume.set(next as number)}
-        onChangeEnd={next => ended.set(`end ${next}`)}
+        onChange={({ value }) => volume.set(value as number)}
+        onChangeEnd={({ value }) => ended.set(`end ${value}`)}
         {...parts}
       >
         <Text>{`Volume ${volume()}`}</Text>
@@ -56,7 +56,7 @@ function App() {
         scale="linear"
         accessibilityLabel="Max price"
         startAccessibilityLabel="Min price"
-        onChange={next => price.set(next as [number, number])}
+        onChange={({ value }) => price.set(value as [number, number])}
         {...parts}
       />
       <Text>{`Price ${price()[0]}-${price()[1]}`}</Text>
@@ -68,7 +68,7 @@ function App() {
         scale="logarithmic"
         axis="vertical"
         accessibilityLabel="Zoom"
-        onChangeEnd={next => zoom.set(`zoom ${next}`)}
+        onChangeEnd={({ value }) => zoom.set(`zoom ${value}`)}
         trackClass="w-[20px] h-[150px] items-center"
         indicatorClass="w-[4px] h-full"
         thumbClass="w-[10px] h-[10px]"
@@ -79,7 +79,7 @@ function App() {
         value={50}
         disabled={disabled()}
         accessibilityLabel="Locked"
-        onChange={next => locked.set(String(next))}
+        onChange={({ value }) => locked.set(String(value))}
         {...parts}
       />
       <Text>{`Locked ${locked()}`}</Text>

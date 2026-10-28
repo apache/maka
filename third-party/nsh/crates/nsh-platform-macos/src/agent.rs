@@ -218,7 +218,7 @@ impl Native for MacNative {
 
     fn type_text(&self, text: &str) {
         let text = text.to_owned();
-        self.on_main(move |_, window| synth::type_text(window, &text));
+        self.on_main(move |surface, window| synth::type_text(surface, window, &text));
     }
 
     fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
@@ -233,7 +233,7 @@ impl Native for MacNative {
             Key::Backspace => "BackSpace",
             Key::SelectAll => "cmd+a",
         };
-        self.on_main(move |_, window| synth::key(window, name));
+        self.on_main(move |surface, window| synth::key(surface, window, name));
     }
 
     fn mouse(&self) -> bool {
@@ -318,7 +318,7 @@ impl Native for MacNative {
             Key::F(n) => format!("F{n}"),
         });
         self.activate();
-        self.on_main(move |_, window| synth::key(window, &name))
+        self.on_main(move |surface, window| synth::key(surface, window, &name))
             .ok_or_else(|| "the window is gone".to_owned())
     }
 
@@ -335,9 +335,9 @@ impl Native for MacNative {
         // it, so then once more.
         self.on_main(|surface, window| {
             if crate::text_input::editing(surface) {
-                synth::key(window, "Escape");
+                synth::key(surface, window, "Escape");
             }
-            synth::key(window, "Escape");
+            synth::key(surface, window, "Escape");
         })
         .ok_or_else(|| "the window is gone".to_owned())
     }

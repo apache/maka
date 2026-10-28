@@ -164,7 +164,7 @@ fn every_record_variant_keeps_its_wire_shape_and_field_policy() {
     let records = [
         json!({"kind":"header","inventory":{"root_session_id":"root","subtree_digest":"digest","sessions":[{"id":"root","revision":1}]},"source_high_water":u64::MAX}),
         json!({"kind":"session","id":"root","parent":null,"created_at":1,"updated_at":2,"archived":false,"configuration":{"integer":u64::MAX,"nested":[1,"1",null]}}),
-        json!({"kind":"copy","request":{"sourceSessionId":"source","targetSessionId":"target","expectedSourceRevision":1,"purpose":{"kind":"branch","turnId":null,"sideConversation":false}},"through":1,"observed_through":2,"lineage":{"kind":"branch","origin":{"parent_session_id":"source","turn_id":null}},"state":"committed"}),
+        json!({"kind":"copy","request":{"sourceSessionId":"source","targetSessionId":"target","expectedSourceRevision":1,"purpose":{"kind":"branch","position":{"kind":"end"},"sideConversation":false}},"through":1,"observed_through":2,"lineage":{"kind":"branch","origin":{"parent_session_id":"source","position":{"kind":"end"}}},"state":"committed"}),
         json!({"kind":"member","session":"root","sequence":1,"archive_sequence":null}),
         json!({"kind":"revision_source","session":"root","sequence":1}),
         json!({"kind":"history_artifact","session":"root","source_session":"source","source_artifact":"old","artifact":"new"}),

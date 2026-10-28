@@ -18,17 +18,17 @@
  */
 
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { TextViewImage } from 'nsh/base';
-import { host } from './host';
+import { useHost, type Host } from './host';
 import { ImageViewer } from './ImageViewer';
 import { createText, errorText, UiError } from './text';
 import { tr } from './locale';
 import { C, captionTextStyle, controlFocusStyle } from './ui';
 
 type Reading = { stream: Awaited<ReturnType<typeof openFile>> | null };
-const openFile = (sessionId: string, path: { bytesBase64: string }) =>
+const openFile = (host: Host, sessionId: string, path: { bytesBase64: string }) =>
   host.readFile({ sessionId, path });
 const close = async (reading: Reading | null) => {
   const stream = reading?.stream;
@@ -45,6 +45,7 @@ export function MarkdownImageView(props: {
   flow: 'block' | 'inline';
   lineHeight: number;
 }) {
+  const host = useHost();
   const target = props.image().src;
   const sessionId = props.sessionId;
   const source = signal<{ uri: string } | null>(null);
@@ -52,7 +53,7 @@ export function MarkdownImageView(props: {
   const error = createText();
   const viewing = signal(false);
   let reading: Reading | null = null;
-  let button: YNode | undefined;
+  let button: ViewRef | undefined;
   let alive = true;
   const owns = () => alive && props.sessionId === sessionId && props.image().src === target;
   const read = () => {
@@ -71,7 +72,7 @@ export function MarkdownImageView(props: {
         source.set({ uri: selected.uri });
         return;
       }
-      const stream = await openFile(sessionId, selected.path);
+      const stream = await openFile(host, sessionId, selected.path);
       if (!owns() || reading !== request) {
         await stream.close();
         return;
@@ -125,7 +126,7 @@ export function MarkdownImageView(props: {
               src={captured.uri}
               role="image"
               accessibilityLabel={name()}
-              onLoad={(size) => {
+              onLoad={({ size }) => {
                 if (current()) dimensions.set(size);
               }}
               onError={(reason) => {
@@ -178,7 +179,7 @@ export function MarkdownImageView(props: {
           disabled={!error() && !dimensions()}
           onPress={inputAction(activate, { sessionId, target })}
           style={{ padding: 0, alignItems: 'flex-start', backgroundColor: 'transparent' }}
-          focusStyle={controlFocusStyle}
+          focusStyle={controlFocusStyle()}
         >
           {content()}
         </Button>

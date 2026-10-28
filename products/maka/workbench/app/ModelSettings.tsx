@@ -17,19 +17,35 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
-import { cleanup, effect, inputAction, signal, Text, View } from 'nsh';
+import {
+  cleanup,
+  effect,
+  inputAction,
+  signal,
+  Text,
+  View,
+  windowSize,
+  type Signal,
+  type JSX,
+} from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { windowSize } from 'nsh';
-import { createSettingsOperations } from './settingsOperations';
-import { createModelSettings } from './settings';
-import { createGeneralSettings } from './generalSettingsState.ts';
-import { createNetworkSettings } from './networkSettingsState.ts';
-import { ConnectionSettings } from './ConnectionSettings';
-import { GeneralSettings } from './GeneralSettings';
-import { NetworkSettings } from './NetworkSettings';
-import { PluginSettings } from './PluginSettings';
-import { createPluginSettings } from './pluginSettingsState.ts';
+import type {
+  UiContext,
+  UiContributionRef,
+  UiHost,
+} from '../../../../packages/plugin-sdk/src/workbench.js';
+import type {
+  SettingsPageInput,
+  SettingsPageNavigation,
+  SettingsRoute,
+  SettingsViewInput,
+} from '../../../../packages/plugin-sdk/src/workbench-views.js';
+import { sameValue } from '../../../../plugins/shared/value';
+import type { SettingsOperations } from './settingsOperations';
+import { contributionTitle } from './plugins/context';
+import { Icon } from './Icon';
+import { tr } from './locale';
+import { dialogTop } from './chrome';
 import {
   C,
   compact,
@@ -39,178 +55,91 @@ import {
   controlHoverStyle,
   controlFocusStyle,
   controlDisabledStyle,
+  textTooltip,
 } from './ui';
-import { Icon } from './Icon';
-import { tr } from './locale';
-import { contributionTitle, pluginContext, type Contribution } from './plugins/context';
-import { sameValue } from '../../../../plugins/shared/value';
-import { PluginView } from './plugins/PluginView';
-import type {
-  InstanceId,
-  ModelSelection,
-} from '../../../../packages/plugin-sdk/src/generated/runtime';
-import { dialogTop } from './chrome';
 
-type BuiltinSection = 'general' | 'connections' | 'network' | 'plugins';
-type Section = BuiltinSection | `ui:${string}`;
-export type SettingsRoute =
-  | { kind: 'builtin'; section: BuiltinSection }
-  | { kind: 'plugin'; instance: InstanceId; id: string };
-const pluginSection = (item: Contribution): Section =>
-  `ui:${JSON.stringify([item.instance.instance, item.id])}`;
-type BackAction = { section: Section; identity: string };
-const sections = [
-  { id: 'general', label: 'General' },
-  { id: 'connections', label: 'Connections & models' },
-  { id: 'network', label: 'Network' },
-  { id: 'plugins', label: 'Plugins' },
-] as const satisfies readonly { id: BuiltinSection; label: string }[];
+type Registration = { key: string; value: SettingsPageNavigation };
+type BackAction = { key: string | null; navigation: string | null };
+const matches = (item: UiContributionRef, route: SettingsRoute | null) =>
+  route !== null && item.id === route.id && sameValue(item.instance.instance, route.instance);
 
-// One native Dialog owns focus restoration. Forms keep their own canonical
-// snapshot and unsaved edits; all writes share the original native journal.
+// Page navigation is registered by the rendered contribution. The dialog owns
+// focus and the original journal; pages own their forms and unsaved drafts.
 export function ModelSettings(props: {
-  close(): void;
-  changed(): void;
-  model?: ModelSelection;
-  initial?: SettingsRoute | null;
-  routeChanged?(route: SettingsRoute): void;
+  context: UiContext<UiHost, JSX.Element>;
+  input: SettingsViewInput;
+  route: Signal<SettingsRoute | null>;
+  defaultRoute: SettingsRoute;
+  operations: SettingsOperations;
+  recover(): void;
 }) {
-  const uiPlugins = pluginContext()!;
-  const section = signal<Section>('connections');
+  const runtime = props.context.runtime;
+  const operations = props.operations;
+  const navigation = signal<Registration | null>(null);
   const rail = () => windowSize().width >= 880 && !compact();
-  const operations = createSettingsOperations();
-  const connections = createModelSettings(
-    props.changed,
-    operations,
-    () => section() === 'connections',
-    props.model,
-  );
-  const general = createGeneralSettings(operations, () => section() === 'general');
-  const network = createNetworkSettings(operations, () => section() === 'network');
-  const plugins = createPluginSettings(operations, () => section() === 'plugins');
-  const pages = { connections, general, network, plugins };
-  const builtin = (value: Section): BuiltinSection | null =>
-    value.startsWith('ui:') ? null : (value as BuiltinSection);
-  const page = (value = section()) => {
-    const id = builtin(value);
-    return id === null ? null : pages[id];
+  const contributed = () => runtime.settings().find((item) => matches(item, props.route()));
+  const page = () => {
+    const registered = navigation();
+    return registered && registered.key === contributed()?.key ? registered.value : null;
   };
-  const contributed = () => uiPlugins.settings().find((item) => pluginSection(item) === section());
-  effect(() => {
-    if (builtin(section()) === null && !contributed()) {
-      section.set('plugins');
-      plugins.activate();
-    }
-  });
+  const busy = () => operations.busy() || (page()?.busy?.() ?? false);
   let alive = true;
   cleanup(() => {
     alive = false;
   });
-  const choose = (request: { from: Section; to: Section }) => {
-    if (!alive || operations.busy() || section() !== request.from || request.from === request.to)
-      return;
+  effect(() => {
+    if (!runtime.ready() || contributed()) return;
+    const fallback =
+      runtime.settings().find((item) => matches(item, props.defaultRoute)) ?? runtime.settings()[0];
+    props.route.set(fallback ? { instance: fallback.instance.instance, id: fallback.id } : null);
+  });
+  const choose = (request: { from: string | null; to: string }) => {
     if (
-      builtin(request.to) === null &&
-      !uiPlugins.settings().some((item) => pluginSection(item) === request.to)
+      !alive ||
+      busy() ||
+      (contributed()?.key ?? null) !== request.from ||
+      request.from === request.to
     )
       return;
-    page(request.from)?.deactivate();
+    const target = runtime.settings().find((item) => item.key === request.to);
+    if (!target) return;
     if (!operations.pending().length) {
       operations.error.set('');
       operations.notice.set('');
     }
-    section.set(request.to);
-    page(request.to)?.activate();
+    props.route.set({ instance: target.instance.instance, id: target.id });
   };
-  let restoring = props.initial;
-  effect(() => {
-    if (!restoring) return;
-    const route = restoring;
-    if (route.kind === 'builtin') {
-      restoring = null;
-      choose({ from: section(), to: route.section });
-    } else if (uiPlugins.ready()) {
-      restoring = null;
-      const item = uiPlugins
-        .settings()
-        .find((item) => item.id === route.id && sameValue(item.instance.instance, route.instance));
-      choose({ from: section(), to: item ? pluginSection(item) : 'plugins' });
-    }
-  });
-  effect(() => {
-    if (restoring) return;
-    const current = builtin(section());
-    if (current) props.routeChanged?.({ kind: 'builtin', section: current });
-    else {
-      const item = contributed();
-      if (item)
-        props.routeChanged?.({
-          kind: 'plugin',
-          instance: item.instance.instance,
-          id: item.id,
-        });
-    }
-  });
   const backAction = (): BackAction => ({
-    section: section(),
-    identity: page()?.navigation() ?? section(),
+    key: contributed()?.key ?? null,
+    navigation: page()?.navigation() ?? null,
   });
   const back = (request: BackAction) => {
     if (
       !alive ||
-      operations.busy() ||
-      section() !== request.section ||
-      (page(request.section)?.navigation() ?? request.section) !== request.identity
+      busy() ||
+      request.key !== (contributed()?.key ?? null) ||
+      request.navigation !== (page()?.navigation() ?? null)
     )
       return;
-    if (page(request.section)?.back() ?? true) props.close();
-  };
-  const close = () => {
-    if (alive && !operations.busy()) props.close();
+    if (page()?.back() ?? true) props.input.close();
   };
   const cancel = (request: BackAction) => () => back(request);
-  const recover = () =>
-    operations.recover(async (original, value) => {
-      const method = original.method;
-      if (original.endpoint === 'agent' && method === 'updateGlobalInstructions')
-        await general.recovered(value);
-      else if (original.endpoint === 'management') plugins.reset();
-      else if (method === 'updateAssistantPreferences') general.reset();
-      else if (method === 'updateNetwork') network.reset();
-      else {
-        connections.reset();
-        props.changed();
-      }
-    });
-  const title = () => {
-    const current = section();
-    switch (current) {
-      case 'connections':
-        return {
-          connections: tr('Connections & models'),
-          providers: tr('Add connection'),
-          connection: tr('Connection settings'),
-          models: tr('Connection models'),
-          model: tr('Model settings'),
-        }[connections.page()];
-      case 'general':
-        return general.title();
-      case 'network':
-        return network.title();
-      case 'plugins':
-        return plugins.title();
-      default: {
-        const item = contributed();
-        return item ? contributionTitle(item) : '';
-      }
-    }
+  const close = () => {
+    if (alive && !busy()) props.input.close();
   };
-  const nested = () =>
-    section() === 'connections'
-      ? connections.page() !== 'connections' || !!connections.confirmation()
-      : section() === 'general'
-        ? general.editor() !== null
-        : section() === 'plugins' && plugins.selected() !== null;
+  const input = (contribution: UiContributionRef): SettingsPageInput => ({
+    settings: {
+      attach(value) {
+        const registration = { key: contribution.key, value };
+        navigation.set(registration);
+        return () => {
+          if (navigation() === registration) navigation.set(null);
+        };
+      },
+    },
+  });
+  const title = () =>
+    page()?.title() ?? (contributed() ? contributionTitle(contributed()!) : tr('Settings'));
   return (
     <Dialog
       animation="none"
@@ -224,7 +153,7 @@ export function ModelSettings(props: {
         alignItems: 'center',
         padding: 16,
         paddingTop: dialogTop(16),
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
       }}
     >
       <View
@@ -251,21 +180,15 @@ export function ModelSettings(props: {
             borderBottomColor: C.line,
           }}
         >
-          <If when={nested()}>
+          <If when={page()?.nested() ?? false}>
             <Button
-              disabled={operations.busy()}
-              accessibilityLabel={
-                section() === 'connections'
-                  ? tr('Back from connection settings')
-                  : section() === 'general'
-                    ? tr('Back from general settings')
-                    : tr('Back from plugins settings')
-              }
+              disabled={busy()}
+              accessibilityLabel={page()?.backLabel?.() ?? tr('Back')}
               tooltip={textTooltip(() => tr('Back'))}
               onPress={inputAction(back, backAction())}
               style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Icon name="back" color={C.secondary} />
@@ -275,13 +198,13 @@ export function ModelSettings(props: {
             {title()}
           </Text>
           <Button
-            disabled={operations.busy()}
+            disabled={busy()}
             accessibilityLabel={tr('Close settings')}
             tooltip={textTooltip(() => tr('Close settings'))}
             onPress={inputAction(close, null)}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="close" color={C.secondary} />
@@ -300,52 +223,28 @@ export function ModelSettings(props: {
               borderRightColor: C.line,
             }}
           >
-            <Each of={sections} key={(item) => item.id}>
+            <Each of={runtime.settings()} key={(item) => item.key}>
               {(item) => (
                 <Button
-                  disabled={operations.busy()}
-                  selected={section() === item().id}
                   accessibilityLabel={tr('Settings section {section}', {
-                    section: tr(item().label),
+                    section: contributionTitle(item()),
                   })}
-                  onPress={inputAction(choose, { from: section(), to: item().id })}
-                  style={{ ...controlStyle, minHeight: rail() ? 40 : 32 }}
-                  selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
-                  disabledStyle={controlDisabledStyle}
-                >
-                  <Text
-                    style={{
-                      ...captionTextStyle,
-                      color: section() === item().id ? C.text : C.muted,
-                    }}
-                  >
-                    {tr(item().label)}
-                  </Text>
-                </Button>
-              )}
-            </Each>
-            <Each of={uiPlugins.settings()} key={(item) => item.key}>
-              {(item) => (
-                <Button
-                  accessibilityLabel={contributionTitle(item())}
-                  disabled={operations.busy()}
-                  selected={section() === pluginSection(item())}
+                  disabled={busy()}
+                  selected={contributed()?.key === item().key}
                   onPress={inputAction(choose, {
-                    from: section(),
-                    to: pluginSection(item()),
+                    from: contributed()?.key ?? null,
+                    to: item().key,
                   })}
                   style={{ ...controlStyle, minHeight: rail() ? 40 : 32 }}
                   selectedStyle={{ backgroundColor: C.raised }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Text
                     style={{
                       ...captionTextStyle,
-                      color: section() === pluginSection(item()) ? C.text : C.muted,
+                      color: contributed()?.key === item().key ? C.text : C.muted,
                     }}
                   >
                     {contributionTitle(item())}
@@ -373,12 +272,12 @@ export function ModelSettings(props: {
                   {tr('Earlier settings actions must be resolved before another change.')}
                 </Text>
                 <Button
-                  disabled={operations.busy()}
+                  disabled={busy()}
                   accessibilityLabel={tr('Recover settings actions')}
-                  onPress={inputAction(recover, null)}
+                  onPress={inputAction(props.recover, null)}
                   style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Text style={{ ...captionTextStyle, color: C.accent }}>
@@ -393,11 +292,11 @@ export function ModelSettings(props: {
                 >
                   {(item) => (
                     <Button
-                      disabled={operations.busy()}
+                      disabled={busy()}
                       onPress={inputAction(operations.abandon, item().id)}
                       style={{ ...controlStyle, alignSelf: 'flex-start' }}
-                      hoverStyle={controlHoverStyle}
-                      focusStyle={controlFocusStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
                       disabledStyle={controlDisabledStyle}
                     >
                       <Text style={{ ...captionTextStyle, color: C.warning }}>
@@ -408,20 +307,8 @@ export function ModelSettings(props: {
                 </Each>
               </View>
             </If>
-            <If when={section() === 'connections'}>
-              <ConnectionSettings owner={connections} />
-            </If>
-            <If when={section() === 'general'}>
-              <GeneralSettings owner={general} />
-            </If>
-            <If when={section() === 'network'}>
-              <NetworkSettings owner={network} />
-            </If>
-            <If when={section() === 'plugins'}>
-              <PluginSettings owner={plugins} />
-            </If>
             <Each of={contributed() ? [contributed()!] : []} key={(item) => item.key}>
-              {(item) => <PluginView contribution={item()} sessionId={uiPlugins.sessionId} />}
+              {(item) => runtime.render(item(), { sessionId: null, input: input(item()) })}
             </Each>
           </View>
         </View>

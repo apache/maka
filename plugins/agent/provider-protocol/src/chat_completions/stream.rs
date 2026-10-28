@@ -187,7 +187,7 @@ impl Stream {
                         let data =
                             serde_json::to_value(&error.error).expect("error fields are JSON");
                         events.push(Event::ProviderError(ProviderError {
-                            message: error.error.message,
+                            message: Some(error.error.message),
                             kind: data["type"].as_str().map(str::to_owned),
                             code: data.get("code").cloned(),
                             status: None,

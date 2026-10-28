@@ -54,14 +54,14 @@ covers [props] ContextMenu.offset
 covers [props] ContextMenu.margin
 # A tooltip after the pointer rested on its trigger for `delay`, gone when
 # the pointer leaves.
-event text:SlowTrigger onHoverIn
+event text:SlowTrigger onMouseEnter
 wait 1000
 absent SlowTip
 wait 1500
 expect SlowTip
 expect Log: tooltip true hover
 expect Tip: open
-event text:SlowTrigger onHoverOut
+event text:SlowTrigger onMouseLeave
 absent SlowTip
 expect Log: tooltip false hover
 expect Tip: closed
@@ -71,15 +71,52 @@ covers [events] Tooltip.onOpen
 covers [events] Tooltip.onClose
 # An element's `tooltip`: shown after half a second, gone on a press, and
 # gone when the pointer leaves.
-event id:prop-tip onHoverIn
+event id:prop-tip onMouseEnter
 wait 700
 expect PropTip
 touch start id:prop-tip 5 5
 touch end
 absent PropTip
-event text:ElementTrigger onHoverIn
+event text:ElementTrigger onMouseEnter
 wait 700
 expect ElementTip
-event text:ElementTrigger onHoverOut
+event text:ElementTrigger onMouseLeave
 absent ElementTip
 covers [props] tooltip
+# base-select-desktop
+tap id:case-base-select-desktop
+# A list at the right of its trigger, 7 points away, lined up by its end
+# but kept 5 points from the top; its search field takes the keyboard at
+# once.
+tap text:SideSelect
+expect Desk: true triggerPress
+expect Kiwi
+frame parent:scroll:label:Kiwi 127 5 120 600
+prop below:scroll:label:Kiwi autoFocus true
+# A press outside closes it.
+touch start text:Elsewhere 5 5
+touch end
+expect Desk: false pressOutside
+absent Kiwi
+covers [props] Select.placement
+covers [props] Select.align
+covers [props] Select.offset
+covers [props] Select.margin
+# Below its trigger by default, lined up by its start: as wide as the
+# trigger (150) and as tall as its one row (30).
+tap text:WideSelect
+expect Lime
+frame parent:scroll:label:Lime 20 368 150 30
+touch start text:Elsewhere 5 5
+touch end
+absent Lime
+
+# The browser-JS backend shares the app's brands and preserves queued jobs.
+tap id:case-runtime-identities
+expect Buffer brand: true
+expect Cleanup identity: true
+expect Callback error: TypeError
+expect Ticks: 0
+tap id:runtime-tick
+wait 20
+expect Ticks: 1

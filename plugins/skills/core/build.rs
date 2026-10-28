@@ -25,6 +25,11 @@ use std::{
 
 const AUTHORING_RESOURCES: &[&str] = &[
     "agents/openai.yaml",
+    "assets/composer-ui/README.md",
+    "assets/composer-ui/README.zh-CN.md",
+    "assets/composer-ui/build.mjs",
+    "assets/composer-ui/index.tsx",
+    "assets/composer-ui/package.ts",
     "assets/starter/create.mjs",
     "assets/starter/host.mjs",
     "assets/starter/ui.tsx",
@@ -41,6 +46,7 @@ const AUTHORING_RESOURCES: &[&str] = &[
     "references/tools-and-input.md",
 ];
 const SDK_RESOURCES: &[&str] = &[
+    "composer-view.ts",
     "configurations.ts",
     "contracts.ts",
     "generated/runtime.ts",
@@ -48,6 +54,8 @@ const SDK_RESOURCES: &[&str] = &[
     "index.ts",
     "native.ts",
     "workbench.ts",
+    "workbench-views.ts",
+    "workspace-view.ts",
 ];
 
 fn declared_file(root: &Path, relative: &str) -> PathBuf {
@@ -233,9 +241,6 @@ fn main() {
             document.to_str().unwrap()
         ));
         for (name, path) in files {
-            if path.starts_with(repo) {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
             source.push_str(&format!(
                 "({name:?}, include_bytes!({:?})),\n",
                 path.to_str().unwrap()

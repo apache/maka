@@ -19,18 +19,59 @@
 
 import { createText, UiError, errorText } from './text';
 import { tr } from './locale';
-import { batch, cleanup, inputAction, signal, Text, View, List } from 'nsh';
+import {
+  batch,
+  cleanup,
+  createAnimatedValue,
+  inputAction,
+  LayoutAnimation,
+  reduceMotion,
+  signal,
+  Text,
+  View,
+  List,
+} from 'nsh';
 import { Button } from 'nsh/base';
 import { windowSize } from 'nsh';
-import { host } from './host';
+import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Subscription } from './history';
 import type { AgentChecklist, AgentTodoItem } from '../../../../packages/plugin-sdk/src/index.js';
 import { C, bodyTextStyle, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
 import { ChoiceIndicator } from './ChoiceIndicator';
 
-export function Checklist(props: { sessionId: string }) {
+/**
+ * The next layout change springs: the dock and the column above it settle
+ * with one small overshoot instead of jumping.
+ */
+const springNext = () => {
+  if (reduceMotion()) return;
+  LayoutAnimation.configureNext({
+    duration: 420,
+    create: { type: 'easeOut', property: 'opacity', duration: 160 },
+    update: { type: 'spring', springDamping: 0.6 },
+    delete: { type: 'easeOut', property: 'opacity', duration: 120 },
+  });
+};
+
+/**
+ * The conversation's todo dock. On the desktop, `tuck` is the corner radius of
+ * the composer below: the dock takes its top corners and sits on the composer,
+ * which squares its own top corners while `joined` reports the dock shown, so
+ * the two read as one card divided by the composer's top border.
+ */
+export function Checklist(props: {
+  sessionId: string;
+  source: ComposerChecklistSource;
+  tuck?: number;
+  joined?: (shown: boolean) => void;
+}) {
   const sessionId = props.sessionId;
+  const source = props.source;
+  // How far the dock sits below its place: it rises from behind the composer
+  // when it appears during the conversation, not when the conversation opens.
+  const rise = createAnimatedValue(0);
+  let riseOnMount = false;
   const snapshot = signal<AgentChecklist | null>(null);
   const items = signal<AgentTodoItem[]>([]);
   const nextOffset = signal<AgentChecklist['nextOffset']>(null);
@@ -43,6 +84,7 @@ export function Checklist(props: { sessionId: string }) {
   const setExpanded = (action: { sessionId: string; open: boolean }) => {
     const page = snapshot();
     if (!alive || action.sessionId !== sessionId || !page?.enabled || page.total === 0) return;
+    if (props.tuck !== undefined) springNext();
     expanded.set(action.open);
   };
   const loadMore = async () => {
@@ -53,7 +95,7 @@ export function Checklist(props: { sessionId: string }) {
     loading.set(true);
     error.set('');
     try {
-      const next: AgentChecklist = await host.query('agent', 'checklist', { sessionId, offset });
+      const next = await source.read(offset);
       // A replacement invalidates every previously loaded page. Never stitch
       // pages from two checklist revisions; the watch supplies the new head.
       if (!alive || currentGeneration !== generation || next.revision !== page.revision) return;
@@ -69,12 +111,13 @@ export function Checklist(props: { sessionId: string }) {
   };
   cleanup(() => {
     alive = false;
+    props.joined?.(false);
     const previous = stream;
     stream = null;
     if (previous) void previous.close().catch(() => {});
   });
   void (async () => {
-    const opened = await host.subscribe('agent', 'watchChecklist', { sessionId, offset: 0 });
+    const opened = await source.watch(0);
     if (!alive) {
       await opened.close();
       return;
@@ -87,7 +130,14 @@ export function Checklist(props: { sessionId: string }) {
         if (page === null) throw new UiError('Checklist updates ended. Reopen the conversation.');
         if (snapshot() && page.revision === snapshot()!.revision) continue;
         generation += 1;
+        const shown = (value: AgentChecklist | null) => !!value?.enabled && value.total > 0;
+        const before = snapshot();
+        if (props.tuck !== undefined && before !== null && shown(page) !== shown(before)) {
+          springNext();
+          riseOnMount = shown(page);
+        }
         batch(() => {
+          props.joined?.(shown(page));
           snapshot.set(page);
           items.set(page.items);
           nextOffset.set(page.nextOffset);
@@ -108,16 +158,44 @@ export function Checklist(props: { sessionId: string }) {
     <If when={snapshot()?.enabled && snapshot()!.total > 0}>
       <View
         accessibilityLabel={tr('Conversation todo dock')}
-        style={{ backgroundColor: C.surface, borderRadius: 8 }}
+        ref={() => {
+          if (!riseOnMount || reduceMotion()) return;
+          riseOnMount = false;
+          rise.set(48);
+          void rise.spring(0, { stiffness: 360, damping: 17 });
+        }}
+        style={
+          props.tuck === undefined
+            ? { backgroundColor: C.surface, borderRadius: 8 }
+            : {
+                backgroundColor: C.raised,
+                borderWidth: 1,
+                borderColor: C.line,
+                borderTopLeftRadius: props.tuck,
+                borderTopRightRadius: props.tuck,
+                borderBottomLeftRadius: 0,
+                borderBottomRightRadius: 0,
+                overflow: 'hidden',
+                // The composer's top border draws the line between the two.
+                marginBottom: -1,
+                transform: [{ translateY: rise }],
+              }
+        }
       >
         <Button
           accessibilityLabel={tr('Toggle conversation todo')}
           selected={expanded()}
           onPress={inputAction(setExpanded, { sessionId, open: !expanded() })}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          hoverStyle={{ backgroundColor: C.raised }}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            ...(props.tuck === undefined ? {} : { borderRadius: 0, paddingHorizontal: 16 }),
+          }}
+          hoverStyle={{ backgroundColor: props.tuck === undefined ? C.raised : C.line }}
           focusStyle={{ backgroundColor: C.line }}
-          activeStyle={{ backgroundColor: C.raised }}
+          activeStyle={{ backgroundColor: props.tuck === undefined ? C.raised : C.line }}
         >
           <Icon name={expanded() ? 'down' : 'right'} color={C.secondary} />
           <Text style={{ ...captionTextStyle, color: C.text }}>
@@ -144,7 +222,7 @@ export function Checklist(props: { sessionId: string }) {
               <View
                 style={{
                   minHeight: 32,
-                  paddingHorizontal: 12,
+                  paddingHorizontal: props.tuck === undefined ? 12 : 16,
                   paddingVertical: 8,
                   flexDirection: 'row',
                   alignItems: 'flex-start',

@@ -42,8 +42,8 @@ function DayRange(props: { stock: Stock }) {
     <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
       <Text style={{ fontSize: 12, color: colors.muted, fontVariant: ["tabular-nums"] }}>L {p(q().low)}</Text>
       <View
-        onLayout={(e) => {
-          width = e.size.width;
+        onLayout={({ bounds }) => {
+          width = bounds.size.width;
           place();
         }}
         accessibilityLabel={`Day range ${p(q().low)} to ${p(q().high)}`}
@@ -226,10 +226,18 @@ function PauseButton(props: { market: Market }) {
       onPress={() => (props.market.running() ? props.market.stop() : props.market.start())}
       hitSlop={6}
       accessibilityLabel={props.market.running() ? "Pause the market" : "Resume the market"}
+      hoverStyle={props.market.running() ? finish.hover : { opacity: 0.94 }}
+      style={{
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        alignItems: "center",
+        justifyContent: "center",
+        borderWidth: 1,
+        ...(props.market.running() ? finish.pill : finish.accent),
+      }}
     >
-      <View style={[{ width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" }, props.market.running() ? { ...finish.pill, borderWidth: 1 } : finish.accent]}>
-        <Icon name={props.market.running() ? "pause" : "play"} size={13} tint={props.market.running() ? colors.muted : colors.onAccent} />
-      </View>
+      <Icon name={props.market.running() ? "pause" : "play"} size={13} tint={props.market.running() ? colors.muted : colors.onAccent} />
     </Press>
   );
 }
@@ -356,8 +364,8 @@ export function StockView(props: { market: Market; stock: Stock; wide?: boolean;
         </View>
       </View>
       {banner.view}
-      {/* The ticket: a bottom sheet on phones, a card in the window on
-          desktops (Escape or a click outside closes it). */}
+      {/* The ticket: a bottom sheet on phones, a dialog card in the middle
+          of the window on desktops (Escape or a click outside closes it). */}
       <If
         when={props.wide}
         else={
@@ -366,8 +374,24 @@ export function StockView(props: { market: Market; stock: Stock; wide?: boolean;
           </Sheet>
         }
       >
-        <Dialog open={ticket()} presentation="formSheet" onOpenChange={(open) => ticket.set(open)} style={{ flex: 1 }}>
-          <View style={{ flex: 1, padding: 20, backgroundColor: colors.surface }}>{ticketView}</View>
+        <Dialog
+          open={ticket()}
+          animation="fade"
+          onOpenChange={({ open }) => ticket.set(open)}
+          backdropStyle={{ backgroundColor: "rgba(0,0,0,0.32)" }}
+          style={{
+            alignSelf: "center",
+            marginVertical: "auto",
+            width: 400,
+            padding: 20,
+            borderRadius: 12,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            backgroundColor: colors.surface,
+            ...finish.menu,
+          }}
+        >
+          {ticketView}
         </Dialog>
       </If>
     </View>

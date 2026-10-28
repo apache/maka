@@ -64,7 +64,6 @@ members = [
     "platform/presentation",
     "platform/process",
     "plugins/agent/providers",
-    "plugins/agent/responses",
     "platform/host-runtime",
     "platform/host-js",
     "platform/sandbox",
@@ -167,7 +166,6 @@ maka-plugin-core = { path = "platform/plugin-core" }
 maka-presentation = { path = "platform/presentation" }
 maka-process = { path = "platform/process" }
 maka-providers = { path = "plugins/agent/providers" }
-maka-responses = { path = "plugins/agent/responses" }
 maka-host-runtime = { path = "platform/host-runtime" }
 maka-host-js = { path = "platform/host-js" }
 maka-sandbox = { path = "platform/sandbox" }

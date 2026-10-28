@@ -323,7 +323,9 @@ async fn edited_and_promoted_resource_sources_are_atomic_and_survive_restart_and
         (
             "branch",
             CopyPurpose::Branch {
-                turn_id: Some("turn".into()),
+                position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                    turn_id: "turn".into(),
+                },
                 side_conversation: false,
             },
         ),

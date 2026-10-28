@@ -41,8 +41,17 @@ pub struct AlertDialogAction {
     /// What it means: the platform places and draws it by its role.
     #[prop(default)]
     pub role: AlertDialogRole,
-    /// What `show` resolves with when it is chosen (default: its label).
-    pub id: Option<SharedString>,
+    /// What `show` reports when it is chosen (`{ action: id }`): the app's
+    /// name for it, never the label, which changes with the app's language.
+    pub id: SharedString,
+}
+
+/// What [`AlertDialog`]'s `show` resolves with.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct AlertDialogResult {
+    /// The chosen action's `id`, or `null` when it closed without one.
+    pub action: Option<SharedString>,
 }
 
 /// What an [`AlertDialogAction`] means.
@@ -80,10 +89,10 @@ pub enum AlertDialogPresentation {
 
 #[module]
 impl AlertDialog {
-    /// Shows the dialog and resolves with the chosen action's `id` (its
-    /// `label` without one), or `null` when it closed without an action.
-    /// Rejects without actions.
-    pub async fn show(options: AlertDialogOptions) -> Result<Option<SharedString>, String> {
+    /// Shows the dialog and resolves with `{ action }`: the chosen
+    /// action's `id`, or `null` when it closed without an action. Rejects
+    /// without actions.
+    pub async fn show(options: AlertDialogOptions) -> Result<AlertDialogResult, String> {
         options.show().await
     }
 }
@@ -96,11 +105,11 @@ impl AlertDialog {
 /// let answer = alert_dialog()
 ///     .title("Delete the photo?")
 ///     .description("This cannot be undone.")
-///     .cancel("Cancel")
-///     .destructive("Delete")
+///     .cancel("cancel", "Cancel")
+///     .destructive("delete", "Delete")
 ///     .show();
 /// spawn(async move {
-///     if answer.await == Ok(Some("Delete".into())) { /* … */ }
+///     if answer.await.is_ok_and(|r| r.action.as_deref() == Some("delete")) { /* … */ }
 /// });
 /// ```
 pub fn alert_dialog() -> AlertDialogOptions {
@@ -121,29 +130,26 @@ impl AlertDialogOptions {
     }
 
     /// Adds a regular action saying `label`, which [`show`](Self::show)
-    /// answers when it is chosen. Actions show in the order they are added.
-    pub fn action(self, label: impl Into<SharedString>) -> Self {
-        self.push_action(label.into(), AlertDialogRole::Default)
+    /// reports as `id` when it is chosen. Actions show in the order they
+    /// are added.
+    pub fn action(self, id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        self.push_action(id.into(), label.into(), AlertDialogRole::Default)
     }
 
     /// Adds the action that closes without doing anything (role
     /// `"cancel"`).
-    pub fn cancel(self, label: impl Into<SharedString>) -> Self {
-        self.push_action(label.into(), AlertDialogRole::Cancel)
+    pub fn cancel(self, id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        self.push_action(id.into(), label.into(), AlertDialogRole::Cancel)
     }
 
     /// Adds an action that destroys or deletes something (role
     /// `"destructive"`).
-    pub fn destructive(self, label: impl Into<SharedString>) -> Self {
-        self.push_action(label.into(), AlertDialogRole::Destructive)
+    pub fn destructive(self, id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        self.push_action(id.into(), label.into(), AlertDialogRole::Destructive)
     }
 
-    fn push_action(mut self, label: SharedString, role: AlertDialogRole) -> Self {
-        self.actions.push(AlertDialogAction {
-            label,
-            role,
-            id: None,
-        });
+    fn push_action(mut self, id: SharedString, label: SharedString, role: AlertDialogRole) -> Self {
+        self.actions.push(AlertDialogAction { label, role, id });
         self
     }
 
@@ -168,15 +174,15 @@ impl AlertDialogOptions {
         self
     }
 
-    /// Shows the dialog now; the answer, to await in a task, is the chosen
-    /// action's `id` (its `label` without one), or `None` when it closed
+    /// Shows the dialog now; the answer, to await in a task, is
+    /// `{ action }`: the chosen action's `id`, or `None` when it closed
     /// without an action. An error without actions.
-    pub fn show(self) -> impl Future<Output = Result<Option<SharedString>, String>> + 'static {
+    pub fn show(self) -> impl Future<Output = Result<AlertDialogResult, String>> + 'static {
         let shown = (!self.actions.is_empty()).then(|| {
             let sheet = self.presentation == AlertDialogPresentation::ActionSheet;
             let cancelable = self.close_on_escape.unwrap_or(sheet)
                 || self.close_on_backdrop_press.unwrap_or(sheet);
-            nsh_core::element::ambient::dialog(Dialog {
+            nsh_core::element::dialog(Dialog {
                 id: 0,
                 title: self.title.as_ref().map(|t| t.to_string()),
                 message: self.description.as_ref().map(|m| m.to_string()),
@@ -194,10 +200,12 @@ impl AlertDialogOptions {
         });
         async move {
             let index = shown.ok_or("AlertDialog.show: `actions` is empty")?.await;
-            Ok(usize::try_from(index)
-                .ok()
-                .and_then(|i| self.actions.get(i))
-                .map(|a| a.id.clone().unwrap_or_else(|| a.label.clone())))
+            Ok(AlertDialogResult {
+                action: usize::try_from(index)
+                    .ok()
+                    .and_then(|i| self.actions.get(i))
+                    .map(|a| a.id.clone()),
+            })
         }
     }
 }
@@ -212,14 +220,14 @@ mod tests {
             .title("Share")
             .description("The photo")
             .action_sheet()
-            .cancel("Cancel")
-            .action("Save")
-            .destructive("Delete")
+            .cancel("cancel", "Cancel")
+            .action("save", "Save")
+            .destructive("delete", "Delete")
             .close_on_escape(false);
         let action = |label: &'static str, role| AlertDialogAction {
             label: label.into(),
             role,
-            id: None,
+            id: label.to_lowercase().into(),
         };
         assert_eq!(
             options,

@@ -226,6 +226,22 @@ jobs:
           test "$available" -ge 4294967296 || { echo "Web text tests require 4 GiB free before compilation" >&2; exit 1; }
           cargo test --locked --manifest-path third-party/nsh/Cargo.toml \
             -p nsh-platform-web --no-default-features --test text
+      - name: Test Web shader lifecycle in the installed browser
+        shell: bash
+        run: |
+          chrome=$(command -v google-chrome || command -v chromium || command -v chromium-browser) || {
+            echo "A preinstalled Chrome/Chromium is required for Web shader lifecycle tests" >&2
+            exit 1
+          }
+          "$chrome" --version
+          node --test third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs
+          CHROME="$chrome" node --test --test-reporter=tap \
+            third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs \
+            | tee "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
+          grep -Fx '# tests 2' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
+          grep -Fx '# pass 2' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
+          grep -Fx '# fail 0' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
+          grep -Fx '# skipped 0' "$RUNNER_TEMP/nsh-shader-browser-tests.tap"
       # This owning workspace has a distinct lock/patch graph; root build
       # artifacts are not assumed reusable. Selected tests open no native window.
       - name: Check GPUI test build reserve

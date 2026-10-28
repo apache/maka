@@ -30,6 +30,8 @@ pub struct StoredSessionConfiguration {
     pub collaboration_mode: maka_agent_facts::execution::CollaborationMode,
     #[serde(default)]
     pub tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_prompt: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
     pub labels: Vec<String>,
@@ -51,6 +53,8 @@ pub struct ResolvedConfiguration {
     pub collaboration_mode: maka_agent_facts::execution::CollaborationMode,
     #[serde(default)]
     pub tools: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_prompt: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
     pub labels: Vec<String>,
@@ -74,6 +78,7 @@ impl StoredSessionConfiguration {
             backend: self.backend,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
+            compaction_prompt: self.compaction_prompt,
             title: self.title,
             title_is_manual: self.title_is_manual,
             labels: self.labels,
@@ -100,6 +105,7 @@ impl ResolvedConfiguration {
             backend: self.backend,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
+            compaction_prompt: self.compaction_prompt,
             title: self.title,
             title_is_manual: self.title_is_manual,
             labels: self.labels,

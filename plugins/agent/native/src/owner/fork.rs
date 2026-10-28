@@ -49,7 +49,7 @@ impl Owner {
             target_session_id: self.operation_id(operation),
             expected_source_revision: input.expected_revision,
             purpose: CopyPurpose::Branch {
-                turn_id: input.turn_id,
+                position: input.position,
                 side_conversation: true,
             },
         };
@@ -155,6 +155,7 @@ impl Owner {
             .map_err(fork_failure)?;
         let configuration = StoredSessionConfiguration {
             backend: parent.backend,
+            compaction_prompt: parent.compaction_prompt,
             collaboration_mode: CollaborationMode::Agent,
             tools,
             title: input.title,

@@ -274,8 +274,8 @@ function App() {
         pan={{ x, y }}
         onPanEnd={(e) => {
           // 以松手时的速度弹回原位。
-          x.spring(0, { velocity: e.velocityX });
-          y.spring(0, { velocity: e.velocityY });
+          x.spring(0, { velocity: e.velocity.x });
+          y.spring(0, { velocity: e.velocity.y });
         }}
         style={{ width: 120, height: 120, borderRadius: 24, backgroundColor: "#8250df", translate: [x, y] }}
       />
@@ -295,7 +295,7 @@ mount(App);
 | `.on_pinch_start` / `.on_pinch_end` | `onPinchStart` / `onPinchEnd` | 捏合开始 / 结束：缩放倍数和速度（`GestureEvent`）。 |
 | `.on_rotation_start` / `.on_rotation_end` | `onRotationStart` / `onRotationEnd` | 旋转开始 / 结束：角度（Rust 中为 `GestureEvent<Radians>`）和速度。 |
 
-拖动事件包含位移（`translation`；TSX：`translationX` / `translationY`，自开始以来移动的点数）、速度（`velocity_x` / `velocity_y`；TSX：`velocityX` / `velocityY`，每**秒**的点数）以及此刻所绑定的值（`value_x` / `value_y`；TSX：`valueX` / `valueY`）。
+拖动事件包含位移（`translation`，一个 `Point`：自开始以来移动的点数）、速度（`velocity_x` / `velocity_y`；TSX：`velocity`，一个 `Point`：每**秒**的点数）以及此刻所绑定的值（`value_x` / `value_y`；TSX：`value`，`{ x?, y? }`，含 `pan` 绑定的轴）。
 
 原生端替你做了这些事：
 
@@ -321,8 +321,8 @@ view()
 <View
   pan={{ x }}
   onPanEnd={(e) => {
-    const projected = (e.valueX ?? 0) + e.velocityX * 0.2;
-    x.spring(projected > 0 ? 140 : -140, { velocity: e.velocityX });
+    const projected = (e.value?.x ?? 0) + e.velocity.x * 0.2;
+    x.spring(projected > 0 ? 140 : -140, { velocity: e.velocity.x });
   }}
   style={{ translate: [x, 0] }}
 />
@@ -402,7 +402,7 @@ view()
 ```
 
 ```tsx tabs
-let track!: YNode;
+let track!: ViewRef;
 let origin = 0;
 <View
   ref={track}

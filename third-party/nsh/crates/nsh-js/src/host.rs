@@ -664,11 +664,40 @@ impl Host {
                     return;
                 }
                 let payload = match (event, payload) {
-                    // `onChange` receives the text itself, as in React Native.
+                    // `onChange({ value })`: the text, in one object as every
+                    // event (`api-naming.md` "Payloads").
                     (EventKind::ChangeText, EventPayload::Text { text, .. }) => {
-                        rquickjs::String::from_str(cx.clone(), text).map(|s| s.into_value())
+                        rquickjs::Object::new(cx.clone()).and_then(|o| {
+                            o.set("value", text.as_str())?;
+                            Ok(o.into_value())
+                        })
                     }
                     (_, EventPayload::Value(value)) => payload_value(&cx, value),
+                    // `onContentSizeChange({ size })`.
+                    (EventKind::ContentSizeChange, EventPayload::Map(fields)) => {
+                        rquickjs::Object::new(cx.clone()).and_then(|o| {
+                            o.set(
+                                "size",
+                                payload_object(&cx, &EventPayload::Map(fields.clone()))?,
+                            )?;
+                            Ok(o.into_value())
+                        })
+                    }
+                    // Presses always pass their event: where the backend
+                    // does not know the pointer, at the view's origin.
+                    (
+                        EventKind::Press
+                        | EventKind::LongPress
+                        | EventKind::PressDown
+                        | EventKind::PressUp,
+                        EventPayload::None,
+                    ) => payload_object(
+                        &cx,
+                        &EventPayload::Press(nsh_core::PressEvent {
+                            clicks: 1,
+                            ..Default::default()
+                        }),
+                    ),
                     // A video's `onLoad`: `{ duration, size }` of the
                     // platforms' `duration`, `width` and `height`.
                     (EventKind::Load, EventPayload::Map(fields))
@@ -1263,12 +1292,18 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             obj.set("modifiers", modifiers_object(cx, modifiers)?)?;
             obj.set("clickCount", *clicks)?;
         }
-        EventPayload::Hover(nsh_core::HoverEvent {
-            position,
-            page_position,
-            modifiers,
-        })
-        | EventPayload::ContextMenu(nsh_core::ContextMenuEvent {
+        EventPayload::Mouse(e) => {
+            obj.set("position", point_object(cx, e.position)?)?;
+            obj.set("pagePosition", point_object(cx, e.page_position)?)?;
+            obj.set("modifiers", modifiers_object(cx, &e.modifiers)?)?;
+            // `null` with no button down, as declared (an absent field
+            // would read `undefined`).
+            match e.pressed_button {
+                Some(button) => obj.set("pressedButton", button.name())?,
+                None => obj.set("pressedButton", Value::new_null(cx.clone()))?,
+            }
+        }
+        EventPayload::ContextMenu(nsh_core::ContextMenuEvent {
             position,
             page_position,
             modifiers,
@@ -1277,12 +1312,15 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             obj.set("pagePosition", point_object(cx, *page_position)?)?;
             obj.set("modifiers", modifiers_object(cx, modifiers)?)?;
         }
-        EventPayload::FileDrop(uris) => {
+        EventPayload::FileDrop(uris) | EventPayload::FileDropAt { uris, .. } => {
             let list = rquickjs::Array::new(cx.clone())?;
             for (index, uri) in uris.iter().enumerate() {
                 list.set(index, uri.as_str())?;
             }
             obj.set("uris", list)?;
+            if let EventPayload::FileDropAt { page_position, .. } = payload {
+                obj.set("pagePosition", point_object(cx, *page_position)?)?;
+            }
         }
         // The bytes cross natively: each file is a `File` over them.
         EventPayload::Paste(paste) => {
@@ -1334,7 +1372,7 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
             }
             obj.set("lines", list)?;
         }
-        EventPayload::Layout(frame) => return Ok(bounds_object(cx, *frame)?.into_value()),
+        EventPayload::Layout(frame) => obj.set("bounds", bounds_object(cx, *frame)?)?,
         EventPayload::Pan {
             translation,
             velocity_x,
@@ -1353,25 +1391,30 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
                 "cancelled",
                 matches!(payload, EventPayload::PanCancelled { .. }),
             )?;
-            obj.set("translationX", translation.x.0)?;
-            obj.set("translationY", translation.y.0)?;
-            obj.set("velocityX", *velocity_x)?;
-            obj.set("velocityY", *velocity_y)?;
-            if let Some(v) = value_x {
-                obj.set("valueX", v.0)?;
-            }
-            if let Some(v) = value_y {
-                obj.set("valueY", v.0)?;
+            obj.set("translation", point_object(cx, *translation)?)?;
+            let velocity = rquickjs::Object::new(cx.clone())?;
+            velocity.set("x", *velocity_x)?;
+            velocity.set("y", *velocity_y)?;
+            obj.set("velocity", velocity)?;
+            // The bound values, those of the axes `pan` binds.
+            if value_x.is_some() || value_y.is_some() {
+                let value = rquickjs::Object::new(cx.clone())?;
+                if let Some(v) = value_x {
+                    value.set("x", v.0)?;
+                }
+                if let Some(v) = value_y {
+                    value.set("y", v.0)?;
+                }
+                obj.set("value", value)?;
             }
         }
-        EventPayload::Scroll(offset) => {
-            obj.set("x", offset.x.0)?;
-            obj.set("y", offset.y.0)?;
-        }
+        EventPayload::Scroll(offset) => obj.set("offset", point_object(cx, *offset)?)?,
         // The numbers JS always got (pixels are whole).
         EventPayload::Image(size) => {
-            obj.set("width", size.width.0 as f32)?;
-            obj.set("height", size.height.0 as f32)?;
+            let pixels = rquickjs::Object::new(cx.clone())?;
+            pixels.set("width", size.width.0 as f32)?;
+            pixels.set("height", size.height.0 as f32)?;
+            obj.set("size", pixels)?;
         }
         EventPayload::Error { message } => obj.set("message", message.as_str())?,
         EventPayload::Text { text, .. } => obj.set("text", text.as_str())?,
@@ -2008,8 +2051,8 @@ const report = (v) => text(String(v));
         assert_eq!(
             errors,
             [
-                "TypeError: keymap.focusedWithin: expected a YNode",
-                "TypeError: keymap.bind within: expected a YNode",
+                "TypeError: keymap.focusedWithin: expected a ViewRef",
+                "TypeError: keymap.bind within: expected a ViewRef",
                 "TypeError: keymap.focusedWithin: requires native focus scopes",
                 "TypeError: keymap.bind within: requires native focus scopes",
             ],
@@ -2430,19 +2473,20 @@ const report = (v) => text(String(v));
     }
 
     #[test]
-    fn hover_payload_has_both_positions_and_the_modifiers() {
+    fn mouse_payload_has_both_positions_the_modifiers_and_the_button() {
         let host = Host::new().unwrap();
-        let event = nsh_core::HoverEvent {
-            position: point(px(3.0), px(4.5)),
-            page_position: point(px(30.0), px(40.5)),
-            modifiers: nsh_core::keymap::Modifiers {
+        let event = nsh_core::MouseEvent::new(
+            point(px(3.0), px(4.5)),
+            point(px(30.0), px(40.5)),
+            nsh_core::keymap::Modifiers {
                 shift: true,
                 cmd: true,
                 ..Default::default()
             },
-        };
+            Some(nsh_core::MouseButton::Left),
+        );
         host.cx.with(|cx| {
-            let value = payload_object(&cx, &EventPayload::Hover(event)).unwrap();
+            let value = payload_object(&cx, &EventPayload::Mouse(event)).unwrap();
             let obj = value.as_object().unwrap();
             let num = |o: &str, k: &str| {
                 let o: rquickjs::Object = obj.get(o).unwrap();
@@ -2463,6 +2507,11 @@ const report = (v) => text(String(v));
             );
             assert!(flag("shift") && flag("platform"));
             assert!(!flag("alt") && !flag("control"));
+            assert_eq!(obj.get::<_, String>("pressedButton").unwrap(), "left");
+            let none = nsh_core::MouseEvent::default();
+            let value = payload_object(&cx, &EventPayload::Mouse(none)).unwrap();
+            let pressed: Value = value.as_object().unwrap().get("pressedButton").unwrap();
+            assert!(pressed.is_null());
         });
     }
 

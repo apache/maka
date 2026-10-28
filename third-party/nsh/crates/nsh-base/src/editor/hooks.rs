@@ -410,10 +410,13 @@ impl Ed {
 
     // Hover.
 
-    /// The mouse moved over the rows (no button down), or the modifiers
-    /// changed while it rests (the platforms report that as a move to
-    /// where it is).
-    pub(crate) fn hover_move(&self, e: &HoverEvent) {
+    /// The mouse moved over the rows, or the modifiers changed while it
+    /// rests (the platforms report that as a move to where it is). A move
+    /// with a button down is a drag, which selects: no hover follows it.
+    pub(crate) fn hover_move(&self, e: &MouseEvent) {
+        if e.pressed_button.is_some() {
+            return;
+        }
         self.pointer_seen(e.position, e.page_position);
         let before = self.hooks.hover.borrow().pointer;
         // Only the modifiers changed: the pointer still rests since it came.

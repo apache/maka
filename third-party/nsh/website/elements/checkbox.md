@@ -51,7 +51,7 @@ function App() {
   return (
     <Checkbox
       checked={on()}
-      onChange={(next) => on.set(next)}
+      onChange={({ checked }) => on.set(checked)}
       class="flex-row items-center gap-2"
       indicatorClass="size-5 items-center justify-center rounded-md border-2 border-border transition-colors checked:border-primary checked:bg-primary"
       indicator={<Text class="text-primary-foreground">{on() ? "✓" : ""}</Text>}
@@ -92,7 +92,7 @@ the checkbox.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onChange` | `.on_change(\|checked: &bool\| ..)` | The checkbox was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation. It reports the value the checkbox asks for: `true` from unchecked and from indeterminate, `false` from checked. |
+| `onChange` | `.on_change(\|checked: &bool\| ..)` | The checkbox was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation. It reports the value the checkbox asks for as `checked`: `true` from unchecked and from indeterminate, `false` from checked. |
 
 A disabled checkbox reports nothing.
 
@@ -122,7 +122,7 @@ const some = () => selected().length > 0 && !all();
 <Checkbox
   checked={all()}
   indeterminate={some()}
-  onChange={(next) => selected.set(next ? items.map((i) => i.id) : [])}
+  onChange={({ checked }) => selected.set(checked ? items.map((i) => i.id) : [])}
   class="flex-row items-center gap-2"
   indicatorClass="group size-5 items-center justify-center rounded-md border-2 border-border checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary"
   indicator={
@@ -145,7 +145,7 @@ its indicator apply, over their `checked:` and `indeterminate:` ones:
 <Checkbox
   checked={on()}
   disabled={locked()}
-  onChange={(next) => on.set(next)}
+  onChange={({ checked }) => on.set(checked)}
   class="flex-row items-center gap-2 disabled:opacity-50"
   indicatorClass="size-5 rounded-md border-2 border-border checked:border-primary checked:bg-primary disabled:border-border disabled:bg-muted"
 >

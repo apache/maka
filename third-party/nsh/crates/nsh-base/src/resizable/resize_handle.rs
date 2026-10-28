@@ -168,12 +168,12 @@ pub(crate) fn band(
             };
             v.hit_slop(slop)
         })
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             if state.get_untracked() == ResizeHandleState::Idle {
                 set(ResizeHandleState::Hovered);
             }
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             if state.get_untracked() == ResizeHandleState::Hovered {
                 set(ResizeHandleState::Idle);
             }

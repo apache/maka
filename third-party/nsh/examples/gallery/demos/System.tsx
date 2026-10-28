@@ -1,7 +1,7 @@
 import { cleanup, resource, signal, Text, View } from "nsh";
 import { createAnimatedValue, Easing } from "nsh";
 import { colorScheme, fontScale, windowSize } from "nsh";
-import { AlertDialog, Dialog, type StatusBarForeground } from "nsh/base";
+import { AlertDialog, type AlertDialogAction, Dialog, type StatusBarForeground } from "nsh/base";
 import { keyboardFrame, safeArea } from "nsh";
 import { Menu } from "nsh/desktop";
 import { keymap } from "nsh";
@@ -109,7 +109,7 @@ function StatusBarCard() {
         open={open()}
         animation="fade"
         statusBar={{ foreground: foreground(), hidden: barHidden(), animated: true }}
-        onOpenChange={(o) => open.set(o)}
+        onOpenChange={({ open: o }) => open.set(o)}
         style={{ flex: 1 }}
       >
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 16, backgroundColor: backdrop() }}>
@@ -139,6 +139,11 @@ function ActionRow(props: { first?: boolean; icon: IconName; tint: string; title
   );
 }
 
+/** What the gallery shows for the action `AlertDialog.show` reported: its label (none: dismissed). */
+function labelOf(actions: AlertDialogAction[], id?: string | null): string {
+  return actions.find((a) => a.id === id)?.label ?? "dismissed";
+}
+
 function Dialogs() {
   const answer = signal<{ text: string; tone: Tone } | null>(null);
   // The answer pops in each time it changes.
@@ -158,7 +163,7 @@ function Dialogs() {
           title="Alert"
           detail="One button"
           onPress={async () => {
-            await AlertDialog.show({ title: "Saved", description: "Your changes were saved.", actions: [{ label: "OK" }] });
+            await AlertDialog.show({ title: "Saved", description: "Your changes were saved.", actions: [{ label: "OK", id: "ok" }] });
             show("OK", "up");
           }}
         />
@@ -168,32 +173,33 @@ function Dialogs() {
           title="Confirm"
           detail="Cancel and destructive buttons"
           onPress={async () => {
-            const action = await AlertDialog.show({
+            const actions: AlertDialogAction[] = [
+              { label: "Cancel", role: "cancel", id: "cancel" },
+              { label: "Delete", role: "destructive", id: "delete" },
+            ];
+            const { action } = await AlertDialog.show({
               title: "Delete the photo?",
               description: "This cannot be undone.",
-              actions: [
-                { label: "Cancel", role: "cancel" },
-                { label: "Delete", role: "destructive" },
-              ],
+              actions,
               closeOnEscape: true,
               closeOnBackdropPress: true,
             });
-            const text = action ?? "dismissed";
-            show(text, text === "Delete" ? "danger" : "neutral");
+            show(labelOf(actions, action), action === "delete" ? "danger" : "neutral");
           }}
         />
         <ActionRow
           icon="star"
           tint={colors.info}
           title="Three buttons"
-          detail="Resolves to the id of the action pressed"
+          detail="Shows the label of the action pressed"
           onPress={async () => {
-            const action = await AlertDialog.show({
-              title: "Update available",
-              description: "Install it now?",
-              actions: [{ label: "Later" }, { label: "Never", role: "cancel" }, { label: "Install", id: "install" }],
-            });
-            show(action === "install" ? "Install" : (action ?? "dismissed"), action === "install" ? "info" : "neutral");
+            const actions: AlertDialogAction[] = [
+              { label: "Later", id: "later" },
+              { label: "Never", role: "cancel", id: "never" },
+              { label: "Install", id: "install" },
+            ];
+            const { action } = await AlertDialog.show({ title: "Update available", description: "Install it now?", actions });
+            show(labelOf(actions, action), action === "install" ? "info" : "neutral");
           }}
         />
         <ActionRow
@@ -202,13 +208,14 @@ function Dialogs() {
           title="Action sheet"
           detail="Title, cancel and destructive options"
           onPress={async () => {
-            const action = await AlertDialog.show({
-              title: "Share the photo",
-              presentation: "actionSheet",
-              actions: [{ label: "Cancel", role: "cancel" }, { label: "Copy link" }, { label: "Save" }, { label: "Delete", role: "destructive" }],
-            });
-            const text = action ?? "dismissed";
-            show(text, text === "Delete" ? "danger" : "accent");
+            const actions: AlertDialogAction[] = [
+              { label: "Cancel", role: "cancel", id: "cancel" },
+              { label: "Copy link", id: "copy" },
+              { label: "Save", id: "save" },
+              { label: "Delete", role: "destructive", id: "delete" },
+            ];
+            const { action } = await AlertDialog.show({ title: "Share the photo", presentation: "actionSheet", actions });
+            show(labelOf(actions, action), action === "delete" ? "danger" : "accent");
           }}
         />
         <ActionRow icon="spark" tint={colors.warn} title="Toast" detail="nsh/base, every platform" onPress={() => void toast({ title: "Hello from a toast", description: "nsh/base's ToastManager, styled by the gallery" })} />
@@ -304,18 +311,18 @@ function Shortcuts() {
   const on = signal(false);
   const last = signal("");
   keymap.bind({
-    "mod+k": (k) => {
+    "mod+k": ({ keystroke }) => {
       count.set(count() + 1);
-      last.set(k);
+      last.set(keystroke);
     },
-    "mod+shift+l": (k) => {
+    "mod+shift+l": ({ keystroke }) => {
       on.set(!on());
-      last.set(k);
+      last.set(keystroke);
     },
   });
-  keymap.bind("mod+backspace", (k) => {
+  keymap.bind("mod+backspace", ({ keystroke }) => {
     count.set(0);
-    last.set(k);
+    last.set(keystroke);
   }, { when: "notEditing" });
   const keys: [string, string][] = [
     [keymap.label("mod+k"), "Counts"],

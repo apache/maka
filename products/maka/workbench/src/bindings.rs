@@ -37,6 +37,7 @@ use maka_plugin_core::contract::{Contract, Interface};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use std::{
+    collections::HashMap,
     future::Future,
     sync::{Arc, LazyLock, Mutex as StdMutex},
 };
@@ -61,14 +62,68 @@ struct Owner {
 }
 struct Scope {
     owner: Arc<Owner>,
+    client: ApplicationClient,
     session: String,
+    /// Sends reserved by `reserve_send` until `confirm_send` takes them.
+    reserved: StdMutex<HashMap<Uuid, maka_app_client::Mutation>>,
 }
 
 /// Root services and session scopes within the Host admitted by the launcher.
 #[class]
 pub struct ApplicationHost {
     owner: Arc<Owner>,
+    client: ApplicationClient,
     initial_session: Option<String>,
+}
+
+#[derive(Clone)]
+enum ApplicationClient {
+    Root,
+    Ui(Arc<ui_services::Services>),
+}
+
+impl ApplicationClient {
+    async fn resolve(&self, owner: &Owner) -> Result<Client, String> {
+        match self {
+            Self::Root => Ok(owner.client.clone()),
+            Self::Ui(services) => services.client().await,
+        }
+    }
+
+    async fn local(&self, owner: &Owner) -> Result<Client, String> {
+        match self {
+            Self::Root => Ok(owner.client.clone()),
+            Self::Ui(services) => services.local_client().await,
+        }
+    }
+
+    async fn refresh(&self, owner: &Owner) -> Result<(), String> {
+        match self {
+            Self::Root => owner.client.refresh().await,
+            Self::Ui(services) => {
+                owner.refresh_ui(serde_json::json!({})).await?;
+                services.client().await.map(drop)
+            }
+        }
+    }
+
+    async fn mutation_context(
+        &self,
+        owner: &Owner,
+        endpoint: String,
+    ) -> Result<(Client, String, JsonValue), String> {
+        match self {
+            Self::Root => Ok((owner.client.clone(), endpoint, JsonValue::Null)),
+            Self::Ui(services) => services.mutation_context(&endpoint).await,
+        }
+    }
+
+    fn asset_uri(&self, uri: String) -> Result<String, String> {
+        match self {
+            Self::Root => Ok(uri),
+            Self::Ui(services) => services.asset_uri(&uri),
+        }
+    }
 }
 
 /// One immutable Agent session's editor and original send operations.
@@ -110,6 +165,7 @@ impl Bindings {
         registry(move || {
             Instance::new(ApplicationHost {
                 owner: owner.clone(),
+                client: ApplicationClient::Root,
                 initial_session: initial_session.clone(),
             })
         })
@@ -146,6 +202,19 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 }
 
 impl Owner {
+    async fn refresh_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
+        self.client.refresh().await?;
+        require_contract(
+            "management",
+            "readUi",
+            &self.client.describe("management").await?.contract,
+        )?;
+        let value = self.client.query("management", "readUi", input).await?;
+        self.plugins
+            .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
+        Ok(value)
+    }
+
     fn spawn<T: Send + 'static>(
         &self,
         operation: impl Future<Output = T> + Send + 'static,
@@ -224,6 +293,10 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub fn asset_uri(&self, uri: String) -> Result<String, String> {
+        self.client.asset_uri(uri)
+    }
+
     #[getter]
     pub fn restored(&self) -> JsonValue {
         self.owner.reload.restored()
@@ -283,7 +356,13 @@ impl ApplicationHost {
     pub fn preview_ui_scale(&self, scale: f32) -> Result<(), String> {
         let control = engine_context::<crate::UiScale>()
             .ok_or("interface scale is controlled by this terminal's font size")?;
-        (control.0)(scale)
+        (control.preview)(scale)
+    }
+
+    /// The pixel renderer's current interface scale, shared by all UI packages.
+    #[getter]
+    pub fn ui_scale_factor(&self) -> Result<f32, String> {
+        engine_context::<crate::UiScale>().map_or(Ok(1.0), |control| (control.current)())
     }
 
     /// Physical terminal activity, independent of any focused input field.
@@ -336,22 +415,28 @@ impl ApplicationHost {
         Ok(Instance::new(ScopedHost {
             scope: Arc::new(Scope {
                 owner: self.owner.clone(),
+                client: self.client.clone(),
                 session: session_id,
+                reserved: Default::default(),
             }),
         }))
     }
 
     pub async fn refresh(this: Instance<Self>) -> Result<(), String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
-        execute(owner.clone(), async move { owner.client.refresh().await }).await
+        execute(owner.clone(), async move { source.refresh(&owner).await }).await
     }
 
     /// Whether this Host published the service in its captured catalogue.
-    pub async fn has_service(this: Instance<Self>, endpoint: String) -> bool {
-        let owner = this.with(|host| host.owner.clone());
+    pub async fn has_service(this: Instance<Self>, endpoint: String) -> Result<bool, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
-        owner.client.describe(&endpoint).await.is_ok()
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            Ok(client.describe(&endpoint).await.is_ok())
+        })
+        .await
     }
 
     /// Bind declared UI services locally; the first service call captures its
@@ -360,7 +445,7 @@ impl ApplicationHost {
         &self,
         source: JsonValue,
         instance: JsonValue,
-        binding_basis: String,
+        definition_basis: String,
     ) -> Result<Instance<ui_services::UiScope>, String> {
         let source = serde_json::from_value(source).map_err(|error| error.to_string())?;
         let instance = serde_json::from_value(instance).map_err(|error| error.to_string())?;
@@ -368,7 +453,8 @@ impl ApplicationHost {
             self.owner.clone(),
             source,
             instance,
-            binding_basis,
+            definition_basis,
+            self.initial_session.clone(),
         )?))
     }
 
@@ -379,12 +465,12 @@ impl ApplicationHost {
         method: String,
         input: JsonValue,
     ) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
+            let (client, endpoint, correlation) = source.mutation_context(&owner, endpoint).await?;
             let id = Uuid::new_v4();
-            let mutation = owner
-                .client
+            let mutation = client
                 .mutation(
                     id,
                     &endpoint,
@@ -392,7 +478,7 @@ impl ApplicationHost {
                     input,
                     Default::default(),
                     None,
-                    JsonValue::Null,
+                    correlation,
                 )
                 .await?;
             mutation.prepare().await?;
@@ -409,11 +495,11 @@ impl ApplicationHost {
         method: String,
         input: JsonValue,
     ) -> Result<Instance<OriginalMutation>, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = execute(owner.clone(), async move {
-            let mutation = owner
-                .client
+            let (client, endpoint, correlation) = source.mutation_context(&owner, endpoint).await?;
+            let mutation = client
                 .mutation(
                     Uuid::new_v4(),
                     &endpoint,
@@ -421,7 +507,7 @@ impl ApplicationHost {
                     input,
                     Default::default(),
                     None,
-                    JsonValue::Null,
+                    correlation,
                 )
                 .await?;
             mutation.prepare().await?;
@@ -438,10 +524,11 @@ impl ApplicationHost {
         method: String,
         input: JsonValue,
     ) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            owner.client.query(&endpoint, &method, input).await
+            let client = source.resolve(&owner).await?;
+            client.query(&endpoint, &method, input).await
         })
         .await
     }
@@ -450,19 +537,7 @@ impl ApplicationHost {
     pub async fn read_ui(this: Instance<Self>, input: JsonValue) -> Result<JsonValue, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        execute(owner.clone(), async move {
-            require_contract(
-                "management",
-                "readUi",
-                &owner.client.describe("management").await?.contract,
-            )?;
-            let value = owner.client.query("management", "readUi", input).await?;
-            owner
-                .plugins
-                .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
-            Ok(value)
-        })
-        .await
+        execute(owner.clone(), async move { owner.refresh_ui(input).await }).await
     }
 
     /// Return an owned generic subscription, with no second handle table.
@@ -472,10 +547,11 @@ impl ApplicationHost {
         method: String,
         input: JsonValue,
     ) -> Result<Instance<ScopedSubscription>, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let subscription = execute(owner.clone(), async move {
-            let subscription = owner.client.subscribe(&endpoint, &method, input).await?;
+            let client = source.resolve(&owner).await?;
+            let subscription = client.subscribe(&endpoint, &method, input).await?;
             Ok(ScopedSubscription {
                 owner,
                 subscription: Arc::new(subscription),
@@ -491,21 +567,21 @@ impl ApplicationHost {
         this: Instance<Self>,
         input: JsonValue,
     ) -> Result<Instance<ScopedSubscription>, String> {
-        let source: maka_agent_api::contract::FileRead =
+        let file: maka_agent_api::contract::FileRead =
             serde_json::from_value(input.clone()).map_err(|_| "Invalid file read selector")?;
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let subscription = execute(owner.clone(), async move {
-            require_contract(
-                AGENT,
-                "readFile",
-                &owner.client.describe(AGENT).await?.contract,
-            )?;
-            let subscription = owner.client.subscribe(AGENT, "readFile", input).await?;
+            let client = source.resolve(&owner).await?;
+            require_contract(AGENT, "readFile", &client.describe(AGENT).await?.contract)?;
+            let subscription = client.subscribe(AGENT, "readFile", input).await?;
             Ok(ScopedSubscription {
                 owner,
                 subscription: Arc::new(subscription),
-                kind: SubscriptionKind::File(Some(source)),
+                kind: SubscriptionKind::File {
+                    source: Some(file),
+                    client: source,
+                },
             })
         })
         .await?;
@@ -518,11 +594,12 @@ impl ApplicationHost {
         method: String,
         input: JsonValue,
     ) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
             let id = Uuid::new_v4();
-            let mutation = owner.client.control(id, &method, input).await?;
+            let mutation = client.control(id, &method, input).await?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))
@@ -539,17 +616,17 @@ impl ApplicationHost {
         secret: Option<String>,
     ) -> Result<JsonValue, String> {
         let resources = settings::attachments(&endpoint, &method, &input, secret)?;
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
             let id = Uuid::new_v4();
             require_contract(
                 &endpoint,
                 &method,
-                &owner.client.describe(&endpoint).await?.contract,
+                &client.describe(&endpoint).await?.contract,
             )?;
-            let mutation = owner
-                .client
+            let mutation = client
                 .settings_mutation(id, &endpoint, &method, input, resources)
                 .await?;
             mutation.prepare().await?;
@@ -568,16 +645,16 @@ impl ApplicationHost {
         secret: Option<String>,
     ) -> Result<Instance<OriginalMutation>, String> {
         let resources = settings::attachments(&endpoint, &method, &input, secret)?;
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
             require_contract(
                 &endpoint,
                 &method,
-                &owner.client.describe(&endpoint).await?.contract,
+                &client.describe(&endpoint).await?.contract,
             )?;
-            let mutation = owner
-                .client
+            let mutation = client
                 .settings_mutation(Uuid::new_v4(), &endpoint, &method, input, resources)
                 .await?;
             mutation.prepare().await?;
@@ -589,10 +666,11 @@ impl ApplicationHost {
 
     /// Unresolved Settings attempts, independent of the selected Agent session.
     pub async fn pending_settings(this: Instance<Self>) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            let operations = owner.client.pending_settings().await?;
+            let client = source.local(&owner).await?;
+            let operations = client.pending_settings().await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
         })
         .await
@@ -603,12 +681,13 @@ impl ApplicationHost {
         this: Instance<Self>,
         operation_id: String,
     ) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            owner.client.operation_for_settings(id).await?;
-            let reply = owner.client.recover(id).await?;
+            let client = source.local(&owner).await?;
+            client.operation_for_settings(id).await?;
+            let reply = client.recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
         })
         .await
@@ -619,12 +698,13 @@ impl ApplicationHost {
         this: Instance<Self>,
         operation_id: String,
     ) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            owner.client.operation_for_settings(id).await?;
-            let operation = owner.client.abandon_unprepared(id).await?;
+            let client = source.local(&owner).await?;
+            client.operation_for_settings(id).await?;
+            let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })
         .await
@@ -632,10 +712,11 @@ impl ApplicationHost {
 
     /// Unresolved controls across this admitted Root, independent of the selected session.
     pub async fn pending_controls(this: Instance<Self>) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            let operations = owner.client.pending_controls().await?;
+            let client = source.local(&owner).await?;
+            let operations = client.pending_controls().await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
         })
         .await
@@ -646,12 +727,13 @@ impl ApplicationHost {
         this: Instance<Self>,
         operation_id: String,
     ) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            owner.client.operation_for_control(id).await?;
-            let reply = owner.client.recover(id).await?;
+            let client = source.local(&owner).await?;
+            client.operation_for_control(id).await?;
+            let reply = client.recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
         })
         .await
@@ -662,12 +744,13 @@ impl ApplicationHost {
         this: Instance<Self>,
         operation_id: String,
     ) -> Result<JsonValue, String> {
-        let owner = this.with(|host| host.owner.clone());
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(owner.clone(), async move {
-            owner.client.operation_for_control(id).await?;
-            let operation = owner.client.abandon_unprepared(id).await?;
+            let client = source.local(&owner).await?;
+            client.operation_for_control(id).await?;
+            let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })
         .await
@@ -724,12 +807,8 @@ impl ScopedHost {
     pub async fn load_draft(this: Instance<Self>) -> Result<JsonValue, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
-            match scope
-                .owner
-                .client
-                .load_draft(AGENT, &scope.session, EDITOR)
-                .await?
-            {
+            let client = scope.client.local(&scope.owner).await?;
+            match client.load_draft(AGENT, &scope.session, EDITOR).await? {
                 Some(draft) => serde_json::to_value(draft).map_err(|error| error.to_string()),
                 None => Ok(serde_json::json!({"revision": 0, "text": "", "attachments": []})),
             }
@@ -747,9 +826,8 @@ impl ScopedHost {
         let edit: maka_app_client::DraftEdit =
             serde_json::from_value(edit).map_err(|_| "Invalid complete draft edit")?;
         execute(scope.owner.clone(), async move {
-            let draft = scope
-                .owner
-                .client
+            let client = scope.client.local(&scope.owner).await?;
+            let draft = client
                 .save_draft(
                     AGENT,
                     &scope.session,
@@ -786,11 +864,8 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            let operation = scope
-                .owner
-                .client
-                .find_upload(&scope.session, EDITOR, id)
-                .await?;
+            let client = scope.client.local(&scope.owner).await?;
+            let operation = client.find_upload(&scope.session, EDITOR, id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })
         .await
@@ -804,15 +879,12 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            scope
-                .owner
-                .client
+            let client = scope.client.local(&scope.owner).await?;
+            client
                 .operation_for_upload(&scope.session, EDITOR, id)
                 .await?;
-            scope.owner.client.recover(id).await?;
-            let operation = scope
-                .owner
-                .client
+            client.recover(id).await?;
+            let operation = client
                 .operation_for_upload(&scope.session, EDITOR, id)
                 .await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
@@ -828,31 +900,50 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            scope
-                .owner
-                .client
+            let client = scope.client.local(&scope.owner).await?;
+            client
                 .operation_for_upload(&scope.session, EDITOR, id)
                 .await?;
-            let operation = scope.owner.client.abandon_unprepared(id).await?;
+            let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })
         .await
     }
 
-    /// Prepare and confirm one new send from an exact persisted draft revision.
-    pub async fn send(
+    /// Reserve one new send of an exact persisted draft revision. Once this
+    /// returns, saving the draft makes a new revision this send never takes.
+    pub async fn reserve_send(
         this: Instance<Self>,
         draft_revision: u64,
         selection: JsonValue,
-    ) -> Result<JsonValue, String> {
+    ) -> Result<String, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
+            let client = scope.client.resolve(&scope.owner).await?;
             let id = Uuid::new_v4();
-            let mutation = scope
-                .owner
-                .client
+            let mutation = client
                 .send_draft(id, AGENT, &scope.session, EDITOR, draft_revision, selection)
                 .await?;
+            scope.reserved.lock().unwrap().insert(id, mutation);
+            Ok(id.to_string())
+        })
+        .await
+    }
+
+    /// Prepare and confirm a send reserved by `reserve_send`.
+    pub async fn confirm_send(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let mutation = scope
+                .reserved
+                .lock()
+                .unwrap()
+                .remove(&id)
+                .ok_or("send was not reserved by this view")?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))
@@ -864,9 +955,8 @@ impl ScopedHost {
     pub async fn pending(this: Instance<Self>) -> Result<JsonValue, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
-            let operations = scope
-                .owner
-                .client
+            let client = scope.client.local(&scope.owner).await?;
+            let operations = client
                 .pending_operations(AGENT, &scope.session, EDITOR)
                 .await?;
             serde_json::to_value(operations).map_err(|error| error.to_string())
@@ -879,8 +969,9 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            scope.owned_operation(id).await?;
-            let reply = scope.owner.client.recover(id).await?;
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            let reply = client.recover(id).await?;
             serde_json::to_value(reply).map_err(|error| error.to_string())
         })
         .await
@@ -894,8 +985,9 @@ impl ScopedHost {
         let scope = this.with(|host| host.scope.clone());
         let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
         execute(scope.owner.clone(), async move {
-            scope.owned_operation(id).await?;
-            let operation = scope.owner.client.abandon_unprepared(id).await?;
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })
         .await
@@ -903,9 +995,8 @@ impl ScopedHost {
 }
 
 impl Scope {
-    async fn owned_operation(&self, id: Uuid) -> Result<(), String> {
-        self.owner
-            .client
+    async fn owned_operation(&self, client: &Client, id: Uuid) -> Result<(), String> {
+        client
             .operation_for_draft(AGENT, &self.session, EDITOR, id)
             .await?;
         Ok(())
@@ -921,7 +1012,10 @@ pub struct ScopedSubscription {
 }
 enum SubscriptionKind {
     Events,
-    File(Option<maka_agent_api::contract::FileRead>),
+    File {
+        source: Option<maka_agent_api::contract::FileRead>,
+        client: ApplicationClient,
+    },
 }
 
 impl Drop for ScopedSubscription {
@@ -938,25 +1032,32 @@ impl ScopedSubscription {
     pub async fn read_file(this: Instance<Self>) -> Result<Instance<files::CapturedFile>, String> {
         let (owner, subscription, source) = this.with_mut(|item| {
             let source = match &mut item.kind {
-                SubscriptionKind::File(source) => source.take(),
+                SubscriptionKind::File { source, client } => {
+                    source.take().map(|source| (source, client.clone()))
+                }
                 SubscriptionKind::Events => None,
             };
             (item.owner.clone(), item.subscription.clone(), source)
         });
         drop(this);
-        let source = source.ok_or("File subscription already consumed or is not a file read")?;
+        let (source, client) =
+            source.ok_or("File subscription already consumed or is not a file read")?;
         let capture = execute(owner, async move {
             let outcome = files::collect(&subscription, &source).await?;
-            tokio::task::spawn_blocking(move || files::presentation(outcome, source))
-                .await
-                .map_err(|_| "Current file presentation worker failed")?
+            tokio::task::spawn_blocking(move || {
+                let mut capture = files::presentation(outcome, source)?;
+                capture.route_image(&client)?;
+                Ok(capture)
+            })
+            .await
+            .map_err(|_| "Current file presentation worker failed")?
         })
         .await?;
         Ok(Instance::new(capture))
     }
     /// Pull one observation from the original subscription.
     pub async fn next(this: Instance<Self>) -> Result<JsonValue, String> {
-        if this.with(|item| matches!(item.kind, SubscriptionKind::File(_))) {
+        if this.with(|item| matches!(item.kind, SubscriptionKind::File { .. })) {
             return Err("Consume file subscriptions with readFile".into());
         }
         let (owner, subscription) =

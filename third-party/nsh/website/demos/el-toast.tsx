@@ -59,7 +59,7 @@ function App() {
         <ToastStack
           placement={wide() ? "bottomRight" : "bottomCenter"}
           style={{ width: 340, maxWidth: "100%" }}
-          onExpandedChange={(open) => {
+          onExpandedChange={({ expanded: open }) => {
             expanded.set(open);
             log(`onExpandedChange · ${open}`);
           }}

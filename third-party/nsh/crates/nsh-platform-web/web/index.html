@@ -27,7 +27,8 @@
   // "runtime-error", message }` / `{ type: "log", level, message }` while
   // the app runs.
   // `cargo xtask web` writes the website gallery's runtime file names
-  // (nsh.<digest>.js / .wasm) for the two below: the player shares them.
+  // (nsh.<digest>.js / .wasm, nsh-syntaxes.<digest>.bin) for those below:
+  // the player shares them.
   import { createPlayer } from "./nsh.js";
 
   const status = document.getElementById("status");
@@ -36,8 +37,10 @@
   const theme = params.get("theme");
   const post = (message) => parent !== window && parent.postMessage({ source: "nsh-player", ...message }, "*");
   const options = {
+    dialogs: "viewport",
     assetBase: new URL("assets/", location.href).href,
     wasm: playground ? "./nsh-playground.wasm" : "./nsh.wasm",
+    data: { syntaxes: "./nsh-syntaxes.bin" },
     onError: (message) => post({ type: "runtime-error", message }),
     onLog: (level, message) => post({ type: "log", level, message }),
   };

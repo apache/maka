@@ -1,4 +1,4 @@
-import { signal, View, type YNode } from "nsh";
+import { signal, View, type WebViewRef } from "nsh";
 import { Canvas } from "nsh";
 import { windowSize } from "nsh";
 import { Menu } from "nsh/desktop";
@@ -79,7 +79,7 @@ function runbook(name: string, region: string): string {
 /** A local runbook uses the existing WebView surface and navigation events. */
 export function RunbookInspector(props: { name: string; region: string }) {
   const state = signal("Opening runbook");
-  let reader: YNode | undefined;
+  let reader: WebViewRef | undefined;
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 16 }}>
       <View style={{ height: 16, flexDirection: "row", gap: 8 }}>

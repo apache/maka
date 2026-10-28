@@ -321,6 +321,27 @@ impl TestFile {
     }
 }
 
+/// A character's resolved style, as [`TestStep::SpanStyle`] answers it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
+pub struct SpanStyle {
+    /// Its text color, `0xRRGGBBAA`.
+    pub color: u32,
+    /// The color of the background a nested text's `backgroundColor` gives
+    /// it.
+    pub background: Option<u32>,
+    /// Its font size, in points.
+    pub font_size: f32,
+    /// Its font weight (400 regular, 700 bold).
+    pub font_weight: u16,
+    /// Whether it is italic.
+    pub italic: bool,
+    /// Whether it is underlined.
+    pub underline: bool,
+    /// Whether it is struck through.
+    pub line_through: bool,
+}
+
 /// A step of a test on a host's app, named as `nsh/test` names them: views
 /// are found by selectors (`id:save`, `text:Add`, `role:button[Save]`), and
 /// actions are native input at the view the selector names.
@@ -435,6 +456,34 @@ pub enum TestStep {
         /// The keystroke: `"mod+k"`, `"escape"`.
         keys: String,
     },
+    /// Holds modifier keys down, or lets go of them, for the pointer's
+    /// steps until then (`app.keyboard.down` / `up`).
+    HoldKeys {
+        /// The modifiers: `"mod"`, `"shift"`, `"alt"`, `"ctrl"`, `"meta"`,
+        /// joined by `+`.
+        keys: String,
+        /// Whether they go down (else up).
+        down: bool,
+    },
+    /// Drags as `Drag` does and keeps the pointer down
+    /// (`app.dragAndHold`), until `Drop`.
+    DragAndHold {
+        /// What to drag.
+        selector: String,
+        /// Rightwards.
+        x: f32,
+        /// Downwards.
+        y: f32,
+    },
+    /// Lets go of the pointer `DragAndHold` left down (`app.drop`).
+    Drop,
+    /// Drops local files on a view (`app.dropFiles`).
+    DropFiles {
+        /// Where.
+        selector: String,
+        /// Their `file:` URLs.
+        uris: Vec<String>,
+    },
     /// Goes back as the user does (`app.back`).
     Back,
     /// Lets the app run (`app.wait`).
@@ -482,6 +531,12 @@ pub enum TestStep {
     },
     /// The text of the input: a string, or null when none matches.
     Value {
+        /// The selector.
+        selector: String,
+    },
+    /// The style of the first character `selector` names
+    /// (`app.spanStyle`): a [`SpanStyle`].
+    SpanStyle {
         /// The selector.
         selector: String,
     },
@@ -601,6 +656,16 @@ pub enum SceneQuery {
     Bounds {
         /// The view.
         id: u32,
+    },
+    /// Where characters `start..end` (UTF-16 units) of text view `id` are
+    /// on screen, as [`SceneQuery::Bounds`]: their first box.
+    TextBounds {
+        /// The text view.
+        id: u32,
+        /// The first character.
+        start: u32,
+        /// After the last character.
+        end: u32,
     },
     /// The viewport's size in points.
     Viewport,

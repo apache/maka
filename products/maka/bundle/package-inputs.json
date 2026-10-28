@@ -21,5 +21,7 @@
   "questions": "plugins/interactions/questions",
   "skill-outcomes": "plugins/skills/skill-outcomes",
   "receipts": "plugins/application/receipts",
-  "gateway": "plugins/application/gateway"
+  "gateway": "plugins/application/gateway",
+  "conversations": "plugins/agent/conversations",
+  "composer": "plugins/agent/composer"
 }

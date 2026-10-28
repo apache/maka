@@ -2,11 +2,15 @@
 //!
 //! The engine owns a [`nsh_core::Core`] on a dedicated thread and runs one
 //! app ([`App`]): a Rust app's root component, or a JS bundle in a QuickJS
-//! VM (`nsh_js::Host`, feature `js`). Each wake-up (input event, timer,
+//! VM (`nsh_js::Host`, feature `js-core`; `js` adds the standard modules
+//! `zlib` and `crypto`). Each wake-up (input event, timer,
 //! resize) runs the app's code (component tasks; JS and its microtasks),
 //! applies what JS committed, lays out, and hands one [`MountBatch`] to the
 //! platform through a [`MountSink`]. The platform thread never blocks on
 //! the engine.
+
+#[cfg(all(feature = "browser", target_arch = "wasm32", not(feature = "js-core")))]
+pub mod browser;
 
 mod access;
 mod app_directory;
@@ -20,9 +24,11 @@ mod local_storage;
 pub mod net;
 pub mod perf;
 mod script;
+#[cfg(feature = "shader")]
+pub mod shader;
 #[cfg(not(target_arch = "wasm32"))]
 mod storage;
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 mod symbolicate;
 
 // The typed API check (docs/dev/geometry.md, "Typed API"): the scan is
@@ -61,10 +67,10 @@ pub use nsh_core::{
     storage::{StorageBackend, StorageChange},
     time::Clock,
 };
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub use nsh_js::BYTECODE_VERSION;
 /// Signed packages, release-key certificates, revocations and trust stores.
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub use nsh_package as package;
 use rustc_hash::FxHashMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -102,7 +108,7 @@ const IDLE_GC_LONGEST: Duration = Duration::from_secs(5);
 /// The shortest time between two deliveries of mouse motion: a frame at
 /// 120 Hz. Mice report moves far more often (up to 1000 Hz), and a handler
 /// that redraws a crosshair needs no more than one per frame.
-const HOVER_MOVE_INTERVAL: Duration = Duration::from_millis(8);
+const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(8);
 
 /// The app an engine runs.
 #[derive(Debug, Clone)]
@@ -113,7 +119,7 @@ const HOVER_MOVE_INTERVAL: Duration = Duration::from_millis(8);
 pub enum App {
     /// A Rust app: its root component, mounted as the surface's content.
     Rust(Root),
-    /// A JS app (feature `js`).
+    /// A JS app (feature `js-core`).
     Js(Bundle),
 }
 
@@ -421,7 +427,7 @@ impl Bundle {
     }
 }
 
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 impl Bundle {
     /// The bundle of a verified package: its bytecode when it was compiled
     /// for this runtime (else its source), its source map and its declared
@@ -469,7 +475,7 @@ fn read_app_id(path: &std::path::Path) -> Option<String> {
 }
 
 /// A verified package, unpacked ([`load_package`], [`verify_package`]).
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 #[derive(Debug)]
 pub struct LoadedPackage {
     /// Its bundle.
@@ -486,7 +492,7 @@ pub struct LoadedPackage {
 /// `assets_root` (`<root>/<app id>/<package hash>/`, once per package) and
 /// records its build (older builds of the app are refused from now on):
 /// [`verify_package`], then [`accept_package`].
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn load_package(
     trust: &mut nsh_package::TrustStore,
     bytes: &[u8],
@@ -504,7 +510,7 @@ pub fn load_package(
 /// decided the package is healthy (its first frame drawn, no fatal error for
 /// a while) calls [`accept_package`]; if it fails before, the app can go
 /// back to the package it ran before, which still verifies.
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn verify_package(
     trust: &nsh_package::TrustStore,
     bytes: &[u8],
@@ -541,7 +547,7 @@ pub fn verify_package(
 /// stack) to the app source position `source_map` (the bundle's) gives,
 /// as the engine does with a bundle's own map: for stacks reported by
 /// packages published without their map (`nsh symbolicate`).
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn symbolicate(source_map: &str, text: &str) -> String {
     symbolicate::Symbolicator::new(Some(source_map.into())).rewrite(text)
 }
@@ -549,7 +555,7 @@ pub fn symbolicate(source_map: &str, text: &str) -> String {
 /// Records the build of `package` ([`verify_package`]) in `trust`: older
 /// builds of its app are refused from now on. Refused if the package or its
 /// release key was revoked since it was verified.
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub fn accept_package(
     trust: &mut nsh_package::TrustStore,
     package: &LoadedPackage,
@@ -596,7 +602,7 @@ pub trait MountSink: Send + 'static {
     }
 
     /// JS or a component's task asked for a display frame
-    /// (`requestAnimationFrame`, `ui::ambient::next_frame`), or lists have
+    /// (`requestAnimationFrame`, `nsh_core::element::next_frame`), or lists have
     /// overscan cells left to bind: call [`EngineControl::frame`] at the
     /// next vsync. Requests are not repeated until that call.
     fn request_frame(&self) {}
@@ -611,6 +617,13 @@ pub trait MountSink: Send + 'static {
     /// latest size. A platform that waits for the layout at a new size, to
     /// show it in the frame the window takes the size, stops waiting here.
     fn resized(&self, _size: Size<Points>) {}
+
+    /// The engine has handled the first `events` events sent with
+    /// [`EngineControl::dispatch_event`]. Called after the commit of the
+    /// turn that handled them (what they changed came before), once per
+    /// turn. A platform holding typed text for the field an event may focus
+    /// gives it to the focused field from here.
+    fn handled(&self, _events: u64) {}
 
     /// The app imports chunk `id` of a split bundle (`import()`), which its
     /// [`Bundle`] does not hold: load it and hand it over with
@@ -769,7 +782,7 @@ fn trusted_directory(path: Option<std::path::PathBuf>) -> Option<std::path::Path
 }
 
 /// Native hosts choose these anchors before any application JavaScript runs.
-#[cfg(feature = "js")]
+#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 fn bundle_system_paths(bundle: &Bundle) -> nsh_core::access::TrustedPaths {
     let mut paths = bundle.system_paths.clone();
     paths.plugin_dir = trusted_directory(paths.plugin_dir);
@@ -893,6 +906,7 @@ enum Message {
     HintObservation(nsh_core::overlay::HintObservation),
     CancelTouch(u32),
     Scroll(NodeId, Point<Points>, u32),
+    InputScroll(NodeId, Point<Points>, Size<Points>, Size<Points>),
     Zoom(NodeId, f32),
     ComponentSize(NodeId, Size<Points>),
     AnimationsFinished(Vec<nsh_core::animation::Finished>),
@@ -905,8 +919,9 @@ enum Message {
     RootSize(NodeId, Size<Points>, EdgeInsets),
     ScreenHeader(NodeId, Option<Points>),
     Frame,
-    States(NodeId, u8),
+    States(NodeId, u16),
     FontsChanged,
+    Remount,
     /// An event of a request (by the hop it is for: events of a hop the
     /// engine left are dropped).
     Fetch(Requester, u64, FetchEvent),
@@ -1002,6 +1017,22 @@ impl EngineControl {
         let _ = self.tx.send(Message::Scroll(id, offset, applied));
     }
 
+    /// Reports how far a multiline input's text scrolled: its offset, the
+    /// size of the text it scrolls and of its viewport. Sent while a
+    /// built-in bar takes the place of its indicator
+    /// (`InputConfig::replaced`), on every change.
+    pub fn input_scroll(
+        &self,
+        id: NodeId,
+        offset: Point<Points>,
+        content: Size<Points>,
+        viewport: Size<Points>,
+    ) {
+        let _ = self
+            .tx
+            .send(Message::InputScroll(id, offset, content, viewport));
+    }
+
     /// Reports the zoom scale of a zoomable scroll view (before the offset
     /// the zoom changed); `onScroll` carries it.
     pub fn zoom(&self, id: NodeId, scale: f32) {
@@ -1093,7 +1124,7 @@ impl EngineControl {
     /// track ([`nsh_core::MountItem::TrackStates`]; bits of
     /// [`nsh_core::tailwind::state`]). Class styles that depend on them
     /// (`active:`, `hover:`, `focus:`) update without JS.
-    pub fn set_states(&self, id: NodeId, states: u8) {
+    pub fn set_states(&self, id: NodeId, states: u16) {
         let _ = self.tx.send(Message::States(id, states));
     }
 
@@ -1102,6 +1133,13 @@ impl EngineControl {
     /// is measured again.
     pub fn fonts_changed(&self) {
         let _ = self.tx.send(Message::FontsChanged);
+    }
+
+    /// The platform's views get everything again and text is measured
+    /// again: the unit the platform converts values with changed (Android's
+    /// density). Send the new environment and size too.
+    pub fn remount(&self) {
+        let _ = self.tx.send(Message::Remount);
     }
 
     /// Records the engine's commits into `monitor` from now on (`None`:
@@ -1433,9 +1471,9 @@ impl<M: TextEngine + 'static> Driver<M> {
         stop: Arc<std::sync::atomic::AtomicBool>,
     ) -> Option<Self> {
         config.pinned.apply(&mut config.environment);
-        #[cfg(feature = "js")]
+        #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
         let system_tx = tx.clone();
-        #[cfg(feature = "js")]
+        #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
         let host_bridge = config.host.bridge(tx.clone());
         let host_tx = tx.clone();
         let text_engine = Rc::new(text_engine);
@@ -1551,10 +1589,12 @@ impl<M: TextEngine + 'static> Driver<M> {
             hot: Vec::new(),
             scroll_events: FxHashMap::default(),
             touch_move: None,
-            hover_moves: Vec::new(),
-            hover_moved: None,
+            mouse_moves: Vec::new(),
+            mouse_moved: None,
             sets_seen: FxHashMap::default(),
             resized: None,
+            events_handled: 0,
+            events_reported: 0,
             pinned: config.pinned,
             host: config.host.clone(),
             url_opens: Vec::new(),
@@ -1597,7 +1637,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         };
         let eval_us = match &config.app {
             App::Js(bundle) => {
-                #[cfg(feature = "js")]
+                #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
                 let system = {
                     script::SystemConfig {
                         access: (*access).clone(),
@@ -1614,7 +1654,10 @@ impl<M: TextEngine + 'static> Driver<M> {
                         host: Rc::new(host_bridge),
                     }
                 };
-                #[cfg(not(feature = "js"))]
+                #[cfg(not(any(
+                    feature = "js-core",
+                    all(feature = "browser", target_arch = "wasm32")
+                )))]
                 let system = script::SystemConfig;
                 let (script, eval_us) = Script::start(
                     bundle,
@@ -1674,6 +1717,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             }
             sink.submit(batch);
         }
+        state.report_handled(&**sink);
         state.net.pump(script, &mut state.core);
         state.load_chunks(script, &**sink);
         state.request_frame(script, &**sink);
@@ -1700,13 +1744,13 @@ impl<M: TextEngine + 'static> Driver<M> {
         [due, gc_deadline].into_iter().flatten().min()
     }
 
-    /// When the next timer, task timer or throttled scroll or hover event
+    /// When the next timer, task timer or throttled scroll or mouse move
     /// is due, on the engine's clock.
     fn due(&self) -> Option<Instant> {
         [
             self.script.as_ref().and_then(Script::next_timer),
             self.state.next_scroll_event(),
-            self.state.next_hover_move(),
+            self.state.next_mouse_move(),
             self.state.core.next_task_timer(),
         ]
         .into_iter()
@@ -1827,10 +1871,10 @@ impl<M: TextEngine + 'static> Driver<M> {
         let turn_start = state.trace.then(Instant::now);
         state.dispatch_touch_move(script);
         if state
-            .next_hover_move()
+            .next_mouse_move()
             .is_some_and(|due| due <= nsh_core::time::now())
         {
-            state.dispatch_hover_moves(script);
+            state.dispatch_mouse_moves(script);
         }
         state.dispatch_scroll_events(script);
         let hot = std::mem::take(&mut state.hot);
@@ -1860,6 +1904,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         if let Some(size) = state.resized.take() {
             sink.resized(size);
         }
+        state.report_handled(&**sink);
         state.net.pump(script, &mut state.core);
         state.load_chunks(script, &**sink);
         state.request_frame(script, &**sink);
@@ -1955,16 +2000,20 @@ struct State<M: TextEngine> {
     scroll_events: FxHashMap<NodeId, ScrollEvent>,
     /// Touch moves not delivered yet: those queued in one frame become one.
     touch_move: Option<(NodeId, Box<nsh_core::TouchEvent>)>,
-    /// Hover and mouse moves not delivered yet: the latest per view, in the order
-    /// they came; sent once per [`HOVER_MOVE_INTERVAL`] at most, and before
+    /// Mouse moves not delivered yet: the latest per view, in the order they
+    /// came; sent once per [`MOUSE_MOVE_INTERVAL`] at most, and before
     /// any other event.
-    hover_moves: Vec<(NodeId, EventKind, EventPayload)>,
-    /// When `hover_moves` were last delivered.
-    hover_moved: Option<Instant>,
+    mouse_moves: Vec<(NodeId, EventPayload)>,
+    /// When `mouse_moves` were last delivered.
+    mouse_moved: Option<Instant>,
     /// [`keep_last_sets`]'s buffer, reused.
     sets_seen: FxHashMap<(u8, NodeId), usize>,
     /// The viewport size a resize set this turn ([`MountSink::resized`]).
     resized: Option<Size<Points>>,
+    /// Events received ([`EngineControl::dispatch_event`]), and the count
+    /// last reported ([`MountSink::handled`]).
+    events_handled: u64,
+    events_reported: u64,
 }
 
 /// Who made a request: JS (`fetch`), or a Rust component's task
@@ -2199,8 +2248,8 @@ impl<M: TextEngine> State<M> {
     /// Forget its queued input and responders before an ACK can permit reuse.
     fn discard_revoked_input(&mut self, script: Option<&Script>) -> bool {
         let core = &self.core;
-        self.hover_moves
-            .retain(|(id, _, _)| core.accepts_native_input(*id));
+        self.mouse_moves
+            .retain(|(id, _)| core.accepts_native_input(*id));
         self.scroll_events
             .retain(|&id, _| core.accepts_native_input(id));
         self.events.retain(|event| {
@@ -2247,34 +2296,40 @@ impl<M: TextEngine> State<M> {
         }
     }
 
-    /// When the pending `onHoverMove`s are due.
-    fn next_hover_move(&self) -> Option<Instant> {
-        if self.hover_moves.is_empty() {
+    /// When the pending `onMouseMove`s are due.
+    fn next_mouse_move(&self) -> Option<Instant> {
+        if self.mouse_moves.is_empty() {
             return None;
         }
         Some(
-            self.hover_moved
-                .map_or_else(nsh_core::time::now, |t| t + HOVER_MOVE_INTERVAL),
+            self.mouse_moved
+                .map_or_else(nsh_core::time::now, |t| t + MOUSE_MOVE_INTERVAL),
         )
     }
 
-    /// Delivers the pending `onHoverMove`s: to the Rust components whose
+    /// Delivers the pending `onMouseMove`s: to the Rust components whose
     /// parts they are on, the others to JS.
-    fn dispatch_hover_moves(&mut self, script: Option<&Script>) {
-        if self.hover_moves.is_empty() {
+    fn dispatch_mouse_moves(&mut self, script: Option<&Script>) {
+        if self.mouse_moves.is_empty() {
             return;
         }
-        self.hover_moved = Some(nsh_core::time::now());
-        for (id, kind, payload) in std::mem::take(&mut self.hover_moves) {
+        self.mouse_moved = Some(nsh_core::time::now());
+        for (id, payload) in std::mem::take(&mut self.mouse_moves) {
             if !self.core.accepts_native_input(id) {
                 continue;
             }
-            if deliver_component_event(script, &mut self.core, &mut self.events, id, kind, &payload)
-            {
+            if deliver_component_event(
+                script,
+                &mut self.core,
+                &mut self.events,
+                id,
+                EventKind::MouseMove,
+                &payload,
+            ) {
                 continue;
             }
             if let Some(script) = script {
-                script.dispatch_event(id, kind, &payload);
+                script.dispatch_event(id, EventKind::MouseMove, &payload);
             }
         }
     }
@@ -2344,6 +2399,15 @@ impl<M: TextEngine> State<M> {
                 let message = "this host does not load chunks (the app was built split)".to_owned();
                 let _ = self.net.tx.send(Message::Chunk(Err((id, message))));
             }
+        }
+    }
+
+    /// Tells the platform how many events were handled, once the commit
+    /// of what they changed is submitted.
+    fn report_handled(&mut self, sink: &dyn MountSink) {
+        if self.events_handled != self.events_reported {
+            self.events_reported = self.events_handled;
+            sink.handled(self.events_handled);
         }
     }
 
@@ -2484,6 +2548,14 @@ impl<M: TextEngine> State<M> {
                         {
                             script.dispatch_event(id, event, &payload);
                         }
+                    }
+                    JsEvent::LayoutListener {
+                        host,
+                        id,
+                        listener,
+                        frame,
+                    } => {
+                        self.core.component_layout(host, id, &listener, frame);
                     }
                     // Without JS nothing waits for them.
                     other => {
@@ -2673,6 +2745,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         Message::HintObservation(observation) => state.core.observe_hint(observation),
         Message::CancelTouch(contact) => state.cancel_touch(script, contact),
         Message::Event(id, event, mut payload) => {
+            state.events_handled += 1;
             state.discard_revoked_input(script);
             if !state.core.accepts_native_input(id) {
                 return true;
@@ -2686,23 +2759,17 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             if state.trace {
                 log::info!(target: "nsh::perf", "event {event:?} on view {id}");
             }
-            // Hover moves wait for the frame, the latest per view; any other
+            // Mouse moves wait for the frame, the latest per view; any other
             // event comes after the moves before it (a view hears where the
             // mouse went before it hears it leave).
-            if event == EventKind::MouseMove
-                || (event == EventKind::HoverMove && matches!(payload, EventPayload::Hover(_)))
-            {
-                match state
-                    .hover_moves
-                    .iter_mut()
-                    .find(|(v, kind, _)| *v == id && *kind == event)
-                {
-                    Some((_, _, pending)) => *pending = payload,
-                    None => state.hover_moves.push((id, event, payload)),
+            if event == EventKind::MouseMove {
+                match state.mouse_moves.iter_mut().find(|(v, _)| *v == id) {
+                    Some((_, pending)) => *pending = payload,
+                    None => state.mouse_moves.push((id, payload)),
                 }
                 return true;
             }
-            state.dispatch_hover_moves(script);
+            state.dispatch_mouse_moves(script);
             // The core tracks input text for layout and to recognize stale
             // values (from JS and from Rust components alike).
             if let (EventKind::ChangeText, EventPayload::Text { text, count }) = (event, &payload) {
@@ -2774,6 +2841,11 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 event.pending = true;
             }
         }
+        Message::InputScroll(id, offset, content, viewport) => {
+            if state.core.accepts_native_input(id) {
+                state.core.set_input_scroll(id, offset, content, viewport);
+            }
+        }
         Message::Zoom(id, scale) => {
             if state.core.accepts_native_input(id) {
                 state.core.set_zoom(id, scale);
@@ -2833,6 +2905,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
             }
         }
         Message::FontsChanged => state.core.fonts_changed(),
+        Message::Remount => state.core.remount(),
         Message::Fetch(who, hop, event) => {
             if let Some(event) = state.net.event(who, hop, event) {
                 match who {

@@ -5,7 +5,7 @@
 // without actions. Its script
 // checks each.
 import { Text, View, signal } from "nsh";
-import { AlertDialog, Button } from "nsh/base";
+import { AlertDialog, type AlertDialogResult, Button } from "nsh/base";
 
 function Control(props: { label: string; onPress: () => void }) {
   return (
@@ -19,10 +19,10 @@ function App() {
   const alert = signal("not shown");
   const sheet = signal("not shown");
   const empty = signal("not shown");
-  const watch = (shown: Promise<string | null>, set: (s: string) => void) => {
+  const watch = (shown: Promise<AlertDialogResult>, set: (s: string) => void) => {
     set(shown instanceof Promise ? "pending" : "no promise");
     shown.then(
-      (id) => set(`chose ${id}`),
+      ({ action }) => set(`chose ${action}`),
       (e) => set(`rejected ${String(e).includes("actions") ? "for actions" : e}`),
     );
   };
@@ -36,9 +36,9 @@ function App() {
               title: "Discard your changes?",
               description: "They are not saved.",
               actions: [
-                { label: "Keep editing", role: "cancel" },
+                { label: "Keep editing", role: "cancel", id: "keep" },
                 { label: "Discard", role: "destructive", id: "discard" },
-                { label: "Save", role: "default", id: null },
+                { label: "Save", role: "default", id: "save" },
               ],
               presentation: "alert",
               closeOnEscape: true,
@@ -56,7 +56,7 @@ function App() {
             AlertDialog.show({
               title: null,
               description: null,
-              actions: [{ label: "Copy" }, { label: "Cancel", role: "cancel" }],
+              actions: [{ label: "Copy", id: "copy" }, { label: "Cancel", role: "cancel", id: "cancel" }],
               presentation: "actionSheet",
               closeOnEscape: null,
               closeOnBackdropPress: null,

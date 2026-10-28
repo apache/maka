@@ -60,14 +60,16 @@
   `landscape:`, `ios:` / `android:` / `web:`, `rtl:` / `ltr:`, `motion-safe:` / `motion-reduce:`, `active:` / `hover:` /
   `focus:` / `focus-within:` / `disabled:` / `enabled:` / `selected:` (`accessibilityState.selected`, a `Button`'s
   `selected`) / `checked:` (`accessibilityState.checked`, not mixed) / `indeterminate:` (`accessibilityState.checked`
-  mixed, CSS's `:indeterminate`), `group-*:` (named groups `group/name`), `first:` / `last:` /
+  mixed, CSS's `:indeterminate`) / `aria-expanded:` (`accessibilityState.expanded`: a `Popover`'s or `Menu`'s trigger
+  while its popup is open), `group-*:` (named groups `group/name`), `first:` / `last:` /
   `odd:` / `even:` / `only:`, `placeholder:` / `selection:` (a color only, the pseudo-element's: `placeholder:text-*` / `selection:bg-*`, the
   `placeholderColor` / `selectionColor` style keys; other utilities under them are unknown), `!` (important). The state classes have style props of their own (`activeStyle`, `hoverStyle`,
-  `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, a `Button`'s `selectedStyle`), resolved the same
-  way: later states win, `disabled` over all. `selected`, `checked` and `indeterminate` are value states the core sets
-  from the accessibility state (never reported by the platform), below the interaction states: `checked`, then
-  `indeterminate` (Tailwind's order), then `selected`, then `hover`, `focus`, `active` (gpui-base's order of value
-  states). `disabled` (any element) applies `disabled:` and drops
+  `focusStyle`, `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`, a `Button`'s `selectedStyle`),
+  resolved the same way: later states win, `disabled` over all. `selected`, `checked`, `indeterminate` and `expanded`
+  are value states the core sets from the accessibility state (never reported by the platform). The first three are
+  below the interaction states: `checked`, then `indeterminate` (Tailwind's order), then `selected`, then `hover`,
+  `focus`, `active` (gpui-base's order of value states); `expanded` is above them, as Tailwind's `aria-*` variants
+  come after its pseudo-classes, so an open popup's trigger keeps its look while hovered or pressed. `disabled` (any element) applies `disabled:` and drops
   the node's press listeners from what is mounted, so it shows no press feedback either. A part of a Rust component
   shows its control's `checked`, `indeterminate` and `disabled` to its own classes and state styles
   (`Interactive::project_checked`, `project_indeterminate`, `project_disabled`, and `project_focused` for the part the keys act on; `Prop::ProjectedStates`): a switch's thumb styled `checked:translate-x-4`, with no accessibility
@@ -191,9 +193,13 @@
   styles keep their own.
 - **Effects** (styles and classes; `effects.rs`): `boxShadow` (CSS syntax, several, `inset`; also `shadow-*` / `ring-*`; a style also takes its layers, `[{ x, y, blur, spread, color, inset }]`, which `nsh-js`'s `shadow_list` writes as the same CSS, so both forms mean one thing),
   `backgroundImage` (linear / radial / conic gradients and their `repeating-` forms,
-  drawn over `backgroundColor` as in CSS; stops at percentages, at lengths along linear and radial gradients
+  drawn over `backgroundColor` as in CSS; a repeating gradient's stops repeat with period last − first both ways
+  over the whole box, a radial one's rings out to its farthest corner: Core Animation's gradient layers and Android's
+  shaders repeat nothing, so macOS and iOS take `Gradient::unrolled_stops` (the stops repeated over the line, cut at
+  its ends with the colors there, at most 16384; a period of at most 1e-4 of the line is drawn once) and Android's
+  `Decor.Gradient.place` does the same; stops at percentages, at lengths along linear and radial gradients
   (a `DefiniteLength::Absolute` position: `Gradient::resolve_stops` places them against `Gradient::line_length` of the box when it is
-  drawn, so every native backend passes the view's size; Android's `Decor.Gradient.resolve` does the same for the
+  drawn, so every native backend passes the view's size; Android's `Decor.Gradient.place` does the same for the
   gradients `encode.rs` sends as written, with their stop count negated; the web hands them to the browser as `px`), or
   at angles around conic ones (fractions of a turn), up to two per stop; transition hints are not parsed; colors mix as in
   CSS (`in <space>`: `color-mix()`'s spaces and hue methods; without one, sRGB when every color is a legacy one, else

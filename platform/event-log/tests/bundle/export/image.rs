@@ -334,7 +334,7 @@ async fn transferred_generated_borrowed_and_later_frozen_images_keep_exact_row_c
                 target_session_id: "branch".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },
@@ -478,7 +478,7 @@ async fn copied_image_ownership_survives_transfer_without_importing_parent_catal
                 target_session_id: "branch".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },

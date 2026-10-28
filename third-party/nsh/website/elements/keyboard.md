@@ -58,7 +58,7 @@ function App() {
       <View style={{ flexDirection: "row", gap: 8, padding: 8, borderTopWidth: 1, borderTopColor: "#e5e5e5" }}>
         <Input
           value={draft()}
-          onChange={(v) => draft.set(v)}
+          onChange={({ value }) => draft.set(value)}
           placeholder="Message"
           style={{ flex: 1, fontSize: 16, padding: 8 }}
         />

@@ -23,7 +23,9 @@
 
 通过提供商适配器构造模型请求并接收流式响应。`ModelExecutor` 管理请求，`Conversation` 构造会话输入，`reasoning` 处理推理配置。凭据通过 `AuthResolver` 提供，调用方传入已授权的网络与计量上下文。
 
-Chat Completions 兼容协议与 Anthropic Messages 使用纯 Rust [协议核心](../provider-protocol/README.zh-CN.md)。原生适配器在请求派发后释放请求体，开放中的流不按输入大小占用接纳额度。未消费输出共享 32 MiB 字节窗口；更大的原子事件独占窗口，直到其持久化分片全部消费。这是背压，不是响应大小上限。空闲期限覆盖网络等待，不包含输出背压等待。
+[`adapters`](src/adapters.rs) 管理 Responses、Chat Completions、Anthropic Messages 和 Codex 订阅的执行适配。它将规范事实投影到纯 Rust [协议核心](../provider-protocol/README.zh-CN.md)，再将协议事件转换为模型事件。提供商定义、认证和发现留在 [providers](../providers/README.zh-CN.md)。
+
+适配器拥有 HTTP/WebSocket 传输与可丢弃的连接状态。请求消费不可变的预编码分块，重试重新打开同一份捕获来源。Codex 先从完整提示词准备 instructions，再由 Responses 连接选择续接后缀。未消费输出共享 32 MiB 字节窗口；更大的原子事件独占窗口，直到其持久化分片全部消费。这是背压，不是响应大小上限。空闲期限覆盖网络等待，不包含输出背压等待。
 
 HTTP、SSE、WebSocket 及持久重建保留完整的规范响应条目和文本。分块与有界通道施加背压，不另设整个响应的配额。可丢弃的续接缓存允许淘汰，恢复依据仍是规范历史。请求 token 选择、提供商协议校验及原有空闲、取消清理与内容保留分开处理。
 

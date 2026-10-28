@@ -113,7 +113,7 @@ pub(super) fn configuration(stage: &'static str, error: &ConfigError, connection
 pub(super) fn model(stage: &'static str, error: &ModelError, connection_id: &str) {
     match error {
         ModelError::Cancelled => {}
-        ModelError::Http { status } => tracing::warn!(
+        ModelError::Http { status, .. } => tracing::warn!(
             stage,
             cause = "model_http",
             connection_id,

@@ -154,7 +154,7 @@ async fn device_login_preserves_region_and_http_failures_without_echoing_respons
             }}),
         });
         transport.release.notify_one();
-        let error = Codex::default()
+        let error = Codex
             .authenticate(
                 maka_agent_ports::provider::authentication::Authenticate {
                     connection: connection(),
@@ -188,7 +188,7 @@ async fn device_login_preserves_region_and_http_failures_without_echoing_respons
 async fn sent_refresh_settles_after_cancellation_and_unknown_reply_is_never_retried() {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         for fail in [false, true] {
-            let binding = Codex::default().definition().unwrap();
+            let binding = Codex.definition().unwrap();
             let transport = Arc::new(Exchange {
                 started: Notify::new(),
                 release: Notify::new(),

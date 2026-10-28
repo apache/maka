@@ -101,7 +101,7 @@ fn a_socket_round_trips_bytes_and_checks_its_limits_in_the_call() {
     let (_engine, rx) = start(
         &format!(
             r#"(async () => {{
-  const socket = await net.connect("127.0.0.1", {port});
+  const socket = await net.connect({{ host: "127.0.0.1", port: {port} }});
   if (net.connect !== connect) throw Error("default and named exports differ");
   if (await socket.read(0) !== null) throw Error("a zero read is null");
   let range = false;
@@ -132,7 +132,7 @@ fn a_socket_not_granted_throws_in_the_call() {
         sockets(10),
     ] {
         let (_engine, rx) = start(
-            r#"try { connect("127.0.0.1", 9); report("connected"); } catch (e) {
+            r#"try { connect({ host: "127.0.0.1", port: 9 }); report("connected"); } catch (e) {
   report(`${e instanceof TypeError} ${e.message}`);
 }"#,
             &capabilities,
@@ -159,7 +159,7 @@ fn closing_a_socket_ends_a_pending_read_and_write() {
     let (_engine, rx) = start(
         &format!(
             r#"(async () => {{
-  const s = await connect("127.0.0.1", {port});
+  const s = await connect({{ host: "127.0.0.1", port: {port} }});
   const chunk = "x".repeat(1048576);
   let limited = false;
   const writes = [];
@@ -191,12 +191,12 @@ fn sockets_are_capped_per_vm_and_a_closed_one_frees_its_place() {
         &format!(
             r#"(async () => {{
   const pending = [];
-  for (let i = 0; i < 32; i++) pending.push(connect("127.0.0.1", {port}));
+  for (let i = 0; i < 32; i++) pending.push(connect({{ host: "127.0.0.1", port: {port} }}));
   let capped = false;
-  try {{ connect("127.0.0.1", {port}); }} catch (e) {{ capped = e instanceof RangeError; }}
+  try {{ connect({{ host: "127.0.0.1", port: {port} }}); }} catch (e) {{ capped = e instanceof RangeError; }}
   const all = await Promise.all(pending);
   all[0].close();
-  const again = await connect("127.0.0.1", {port});
+  const again = await connect({{ host: "127.0.0.1", port: {port} }});
   again.close();
   report(`${{capped}} reused`);
 }})().catch((e) => report(String(e)));"#
@@ -222,7 +222,7 @@ fn dropping_the_engine_closes_its_sockets() {
     });
     let (engine, rx) = start(
         &format!(
-            r#"connect("127.0.0.1", {port}).then((s) => {{
+            r#"connect({{ host: "127.0.0.1", port: {port} }}).then((s) => {{
   globalThis.socket = s;
   s.read().catch(() => {{}});
   report("connected");
@@ -252,7 +252,7 @@ fn connection_failures_carry_nodes_error_codes() {
         .port();
     let (_engine, rx) = start(
         &format!(
-            r#"connect("127.0.0.1", {port}).then(() => report("connected"), (e) =>
+            r#"connect({{ host: "127.0.0.1", port: {port} }}).then(() => report("connected"), (e) =>
   report(`${{e.constructor.name}} ${{e.code}} ${{e.syscall}} ${{e.address}} ${{e.port === {port}}} ${{e.message.startsWith("connecting to 127.0.0.1:{port} failed")}}`));"#
         ),
         &sockets(port),

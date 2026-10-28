@@ -22,7 +22,7 @@ import { errorText, renderText, type UiText } from '../../../../products/maka/wo
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, untracked, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { host } from '../../../../products/maka/workbench/app/host';
+import { useHost } from '../../../../products/maka/workbench/app/host';
 import type { GitStatus, GitStatusEntry } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   gitAreaLabel,
@@ -65,6 +65,7 @@ export function WorkspaceChanges(props: {
   sessionId: string;
   openDiff(target: CurrentDiffTarget): void;
 }) {
+  const host = useHost();
   const state = signal<ChangesState>({ kind: 'loading' });
   let generation = 0;
   let alive = true;
@@ -117,8 +118,8 @@ export function WorkspaceChanges(props: {
             state().kind === 'error' ? tr('Retry current changes') : tr('Refresh current changes'),
           )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="refresh" color={C.secondary} />
         </Button>
@@ -174,8 +175,8 @@ export function WorkspaceChanges(props: {
                   alignItems: 'center',
                   gap: 8,
                 }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Icon name="file" color={entry().kind === 'deleted' ? C.danger : C.muted} />
                 <View style={{ flex: 1, minWidth: 0 }}>

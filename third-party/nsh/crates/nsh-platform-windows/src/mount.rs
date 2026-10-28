@@ -247,7 +247,7 @@ impl Mounter {
                     ViewKind::WebView | ViewKind::Video | ViewKind::Native => {
                         crate::native::resized(view)
                     }
-                    _ => {}
+                    _ => crate::shader::resized(surface, view),
                 }
             }
             MountItem::ViewStyle { id, style } => {
@@ -291,6 +291,7 @@ impl Mounter {
                 id,
                 horizontal,
                 scrollbar_visible,
+                replaced,
                 mirrored,
                 ..
             } => {
@@ -300,6 +301,7 @@ impl Mounter {
                         view,
                         *horizontal,
                         *scrollbar_visible,
+                        *replaced,
                         *mirrored,
                     );
                 }
@@ -347,6 +349,11 @@ impl Mounter {
             MountItem::Canvas { id, drawing } => {
                 if let Some(view) = &self.get(*id) {
                     crate::canvas::set(surface, view, drawing.clone());
+                }
+            }
+            MountItem::Shader { id, layer } => {
+                if let Some(view) = &self.get(*id) {
+                    crate::shader::set(surface, view, layer.clone());
                 }
             }
             MountItem::Gestures { id, values } => {
@@ -476,6 +483,9 @@ impl Mounter {
                     crate::text_input::set_selection(view, *start, *end);
                 }
             }
+            Command::ScrollTo { y, .. } if view.is_some_and(|v| v.kind() == ViewKind::Input) => {
+                crate::text_input::scroll_to(view.expect("an input"), *y);
+            }
             Command::ScrollTo { .. }
             | Command::ScrollToEnd { .. }
             | Command::ScrollToIndex { .. }
@@ -551,6 +561,7 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::ScrollBehavior { id, .. }
         | MountItem::Refreshing { id, .. }
         | MountItem::Canvas { id, .. }
+        | MountItem::Shader { id, .. }
         | MountItem::ViewProps { id, .. }
         | MountItem::Input { id, .. }
         | MountItem::InputValue { id, .. }

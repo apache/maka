@@ -110,6 +110,11 @@ pub(crate) fn root() -> PathBuf {
 
 /// Builds `libnsh.so` for `abis` and `classes.dex` into
 /// `target/android/<profile>[-dev]`, returning that directory.
+///
+/// Release libraries go into `lib/<abi>` without their symbol tables and
+/// debug info, which APKs store uncompressed (a quarter of each library);
+/// `symbols/<abi>` keeps them whole, for `ndk-stack`, Play Console and the
+/// AAR (Gradle strips what it packages and keeps the symbols itself).
 pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result<PathBuf> {
     let sdk = Sdk::find()?;
     let profile = if release { "release" } else { "debug" };
@@ -127,7 +132,16 @@ pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result
         // Unchanged files keep their times: `nsh run` rebuilds and
         // reinstalls the development host when they change.
         let dest = dest.join("libnsh.so");
-        if !up_to_date(&dest, std::slice::from_ref(&so)) {
+        let symbols = out.join("symbols").join(abi).join("libnsh.so");
+        if up_to_date(&dest, std::slice::from_ref(&so)) && (!release || symbols.exists()) {
+            continue;
+        }
+        if release {
+            fs::create_dir_all(symbols.parent().context("symbols directory")?)?;
+            fs::copy(&so, &symbols)?;
+            strip(&sdk, &so, &dest)?;
+            check_alignment(&sdk, &dest)?;
+        } else {
             fs::copy(&so, &dest)?;
         }
     }
@@ -144,6 +158,18 @@ pub(crate) fn build(release: bool, dev: bool, abis: &[String]) -> anyhow::Result
     }
     term::note(out.strip_prefix(root()).unwrap_or(&out).display());
     Ok(out)
+}
+
+/// Writes `library` to `to` without the symbols nothing links against: the
+/// dynamic ones (`JNI_OnLoad`, the `Java_*` natives) stay.
+fn strip(sdk: &Sdk, library: &Path, to: &Path) -> anyhow::Result<()> {
+    term::run(
+        Command::new(sdk.toolchain().join("bin/llvm-strip"))
+            .arg("--strip-unneeded")
+            .arg("-o")
+            .arg(to)
+            .arg(library),
+    )
 }
 
 /// Check the linked ELF, before it is copied into a runtime or an AAR.

@@ -19,20 +19,25 @@
 
 import { textTooltip } from './ui';
 import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ListRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { platform, windowSize } from 'nsh';
+import { pixelRatio, platform, windowSize } from 'nsh';
+import { host as nativeHost } from 'maka/host';
 import type { Position } from './history';
 import { C, controlStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { uiScale } from './uiScale';
 
 // Cell input rounds by half a 16 / scale row; include the two-point stroke.
-const markPitch = () => (platform.isTerminal ? 16 : Math.max(24, 16 / uiScale.factor() + 2));
+const markPitch = computed(() => {
+  if (platform.isTerminal) return 16;
+  pixelRatio();
+  windowSize();
+  return Math.max(24, 16 / nativeHost.uiScaleFactor + 2);
+});
 const railInset = platform.isTerminal ? 0 : 6;
 const railMargin = 32;
-const railWidth = () => (platform.isTerminal ? 24 : markPitch());
+export const railWidth = () => (platform.isTerminal ? 24 : markPitch());
 
 function TurnMark(props: { active: boolean; busy: boolean; landmark: boolean }) {
   const color = () => (props.active ? C.text : C.line);
@@ -200,7 +205,7 @@ export function TurnNavigation(props: {
     const active = props.active();
     return props.items().findIndex((item) => item.turnId === active);
   });
-  let rail: YNode | undefined;
+  let rail: ListRef | undefined;
   const followActive = () => {
     const index = activeIndex();
     if (rail && props.active() !== null && index >= 0)
@@ -219,7 +224,7 @@ export function TurnNavigation(props: {
   });
   return (
     <View
-      onLayout={(frame) => height.set(frame.size.height)}
+      onLayout={({ bounds: frame }) => height.set(frame.size.height)}
       style={{ width: railWidth(), minHeight: 0, justifyContent: 'center' }}
     >
       <View style={{ width: railWidth(), height: frameHeight() }}>

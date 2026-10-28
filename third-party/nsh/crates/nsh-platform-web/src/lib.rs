@@ -15,11 +15,17 @@
 //!   `requestAnimationFrame` ([`animation`]).
 //!
 //! - `fetch` runs on the browser's `fetch` ([`net`]).
+//! - What the module leaves out, the syntaxes code is highlighted with,
+//!   comes from the page the first time it is needed ([`nsh_data`],
+//!   `nsh_core::runtime_data`).
 //!
 //! There are no native components; web views are `<iframe>`s and scroll
 //! views use the browser's scrolling. Off WebAssembly this crate is empty.
 
 #![cfg(target_arch = "wasm32")]
+
+#[cfg(all(feature = "browser-core", not(feature = "js")))]
+mod browser;
 
 mod animation;
 mod canvas;
@@ -29,6 +35,7 @@ mod filesystem;
 #[cfg(feature = "js")]
 mod local_time;
 mod net;
+mod shader;
 mod storage;
 mod text;
 mod websocket;
@@ -112,7 +119,20 @@ pub fn set_ui_sets(sets: Vec<Registry>) {
 fn ui_sets() -> Vec<Registry> {
     UI_SETS
         .with(|s| s.borrow().clone())
-        .unwrap_or_else(|| vec![nsh_base::registry()])
+        .unwrap_or_else(|| vec![base_set()])
+}
+
+/// `nsh/base`: every part of it.
+#[cfg(feature = "base-full")]
+fn base_set() -> Registry {
+    nsh_base::registry()
+}
+
+/// `nsh/base` in the lite runtime (feature `base-full` off): its core part,
+/// so the other parts' code stays out of the module.
+#[cfg(not(feature = "base-full"))]
+fn base_set() -> Registry {
+    nsh_base::registry_of([nsh_base::parts::core as nsh_base::parts::Part])
 }
 
 /// Makes this module an app's web runtime that serves `$sets` (an
@@ -476,7 +496,7 @@ pub extern "C" fn nsh_start_rust(width: f32, height: f32, dark: u32, pixel_ratio
     )
 }
 
-/// Sets up logging and panics once.
+/// Sets up logging, panics and the runtime's data once.
 fn init() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
@@ -485,7 +505,31 @@ fn init() {
         std::panic::set_hook(Box::new(|info| {
             ffi::report_error(&format!("nsh panicked: {info}"));
         }));
+        // What this module leaves out (the syntaxes) comes from the page.
+        nsh_core::runtime_data::set_loader(ffi::load_data);
     });
+}
+
+/// Hands over the runtime's data `name` that the page fetched for
+/// `load_data` (`nsh_core::runtime_data`): its bytes when `ok` is 1; with 0
+/// the page has no such file or it did not load. Returns the delay (ms)
+/// until [`nsh_pump`] is due, or -1.
+///
+/// # Safety
+///
+/// Both ranges are memory from [`nsh_alloc`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn nsh_data(
+    name: *const u8,
+    name_len: usize,
+    ptr: *const u8,
+    len: usize,
+    ok: u32,
+) -> f64 {
+    // SAFETY: guaranteed by the caller.
+    let (name, data) = unsafe { (string(name, name_len), bytes(ptr, len)) };
+    nsh_core::runtime_data::deliver(&name, (ok != 0).then(|| data.to_vec()));
+    pump()
 }
 
 #[cfg(feature = "js")]
@@ -1179,47 +1223,32 @@ pub unsafe extern "C" fn nsh_event(
         EventKind::Error => EventPayload::Error {
             message: text("message"),
         },
-        EventKind::HoverMove
-        | EventKind::ContextMenu
+        // `{ position, pagePosition, modifiers, pressedButton }`, as handlers
+        // get it.
+        EventKind::MouseEnter | EventKind::MouseLeave | EventKind::MouseMove => {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            let pressed_button = value
+                .get("pressedButton")
+                .and_then(|v| v.as_str())
+                .and_then(mouse_button);
+            EventPayload::Mouse(nsh_core::MouseEvent::new(
+                position,
+                page_position,
+                modifiers,
+                pressed_button,
+            ))
+        }
+        EventKind::ContextMenu
         | EventKind::Press
         | EventKind::LongPress
         | EventKind::PressDown
         | EventKind::PressUp
-            if matches!(kind, EventKind::HoverMove | EventKind::ContextMenu)
-                || value.get("pagePosition").is_some() =>
+            if kind == EventKind::ContextMenu || value.get("pagePosition").is_some() =>
         {
             // `{ position, pagePosition, modifiers }` (presses: and
             // `clicks`), as handlers get it.
-            let at = |k: &str| {
-                let p = value.get(k);
-                let n = |c: &str| {
-                    p.and_then(|p| p.get(c))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0) as f32
-                };
-                point(Points(n("x")), Points(n("y")))
-            };
-            let flag = |k: &str| {
-                value
-                    .get("modifiers")
-                    .and_then(|m| m.get(k))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            };
-            let (position, page_position) = (at("position"), at("pagePosition"));
-            let modifiers = nsh_core::keymap::Modifiers {
-                ctrl: flag("control"),
-                alt: flag("alt"),
-                shift: flag("shift"),
-                cmd: flag("platform"),
-            };
-            if kind == EventKind::HoverMove {
-                EventPayload::Hover(nsh_core::HoverEvent {
-                    position,
-                    page_position,
-                    modifiers,
-                })
-            } else if kind != EventKind::ContextMenu {
+            let (position, page_position, modifiers) = pointer_at(&value);
+            if kind != EventKind::ContextMenu {
                 EventPayload::Press(nsh_core::PressEvent {
                     position,
                     page_position,
@@ -1308,6 +1337,53 @@ pub unsafe extern "C" fn nsh_event(
         },
     };
     send(|app| app.control.dispatch_event(id, kind, payload))
+}
+
+/// The pointer of a mouse or press payload: its `position`, `pagePosition`
+/// and `modifiers`.
+fn pointer_at(
+    value: &serde_json::Value,
+) -> (
+    nsh_core::Point<Points>,
+    nsh_core::Point<Points>,
+    nsh_core::keymap::Modifiers,
+) {
+    let at = |k: &str| {
+        let p = value.get(k);
+        let n = |c: &str| {
+            p.and_then(|p| p.get(c))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32
+        };
+        point(Points(n("x")), Points(n("y")))
+    };
+    let flag = |k: &str| {
+        value
+            .get("modifiers")
+            .and_then(|m| m.get(k))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let modifiers = nsh_core::keymap::Modifiers {
+        ctrl: flag("control"),
+        alt: flag("alt"),
+        shift: flag("shift"),
+        cmd: flag("platform"),
+    };
+    (at("position"), at("pagePosition"), modifiers)
+}
+
+/// The button a mouse payload's `pressedButton` names (`nsh.js` names the
+/// first of the DOM's `buttons` bits held).
+fn mouse_button(name: &str) -> Option<nsh_core::MouseButton> {
+    Some(match name {
+        "left" => nsh_core::MouseButton::Left,
+        "right" => nsh_core::MouseButton::Right,
+        "middle" => nsh_core::MouseButton::Middle,
+        "back" => nsh_core::MouseButton::Back,
+        "forward" => nsh_core::MouseButton::Forward,
+        _ => return None,
+    })
 }
 
 /// `onPaste` of input `id`: what the user pasted, as JSON `{ text, files:
@@ -1586,6 +1662,27 @@ pub extern "C" fn nsh_scroll(id: u32, x: f32, y: f32, applied: u32) -> f64 {
     })
 }
 
+/// The text of multiline input `id` scrolled to `y`, or its height
+/// (`content`) or its viewport's changed, while a built-in bar takes the
+/// place of its indicator.
+#[unsafe(no_mangle)]
+pub extern "C" fn nsh_input_scroll(
+    id: u32,
+    y: f32,
+    width: f32,
+    content: f32,
+    viewport: f32,
+) -> f64 {
+    send(|app| {
+        app.control.input_scroll(
+            id,
+            point(px(0.0), px(y)),
+            size(px(width), px(content.max(viewport))),
+            size(px(width), px(viewport)),
+        );
+    })
+}
+
 /// Vertical scroll view `id` is pulled `distance` past its top: its pull
 /// value (`pullValue`) follows.
 #[unsafe(no_mangle)]
@@ -1729,7 +1826,7 @@ pub extern "C" fn nsh_root_size(
 /// classes).
 #[unsafe(no_mangle)]
 pub extern "C" fn nsh_states(id: u32, states: u32) -> f64 {
-    send(|app| app.control.set_states(id, states as u8))
+    send(|app| app.control.set_states(id, states as u16))
 }
 
 /// The surface was resized (points).

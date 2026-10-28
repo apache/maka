@@ -67,12 +67,12 @@ function Details() {
 
 ## 打开状态
 
-没有 `open` 时，弹出框自己保存状态，初始值为 `defaultOpen`。有 `open` 时，状态由应用持有：在 `onOpenChange(open, reason)` 中修改它，每次打开或关闭的请求都会带着原因（`"triggerPress"`、`"pressOutside"`、`"cancel"`）报告给它。
+没有 `open` 时，弹出框自己保存状态，初始值为 `defaultOpen`。有 `open` 时，状态由应用持有：在 `onOpenChange({ open, reason })` 中修改它，每次打开或关闭的请求都会带着原因（`"triggerPress"`、`"pressOutside"`、`"cancel"`）报告给它。
 
 ```tsx
 const open = signal(false);
 
-<Popover open={open()} onOpenChange={(next) => open.set(next)} trigger={<Text>Filters</Text>}>
+<Popover open={open()} onOpenChange={(e) => open.set(e.open)} trigger={<Text>Filters</Text>}>
   <FilterForm onApply={() => open.set(false)} />
 </Popover>
 ```
@@ -81,7 +81,7 @@ const open = signal(false);
 
 ## 独立的锚点
 
-受控弹出框可以使用 `anchor={rowRef}` 跟随在别处渲染的元素，无需把它移入 `trigger`。这个 ref 是同一根视图中的 `YNode`，其边界优先于触发元素。弹出框打开期间保持锚点挂载；虚拟列表中的原行退役时关闭弹出层。锚点只决定位置：键盘焦点会回到实际打开它的控件，例如列表的搜索框。
+受控弹出框可以使用 `anchor={rowRef}` 跟随在别处渲染的元素，无需把它移入 `trigger`。这个 ref 是同一根视图中的 `ViewRef`，其边界优先于触发元素。弹出框打开期间保持锚点挂载；虚拟列表中的原行退役时关闭弹出层。锚点只决定位置：键盘焦点会回到实际打开它的控件，例如列表的搜索框。
 
 <a id="phones-and-desktops"></a>
 
@@ -109,8 +109,8 @@ const open = signal(false);
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape 和 Android 返回键会关闭它。 |
 | `closeOnPressOutside` | `.close_on_press_outside(..)` | `boolean` | `true` | 外部按压会关闭它。 |
 | `popupClass`、`popupStyle` | `popup_class`、`popup_style` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层（装着内容的盒子）的外观。 |
-| `anchor` | `.anchor(..)` | `YNode \| null` | 无 | 在别处渲染的锚点，其边界优先于触发元素。 |
-| `trigger` | `.trigger(..)` | `JSX.Element` | 无 | 打开它的元素；它相对这个元素放置。 |
+| `anchor` | `.anchor(..)` | `ViewRef \| null` | 无 | 在别处渲染的锚点，其边界优先于触发元素。 |
+| `trigger` | `.trigger(..)` | `JSX.Element` | 无 | 打开它的元素；它相对这个元素放置。弹出层打开时，它的 `aria-expanded:` 类和 `expandedStyle` 生效。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容。 |
 
 <a id="events"></a>

@@ -91,7 +91,7 @@ async fn reopened_images_preserve_complete_accepted_artifacts_and_copied_authori
         let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
         assert!(matches!(log.root().copy_session(maka_event_log::sessions::SessionCopy {
             source_session_id: "session".into(), target_session_id: "branch".into(),
-            expected_source_revision: revision, purpose: maka_agent_facts::session::CopyPurpose::Branch { turn_id: None, side_conversation: false },
+            expected_source_revision: revision, purpose: maka_agent_facts::session::CopyPurpose::Branch { position: maka_agent_facts::session::ForkPosition::End, side_conversation: false },
         }, &json!({}), 2).await.unwrap(), maka_event_log::sessions::SessionCopyResult::Committed(_)));
 
         log.close().await.unwrap();

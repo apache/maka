@@ -160,7 +160,7 @@ The global `WebSocket` queues at most eight messages to send, with at most 8 MiB
 
 The `websocket` module's `WebSocketConnection` holds at most eight pending operations (reads, writes, close) and at most 8 MiB of writes not sent yet; a `write()` past the byte limit throws a `RangeError` at the call, and one past the operation limit rejects. One `read()` may wait at a time. Messages that arrive before they are read are kept, up to eight and 8 MiB together; one more closes the connection, since the app reads slower than the peer sends. Resolving, connecting and the handshake together, each write and closing time out after 30 seconds. After the connection ends (the peer closed it, a read or write failed, or too much arrived unread), `read()` still resolves the kept messages, in order, then rejects with why it ended.
 
-`net.connect(host, port)` uses only `network.sockets`, a list of exact `"host:port"` destinations (`"[::1]:9000"` for IPv6), checked before DNS lookup. Each entry grants one port on one host; host patterns, `network.hosts` and HTTP grants cover HTTP traffic only, and an app without `"capabilities"` lists its sockets too. The returned `Socket` provides `read(size?)`, `write(text)` and `close()`; reads return `Uint8Array`, or `null` at EOF. A refused grant throws a `TypeError` and a limit a `RangeError` at the call; connection and I/O failures reject with Node's `code` (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `ECONNRESET`, ...) and `syscall`, a connection's also with `address` and `port`, and an operation on a closed socket with `ERR_SOCKET_CLOSED`. Connections and I/O have 30-second timeouts, each read/write is limited to 1 MiB, at most 4 MiB of writes may wait to be sent, and `close()` ends pending reads and writes at once. Each VM keeps at most 32 sockets open or connecting. This is a promise-based client socket interface.
+`net.connect({ host, port })` uses only `network.sockets`, a list of exact `"host:port"` destinations (`"[::1]:9000"` for IPv6), checked before DNS lookup. Each entry grants one port on one host; host patterns, `network.hosts` and HTTP grants cover HTTP traffic only, and an app without `"capabilities"` lists its sockets too. The returned `Socket` provides `read(size?)`, `write(text)` and `close()`; reads return `Uint8Array`, or `null` at EOF. A refused grant throws a `TypeError` and a limit a `RangeError` at the call; connection and I/O failures reject with Node's `code` (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `ECONNRESET`, ...) and `syscall`, a connection's also with `address` and `port`, and an operation on a closed socket with `ERR_SOCKET_CLOSED`. Connections and I/O have 30-second timeouts, each read/write is limited to 1 MiB, at most 4 MiB of writes may wait to be sent, and `close()` ends pending reads and writes at once. Each VM keeps at most 32 sockets open or connecting. This is a promise-based client socket interface.
 
 Raw TCP uses native hosts. Both WebSocket interfaces use the browser transport in web apps, retaining Rust capability checks and the limits above. Custom browser handshake headers report an explicit unsupported-option error. Browser connection policies also apply. Embedding grants intersect the app's capability declaration.
 
@@ -242,7 +242,7 @@ spawn(async move {
 ```tsx tabs
 import { connect } from "net";
 
-const socket = await connect("tcp.example.com", 9000);
+const socket = await connect({ host: "tcp.example.com", port: 9000 });
 try {
   await socket.write("hello\n");
   const bytes = await socket.read(1024);

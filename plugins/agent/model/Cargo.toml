@@ -24,7 +24,6 @@ publish.workspace = true
 
 [dependencies]
 bytes = "1.12.1"
-sha2.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
@@ -33,8 +32,8 @@ uuid.workspace = true
 hyper = { version = "1.12.0", default-features = false }
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
-maka-responses.workspace = true
 maka-provider-protocol.workspace = true
+sha2.workspace = true
 jiff.workspace = true
 base64 = "0.23.1"
 serde.workspace = true

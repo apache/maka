@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Host-owned model I/O shared by native and JavaScript adapters.
+//! Host-owned model I/O shared by built-in and JavaScript adapters.
 use futures_util::future::BoxFuture;
 use maka_agent_facts::model::error::ProviderFailure;
 use maka_agent_facts::model::error::ProviderFailureReason;

@@ -23,7 +23,7 @@ Third-party source and dependency patch attribution is recorded in [LICENSE](../
 
 ### Native model protocol validation
 
-`plugins/agent/provider-protocol` implements Chat Completions compatible and Anthropic Messages with native Rust input types, wire decoders and stream state. Its behavior was checked against the relevant unchanged Vercel AI SDK tests at revision `e623e8c88b55066dde769614a16ae51d424974aa` (openai-compatible 3.0.77 and anthropic 4.0.87). The upstream tests and temporary validation bindings are external validation tools and are not distributed with Maka. The product uses the same Rust protocol core through Host-scoped transport.
+`plugins/agent/provider-protocol` implements Responses, Chat Completions compatible and Anthropic Messages with protocol-owned Rust input types, wire decoders and stream state. Chat Completions and Anthropic behavior was checked against the relevant unchanged Vercel AI SDK tests at revision `e623e8c88b55066dde769614a16ae51d424974aa` (openai-compatible 3.0.77 and anthropic 4.0.87). The upstream tests and temporary validation bindings are external validation tools and are not distributed with Maka. The product uses the same Rust protocol core through Host-scoped transport in `plugins/agent/model/src/adapters`.
 
 ### Source archive non-text inventory
 

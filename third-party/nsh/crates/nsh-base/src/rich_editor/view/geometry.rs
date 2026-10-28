@@ -7,7 +7,7 @@
 //! places stay apart: a position at a line wrap is two places, which the
 //! selection's affinity tells apart.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use nsh_core::{TextLine, prelude::*};
 use unicode_segmentation::UnicodeSegmentation;
@@ -77,6 +77,10 @@ impl InlineMap {
                 }
                 return if run.doc_len == 0 {
                     run.doc
+                } else if run.text_len as usize != run.doc_len {
+                    // A leaf drawn as text (a mention): the nearer side, the
+                    // caret never stands inside it.
+                    run.doc + usize::from(2 * (t - run.text) >= run.text_len) * run.doc_len
                 } else {
                     run.doc + ((t - run.text) as usize).min(run.doc_len)
                 };
@@ -101,6 +105,9 @@ pub(crate) struct TextGeo {
     pub(crate) owner: Option<u64>,
 }
 
+/// Measures a text in a font (the platform's measurer, captured).
+pub(crate) type Measure = Rc<dyn Fn(&str, &str) -> Points>;
+
 /// The geometry of a rendered document.
 #[derive(Default)]
 pub(crate) struct Geometry {
@@ -114,7 +121,13 @@ pub(crate) struct Geometry {
     pub(crate) atoms: HashMap<u64, usize>,
     /// The font measuring within a line (relative widths only).
     pub(crate) font: String,
+    /// Captured on the view's engine thread, independent of runtime entry.
+    pub(crate) measure: Option<Measure>,
 }
+
+/// The caret's height in the font's ascender and descender: about one em
+/// for common fonts, whose ascender and descender span some 1.2 em.
+const CARET_EM: f32 = 0.85;
 
 /// A place a point lands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +139,13 @@ pub(crate) enum Hit {
 }
 
 impl Geometry {
+    fn measure_text(&self, text: &str) -> Points {
+        self.measure.as_ref().map_or_else(
+            || measure_text(&self.font, text),
+            |measure| measure(&self.font, text),
+        )
+    }
+
     /// Block `id`'s top left in the content box.
     pub(crate) fn origin(&self, id: u64) -> Option<Point<Points>> {
         let mut at = Point::default();
@@ -183,6 +203,33 @@ impl Geometry {
         Some(Bounds::new(
             Point::new(origin.x + x, origin.y + y),
             Size::new(px(0.0), h),
+        ))
+    }
+
+    /// The drawn caret at `pos`: about the font's em tall (the ascender
+    /// and descender less their own gap, as gpui-kit's input draws 0.85 of
+    /// a normal line), centred in the line, rather than the whole line box
+    /// [`Self::caret_rect`] gives.
+    pub(crate) fn caret_glyph_rect(
+        &self,
+        pos: usize,
+        affinity: Affinity,
+    ) -> Option<Bounds<Points>> {
+        let b = self.caret_rect(pos, affinity)?;
+        let id = self.text_at(pos)?;
+        let (_, geo) = self.text_box(id)?;
+        let t = geo.map.to_text(pos - geo.start);
+        let Some(line) = line_of(&geo.lines, t, affinity).map(|i| &geo.lines[i]) else {
+            return Some(b);
+        };
+        let glyphs = (line.ascender + line.descender) * CARET_EM;
+        if glyphs <= px(0.0) || glyphs >= line.height {
+            return Some(b);
+        }
+        let top = b.origin.y + (line.height - glyphs) * 0.5;
+        Some(Bounds::new(
+            Point::new(b.origin.x, top),
+            Size::new(px(0.0), glyphs),
         ))
     }
 
@@ -244,7 +291,7 @@ impl Geometry {
         if x >= line.width {
             return line.end;
         }
-        let full = measure_text(&self.font, &line.text).max(px(1.0));
+        let full = self.measure_text(&line.text).max(px(1.0));
         let mut best = (line.start, Points(f32::MAX));
         let mut units = 0u32;
         let mut boundaries = vec![(0u32, 0usize)];
@@ -261,7 +308,7 @@ impl Geometry {
             let w = if b == 0 {
                 px(0.0)
             } else {
-                line.width * (measure_text(&self.font, &line.text[..b]).0 / full.0)
+                line.width * (self.measure_text(&line.text[..b]).0 / full.0)
             };
             let d = Points((w - x).0.abs());
             if d < best.1 {
@@ -282,15 +329,25 @@ impl Geometry {
         let units: Vec<u16> = line.text.encode_utf16().collect();
         let k = ((t - line.start) as usize).min(units.len());
         let prefix = String::from_utf16_lossy(&units[..k]);
-        let full = measure_text(&self.font, &line.text).max(px(1.0));
-        line.width * (measure_text(&self.font, &prefix).0 / full.0)
+        let full = self.measure_text(&line.text).max(px(1.0));
+        line.width * (self.measure_text(&prefix).0 / full.0)
     }
 
     /// The place at `p` (content box): an atom it is on, else the nearest
     /// textblock's nearest position.
     pub(crate) fn hit(&self, p: Point<Points>) -> Option<Hit> {
+        self.hit_in(p, None)
+    }
+
+    /// The place at `p` among the atoms and textblocks in `range` (all
+    /// without one): a table cell's, which its neighbors beside it must
+    /// not take a press from.
+    pub(crate) fn hit_in(&self, p: Point<Points>, range: Option<(usize, usize)>) -> Option<Hit> {
+        let within = |pos: usize| range.is_none_or(|(from, to)| pos >= from && pos < to);
         for (id, pos) in &self.atoms {
-            if let (Some(origin), Some((_, frame))) = (self.origin(*id), self.frames.get(id)) {
+            if within(*pos)
+                && let (Some(origin), Some((_, frame))) = (self.origin(*id), self.frames.get(id))
+            {
                 let b = Bounds::new(origin, frame.size);
                 if p.x >= b.origin.x
                     && p.x < b.origin.x + b.size.width
@@ -303,7 +360,10 @@ impl Geometry {
         }
         // The textblock nearest vertically (then horizontally).
         let mut best: Option<(f32, f32, u64)> = None;
-        for id in self.texts.keys() {
+        for (id, text) in &self.texts {
+            if !within(text.start) {
+                continue;
+            }
             let Some((origin, geo)) = self.text_box(*id) else {
                 continue;
             };
@@ -458,5 +518,28 @@ mod tests {
         assert_eq!(m.to_doc(3), 3);
         assert_eq!(m.to_doc(5), 4);
         assert_eq!(m.to_doc(6), 5);
+    }
+
+    #[test]
+    fn a_leaf_drawn_as_text_is_one_position() {
+        // "ab", a mention drawn as "@Alice", "c".
+        let run = |doc, doc_len, text, text_len| Run {
+            doc,
+            doc_len,
+            text,
+            text_len,
+            side: 0,
+        };
+        let m = InlineMap {
+            runs: vec![run(0, 2, 0, 2), run(2, 1, 2, 6), run(3, 1, 8, 1)],
+            size: 4,
+            len: 9,
+        };
+        assert_eq!(m.to_text(2), 2);
+        assert_eq!(m.to_text(3), 8);
+        // Inside its text: the nearer side.
+        assert_eq!(m.to_doc(4), 2);
+        assert_eq!(m.to_doc(5), 3);
+        assert_eq!(m.to_doc(8), 3);
     }
 }

@@ -185,7 +185,7 @@ async fn physical_attempt_usage_survives_rejection_copy_removal_and_reopen() {
                 target_session_id: "branch".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false
                 },
             },

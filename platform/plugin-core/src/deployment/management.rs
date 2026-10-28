@@ -214,6 +214,8 @@ pub struct UiInstance {
     pub package: PackageRef,
     pub configuration: serde_json::Value,
     pub module: String,
+    #[serde(rename = "definitionBasis")]
+    pub definition_basis: String,
     #[serde(rename = "bindingBasis")]
     pub binding_basis: String,
     pub imports: BTreeMap<String, usize>,

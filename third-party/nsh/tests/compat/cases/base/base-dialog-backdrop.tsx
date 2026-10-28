@@ -2,7 +2,7 @@
 // backdrop of `nsh/base`'s `Dialog`: a view behind the popup while the app
 // styles one (`backdropStyle`, `backdropClass`), found by
 // `backdropTestID`, whose presses are close attempts (`onCancel`, then
-// `onOpenChange(false, "backdropPress")`).
+// `onOpenChange({ open: false, reason: "backdropPress" })`).
 // Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Dialog } from "nsh/base";
@@ -19,7 +19,7 @@ function App() {
         backdropTestID="shade"
         backdropStyle={{ backgroundColor: "#00000080" }}
         onCancel={() => note("styled cancel")}
-        onOpenChange={(open, reason) => {
+        onOpenChange={({ open, reason }) => {
           note(`styled change ${open} ${reason}`);
           styled.set(open);
         }}

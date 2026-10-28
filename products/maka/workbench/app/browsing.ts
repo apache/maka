@@ -19,7 +19,7 @@
 
 import { createText, errorText, UiError } from './text';
 import { batch, cleanup, signal } from 'nsh';
-import { host } from './host';
+import type { Host } from './host';
 import type {
   AgentSessionListScope,
   AgentSessionFilter,
@@ -75,7 +75,7 @@ const uniqueSessions = (items: BrowserSession[]) => [
 
 // One mounted read projection serves the workspace browser and session picker.
 // Host revisions own paging; these snapshots grant no mutation authority.
-export function createBrowsing(): Browsing {
+export function createBrowsing(host: Host): Browsing {
   const scope = signal<BrowserScope>({ kind: 'all' });
   const filter = signal<AgentSessionFilter>('all');
   const sessions = signal<BrowserSession[]>([]);

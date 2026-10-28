@@ -48,12 +48,12 @@ fn player() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { signal, Text, Video, View, type YNode } from "nsh";
+import { signal, Text, Video, type VideoRef, View } from "nsh";
 
 function Player() {
   const paused = signal(true);
   const time = signal("");
-  let video!: YNode;
+  let video!: VideoRef;
   return (
     <View style={{ gap: 12 }}>
       <Video

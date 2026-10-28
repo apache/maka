@@ -106,8 +106,8 @@ import { openUrl } from "nsh";
 const log = signal<string[]>([]);
 const say = (s: string) => log.set([...log(), s]);
 
-openUrl("https://example.com/a?b=1").then((v) => say(`web ${v}`));
-openUrl("mailto:ada@example.com").then((v) => say(`mail ${v}`));
+openUrl("https://example.com/a?b=1").then(({ opened }) => say(`web ${opened}`));
+openUrl("mailto:ada@example.com").then(({ opened }) => say(`mail ${opened}`));
 for (const url of ["javascript:alert(1)", "example.com", "file:///etc/passwd"]) {
   try {
     openUrl(url);

@@ -213,6 +213,11 @@ pub(crate) struct Surface {
     /// Frame callbacks of the platform's own animations (scroll glides,
     /// transitions): called on every frame while they return true.
     frame_callbacks: RefCell<Vec<FrameCallback>>,
+    /// How many of the frame callbacks have only cosmetic work left (a
+    /// scroll indicator fading out): what [`Surface::animating`] does not
+    /// count.
+    #[cfg(feature = "dev")]
+    cosmetic_frames: Cell<usize>,
     /// The model of a test session's app (`nsh test --target`).
     #[cfg(feature = "dev")]
     test_model: RefCell<Option<std::sync::Arc<nsh_testing::agent::Model>>>,
@@ -244,6 +249,8 @@ pub(crate) struct Surface {
     /// The app's keyboard shortcuts ([`crate::keymap`]).
     pub(crate) keymap: crate::keymap::KeymapState,
     pub(crate) file_drop: crate::file_drop::State,
+    /// The GPU device and the shader views rendering ([`crate::shader`]).
+    pub(crate) shaders: crate::shader::Shaders,
 }
 
 /// A per-frame callback ([`Surface::add_frame_callback`]): gets the frame
@@ -277,6 +284,8 @@ impl Surface {
             queued: RefCell::default(),
             frame_callbacks: RefCell::default(),
             #[cfg(feature = "dev")]
+            cosmetic_frames: Cell::new(0),
+            #[cfg(feature = "dev")]
             test_model: RefCell::default(),
             link: RefCell::new(None),
             perf: RefCell::new(None),
@@ -293,6 +302,7 @@ impl Surface {
             keymap: Default::default(),
             file_drop: Default::default(),
             chrome: Default::default(),
+            shaders: Default::default(),
         });
         SURFACES.with(|s| s.borrow_mut().insert(key, Rc::downgrade(&surface)));
         // CoreText's first use loads fonts and caches (tens of
@@ -380,6 +390,9 @@ impl Surface {
         self.queued.borrow_mut().clear();
         self.resize_late.set(false);
         self.frame_callbacks.borrow_mut().clear();
+        #[cfg(feature = "dev")]
+        self.cosmetic_frames.set(0);
+        crate::shader::clear(self);
     }
 
     /// Calls `f` with the engine's control, if an app runs.
@@ -651,6 +664,8 @@ impl Surface {
             );
             (std::mem::take(&mut anim.finished), moved)
         };
+        // Shaders whose animated uniforms moved render from the next frame.
+        crate::shader::wake(self);
         // No surface state borrowed while the app's components run.
         crate::native::component_animated(self, moved);
         crate::scroll::pin_animated_sticky(self);
@@ -668,12 +683,27 @@ impl Surface {
         self.ensure_ticking();
     }
 
+    /// A frame callback's work left became cosmetic (`on`: a scroll
+    /// indicator fading out, which shows nothing the app did) or no longer
+    /// is; it ends with `on` false.
+    pub(crate) fn cosmetic_frame(&self, on: bool) {
+        #[cfg(feature = "dev")]
+        {
+            let n = self.cosmetic_frames.get();
+            self.cosmetic_frames
+                .set(if on { n + 1 } else { n.saturating_sub(1) });
+        }
+        #[cfg(not(feature = "dev"))]
+        let _ = on;
+    }
+
     /// Whether a native animation runs: the graph's, or the platform's own
-    /// (scroll glides, zooms); or batches wait for the next frame.
+    /// (scroll glides, zooms; not a scroll indicator's fade, after which
+    /// nothing changes); or batches wait for the next frame.
     #[cfg(feature = "dev")]
     pub(crate) fn animating(&self) -> bool {
         self.anim.borrow().animating()
-            || !self.frame_callbacks.borrow().is_empty()
+            || self.frame_callbacks.borrow().len() > self.cosmetic_frames.get()
             || !self.queued.borrow().is_empty()
     }
 

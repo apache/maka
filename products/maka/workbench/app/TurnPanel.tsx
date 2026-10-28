@@ -20,15 +20,13 @@
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
 import { cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
-import type { Signal, YNode } from 'nsh';
-import { Button } from 'nsh/base';
+import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
 import type { Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import { C, captionTextStyle, controlStyle } from './ui';
-import { Icon } from './Icon';
+import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
 import type { ImagePreview } from './ToolImage';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 
@@ -38,16 +36,9 @@ const panelStyle = {
   padding: 0,
   borderWidth: 0,
 };
-const groupHeaderStyle = {
-  ...controlStyle,
-  paddingHorizontal: 0,
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 8,
-} as const;
 const groupHeaderHeight = Math.max(
-  groupHeaderStyle.minHeight,
-  captionTextStyle.lineHeight + 2 * groupHeaderStyle.paddingVertical,
+  controlStyle.minHeight,
+  captionTextStyle.lineHeight + 2 * controlStyle.paddingVertical,
 );
 const memberGap = 6;
 
@@ -68,8 +59,8 @@ export type GroupViewState = {
   opening?: 'top' | 'bottom';
   revealRow?: string;
   visibleRows: Signal<ReadonlySet<string>>;
-  rowNodes: Map<string, YNode>;
-  list?: YNode;
+  rowNodes: Map<string, ViewRef>;
+  list?: ListRef;
   requestFocus?: boolean;
 };
 
@@ -107,35 +98,34 @@ export function TurnSummary(props: {
       props.toggle(action.open);
   };
   return (
-    <Button
-      accessibilityLabel={tr('Turn work details')}
-      disabled={!props.canFold()}
-      selected={props.expanded()}
-      onPress={inputAction(choose, {
-        turnId: props.turn().turnId,
-        answerKey: props.turn().answerKey,
-        open: !props.expanded(),
-      })}
-      style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}
-      hoverStyle={{ backgroundColor: C.surface }}
-      focusStyle={{ backgroundColor: C.raised }}
-      activeStyle={{ backgroundColor: C.line }}
-    >
-      <If when={props.canFold()}>
-        <Icon name={props.expanded() ? 'down' : 'right'} color={C.secondary} />
-      </If>
-      <Text
-        style={[
-          { flex: 1, color: turnOutcome(props.turn()) === 'failed' ? C.danger : C.muted },
-          { numberOfLines: 1 },
-        ]}
+    <View style={{ marginTop: 8, marginBottom: platform.isTerminal ? 0 : 8 }}>
+      <Disclosure
+        label={tr('Turn work details')}
+        open={props.expanded()}
+        foldable={props.canFold()}
+        terminalInset={controlStyle.paddingHorizontal}
+        onPress={inputAction(choose, {
+          turnId: props.turn().turnId,
+          answerKey: props.turn().answerKey,
+          open: !props.expanded(),
+        })}
       >
-        {label()}
-      </Text>
-      <If when={turnOutcome(props.turn()) === 'completed'}>
-        <Text style={{ color: C.muted }}>{duration(props.turn())}</Text>
-      </If>
-    </Button>
+        <Text
+          style={[
+            {
+              ...disclosureTitleStyle,
+              color: turnOutcome(props.turn()) === 'failed' ? C.danger : C.muted,
+            },
+            { numberOfLines: 1 },
+          ]}
+        >
+          {label()}
+        </Text>
+        <If when={turnOutcome(props.turn()) === 'completed'}>
+          <Text style={{ ...captionTextStyle, color: C.muted }}>{duration(props.turn())}</Text>
+        </If>
+      </Disclosure>
+    </View>
   );
 }
 
@@ -193,7 +183,7 @@ function ActivityLog(props: {
   });
   const opening = state.opening;
   state.opening = undefined;
-  let ownList: YNode | undefined;
+  let ownList: ListRef | undefined;
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -309,7 +299,7 @@ function ActivityLog(props: {
                 const first = props.row(ownedId());
                 if (!first) return <View />;
                 const rowId = ownedId();
-                let ownRow: YNode | undefined;
+                let ownRow: ViewRef | undefined;
                 cleanup(() => {
                   if (state.rowNodes.get(rowId) === ownRow) state.rowNodes.delete(rowId);
                 });
@@ -322,7 +312,7 @@ function ActivityLog(props: {
                     style={{
                       paddingBottom: props.group().rowIds.at(-1) === ownedId() ? 0 : memberGap,
                     }}
-                    onLayout={(frame) => {
+                    onLayout={({ bounds: frame }) => {
                       if (
                         !alive ||
                         lease !== state.lease ||
@@ -480,24 +470,19 @@ export function TurnPanel(props: {
   };
   return (
     <View style={panelStyle}>
-      <Button
-        accessibilityLabel={tr('Process group')}
-        disabled={props.group().rowIds.length === 0}
-        selected={props.state.open()}
+      <Disclosure
+        label={tr('Process group')}
+        open={props.state.open()}
+        foldable={props.group().rowIds.length > 0}
         onPress={inputAction(choose, {
           sessionId: props.sessionId,
           key: props.group().key,
           open: !props.state.open(),
         })}
-        style={groupHeaderStyle}
-        hoverStyle={{ backgroundColor: C.surface }}
-        focusStyle={{ backgroundColor: C.raised }}
-        activeStyle={{ backgroundColor: C.line }}
       >
-        <Icon name={props.state.open() ? 'down' : 'right'} color={C.secondary} />
         <Text
           style={[
-            { ...captionTextStyle, flex: 1, color: active() ? C.secondary : C.muted },
+            { ...disclosureTitleStyle, color: active() ? C.secondary : C.muted },
             { numberOfLines: 1, textOverflow: 'ellipsis' },
           ]}
         >
@@ -508,7 +493,7 @@ export function TurnPanel(props: {
             {duration(props.turn(), clock())}
           </Text>
         </If>
-      </Button>
+      </Disclosure>
       <If when={props.state.open() && props.group().rowIds.length > 0}>
         <ActivityLog {...props} />
       </If>

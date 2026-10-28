@@ -233,7 +233,7 @@ async fn selected_and_override_pins_upgrade_without_reauthoring_custom_compositi
         ),
         (
             "root.js".into(),
-            b"export function activate(){return {}; }".to_vec(),
+            b"export function activate(){return {exports:{root:{kind:'root',render(){return null;}}}}; }".to_vec(),
         ),
     ]))
     .unwrap();

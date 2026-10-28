@@ -62,7 +62,7 @@ function App() {
   const last = signal("—");
   const reasons = signal<string[]>([]);
   const hidden = signal(false);
-  const changed = (name: string) => (open: boolean, reason: OpenChangeReason) =>
+  const changed = (name: string) => ({ open, reason }: { open: boolean; reason: OpenChangeReason }) =>
     reasons.set([`${name} ${open ? "opened" : "closed"} · ${reason}`, ...reasons()].slice(0, 8));
   const choose = (what: string) => last.set(what);
   const menu = () => (
@@ -126,7 +126,7 @@ function App() {
           {last()} · hidden files {hidden() ? "shown" : "hidden"}
         </Text>
       </Panel>
-      <Panel title="onOpenChange(open, reason)" grow>
+      <Panel title="onOpenChange({ open, reason })" grow>
         <View style={{ gap: 2 }}>
           <Each of={reasons()}>{(e, i) => <Text style={{ fontSize: 12, color: i() === 0 ? ui().text : ui().faint }}>{e()}</Text>}</Each>
         </View>

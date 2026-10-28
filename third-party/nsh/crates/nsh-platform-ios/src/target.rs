@@ -149,6 +149,11 @@ define_class!(
             self.with_mounter(|m| m.tick());
         }
 
+        #[unsafe(method(shaderFrame:))]
+        fn shader_frame(&self, _link: &CADisplayLink) {
+            self.with_mounter(|m| m.shader_frame());
+        }
+
         #[unsafe(method(handleEditingChanged:))]
         fn handle_editing_changed(&self, field: &UITextField) {
             // Read now: a deferred call must report this edit's text.
@@ -337,9 +342,11 @@ define_class!(
                 .control
                 .scroll(id, point(px(offset.x as f32), px(offset.y as f32)), applied);
             self.with_mounter(move |m| m.scrolled(id, offset));
-            // A text area scrolling moves its caret.
+            // A text area scrolling moves its caret, and a built-in bar's
+            // thumb.
             if scroll.downcast_ref::<input::Area>().is_some() {
                 self.caret_moved(scroll);
+                self.input_scrolled(scroll);
             }
         }
 
@@ -522,6 +529,12 @@ impl EventTarget {
             .borrow_mut()
             .entry(id)
             .or_default() += 1;
+    }
+
+    /// Reports how far text area `view` scrolled, if a built-in bar takes
+    /// the place of its indicator and it changed (`input::report_scroll`).
+    pub(crate) fn input_scrolled(&self, view: &UIView) {
+        input::report_scroll(view, &self.ivars().control);
     }
 
     /// Forgets a deleted scroll view.

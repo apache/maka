@@ -5,16 +5,20 @@ use std::{borrow::Cow, sync::Arc};
 
 use super::builder::Listener;
 use crate::{
-    Bounds, ContextMenuEvent, EventPayload, HoverEvent, JsonValue, PayloadValue, Point, Points,
+    Bounds, ContextMenuEvent, EventPayload, JsonValue, MouseEvent, PayloadValue, Point, Points,
     Size, TouchEvent,
     geometry::{DevicePixels, Radians},
 };
 
 /// Local files or directories dropped on an element (`on_file_drop`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct FileDropEvent {
     /// Absolute `file:` URLs in platform order; encoded filenames are preserved.
     pub uris: Vec<String>,
+    /// Where the files were let go, in the window's coordinates (TS:
+    /// `pagePosition`), on backends that know it (Linux).
+    pub page_position: Option<Point<Points>>,
 }
 
 /// A scroll view moved (`on_scroll`): the offset, and the sizes it moves in.
@@ -386,14 +390,6 @@ pub(crate) fn offset(p: &EventPayload) -> Option<Cow<'_, Point<Points>>> {
     }))
 }
 
-/// `onMouseMove`'s payload: the mouse in the view, local `x` / `y`.
-pub(crate) fn mouse_position(p: &EventPayload) -> Option<Cow<'_, Point<Points>>> {
-    Some(Cow::Owned(Point {
-        x: Points(number(p, "x")),
-        y: Points(number(p, "y")),
-    }))
-}
-
 pub(crate) fn pan(p: &EventPayload) -> Option<Cow<'_, PanEvent>> {
     match *p {
         EventPayload::Pan {
@@ -494,10 +490,13 @@ pub(crate) fn native(p: &EventPayload) -> Option<Cow<'_, NativeEvent>> {
     }
 }
 
-pub(crate) fn hover(p: &EventPayload) -> Option<Cow<'_, HoverEvent>> {
+/// `onMouseEnter`, `onMouseMove` and `onMouseLeave`'s payload; an event
+/// sent without one (an embedder's, a script's) still reaches the
+/// listener, at no known position.
+pub(crate) fn mouse(p: &EventPayload) -> Option<Cow<'_, MouseEvent>> {
     match p {
-        EventPayload::Hover(e) => Some(Cow::Borrowed(e)),
-        _ => None,
+        EventPayload::Mouse(e) => Some(Cow::Borrowed(e)),
+        _ => Some(Cow::Owned(MouseEvent::default())),
     }
 }
 
@@ -510,7 +509,17 @@ pub(crate) fn context_menu(p: &EventPayload) -> Option<Cow<'_, ContextMenuEvent>
 
 pub(crate) fn file_drop(p: &EventPayload) -> Option<Cow<'_, FileDropEvent>> {
     match p {
-        EventPayload::FileDrop(uris) => Some(Cow::Owned(FileDropEvent { uris: uris.clone() })),
+        EventPayload::FileDrop(uris) => Some(Cow::Owned(FileDropEvent {
+            uris: uris.clone(),
+            page_position: None,
+        })),
+        EventPayload::FileDropAt {
+            uris,
+            page_position,
+        } => Some(Cow::Owned(FileDropEvent {
+            uris: uris.clone(),
+            page_position: Some(*page_position),
+        })),
         _ => None,
     }
 }

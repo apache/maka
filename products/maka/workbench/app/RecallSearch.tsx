@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { batch, cleanup, computed, inputAction, List, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ListRef } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
@@ -31,7 +31,7 @@ import type {
   HistoryRowPosition,
   RecallQuery,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { host } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import { createText, errorText, renderText, UiError, type UiText } from './text';
 import { Icon } from './Icon';
@@ -90,6 +90,7 @@ export function RecallSearch(props: {
   open(origin: string | null, target: RecallTarget): Promise<boolean | void>;
   close(): void;
 }) {
+  const host = useHost();
   const origin = props.origin;
   const query = signal('');
   const state = signal<SearchState>({ kind: 'empty' });
@@ -100,7 +101,7 @@ export function RecallSearch(props: {
   let sequence = 0;
   let wanted: Request | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let removeKeys = () => {};
   const release = (request: Request) => {
     if (!request.stream) return Promise.resolve();
@@ -279,14 +280,14 @@ export function RecallSearch(props: {
   return (
     <Dialog
       animation="none"
-      onOpenChange={(open) => {
+      onOpenChange={({ open }) => {
         if (!open) close();
       }}
       style={{
         flex: 1,
         justifyContent: 'flex-start',
         alignItems: 'center',
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
         paddingHorizontal: 16,
         paddingTop: compact() ? 16 : windowSize().height / 8,
         paddingBottom: 16,
@@ -330,8 +331,8 @@ export function RecallSearch(props: {
               paddingHorizontal: 8,
               alignItems: 'center',
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Icon name="close" color={C.muted} />
           </Button>
@@ -353,6 +354,9 @@ export function RecallSearch(props: {
                 repeat: true,
                 within: node,
               }),
+              // One Escape closes the search, as its close button says; a
+              // text field alone would only lose the focus.
+              keymap.bind('escape', close, { when: 'always', within: node }),
             ];
             removeKeys = () => keys.forEach((remove) => remove());
           }}
@@ -360,7 +364,7 @@ export function RecallSearch(props: {
           accessibilityLabel={tr('Search conversation history')}
           autoFocus
           value={query()}
-          onChange={(text) => search(text)}
+          onChange={({ value: text }) => search(text)}
           onSubmit={submit}
           submitBehavior="submit"
           readonly={opening()}
@@ -391,8 +395,8 @@ export function RecallSearch(props: {
             accessibilityLabel={tr('Retry')}
             onPress={inputAction(retry, failure()?.request.id)}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
           </Button>
@@ -463,8 +467,8 @@ export function RecallSearch(props: {
                       borderColor: 'transparent',
                       backgroundColor: index() === row.index ? C.raised : C.surface,
                     }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                   >
                     <View
                       style={[

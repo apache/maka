@@ -187,6 +187,9 @@ scroll::snap_duration(velocity)                                  # a velocity, p
 scroll::spokes ->                                                # an opacity per spoke, 0..1
 scroll::wheel_end(vx)                                            # a velocity, points per second
 scroll::wheel_end(vy)                                            # a velocity, points per second
+shader::UniformValue::Number.0                                  # a uniform's value, whatever the app's program makes of it
+shader::builtins(scale)                                          # pixels per point, a ratio
+shader::builtins(time)                                           # time
 shape::SMOOTHING                                                 # a corner smoothing factor
 style::Color::to_f64 ->                                          # color components
 style::LineHeight::Em.0                                          # a multiple of the element's font size

@@ -29,11 +29,14 @@ import {
   type CompositionInput,
   type CompositionNode,
   type PackageRef,
+  type UiTarget,
   type Target as BindingTarget,
 } from '../../../../packages/plugin-sdk/src/index.js';
 export { installation } from './installation.js';
 export const packageNames = [
   'workbench',
+  'conversations',
+  'composer',
   'workhub',
   'host-logs',
   'recovery-gateway',
@@ -64,6 +67,9 @@ export const instanceNames = [
   'coordinator-workspace-processes',
   'coordinator-protocol-processes',
   'workbench-ui',
+  'conversations-ui',
+  'composer-ui',
+  'settings-ui',
   'workspace-files-ui',
 ] as const;
 export type InstanceName = (typeof instanceNames)[number];
@@ -121,6 +127,202 @@ interface ApplicationSources {
   endpoints: Record<string, Endpoint>;
   native: NativeGrant[];
 }
+
+const defaultUi = {
+  'workbench-ui': {
+    package: 'workbench',
+    views: {
+      navigation: { instance: 'conversations-ui', id: 'navigation' },
+      session: { instance: 'conversations-ui', id: 'session' },
+      preview: { instance: 'conversations-ui', id: 'preview' },
+      settings: { instance: 'settings-ui', id: 'Settings' },
+    },
+  },
+  'conversations-ui': {
+    package: 'conversations',
+    views: {
+      composer: { instance: 'composer-ui', id: 'composer' },
+      workspace: { instance: 'workspace-files-ui', id: 'workspace' },
+      settings: { instance: 'settings-ui', id: 'Settings' },
+    },
+  },
+  'composer-ui': { package: 'composer', views: {} },
+  'settings-ui': { package: 'settings', views: {} },
+  'workspace-files-ui': { package: 'workspace-files', views: {} },
+} as const;
+type DefaultUiName = keyof typeof defaultUi;
+type UiAliases = Record<DefaultUiName, string>;
+type UiBindings = NonNullable<CompositionNode['bindings']>;
+const defaultUiNames = Object.keys(defaultUi) as DefaultUiName[];
+const defaultUiAliases = Object.fromEntries(
+  defaultUiNames.map((name) => [name, name]),
+) as UiAliases;
+const settingsUiImports = [
+  'agent',
+  'settings',
+  'authentication',
+  'setup',
+  'management',
+  'receipts',
+];
+const workspaceUiImports = ['agent', 'terminal'];
+
+function defaultUiValues(name: DefaultUiName, aliases: UiAliases) {
+  const views: Readonly<Record<string, { instance: DefaultUiName; id: string }>> =
+    defaultUi[name].views;
+  return Object.fromEntries(
+    Object.entries(views).map(([slot, view]) => [
+      slot,
+      { path: [aliases[view.instance]], id: view.id },
+    ]),
+  );
+}
+
+function defaultUiNode(
+  name: DefaultUiName,
+  packages: Record<PackageName, PackageRef>,
+  key: string,
+  aliases: UiAliases,
+): CompositionNode {
+  return {
+    key,
+    package: { source: 'pinned', package: packages[defaultUi[name].package] },
+    usePackage: 'ui',
+    configuration: { values: defaultUiValues(name, aliases) },
+    bindings: {},
+  };
+}
+
+const selectUiBindings = (bindings: UiBindings, imports: readonly string[]): UiBindings =>
+  Object.fromEntries(
+    imports.flatMap((name) => (bindings[name] === undefined ? [] : [[name, bindings[name]]])),
+  );
+
+/** Reauthor the bundled UI subgraph before validating updated package pins. */
+export function updateDefaultUi(
+  source: CompositionInput,
+  packages: Record<PackageName, PackageRef>,
+  candidateKeys: Record<string, string>,
+): CompositionInput {
+  if (!packages.workbench) return source;
+  const owns = (
+    node: CompositionNode | undefined,
+    name: PackageName,
+    entry: 'ui' | 'host',
+  ): node is CompositionNode =>
+    node?.usePackage === entry &&
+    node.package.source === 'pinned' &&
+    node.package.package.id === packages[name]?.id;
+  const roots = Object.entries(source.instances).filter(([, node]) =>
+    owns(node, 'workbench', 'ui'),
+  );
+  if (roots.length === 0) return source;
+  const next: CompositionInput = { ...source, instances: { ...source.instances } };
+  const findOwned = (name: PackageName, entry: 'ui' | 'host') =>
+    owns(next.instances[name], name, entry)
+      ? ([name, next.instances[name]!] as const)
+      : Object.entries(next.instances).find(([, node]) => owns(node, name, entry));
+  const gateway = findOwned('gateway', 'host')?.[1];
+  const fallback: UiBindings = { ...gateway?.bindings };
+  for (const [name, packageName, exportName] of [
+    ['management', 'host-deployment-manager', 'Management'],
+    ['receipts', 'receipts', 'Receipts'],
+    ['skillOutcomes', 'skill-outcomes', 'Outcomes'],
+  ] as const) {
+    const provider = findOwned(packageName, 'host');
+    if (fallback[name] === undefined && provider)
+      fallback[name] = [{ kind: 'instance', path: [provider[0]], export: exportName }];
+  }
+  for (const [rootName, root] of roots) {
+    const separate = roots.length > 1 && rootName !== 'workbench-ui';
+    const aliases = { ...defaultUiAliases, 'workbench-ui': rootName };
+    if (separate) {
+      aliases['conversations-ui'] = `${rootName}-conversations-ui`;
+      aliases['settings-ui'] = `${rootName}-settings-ui`;
+      aliases['workspace-files-ui'] = `${rootName}-workspace-files-ui`;
+    }
+    const selected = new Set<DefaultUiName>();
+    const selectViews = (owner: DefaultUiName, node: CompositionNode) => {
+      const views: Readonly<Record<string, { instance: DefaultUiName; id: string }>> =
+        defaultUi[owner].views;
+      for (const [slot, view] of Object.entries(views)) {
+        if (selected.has(view.instance)) continue;
+        const target = node.configuration?.values?.[slot] as UiTarget | undefined;
+        if (
+          target?.path.length === 1 &&
+          owns(next.instances[target.path[0]!], defaultUi[view.instance].package, 'ui')
+        ) {
+          aliases[view.instance] = target.path[0]!;
+          selected.add(view.instance);
+        }
+      }
+    };
+    selectViews('workbench-ui', root!);
+    const conversation = next.instances[aliases['conversations-ui']];
+    if (owns(conversation, 'conversations', 'ui')) selectViews('conversations-ui', conversation);
+    const additions: DefaultUiName[] = [];
+    for (const name of defaultUiNames) {
+      if (name === 'workbench-ui') continue;
+      const packageName = defaultUi[name].package;
+      const isolated = roots.length > 1 && name !== 'composer-ui';
+      const existing = owns(next.instances[aliases[name]], packageName, 'ui')
+        ? ([aliases[name], next.instances[aliases[name]]!] as const)
+        : isolated
+          ? undefined
+          : findOwned(packageName, 'ui');
+      if (existing) {
+        aliases[name] = existing[0];
+        if (name === 'conversations-ui') selectViews(name, existing[1]!);
+        continue;
+      }
+      const preferred = aliases[name];
+      let alias = preferred;
+      let suffix = 2;
+      while (next.instances[alias] !== undefined) alias = `${preferred}-${suffix++}`;
+      aliases[name] = alias;
+      additions.push(name);
+    }
+    for (const name of additions) {
+      const key = candidateKeys[`${rootName}/${name}`]!;
+      next.instances[aliases[name]] = defaultUiNode(name, packages, key, aliases);
+    }
+    const configure = (name: DefaultUiName, node: CompositionNode): CompositionNode => ({
+      ...node,
+      configuration: {
+        ...node.configuration,
+        values: { ...defaultUiValues(name, aliases), ...node.configuration?.values },
+      },
+    });
+    next.instances[rootName] = { ...configure('workbench-ui', root!), bindings: {} };
+    const inherited = {
+      ...fallback,
+      ...root!.bindings,
+      ...next.instances[aliases['conversations-ui']]!.bindings,
+    };
+    for (const name of defaultUiNames) {
+      if (name === 'workbench-ui') continue;
+      const alias = aliases[name];
+      const node = configure(name, next.instances[alias]!);
+      next.instances[alias] =
+        name !== 'composer-ui'
+          ? {
+              ...node,
+              bindings: {
+                ...(name === 'conversations-ui'
+                  ? inherited
+                  : selectUiBindings(
+                      inherited,
+                      name === 'settings-ui' ? settingsUiImports : workspaceUiImports,
+                    )),
+                ...node.bindings,
+              },
+            }
+          : node;
+    }
+  }
+  return next;
+}
+
 /** The shared business Host owns services independently of either shell. */
 function settingsComposition(configuration: CompositionConfiguration) {
   const { packages, keys } = configuration;
@@ -144,10 +346,12 @@ function settingsComposition(configuration: CompositionConfiguration) {
   const host: CompositionInput = {
     ui: { path: ['workbench-ui'], id: 'root' },
     instances: {
-      'workbench-ui': {
-        ...node('workbench', {}, {}, 'workbench-ui'),
-        usePackage: 'ui',
-      },
+      ...Object.fromEntries(
+        defaultUiNames.map((name) => [
+          name,
+          defaultUiNode(name, packages, keys[name], defaultUiAliases),
+        ]),
+      ),
       'host-deployment-manager': node('host-deployment-manager'),
       'host-logs': node('host-logs'),
       'host-deployment-gateway': node(
@@ -245,12 +449,20 @@ export function composition(configuration: CompositionConfiguration): Applicatio
   const source = configuration.coordinator
     ? workhubComposition(configuration)
     : agentComposition(configuration);
-  source.host.instances['workbench-ui']!.bindings = {
+  const bindings: Record<string, BindingTarget[]> = {
     ...source.host.instances.gateway!.bindings,
-    management: [{ kind: 'instance', path: ['host-deployment-manager'], export: 'Management' }],
-    receipts: [{ kind: 'instance', path: ['receipts'], export: 'Receipts' }],
-    skillOutcomes: [{ kind: 'instance', path: ['skill-outcomes'], export: 'Outcomes' }],
+    management: [
+      { kind: 'instance' as const, path: ['host-deployment-manager'], export: 'Management' },
+    ],
+    receipts: [{ kind: 'instance' as const, path: ['receipts'], export: 'Receipts' }],
+    skillOutcomes: [{ kind: 'instance' as const, path: ['skill-outcomes'], export: 'Outcomes' }],
   };
+  source.host.instances['conversations-ui']!.bindings = bindings;
+  source.host.instances['settings-ui']!.bindings = selectUiBindings(bindings, settingsUiImports);
+  source.host.instances['workspace-files-ui']!.bindings = selectUiBindings(
+    bindings,
+    workspaceUiImports,
+  );
   return source;
 }
 
@@ -404,10 +616,6 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       ...(processMethods.length ? { processes: [local('workspace-processes', 'processes')] } : {}),
     },
   );
-  host.instances['workspace-files-ui'] = {
-    ...node('workspace-files', {}, {}, 'workspace-files-ui'),
-    usePackage: 'ui',
-  };
   if (asksForms || executors.length) host.instances.forms = node('forms');
   if (asksQuestions) host.instances.questions = node('questions');
   if (fileMethods.length || executors.length)

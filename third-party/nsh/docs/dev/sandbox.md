@@ -108,7 +108,7 @@ leading `/` or with `*`, `?` or `#`, a method that is not a token. WebSockets (t
 go through `Access::allows_websocket`: a handshake is an HTTP GET, so `ws` / `wss` are checked as GETs over `http` /
 `https` (or under their own scheme, for rules listing `ws` / `wss`), on the parsed URL the handshake then connects
 to, before DNS; redirects are rejected; both APIs share one cap of 32 per VM (the `Quotas` kind `runtime::WEBSOCKETS`). Raw TCP
-`net.connect` requires an exact `network.sockets` entry (`"host:port"`, no patterns, port 1 to 65535): a socket
+`net.connect({ host, port })` requires an exact `network.sockets` entry (`"host:port"`, no patterns, port 1 to 65535): a socket
 bypasses every HTTP rule, so neither `hosts` nor `http` grants imply one, and `Capabilities::all()` (apps without a
 declaration) has none. Sockets are capped at 32 per VM (the call's `System` quotas) and 4 MiB of pending writes each;
 `close()` ends pending reads and writes. `zlib` decompression output is capped at 64 MiB or the heap limit if

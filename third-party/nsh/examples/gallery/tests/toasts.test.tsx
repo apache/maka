@@ -1,4 +1,4 @@
-// The Overlays demo's toasts on a phone (headless runs are touch screens):
+// The Toast demo on a phone (headless runs are touch screens):
 // the gallery's `toast()` (`toast.tsx`, on `nsh/base`'s `ToastManager`,
 // `ToastStack` and `Toast`) from a button, shown by its `Toaster`; they
 // close by themselves, by their action, by back (the stack's `onCancel`),
@@ -11,7 +11,7 @@ import type { App } from "nsh/test";
 let app: App;
 beforeEach(async () => {
   app = await open("../App.tsx", { clock: {} });
-  await app.press("role:button[Overlays]");
+  await app.press("role:button[Toast]");
   await app.waitFor("Copy the link");
 });
 
@@ -75,7 +75,7 @@ test("a swipe takes a toast away", async () => {
 
 test("on a desktop, the pointer on a toast stops its time", async () => {
   const desk = await open("../App.tsx", { platform: "macos", clock: {} });
-  await desk.press("role:button[Overlays]");
+  await desk.press("role:button[Toast]");
   await desk.waitFor("Copy the link");
   await desk.press("Copy the link");
   await desk.waitFor("Copied");

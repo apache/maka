@@ -29,8 +29,8 @@ import {
 import { tr } from './locale';
 import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
-import { host } from './host';
+import type { ViewRef } from 'nsh';
+import { useHost } from './host';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
 import { Button } from 'nsh/base';
@@ -109,8 +109,8 @@ function InteractionAction(props: {
         gap: 8,
         backgroundColor: props.primary ? C.accent : props.selected ? C.raised : C.surface,
       }}
-      hoverStyle={props.primary ? { backgroundColor: C.accentHover } : controlHoverStyle}
-      focusStyle={props.primary ? { backgroundColor: C.accentHover } : controlFocusStyle}
+      hoverStyle={props.primary ? { backgroundColor: C.accentHover } : controlHoverStyle()}
+      focusStyle={props.primary ? { backgroundColor: C.accentHover } : controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>
@@ -209,6 +209,7 @@ export function InteractionComposer({
   focusComposer(): void;
   confirming(): boolean;
 }) {
+  const host = useHost();
   const record = signal<InteractionRecord | null>(null);
   const loading = signal(false),
     busy = signal(false),
@@ -631,7 +632,7 @@ export function InteractionComposer({
     });
   let unbindKeys = () => {};
   cleanup(() => unbindKeys());
-  const attach = (node: YNode) => {
+  const attach = (node: ViewRef) => {
     unbindKeys();
     const bindings = [
       keymap.bind('mod+enter', submit, { when: 'always', within: node }),
@@ -876,8 +877,8 @@ export function InteractionComposer({
                                     ? C.raised
                                     : C.surface,
                               }}
-                              hoverStyle={controlHoverStyle}
-                              focusStyle={controlFocusStyle}
+                              hoverStyle={controlHoverStyle()}
+                              focusStyle={controlFocusStyle()}
                               disabledStyle={controlDisabledStyle}
                             >
                               <ChoiceIndicator
@@ -943,7 +944,7 @@ export function InteractionComposer({
                             value={String(answers()[index()]?.value ?? '')}
                             readonly={blocked()}
                             placeholder={tr('Your answer')}
-                            onChange={(value) => choose(index(), value, true)}
+                            onChange={({ value }) => choose(index(), value, true)}
                             style={{
                               ...inputTextStyle,
                               placeholderColor: C.muted,

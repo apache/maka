@@ -26,17 +26,12 @@ globalThis.__terminalLoginBoundary = boundary;
 const appRoot = new URL('../../products/maka/workbench/app/', import.meta.url);
 const native = {
   nsh: `export const signal = initial => { let value = initial; const read = () => value; read.set = next => { value = next; }; return read; }; export const cleanup = () => {}; export const Clipboard = { writeText: async () => {} };`,
-  host: `export const host = {
-    pendingSettings: async () => { const fixture = globalThis.__terminalLoginBoundary; fixture.releases += 1; return fixture.pending; },
-    beginSetting: async () => ({ next: async () => globalThis.__terminalLoginBoundary.event, cancel() {} })
-  };`,
   locale: `export const tr = (key, values) => values ? key.replace(/\\{(\\w+)\\}/g, (_, name) => values[name]) : key;`,
 };
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     let key = specifier;
     if (context.parentURL?.startsWith(appRoot.href)) {
-      if (specifier === './host') key = 'host';
       if (specifier === './locale') key = 'locale';
     }
     if (key in native)
@@ -54,6 +49,13 @@ const { createConnectionLogin } = await import(new URL('connectionLoginState.ts'
 const { createSettingsOperations } = await import(new URL('settingsOperations.ts', appRoot));
 hooks.deregister();
 
+const host = {
+  pendingSettings: async () => {
+    boundary.releases += 1;
+    return boundary.pending;
+  },
+  beginSetting: async () => ({ next: async () => boundary.event, cancel() {} }),
+};
 const action = { editor: 1, input: { expected: { connectionId: 'connection', revision: 1 } } };
 function setup({
   cleanupError = null,
@@ -67,11 +69,11 @@ function setup({
     cleanupError,
     reply: { receipt: { kind: 'recorded', outcome: { kind: 'returned', value: result } } },
   };
-  const operations = createSettingsOperations();
+  const operations = createSettingsOperations(host);
   operations.pendingKnown.set(true);
   const events = [];
   let login;
-  login = createConnectionLogin(operations, {
+  login = createConnectionLogin(host, operations, {
     accepts: () => true,
     async saved(_, value) {
       events.push(`adopt:${value.connection.connectionId}`);

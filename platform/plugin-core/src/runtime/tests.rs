@@ -761,6 +761,7 @@ fn ui_consumers_track_effective_provider_changes_and_keep_original_work_through_
     fixture.input.instances.insert("ui".into(), ui);
     let ui_id = fixture.id("ui");
     let plan = fixture.plan();
+    let definition = plan.definition_basis(&ui_id).unwrap();
     let basis = plan.binding_basis(&ui_id).unwrap();
     let mut runtime = Runtime::new(plan);
     let ui = runtime.begin_ui_consumer(&ui_id).unwrap();
@@ -785,6 +786,7 @@ fn ui_consumers_track_effective_provider_changes_and_keep_original_work_through_
         .values
         .insert("unrelated".into(), json!(true));
     let unrelated = fixture.plan();
+    assert_eq!(unrelated.definition_basis(&ui_id).unwrap(), definition);
     assert_eq!(unrelated.binding_basis(&ui_id).unwrap(), basis);
     assert!(runtime.install(unrelated).is_empty());
 
@@ -805,7 +807,9 @@ fn ui_consumers_track_effective_provider_changes_and_keep_original_work_through_
         )
         .unwrap();
     fixture.input.instances.get_mut("p").unwrap().package = upgraded_package.into();
-    assert_ne!(fixture.plan().binding_basis(&ui_id).unwrap(), basis);
+    let upgraded = fixture.plan();
+    assert_eq!(upgraded.definition_basis(&ui_id).unwrap(), definition);
+    assert_ne!(upgraded.binding_basis(&ui_id).unwrap(), basis);
     fixture.input.instances.get_mut("p").unwrap().package = original_package.into();
     fixture
         .input
@@ -816,7 +820,37 @@ fn ui_consumers_track_effective_provider_changes_and_keep_original_work_through_
         .values
         .insert("changed".into(), json!(true));
     let changed = fixture.plan();
+    assert_eq!(changed.definition_basis(&ui_id).unwrap(), definition);
     assert_ne!(changed.binding_basis(&ui_id).unwrap(), basis);
+    let mut redefined = fixture.input.clone();
+    redefined
+        .instances
+        .get_mut("ui")
+        .unwrap()
+        .configuration
+        .values
+        .insert("own".into(), json!(true));
+    let own_configuration =
+        Plan::prepare(&redefined, &fixture.packages, &RemoteExports::new()).unwrap();
+    assert_ne!(
+        own_configuration.definition_basis(&ui_id).unwrap(),
+        definition
+    );
+    redefined
+        .instances
+        .get_mut("ui")
+        .unwrap()
+        .configuration
+        .values
+        .remove("own");
+    redefined
+        .instances
+        .get_mut("ui")
+        .unwrap()
+        .bindings
+        .insert("action".into(), vec![target("p")]);
+    let own_binding = Plan::prepare(&redefined, &fixture.packages, &RemoteExports::new()).unwrap();
+    assert_ne!(own_binding.definition_basis(&ui_id).unwrap(), definition);
     let retired = runtime.install(changed);
     assert_eq!(retired.len(), 3);
     assert!(retired.contains(&provider));

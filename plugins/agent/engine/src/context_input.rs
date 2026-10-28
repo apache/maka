@@ -41,7 +41,9 @@ fn summary_output_reserve<W>(input: &RunInput<W>) -> u64 {
 /// The desired summary output may exceed the reserve; the final request caps
 /// it to available capacity. This is not a minimum summary length.
 pub(super) fn summary_output_budget<W>(input: &RunInput<W>) -> u64 {
-    summary_output_reserve(input).max(input.main_output_limit.unwrap_or(8000))
+    summary_output_reserve(input).max(maka_agent_facts::context::effective_output_limit(
+        input.main_output_limit,
+    ))
 }
 
 pub(super) fn summary_budget<W>(input: &RunInput<W>) -> u64 {

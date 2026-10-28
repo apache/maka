@@ -126,7 +126,7 @@ async fn responses_unexpected_http_body_preserves_diagnostics_without_replaying(
     ] {
         let error = failure(ProviderKind::OpenaiResponses, status, content_type, body).await;
         if status == 400 {
-            assert!(matches!(&error, ModelError::Http { status: 400 }));
+            assert!(matches!(&error, ModelError::Http { status: 400, .. }));
             assert!(!error.to_string().contains(detail));
             continue;
         }
@@ -164,8 +164,10 @@ async fn http_and_sse_failures_preserve_typed_evidence_across_native_families() 
                 ModelError::ContextOverflow { observed_output: false }));
         }
         for body in [json!({"error":{"message":"context length rejected"}}).to_string(), String::new()] {
-            assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,413,"application/json",body).await,ModelError::Http { status: 413 }));
+            assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,413,"application/json",body).await,ModelError::Http { status: 413, .. }));
         }
+        for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiResponses,
+            ProviderKind::OpenaiCompatible { name: "fixture".into() }, ProviderKind::Anthropic] {
         for (status, header, reason) in [
             (503, None, Some(maka_model::ProviderFailureReason::ProviderUnavailable)),
             (503, Some("invalid"), Some(maka_model::ProviderFailureReason::ProviderUnavailable)),
@@ -174,17 +176,19 @@ async fn http_and_sse_failures_preserve_typed_evidence_across_native_families() 
             (401, Some("0.01"), None),
         ] {
             let headers: Vec<_> = header.map(|value| ("Retry-After", value)).into_iter().collect();
-            let result = failure_with_headers(ProviderKind::OpenaiChatCompletions, status, "application/json",
+            let result = failure_with_headers(kind.clone(), status, "application/json",
                 json!({"error":{"message":"temporary fixture"}}).to_string(), &headers).await;
             match (reason, result) {
                 (Some(reason), ModelError::Provider(failure)) => {
                     assert_eq!(failure.reason(), reason);
+                    assert_eq!(failure.message(), "temporary fixture");
                     assert!(failure.replay_safe());
-                    assert_eq!(failure.retry_after(), header.filter(|h| *h == "0.01").map(|_| Duration::from_millis(10)));
+                    assert_eq!(failure.retry_after(), header.filter(|h| *h == "0.01" && !matches!(kind, ProviderKind::OpenaiResponses)).map(|_| Duration::from_millis(10)));
                 }
-                (None, ModelError::Http { status: 401 }) => {}
+                (None, ModelError::Http { status: 401, .. }) => {}
                 (_, result) => panic!("unexpected failure classification: {result}"),
             }
+        }
         }
         for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiCompatible { name: "fixture".into() }] {
             let chunk = json!({"id":"reply","object":"chat.completion.chunk","created":1,"model":"test-model",
@@ -209,4 +213,48 @@ async fn text_and_unfinished_tool_input_make_overflow_non_replayable() {
                 ModelError::ContextOverflow { observed_output: true }));
         }
     }).await.expect("partial output must retain its failure classification");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_diagnostics_preserve_only_structured_messages_across_native_families() {
+    for kind in [
+        ProviderKind::OpenaiChatCompletions,
+        ProviderKind::OpenaiResponses,
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
+        ProviderKind::Anthropic,
+    ] {
+        for (body, expected_message) in [
+            (json!({"error":{"type":"invalid_request_error","message":"unsupported tool choice"}, "private":"raw body sentinel"}).to_string(), Some("unsupported tool choice")),
+            (json!({"message":"invalid model parameter"}).to_string(), if matches!(kind, ProviderKind::OpenaiResponses) { None } else { Some("invalid model parameter") }),
+            (json!({"detail":"raw body sentinel"}).to_string(), None),
+            ("<html>raw body sentinel</html>".into(), None),
+        ] {
+            let error = failure(kind.clone(), 400, "application/json", body).await;
+            assert_eq!(error.failure_cause(), Some(maka_agent_facts::model::error::ModelFailureCause::Http { status: 400 }));
+            let expected = expected_message.map_or_else(|| "model HTTP request failed (status 400)".to_owned(), |message| format!("model HTTP request failed (status 400): {message}"));
+            assert_eq!(error.to_string(), expected, "{kind:?}");
+            let ModelError::Http { message, .. } = error else { panic!("HTTP rejection must remain terminal") };
+            assert_eq!(message.as_deref(), expected_message);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn anthropic_stream_rejection_keeps_its_structured_message_with_extension_data() {
+    let error = failure(
+        ProviderKind::Anthropic,
+        200,
+        "text/event-stream",
+        sse(&[json!({"type":"error","error":{"type":"invalid_request_error","message":"unsupported tool choice","data":null}})]),
+    ).await;
+    assert_eq!(
+        error.to_string(),
+        "model HTTP request failed (status 400): unsupported tool choice"
+    );
+    assert_eq!(
+        error.failure_cause(),
+        Some(maka_agent_facts::model::error::ModelFailureCause::Http { status: 400 })
+    );
 }

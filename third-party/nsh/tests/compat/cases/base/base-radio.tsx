@@ -3,7 +3,8 @@
 // with no look of their own: the roles and states screen readers get
 // (`accessibilityLabel`), a press on an unchecked radio asking for `true`
 // (`onChange`) while the app owns which one is checked (`checked`), a
-// checked radio that stays checked, `disabled`, and the app's look of a
+// checked radio that stays checked, `disabled`, the group as one stop of
+// the keyboard focus (only the checked radio is `focusable`), and the app's look of a
 // radio (`checkedStyle`) and of the dot it puts inside, whose
 // `group-checked:` and `group-disabled:` classes follow the radio. The
 // dot's widths move the label after it, which is how its script sees
@@ -25,9 +26,9 @@ function App() {
       accessibilityLabel={locked ? `${label} plan` : undefined}
       class="group flex-row items-center"
       checkedStyle={{ backgroundColor: "#00ff00" }}
-      onChange={next => {
+      onChange={({ checked }) => {
         changes.set(changes() + 1);
-        if (next) plan.set(value);
+        if (checked) plan.set(value);
       }}
     >
       <View class={dot} />

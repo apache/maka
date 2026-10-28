@@ -45,6 +45,10 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
   the generated Android runtimes' build scripts. `cargo xtask android` checks every linked library's LOAD alignment
   with the NDK's `llvm-objdump` before copying it into the runtime; `cargo xtask dist` uses the same checked libraries
   for the APK runtimes and AARs. APK ZIP alignment is checked separately by `zipalign -c -P 16 -v 4 <app.apk>`.
+- Release runtimes' `lib/<abi>/libnsh.so` is stripped with the NDK's `llvm-strip --strip-unneeded` (a quarter of each
+  library, which APKs store uncompressed; the dynamic symbols JNI needs stay), and checked again; `symbols/<abi>/`
+  keeps the linked library for `ndk-stack` and Play Console. The AARs carry the linked libraries: Gradle strips what
+  it packages and extracts the symbols itself.
 - Embedding: iOS apps link `NativeShell.xcframework` and `import NativeShell` (Swift: `NshAppView`, a `UIView`;
   `NshTrust`, `NshPackage`, `NshLimits`, `NshError`); Android apps add `nsh.aar` and use `com.longbridge.nsh.NshView`.
   `*Dev` / `-dev` variants can also load from a dev server. See `examples/embed-*`. Rust desktop apps use the platform
@@ -165,7 +169,7 @@ cancelled or later projections; otherwise it explicitly does nothing. Scene mirr
     the URL check and the `openUrl` capability, where no `host.call` name of the app can reach it or be mistaken for
     it. The core keeps each request (`Action::OpenUrl` → `Core::take_url_opens`); the engine (`State::open_urls`,
     after each commit round) runs the handler on the engine thread with an `OpenUrlRequest`, answered once from any
-    thread: `handled()` resolves the app's promise `true` (`Core::answer_open_url`), `decline()` or dropping it
+    thread: `handled()` resolves the app's promise with `{ opened: true }` (`Core::answer_open_url`), `decline()` or dropping it
     hands the URL to the platform (`Message::UrlHandled` → `Core::open_url_on_platform`: `Command::OpenUrl` on the
     root, answered by `EventKind::OpenUrl` `{ id, opened }`). Without a handler the platform opens it at once. The
     SDKs' handlers are synchronous on the main thread (Swift `(URL) -> Bool`, Java `boolean openUrl(String)`), reached

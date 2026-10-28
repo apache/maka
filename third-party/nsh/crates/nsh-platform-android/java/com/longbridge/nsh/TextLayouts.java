@@ -861,7 +861,10 @@ final class TextLayouts {
         private final int height;
 
         ExactLineHeight(float height) {
-            this.height = (int) Math.ceil(height);
+            // To the nearest pixel, as a TextView's lineHeight in dp is
+            // (getDimensionPixelSize): rounded up, 21 dp at 2.625 is 56
+            // pixels, a third of a point taller than the design's line.
+            this.height = Math.max(1, Math.round(height));
         }
 
         @Override

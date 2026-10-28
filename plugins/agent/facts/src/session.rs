@@ -49,6 +49,32 @@ impl std::str::FromStr for CopyState {
     }
 }
 
+/// A complete logical Turn boundary within the source session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentForkPosition")]
+pub enum ForkPosition {
+    /// Capture an empty history prefix.
+    Start,
+    /// Capture all current history, including later compaction facts.
+    End,
+    /// Include the complete target Turn.
+    ThroughTurn {
+        #[schemars(length(min = 1))]
+        turn_id: String,
+    },
+    /// Exclude the complete target Turn, including its submitted inputs.
+    BeforeTurn {
+        #[schemars(length(min = 1))]
+        turn_id: String,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -58,8 +84,7 @@ impl std::str::FromStr for CopyState {
 )]
 pub enum CopyPurpose {
     Branch {
-        /// None captures all current history, including later compaction facts.
-        turn_id: Option<String>,
+        position: ForkPosition,
         side_conversation: bool,
     },
     EmptySideConversation,
@@ -91,7 +116,7 @@ pub struct CopyReceipt {
 #[serde(deny_unknown_fields)]
 pub struct BranchOrigin {
     pub parent_session_id: String,
-    pub turn_id: Option<String>,
+    pub position: ForkPosition,
 }
 
 /// Flattened provenance remains readable after the source catalog is removed.

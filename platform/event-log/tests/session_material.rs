@@ -137,7 +137,7 @@ async fn collection_waits_for_the_last_history_owner_and_preserves_frozen_accoun
             target_session_id: "copy".into(),
             expected_source_revision: revision,
             purpose: CopyPurpose::Branch {
-                turn_id: None,
+                position: maka_agent_facts::session::ForkPosition::End,
                 side_conversation: false,
             },
         },

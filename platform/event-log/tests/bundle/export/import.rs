@@ -400,7 +400,7 @@ pub(super) async fn roundtrip(bytes: &[u8]) {
             target_session_id: "after-import".into(),
             expected_source_revision: source.revision,
             purpose: CopyPurpose::Branch {
-                turn_id: None,
+                position: maka_agent_facts::session::ForkPosition::End,
                 side_conversation: false,
             },
         },

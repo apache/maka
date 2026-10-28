@@ -200,7 +200,7 @@ fn verify(data: &[u8], integrity: &str) -> anyhow::Result<()> {
 }
 
 /// nsh's cache: `NSH_CACHE`, else the platform's cache directory.
-fn cache() -> anyhow::Result<PathBuf> {
+pub(crate) fn cache() -> anyhow::Result<PathBuf> {
     if let Some(dir) = env::var_os("NSH_CACHE") {
         return Ok(PathBuf::from(dir));
     }

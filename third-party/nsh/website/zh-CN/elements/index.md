@@ -57,7 +57,7 @@ mount(App);
 在 TSX 中，每个标签都使用 PascalCase，并指向作用域中的绑定：原语从 `nsh` 导入，基础组件从 `nsh/base` 导入。只有 `<If>` 和 `<Each>` 是无需导入的全局组件。`<view>` 这样的小写标签会导致构建错误，因为 TypeScript 只能对照每个名称一个的全局类型来检查它，`List`、`Each` 这类泛型组件就无法推断条目类型。编译器通过导入识别这些元素并就地创建原生视图，所以导入它们在运行时没有任何开销。参见 [JSX 与组件](../docs/jsx-and-components.md)。
 
 ```tsx
-import { Canvas, Image, List, Overlay, Scroll, Text, Video, View, WebView } from "nsh";
+import { Canvas, Image, List, Overlay, Scroll, Shader, Text, Video, View, WebView } from "nsh";
 import { Button, Dialog, Menu, NavPage, NavStack, Popover, Sheet, Tooltip, Input } from "nsh/base";
 ```
 
@@ -73,6 +73,7 @@ TSX 从 `nsh` 导入，Rust 从 `nsh_core::prelude` 导入。
 | `<Scroll>` | `scroll()` | UIScrollView / ScrollView | [Scroll](./scroll.md) |
 | `<List>` | `virtual_list(count, \|at\| row)` | 复用单元格的 UIScrollView / ScrollView | [List](./list.md) |
 | `<Canvas>` | `canvas(painter)` | 回放 2D 绘制的视图 | [Canvas](./canvas.md) |
+| `<Shader>` | `shader(program)` | 由 WGSL 程序在 GPU 上绘制其区域的视图，绘制在子元素之下 | [Shader](./shader.md) |
 | `<WebView>` | `web_view(url)`、`web_view_html(html, base)` | WKWebView / android.webkit.WebView | [WebView](./web-view.md) |
 | `<Video>` | `video(url)` | AVPlayerLayer / TextureView 上的 MediaPlayer | [Video](./video.md) |
 | `<Overlay>` | `overlay()` | 窗口（或所在对话框）之上的视图，相对锚点放置 | [Overlay](./overlay.md) |
@@ -89,13 +90,17 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 |---|---|---|---|
 | `<Button>` | `nsh_base::button()` | 带有状态和角色的可按压控件 | [Button](./button.md) |
 | `<Input>` | `nsh_base::input()` | 原生文本输入框（UITextField 或 UITextView / EditText） | [Input](./input.md) |
+| `<OtpInput>` | `nsh_base::otp_input()` | 固定位数的一次性验证码，输入、粘贴或自动填充到格子里 | [OtpInput](./otp-input.md) |
 | `<Checkbox>` | `nsh_base::checkbox()` | 带指示器的勾选 / 未勾选 / 半选控件 | [Checkbox](./checkbox.md) |
 | `<Radio>`、`<RadioGroup>` | `nsh_base::radio()`、`radio_group()` | 一组只能选一个的选项中的一项，以及这一组 | [Radio](./radio.md) |
 | `<Tab>`、`<Tabs>` | `nsh_base::tab()`、`tabs()` | 标签列表中的一个标签页，以及这个列表 | [Tabs](./tabs.md) |
 | `<Switch>` | `nsh_base::switch()` | 带轨道和滑块的开 / 关控件 | [Switch](./switch.md) |
+| `<Select>` | `nsh_base::select()` | 从一组条目中选出一个值，支持键盘、搜索和分组 | [Select](./select.md) |
 | `<Collapsible>` | `nsh_base::collapsible()` | 内容可展开和收起的区域 | [Collapsible](./collapsible.md) |
 | `<Progress>` | `nsh_base::progress()` | 进度条：任务完成了多少，或正在进行 | [Progress](./progress.md) |
+| `<NumberInput>` | `nsh_base::number_input()` | 在输入框里输入、或用按钮和按键步进的数字 | [NumberInput](./number-input.md) |
 | `<Slider>` | `nsh_base::slider()` | 沿轨道选取一个值或两个值组成的范围 | [Slider](./slider.md) |
+| `<Scrollbar>` | `nsh_base::scrollbar()` | 为滚动视图或列表提供应用自己外观的滚动条 | [Scrollbar](./scrollbar.md) |
 | `<Plot>`、`<Line>`、`<Area>`、`<Bar>`、`<Grid>`、`<Pie>`、`<Arc>`（`nsh/base/plot`） | `nsh_base::plot::{plot, line, area, bar, grid, pie, arc}` | 图表的框架与图形，根据应用的数据行原生绘制 | [Plot](./plot.md) |
 | `<Dialog>` | `nsh_base::dialog()` | 把子元素呈现在其他一切之上 | [Dialog](./dialog.md) |
 | `<NavStack>`、`<NavPage>` | `nsh_base::nav_stack()`、`nsh_base::nav_page()` | 原生导航：带有平台标题栏和返回手势的页面栈 | [NavStack](./nav-stack.md) |
@@ -135,12 +140,14 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `onPress` | `.on_press(..)` | `() => void` | | 在视图内完成一次点击。 |
-| `onLongPress` | `.on_long_press(..)` | `() => void` | | 手指按住达到 `delayLongPress`。 |
-| `onPressDown` | `.on_press_down(..)` | `() => void` | | 手指在视图上按下。 |
-| `onPressUp` | `.on_press_up(..)` | `() => void` | | 手指抬起或移出。 |
+| `onPress` | `.on_press(..)` | `(e: PressEvent) => void` | | 在视图内完成一次点击。 |
+| `onLongPress` | `.on_long_press(..)` | `(e: PressEvent) => void` | | 手指按住达到 `delayLongPress`。 |
+| `onPressDown` | `.on_press_down(..)` | `(e: PressEvent) => void` | | 手指在视图上按下。 |
+| `onPressUp` | `.on_press_up(..)` | `(e: PressEvent) => void` | | 手指抬起或移出。 |
 | `delayLongPress` | `.long_press_delay(ms)` | `number` | `500` | 按压变为长按前的毫秒数。 |
 | `hitSlop` | `.hit_slop(EdgeInsets::all(px(8.0)))` | `number \| Partial<Edges>` | | 把触摸区域扩展到边界之外，单位为点。 |
+
+`PressEvent` 为 `{ position, pagePosition, modifiers, clickCount }`：指针在视图中和在其根视图中的位置（`Point`）、按压开始时按住的修饰键，以及连续点击的次数（双击为 2）。平台不报告指针时，它是视图的原点，没有修饰键，点击一次。
 
 样式键 `pointerEvents`（Rust 中为 `.pointer_events(PointerEvents::BoxNone)`，类为 `pointer-events-*`）决定视图及其中的视图接收哪些触摸：`"none"` 都不接收（其中设置了 `"auto"` 的视图会重新接收），`"box-none"` 只有其中的视图接收，`"box-only"` 只有视图本身接收（[触摸与手势](../docs/touch-and-gestures.md#pointerevents)）。
 
@@ -161,6 +168,7 @@ TSX 从 `nsh/base` 导入，Rust 从 `nsh_base` crate 导入。它们负责行�
 | `checkedStyle` | `.checked(\|s\| ..)`、`.checked_style(style)` | `checked:` | `accessibilityState.checked` 为 `true` 时（复选框、开关、单选框；`"mixed"` 不算勾选）。 |
 | `indeterminateStyle` | `.indeterminate(\|s\| ..)`、`.indeterminate_style(style)` | `indeterminate:` | `accessibilityState.checked` 为 `"mixed"` 时（既非勾选也非未勾选的复选框）。 |
 | `selectedStyle` | `.selected(\|s\| ..)` | `selected:` | `accessibilityState.selected` 为 `true` 时（选中的 `Button`、标签页）。 |
+| `expandedStyle` | `.expanded(\|s\| ..)`、`.expanded_style(style)` | `aria-expanded:` | `accessibilityState.expanded` 为 `true` 时（弹出层打开时 `Popover`、`Menu` 的触发器）。 |
 
 ```rust tabs
 view()
@@ -186,13 +194,13 @@ view()
 
 | 属性 | Rust | 类型 | 说明 |
 |---|---|---|---|
-| `onHoverIn` | `.on_hover_in(..)` | `() => void` | 鼠标移到视图或其内部的视图上。 |
-| `onHoverMove` | `.on_hover_move(..)` | `(e: HoverEvent) => void` | 没有按下按键时，鼠标在视图（或其内部的视图）上移动，或鼠标停在那里时按下或松开了修饰键。 |
-| `onHoverOut` | `.on_hover_out(..)` | `() => void` | 鼠标离开视图及其内部的视图，或离开窗口。 |
+| `onMouseEnter` | `.on_mouse_enter(..)` | `(e: MouseEvent) => void` | 鼠标移到视图或其内部的视图上（DOM 的 `mouseenter`）。 |
+| `onMouseMove` | `.on_mouse_move(..)` | `(e: MouseEvent) => void` | 鼠标在视图（或其内部的视图）上移动，无论是否按着按键；或鼠标停在那里、没有按键按下时按下或松开了修饰键（DOM 的 `mousemove`）。 |
+| `onMouseLeave` | `.on_mouse_leave(..)` | `(e: MouseEvent) => void` | 鼠标离开视图及其内部的视图，或离开窗口；`e` 是鼠标最后所在的位置（DOM 的 `mouseleave`）。 |
 
-与 CSS 的 `:hover` 一样，鼠标在视图上或在其内部任何内容上时，视图都算作被悬停，因此鼠标下方视图外层的视图也会收到 `onHoverIn`（由外向内；`onHoverOut` 由内向外）。事件在发生之后才通知应用，触摸从不触发；按着按键移动属于触摸（`onTouchMove`、响应者系统）。从鼠标下方移除的视图会收到 `onHoverOut`，在 Linux 和 Windows 上要等到鼠标下一次移动。
+与 CSS 的 `:hover` 和 DOM 的 `mouseenter` 一样，鼠标在视图上或在其内部任何内容上时，视图都算作被悬停，因此鼠标下方视图外层的视图也会收到 `onMouseEnter`（由外向内；`onMouseLeave` 由内向外）。事件在发生之后才通知应用，触摸从不触发。从鼠标下方移除的视图会收到 `onMouseLeave`，在 Linux 和 Windows 上要等到鼠标下一次移动。
 
-`HoverEvent` 像 GPUI 的 `MouseMoveEvent` 一样给出鼠标的位置：`position` 是在视图中的位置（一个 `Point`，单位为点，已去掉视图的变换），`pagePosition` 是在视图所在根视图中的位置（与触摸相同），以及按住的 `modifiers`（`control`、`alt`、`shift`、`platform`：Apple 平台上是 Command，其他平台是 Windows 键）；Rust 中为 `position`、`page_position` 和 `modifiers`。移动事件每帧最多一次，总是最新的那次，并且一定在随后的 `onHoverOut` 之前到达，因此处理函数可以在每次移动时重绘：
+`MouseEvent` 像 GPUI 的 `MouseMoveEvent` 一样给出鼠标的位置：`position` 是在视图中的位置（一个 `Point`，单位为点，已去掉视图的变换），`pagePosition` 是在视图所在根视图中的位置（与触摸相同），按住的 `modifiers`（`control`、`alt`、`shift`、`platform`：Apple 平台上是 Command，其他平台是 Windows 键），以及 `pressedButton`：按下的按键（`"left"`、`"right"`、`"middle"`、`"back"` 或 `"forward"`，即 GPUI 的 `MouseButton`），没有按键时为 `null`；Rust 中为 `position`、`page_position`、`modifiers` 和 `pressed_button`。在桌面平台和 Web 上，拖动同时也是触摸（`onTouchMove`、响应者系统），它的移动带着 `pressedButton` 到达 `onMouseMove`：只跟随悬停的反馈跳过这些移动即可；iOS 和 Android 的悬停报告的是没有按键按下的指针。移动事件每帧最多一次，总是最新的那次，并且一定在随后的 `onMouseLeave` 之前到达，因此处理函数可以在每次移动时重绘：
 
 ```rust tabs
 // 图表上的十字线。
@@ -200,8 +208,8 @@ let at = signal(None::<Points>);
 
 view()
     .h(px(200.0))
-    .on_hover_move(move |e: &HoverEvent| at.set(Some(e.position.x)))
-    .on_hover_out(move || at.set(None))
+    .on_mouse_move(move |e: &MouseEvent| at.set(Some(e.position.x)))
+    .on_mouse_leave(move |_: &MouseEvent| at.set(None))
     .child(when(move || at.get().is_some(), move || {
         view()
             .absolute()
@@ -217,7 +225,7 @@ view()
 // 图表上的十字线。
 const at = signal<number | null>(null);
 
-<View onHoverMove={(e) => at.set(e.position.x)} onHoverOut={() => at.set(null)} style={{ height: 200 }}>
+<View onMouseMove={(e) => at.set(e.position.x)} onMouseLeave={() => at.set(null)} style={{ height: 200 }}>
   <If when={at() !== null}>
     <View style={{ position: "absolute", left: at()!, top: 0, bottom: 0, width: 1, backgroundColor: "#888" }} />
   </If>
@@ -347,8 +355,8 @@ view().on_press(open_page).child(
 
 | 属性 | Rust | 类型 | 说明 |
 |---|---|---|---|
-| `onLayout` | `.on_layout(\|frame: &Bounds<Points>\| ..)` | `(bounds: Bounds) => void` | 每次布局改变视图位置尺寸后，给出相对父视图的 frame `{ origin, size }`。 |
-| `ref` | `.element_ref(&handle)` | `YNode \| (node: YNode) => void` | 原生节点（参见 [ref 方法](#ref-方法)）。`ref={el}` 赋值给变量，`ref={fn}` 调用函数。 |
+| `onLayout` | `.on_layout(\|frame: &Bounds<Points>\| ..)` | `(e: { bounds: Bounds }) => void` | 每次布局改变视图位置尺寸后，`bounds` 给出相对父视图的 frame `{ origin, size }`。 |
+| `ref` | `.element_ref(&handle)` | `ViewRef \| (node: ViewRef) => void` | 元素的 ref（参见 [ref 方法](#ref-方法)）：`ViewRef`，或元素自己基于它的类型。`ref={el}` 赋值给变量，`ref={fn}` 调用函数。 |
 | `nativeID` | `.native_id(id)` | `string` | 为视图命名，供其他元素引用，例如输入框引用的 `InputAccessoryView`。 |
 | `testID` | `.test_id(id)` | `string` | UI 测试使用的标识（在 Android 上是视图的 resource id）。 |
 | `key` | `.key(key)` | `string` | 元素在兄弟元素之间的标识。 |
@@ -367,7 +375,7 @@ view().on_press(open_page).child(
 | `rotation` | `.rotation_value(&angle)` | `{ angle?: AnimatedValue }` | 双指旋转驱动 `angle`（角度）。 |
 | `onRotationStart` / `onRotationEnd` | `.on_rotation_start(..)` / `.on_rotation_end(..)` | `(e: { rotation: number; velocity: number }) => void` | 旋转开始 / 结束。 |
 
-`PanEvent` 为 `{ translationX, translationY, velocityX, velocityY, valueX?, valueY? }`（Rust 中为 `translation`、`velocity_x`、`velocity_y`、`value_x`、`value_y`）：自开始以来的位移、以点每秒计的速度，以及此刻所绑定值的数值（拖动可能在动画中途抓住一个值）。
+`PanEvent` 为 `{ cancelled, translation, velocity, value? }`（Rust 中为 `cancelled`、`translation`、`velocity_x`、`velocity_y`、`value_x`、`value_y`）：系统是否取消了拖动、自开始以来的位移和以点每秒计的速度（`Point`），以及此刻所绑定值的数值，即 `pan` 绑定的轴的 `{ x?, y? }`（拖动可能在动画中途抓住一个值）。
 
 ### 原始触摸与响应者系统
 
@@ -444,20 +452,21 @@ view()
 
 ## ref 方法
 
-在 TSX 中 `ref` 收到一个 `YNode`；在 Rust 中，`element_ref()` 创建一个 `ElementRef` 句柄，由 `.element_ref(&handle)` 附加到元素上。它们的方法向原生视图发送命令，与同一轮中先前的改动按顺序执行。各元素页面会说明哪些方法适用。
+在 TSX 中 `ref` 收到元素的 ref，类型是元素自己的：`View`、`Text`、`Image`、`Canvas`、`Overlay` 和 `Shader` 是 `ViewRef`（`focus`、`blur`、`measure`），其他元素是在 `ViewRef` 之上加上自身方法的类型：`InputRef`（`Input`）、`ScrollRef`（`Scroll`）、`ListRef`（`List`）、`WebViewRef`（`WebView`）、`VideoRef`（`Video`）和 `NativeComponentRef`（原生组件）。在 Rust 中，`element_ref()` 创建一个 `ElementRef` 句柄，由 `.element_ref(&handle)` 附加到元素上。它们的方法向原生视图发送命令，与同一轮中先前的改动按顺序执行。各元素页面会说明哪些方法适用。ref 变量请按元素自己的类型声明（`<Input>` 用 `let field!: InputRef`）：声明为 `ViewRef` 的变量不能用在 ref 带有自己方法的元素上。
 
-| 方法 | Rust | 适用于 | 说明 |
+| 方法 | Rust | Ref | 说明 |
 |---|---|---|---|
-| `focus()` / `blur()` | `focus()` / `blur()` | `<Input>` | 获取焦点（弹出键盘）/ 失去焦点。 |
-| `setSelection(start, end?)` | `set_selection(start, end)` | `<Input>` | 选中 `start..end`（UTF-16 单位）；省略 `end` 时为光标。 |
-| `scrollTo({ x?, y?, animated? })` | `scroll_to(point, animated)` | `<Scroll>`、`List` | 滚动到某个偏移量。 |
-| `zoomTo({ scale, x?, y?, animated? })` | `zoom_to(scale, center, animated)` | 可缩放的 `<Scroll>` | 围绕内容中的某点缩放到 `scale`。 |
-| `scrollToOffset({ offset, animated? })` | `scroll_to_offset(offset, animated)` | `List` | 沿列表方向滚动到某个偏移量。 |
-| `scrollToIndex({ index, animated?, viewPosition?, viewOffset? })` | `scroll_to_index(index, position, offset, animated)` | `List` | 把某一项滚动到可见区域。 |
-| `scrollToEnd({ animated? })` | `scroll_to_end(animated)` | `List` | 滚动到内容末尾。 |
-| `reload()`、`goBack()`、`goForward()`、`stopLoading()`、`injectJavaScript(script)`、`postMessage(data)` | `reload()`、`go_back()`、`go_forward()`、`stop_loading()`、`inject_java_script(..)`、`post_message(..)` | `WebView` | 控制页面。 |
-| `seek(seconds)` | `seek(seconds)` | `Video` | 跳转到某个时间点。 |
-| `command(name, args?)` | `command(name, args)` | 原生组件 | 调用已注册原生组件的命令（[`nativeComponent`](../modules/nsh.md#nativecomponent-and-nativemodule)）。 |
+| `focus()` / `blur()` | `focus()` / `blur()` | `ViewRef` | 让 `<Input>` 获取焦点（弹出键盘），或让可按下的视图获得键盘焦点 / 失去焦点。 |
+| `measure()` | `measure()` | `ViewRef` | [视图的位置](../docs/touch-and-gestures.md)。 |
+| `setSelection(start, end?)` | `set_selection(start, end)` | `InputRef` | 选中 `start..end`（UTF-16 单位）；省略 `end` 时为光标。 |
+| `scrollTo({ x?, y?, animated? })` | `scroll_to(point, animated)` | `ScrollRef`、`ListRef` | 滚动到某个偏移量。 |
+| `zoomTo({ scale, x?, y?, animated? })` | `zoom_to(scale, center, animated)` | `ScrollRef`（可缩放的 `<Scroll>`） | 围绕内容中的某点缩放到 `scale`。 |
+| `scrollToOffset({ offset, animated? })` | `scroll_to_offset(offset, animated)` | `ListRef` | 沿列表方向滚动到某个偏移量。 |
+| `scrollToIndex({ index, animated?, viewPosition?, viewOffset? })` | `scroll_to_index(index, position, offset, animated)` | `ListRef` | 把某一项滚动到可见区域。 |
+| `scrollToEnd({ animated? })` | `scroll_to_end(animated)` | `ScrollRef`、`ListRef` | 滚动到内容末尾。 |
+| `reload()`、`goBack()`、`goForward()`、`stopLoading()`、`injectJavaScript(script)`、`postMessage(data)` | `reload()`、`go_back()`、`go_forward()`、`stop_loading()`、`inject_java_script(..)`、`post_message(..)` | `WebViewRef` | 控制页面。 |
+| `seek(seconds)` | `seek(seconds)` | `VideoRef` | 跳转到某个时间点。 |
+| `command(name, args?)` | `command(name, args)` | `NativeComponentRef` | 调用已注册原生组件的命令（[`nativeComponent`](../modules/nsh.md#nativecomponent-and-nativemodule)）。 |
 
 ```rust tabs
 let field = element_ref();
@@ -468,10 +477,10 @@ view()
 ```
 
 ```tsx tabs
-import { View, type YNode } from "nsh";
+import { type InputRef, View } from "nsh";
 import { Input } from "nsh/base";
 
-let input!: YNode;
+let input!: InputRef;
 <View onPress={() => input.focus()}>
   <Input ref={input} placeholder="点击这一行开始输入" />
 </View>;

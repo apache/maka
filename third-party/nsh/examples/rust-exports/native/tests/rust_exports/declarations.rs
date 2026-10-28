@@ -12,8 +12,8 @@ fn callbacks_and_events_name_their_arguments() {
     for line in [
         // `#[args(balance)]` on the parameter.
         "  onChange(listener: (balance: number) => void): void;",
-        // An event's data without `#[args]`: `value`.
-        "  onChange?: (value: number) => void;",
+        // An event's data without `#[args]`: one object, its field `value`.
+        "  onChange?: (event: { value: number }) => void;",
     ] {
         assert!(ts.contains(line), "missing {line:?} in\n{ts}");
     }

@@ -1,6 +1,6 @@
 import { cleanup, signal, Text, View } from "nsh";
 import { TextView, type TextViewImage } from "nsh/base";
-import { Button, Caption, Card, colors, DemoPage } from "../ui";
+import { Button, Caption, Card, colors, DemoPage, Segmented } from "../ui";
 import { ImageViewer } from "./ImageViewer";
 
 const MARKDOWN = `# Native Shell
@@ -251,7 +251,7 @@ function Markdown() {
         codeBlockActions={[{ id: "copy", label: "Copy code" }]}
         renderMath={(math) => <Tex tex={math.tex} display={math.display} />}
         onLinkPress={({ url }) => pressed.set(url)}
-        onImagePress={(image) => viewing.set(image)}
+        onImagePress={({ image }) => viewing.set(image)}
       />
       <Caption label="Link pressed" note={pressed()} />
       <ImageViewer image={viewing()} onClose={() => viewing.set(null)} />
@@ -263,7 +263,7 @@ function Html() {
   const viewing = signal<TextViewImage | null>(null);
   return (
     <Card icon="text" title="HTML" subtitle="An article page: sections, figures, lists, tables, code">
-      <TextView html={HTML} selectable classes={links} onImagePress={(image) => viewing.set(image)} />
+      <TextView html={HTML} selectable classes={links} onImagePress={({ image }) => viewing.set(image)} />
       <ImageViewer image={viewing()} onClose={() => viewing.set(null)} />
     </Card>
   );
@@ -392,6 +392,24 @@ function Selection() {
   );
 }
 
+const TABS = [
+  { value: "Markdown", label: "Markdown", body: Markdown },
+  { value: "HTML", label: "HTML", body: Html },
+  { value: "Extensions", label: "Extensions", body: Extensions },
+  { value: "Streaming", label: "Streaming", body: Streaming },
+  { value: "Selection", label: "Selection", body: Selection },
+] as const;
+
+type Tab = (typeof TABS)[number]["value"];
+
+/** One document at a time, a tab each: a document wants the page's width. */
 export function TextViewDemo() {
-  return <DemoPage cards={[Streaming, Markdown, Selection, Extensions, Html]} />;
+  const tab = signal<Tab>("Markdown");
+  const Shown = () => (
+    <View style={{ gap: 16 }}>
+      <Segmented options={TABS} value={tab()} onChange={(t) => tab.set(t)} fill />
+      <Each of={TABS.filter((t) => t.value === tab())}>{(t) => t().body()}</Each>
+    </View>
+  );
+  return <DemoPage columns={1} cards={[Shown]} />;
 }

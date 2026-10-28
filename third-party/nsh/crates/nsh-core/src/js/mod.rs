@@ -37,6 +37,12 @@ pub fn is_standard_module(name: &str) -> bool {
     STANDARD_MODULES.contains(&name)
 }
 
+/// The globals the standard module `crypto` defines: Web Crypto's `crypto`
+/// and its classes. A runtime built without `crypto` (`nsh-js`'s feature)
+/// has none of them, so code that names one needs a runtime with it (the
+/// bundler's `NativeUse::global_crypto`).
+pub const CRYPTO_GLOBALS: &[&str] = &["crypto", "Crypto", "SubtleCrypto", "CryptoKey"];
+
 /// The module name of an app's bundle (its entry chunk): stack traces show
 /// `bundle.js:LINE:COL`, and the chunks of a split bundle import it as
 /// `./bundle.js`.
@@ -116,15 +122,18 @@ mod tests {
         // Each host prop and event in the interface of the elements it is for.
         let elements = super::host::declarations();
         for (interface, prop) in [
-            ("HostProps", "  onPress?: (e?: PressEvent) => void;"),
-            ("HostProps", "  onLongPress?: (e?: PressEvent) => void;"),
-            ("HostProps", "  onPressDown?: (e?: PressEvent) => void;"),
-            ("HostProps", "  onPressUp?: (e?: PressEvent) => void;"),
-            ("HostProps", "  onLayout?: (bounds: Bounds) => void;"),
+            ("HostProps", "  onPress?: (e: PressEvent) => void;"),
+            ("HostProps", "  onLongPress?: (e: PressEvent) => void;"),
+            ("HostProps", "  onPressDown?: (e: PressEvent) => void;"),
+            ("HostProps", "  onPressUp?: (e: PressEvent) => void;"),
+            ("HostProps", "  onLayout?: (e: { bounds: Bounds }) => void;"),
             ("AndroidHostProps", "  elevation?: number;"),
             ("IOSHostProps", "  backdropMaterial?: BackdropMaterial;"),
             ("InputHostProps", "  keyboardType?: KeyboardType;"),
-            ("InputHostProps", "  onChange?: (text: string) => void;"),
+            (
+                "InputHostProps",
+                "  onChange?: (e: { value: string }) => void;",
+            ),
             (
                 "InputHostProps",
                 "  onSubmit?: (e: { text: string }) => void;",
@@ -137,7 +146,10 @@ mod tests {
                 "IOSInputHostProps",
                 "  keyboardAppearance?: KeyboardAppearance;",
             ),
-            ("ImageHostProps", "  onLoad?: (e: PixelSize) => void;"),
+            (
+                "ImageHostProps",
+                "  onLoad?: (e: { size: PixelSize }) => void;",
+            ),
             (
                 "TextHostProps",
                 "  textSource?: { id: string; offset: number; segments?: never } | { id: string; offset?: never; segments: { start: number; end: number; sourceStart: number; sourceEnd: number; kind: \"literal\" | \"replacement\" }[] };",

@@ -31,9 +31,9 @@ export type RecursiveArray<T> = readonly (T | RecursiveArray<T>)[];
 export type StyleProp<T> = T | RecursiveArray<T | false | null | undefined> | false | null | undefined;
 
 /** Props every host element accepts; `S`, the style its state styles
- * take (its `style`'s). */
-export interface CommonProps<S = ViewStyle> extends TouchProps, HostProps, StateStyleProps<S> {
-  ref?: YNode | ((node: YNode) => void);
+ * take (its `style`'s); `R`, its ref's type. */
+export interface CommonProps<S = ViewStyle, R = ViewRef> extends TouchProps, HostProps, StateStyleProps<S> {
+  ref?: R | ((node: R) => void);
   children?: JSX.Element;
   /** iOS-only props (ignored elsewhere). */
   ios?: IOSProps;
@@ -69,6 +69,9 @@ export interface StateStyleProps<S = ViewStyle> {
   /** While `accessibilityState.checked` is `"mixed"` (`indeterminate:`):
    * a checkbox that is neither checked nor unchecked. */
   indeterminateStyle?: StyleProp<S>;
+  /** While `accessibilityState.expanded` is `true` (`aria-expanded:`): a
+   * `Popover`'s or `Menu`'s trigger while its popup is open. */
+  expandedStyle?: StyleProp<S>;
 }
 
 /** iOS-only props of every element (`ios={{…}}`); elements add their own. */
@@ -110,8 +113,15 @@ export interface ImageProps extends CommonProps<ImageStyle>, ImageHostProps {
   style?: StyleProp<ImageStyle>;
 }
 
+/** `<Shader>`: a view whose box a WGSL shader draws, under its children. */
+export interface ShaderProps extends CommonProps, ViewHostProps, ShaderHostProps {
+  /** The WGSL defining `fn shade(uv: vec2f) -> vec4f`. */
+  source: string;
+  style?: StyleProp<ViewStyle>;
+}
+
 /** `<Scroll>` */
-export interface ScrollProps extends CommonProps, ScrollingHostProps, ScrollHostProps {
+export interface ScrollProps extends CommonProps<ViewStyle, ScrollRef>, ScrollingHostProps, ScrollHostProps {
   style?: StyleProp<ViewStyle>;
   /** The style of a view around the content: it scrolls with the
    * content, `flexGrow: 1` makes it at least as tall as the viewport (a
@@ -141,7 +151,7 @@ export type OS = "ios" | "android" | "macos" | "windows" | "linux" | "web";
 
 export declare namespace JSX {
   /** What components return and children accept. */
-  type Element = YNode | ArrayElement | (() => Element) | string | number | boolean | null | undefined;
+  type Element = ViewRef | ArrayElement | (() => Element) | string | number | boolean | null | undefined;
   interface ArrayElement extends Array<Element> {}
   interface ElementChildrenAttribute {
     children: {};
@@ -201,6 +211,58 @@ fn exports(out: &mut String, items: &[Item]) {
     }
 }
 
+/// The refs of the host elements: what `ref` receives, each element's
+/// own type, so a method of one element is on no other's (`AGENTS.md`
+/// "API shapes"). Name, base, documentation, the methods of
+/// [`crate::dom::NODE_METHODS`] it adds. At run time every node has them
+/// all; the types hold each element to its own.
+pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
+    (
+        "ViewRef",
+        None,
+        "A native node: what `ref` receives, and what an element is. Its methods send commands to its\nview, in order with the changes before them.",
+        &["focus", "blur", "measure"],
+    ),
+    (
+        "InputRef",
+        Some("ViewRef"),
+        "An `<Input>`'s ref.",
+        &["setSelection", "replaceRange"],
+    ),
+    (
+        "ScrollRef",
+        Some("ViewRef"),
+        "A `<Scroll>`'s ref.",
+        &["scrollTo", "zoomTo", "scrollToEnd"],
+    ),
+    (
+        "ListRef",
+        Some("ViewRef"),
+        "A `List`'s ref.",
+        &["scrollTo", "scrollToOffset", "scrollToIndex", "scrollToEnd"],
+    ),
+    (
+        "WebViewRef",
+        Some("ViewRef"),
+        "A `<WebView>`'s ref.",
+        &[
+            "reload",
+            "goBack",
+            "goForward",
+            "stopLoading",
+            "injectJavaScript",
+            "postMessage",
+        ],
+    ),
+    ("VideoRef", Some("ViewRef"), "A `<Video>`'s ref.", &["seek"]),
+    (
+        "NativeComponentRef",
+        Some("ViewRef"),
+        "The ref of a native component the embedding app registered (`nativeComponent`).",
+        &["command"],
+    ),
+];
+
 /// `types.d.ts`: the styles, the elements' props and events, the node and
 /// JSX types.
 fn element_types() -> String {
@@ -216,12 +278,29 @@ fn element_types() -> String {
         doc_comment(&mut out, doc, "  ");
         let _ = writeln!(out, "  {name}?: {handler};");
     }
-    out.push_str("}\n\n/** A native node: what `ref` receives. Its methods send commands to its\n * view, in order with the changes before them. */\nexport interface YNode {\n");
-    for (name, _, signature, doc) in crate::dom::NODE_METHODS {
-        doc_comment(&mut out, doc, "  ");
-        let _ = writeln!(out, "  {name}{signature};");
-    }
     out.push_str("}\n");
+    for (name, extends, doc, methods) in REFS {
+        out.push('\n');
+        doc_comment(&mut out, doc, "");
+        match extends {
+            Some(base) => {
+                let _ = writeln!(out, "export interface {name} extends {base} {{");
+            }
+            None => {
+                let _ = writeln!(out, "export interface {name} {{");
+            }
+        }
+        for method in *methods {
+            let Some((_, _, signature, doc)) =
+                crate::dom::NODE_METHODS.iter().find(|(n, ..)| n == method)
+            else {
+                continue;
+            };
+            doc_comment(&mut out, doc, "  ");
+            let _ = writeln!(out, "  {method}{signature};");
+        }
+        out.push_str("}\n");
+    }
     out
 }
 
@@ -267,7 +346,7 @@ fn set_part(out: &mut String, set: &SetDescription) {
 
 /// The props of `Input`, declared beside it (`nsh/base`).
 const INPUT_TYPES: &str = r#"/** `<Input>` */
-export interface InputProps extends CommonProps<InputStyle>, InputHostProps {
+export interface InputProps extends CommonProps<InputStyle, InputRef>, InputHostProps {
   style?: StyleProp<InputStyle>;
   ios?: IOSInputProps;
 }
@@ -742,9 +821,9 @@ mod tests {
             assert!(types[start..end].contains(&format!("  {event}?: () => void;")));
         }
         for inheritance in [
-            "export interface CommonProps<S = ViewStyle> extends TouchProps, HostProps, StateStyleProps<S> {",
+            "export interface CommonProps<S = ViewStyle, R = ViewRef> extends TouchProps, HostProps, StateStyleProps<S> {",
             "export interface ViewProps extends CommonProps, ViewHostProps {",
-            "export interface ScrollProps extends CommonProps, ScrollingHostProps, ScrollHostProps {",
+            "export interface ScrollProps extends CommonProps<ViewStyle, ScrollRef>, ScrollingHostProps, ScrollHostProps {",
         ] {
             assert!(types.contains(inheritance), "{inheritance}");
         }
@@ -755,11 +834,34 @@ mod tests {
             .unwrap()
             .1;
         assert!(input.contains(
-            "export interface InputProps extends CommonProps<InputStyle>, InputHostProps {"
+            "export interface InputProps extends CommonProps<InputStyle, InputRef>, InputHostProps {"
         ));
         assert!(crate::list::TYPES.contains(
-            "export interface ListProps<T> extends Omit<ViewProps, \"children\">, ScrollingHostProps, ListHostProps {"
+            "export interface ListProps<T> extends Omit<ViewProps, \"children\" | \"ref\">, ScrollingHostProps, ListHostProps {"
         ));
+    }
+
+    /// Every method a node has is declared on a ref, and each ref names
+    /// only methods nodes have: no element's ref carries every method.
+    #[test]
+    fn each_node_method_is_on_a_ref() {
+        for (name, ..) in crate::dom::NODE_METHODS {
+            assert!(
+                REFS.iter().any(|(.., methods)| methods.contains(name)),
+                "`{name}` is on no ref of `REFS`"
+            );
+        }
+        for (r, _, _, methods) in REFS {
+            for m in *methods {
+                assert!(
+                    crate::dom::NODE_METHODS.iter().any(|(n, ..)| n == m),
+                    "`{r}.{m}` is not a node method"
+                );
+            }
+        }
+        let ts = element_types();
+        assert!(!ts.contains("YNode"));
+        assert!(ts.contains("export interface InputRef extends ViewRef {"));
     }
 
     #[derive(Default, nsh_core::element::JsObject)]

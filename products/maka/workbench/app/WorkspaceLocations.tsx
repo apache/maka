@@ -25,7 +25,7 @@ import type {
   DirectoryRootSpec,
   ServiceMethods,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { host } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import { createSettingsOperations } from './settingsOperations';
 import { UiError } from './text';
@@ -43,7 +43,8 @@ type SettingsWorkspaceLocations = NonNullable<
 >;
 
 export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | null): void }) {
-  const operations = createSettingsOperations();
+  const host = useHost();
+  const operations = createSettingsOperations(host);
   const snapshot = signal<SettingsWorkspaceLocations | null>(null);
   const roots = signal<DirectoryRootSpec[]>([]);
   const label = signal('');
@@ -113,11 +114,15 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
     });
   const button = {
     style: controlStyle,
-    hoverStyle: controlHoverStyle,
-    focusStyle: controlFocusStyle,
+    get hoverStyle() {
+      return controlHoverStyle();
+    },
+    get focusStyle() {
+      return controlFocusStyle();
+    },
     disabledStyle: controlDisabledStyle,
   };
-  const inputStyle = {
+  const inputStyle = () => ({
     height: 36,
     paddingHorizontal: 12,
     color: C.text,
@@ -125,7 +130,7 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
     backgroundColor: C.background,
     borderRadius: inputBorderRadius,
     fontSize: 14,
-  };
+  });
   void load();
   return (
     <View
@@ -218,19 +223,19 @@ export function WorkspaceLocations(props: { close(roots: DirectoryRootSpec[] | n
       </List>
       <Input
         value={label()}
-        onChange={(value) => label.set(value)}
+        onChange={({ value }) => label.set(value)}
         readonly={locked()}
         accessibilityLabel={tr('Workspace location name')}
         placeholder={tr('Location name')}
-        style={inputStyle}
+        style={inputStyle()}
       />
       <Input
         value={path()}
-        onChange={(value) => path.set(value)}
+        onChange={({ value }) => path.set(value)}
         readonly={locked()}
         accessibilityLabel={tr('Workspace location path')}
         placeholder={tr('Absolute folder path on this Host')}
-        style={inputStyle}
+        style={inputStyle()}
       />
       <Button
         {...button}

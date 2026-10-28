@@ -194,11 +194,49 @@ async fn account_metadata_and_reply_capacity_survive_plugin_policy_resolution() 
         1024
     );
     assert_eq!(model.main_output_limit, Some(2976));
+    input.overrides.as_mut().unwrap().max_output_tokens = None;
+    let inherited = anthropic.prepare(input.clone()).await.unwrap();
+    assert_eq!(inherited.info.max_output_tokens, Some(4000));
+    assert_eq!(inherited.main_output_limit, Some(2976));
+    input.overrides.as_mut().unwrap().max_output_tokens = Some(4000);
+    let explicit = anthropic.prepare(input.clone()).await.unwrap();
+    assert_eq!(
+        explicit.main_output_limit, inherited.main_output_limit,
+        "entering the inherited total budget must not subtract thinking twice"
+    );
+    assert_eq!(explicit.provider_options, inherited.provider_options);
     input.overrides.as_mut().unwrap().max_output_tokens = Some(1000);
     assert_eq!(
         serde_json::to_value(anthropic.prepare(input).await.unwrap_err()).unwrap(),
         json!({"kind":"insufficient_output_budget"})
     );
+    let mut unknown = request(
+        &anthropic,
+        "claude-future-unlisted",
+        ModelOverride::default(),
+    );
+    unknown.model.capabilities = Some(maka_agent_facts::configuration::ModelCapabilities {
+        reasoning: Some(true),
+        ..Default::default()
+    });
+    let inherited = anthropic.prepare(unknown.clone()).await.unwrap();
+    assert_eq!(inherited.info.max_output_tokens, None);
+    assert_eq!(
+        inherited.provider_options["anthropic"]["thinking"]["budgetTokens"],
+        1024
+    );
+    assert_eq!(
+        maka_agent_facts::context::effective_output_limit(inherited.main_output_limit),
+        8000
+    );
+    unknown.overrides.as_mut().unwrap().max_output_tokens = Some(9024);
+    let explicit = anthropic.prepare(unknown).await.unwrap();
+    assert_eq!(
+        explicit.main_output_limit,
+        Some(8000),
+        "an unknown model's displayed total budget must preserve its effective reply budget"
+    );
+    assert_eq!(explicit.provider_options, inherited.provider_options);
     let openai = binding("openai");
     for (id, label) in [("gpt-6-sol", "GPT-6 Sol"), ("gpt-6-luna", "GPT-6 Luna")] {
         let mut input = request(&openai, id, ModelOverride::default());
@@ -245,47 +283,66 @@ async fn account_metadata_and_reply_capacity_survive_plugin_policy_resolution() 
             .get("reasoningSummary")
             .is_none()
     );
-    assert_eq!(model.main_output_limit, None);
+    assert_eq!(model.main_output_limit, Some(128000));
 }
 
 #[tokio::test]
 async fn catalog_metadata_and_execution_share_provider_facts_and_explicit_overrides() {
-    let binding = binding("openai");
-    for (reported, overrides) in [
-        (ModelInfo::new("gpt-5.2"), ModelOverride::default()),
-        (
-            ModelInfo {
-                thinking_levels: Some(vec![]),
-                ..ModelInfo::new("gpt-5.2")
-            },
-            ModelOverride::default(),
-        ),
-        (
-            ModelInfo::new("gpt-5.2"),
-            ModelOverride {
-                thinking_levels: Some(vec![Low, High]),
-                default_thinking_level: Some(High),
-                ..Default::default()
-            },
-        ),
-    ] {
-        let mut input = request(&binding, "gpt-5.2", overrides.clone());
-        let metadata = ApiProviders::model_metadata(
-            "openai",
-            snapshot(),
-            input.connection.clone(),
-            reported.clone(),
-            Some(overrides),
-        )
-        .unwrap();
-        input.model = reported;
-        let model = binding.prepare(input).await.unwrap();
-        assert_eq!(
-            serde_json::to_value(&model.info).unwrap(),
-            serde_json::to_value(&metadata.info).unwrap()
-        );
-        assert_eq!(model.thinking_levels, metadata.thinking_levels);
-    }
+    use maka_agent_facts::public_catalog::PublicCatalogBody;
+    use maka_providers::catalog::Snapshot;
+    let models = PublicCatalogBody::from_json(json!({
+        "openai":{"id":"openai","models":{
+            "model-alias":{"id":"model-alias","canonical_model_id":"vendor/public-model"}
+        }},
+        "openrouter":{"id":"openrouter","models":{
+            "vendor/public-model":{"id":"vendor/public-model","canonical_model_id":"vendor/public-model"}
+        }}
+    }).to_string()).unwrap();
+    let router = PublicCatalogBody::from_json(
+        json!({"data":[{
+            "id":"vendor/public-model","name":"Public model","context_length":1048576,
+            "top_provider":{"max_completion_tokens":393216},
+            "reasoning":{"mandatory":true,"supported_efforts":["high"],"default_effort":"high"}
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let snapshot =
+        std::sync::Arc::new(Snapshot::from_sources(Some(&models), Some(&router)).unwrap());
+    let binding = ApiProviders::definition("openai-compatible", snapshot.clone()).unwrap();
+    let mut input = request(&binding, "model-alias", ModelOverride::default());
+    let metadata = ApiProviders::model_metadata(
+        "openai-compatible",
+        snapshot,
+        input.connection.clone(),
+        input.model.clone(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(metadata.info.display_name.as_deref(), Some("Public model"));
+    assert_eq!(metadata.info.context_window, Some(1048576));
+    assert_eq!(metadata.info.max_output_tokens, Some(393216));
+    assert_eq!(metadata.info.api_protocol, None);
+    assert!(metadata.thinking_levels.is_empty());
+    assert_eq!(metadata.default_thinking_level, None);
+    let model = binding.prepare(input.clone()).await.unwrap();
+    assert_eq!(model.info.id, "model-alias");
+    assert_eq!(model.adapter, "chat-completions");
+    assert_eq!(model.info.context_window, Some(1048576));
+    assert_eq!(model.main_output_limit, Some(393216));
+    input.model.context_window = Some(8192);
+    input.model.max_output_tokens = Some(4096);
+    input.overrides = Some(ModelOverride {
+        context_window: Some(6000),
+        input_limit: Some(4000),
+        max_output_tokens: Some(2048),
+        ..Default::default()
+    });
+    let model = binding.prepare(input).await.unwrap();
+    assert_eq!(model.info.context_window, Some(6000));
+    assert_eq!(model.info.input_limit, Some(4000));
+    assert_eq!(model.info.max_output_tokens, Some(4096));
+    assert_eq!(model.main_output_limit, Some(2048));
 }
 
 #[tokio::test]

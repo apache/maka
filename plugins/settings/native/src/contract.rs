@@ -115,6 +115,39 @@ pub struct UpdateModelSettings {
     pub tools: ModelToolPreferences,
     pub limits: ModelLimits,
 }
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SettingsResolveModel")]
+pub struct ResolveModel {
+    pub connection_id: String,
+    pub model_id: String,
+    #[serde(default)]
+    #[schemars(with = "maka_agent_facts::configuration::ModelOverride")]
+    pub overrides: Option<maka_agent_facts::configuration::ModelOverride>,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "SettingsModelDefaults")]
+pub struct ModelDefaults {
+    pub label: String,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub context_window: Option<u64>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub input_limit: Option<u64>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub max_output_tokens: Option<u64>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub compaction_threshold: Option<u64>,
+    pub code_mode: bool,
+    pub code_mode_language: maka_agent_facts::execution::CodeLanguage,
+    pub apply_patch: bool,
+    #[schemars(length(max = 8))]
+    pub thinking_levels: Vec<maka_agent_facts::execution::ThinkingLevel>,
+    #[schemars(
+        with = "maka_plugin_core::wire_schema::RequiredNullable<maka_agent_facts::execution::ThinkingLevel>"
+    )]
+    pub default_thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+}
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "SettingsDefaultModel")]
@@ -125,6 +158,8 @@ pub enum DefaultModel {
     },
     Ready {
         choice: ModelChoice,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<ModelDefaults>")]
+        defaults: Option<ModelDefaults>,
     },
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -540,9 +575,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "resolveModel".into(),
-                    method::<maka_agent_facts::configuration::ConnectionTarget, DefaultModel>(
-                        MethodMode::Query,
-                    ),
+                    method::<ResolveModel, DefaultModel>(MethodMode::Query),
                 ),
                 (
                     "setDefault".into(),

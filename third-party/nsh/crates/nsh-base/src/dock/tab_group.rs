@@ -304,10 +304,10 @@ pub(crate) fn tab(
         .inline_style(a.props.tab_style)
         .element_ref(&me)
         .on_press(move || a.select(&pressed))
-        .on_hover_in(move || {
+        .on_mouse_enter(move |_: &MouseEvent| {
             hovered.replace(true);
         })
-        .on_hover_out(move || {
+        .on_mouse_leave(move |_: &MouseEvent| {
             hovered.replace(false);
         })
         .on_press_down(move || {

@@ -12,6 +12,8 @@
 
 use nsh_core::{element::StyleRefinement, prelude::*};
 
+#[cfg(all(feature = "highlight", target_arch = "wasm32"))]
+pub(crate) use self::syntect_syntaxes::load_async;
 #[cfg(feature = "highlight")]
 pub(crate) use self::syntect_syntaxes::{find_syntax, loaded, plain, scope_token, syntaxes};
 
@@ -127,8 +129,56 @@ mod syntect_syntaxes {
 
     /// bat's syntaxes (two-face's), loaded on the first call: syntaxes
     /// that expect each line with its line break.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn syntaxes() -> &'static SyntaxSet {
         SYNTAXES.get_or_init(two_face::syntax::extra_newlines)
+    }
+
+    /// bat's syntaxes once [`load_async`] has them, else none (every
+    /// language is plain): the web runtime does not carry them.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn syntaxes() -> &'static SyntaxSet {
+        static NONE: OnceLock<SyntaxSet> = OnceLock::new();
+        SYNTAXES
+            .get()
+            .unwrap_or_else(|| NONE.get_or_init(SyntaxSet::default))
+    }
+
+    /// Loads the syntaxes on the web: from the page's copy of two-face's
+    /// dump (`nsh-syntaxes.bin`, which the runtime leaves out), fetched
+    /// the first time, after the frame that shows the code plain. False
+    /// when the page has none or it is not a dump this syntect reads: code
+    /// stays plain.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn load_async() -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        /// The page's dump could not be read: not tried again.
+        static FAILED: AtomicBool = AtomicBool::new(false);
+        // Deserializing blocks the page for tens of milliseconds.
+        nsh_core::prelude::next_frame().await;
+        if loaded() {
+            return true;
+        }
+        if FAILED.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Some(bytes) = nsh_core::runtime_data::load("syntaxes").await else {
+            return false;
+        };
+        if !loaded() {
+            match syntect::dumps::from_uncompressed_data::<SyntaxSet>(&bytes) {
+                Ok(set) => {
+                    let _ = SYNTAXES.set(set);
+                }
+                Err(err) => {
+                    FAILED.store(true, Ordering::Relaxed);
+                    log::warn!("the syntaxes the page has cannot be read: {err}");
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Whether the syntaxes are loaded ([`syntaxes`] returns at once).

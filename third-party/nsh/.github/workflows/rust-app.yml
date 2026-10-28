@@ -184,11 +184,14 @@ jobs:
       - name: Run the examples' tests in Chrome
         run: |
           ./target/debug/nsh test examples/counter --target web
-          for file in device dock form gestures hover navigation network photos resizable shortcuts storage timers; do
+          for file in device dock form gestures hover links navigation network photos resizable shortcuts storage timers; do
             ./target/debug/nsh test "examples/gallery/tests/$file.test.tsx" --target web
           done
+          ./target/debug/nsh test examples/gallery/tests/data-table-interactions.test.tsx --target web --filter "column's classes style"
           ./target/debug/nsh test examples/gallery/tests/environment.test.tsx --target web --filter appearance
+          ./target/debug/nsh test examples/gallery/tests/controls.test.tsx --target web --filter 'one-time code'
           ./target/debug/nsh test examples/gallery/tests/overlays.test.tsx --target web --filter 'Escape cancels'
+          ./target/debug/nsh test examples/gallery/tests/rich-editor.test.tsx --target web --filter 'Backspace after the caret moves'
           # Apps with Rust crates, in their hosts' runtime: a TSX app and a
           # Rust app (its root).
           ./target/debug/nsh test examples/rust-exports --target web
@@ -196,9 +199,10 @@ jobs:
           ./target/debug/nsh test examples/gallery-rs/shortcuts.test.tsx --target web
       - name: Publish a TSX app with a Rust crate for the web
         run: |
-          # A TSX entry and the app's crate: QuickJS runs App.tsx, the
-          # crate's set is compiled into the app's runtime.
+          # A TSX entry runs in the browser; the app's Rust UI set is
+          # compiled into its browser-only runtime.
           ./target/debug/nsh package examples/rust-exports --target web -o target/rust-exports-web
           site="target/rust-exports-web/Rust Exports"
-          ls "$site"/app.*.nshc
+          ls "$site"/app.*.js
+          node crates/nsh-platform-web/web/browser/package-size.mjs "$site" --require-browser
           grep -q rust-exports/native "$site"/nsh.*.wasm

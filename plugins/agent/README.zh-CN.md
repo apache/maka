@@ -25,7 +25,7 @@
 
 - [facts](facts/README.zh-CN.md)、[api](api/README.zh-CN.md) 和 [ports](ports/README.zh-CN.md)分别定义持久数据、协议契约和业务接口。
 - [authority](authority/README.zh-CN.md)检查原始调用权限，[native](native/README.zh-CN.md)提供 Host 服务，[engine](engine/README.zh-CN.md)执行 Agent 工作。
-- [model](model/README.zh-CN.md)、[providers](providers/README.zh-CN.md) 和 [responses](responses/README.zh-CN.md) 与纯 Rust [provider-protocol](provider-protocol/README.zh-CN.md) 核心实现模型请求及协议。
+- [provider-protocol](provider-protocol/README.zh-CN.md) 管理三种协议的编解码，[model](model/README.zh-CN.md) 管理执行适配器，[providers](providers/README.zh-CN.md) 管理提供商定义、认证和发现。
 - [tool-catalog](tool-catalog/README.zh-CN.md)选择工具，[tools](tools/README.zh-CN.md)分发调用并提供 Code Mode。
 - [assistant](assistant/README.zh-CN.md)、[goal](goal/README.zh-CN.md)、[graph](graph/README.zh-CN.md)、[scheduler](scheduler/engine/README.zh-CN.md)、[insights](insights/README.zh-CN.md)、[session-import](session-import/README.zh-CN.md)、[session-recap](session-recap/README.zh-CN.md) 和 [session-title](session-title/README.zh-CN.md)管理各自功能。
 - [acp-executor](acp-executor/native/README.zh-CN.md)通过显式进程与回调服务连接外部 ACP Agent。

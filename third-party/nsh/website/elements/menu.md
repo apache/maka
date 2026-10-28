@@ -109,7 +109,7 @@ cancels the hold.
 ## Open state
 
 Without `open`, a menu keeps its own state (from `defaultOpen` for `Menu`). With `open`, the app owns it and changes
-it in `onOpenChange(open, reason)`: `"triggerPress"`, `"select"`, `"pressOutside"`, `"backdropPress"`, `"cancel"`,
+it in `onOpenChange({ open, reason })`: `"triggerPress"`, `"select"`, `"pressOutside"`, `"backdropPress"`, `"cancel"`,
 `"contextMenu"` or `"longPress"`.
 
 ## Props
@@ -126,7 +126,7 @@ it in `onOpenChange(open, reason)`: `"triggerPress"`, `"select"`, `"pressOutside
 | `margin` | `.margin(..)` | `number` | `0` | Desktops: the distance it keeps from the edges of the safe area. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup (desktops) or the sheet (phones), and the submenus' popups. |
 | `backdropClass`, `backdropStyle` | `.backdrop_class(..)`, `.backdrop_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Phones: the backdrop behind the sheet. |
-| `trigger` | `.trigger(..)` | `JSX.Element` | none | What opens it when pressed. |
+| `trigger` | `.trigger(..)` | `JSX.Element` | none | What opens it when pressed. While the menu is open its `aria-expanded:` classes and `expandedStyle` apply. |
 | `children` | `.child(..)` | `JSX.Element` | none | The items, made each time it opens. |
 
 ### ContextMenu

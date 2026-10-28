@@ -267,6 +267,14 @@ pub enum EditorEvent {
     CodeActionRequest(EditorCodeActionRequest),
 }
 
+/// What an [`Editor`]'s `replaceAll` did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct EditorReplaceAll {
+    /// How many matches it replaced.
+    pub count: u32,
+}
+
 /// Where a context menu was asked for in an [`Editor`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, JsObject)]
 #[non_exhaustive]
@@ -547,9 +555,12 @@ impl EditorApi {
         self.ed.replace_current(&text);
     }
 
-    /// Replaces every match with `text`, as one edit: how many.
-    pub fn replace_all(&self, text: String) -> u32 {
-        self.ed.replace_all(&text)
+    /// Replaces every match with `text`, as one edit: `{ count }`, how
+    /// many.
+    pub fn replace_all(&self, text: String) -> EditorReplaceAll {
+        EditorReplaceAll {
+            count: self.ed.replace_all(&text),
+        }
     }
 
     /// Folds the lines under line `line` (from 0).

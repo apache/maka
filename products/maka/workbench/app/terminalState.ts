@@ -20,8 +20,8 @@
 import { errorText, renderText, UiError } from './text';
 import { cleanup, effect, signal, untracked, type Signal } from 'nsh';
 import { TerminalGrid } from 'maka/host';
-import { host, terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
-import type { ScopedHost } from './host';
+import { terminalMutation, pendingTerminals, recoverTerminal, abandonTerminal } from './host';
+import type { Host, ScopedHost } from './host';
 import { tr } from './locale';
 import type {
   ClientOperation,
@@ -69,11 +69,14 @@ const stop = (watch: Watch<unknown> | null) => {
 };
 const DEFAULT_SIZE = { cols: 80, rows: 24 };
 
-export function createTerminals(options: {
-  sessionId(): string | null;
-  active(): boolean;
-  open(entry: ResourceUpdate, model: TerminalModel): void;
-}) {
+export function createTerminals(
+  host: Host,
+  options: {
+    sessionId(): string | null;
+    active(): boolean;
+    open(entry: ResourceUpdate, model: TerminalModel): void;
+  },
+) {
   const entries = signal<TerminalRow[]>([]);
   const error = signal<unknown>('');
   const loading = signal(false);
@@ -203,7 +206,7 @@ export function createTerminals(options: {
     if (!entry) return;
     let model = models.get(entry.result.ref);
     if (!model) {
-      model = createTerminal(entry, scope, {
+      model = createTerminal(host, entry, scope, {
         admitted: () => owns(entry.sessionId) && known() && !pending().length,
         mutate,
         removed: () => models.delete(entry.result.ref),
@@ -329,6 +332,7 @@ export function createTerminals(options: {
 }
 
 function createTerminal(
+  host: Host,
   initial: ResourceUpdate,
   scope: ScopedHost,
   hooks: {

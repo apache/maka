@@ -236,7 +236,7 @@ const NSH: &[Item] = &[
         Export::Value(|cx| dom::host_component(cx, "view", true)),
         Ts::function(
             "A view: the box layout, styles, touches and accessibility work on\n(UIView / ViewGroup).",
-            &["(props: ViewProps): YNode"],
+            &["(props: ViewProps): JSX.Element"],
         ),
     ),
     (
@@ -244,7 +244,7 @@ const NSH: &[Item] = &[
         Export::Value(|cx| dom::host_component(cx, "text", true)),
         Ts::function(
             "A paragraph of text; a `<Text>` in it is a span of the same paragraph, other\nelements are inline attachments.",
-            &["(props: TextProps): YNode"],
+            &["(props: TextProps): JSX.Element"],
         ),
     ),
     (
@@ -252,7 +252,7 @@ const NSH: &[Item] = &[
         Export::Value(|cx| dom::host_component(cx, "scroll", true)),
         Ts::function(
             "A native scroll view (UIScrollView / ScrollView), zoomable; for long\nlists, `List`.",
-            &["(props: ScrollProps): YNode"],
+            &["(props: ScrollProps): JSX.Element"],
         ),
     ),
     (
@@ -260,7 +260,15 @@ const NSH: &[Item] = &[
         Export::Value(|cx| dom::host_component(cx, "overlay", true)),
         Ts::function(
             "Its children on top of the root view it is in (the surface, or the dialog\naround it), outside its parent's layout and clipping, while it stays its\nparent's child for everything else (context, events, lifetime): popovers,\nmenus, tooltips. Without `anchor` it is a `position: fixed` box of that\nroot view; with one it goes on the `placement` side of the anchor, on the\nother when only that one has room, kept inside the safe area, and follows\nthe anchor as it moves. `onPressOutside` and `onCancel` (Escape, Android\nback) report what closes it; closing is the app's.",
-            &["(props: OverlayProps): YNode"],
+            &["(props: OverlayProps): JSX.Element"],
+        ),
+    ),
+    (
+        "Shader",
+        Export::Value(|cx| dom::host_component(cx, "shader", true)),
+        Ts::function(
+            "A view whose box a GPU shader draws, under its children: `source` is WGSL\ndefining `fn shade(uv: vec2f) -> vec4f`, the straight sRGB color of each\npoint (`uv` 0..1 from the top left), which reads `nsh.size` (points),\n`nsh.time` (seconds; reading it animates the shader, unless `paused`),\n`nsh.scale` and the members of its `struct Uniforms` as `uniforms.name`, set by\n`uniforms={{ name: value }}`: numbers, colors, lists and animated values,\nwhich move it natively. It takes every prop of a `View`.",
+            &["(props: ShaderProps): JSX.Element"],
         ),
     ),
 ];
@@ -498,7 +506,7 @@ const IMAGE_EXPORTS: &[Item] = &[(
     }),
     Ts::value(
         "An image (a URL or `import logo from \"./logo.png\"`), decoded and cached\nnatively; `Image.getSize(src)` and `Image.prefetch(src)` ask about one\nwithout showing it.",
-        "((props: ImageProps) => YNode) & ImageModule",
+        "((props: ImageProps) => JSX.Element) & ImageModule",
     ),
 )];
 

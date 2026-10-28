@@ -78,7 +78,7 @@ function App() {
     <View style={{ flex: 1, padding: 8 }}>
       <Image
         src="asset:/same-preview.png"
-        onLoad={(e) => loaded.set(`${label}|${policy}|${e.width}x${e.height}`)}
+        onLoad={(e) => loaded.set(`${label}|${policy}|${e.size.width}x${e.size.height}`)}
         onError={(e) => loaded.set(e.message)}
         style={{ width: 32, height: 32 }}
       />
@@ -135,10 +135,10 @@ function App() {
       <Button testID="b" ref={(node) => b = node} onPress={() => record("B")}><Text>B</Text></Button>
       <Button testID="opener" onPress={() => { record("open"); open.set(true); }}><Text>Open dialog</Text></Button>
       <Dialog open={open()} animation="none" onOpen={() => record("shown")}
-        onClose={() => record("closed")} onOpenChange={(next) => open.set(next)}>
+        onClose={() => record("closed")} onOpenChange={({ open: next }) => open.set(next)}>
         <Button testID="modal" onPress={() => record("modal")}><Text>Modal action</Text></Button>
       </Dialog>
-      <Popover open={popup()} onOpenChange={(next) => popup.set(next)}>
+      <Popover open={popup()} onOpenChange={({ open: next }) => popup.set(next)}>
         <Button testID="popup-action" onPress={() => {}}><Text>Popup action</Text></Button>
       </Popover>
     </View>
@@ -254,7 +254,7 @@ function App() {
   return (
     <View style={{ flex: 1, padding: 8, gap: 8 }}>
       <Square style={{ width: 40, height: 20 }} />
-      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -277,7 +277,7 @@ function App() {
       <Input
         autoFocus
         value={text()}
-        onChange={(t) => {
+        onChange={({ value: t }) => {
           log.push("change " + t);
           text.set(t);
         }}
@@ -382,13 +382,16 @@ fn wait_for(view: &Entity<AppView>, cx: &mut VisualTestContext, text: &str) {
 fn windows(cx: &mut TestAppContext) {
     // The engine (and the settings portal) run on threads of their own.
     cx.executor().allow_parking();
+    text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx);
     keys_reach_the_fields_of_a_surface_showing_a_native_component(cx);
     #[cfg(feature = "dev")]
     synthetic_keys_type_printable_characters_after_shortcuts(cx);
     compositions_are_reported_and_hold_values_until_they_end(cx);
     menu_shortcuts_leave_a_focused_field_the_keys_it_uses(cx);
     presses_carry_where_the_pointer_was(cx);
+    files_dropped_from_outside_reach_the_view_under_them(cx);
     presses_carry_the_modifier_keys_and_click_count(cx);
+    mouse_events_carry_the_position_button_and_modifiers(cx);
     an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx);
     the_app_s_shortcuts_reach_it_while_a_native_component_has_the_keyboard(cx);
     configured_assets_stay_with_their_original_load(cx);
@@ -420,7 +423,7 @@ mount(() => <View>
     pasteBehavior={behavior()} readonly={readonly()}
     onFileDrop={() => {}}
     onPaste={(event) => pastes.set([...pastes(), event.uris.length ? event.uris.join(";") : event.text])}
-    onChange={(text) => value.set(text)} style={{ height: 160 }} />
+    onChange={({ value: text }) => value.set(text)} style={{ height: 160 }} />
   <Input testID="report" readonly value={`${behavior()}|${readonly()}|${pastes().join(",")}`}
     style={{ height: 30 }} />
 </View>);
@@ -1107,7 +1110,7 @@ import { keymap } from "nsh";
 function App() {
   const text = signal("");
   keymap.bind("shift+=", () => text.set("shortcut"), { when: "always" });
-  return <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />;
+  return <Input autoFocus value={text()} onChange={({ value: t }) => text.set(t)} style={{ height: 30 }} />;
 }
 mount(App);
 "#;
@@ -1214,6 +1217,251 @@ fn an_embedded_surface_takes_the_keyboard_when_its_app_focuses_a_field(cx: &mut 
     });
     cx.simulate_keystrokes("end backspace");
     wait_for(&view, cx, "ab");
+}
+
+/// Two fields. Enter in the first, and Ctrl+N (Command+N on macOS), both
+/// focus the second. Text typed before the engine has handled that key
+/// belongs to the second field.
+const TWO_FIELDS: &str = r#"
+import { keymap, mount, signal, View, type InputRef, type ViewRef } from "nsh";
+import { Input } from "nsh/base";
+
+function App() {
+  const first = signal("A");
+  const second = signal("");
+  let next!: InputRef;
+  let outside!: ViewRef;
+  const go = () => next.focus();
+  keymap.bind("mod+n", go, { when: "always" });
+  keymap.bind("mod+k", () => second.set(second() + "!"), { when: "always" });
+  keymap.bind("mod+b", () => outside.focus(), { when: "always" });
+  return (
+    <View style={{ flex: 1, padding: 8, gap: 8 }}>
+      <Input
+        autoFocus
+        value={first()}
+        onChange={({ value }) => first.set(value)}
+        onSubmit={go}
+        submitBehavior="submit"
+        style={{ height: 30 }}
+      />
+      <Input ref={next} value={second()} onChange={({ value }) => second.set(value)} style={{ height: 30 }} />
+      <Input testID="report" readonly focusable={false} value={second()} style={{ height: 30 }} />
+      <View ref={outside} testID="outside" focusable style={{ height: 30 }} />
+    </View>
+  );
+}
+mount(App);
+"#;
+
+fn down(vk: u16, modifiers: crate::input::Modifiers) -> crate::input::KeyEvent {
+    crate::input::KeyEvent {
+        vk,
+        down: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// `x`, then Backspace, then `y`, before the engine applies `key`. The
+/// focused field must still read "A", and then "y" once the next field
+/// has the keyboard.
+fn typed_ahead(cx: &mut TestAppContext, key: crate::input::KeyEvent) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let surface = view.surface().clone();
+        assert!(crate::input::key(&surface, key), "the key was not handled");
+        crate::text_input::char_input(&surface, "x");
+        assert!(crate::input::key(
+            &surface,
+            down(crate::keys::VK_BACK, crate::input::Modifiers::default())
+        ));
+        crate::text_input::char_input(&surface, "y");
+        let now = crate::text_input::focused(view.surface())
+            .and_then(|field| crate::text_input::accessible_value(&field))
+            .map(|value| value.text);
+        assert!(
+            matches!(now.as_deref(), None | Some("A")),
+            "typed ahead into the field that still has the keyboard: {now:?}"
+        );
+    });
+    wait_for(&view, cx, "y");
+}
+
+fn text_typed_ahead_of_enter_or_a_binding_lands_in_the_next_field(cx: &mut TestAppContext) {
+    typed_ahead(
+        cx,
+        down(crate::keys::VK_RETURN, crate::input::Modifiers::default()),
+    );
+    let modifiers = if cfg!(target_os = "macos") {
+        crate::input::Modifiers {
+            meta: true,
+            ..crate::input::Modifiers::default()
+        }
+    } else {
+        crate::input::Modifiers {
+            ctrl: true,
+            ..crate::input::Modifiers::default()
+        }
+    };
+    typed_ahead(cx, down(0x4E, modifiers));
+    composed_ahead(cx, modifiers);
+    bindings_ahead(cx, modifiers);
+    paused_ahead(cx, modifiers);
+}
+
+fn composed_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    use crate::text_input::ime;
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(
+            s,
+            down(crate::keys::VK_RETURN, Default::default())
+        ));
+        ime::replace_and_mark_text_in_range(s, None, "n", Some(1..1));
+        ime::replace_and_mark_text_in_range(s, None, "ni😀", Some(2..2));
+    });
+    let start = Instant::now();
+    loop {
+        cx.run_until_parked();
+        if view.read_with(cx, |view, _| ime::marked_text_range(view.surface())) == Some(0..4) {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "preedit did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(field_text(&view, cx).as_deref(), Some(""));
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert_eq!(ime::marked_text_range(s), Some(0..4));
+        assert_eq!(ime::selected_text_range(s).unwrap().range, 2..2);
+        assert_eq!(
+            ime::text_for_range(s, 0..4, &mut None).as_deref(),
+            Some("ni😀")
+        );
+        ime::replace_text_in_range(s, None, "你");
+    });
+    wait_for(&view, cx, "你");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(s, down(0x4E, modifiers)));
+        ime::replace_and_mark_text_in_range(s, None, "discard", None);
+        ime::replace_and_mark_text_in_range(s, None, "", None);
+        ime::replace_text_in_range(s, None, "x");
+        let mut released = down(0x4E, Default::default());
+        released.down = false;
+        crate::input::key(s, released);
+    });
+    wait_for(&view, cx, "你x");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert_eq!(ime::marked_text_range(s), None);
+        assert!(crate::input::key(s, down(0x4E, modifiers)));
+        ime::replace_and_mark_text_in_range(s, None, "😀", Some(2..2));
+        ime::unmark_text(s);
+        ime::replace_text_in_range(s, Some(0..1), "好");
+    });
+    wait_for(&view, cx, "好x😀");
+}
+
+fn bindings_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    view.update(cx, |view, _| {
+        let s = view.surface();
+        assert!(crate::input::key(
+            s,
+            down(crate::keys::VK_RETURN, Default::default())
+        ));
+        crate::text_input::char_input(s, "x");
+        for _ in 0..2 {
+            assert!(crate::input::key(s, down(0x4B, modifiers)));
+            let mut released = down(0x4B, Default::default());
+            released.down = false;
+            crate::input::key(s, released);
+        }
+    });
+    wait_for(&view, cx, "x!!");
+}
+
+fn paused_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
+    let code = nsh_bundler::compile_module("App.tsx", TWO_FIELDS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "A");
+    let result = Arc::new(Mutex::new(None));
+    for editing in [true, false] {
+        cx.update(|window, cx| {
+            view.update(cx, |view, cx| {
+                if !editing {
+                    view.resume_input(window, cx);
+                }
+                let s = view.surface();
+                if editing {
+                    assert!(crate::input::key(
+                        s,
+                        down(crate::keys::VK_RETURN, Default::default())
+                    ));
+                    crate::text_input::char_input(s, "你");
+                    assert!(crate::input::key(s, down(0x4E, modifiers)));
+                    let mut released = down(0x4E, Default::default());
+                    released.down = false;
+                    crate::input::key(s, released);
+                    crate::text_input::char_input(s, "好");
+                } else {
+                    assert!(crate::input::key(s, down(0x42, modifiers)));
+                    crate::text_input::ime::replace_text_in_range(s, None, "");
+                    crate::text_input::ime::replace_and_mark_text_in_range(s, None, "", None);
+                }
+                let result = result.clone();
+                view.pause_input(window, cx, move |done| *result.lock().unwrap() = Some(done));
+            });
+        });
+        let start = Instant::now();
+        loop {
+            cx.run_until_parked();
+            if let Some(done) = result.lock().unwrap().take() {
+                done.unwrap();
+                view.update(cx, |view, _| view.surface().drain());
+                assert_eq!(field_text(&view, cx).as_deref(), editing.then_some("你好"));
+                assert_eq!(
+                    view.read_with(cx, |view, _| {
+                        find_test_view(&view.surface().root, "report")
+                            .and_then(|view| crate::text_input::accessible_value(&view))
+                            .map(|value| value.text)
+                    })
+                    .as_deref(),
+                    Some("你好")
+                );
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "input pause did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 struct KeyLog {
@@ -1395,7 +1643,7 @@ function App() {
   setTimeout(async () => text.set(`${Whose.now()} ${await Whose.later()}`), 0);
   return (
     <View style={{ flex: 1 }}>
-      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -1598,6 +1846,123 @@ mod press_point {
     }
 }
 
+fn files_dropped_from_outside_reach_the_view_under_them(cx: &mut TestAppContext) {
+    let source = r#"
+import { mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+const log = signal<string[]>([]);
+const add = (entry: string) => log.set([...log(), entry]);
+mount(() => <View style={{ flex: 1 }}>
+  <View
+    onFileDragEnter={() => add("enter outer")}
+    onFileDragLeave={() => add("leave outer")}
+    onFileDrop={(e) => add("drop outer " + e.uris.join(";"))}
+    style={{ height: 100 }}
+  >
+    <View
+      onFileDragEnter={() => add("enter inner")}
+      onFileDragLeave={() => add("leave inner")}
+      onFileDrop={(e) => add("drop inner " + e.uris.join(";"))}
+      style={{ height: 40 }}
+    />
+  </View>
+  <View style={{ height: 100 }} />
+  <Input autoFocus readonly value={log().join(", ") || "none"} style={{ height: 30 }} />
+</View>);
+"#;
+    let code = nsh_bundler::compile_module("App.tsx", source, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| {
+        view.load(App::Js(Bundle::source(code.clone())))
+    });
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "none");
+    let origin = view.read_with(cx, |view, _| view.surface().origin.get());
+    let at = |y: f32| gpui::point(gpui::px(origin.0 + 10.0), gpui::px(origin.1 + y));
+    let send = |cx: &mut VisualTestContext, event: gpui::FileDropEvent| {
+        cx.update(|window, cx| {
+            window.dispatch_event(gpui::PlatformInput::FileDrop(event), cx);
+        });
+        cx.run_until_parked();
+    };
+    let enter = |cx: &mut VisualTestContext, y: f32, paths: &[&str]| {
+        let paths = gpui::ExternalPaths(paths.iter().map(std::path::PathBuf::from).collect());
+        send(
+            cx,
+            gpui::FileDropEvent::Entered {
+                position: at(y),
+                paths,
+            },
+        );
+        // The platform's next report, once the drag's frame has laid the
+        // drop layer over the surface.
+        send(cx, gpui::FileDropEvent::Pending { position: at(y) });
+    };
+    // The innermost listener under the drag is the destination; moving
+    // leaves it for the next one, and the drop goes there, without the
+    // relative path.
+    enter(cx, 20.0, &["/tmp/a b.txt", "b.txt"]);
+    wait_for(&view, cx, "enter inner");
+    send(cx, gpui::FileDropEvent::Pending { position: at(70.0) });
+    wait_for(&view, cx, "enter inner, leave inner, enter outer");
+    send(cx, gpui::FileDropEvent::Submit { position: at(70.0) });
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer",
+    );
+    // Leaving the window leaves the destination.
+    enter(cx, 20.0, &["/tmp/c.txt"]);
+    send(cx, gpui::FileDropEvent::Exited);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
+    // Where no view listens, the drop goes nowhere.
+    enter(cx, 150.0, &["/tmp/d.txt"]);
+    send(
+        cx,
+        gpui::FileDropEvent::Submit {
+            position: at(150.0),
+        },
+    );
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner",
+    );
+    // The same bundle reuses its node ids, but a new load owns its own drag events.
+    enter(cx, 20.0, &["/tmp/reloaded.txt"]);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, leave inner, enter outer, drop outer file:///tmp/a%20b.txt, leave outer, \
+         enter inner, leave inner, enter inner",
+    );
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    wait_for(&view, cx, "none");
+    send(cx, gpui::FileDropEvent::Pending { position: at(20.0) });
+    wait_for(&view, cx, "enter inner");
+    send(cx, gpui::FileDropEvent::Submit { position: at(20.0) });
+    wait_for(
+        &view,
+        cx,
+        "enter inner, drop inner file:///tmp/reloaded.txt, leave inner",
+    );
+    enter(cx, 20.0, &["/tmp/cancelled.txt"]);
+    send(cx, gpui::FileDropEvent::Exited);
+    wait_for(
+        &view,
+        cx,
+        "enter inner, drop inner file:///tmp/reloaded.txt, leave inner, enter inner, leave inner",
+    );
+    view.update(cx, |view, _| view.stop());
+}
+
 fn presses_carry_where_the_pointer_was(cx: &mut TestAppContext) {
     let (view, cx) =
         cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
@@ -1722,7 +2087,7 @@ function App() {
     },
   ]);
   return (
-    <View style={{ flex: 1 }} onLayout={(e) => height.set(Math.round(e.size.height))}>
+    <View style={{ flex: 1 }} onLayout={({ bounds }) => height.set(Math.round(bounds.size.height))}>
       <Input autoFocus value={`h ${height()}${chosen()}`} style={{ height: 30 }} />
     </View>
   );
@@ -1743,7 +2108,7 @@ fn an_embedded_view_that_owns_its_window_sets_its_title_and_menu(cx: &mut TestAp
         r#"{OWNED_WINDOW}
 import {{ keymap, setColorScheme }} from "nsh";
 keymap.bind("mod+t", () => {{
-  Window.setTitleBar("hidden", 48);
+  Window.setTitleBar({{ style: "hidden", height: 48 }});
   Window.setMenuBar("autoHide");
   setColorScheme("dark");
   void Menu.popup([{{ label: "Retired popup", onSelect: () => {{}} }}]);
@@ -1938,7 +2303,7 @@ function App() {
     { label: "File", submenu: [{ label: "New", onSelect: () => chosen.set(" new") }] },
   ]);
   return (
-    <View style={{ flex: 1 }} onLayout={(e) => height.set(Math.round(e.size.height))}>
+    <View style={{ flex: 1 }} onLayout={({ bounds }) => height.set(Math.round(bounds.size.height))}>
       <Input autoFocus value={`h ${height()}${chosen()}`} style={{ height: 30 }} />
     </View>
   );
@@ -2012,17 +2377,17 @@ function App() {
     <View style={{ flex: 1 }}>
       <Image
         src="asset:/app.png"
-        onLoad={(e) => report("app", `${e.width}x${e.height}`)}
+        onLoad={({ size }) => report("app", `${size.width}x${size.height}`)}
         onError={(e) => report("app", e.message)}
         style={{ width: 10, height: 10 }}
       />
       <Image
         src="asset:/bytes/cover.png"
-        onLoad={(e) => report("cover", `${e.width}x${e.height}`)}
+        onLoad={({ size }) => report("cover", `${size.width}x${size.height}`)}
         onError={(e) => report("cover", e.message)}
         style={{ width: 10, height: 10 }}
       />
-      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -2114,7 +2479,7 @@ function App() {
         autoFocus
         submitBehavior="submit"
         value={text()}
-        onChange={(t) => text.set(t)}
+        onChange={({ value }) => text.set(value)}
         style={{ height: 30 }}
       />
     </View>
@@ -2203,7 +2568,7 @@ function App() {
         }
         style={{ height: 40 }}
       />
-      <Input testID="report" autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input testID="report" autoFocus value={text()} onChange={({ value }) => text.set(value)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -2231,6 +2596,83 @@ fn presses_carry_the_modifier_keys_and_click_count(cx: &mut TestAppContext) {
         &view,
         cx,
         "ctrl false shift false alt false meta false clicks 2",
+    );
+}
+
+/// A pad 100 × 40 at (10, 10) over a focused field that shows the pad's
+/// last `onMouseEnter`, `onMouseMove` and `onMouseLeave`: where the mouse
+/// was in the pad and the window, the button held and Shift.
+const MOUSE_EVENTS: &str = r#"
+import { mount, signal, View } from "nsh";
+import { Input } from "nsh/base";
+
+const show = (name, e) =>
+  `${name} ${Math.round(e.position.x)} ${Math.round(e.position.y)} in ${Math.round(e.pagePosition.x)} ${Math.round(e.pagePosition.y)} ${e.pressedButton} ${e.modifiers.shift}`;
+
+function App() {
+  const enter = signal("-");
+  const move = signal("-");
+  const leave = signal("-");
+  return (
+    <View style={{ flex: 1 }}>
+      <View
+        onMouseEnter={(e) => enter.set(show("enter", e))}
+        onMouseMove={(e) => move.set(show("move", e))}
+        onMouseLeave={(e) => leave.set(show("leave", e))}
+        style={{ marginLeft: 10, marginTop: 10, width: 100, height: 40 }}
+      />
+      <Input autoFocus value={`${enter()} | ${move()} | ${leave()}`} style={{ height: 30 }} />
+    </View>
+  );
+}
+mount(App);
+"#;
+
+fn mouse_events_carry_the_position_button_and_modifiers(cx: &mut TestAppContext) {
+    let code = nsh_bundler::compile_module("App.tsx", MOUSE_EVENTS, &[]).unwrap();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
+    view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
+    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    wait_for(&view, cx, "- | - | -");
+    let none = gpui::Modifiers::default();
+    // The move that brings the mouse in enters the pad and moves over it.
+    cx.simulate_mouse_move(gpui::point(gpui::px(30.0), gpui::px(25.0)), None, none);
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 20 15 in 30 25 null false | -",
+    );
+    // Moves with a button down are moves too, with the button.
+    cx.simulate_mouse_move(
+        gpui::point(gpui::px(40.0), gpui::px(30.0)),
+        gpui::MouseButton::Left,
+        none,
+    );
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 30 20 in 40 30 left false | -",
+    );
+    cx.simulate_mouse_move(gpui::point(gpui::px(50.0), gpui::px(30.0)), None, none);
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 40 20 in 50 30 null false | -",
+    );
+    // A modifier key changing while the mouse rests is a move where it is.
+    cx.simulate_modifiers_change(gpui::Modifiers::shift());
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 40 20 in 50 30 null true | -",
+    );
+    cx.simulate_modifiers_change(none);
+    cx.simulate_mouse_move(gpui::point(gpui::px(120.0), gpui::px(30.0)), None, none);
+    wait_for(
+        &view,
+        cx,
+        "enter 20 15 in 30 25 null false | move 40 20 in 50 30 null false | leave 110 20 in 120 30 null false",
     );
 }
 

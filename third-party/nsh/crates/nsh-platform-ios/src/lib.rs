@@ -20,6 +20,7 @@ mod agent;
 mod animation;
 mod app;
 mod blur;
+mod bottom_bar;
 mod canvas;
 mod component;
 mod decor;
@@ -39,6 +40,7 @@ mod net;
 mod picker;
 mod press;
 mod selectable_view;
+mod shader;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;

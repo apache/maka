@@ -61,6 +61,37 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  'Edit conversation compaction prompt': [
+    'Edit conversation compaction prompt',
+    '编辑会话压缩提示词',
+    '編輯對話壓縮提示詞',
+  ],
+  'Conversation compaction prompt': [
+    'Conversation compaction prompt',
+    '会话压缩提示词',
+    '對話壓縮提示詞',
+  ],
+  'Save conversation compaction prompt': [
+    'Save conversation compaction prompt',
+    '保存会话压缩提示词',
+    '儲存對話壓縮提示詞',
+  ],
+  'Use global compaction prompt': [
+    'Use global compaction prompt',
+    '使用全局压缩提示词',
+    '使用全域壓縮提示詞',
+  ],
+  'Use global settings': ['Use global settings', '使用全局设置', '使用全域設定'],
+  'Close conversation compaction prompt': [
+    'Close conversation compaction prompt',
+    '关闭会话压缩提示词',
+    '關閉對話壓縮提示詞',
+  ],
+  'Cancel conversation compaction prompt': [
+    'Cancel conversation compaction prompt',
+    '取消编辑会话压缩提示词',
+    '取消編輯對話壓縮提示詞',
+  ],
   Connection: ['Connection', '连接', '連線'],
   'Back to models': ['Back to models', '返回模型', '返回模型'],
   'Load more connections': ['Load more connections', '加载更多连接', '載入更多連線'],
@@ -436,6 +467,7 @@ export const conversationMessages = {
   Error: ['Error', '错误', '錯誤'],
   'Expand session browser': ['Expand session browser', '展开对话侧栏', '展開對話側欄'],
   'Exit {code}': ['Exit {code}', '退出码 {code}', '結束碼 {code}'],
+  'Failed {count} times': ['Failed {count} times', '共失败 {count} 次', '共失敗 {count} 次'],
   File: msg_toolFilePath,
   Files: ['Files', '文件', '檔案'],
   'Filesystem: no additional access': [
@@ -1178,6 +1210,7 @@ export const conversationMessages = {
   'Tool failed': ['Tool failed', '工具失败', '工具失敗'],
   Trajectory: ['Trajectory', '执行过程', '執行過程'],
   'Turn activity': ['Turn activity', '轮次活动', '輪次活動'],
+  'Turn finished': ['Turn finished', '本轮已结束', '本輪已結束'],
   'Turn landmarks changed their requested fence.': [
     'Turn landmarks changed their requested fence.',
     '轮次定位的请求边界已变化。',
@@ -1241,6 +1274,11 @@ export const conversationMessages = {
     "View this turn's model usage",
     '查看本轮模型用量',
     '查看本輪模型用量',
+  ],
+  'Wait for the message to send before switching.': [
+    'Wait for the message to send before switching.',
+    '请等消息发出后再切换。',
+    '請等訊息送出後再切換。',
   ],
   'Wait for the saved draft before switching.': [
     'Wait for the saved draft before switching.',
@@ -1343,11 +1381,11 @@ export const conversationMessages = {
     '正在保存沙箱设置…',
     '正在儲存沙箱設定…',
   ],
-  'Sandbox off': ['Sandbox off', '关闭沙箱', '關閉沙箱'],
+  'Sandbox off': ['Sandbox off', '沙箱已关闭', '沙箱已關閉'],
   'Full access · Sandbox off': [
     'Full access · Sandbox off',
-    '完全访问 · 关闭沙箱',
-    '完整存取 · 關閉沙箱',
+    '完全访问 · 沙箱已关闭',
+    '完整存取 · 沙箱已關閉',
   ],
   'Read files without changing the workspace.': [
     'Read files without changing the workspace.',

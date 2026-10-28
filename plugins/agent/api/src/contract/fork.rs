@@ -18,6 +18,7 @@
  */
 
 use super::{Rejection, Session};
+pub use maka_agent_facts::session::ForkPosition;
 use maka_plugin_core::operation::RecoveryRef;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -30,12 +31,7 @@ pub struct Fork {
     pub session_id: String,
     #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
     pub expected_revision: u64,
-    /// Include history through a complete logical Turn, or all current history when null.
-    #[schemars(
-        with = "maka_plugin_core::wire_schema::RequiredNullable<String>",
-        length(min = 1)
-    )]
-    pub turn_id: Option<String>,
+    pub position: ForkPosition,
     #[schemars(length(min = 1))]
     pub title: String,
     pub labels: Vec<String>,
@@ -75,9 +71,5 @@ pub struct ForkReceiptResult {
 pub struct SessionBranch {
     #[schemars(length(min = 1))]
     pub session_id: String,
-    #[schemars(
-        with = "maka_plugin_core::wire_schema::RequiredNullable<String>",
-        length(min = 1)
-    )]
-    pub turn_id: Option<String>,
+    pub position: ForkPosition,
 }

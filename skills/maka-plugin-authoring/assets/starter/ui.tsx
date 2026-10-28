@@ -19,9 +19,12 @@
 
 import { signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
+import type { UiContext } from '@maka-agent/plugin-sdk';
 
-export function activate(context) {
-  const count = signal(0);
+export function activate(context: UiContext) {
+  const restored = context.restored;
+  if (restored !== null && typeof restored !== 'number') throw Error('Invalid counter state');
+  const count = signal(restored ?? 0);
   function Counter() {
     return (
       <View style={{ padding: 16, gap: 12 }}>
@@ -33,13 +36,18 @@ export function activate(context) {
     );
   }
   return {
-    root: { kind: 'root', render: Counter },
-    counter: { kind: 'panel', render: Counter },
-    openCounter: {
-      kind: 'command',
-      run() {
-        context.openPanel('counter');
+    exports: {
+      root: { kind: 'root', render: Counter },
+      counter: { kind: 'panel', render: Counter },
+      openCounter: {
+        kind: 'command',
+        run() {
+          context.openPanel('counter');
+        },
       },
+    },
+    async prepareReload() {
+      return count();
     },
   };
 }

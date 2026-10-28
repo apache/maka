@@ -47,7 +47,7 @@ function Filters() {
       <View onPress={() => open.set(true)}><Text>Filters</Text></View>
       <Sheet
         open={open()}
-        onOpenChange={(next) => open.set(next)}
+        onOpenChange={(e) => open.set(e.open)}
         popupClass="gap-3 rounded-t-2xl bg-white p-6"
         backdropClass="bg-black/40"
       >
@@ -69,7 +69,7 @@ asynchronous size updates share the same animation progress; the panel settles a
 ## Open state
 
 Without `open`, the sheet keeps its own state, starting from `defaultOpen`. With `open`, the app owns it: change it in
-`onOpenChange(open, reason)`, which reports each request to close with its reason (`"backdropPress"`, `"cancel"`, `"swipe"`).
+`onOpenChange({ open, reason })`, which reports each request to close with its reason (`"backdropPress"`, `"cancel"`, `"swipe"`).
 `onOpen` and `onClose` follow it in and out, whoever opened or closed it.
 
 `closeOnEscape={false}` keeps it open on Escape and back, `closeOnBackdropPress={false}` on presses on the backdrop;
@@ -116,3 +116,6 @@ on iOS), use a [Dialog](./dialog.md) with `presentation="pageSheet"`.
 | `onOpen` | `.on_open(\|\| ..)` | It came in: it is all there. |
 | `onClose` | `.on_close(\|\| ..)` | It went: it is all gone. Also when the app closed it. |
 | `onCancel` | `.on_cancel(\|\| ..)` | The user tried to close it (Escape or back, a press on the backdrop, an enabled swipe), whether or not it closed. |
+
+On the web, embedding with `dialogs: "viewport"` presents the sheet and its backdrop over the host page,
+including a same-origin iframe. Cross-origin frames use [`hostPlayerFrame`](../docs/web.md#embed-it-in-a-page).

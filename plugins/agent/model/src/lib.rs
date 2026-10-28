@@ -30,7 +30,6 @@ pub use maka_agent_facts::model::prompt;
 pub use maka_agent_facts::model::request::ProviderKind;
 pub mod adapters;
 mod conversation;
-mod native;
 mod network;
 pub mod reasoning;
 mod step;
@@ -391,7 +390,7 @@ impl ModelExecutor {
             }
         }
         // Public requests also cross JSON clients. Keep their integer contract
-        // independent of the selected native provider implementation.
+        // independent of the selected provider implementation.
         if request
             .max_output_tokens
             .is_some_and(|value| value == 0 || value > 9_007_199_254_740_991)
@@ -518,6 +517,6 @@ impl maka_agent_ports::model::Events for ChannelEvents {
 #[cfg(test)]
 mod stream_tests;
 
-pub use native::wire::{
+pub use adapters::wire::{
     EncodedWire, FrozenWire, SummaryWireBound, WireEncoding, WirePlan, WireSink, WireWrite,
 };

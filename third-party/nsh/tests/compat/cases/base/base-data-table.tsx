@@ -44,13 +44,13 @@ export default function BaseDataTable() {
           accessibilityLabel="Fruits"
           cellSelectable
           sort={sort()}
-          onSortChange={next => {
+          onSortChange={({ sort: next }) => {
             sorted.set(next ? `${next.key} ${next.direction}` : "cleared");
             sort.set(next ?? undefined);
           }}
-          onSelectionChange={s => selected.set(s ? `row ${s.row} column ${s.column}` : "none")}
+          onSelectionChange={({ selection: s }) => selected.set(s ? `row ${s.row} column ${s.column}` : "none")}
           onRowPress={e => pressed.set(`${e.row}:${e.column} ${e.clicks}`)}
-          onVisibleRowsChange={r => visible.set(`${r.start}-${r.end}`)}
+          onVisibleRowsChange={({ range: r }) => visible.set(`${r.start}-${r.end}`)}
           renderCell={cell => <Text>{`Cell ${cell.row}:${cell.key} ${cell.text}`}</Text>}
           style={{ flex: 1 }}
         />

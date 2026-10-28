@@ -22,7 +22,7 @@ import { errorText, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { host } from './host';
+import type { Host } from './host';
 import type { GitArea, GitDiff, WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { parsePatch } from './patch';
 import { Icon } from './Icon';
@@ -90,7 +90,7 @@ export type CurrentDiffModel = {
 
 // The resource tab owns this projection across dock/Dialog presentation changes.
 // The existing gitDiff query returns a whole patch without a size bound.
-export function createCurrentDiff(target: CurrentDiffTarget): CurrentDiffModel {
+export function createCurrentDiff(host: Host, target: CurrentDiffTarget): CurrentDiffModel {
   const state = signal<DiffState>({ kind: 'loading' });
   let generation = 0;
   let alive = true;
@@ -181,8 +181,8 @@ export function CurrentDiff(props: { model: CurrentDiffModel }) {
             model.state().kind === 'error' ? tr('Retry current diff') : tr('Refresh current diff'),
           )}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="refresh" color={C.secondary} />
         </Button>
@@ -251,11 +251,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
               alignItems: 'flex-start',
               minWidth: 0,
               backgroundColor:
-                row().kind === 'added'
-                  ? '#203527'
-                  : row().kind === 'removed'
-                    ? '#382528'
-                    : undefined,
+                row().kind === 'added' ? C.added : row().kind === 'removed' ? C.removed : undefined,
             }}
           >
             <If when={row().kind !== 'hunk' && row().kind !== 'meta'}>
@@ -297,7 +293,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
                     flexShrink: 0,
                     color:
                       row().kind === 'added'
-                        ? '#9bd5a5'
+                        ? C.success
                         : row().kind === 'removed'
                           ? C.danger
                           : C.text,
@@ -316,7 +312,7 @@ function DiffRows(props: { model: CurrentDiffModel }) {
                   minWidth: 0,
                   color:
                     row().kind === 'added'
-                      ? '#9bd5a5'
+                      ? C.success
                       : row().kind === 'removed'
                         ? C.danger
                         : row().kind === 'context'

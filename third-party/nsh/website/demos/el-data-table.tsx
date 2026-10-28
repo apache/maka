@@ -1,5 +1,5 @@
 import { mount, signal, Text, View } from "nsh";
-import { DataTable, type DataTableColumn, type DataTableSelection, type DataTableSort } from "nsh/base";
+import { DataTable, type DataTableColumn, type DataTableSort } from "nsh/base";
 import { dataTableClasses, dataTableFitPadding, Log, Segmented, Split, ui, wide } from "./palette";
 
 const NAMES = ["Ada", "Alan", "Grace", "Linus", "Margaret", "Dennis", "Barbara", "Ken"];
@@ -62,12 +62,12 @@ function App() {
             stripe
             cellSelectable={mode() === "cell"}
             sort={sort()}
-            onSortChange={(next) => {
+            onSortChange={({ sort: next }) => {
               sortBy(next ?? undefined);
               log(`onSortChange: ${next ? `${next.key} ${next.direction}` : "none"}`);
             }}
-            onSelectionChange={(s: DataTableSelection | null) => log(`onSelectionChange: ${s ? JSON.stringify(s) : "none"}`)}
-            onColumnResize={(key, width) => log(`onColumnResize: ${key} ${Math.round(width)}`)}
+            onSelectionChange={({ selection }) => log(`onSelectionChange: ${selection ? JSON.stringify(selection) : "none"}`)}
+            onColumnResize={({ key, width }) => log(`onColumnResize: ${key} ${Math.round(width)}`)}
             style={{ flex: 1 }}
           />
         </View>

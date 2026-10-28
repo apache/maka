@@ -30,6 +30,7 @@ service contract. Validate unknown responses before consuming them.
 ```ts
 const result = await context.invoke({
   operation: 'call', import: 'echo', provider: 0, method: 'echo', input: 'hello',
+  attachments: {},
 });
 if (typeof result !== 'string') throw Error('Invalid Echo result');
 ```
@@ -54,10 +55,11 @@ fields. A declaration does not add a global tool or confer filesystem/process ac
 
 The same Host service can be consumed by its package's UI or by another UI plugin.
 Declare the contract in `application.ui.imports`, bind its providers in the UI
-instance, and call `context.services[importName][providerIndex]`. These service
-calls use the actual UI consumer's session and original mutation receipt. The
-trusted module also retains the full client `context.host`; import bindings do
-not introduce a separate UI permission boundary. See [Shared NSH UI plugins](ui-plugins.md).
+instance, and call `context.services[importName][providerIndex]`, including when
+selecting a provider from a `many` import. `context.application` supplies the
+application client bound to those declared imports. These calls use the actual UI
+consumer's session and original mutation receipt. Trusted modules retain the full
+client `context.host` and shared NSH capabilities. See [Shared NSH UI plugins](ui-plugins.md).
 
 Skills use the ordinary Library contract, actual registered tool names and independent
 `search`, `load` and `prepare` grants. `agent.skillLibrary` explicitly selects input

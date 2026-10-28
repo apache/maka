@@ -139,7 +139,7 @@ function App() {
             value={spent()}
             step={25}
             label="Groceries"
-            onChange={(v) => {
+            onChange={({ value: v }) => {
               spent.set(v);
               changes.update((n) => n + 1);
             }}

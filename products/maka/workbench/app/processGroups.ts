@@ -20,12 +20,13 @@
 import type { Row } from './history';
 import type { ToolActivity } from './toolActivity';
 
-/** Source identity, ordering and turn/group boundaries, independent of streamed text. */
+/** Source identity, ordering and failure text; streamed answer text does not regroup rows. */
 export type ProcessRow = Pick<
   Row,
   | 'messageId'
   | 'field'
   | 'role'
+  | 'text'
   | 'position'
   | 'tool'
   | 'turnId'
@@ -55,6 +56,8 @@ export type MessageEntry = {
   key: string;
   rowId: string;
   processTurnId?: string;
+  /** How many identical failures in a row this entry stands for, when more than one. */
+  repeats?: number;
 };
 export type ProcessEntry = ProcessGroup | MessageEntry;
 export type TurnPresentation = {
@@ -95,6 +98,7 @@ export function sameProcessRows(
       return (
         stableRowId(row) === stableRowId(next) &&
         row.role === next.role &&
+        (row.role !== 'failure' || row.text === next.text) &&
         row.field === next.field &&
         row.turnId === next.turnId &&
         sourceSequence(row) === sourceSequence(next) &&
@@ -267,6 +271,20 @@ export function projectProcessGroups(input: {
       body || row.role === 'user' || row.role === 'failure' || row.role === 'compaction';
     if (!row.turnId || outside) {
       flush(true);
+      // A provider that keeps refusing (a rate limit, an overload) fails each retry
+      // with the same text; show the run once with its count.
+      const last = entries.at(-1);
+      const lastRow = last?.kind === 'message' ? rowsById.get(last.rowId) : undefined;
+      if (
+        row.role === 'failure' &&
+        last?.kind === 'message' &&
+        lastRow?.role === 'failure' &&
+        lastRow.turnId === row.turnId &&
+        lastRow.text === row.text
+      ) {
+        last.repeats = (last.repeats ?? 1) + 1;
+        continue;
+      }
       const message: MessageEntry = { kind: 'message', key: position.rowId, rowId: position.rowId };
       if (row.turnId) {
         if (row.role === 'user' && progressed.has(row.turnId))

@@ -404,7 +404,7 @@ impl Stream {
                     _ => None,
                 };
                 events.push(Event::ProviderError(output::ProviderError {
-                    message: error.message,
+                    message: Some(error.message),
                     kind: Some(error.r#type),
                     code: error.code.map(|v| json!(v)),
                     status: error.status.or(inferred.map(|v| v.0)),

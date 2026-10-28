@@ -116,6 +116,7 @@ pub fn element_bits(tag: crate::Tag) -> u32 {
             Tag::Video => on::VIDEO,
             Tag::InputAccessory => on::INPUT_ACCESSORY,
             Tag::View => on::VIEW,
+            Tag::Shader => on::VIEW | on::SHADER,
             Tag::Cell | Tag::Stack | Tag::HeaderItem | Tag::Canvas | Tag::Native | Tag::Overlay => {
                 0
             }
@@ -162,6 +163,8 @@ pub mod on {
     pub const OVERLAY: u32 = 1 << 12;
     /// `<view>`.
     pub const VIEW: u32 = 1 << 13;
+    /// `<shader>`.
+    pub const SHADER: u32 = 1 << 14;
     /// Set by the runtime itself, not part of the elements' types.
     pub const INTERNAL: u32 = 1 << 31;
 }
@@ -440,14 +443,12 @@ export interface OverlayPosition {
 export interface PanEvent {
   /** The system cancelled the drag rather than releasing it. */
   cancelled: boolean;
-  translationX: number;
-  translationY: number;
-  velocityX: number;
-  velocityY: number;
-  /** The `pan.x` value now (with one). */
-  valueX?: number;
-  /** The `pan.y` value now (with one). */
-  valueY?: number;
+  /** How far the finger moved since the drag started. */
+  translation: Point;
+  /** How fast it moves, in points per second. */
+  velocity: Point;
+  /** The values `pan` binds now, those of the axes it binds (`pan.x`, `pan.y`). */
+  value?: Partial<Point>;
 }
 
 /** Where the pointer was at a press, the modifier keys held when it began and its click count: the payload of `onPress`, `onLongPress`, `onPressDown` and `onPressUp` on backends that know it. */
@@ -461,14 +462,19 @@ export interface PressEvent {
   clickCount: number;
 }
 
-/** Where the mouse is over a hovered view: the payload of `onHoverMove` (GPUI's `MouseMoveEvent`). */
-export interface HoverEvent {
+/** Where the mouse is over a view: the payload of `onMouseEnter`, `onMouseMove` and `onMouseLeave` (GPUI's `MouseMoveEvent`). */
+export interface MouseEvent {
   /** Position in the view (its transforms undone). */
   position: Point;
   /** Position in the root view the view is in (the surface or its modal), as touches' `pageX` / `pageY`. */
   pagePosition: Point;
   modifiers: Modifiers;
+  /** The button held down (a drag), or `null`. */
+  pressedButton: MouseButton | null;
 }
+
+/** A mouse button (GPUI's `MouseButton`). */
+export type MouseButton = "left" | "right" | "middle" | "back" | "forward";
 
 /** Where a context menu was asked for: the payload of `onContextMenu`. */
 export interface ContextMenuEvent {
@@ -539,56 +545,50 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::Press,
         on::ALL,
-        "(e?: PressEvent) => void",
-        "A tap. `e` is where the pointer was, with the modifier keys and the click count, on backends that know it.",
+        "(e: PressEvent) => void",
+        "A tap. `e` is where the pointer was, with the modifier keys and the click count (at the view's origin, with no keys and one click, on backends that do not know the pointer).",
     ),
     (
         EventKind::LongPress,
         on::ALL,
-        "(e?: PressEvent) => void",
-        "A press held for about half a second. `e` is where the pointer was, with the modifier keys and the click count, on backends that know it.",
+        "(e: PressEvent) => void",
+        "A press held for about half a second. `e` is where the pointer was, with the modifier keys and the click count (at the view's origin, with no keys and one click, on backends that do not know the pointer).",
     ),
     (
         EventKind::PressDown,
         on::ALL,
-        "(e?: PressEvent) => void",
-        "A press went down. `e` is where the pointer was, with the modifier keys and the click count, on backends that know it.",
+        "(e: PressEvent) => void",
+        "A press went down. `e` is where the pointer was, with the modifier keys and the click count (at the view's origin, with no keys and one click, on backends that do not know the pointer).",
     ),
     (
         EventKind::PressUp,
         on::ALL,
-        "(e?: PressEvent) => void",
-        "The press ended. `e` is where the pointer was, with the modifier keys and the click count, on backends that know it.",
+        "(e: PressEvent) => void",
+        "The press ended. `e` is where the pointer was, with the modifier keys and the click count (at the view's origin, with no keys and one click, on backends that do not know the pointer).",
     ),
     (
-        EventKind::HoverIn,
+        EventKind::MouseEnter,
         on::ALL,
-        "() => void",
-        "The mouse came over the view or a view inside it (never on touches).",
+        "(e: MouseEvent) => void",
+        "The mouse came over the view or a view inside it (never on touches; the DOM's `mouseenter`).",
     ),
     (
-        EventKind::HoverOut,
+        EventKind::MouseLeave,
         on::ALL,
-        "() => void",
-        "The mouse left the view and the views inside it, or the window.",
+        "(e: MouseEvent) => void",
+        "The mouse left the view and the views inside it, or the window, from where `e` says (the DOM's `mouseleave`).",
     ),
     (
-        EventKind::HoverMove,
+        EventKind::MouseMove,
         on::ALL,
-        "(e: HoverEvent) => void",
-        "The mouse moved over the view (or a view inside it) with no button down, at most once per frame.",
+        "(e: MouseEvent) => void",
+        "The mouse moved over the view (or a view inside it), with or without a button down (`e.pressedButton`), or a modifier key changed while it rests there with none down; at most once per frame.",
     ),
     (
         EventKind::ContextMenu,
         on::ALL,
         "(e: ContextMenuEvent) => void",
         "The secondary button (a right click, Control-click on Apple platforms) was pressed over the view: open a menu with `Menu.popup(items, e.pagePosition)`. The nearest listener hears it; a text input or selectable text nearer shows its own menu instead.",
-    ),
-    (
-        EventKind::MouseMove,
-        on::ALL,
-        "(e: Point) => void",
-        "The mouse moved inside the view, including with a button down (desktops and web); `x`/`y` are local coordinates in points, delivered at most once per frame.",
     ),
     (
         EventKind::FileDragEnter,
@@ -605,13 +605,13 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::FileDrop,
         on::ALL,
-        "(e: { uris: string[] }) => void",
-        "Local file URLs dropped on this desktop destination.",
+        "(e: { uris: string[]; pagePosition?: { x: number; y: number } }) => void",
+        "Local file URLs dropped on this desktop destination; `pagePosition`: where, in the window's coordinates, on backends that know it (Linux).",
     ),
     (
         EventKind::Layout,
         on::ALL,
-        "(bounds: Bounds) => void",
+        "(e: { bounds: Bounds }) => void",
         "The frame changed: its bounds in the parent.",
     ),
     (EventKind::PanStart, on::ALL, "(e: PanEvent) => void", ""),
@@ -684,7 +684,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::Load,
         on::IMAGE,
-        "(e: PixelSize) => void",
+        "(e: { size: PixelSize }) => void",
         "The source image's size in pixels (not the decoded, downsampled one).",
     ),
     (
@@ -726,31 +726,31 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::ScrollDragStart,
         on::SCROLLING,
-        "(e: Point) => void",
+        "(e: { offset: Point }) => void",
         "",
     ),
     (
         EventKind::ScrollDragEnd,
         on::SCROLLING,
-        "(e: Point) => void",
+        "(e: { offset: Point }) => void",
         "",
     ),
     (
         EventKind::MomentumStart,
         on::SCROLLING,
-        "(e: Point) => void",
+        "(e: { offset: Point }) => void",
         "",
     ),
     (
         EventKind::MomentumEnd,
         on::SCROLLING,
-        "(e: Point) => void",
+        "(e: { offset: Point }) => void",
         "",
     ),
     (
         EventKind::ScrollEnd,
         on::SCROLL | on::LIST,
-        "(e: Point) => void",
+        "(e: { offset: Point }) => void",
         "",
     ),
     (EventKind::Refresh, on::SCROLL | on::LIST, "() => void", ""),
@@ -764,8 +764,8 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::ChangeText,
         on::INPUT,
-        "(text: string) => void",
-        "",
+        "(e: { value: string }) => void",
+        "The user edited the text: `value` is the text now.",
     ),
     (
         EventKind::SubmitEditing,
@@ -818,7 +818,7 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::ContentSizeChange,
         on::INPUT,
-        "(e: Size) => void",
+        "(e: { size: Size }) => void",
         "The size of the text (at the input's width when `multiline`; one empty line's while it is empty, whatever its placeholder): grow a multiline input with it.",
     ),
     (
@@ -906,6 +906,7 @@ const GROUPS: &[(u32, &str, &str)] = &[
     (on::MODAL, "Dialog", "dialogs"),
     (on::WEBVIEW, "WebView", "web views"),
     (on::VIDEO, "Video", "videos"),
+    (on::SHADER, "Shader", "shaders"),
     (on::INPUT_ACCESSORY, "InputAccessory", "input accessories"),
     (on::OVERLAY, "Overlay", "`<Overlay>`"),
 ];

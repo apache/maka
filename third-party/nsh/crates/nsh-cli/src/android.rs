@@ -14,6 +14,12 @@ use anyhow::{Context as _, bail};
 /// Minimum Android version (API 28, Android 9), as the runtime is built.
 pub(crate) const MIN_SDK: u32 = 28;
 const TARGET_SDK: u32 = 35;
+/// The ABIs the runtime is built for: `nsh package --abi`'s values.
+pub(crate) const ABIS: [&str; 3] = ["arm64-v8a", "armeabi-v7a", "x86_64"];
+/// The ABIs `nsh package` puts into an APK unless `--abi` names others:
+/// the 64-bit and 32-bit processes of phones (`--run` adds the device's,
+/// an emulator's `x86_64`).
+pub(crate) const DEFAULT_ABIS: [&str; 2] = ["arm64-v8a", "armeabi-v7a"];
 
 /// The Android SDK.
 pub(crate) struct Sdk {
@@ -63,20 +69,7 @@ impl Sdk {
     /// (`ANDROID_NDK_HOME`, else the newest NDK of the SDK): an app's own
     /// `libnsh.so` (`rust_app.rs`).
     pub(crate) fn ndk_cargo(&self, triple: &str) -> anyhow::Result<Command> {
-        let ndk = match env::var_os("ANDROID_NDK_HOME") {
-            Some(ndk) => PathBuf::from(ndk),
-            None => newest(&self.root.join("ndk"))
-                .context("no NDK in the SDK: install it with `sdkmanager \"ndk;<version>\"`")?,
-        };
-        // The NDK's "darwin-x86_64" toolchain is universal.
-        let host = if cfg!(target_os = "macos") {
-            "darwin-x86_64"
-        } else if cfg!(windows) {
-            "windows-x86_64"
-        } else {
-            "linux-x86_64"
-        };
-        let toolchain = ndk.join("toolchains/llvm/prebuilt").join(host);
+        let toolchain = self.ndk_toolchain()?;
         let bin = toolchain.join("bin");
         // On Windows the NDK's per-target compilers are batch files.
         let script = if cfg!(windows) { ".cmd" } else { "" };
@@ -109,6 +102,36 @@ impl Sdk {
                 ),
             );
         Ok(cmd)
+    }
+
+    /// The NDK's LLVM toolchain (`ANDROID_NDK_HOME`, else the newest NDK of
+    /// the SDK).
+    fn ndk_toolchain(&self) -> anyhow::Result<PathBuf> {
+        let ndk = match env::var_os("ANDROID_NDK_HOME") {
+            Some(ndk) => PathBuf::from(ndk),
+            None => newest(&self.root.join("ndk"))
+                .context("no NDK in the SDK: install it with `sdkmanager \"ndk;<version>\"`")?,
+        };
+        // The NDK's "darwin-x86_64" toolchain is universal.
+        let host = if cfg!(target_os = "macos") {
+            "darwin-x86_64"
+        } else if cfg!(windows) {
+            "windows-x86_64"
+        } else {
+            "linux-x86_64"
+        };
+        Ok(ndk.join("toolchains/llvm/prebuilt").join(host))
+    }
+
+    /// Writes `library` to `to` without the symbols nothing links against
+    /// (the dynamic ones, `JNI_OnLoad` and the natives, stay): an app's
+    /// release `libnsh.so`, which APKs store uncompressed.
+    pub(crate) fn strip(&self, library: &Path, to: &Path) -> anyhow::Result<()> {
+        run(Command::new(self.ndk_toolchain()?.join("bin/llvm-strip"))
+            .arg("--strip-unneeded")
+            .arg("-o")
+            .arg(to)
+            .arg(library))
     }
 
     fn tool(&self, name: &str) -> PathBuf {
@@ -155,6 +178,9 @@ pub(crate) struct Apk<'a> {
     pub(crate) dark: bool,
     /// `classes.dex` and `lib/<abi>/libnsh.so`.
     pub(crate) runtime: &'a Path,
+    /// The ABIs whose `libnsh.so` goes in, each of which the runtime must
+    /// have (empty: every one it has).
+    pub(crate) abis: &'a [String],
     /// Launcher icon (square PNG).
     pub(crate) icon: Option<&'a Path>,
     /// Files under `assets/` in the APK: (path in the APK, contents).
@@ -300,24 +326,38 @@ fn add_files(base: &Path, out: &Path, apk: &Apk<'_>) -> anyhow::Result<()> {
         .read_to_end(&mut dex)?;
     zip.write_all(&dex)?;
     let libs = apk.runtime.join("lib");
-    let mut abis = 0;
+    let mut available = Vec::new();
     for entry in fs::read_dir(&libs).with_context(|| format!("read {}", libs.display()))? {
         let abi_dir = entry?.path();
-        let so = abi_dir.join("libnsh.so");
-        if !so.exists() {
-            continue;
+        if abi_dir.join("libnsh.so").exists() {
+            available.push(
+                abi_dir
+                    .file_name()
+                    .context("abi")?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
-        let abi = abi_dir
-            .file_name()
-            .context("abi")?
-            .to_string_lossy()
-            .into_owned();
+    }
+    available.sort();
+    if available.is_empty() {
+        bail!("no libnsh.so in {}", libs.display());
+    }
+    let abis = if apk.abis.is_empty() {
+        &available[..]
+    } else {
+        apk.abis
+    };
+    for abi in abis {
+        if !available.contains(abi) {
+            bail!(
+                "the Android runtime has no libnsh.so for {abi} (it has {})",
+                available.join(", ")
+            );
+        }
+        let so = libs.join(abi).join("libnsh.so");
         zip.start_file(format!("lib/{abi}/libnsh.so"), stored)?;
         zip.write_all(&fs::read(&so)?)?;
-        abis += 1;
-    }
-    if abis == 0 {
-        bail!("no libnsh.so in {}", libs.display());
     }
     for (path, bytes) in &apk.assets {
         // Bytecode and images are compressed already or small.
@@ -416,6 +456,17 @@ pub(crate) fn device(sdk: &Sdk) -> anyhow::Result<String> {
         .context("no Android device or emulator connected (see `adb devices`)")
 }
 
+/// The ABIs `serial` runs, preferred first (`ro.product.cpu.abilist`).
+pub(crate) fn device_abis(sdk: &Sdk, serial: &str) -> anyhow::Result<Vec<String>> {
+    let list = adb(sdk, serial, &["shell", "getprop", "ro.product.cpu.abilist"])?;
+    Ok(list
+        .trim()
+        .split(',')
+        .filter(|abi| !abi.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
 /// A port of the device forwarded to this machine (`adb reverse`), removed
 /// when dropped, however the command ends (Ctrl-C too: it is
 /// [`ui::Stoppable`] meanwhile): a dev host left on the device would
@@ -484,6 +535,7 @@ mod tests {
             rust,
             dark: false,
             runtime: std::path::Path::new("."),
+            abis: &[],
             icon: None,
             assets: Vec::new(),
             signing: super::Signing::Debug,

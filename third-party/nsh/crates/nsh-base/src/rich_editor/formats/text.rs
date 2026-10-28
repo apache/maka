@@ -1,8 +1,12 @@
 //! Plain text: one textblock per line, and the clipboard's text. Types
-//! with a `render_text` (Tiptap's `renderText`) count as its text.
+//! with a `render_text` (Tiptap's `renderText`) count as its text; a
+//! table's row is a line of its cells separated by tabs.
 
 use super::{DocFormat, FormatError};
-use crate::rich_editor::model::{Fragment, Node, ResolvedPos, Schema, Slice};
+use crate::rich_editor::{
+    model::{Fragment, Node, ResolvedPos, Schema, Slice},
+    tables::{TableRole, table_role},
+};
 
 /// Documents as plain text: each textblock is a line, read back as a
 /// block of [`PlainTextFormat::block`]'s type. Structure and marks are
@@ -96,6 +100,18 @@ fn collect_lines(fragment: &Fragment, lines: &mut Vec<String>, inline: &mut Opti
             if child.ty().name().contains("break") {
                 line.push('\n');
             }
+        } else if table_role(child.ty()) == Some(TableRole::Row) {
+            // A table's row is a line, its cells separated by tabs (each
+            // cell's lines by spaces), as spreadsheets paste.
+            flush(lines, inline);
+            let cells: Vec<String> = (0..child.child_count())
+                .map(|j| {
+                    let mut cell_lines = Vec::new();
+                    collect_lines(child.child(j).content(), &mut cell_lines, &mut None);
+                    cell_lines.join(" ")
+                })
+                .collect();
+            lines.push(cells.join("\t"));
         } else if child.is_textblock() {
             flush(lines, inline);
             let mut line = Some(String::new());
@@ -188,6 +204,14 @@ mod tests {
             .unwrap();
         let text = PlainTextFormat::default().serialize(&doc).unwrap();
         assert_eq!(text, "Title\nquoted\na\nb");
+    }
+
+    #[test]
+    fn table_rows_are_lines_of_tab_separated_cells() {
+        use crate::rich_editor::tables::test_util::{doc, grid, p};
+        let d = doc(vec![p("before"), grid(&[&["a", "b"], &["c", ""]])]);
+        let text = PlainTextFormat::default().serialize(&d).unwrap();
+        assert_eq!(text, "before\na\tb\nc\t");
     }
 
     #[test]

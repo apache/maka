@@ -62,8 +62,8 @@ function Choice(props: {
         gap: 8,
         backgroundColor: props.selected ? C.raised : C.surface,
       }}
-      hoverStyle={controlHoverStyle}
-      focusStyle={controlFocusStyle}
+      hoverStyle={controlHoverStyle()}
+      focusStyle={controlFocusStyle()}
       disabledStyle={controlDisabledStyle}
     >
       <If when={props.kind}>
@@ -164,7 +164,7 @@ export function FormRequest(props: {
                     masked={draft()?.hidden}
                     autoCorrect={false}
                     placeholder={placeholder()}
-                    onChange={(value) => props.edit(index(), original, value)}
+                    onChange={({ value }) => props.edit(index(), original, value)}
                     style={{
                       ...inputTextStyle,
                       height: compact() ? 32 : 40,

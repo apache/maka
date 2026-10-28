@@ -21,7 +21,7 @@ import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { host } from './host';
+import { useHost } from './host';
 import type { WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { Icon } from './Icon';
 import {
@@ -36,6 +36,7 @@ import {
 import type { WorkspaceFilesModel } from './workspaceFileState';
 
 export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
+  const host = useHost();
   const model = props.model;
   const viewportHeight = signal(0);
   effect(() => {
@@ -72,8 +73,8 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                     alignItems: 'center',
                     gap: 8,
                   }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                 >
                   <Icon name={index() ? 'right' : 'folder'} color={C.muted} />
@@ -99,8 +100,8 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
           onPress={inputAction(model.refresh, null)}
           tooltip={textTooltip(() => tr('Refresh workspace files'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="refresh" color={C.secondary} />
@@ -140,7 +141,7 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                   model.position.y = event.offset.y;
                 }
               }}
-              onLayout={(frame) => {
+              onLayout={({ bounds: frame }) => {
                 if (ownsView()) viewportHeight.set(frame.size.height);
               }}
               onLoadMore={() => {
@@ -172,8 +173,8 @@ export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
                     alignItems: 'center',
                     gap: 8,
                   }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                   disabledStyle={controlDisabledStyle}
                   activeStyle={{ backgroundColor: C.line }}
                 >
@@ -240,8 +241,8 @@ function DirectoryStatus(props: { model: WorkspaceFilesModel }) {
               gap: 8,
               backgroundColor: C.surface,
             }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="refresh" color={C.secondary} />

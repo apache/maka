@@ -14,7 +14,7 @@ function App() {
       <Input
         testID="compose"
         style={{ width: 300, height: 40 }}
-        onChange={(t) => text.set(t)}
+        onChange={({ value }) => text.set(value)}
         onCompositionChange={(e) => composition.set(`${e.composing ? "composing" : "ended"} [${e.text}]`)}
       />
       <Text>Composition: {composition()}</Text>

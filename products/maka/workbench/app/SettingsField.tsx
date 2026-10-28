@@ -29,6 +29,7 @@ type SettingsInputProps = {
   readonly?: boolean;
   disabled?: boolean;
   autoFocus?: boolean;
+  placeholder?: string;
 };
 
 const inputStyle = (disabled?: boolean) => ({
@@ -48,7 +49,8 @@ export function SettingsEditor(props: SettingsInputProps) {
       accessibilityLabel={props.label}
       autoFocus={props.autoFocus}
       value={props.value}
-      onChange={props.change}
+      placeholder={props.placeholder}
+      onChange={({ value }) => props.change(value)}
       multiline
       submitBehavior="newline"
       readonly={props.readonly || props.disabled}
@@ -78,7 +80,8 @@ export function SettingsField(
         accessibilityLabel={props.label}
         autoFocus={props.autoFocus}
         value={props.value}
-        onChange={props.change}
+        placeholder={props.placeholder}
+        onChange={({ value }) => props.change(value)}
         masked={props.masked}
         multiline={props.multiline}
         readonly={props.readonly || props.disabled}
@@ -86,6 +89,7 @@ export function SettingsField(
         autoCorrect={false}
         style={{
           ...inputStyle(props.disabled),
+          placeholderColor: C.muted,
           height: props.multiline ? undefined : compact() ? 32 : 40,
           minHeight: compact() ? 32 : 40,
           maxHeight: props.multiline ? windowSize().height / 2 : undefined,

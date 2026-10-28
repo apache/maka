@@ -31,7 +31,7 @@ import {
   List,
 } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ListRef, ViewRef } from 'nsh';
 import type {
   ModelSelection,
   SettingsModelCursor,
@@ -41,10 +41,10 @@ import type {
 import { Button, Popover } from 'nsh/base';
 import { keymap } from 'nsh';
 import { platform, windowSize } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import { createText, errorText, UiError } from './text';
-import type { ConversationHandle } from './Conversation';
+import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
 import { effectiveThinkingLevel, effortCaption, modelCaption, sameRoute } from './modelSelection';
 import type { BackendIdentity, ModelBackend, ModelChoice } from './modelSelection';
 import { ChoiceIndicator } from './ChoiceIndicator';
@@ -78,6 +78,11 @@ type ModelsPage = {
 type ModelMenuHandle = { instance: number; back(): void; dismiss(): void };
 type ModelTarget = { sessionId: string; instance: number | null };
 const modelRowHeight = platform.isTerminal ? 48 : 40;
+// Notes under the model list start where the rows' text does.
+const listFill = () => (platform.isTerminal ? C.surface : C.background);
+const listTextInset = {
+  paddingHorizontal: platform.isTerminal ? 0 : controlStyle.paddingHorizontal,
+};
 
 export function ModelSelect(props: {
   owner: ConversationHandle;
@@ -92,7 +97,7 @@ export function ModelSelect(props: {
   let menu: ModelMenuHandle | null = null;
   const changed = computed(() => {
     const instance = props.instance();
-    return (next: boolean, reason: string) => {
+    return ({ open: next, reason }: { open: boolean; reason: string }) => {
       if (!props.current() || props.instance() !== instance) return;
       if (next) {
         if (instance === null) props.toggle({ sessionId: owner.sessionId, instance });
@@ -128,8 +133,10 @@ export function ModelSelect(props: {
       trigger={
         <Button
           accessibilityLabel={tr('Choose model and effort')}
-          tooltip={textTooltip(
-            () => `${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`,
+          tooltip={textTooltip(() =>
+            props.instance() !== null
+              ? undefined
+              : `${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`,
           )}
           onPress={inputAction(props.toggle, {
             sessionId: owner.sessionId,
@@ -226,6 +233,7 @@ function ModelMenu(props: {
   attach(handle: ModelMenuHandle): void;
   detach(handle: ModelMenuHandle): void;
 }) {
+  const host = useHost();
   const owner = props.owner;
   const pane = signal<Pane>(owner.backend() ? 'root' : 'models');
   const query = signal('');
@@ -243,7 +251,7 @@ function ModelMenu(props: {
   let generation = 0;
   let modelsQueued = false;
   let removeSearchKeys = () => {};
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   let focusIntent: 'model' | 'effort' | null = null;
   cleanup(() => {
     alive = false;
@@ -477,7 +485,7 @@ function ModelMenu(props: {
     const choice = choices()[index()];
     if (choice) void submit(modelAction(choice));
   };
-  const focusRoot = (which: 'model' | 'effort', node: YNode) => {
+  const focusRoot = (which: 'model' | 'effort', node: ViewRef) => {
     if (focusIntent !== which) return;
     focusIntent = null;
     node.focus();
@@ -536,8 +544,8 @@ function ModelMenu(props: {
           }
           tooltip={textTooltip(() => (pane() === 'root' ? tr('Close') : tr('Back')))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name={pane() === 'root' ? 'close' : 'back'} color={C.muted} />
@@ -647,8 +655,8 @@ function ModelMenu(props: {
               selected={connection() === null}
               onPress={inputAction(filterConnection, null)}
               style={controlStyle}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
             >
               <Text style={{ ...captionTextStyle, color: C.text }}>{tr('All connections')}</Text>
             </Button>
@@ -667,8 +675,8 @@ function ModelMenu(props: {
                     slug: item().slug,
                   })}
                   style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-                  hoverStyle={controlHoverStyle}
-                  focusStyle={controlFocusStyle}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
                 >
                   <View style={[{ flex: 1, minWidth: 0 }, { pointerEvents: 'none' }]}>
                     <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
@@ -690,8 +698,8 @@ function ModelMenu(props: {
                 disabled={connectionsLoading()}
                 onPress={loadConnections}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Text style={{ ...captionTextStyle, color: C.accent }}>
                   {connectionsLoading() ? tr('Loading…') : tr('Load more connections')}
@@ -711,8 +719,8 @@ function ModelMenu(props: {
             to: 'connections',
           })}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Connection')}</Text>
@@ -741,7 +749,7 @@ function ModelMenu(props: {
           accessibilityLabel={tr('Search models')}
           value={query()}
           readonly={pending()}
-          onChange={(text) => {
+          onChange={({ value: text }) => {
             batch(() => {
               query.set(text);
               selected.set(0);
@@ -773,6 +781,9 @@ function ModelMenu(props: {
             height: choices().length * modelRowHeight,
             minHeight: modelRowHeight,
             flexShrink: 1,
+            // On the desktop the list is a field like the search above it, so
+            // a row cut off at its edge does not run into the count below.
+            ...(platform.isTerminal ? {} : { borderRadius: 8, backgroundColor: C.background }),
           }}
         >
           {(id) => (
@@ -801,7 +812,7 @@ function ModelMenu(props: {
                       backgroundColor:
                         choices()[index()] && routeId(choices()[index()]) === key()
                           ? C.line
-                          : C.surface,
+                          : listFill(),
                     }}
                     hoverStyle={{ backgroundColor: C.raised }}
                     focusStyle={{ backgroundColor: C.raised }}
@@ -832,11 +843,11 @@ function ModelMenu(props: {
           )}
         </List>
         <If when={!loading() && !error() && choices().length === 0}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
+          <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
             {tr('No models match this search and connection.')}
           </Text>
         </If>
-        <Text style={{ ...captionTextStyle, color: C.muted }}>
+        <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
           {loading()
             ? tr('Loading…')
             : choices().length === 1
@@ -906,8 +917,8 @@ function ModelMenu(props: {
                       }),
                     )}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <Text style={{ ...captionTextStyle, color: C.secondary }}>
@@ -935,8 +946,8 @@ function ModelMenu(props: {
           onPress={inputAction(retry, { instance: props.instance, from: pane() })}
           accessibilityLabel={tr('Retry model policy')}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
@@ -947,8 +958,8 @@ function ModelMenu(props: {
         accessibilityLabel={tr('Manage connections and models')}
         onPress={inputAction(props.manage, null)}
         style={controlStyle}
-        hoverStyle={controlHoverStyle}
-        focusStyle={controlFocusStyle}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
         disabledStyle={controlDisabledStyle}
       >
         <Text style={{ ...captionTextStyle, color: C.accent }}>
@@ -970,8 +981,8 @@ function ModelMenu(props: {
             onPress={inputAction(retry, { instance: props.instance, from: pane() })}
             accessibilityLabel={tr('Retry model catalog')}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>

@@ -39,7 +39,7 @@ const MAIN = `fn main() {
 
 function App() {
   const source = signal(MAIN);
-  return <Editor value={source()} onChange={(value) => source.set(value)} language="rust" class="flex-1" />;
+  return <Editor value={source()} onChange={({ value }) => source.set(value)} language="rust" class="flex-1" />;
 }
 
 mount(App);
@@ -65,7 +65,7 @@ mount(App);
 支持的语言：Rust、JavaScript、JSX、TypeScript、TSX、JSON、Python、Go、C、C++、C#、Java、Kotlin、Swift、Objective-C、Objective-C++、Ruby、PHP、Lua、Shell、Fish、PowerShell、SQL、HTML、XML、Vue、Svelte、CSS、SCSS、Sass、Less、Markdown、YAML、TOML、INI、Dockerfile、Makefile、CMake、Dart、Scala、Elixir、Erlang、Haskell、OCaml、F#、Clojure、Zig、Perl、R、Julia、Nix、Terraform、Protocol Buffers、GraphQL 和 Diff。
 
 ```tsx
-<Editor value={source()} onChange={(v) => source.set(v)} language={file().name} tabSize={2} softWrap class="flex-1" />
+<Editor value={source()} onChange={({ value }) => source.set(value)} language={file().name} tabSize={2} softWrap class="flex-1" />
 ```
 
 <a id="your-own-languages"></a>
@@ -95,7 +95,7 @@ fn native(registry: &mut Registry) {
 ```
 
 ```tsx
-<Editor value={source()} onChange={(v) => source.set(v)} language="build.nb" class="flex-1" />
+<Editor value={source()} onChange={({ value }) => source.set(value)} language="build.nb" class="flex-1" />
 ```
 
 <a id="editing"></a>
@@ -179,7 +179,7 @@ keymap.bind({
 
 ## 查找与替换
 
-`search` 是要查找的内容：`{ query, caseSensitive?, wholeWord?, regex?, inSelection? }`。它的匹配项会被高亮，选区所在的那一项更醒目，`onSearchChange` 报告 `{ count, current, error }`：匹配项的数量、选区所在的是哪一项（从 0 开始），以及正则表达式无效的原因。`findNext` 和 `findPrevious` 选中下一个和上一个匹配项，到头后绕回；`replace(text)` 替换当前匹配项并选中下一个，`replaceAll(text)` 把所有匹配项作为一次编辑替换，并返回替换的数量。正则表达式的替换文本用 `$1` 和 `${name}` 引用它的分组。
+`search` 是要查找的内容：`{ query, caseSensitive?, wholeWord?, regex?, inSelection? }`。它的匹配项会被高亮，选区所在的那一项更醒目，`onSearchChange` 报告 `{ result }`，即 `{ count, current, error }`：匹配项的数量、选区所在的是哪一项（从 0 开始），以及正则表达式无效的原因。`findNext` 和 `findPrevious` 选中下一个和上一个匹配项，到头后绕回；`replace(text)` 替换当前匹配项并选中下一个，`replaceAll(text)` 把所有匹配项作为一次编辑替换，并返回 `{ count }`，即替换的数量。正则表达式的替换文本用 `$1` 和 `${name}` 引用它的分组。
 
 `inSelection` 只在它打开时选中的内容里查找（没有选中内容时为光标所在的行）：只要它保持打开，这个范围就一直保留，随编辑移动，选区从一个匹配项移到另一个时也不变。`findWithSelection`（macOS 上为 `cmd+e`）用 `onFindWithSelection` 报告选中的文本或光标处的单词，供查找栏作为查询内容。
 
@@ -199,21 +199,21 @@ function Find(props: { source: string; onChange: (value: string) => void }) {
   return (
     <View class="flex-1">
       <View class="flex-row items-center gap-2 border-b border-border p-2">
-        <Input value={query()} onChange={(q) => query.set(q)} onSubmit={() => editor.run("findNext")} placeholder="Find" class="flex-1" />
+        <Input value={query()} onChange={({ value }) => query.set(value)} onSubmit={() => editor.run("findNext")} placeholder="Find" class="flex-1" />
         <Text class="text-sm text-muted-foreground">{status()}</Text>
         <Button onPress={() => editor.run("findPrevious")} class="px-2"><Text>↑</Text></Button>
         <Button onPress={() => editor.run("findNext")} class="px-2"><Text>↓</Text></Button>
-        <Input value={replacement()} onChange={(r) => replacement.set(r)} placeholder="Replace" class="flex-1" />
+        <Input value={replacement()} onChange={({ value }) => replacement.set(value)} placeholder="Replace" class="flex-1" />
         <Button onPress={() => editor.replace(replacement())} class="px-2"><Text>Replace</Text></Button>
-        <Button onPress={async () => console.log("replaced", await editor.replaceAll(replacement()))} class="px-2"><Text>All</Text></Button>
+        <Button onPress={async () => console.log("replaced", (await editor.replaceAll(replacement())).count)} class="px-2"><Text>All</Text></Button>
       </View>
       <Editor
         ref={editor}
         value={props.source}
-        onChange={props.onChange}
+        onChange={(e) => props.onChange(e.value)}
         language="ts"
         search={query() ? { query: query() } : undefined}
-        onSearchChange={(r) => result.set(r)}
+        onSearchChange={(e) => result.set(e.result)}
         class="flex-1"
       />
     </View>
@@ -239,9 +239,9 @@ async function lint(text: string) {
 
 <Editor
   value={source()}
-  onChange={(v) => {
-    source.set(v);
-    lint(v);
+  onChange={({ value }) => {
+    source.set(value);
+    lint(value);
   }}
   language="ts"
   diagnostics={problems()}
@@ -282,7 +282,7 @@ const kinds: Record<string, EditorToken> = { keyword: "keyword", function: "titl
 
 <Editor
   value={source()}
-  onChange={(v) => source.set(v)}
+  onChange={({ value }) => source.set(value)}
   language="ts"
   highlighting={false}
   decorations={semanticTokens().map((t) => ({ range: range(t.line, t.start, t.end), token: kinds[t.type] }))}
@@ -307,7 +307,7 @@ const folded = new Map<string, EditorFoldRange[]>();
   value={file().text}
   language={file().name}
   foldRanges={ranges()} // 来自语言服务器的 textDocument/foldingRange
-  onFoldChange={(folds) => folded.set(file().name, folds)}
+  onFoldChange={({ folds }) => folded.set(file().name, folds)}
   class="flex-1"
 />
 <Button onPress={() => editor.foldLevel(2)}><Text>折叠方法</Text></Button>
@@ -317,7 +317,7 @@ const folded = new Map<string, EditorFoldRange[]>();
 
 ## 断点和上下文菜单
 
-点击行号会报告 `onLineNumberPress(line)`，可以在这里设置断点，由应用画成一个装饰。辅助按键（右键单击、Mac 上的 Control 点击）报告 `onContextMenu({ position, x, y })`：指针下文本中的位置和根视图中的坐标，应用在那里打开自己的菜单。在触摸屏上，长按、双击、松开手柄和轻点选区也会报告它，并带有 `selection`：选区在根视图中的范围（`{ x, y, width, height }`），`x` / `y` 是它顶边的中点，用来放置编辑菜单。
+点击行号会报告 `onLineNumberPress({ line })`，可以在这里设置断点，由应用画成一个装饰。辅助按键（右键单击、Mac 上的 Control 点击）报告 `onContextMenu({ position, x, y })`：指针下文本中的位置和根视图中的坐标，应用在那里打开自己的菜单。在触摸屏上，长按、双击、松开手柄和轻点选区也会报告它，并带有 `selection`：选区在根视图中的范围（`{ x, y, width, height }`），`x` / `y` 是它顶边的中点，用来放置编辑菜单。
 
 ```tsx
 <Editor
@@ -334,7 +334,7 @@ const breakpoints = signal<number[]>([]);
 <Editor
   value={source()}
   language="py"
-  onLineNumberPress={(line) =>
+  onLineNumberPress={({ line }) =>
     breakpoints.set(breakpoints().includes(line) ? breakpoints().filter((l) => l !== line) : [...breakpoints(), line])
   }
   decorations={breakpoints().map((line) => ({ range: range(line, 0, 0), lineClass: "bg-red-500/15" }))}
@@ -367,7 +367,7 @@ let editor!: EditorRef;
 <Editor
   ref={(r) => (editor = r)}
   value={source()}
-  onChange={(v) => source.set(v)}
+  onChange={({ value }) => source.set(value)}
   language="ts"
   completion
   completionTriggerCharacters={["."]}
@@ -384,7 +384,7 @@ let editor!: EditorRef;
 
 ### 悬停与点击
 
-- `onHover(event)`：鼠标停在一个字符上（桌面和 Web）。`event` 包含它的 `position`、UTF-16 的 `offset`、所在单词的 `range`、指针的 `pagePosition`、单词的 `pageBounds`、按住的 `modifiers`，以及那里的 `diagnostics`，应用显示它们的消息。移到另一个单词时立即报告下一次悬停。
+- `onHover(event)`：鼠标在没有按键按下时停在一个字符上（桌面和 Web；拖动用来选择文字）。`event` 包含它的 `position`、UTF-16 的 `offset`、所在单词的 `range`、指针的 `pagePosition`、单词的 `pageBounds`、按住的 `modifiers`，以及那里的 `diagnostics`，应用显示它们的消息。移到另一个单词时立即报告下一次悬停。
 - `onHoverEnd()`：鼠标离开了单词或编辑器，或者它下面的文本改变或滚动了。
 - `onTextPress(event)`：一个字符被点击，在编辑器放好光标之后：`{ position, offset, range, pagePosition, modifiers, clicks }`。
 - `caretBounds()` 和 `rangeBounds(range)`：光标和一个范围的位置 `{ bounds, pageBounds }`（在编辑器中和在根视图中）：应用的弹出层在那里打开。
@@ -425,7 +425,7 @@ let editor!: EditorRef;
 <Editor
   ref={(r) => (editor = r)}
   value={source()}
-  onChange={(v) => source.set(v)}
+  onChange={({ value }) => source.set(value)}
   language="ts"
   onDefinitionRequest={async (e) => {
     const target = await server.definition(e.position);
@@ -478,7 +478,7 @@ let editor!: EditorRef;
 | `setSelections(selections)` | 设置选区（最后一个为主选区），并把主选区滚动到视野中。 |
 | `run(command)` | 执行一个命令，与它的按键效果相同（[命令](#commands)）。 |
 | `replace(text)` | 替换当前匹配项并选中下一个。 |
-| `replaceAll(text)` | `Promise<number>`：把所有匹配项作为一次编辑替换；返回数量。 |
+| `replaceAll(text)` | `Promise<EditorReplaceAll>`：把所有匹配项作为一次编辑替换；返回 `{ count }`，即数量。 |
 | `fold(line)`、`unfold(line)` | 折叠第 `line` 行（从 0 开始）下面的行，或展开它。 |
 | `foldRecursive(line)`、`unfoldRecursive(line)` | 折叠第 `line` 行的折叠及其中的每个折叠，或把它们全部展开。 |
 | `foldLevel(level)` | 折叠嵌套层级为 `level` 的每个折叠（1：最外层）。 |
@@ -510,7 +510,7 @@ let editor!: EditorRef;
 <Button onPress={() => editor.setSelections([{ anchor: { line: 0, column: 0 }, head: { line: 0, column: 0 } }])}>
   <Text>Go to the top</Text>
 </Button>
-<Editor ref={editor} value={source()} onChange={(v) => source.set(v)} language="rs" class="flex-1" />
+<Editor ref={editor} value={source()} onChange={({ value }) => source.set(value)} language="rs" class="flex-1" />
 ```
 
 <a id="commands"></a>
@@ -557,7 +557,7 @@ let editor!: EditorRef;
 ```tsx
 <Editor
   value={source()}
-  onChange={(v) => source.set(v)}
+  onChange={({ value }) => source.set(value)}
   language="tsx"
   fontFamily="JetBrains Mono"
   fontSize={14}
@@ -660,17 +660,17 @@ let editor!: EditorRef;
 
 | 事件 | Rust | 说明 |
 |---|---|---|
-| `onChange` | `.on_change(\|value: &SharedString\| ..)` | 文本改变了：完整的新文本。 |
-| `onSelectionChange` | `.on_selection_change(\|selections: &Vec<EditorSelection>\| ..)` | 选区改变了：所有选区，主选区在最后。 |
+| `onChange` | `.on_change(\|value: &SharedString\| ..)` | 文本改变了：`{ value }`，完整的新文本。 |
+| `onSelectionChange` | `.on_selection_change(\|selections: &Vec<EditorSelection>\| ..)` | 选区改变了：`{ selections }`，所有选区，主选区在最后。 |
 | `onFocus`、`onBlur` | `.on_focus(\|\| ..)`、`.on_blur(\|\| ..)` | 编辑器获得或失去焦点。 |
-| `onSearchChange` | `.on_search_change(\|result: &EditorSearchResult\| ..)` | 搜索的匹配项改变了：`{ count, current, error }`。 |
-| `onLineNumberPress` | `.on_line_number_press(\|line: &u32\| ..)` | 行号被点击：行号，从 0 开始。 |
+| `onSearchChange` | `.on_search_change(\|result: &EditorSearchResult\| ..)` | 搜索的匹配项改变了：`{ result }`，即 `{ count, current, error }`。 |
+| `onLineNumberPress` | `.on_line_number_press(\|line: &u32\| ..)` | 行号被点击：`{ line }`，行号，从 0 开始。 |
 | `onContextMenu` | `.on_context_menu(\|event: &EditorContextMenuEvent\| ..)` | 在文本上按下了辅助按键，或触摸选中了文本：`{ position, x, y, selection? }`。 |
 | `onHover` | `.on_hover(\|event: &EditorHoverEvent\| ..)` | 鼠标停在一个字符上（[语言功能](#language-features)）。 |
 | `onHoverEnd` | `.on_hover_end(\|\| ..)` | 悬停结束了。 |
 | `onTextPress` | `.on_text_press(\|event: &EditorTextPressEvent\| ..)` | 一个字符被点击：带有它的单词、修饰键和点击次数。 |
-| `onFindWithSelection` | `.on_find_with_selection(\|query: &String\| ..)` | 执行了 `findWithSelection`：作为查找栏查询内容的文本。 |
-| `onFoldChange` | `.on_fold_change(\|folds: &Vec<EditorFoldRange>\| ..)` | 已折叠的范围改变了：每一个，包括嵌套的。 |
+| `onFindWithSelection` | `.on_find_with_selection(\|query: &String\| ..)` | 执行了 `findWithSelection`：`{ query }`，作为查找栏查询内容的文本。 |
+| `onFoldChange` | `.on_fold_change(\|folds: &Vec<EditorFoldRange>\| ..)` | 已折叠的范围改变了：`{ folds }`，每一个，包括嵌套的。 |
 | `onCompletionRequest` | `.on_completion_request(\|event: &EditorCompletionRequest\| ..)` | 编辑器请求补全：`{ id, offset, position, query, queryStart, trigger, character? }`（[补全](#补全)）。 |
 | `onCompletionAccept` | `.on_completion_accept(\|event: &EditorCompletionAcceptEvent\| ..)` | 一项被接受并插入：`{ item }`。 |
 | `onInlineCompletionRequest` | `.on_inline_completion_request(\|event: &EditorInlineCompletionRequest\| ..)` | 输入停顿了：`{ id, offset, position }`，用于行内补全。 |

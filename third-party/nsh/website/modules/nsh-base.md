@@ -1,6 +1,6 @@
 ---
 title: nsh/base
-description: "Unstyled base components for an app's UI: buttons, checkboxes, radios, switches, tabs, resizable panels, dockable workspaces, Markdown and HTML documents, a code editor, diffs, text inputs, navigation stacks and dialogs, system alert dialogs and the status bar of pages and dialogs."
+description: "Unstyled base components for an app's UI: buttons, checkboxes, radios, switches, tabs, selects, comboboxes, resizable panels, dockable workspaces, Markdown and HTML documents, a code editor, diffs, text inputs, navigation stacks and dialogs, system alert dialogs and the status bar of pages and dialogs."
 order: 2.5
 demo: ui-navigation
 ---
@@ -10,7 +10,7 @@ demo: ui-navigation
 `nsh/base` is the base component layer of an app's UI: unstyled components that own behavior, state, focus and
 accessibility, on every platform. It sits between the primitives (`nsh`, `nsh/mobile` and `nsh/desktop`) and the
 app's own component library, as `gpui-base` sits between `gpui` and a styled library in GPUI Kit (see
-[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `Radio` in a `RadioGroup`, `Slider`, `Switch`, `Tab` in `Tabs`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), the parts charts are built from (`Plot` with `Line`, `Area`, `Bar`, `Grid`, `Pie` and `Arc`, in `nsh/base/plot`), workspaces the user arranges (`ResizablePanel`s in a
+[Modules](./index.md#three-layers)). It provides controls (`Button`, `Checkbox`, `NumberInput`, `Radio` in a `RadioGroup`, `Slider`, `Switch`, `Tab` in `Tabs`, `Select`, `Combobox`), scroll bars of the app's own look (`Scrollbar`), regions that expand and collapse (`Collapsible`), a progress bar (`Progress`), one-time codes (`OtpInput`), the parts charts are built from (`Plot` with `Line`, `Area`, `Bar`, `Grid`, `Pie` and `Arc`, in `nsh/base/plot`), workspaces the user arranges (`ResizablePanel`s in a
 `ResizablePanelGroup`, and `DockArea`'s splits, tab groups and docks), documents of Markdown or HTML (`TextView`), a code editor (`Editor`) the changes between texts (`DiffView`) and tables of rows and columns (`Table` and its parts, `DataTable`), text inputs
 (`Input`), popups shown on top of everything (`Popover`, `Menu` and `ContextMenu` with their `MenuItem`,
 `MenuSeparator` and `Submenu`, `Tooltip`, `Sheet`), toasts (`Toast` in a `ToastStack`, their lifecycle in a `ToastManager`), navigation (a `NavStack` of `NavPage`s driven
@@ -26,7 +26,7 @@ from the `nsh-base` crate (`nsh_base::{button, dialog, …}`).
 ```rust tabs
 use nsh_base::{
     MarkdownExtension, MarkdownOptions, alert_dialog, button, checkbox, dialog, diff_view, dock_area, editor,
-    h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, switch, tab, tabs, text_view, theme, toast, toast_stack, v_resizable,
+    combobox, h_resizable, nav_page, nav_stack, radio, radio_group, resizable_panel, select, switch, tab, tabs, text_view, theme, toast, toast_stack, v_resizable,
 };
 ```
 
@@ -44,6 +44,7 @@ import {
   DockArea,
   Editor,
   Menu,
+  OtpInput,
   Progress,
   MenuItem,
   MenuSeparator,
@@ -54,7 +55,11 @@ import {
   RadioGroup,
   ResizablePanel,
   ResizablePanelGroup,
+  Scrollbar,
+  Select,
+  Combobox,
   Sheet,
+  NumberInput,
   Slider,
   Submenu,
   Switch,
@@ -78,6 +83,7 @@ import type {
   AlertDialogAction,
   AlertDialogOptions,
   AlertDialogPresentation,
+  AlertDialogResult,
   AlertDialogRole,
   ButtonProps,
   CheckboxProps,
@@ -104,6 +110,7 @@ import type {
   EditorDiagnostic,
   EditorProps,
   EditorRef,
+  EditorReplaceAll,
   EditorSearch,
   EditorSearchResult,
   EditorSelection,
@@ -112,10 +119,23 @@ import type {
   NavPageProps,
   NavStackProps,
   NavStackState,
+  OtpInputProps,
   ProgressProps,
   StatusBar,
   RadioGroupProps,
   RadioProps,
+  NumberInputProps,
+  SelectGroup,
+  SelectItem,
+  SelectItemState,
+  SelectProps,
+  ComboboxProps,
+  ScrollbarEntrance,
+  ScrollbarLook,
+  ScrollbarMode,
+  ScrollbarMotion,
+  ScrollbarProps,
+  ScrollbarTheme,
   SliderProps,
   SliderScale,
   SliderValue,
@@ -146,8 +166,13 @@ walkthroughs, see the [Navigation guide](../docs/navigation.md) and [Forms and k
 | [`Radio`](../elements/radio.md), [`RadioGroup`](../elements/radio.md) | `radio()`, `radio_group()` | One option of a set the user picks one of, and the set; the app owns which one is checked. |
 | [`Switch`](../elements/switch.md) | `switch()` | An on / off control with a track and a thumb the app styles. |
 | [`Tab`](../elements/tabs.md), [`Tabs`](../elements/tabs.md) | `tab()`, `tabs()` | One tab of a tab list, and the list; the app owns which one is selected and shows its content. |
+| [`Select`](../elements/select.md) | `select()` | One value from a list of items: a popup at the trigger on desktops, a sheet on phones; the app owns `value` and draws the trigger. |
+| [`Combobox`](../elements/combobox.md) | `combobox()` | One value or several (`multiple`) from a searchable list of items, as a select's; the app owns `value` and draws the trigger. |
 | [`Collapsible`](../elements/collapsible.md) | `collapsible()` | A region whose content expands and collapses; the app owns `open` and its trigger. |
+| [`OtpInput`](../elements/otp-input.md) | `otp_input()` | A one-time code in cells the app styles; the app owns `value`, `onComplete` tells when it is full. |
 | [`Progress`](../elements/progress.md) | `progress()` | A progress bar; the app owns `value` (0 to 100) and `indeterminate`. |
+| [`NumberInput`](../elements/number-input.md) | `number_input()` | A number typed in a field or stepped with buttons and keys; the app owns `value` (or the input keeps its own from `defaultValue`). |
+| [`Scrollbar`](../elements/scrollbar.md) | `scrollbar()` | A scroll bar of the app's own look for the scroll view or list it names (`scroll`); its thumb follows the content and its drags and presses scroll it. |
 | [`Slider`](../elements/slider.md) | `slider()` | A value, or a range of two, picked along a track; the app owns `value` (or the slider keeps its own from `defaultValue`). |
 | [`ResizablePanelGroup`, `ResizablePanel`](../elements/resizable.md) | `h_resizable()`, `v_resizable()`, `resizable_panel()` | Panels side by side or stacked, with handles the user drags to resize them. |
 | [`DockArea`](../elements/dock.md) | `dock_area()` | A workspace of splits, tab groups and edge docks the user arranges; its layout is the app's data. |
@@ -209,6 +234,23 @@ screen readers announce and holds no value: the app tells each tab whether it is
 presses (`onPress`) and shows the selected section's content itself. The app's label is the tab's children, whose
 `group-selected:` classes follow it. See [Tabs](../elements/tabs.md).
 
+### Select
+
+One value chosen from a list of items given as data (`items`: a value and a title each, optionally disabled or in a
+section), with no look. The app's trigger opens the list: a popup at the trigger on the desktops, a sheet at the
+bottom on phones and tablets. The select owns the keyboard (Up, Down, Home, End, Page Up and Down, typeahead, Return
+and Escape), search (`searchable`), the highlighted row (`focus:` on `itemClass`, `highlighted` in `renderItem`) and
+the combobox, listbox and option roles for screen readers. The app owns the value (`value`, `onChange`) or leaves it
+to the select (`defaultValue`), and styles each part or draws the rows. See [Select](../elements/select.md).
+
+### Combobox
+
+Values chosen from a list of items, as a select's list, with no look: one, or with `multiple` several, a choice then
+toggling the item while the list stays open. The value is an array the app owns (`value`, `onChange`) or leaves to
+the combobox (`defaultValue`); `onConfirm` tells it as the list closes. The query can be the app's (`query`,
+`onQueryChange`), a footer shows below the rows and a clear button empties the value. See
+[Combobox](../elements/combobox.md).
+
 ### Collapsible
 
 A region whose content expands and collapses, with no look: its children show always (a summary, the trigger), its
@@ -223,6 +265,16 @@ width. The app owns `value` (0 to 100) and `indeterminate`; screen readers get t
 value, and no value while indeterminate, when the indicator's width and motion are the app's. See
 [Progress](../elements/progress.md).
 
+### NumberInput
+
+A number typed in a field or stepped, with no look: the field (`Input`), the decrement before it and the increment
+after it (or both in a column on the right, `controlsRight`). The app owns `value` (a number or `null`; or the input
+keeps its own from `defaultValue`) and hears `onChange` with the number the field reads as. The field takes a number or
+the text on the way to one, digits and signs of other keyboards included; the buttons, Up / Down and Page Up / Page
+Down step it by `step`, keeping the decimals, up to `min` and `max`, and leaving the field holds a typed value to them.
+The field is a spin button for screen readers, whose increment and decrement step it. See
+[NumberInput](../elements/number-input.md).
+
 ### Slider
 
 A value, or a range of two, picked along a track, with no look: a track that takes presses and drags, the indicator
@@ -231,6 +283,24 @@ inside it that the values map onto, the range and one thumb per value on it. The
 `step` from `min`, and `onChangeEnd` once per change; `scale` spreads the values linearly or by orders of magnitude,
 `axis` lays the track out horizontally or vertically. Each thumb is an adjustable element for screen readers with its
 own value, a stop of the keyboard focus, and moves with WAI-ARIA's slider keys. See [Slider](../elements/slider.md).
+
+### Scrollbar
+
+A scroll bar of the app's own look for a scroll view or a list, placed where the app wants it, with no look: a track
+(the bar's `class`) and a thumb in it (`thumbClass`). It names its scroll view (`scroll`, its `ref`) and follows its
+offset, content and viewport; a drag of the thumb scrolls the content, a press on the track brings the thumb's middle
+there. `mode` shows it while the content scrolls (until `motion.idle` after), while the pointer is over the bar,
+or always; `axis` makes it horizontal. `Scrollbar.setTheme` gives every scroll view and list a bar of the app's look
+over its viewport, with none to place, and a view takes a theme of its own as its `scrollbar` prop. See
+[Scrollbar](../elements/scrollbar.md).
+
+### OtpInput
+
+A fixed-length numeric one-time code, with no look: one native text field over the cells takes the keyboard, so
+typing, paste, the number pad and the system's code autofill are the platform's, and screen readers find one text
+field. Digits only go in, up to `length`; Backspace removes the last. The app owns `value` (or gives `defaultValue`)
+and hears `onChange` and `onComplete`; it styles the cells (`focus:` on the one that takes the next digit), their
+groups and the caret. See [OtpInput](../elements/otp-input.md).
 
 ### Plot (`nsh/base/plot`)
 
@@ -315,8 +385,8 @@ popup and backdrop are styled by the app. See [Dialog](../elements/dialog.md).
 
 ### AlertDialog
 
-`AlertDialog.show(options)` shows the platform's own alert or action sheet and resolves with the action the user
-chose. See [AlertDialog](../elements/alert-dialog.md).
+`AlertDialog.show(options)` shows the platform's own alert or action sheet and resolves with `{ action }`, the `id`
+of the action the user chose. See [AlertDialog](../elements/alert-dialog.md).
 
 ## Input
 
@@ -434,7 +504,7 @@ launch screen.
 
 - [Navigation guide](../docs/navigation.md).
 - [Forms and keyboard](../docs/forms-and-keyboard.md).
-- [Button](../elements/button.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Collapsible](../elements/collapsible.md), [Progress](../elements/progress.md), [Slider](../elements/slider.md), [Plot](../elements/plot.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md),
+- [Button](../elements/button.md), [Checkbox](../elements/checkbox.md), [Radio](../elements/radio.md), [Switch](../elements/switch.md), [Tabs](../elements/tabs.md), [Select](../elements/select.md), [Combobox](../elements/combobox.md), [Collapsible](../elements/collapsible.md), [Progress](../elements/progress.md), [Slider](../elements/slider.md), [Scrollbar](../elements/scrollbar.md), [NumberInput](../elements/number-input.md), [OtpInput](../elements/otp-input.md), [Plot](../elements/plot.md), [NavStack](../elements/nav-stack.md), [Dialog](../elements/dialog.md),
   [AlertDialog](../elements/alert-dialog.md), [TextView](../elements/text-view.md), [Editor](../elements/editor.md), [DiffView](../elements/diff-view.md), [Table](../elements/table.md), [DataTable](../elements/data-table.md),
   [Text](../elements/text.md) and
   [Input](../elements/input.md).

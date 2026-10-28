@@ -16,7 +16,7 @@ use nsh_base::editor::{
     EditorDefinitionTrigger, EditorPosition, EditorRange, EditorSelection, editor,
 };
 use nsh_core::{
-    Cursor, EventKind, EventPayload, HoverEvent, MountItem, NodeId, PressEvent, Size,
+    Cursor, EventKind, EventPayload, MountItem, MouseEvent, NodeId, PressEvent, Size,
     element::Root,
     keymap::Modifiers,
     platform::{Idiom, Os},
@@ -241,12 +241,8 @@ fn hover(app: &mut Headless, x: f32, y: f32, ctrl: bool) {
     let at = Point::new(px(x), px(y));
     app.engine().control().dispatch_event(
         rows,
-        EventKind::HoverMove,
-        EventPayload::Hover(HoverEvent {
-            position: at,
-            page_position: at,
-            modifiers: modifiers(ctrl),
-        }),
+        EventKind::MouseMove,
+        EventPayload::Mouse(MouseEvent::new(at, at, modifiers(ctrl), None)),
     );
 }
 
@@ -311,9 +307,12 @@ fn the_link_follows_the_pointer_and_goes_when_it_leaves() {
     hands(&mut app, &cursors, 1);
     // The mouse leaves the rows.
     let rows = rows(&app);
-    app.engine()
-        .control()
-        .dispatch_event(rows, EventKind::HoverOut, EventPayload::None);
+    let at = Point::new(px(1.0), px(25.0));
+    app.engine().control().dispatch_event(
+        rows,
+        EventKind::MouseLeave,
+        EventPayload::Mouse(MouseEvent::new(at, at, Modifiers::default(), None)),
+    );
     hands(&mut app, &cursors, 0);
 }
 

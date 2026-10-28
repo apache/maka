@@ -5,13 +5,14 @@ import {
   type RichCommand,
   type RichEditorSession,
   StarterKit,
+  TableKit,
   command,
   createRichEditor,
   redo,
   undo,
 } from "nsh/base";
 import { colors, mono, Segmented } from "../ui";
-import { IconButton, ToggleGroup, type ToggleItem, ToolbarSeparator } from "./RichEditorUi";
+import { IconButton, type LucideIconName, ToggleGroup, type ToggleItem, ToolbarSeparator } from "./RichEditorUi";
 import { createLinkMenu, LinkBubble, type LinkMenu } from "./RichEditorLink";
 
 // `nsh/base`'s `RichEditor` renders a session the app makes with
@@ -20,7 +21,9 @@ import { createLinkMenu, LinkBubble, type LinkMenu } from "./RichEditorLink";
 // never wait for JS. What is around it is the app's: the toolbar runs
 // Tiptap's commands and asks the session which apply and which are
 // active, the bubble menu edits the link under the caret, and the zoom
-// button gives the document the whole screen.
+// button gives the document the whole screen. Tables (`TableKit`) are
+// grids of their cells: drag a column's or row's border to resize it, and
+// the grips on the table's edges to select and move rows and columns.
 
 const DOC = `# Release notes
 
@@ -42,6 +45,11 @@ Drag to select past the editor's edge and the document scrolls along. The zoom b
 1. Undo and redo keep every step
 2. The document is Markdown when you switch to it below
 3. Code, quotes and rules are blocks of their own
+
+| Key | In a table |
+| --- | --- |
+| Tab | The next cell, a new row after the last |
+| Shift-Tab | The previous cell |
 
 ---
 
@@ -104,6 +112,22 @@ const WRAP_COMMANDS: Record<Wrap, string> = {
   task: "toggleTaskList",
   quote: "toggleBlockquote",
 };
+
+/** The table buttons shown while the selection is in a table: Tiptap's table commands. */
+const TABLE_ACTIONS: { icon: LucideIconName; label: string; command: string }[] = [
+  { icon: "row-insert-above", label: "Add row before", command: "addRowBefore" },
+  { icon: "row-insert-below", label: "Add row after", command: "addRowAfter" },
+  { icon: "column-insert-left", label: "Add column before", command: "addColumnBefore" },
+  { icon: "column-insert-right", label: "Add column after", command: "addColumnAfter" },
+  { icon: "row-delete", label: "Delete row", command: "deleteRow" },
+  { icon: "column-delete", label: "Delete column", command: "deleteColumn" },
+  { icon: "table-cells-merge", label: "Merge cells", command: "mergeCells" },
+  { icon: "table-cells-split", label: "Split cell", command: "splitCell" },
+  { icon: "panel-top", label: "Toggle header row", command: "toggleHeaderRow" },
+  { icon: "trash", label: "Delete table", command: "deleteTable" },
+];
+
+const INSERT_TABLE = command("insertTable", { rows: 3, cols: 3, withHeaderRow: true });
 
 const WRAP_TYPES: Record<Wrap, string> = { bullet: "bulletList", ordered: "orderedList", task: "taskList", quote: "blockquote" };
 
@@ -168,6 +192,20 @@ function Toolbar(props: { editor: RichEditorSession; revision: number; link: Lin
       <IconButton icon="list-indent-decrease" label="Outdent" disabled={!can(outdent)} onPress={() => run(outdent)} />
       <IconButton icon="list-indent-increase" label="Indent" disabled={!can(indent)} onPress={() => run(indent)} />
       <IconButton icon="minus" label="Divider" disabled={!can(command("setHorizontalRule"))} onPress={() => run(command("setHorizontalRule"))} />
+      <ToolbarSeparator />
+      <IconButton icon="table" label="Insert table" disabled={!can(INSERT_TABLE)} onPress={() => run(INSERT_TABLE)} />
+      <If when={on("table")}>
+        <Each of={TABLE_ACTIONS}>
+          {(action) => (
+            <IconButton
+              icon={action().icon}
+              label={action().label}
+              disabled={!can(command(action().command))}
+              onPress={() => run(command(action().command))}
+            />
+          )}
+        </Each>
+      </If>
       <View style={{ flex: 1 }} />
       <IconButton icon={props.zoomed ? "minimize-2" : "maximize-2"} label={props.zoomed ? "Exit zoom" : "Zoom"} onPress={props.onZoom} />
     </View>
@@ -195,6 +233,7 @@ const documentClasses = {
     orderedList: "gap-1.5 pl-6",
     taskList: "gap-1.5",
     horizontalRule: "h-px bg-border my-3",
+    tableHeader: "font-semibold",
   },
   marks: {
     bold: "font-bold",
@@ -208,7 +247,7 @@ const documentClasses = {
 export function RichEditorDemo() {
   // Mod-K opens the link field, as in most editors.
   const keys = new RichEditorPlugin("linkKey");
-  const editor = createRichEditor({ extensions: [StarterKit], plugins: [keys], content: DOC, format: "markdown" });
+  const editor = createRichEditor({ extensions: [StarterKit, TableKit], plugins: [keys], content: DOC, format: "markdown" });
   const revision = signal(editor.revision);
   const source = signal(editor.getMarkdown());
   const text = signal(editor.getText());

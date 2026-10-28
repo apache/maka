@@ -29,7 +29,7 @@ log.workspace = true
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
 nsh-core = { workspace = true, features = ["svg"] }
-nsh-engine.workspace = true
+nsh-engine = { workspace = true, features = ["shader"] }
 nsh-base = { workspace = true, features = ["highlight"] }
 serde_json.workspace = true
 rustc-hash.workspace = true

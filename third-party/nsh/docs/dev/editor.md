@@ -233,10 +233,11 @@ glyphs) and the hit layer's cursor turns into a hand (`style_when` over the link
 pointer leaves the range or the editor, or the text, its layout or the scrolling changes (`follow_definition`), or
 `hideDefinitionLink()`; each of these also drops the request out, so an answer to any but the last request, or one
 arriving after an edit, is ignored. The platforms report a modifier key pressed or released under a still mouse as a
-hover move where it is (`elements.md`), so pressing Mod over a word asks without moving the mouse; `hover_move` then
-also reports `onHover` again for the word shown, with the new modifiers. A Mod-click on a word asks with trigger
-`press` after `onTextPress`: on the link the caret stays where it is (as GPUI Kit's editor does), elsewhere the press
-places it first. `goToDefinition` (F12) asks with trigger `key` at the primary caret, for the word there (the word
+mouse move (`onMouseMove`) where it is (`elements.md`), so pressing Mod over a word asks without moving the mouse;
+`hover_move` then also reports `onHover` again for the word shown, with the new modifiers. Moves with a button down
+(a drag selecting text, `pressed_button`) are not hovers: `hover_move` ignores them. A Mod-click on a word asks with
+trigger `press` after `onTextPress`: on the link the caret stays where it is (as GPUI Kit's editor does), elsewhere the
+press places it first. `goToDefinition` (F12) asks with trigger `key` at the primary caret, for the word there (the word
 before it at a word's end). Answers to `press` and `key` are the app's to act on (`revealPosition`, `setSelections`,
 opening another file). `showCodeActions` (Mod+.) reports `onCodeActionRequest`: the primary selection, start first,
 the caret, and the caret's box (`caretBounds`), where the app opens its menu of the language server's actions, whose
@@ -273,8 +274,9 @@ The built-in highlighter keeps syntect's state every 16 lines (and on lines that
 marks the lines from its first one dirty; parsing starts at the nearest state kept before it and stops as soon as a
 line ends in the state the next line started with before, so typing in a function costs a few lines. Only an edit that
 changes what follows (opening a block comment or a string) parses on. The syntaxes load on a blocking thread the
-first time a language needs them. Without feature `highlight` the built-in languages are plain; the app's
-highlighters still run.
+first time a language needs them (`Highlighter::load_async`, which `DiffView` uses too); on the web they come from the
+page then (`nsh-syntaxes.bin`, `text-view.md` "Syntax highlighting"), and the text stays plain until they arrive.
+Without feature `highlight` the built-in languages are plain; the app's highlighters still run.
 
 The app's highlighters and languages (`highlighter.rs`, `languages.rs`) are kept per engine, in a value of the
 surface (`nsh_core::element::global`), never process-wide. `register_language` adds an `EditorLanguage` (a
@@ -303,7 +305,7 @@ again for the echo of a controlled `value`. Building it is the one cost of an ed
 Unicode case folding, linear time whatever the query, `^` / `$` at every line's start and end, whole words by word
 boundaries. `findNext` / `findPrevious` (commands) select the next / previous match from the primary selection,
 wrapping; `replace(text)` replaces the current match and selects the next, `replaceAll(text)` replaces every match as
-one edit and returns how many. Replacements expand `$1` and `${name}` for regular expressions. `inSelection` keeps
+one edit and returns `{ count }` (`EditorReplaceAll`), how many. Replacements expand `$1` and `${name}` for regular expressions. `inSelection` keeps
 the matches inside a scope: what was selected when the search turned to the selection (the carets' lines when nothing
 was), kept while it stays on and carried through edits as marks are (`State::set_search`). The find bar is the app's;
 `findWithSelection` (`cmd+e`) reports the selected text (a caret: its word) with `onFindWithSelection` for it to take

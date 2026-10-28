@@ -45,7 +45,7 @@ function Filters() {
       <View onPress={() => open.set(true)}><Text>Filters</Text></View>
       <Sheet
         open={open()}
-        onOpenChange={(next) => open.set(next)}
+        onOpenChange={(e) => open.set(e.open)}
         popupClass="gap-3 rounded-t-2xl bg-white p-6"
         backdropClass="bg-black/40"
       >
@@ -65,7 +65,7 @@ function Filters() {
 
 ## 打开状态
 
-没有 `open` 时，sheet 自己保存状态，初始值为 `defaultOpen`。有 `open` 时，状态由应用持有：在 `onOpenChange(open, reason)` 中修改它，每次关闭的请求都会带着原因（`"backdropPress"`、`"cancel"`、`"swipe"`）报告给它。无论是谁打开或关闭了它，`onOpen` 和 `onClose` 都会在它进入和离开后触发。
+没有 `open` 时，sheet 自己保存状态，初始值为 `defaultOpen`。有 `open` 时，状态由应用持有：在 `onOpenChange({ open, reason })` 中修改它，每次关闭的请求都会带着原因（`"backdropPress"`、`"cancel"`、`"swipe"`）报告给它。无论是谁打开或关闭了它，`onOpen` 和 `onClose` 都会在它进入和离开后触发。
 
 `closeOnEscape={false}` 让它在 Escape 和返回键时保持打开，`closeOnBackdropPress={false}` 让它在按下背景层时保持打开；`onCancel` 仍会收到这些操作，可以先询问用户。
 
@@ -115,3 +115,6 @@ Sheet 由 NSH 在应用的窗口中绘制，样式由应用决定。要使用平
 | `onOpen` | `.on_open(\|\| ..)` | 它已进入：完全显示出来。 |
 | `onClose` | `.on_close(\|\| ..)` | 它已离开：完全消失。应用关闭它时也会触发。 |
 | `onCancel` | `.on_cancel(\|\| ..)` | 用户尝试关闭它（Escape 或返回键、按下背景层、已启用的下拉关闭），无论它是否关闭。 |
+
+在 Web 上，嵌入时设置 `dialogs: "viewport"` 可让面板和遮罩覆盖宿主页面，同源 iframe 也会采用这个范围。
+跨域 iframe 由宿主页接入 [`hostPlayerFrame`](../docs/web.md)。

@@ -115,9 +115,9 @@ pub(crate) struct ViewState {
     /// Touch, accessibility and test properties.
     pub(crate) props: Box<ViewProps>,
     /// States to report (`TrackStates`), and the current ones.
-    pub(crate) tracked: u8,
+    pub(crate) tracked: u16,
     /// Current interaction states (pressed, hovered, focused).
-    pub(crate) states: u8,
+    pub(crate) states: u16,
     /// Extra translation (sticky list cells, screen transitions).
     pub(crate) shift: (f32, f32),
     /// Extra opacity (screen and modal transitions).
@@ -130,6 +130,8 @@ pub(crate) struct ViewState {
     pub(crate) image: Option<crate::image::ImageState>,
     /// Canvas content.
     pub(crate) canvas: Option<crate::canvas::CanvasState>,
+    /// What a shader draws under the children ([`crate::shader`]).
+    pub(crate) shader: Option<crate::shader::ShaderState>,
     /// Text field (input views).
     pub(crate) input: Option<std::rc::Rc<crate::text_input::InputState>>,
     /// Hosted AppKit views.
@@ -163,6 +165,7 @@ impl ViewState {
             text: None,
             image: None,
             canvas: None,
+            shader: None,
             input: None,
             natives: Vec::new(),
             overflow: None,

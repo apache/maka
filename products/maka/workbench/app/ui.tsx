@@ -19,19 +19,12 @@
 
 import { tr } from './locale';
 import { Text, View } from 'nsh';
-import type { JSX, YNode } from 'nsh';
+import type { JSX, ViewRef } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
-import { keymap, platform, windowSize } from 'nsh';
+import { colorScheme, keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
 import { sessionStatusCaption } from './sessionStatus';
-import {
-  controlsLeft,
-  controlsRight,
-  docked,
-  ownTitleBar,
-  TITLE_BAR_HEIGHT,
-  windowDrag,
-} from './chrome';
+import { controlsLeft, controlsRight, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export function textTooltip(text: () => string | undefined): JSX.Element {
   return (
@@ -41,7 +34,7 @@ export function textTooltip(text: () => string | undefined): JSX.Element {
   );
 }
 
-export const C = {
+const DARK = {
   background: '#161719',
   surface: '#202123',
   raised: '#2a2b2e',
@@ -53,7 +46,42 @@ export const C = {
   warning: '#e7b86b',
   danger: '#f48a8a',
   line: '#37393e',
+  success: '#9bd5a5',
+  added: '#203527',
+  removed: '#382528',
+  /** Behind a dialog. */
+  scrim: '#00000099',
 };
+const LIGHT: typeof DARK = {
+  background: '#ffffff',
+  surface: '#f5f5f6',
+  raised: '#ebebed',
+  text: '#1c1d1f',
+  secondary: '#45484e',
+  muted: '#6c7079',
+  accent: '#2f6bd8',
+  accentHover: '#1f56b8',
+  warning: '#9a5b00',
+  danger: '#c43c3c',
+  line: '#dcdde0',
+  success: '#1f7a3a',
+  added: '#e3f3e7',
+  removed: '#fbe8e9',
+  scrim: '#00000040',
+};
+/** Whether the interface is dark: the window's appearance in effect (`setColorScheme`);
+ * terminals keep the dark colors. */
+export const isDark = () => platform.isTerminal || colorScheme() !== 'light';
+/** The interface's colors, in the appearance in effect: read them where they are drawn. */
+export const C = Object.defineProperties(
+  {} as typeof DARK,
+  Object.fromEntries(
+    Object.keys(DARK).map((key) => [
+      key,
+      { enumerable: true, get: () => (isDark() ? DARK : LIGHT)[key as keyof typeof DARK] },
+    ]),
+  ),
+);
 
 // Cells have a fixed 16-point row; native pixels retain the prose leading.
 export const bodyTextStyle = { fontSize: 14, lineHeight: platform.isTerminal ? 16 : 24 };
@@ -78,12 +106,113 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
-export const controlHoverStyle = { backgroundColor: C.raised };
-export const controlFocusStyle = { backgroundColor: C.raised, borderColor: C.accent };
+/**
+ * Horizontal padding of the disclosure rows in a turn (status, process group,
+ * thinking, tool). The desktop gives them one value so their chevrons and
+ * trailing states line up; the terminal keeps its own cell layout.
+ */
+export const disclosureInset = (terminal: number) => (platform.isTerminal ? terminal : 8);
+/**
+ * A switch or action row among labelled text fields. On the desktop it gets the
+ * fields' box, so its inset text lines up with the text typed in them.
+ */
+export const fieldBoxStyle = () =>
+  platform.isTerminal ? {} : { borderWidth: 1, borderColor: C.line, backgroundColor: C.background };
+export const controlHoverStyle = () => ({ backgroundColor: C.raised });
+export const controlFocusStyle = () => ({ backgroundColor: C.raised, borderColor: C.accent });
 export const controlDisabledStyle = platform.isTerminal
   ? { backgroundColor: C.background }
   : { opacity: 0.4 };
+// Focus styles apply to keyboard focus only, so a ring keeps it apart from hover.
+const quietFocusStyle = () =>
+  platform.isTerminal
+    ? { backgroundColor: C.raised }
+    : {
+        outlineStyle: 'solid' as const,
+        outlineWidth: 2,
+        outlineColor: C.accent,
+        outlineOffset: -2,
+      };
+const quietHoverStyle = () => ({ backgroundColor: C.surface });
+const quietActiveStyle = () => ({ backgroundColor: C.raised });
+
+export function IconButton(props: {
+  label: string;
+  tooltip?: string;
+  icon: Parameters<typeof Icon>[0]['name'];
+  selected?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Button
+      accessibilityLabel={props.label}
+      tooltip={textTooltip(() => props.tooltip ?? props.label)}
+      selected={props.selected}
+      disabled={props.disabled}
+      onPress={props.onPress}
+      style={{
+        ...controlStyle,
+        width: 32,
+        paddingHorizontal: 8,
+        alignItems: 'center',
+        flexShrink: 0,
+      }}
+      hoverStyle={quietHoverStyle()}
+      activeStyle={quietActiveStyle()}
+      focusStyle={quietFocusStyle()}
+      disabledStyle={controlDisabledStyle}
+    >
+      <Icon name={props.icon} color={props.selected ? C.accent : C.muted} />
+    </Button>
+  );
+}
+
+export const disclosureTitleStyle = { ...captionTextStyle, flex: 1, minWidth: 0 } as const;
+
+export function Disclosure(props: {
+  label: string;
+  tooltip?: string;
+  open: boolean;
+  foldable?: boolean;
+  terminalInset?: number;
+  onPress: () => void;
+  children: JSX.Element;
+  trailing?: JSX.Element;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
+      <Button
+        accessibilityLabel={props.label}
+        tooltip={props.tooltip === undefined ? undefined : textTooltip(() => props.tooltip)}
+        disabled={props.foldable === false}
+        selected={props.open}
+        onPress={props.onPress}
+        style={{
+          ...controlStyle,
+          paddingHorizontal: disclosureInset(props.terminalInset ?? 0),
+          flex: 1,
+          minWidth: 0,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+        }}
+        hoverStyle={quietHoverStyle()}
+        activeStyle={quietActiveStyle()}
+        focusStyle={quietFocusStyle()}
+      >
+        <If when={props.foldable !== false}>
+          <Icon name={props.open ? 'down' : 'right'} color={C.secondary} />
+        </If>
+        {props.children}
+      </Button>
+      {props.trailing}
+    </View>
+  );
+}
 export type BrowserHeader = {
+  navigationDocked: boolean;
+  previewDocked: boolean;
   expanded: boolean;
   hidden: boolean;
   toggle(): void;
@@ -95,7 +224,7 @@ export function Header(props: {
   commands(): void;
   browser: BrowserHeader;
   files?(): void;
-  filesOpener?(node: YNode): void;
+  filesOpener?(node: ViewRef): void;
 }) {
   const workspaceName = () => {
     const path = props.workspace;
@@ -115,8 +244,8 @@ export function Header(props: {
         opacity: props.browser.hidden ? 0 : 1,
         flexDirection: 'row',
         alignItems: 'center',
-        paddingLeft: 16 + controlsLeft(!docked.browser()),
-        paddingRight: 16 + controlsRight(!docked.preview()),
+        paddingLeft: 16 + controlsLeft(!props.browser.navigationDocked),
+        paddingRight: 16 + controlsRight(!props.browser.previewDocked),
         height: ownTitleBar
           ? TITLE_BAR_HEIGHT
           : !platform.isTerminal && !props.title && !props.status

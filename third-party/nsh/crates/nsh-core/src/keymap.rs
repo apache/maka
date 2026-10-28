@@ -571,6 +571,15 @@ fn parse_key(text: &str, key: &str) -> Result<Key, KeystrokeError> {
     Ok(Key::Char(c))
 }
 
+/// The character the key typing `c` types with Shift on the US layout
+/// (`8` a `*`, `a` an `A`): what `shift+8` types.
+pub fn shifted(c: char) -> char {
+    SHIFTED
+        .iter()
+        .find(|(_, base)| *base == c)
+        .map_or(c.to_ascii_uppercase(), |(shifted, _)| *shifted)
+}
+
 /// Whether keyboard shortcuts on `os` follow Apple's conventions: `mod` is
 /// Command and labels use ⌘ ([`Keystroke::label`]). macOS and iOS do; a
 /// browser does when it runs on an Apple platform (`apple_keyboard`,
@@ -823,6 +832,15 @@ impl Keymap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_types_the_us_layouts_characters() {
+        assert_eq!(shifted('8'), '*');
+        assert_eq!(shifted('2'), '@');
+        assert_eq!(shifted('/'), '?');
+        assert_eq!(shifted('a'), 'A');
+        assert_eq!(shifted('*'), '*');
+    }
 
     #[test]
     fn keys_have_windows_virtual_key_codes_both_ways() {

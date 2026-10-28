@@ -20,7 +20,6 @@
 //! Terminal effects use the admitted Host, its original Calls and durable client receipts.
 use super::{Scope, execute, require_contract};
 use maka_app_client::MutationEvent;
-use maka_capabilities::call::Attachments;
 use nsh_core::JsonValue;
 use serde_json::json;
 use std::sync::Arc;
@@ -39,18 +38,6 @@ fn session<'a>(method: &str, input: &'a JsonValue) -> Result<&'a str, String> {
         .ok_or_else(|| "Terminal action has no session owner".into())
 }
 
-fn owns(operation: &maka_app_client::Operation, session: &str) -> bool {
-    operation.endpoint == "terminal"
-        && operation.session_id.as_deref() == Some(session)
-        && operation.draft.is_none()
-        && operation.upload.is_none()
-        && operation.correlation == json!({"kind":"terminal"})
-        && matches!(
-            operation.method.as_str(),
-            "start" | "stop" | "control" | "release"
-        )
-}
-
 /// Execute exactly one original terminal action in this immutable session.
 pub(super) async fn mutate(
     scope: Arc<Scope>,
@@ -61,24 +48,15 @@ pub(super) async fn mutate(
         return Err("Terminal action belongs to another session".into());
     }
     execute(scope.owner.clone(), async move {
+        let client = scope.client.resolve(&scope.owner).await?;
         require_contract(
             "terminal",
             &method,
-            &scope.owner.client.describe("terminal").await?.contract,
+            &client.describe("terminal").await?.contract,
         )?;
         let id = Uuid::new_v4();
-        let mutation = scope
-            .owner
-            .client
-            .mutation(
-                id,
-                "terminal",
-                &method,
-                input,
-                Attachments::new(),
-                Some(scope.session.clone()),
-                json!({"kind":"terminal"}),
-            )
+        let mutation = client
+            .terminal_mutation(id, &method, input, &scope.session)
             .await?;
         let result: Result<(_, Option<String>), String> = async {
             mutation.prepare().await?;
@@ -107,7 +85,8 @@ pub(super) async fn mutate(
 /// Unknown originals survive a view or launcher restart; never repeat their input.
 pub(super) async fn pending(scope: Arc<Scope>) -> Result<JsonValue, String> {
     execute(scope.owner.clone(), async move {
-        serde_json::to_value(scope.owner.client.pending_terminals(&scope.session).await?)
+        let client = scope.client.local(&scope.owner).await?;
+        serde_json::to_value(client.pending_terminals(&scope.session).await?)
             .map_err(|error| error.to_string())
     })
     .await
@@ -117,11 +96,9 @@ pub(super) async fn pending(scope: Arc<Scope>) -> Result<JsonValue, String> {
 pub(super) async fn recover(scope: Arc<Scope>, operation_id: String) -> Result<JsonValue, String> {
     let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
     execute(scope.owner.clone(), async move {
-        if !owns(&scope.owner.client.operation(id).await?, &scope.session) {
-            return Err("Original terminal action belongs to another owner".into());
-        }
-        serde_json::to_value(scope.owner.client.recover(id).await?)
-            .map_err(|error| error.to_string())
+        let client = scope.client.local(&scope.owner).await?;
+        client.operation_for_terminal(id, &scope.session).await?;
+        serde_json::to_value(client.recover(id).await?).map_err(|error| error.to_string())
     })
     .await
 }
@@ -130,10 +107,9 @@ pub(super) async fn recover(scope: Arc<Scope>, operation_id: String) -> Result<J
 pub(super) async fn abandon(scope: Arc<Scope>, operation_id: String) -> Result<JsonValue, String> {
     let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
     execute(scope.owner.clone(), async move {
-        if !owns(&scope.owner.client.operation(id).await?, &scope.session) {
-            return Err("Original terminal action belongs to another owner".into());
-        }
-        serde_json::to_value(scope.owner.client.abandon_unprepared(id).await?)
+        let client = scope.client.local(&scope.owner).await?;
+        client.operation_for_terminal(id, &scope.session).await?;
+        serde_json::to_value(client.abandon_unprepared(id).await?)
             .map_err(|error| error.to_string())
     })
     .await

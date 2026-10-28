@@ -69,6 +69,7 @@ const APPEARANCE: i32 = 33;
 const RETIRE_LIST_CELL: i32 = 34;
 const PROJECT_ROOT: i32 = 35;
 const COMPONENT_PROP_SLOTS: i32 = 36;
+const SHADER: i32 = 37;
 
 /// An entry of the object table.
 pub(crate) enum Obj {
@@ -292,6 +293,7 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 id,
                 horizontal,
                 scrollbar_visible,
+                replaced,
                 scroll_value,
                 pull_value,
                 keyboard_dismiss,
@@ -311,6 +313,7 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     id,
                     horizontal,
                     scrollbar_visible,
+                    replaced,
                     scroll_value,
                     pull_value,
                     keyboard_dismiss,
@@ -348,6 +351,14 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 e.int(CANVAS);
                 e.int(id as i32);
                 canvas(&mut e, &drawing);
+            }
+            MountItem::Shader { id, layer } => {
+                // Java learns only whether the view shows a shader; the
+                // layer goes to the UI-thread renderer (`crate::shader`).
+                e.int(SHADER);
+                e.int(id as i32);
+                e.bool(layer.is_some());
+                e.animation.push(MountItem::Shader { id, layer });
             }
             MountItem::Overflow { id, extent } => {
                 e.int(OVERFLOW);
@@ -779,11 +790,13 @@ fn effects(e: &mut Encoded, s: &ViewStyle) {
                 e.float(y.0);
             }
         }
+        // Repeated by `Decor.Gradient.place`, over the box it knows.
+        e.bool(g.repeating);
         if g.has_lengths() {
             // Stops placed in points depend on the box, which `Decor`
             // knows when it draws: they go as written, their count
             // negated, each with its unit (0 spread, 1 fraction, 2
-            // points), and `Decor.Gradient.resolve` places them.
+            // points), and `Decor.Gradient.place` places them.
             e.int(-(g.stops.len() as i32));
             for s in &g.stops {
                 e.int(argb(s.color));
@@ -1260,6 +1273,10 @@ fn input(e: &mut Encoded, c: &InputConfig) {
     e.bool(c.caret_hidden);
     // `pasteBehavior`: whether a paste inserts its text.
     e.bool(c.paste_behavior == nsh_core::PasteBehavior::Insert);
+    // A multiline input's own scroll bar shows; a built-in bar replaces it
+    // (the input then reports how far its text scrolled).
+    e.bool(c.scrollbar_visible);
+    e.bool(c.replaced);
 }
 
 // --- Canvas drawings (`CanvasBox.java`) -------------------------------------

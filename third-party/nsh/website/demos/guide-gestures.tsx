@@ -15,8 +15,8 @@ function DragCard() {
         onPanEnd={(e) => {
           flings.update((n) => n + 1);
           // Spring home, starting with the release velocity.
-          x.spring(0, { velocity: e.velocityX, stiffness: 200, damping: 16 });
-          y.spring(0, { velocity: e.velocityY, stiffness: 200, damping: 16 });
+          x.spring(0, { velocity: e.velocity.x, stiffness: 200, damping: 16 });
+          y.spring(0, { velocity: e.velocity.y, stiffness: 200, damping: 16 });
         }}
         style={{
           width: 120,

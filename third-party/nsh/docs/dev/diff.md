@@ -127,7 +127,7 @@ reached that place and has not scrolled from it, or is still scrolling to it), e
 change near the end that cannot reach the top still counts; they wrap around. `currentHunk` is that change, else the
 one at the top of the view, else the first starting in view.
 
-`onStatsChange` reports `DiffStats` (`{ added, deleted, hunks }`) once when the view is made and again whenever the
+`onStatsChange` reports `{ stats }`, a `DiffStats` (`{ added, deleted, hunks }`), once when the view is made and again whenever the
 texts are diffed to counts other than those reported last (new props, a hunk kept or reverted), so an app's "+8 −8 ·
 5 changes" line follows the props with no ref call. The ref's methods that return a value (`hunks()`, `stats()`) give
 Promises in JS, as every component method with a result does (`docs/dev/components.md`).

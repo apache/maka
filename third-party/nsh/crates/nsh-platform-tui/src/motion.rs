@@ -585,14 +585,13 @@ fn lerp_style(
     {
         out.transform = transform;
     }
-    if props.has(TransitionProps::SHADOW) {
-        if box_shadows(from) != box_shadows(to)
-            && let Some(shadows) = lerp_box_shadows(box_shadows(from), box_shadows(to), p)
-        {
-            let mut effects = to.effects.as_deref().cloned().unwrap_or_default();
-            effects.box_shadows = shadows;
-            out.effects = Some(Arc::new(effects));
-        }
+    if props.has(TransitionProps::SHADOW)
+        && box_shadows(from) != box_shadows(to)
+        && let Some(shadows) = lerp_box_shadows(box_shadows(from), box_shadows(to), p)
+    {
+        let mut effects = to.effects.as_deref().cloned().unwrap_or_default();
+        effects.box_shadows = shadows;
+        out.effects = Some(Arc::new(effects));
     }
     if props.has(TransitionProps::SHAPE) {
         out.border_radius = lerp_points(from.border_radius, to.border_radius, p).max(Points::ZERO);

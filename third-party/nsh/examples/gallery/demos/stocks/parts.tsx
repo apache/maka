@@ -159,7 +159,7 @@ export function SpringBar(props: { share: () => number; color: string; from?: "l
   return (
     <View
       onLayout={(e) => {
-        width = e.size.width;
+        width = e.bounds.size.width;
         place();
       }}
       style={{ height: h, overflow: "hidden", borderRadius: props.radius ?? h / 2 }}

@@ -757,7 +757,10 @@ impl Surface {
                 self.resize(columns, rows);
                 true
             }
-            Event::Key(key) => self.key_event(key),
+            Event::Key(key) => {
+                self.mouse_modifiers_changed(key.modifiers);
+                self.key_event(key)
+            }
             Event::Mouse(mouse) => self.mouse_event(mouse),
             Event::Paste(text) => {
                 if self.dialog.is_some() {
@@ -783,8 +786,7 @@ impl Surface {
                     self.remember_focus(id);
                 }
                 self.set_focus(None);
-                self.set_hover(None);
-                self.cancel_pointer();
+                self.pointer_left();
                 true
             }
             Event::FocusGained => {
@@ -1117,11 +1119,11 @@ impl Surface {
                 .map(|link| link.events)
         });
         if let Some(events) = events.filter(|events| events.contains(kind)) {
-            if matches!(kind, EventKind::HoverIn | EventKind::HoverOut)
+            if matches!(kind, EventKind::MouseEnter | EventKind::MouseLeave)
                 && !events.contains_listener(kind)
             {
                 if let Some(watch) = events.hint_watch() {
-                    let observation = if kind == EventKind::HoverIn {
+                    let observation = if kind == EventKind::MouseEnter {
                         HintObservation::Enter(watch)
                     } else {
                         HintObservation::Leave(watch)
@@ -2055,6 +2057,7 @@ impl Surface {
         let x = (mouse.column as f32 + 0.5) * self.metrics.width().0;
         let y = (mouse.row as f32 + 0.5) * self.metrics.height().0;
         let hit = self.hit_test(x, y);
+        self.remember_mouse(mouse, x, y);
         self.set_hover(hit);
         let native = self
             .pointer
@@ -2179,6 +2182,80 @@ impl Surface {
         row != before.0
     }
 
+    /// Input bars use the editor's wrapped cell viewport, not ScrollState.
+    pub(crate) fn scroll_input_to(&mut self, id: NodeId, y: nsh_core::Points) {
+        if !y.0.is_finite() {
+            return;
+        }
+        let (Some(node), Some(geometry)) = (self.node(id), self.input_hit_geometry(id)) else {
+            return;
+        };
+        if !node.input.multiline || node.delete_pending {
+            return;
+        }
+        crate::render::input_scroll(
+            node,
+            self.focus == Some(id),
+            geometry.columns,
+            geometry.rows,
+        );
+        let maximum = node
+            .editor
+            .cell_extent(geometry.columns, node.input.secure)
+            .0
+            .saturating_sub(geometry.rows.saturating_sub(1));
+        let row = ((y.0 / self.metrics.height().0).round().max(0.0) as usize).min(maximum);
+        node.input_viewport.set(crate::surface::InputViewport {
+            origin: (row, 0),
+            reveal: false,
+            ..node.input_viewport.get()
+        });
+    }
+
+    /// Rendering can resolve caret reveal and resize through interior state.
+    /// Report at the host's drain boundary, after that same viewport resolution,
+    /// visiting only inputs whose native indicator is replaced by a core bar.
+    pub(crate) fn report_input_scrolls(&mut self) {
+        for index in 0..self.input_scrollers.len() {
+            let id = self.input_scrollers[index];
+            let (Some(node), Some(geometry)) = (self.node(id), self.input_hit_geometry(id)) else {
+                continue;
+            };
+            if node.kind != ViewKind::Input
+                || node.delete_pending
+                || node.parent.is_none()
+                || self.is_dying(id)
+            {
+                continue;
+            }
+            let origin = crate::render::input_scroll(
+                node,
+                self.focus == Some(id),
+                geometry.columns,
+                geometry.rows,
+            );
+            let rows = node
+                .editor
+                .cell_extent(geometry.columns, node.input.secure)
+                .0
+                + 1;
+            let width = self.metrics.width() * geometry.columns as f32;
+            let report = (
+                point(px(0.0), self.metrics.height() * origin.0 as f32),
+                nsh_core::Size::new(
+                    width,
+                    self.metrics.height() * rows.max(geometry.rows) as f32,
+                ),
+                nsh_core::Size::new(width, self.metrics.height() * geometry.rows as f32),
+            );
+            if node.reported_input_scroll != Some(report) {
+                self.node_mut(id).unwrap().reported_input_scroll = Some(report);
+                self.events
+                    .push(SurfaceEvent::InputScroll(id, report.0, report.1, report.2));
+            }
+        }
+    }
+
     pub(crate) fn pinch_wheel(&mut self, id: NodeId, kind: MouseEventKind, mut steps: u16) -> u16 {
         let Some(node) = self.node(id) else {
             return 0;
@@ -2275,7 +2352,11 @@ impl Surface {
             return self.dialog_mouse(mouse);
         }
         let hit = self.hit_test(x, y);
+        self.remember_mouse(mouse, x, y);
         self.set_hover(hit);
+        if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
+            self.emit_mouse_move(hit);
+        }
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.selectable_view_window_press(hit);
         }
@@ -2823,6 +2904,72 @@ impl Surface {
         self.report_states(self.focus, previous, &hover);
     }
 
+    fn remember_mouse(&mut self, mouse: MouseEvent, x: f32, y: f32) {
+        let button = match mouse.kind {
+            MouseEventKind::Down(button) | MouseEventKind::Drag(button) => Some(match button {
+                MouseButton::Left => nsh_core::MouseButton::Left,
+                MouseButton::Right => nsh_core::MouseButton::Right,
+                MouseButton::Middle => nsh_core::MouseButton::Middle,
+            }),
+            MouseEventKind::Up(_) | MouseEventKind::Moved => None,
+            // Wheel events say nothing about held buttons. Gesture capture is
+            // not their authority: a right button does not create a Pointer.
+            _ => self.last_mouse.and_then(|mouse| mouse.pressed_button),
+        };
+        let position = point(px(x), px(y));
+        self.last_mouse = Some(nsh_core::MouseEvent::new(
+            position,
+            position,
+            mouse_modifiers(mouse.modifiers),
+            button,
+        ));
+    }
+
+    fn mouse_payload(&self, id: NodeId) -> EventPayload {
+        let mut mouse = self.last_mouse.unwrap_or_default();
+        let (x, y) = (mouse.page_position.x.0, mouse.page_position.y.0);
+        let local = self.surface_to_local(id, x, y).unwrap_or_default();
+        mouse.position = point(px(local.0), px(local.1));
+        // Modals own a separately laid out root, though they share this terminal.
+        if let Some(root) = self.ancestors(id).into_iter().find(|id| {
+            self.node(*id)
+                .is_some_and(|node| node.kind == ViewKind::Modal)
+        }) && let Some(page) = self.surface_to_local(root, x, y)
+        {
+            mouse.page_position = point(px(page.0), px(page.1));
+        }
+        EventPayload::Mouse(mouse)
+    }
+
+    fn emit_mouse_move(&mut self, hit: Option<NodeId>) {
+        let Some(hit) = hit else { return };
+        for id in self.ancestors(hit) {
+            if self
+                .node(id)
+                .is_some_and(|node| node.events.contains(EventKind::MouseMove))
+            {
+                self.emit_if(id, EventKind::MouseMove, self.mouse_payload(id));
+            }
+        }
+    }
+
+    fn mouse_modifiers_changed(&mut self, modifiers: KeyModifiers) {
+        let modifiers = mouse_modifiers(modifiers);
+        let Some(mouse) = self.last_mouse.as_mut() else {
+            return;
+        };
+        if mouse.modifiers == modifiers {
+            return;
+        }
+        mouse.modifiers = modifiers;
+        if mouse.pressed_button.is_some() {
+            return;
+        }
+        let point = mouse.page_position;
+        let hit = self.hit_test(point.x.0, point.y.0);
+        self.emit_mouse_move(hit);
+    }
+
     pub(crate) fn set_hover(&mut self, target: Option<NodeId>) {
         let next: Vec<_> = target
             .map(|id| self.ancestors(id))
@@ -2831,8 +2978,8 @@ impl Surface {
             .filter(|id| {
                 self.node(*id).is_some_and(|n| {
                     n.tracked & state::HOVERED != 0
-                        || n.events.contains(EventKind::HoverIn)
-                        || n.events.contains(EventKind::HoverOut)
+                        || n.events.contains(EventKind::MouseEnter)
+                        || n.events.contains(EventKind::MouseLeave)
                 })
             })
             .collect();
@@ -2840,7 +2987,7 @@ impl Surface {
         self.hovered = target;
         for id in &previous {
             if !self.hovered_path.contains(id) {
-                self.emit_if(*id, EventKind::HoverOut, EventPayload::None);
+                self.emit_if(*id, EventKind::MouseLeave, self.mouse_payload(*id));
             }
         }
         let entering: Vec<_> = self
@@ -2851,7 +2998,7 @@ impl Surface {
             .filter(|id| !previous.contains(id))
             .collect();
         for id in entering {
-            self.emit_if(id, EventKind::HoverIn, EventPayload::None);
+            self.emit_if(id, EventKind::MouseEnter, self.mouse_payload(id));
         }
         self.report_states(self.focus, self.pressed, &previous);
     }
@@ -2862,7 +3009,7 @@ impl Surface {
         focus_chain: &[NodeId],
         pressed: Option<NodeId>,
         hover: &[NodeId],
-    ) -> u8 {
+    ) -> u16 {
         let mut states = 0;
         if focus == Some(id) {
             states |= state::FOCUSED;
@@ -3096,6 +3243,7 @@ impl Surface {
     /// Keyboard focus and the editor's selection remain active.
     pub fn pointer_left(&mut self) {
         self.set_hover(None);
+        self.last_mouse = None;
         self.cancel_pointer();
     }
 
@@ -3175,6 +3323,15 @@ impl Surface {
     }
 }
 
+fn mouse_modifiers(modifiers: KeyModifiers) -> Modifiers {
+    Modifiers {
+        ctrl: modifiers.contains(KeyModifiers::CONTROL),
+        alt: modifiers.contains(KeyModifiers::ALT),
+        shift: modifiers.contains(KeyModifiers::SHIFT),
+        cmd: modifiers.contains(KeyModifiers::SUPER),
+    }
+}
+
 fn keystroke(event: KeyEvent) -> Option<Keystroke> {
     let mut modifiers = Modifiers {
         ctrl: event.modifiers.contains(KeyModifiers::CONTROL),
@@ -3217,7 +3374,7 @@ fn keystroke(event: KeyEvent) -> Option<Keystroke> {
 
 #[cfg(test)]
 mod tests {
-    use nsh_core::{Bounds, Command, Point, Size};
+    use nsh_core::{Bounds, Command, Point, Points, Size};
 
     use super::*;
 
@@ -3708,8 +3865,8 @@ mod tests {
                 MountItem::Events {
                     id: 2,
                     events: mask(&[
-                        EventKind::HoverIn,
-                        EventKind::HoverOut,
+                        EventKind::MouseEnter,
+                        EventKind::MouseLeave,
                         EventKind::PressDown,
                         EventKind::PressUp,
                         EventKind::Press,
@@ -3745,7 +3902,16 @@ mod tests {
         assert_eq!(
             entered,
             [
-                (2, EventKind::HoverIn, EventPayload::None),
+                (
+                    2,
+                    EventKind::MouseEnter,
+                    EventPayload::Mouse(nsh_core::MouseEvent::new(
+                        point(px(20.0), px(8.0)),
+                        point(px(20.0), px(8.0)),
+                        Modifiers::default(),
+                        None,
+                    ))
+                ),
                 (2, EventKind::PressDown, EventPayload::None),
             ]
         );
@@ -3778,7 +3944,16 @@ mod tests {
         assert_eq!(
             left,
             [
-                (2, EventKind::HoverOut, EventPayload::None),
+                (
+                    2,
+                    EventKind::MouseLeave,
+                    EventPayload::Mouse(nsh_core::MouseEvent::new(
+                        point(px(20.0), px(8.0)),
+                        point(px(20.0), px(8.0)),
+                        Modifiers::default(),
+                        Some(nsh_core::MouseButton::Left),
+                    ))
+                ),
                 (2, EventKind::PressUp, EventPayload::None),
             ]
         );
@@ -3792,7 +3967,19 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(released, [(2, EventKind::HoverIn, EventPayload::None)]);
+        assert_eq!(
+            released,
+            [(
+                2,
+                EventKind::MouseEnter,
+                EventPayload::Mouse(nsh_core::MouseEvent::new(
+                    point(px(20.0), px(8.0)),
+                    point(px(20.0), px(8.0)),
+                    Modifiers::default(),
+                    None,
+                ))
+            )]
+        );
         for kind in [
             MouseEventKind::Moved,
             MouseEventKind::Down(MouseButton::Left),
@@ -5895,6 +6082,519 @@ mod tests {
     }
 
     #[test]
+    fn real_themed_input_bar_consumes_terminal_scroll_reports() {
+        use nsh_core::{
+            Color, Core, MountBatch, Op, Prop, ScrollbarSetting, Tag, element::JsEvent,
+        };
+
+        // Core queues layout callbacks for its host to deliver. Run those real
+        // component callbacks as Engine does, so the bar measures its rail.
+        fn commit(core: &mut Core<crate::TerminalTextEngine>) -> Option<MountBatch> {
+            let mut items = Vec::new();
+            for _ in 0..32 {
+                if let Some(batch) = core.commit() {
+                    items.extend(batch.items);
+                }
+                let mut events = Vec::new();
+                core.take_events(&mut events);
+                if events.is_empty() {
+                    return (!items.is_empty()).then_some(MountBatch { items });
+                }
+                for event in events {
+                    match event {
+                        JsEvent::Event(id, kind, payload) => {
+                            assert!(core.accepts_native_input(id));
+                            assert!(core.component_event(id, kind, &payload));
+                        }
+                        JsEvent::LayoutListener {
+                            host,
+                            id,
+                            listener,
+                            frame,
+                        } => {
+                            core.component_layout(host, id, &listener, frame);
+                        }
+                        _ => {
+                            panic!("unexpected non-layout component work in the input-bar fixture")
+                        }
+                    }
+                }
+            }
+            panic!("the real scrollbar's layout callbacks did not settle");
+        }
+
+        fn thumb(surface: &Surface, color: Color) -> (NodeId, Bounds<Points>) {
+            let id = surface
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(id, node)| {
+                    node.as_ref()
+                        .filter(|node| node.style.background_color == color)
+                        .map(|_| id as NodeId)
+                })
+                .expect("the real themed thumb is mounted");
+            (
+                id,
+                surface
+                    .global_frame(id)
+                    .expect("the thumb's transformed geometry"),
+            )
+        }
+
+        let metrics = crate::CellMetrics::default();
+        let mut core = Core::new(
+            crate::TerminalTextEngine::new(metrics),
+            Size::new(px(320.0), px(192.0)),
+        );
+        core.set_components(nsh_base::registry());
+        for op in [
+            Op::Create {
+                id: 2,
+                tag: Tag::Input,
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Multiline(true),
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Class("w-[160px] h-[64px]".into()),
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Value(
+                    (0..20)
+                        .map(|row| row.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                        .into(),
+                ),
+            },
+            Op::SetProp {
+                id: 2,
+                prop: Prop::Scrollbar(ScrollbarSetting::Themed(std::sync::Arc::new(
+                    serde_json::json!({
+                        "mode": "always", "minThumbLength": 16,
+                        "vertical": { "class": "absolute inset-y-0 right-0 w-2", "thumbClass": "w-full", "thumbStyle": { "backgroundColor": "#ff0000" } }
+                    }),
+                ))),
+            },
+            Op::Insert {
+                parent: ROOT_ID,
+                child: 2,
+                before: None,
+            },
+        ] {
+            core.apply(op).unwrap();
+        }
+        let mut surface = Surface::new(40, 12, metrics);
+        surface.apply(commit(&mut core).unwrap());
+        assert!(
+            surface.node(2).unwrap().input.replaced,
+            "the real base registry must mount its themed input bar"
+        );
+        assert!(!surface.node(2).unwrap().input.scrollbar_visible);
+        surface.selection(2, 0, 0);
+        let forward = |surface: &mut Surface, core: &mut Core<crate::TerminalTextEngine>| {
+            let mut reports = 0;
+            for event in surface.drain_events() {
+                if let SurfaceEvent::InputScroll(id, offset, content, viewport) = event {
+                    core.set_input_scroll(id, offset, content, viewport);
+                    reports += 1;
+                }
+            }
+            reports
+        };
+        assert_eq!(forward(&mut surface, &mut core), 1);
+        surface.apply(commit(&mut core).unwrap());
+        let red = Color::rgba(255, 0, 0, 255);
+        let blue = Color::rgba(0, 0, 255, 255);
+        let (old_thumb, before) = thumb(&surface, red);
+        assert_eq!(before.size.height, px(16.0));
+        assert_eq!(before.origin.y, px(0.0));
+        surface.handle_wheel(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            2,
+        );
+        assert_eq!(forward(&mut surface, &mut core), 1);
+        surface.apply(commit(&mut core).unwrap());
+        let (moved_thumb, moved) = thumb(&surface, red);
+        assert_eq!(moved_thumb, old_thumb);
+        assert_eq!(moved.size, before.size);
+        // Its holder uses translate_y, not a layout Frame: 96/256 of the
+        // 48-point track travel is 18 points in the actual presented scene.
+        assert!((moved.origin.y.0 - 18.0).abs() < 0.001);
+        core.apply(Op::Command {
+            id: 2,
+            command: Command::ScrollTo {
+                x: px(0.0),
+                y: px(32.0),
+                animated: false,
+            },
+        })
+        .unwrap();
+        surface.apply(commit(&mut core).unwrap());
+        assert_eq!(surface.node(2).unwrap().input_viewport.get().origin.0, 2);
+        assert_eq!(surface.node(2).unwrap().editor.selection(), (0, 0));
+        assert_eq!(forward(&mut surface, &mut core), 1);
+        surface.apply(commit(&mut core).unwrap());
+        let (_, commanded) = thumb(&surface, red);
+        assert!((commanded.origin.y.0 - 6.0).abs() < 0.001);
+
+        // A new theme recreates the core bar and forgets its scroll metrics,
+        // even though the native config remains `replaced` and nothing moved.
+        let old_bar = surface
+            .node(ROOT_ID)
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|&id| id != 2)
+            .expect("the core's bar beside the input");
+        core.apply(Op::SetProp {
+            id: 2,
+            prop: Prop::Scrollbar(ScrollbarSetting::Themed(std::sync::Arc::new(
+                serde_json::json!({
+                    "mode": "always", "minThumbLength": 16,
+                    "vertical": { "class": "absolute inset-y-0 right-0 w-2", "thumbClass": "w-full", "thumbStyle": { "backgroundColor": "#0000ff" } }
+                }),
+            ))),
+        }).unwrap();
+        let replaced = commit(&mut core).unwrap();
+        assert!(
+            replaced.items.iter().any(|item| matches!(item,
+                nsh_core::MountItem::Delete { id } if *id == old_bar
+            )),
+            "the theme really replaced its bar"
+        );
+        surface.apply(replaced);
+        assert!(surface.node(2).unwrap().input.replaced);
+        assert_eq!(surface.node(2).unwrap().input_viewport.get().origin.0, 2);
+        assert_eq!(
+            forward(&mut surface, &mut core),
+            1,
+            "a true-to-true replacement still needs the unchanged nonzero offset"
+        );
+        surface.apply(commit(&mut core).unwrap());
+        let (new_thumb, placed) = thumb(&surface, blue);
+        assert_ne!(new_thumb, old_thumb);
+        assert_eq!(
+            placed, commanded,
+            "the replacement thumb uses the unchanged geometry"
+        );
+        assert_eq!(forward(&mut surface, &mut core), 0);
+    }
+
+    #[test]
+    fn replaced_input_reports_the_real_viewport_and_scroll_commands_leave_selection_alone() {
+        use nsh_core::{Command, InputConfig, MountBatch, MountItem};
+        fn reports(
+            surface: &mut Surface,
+        ) -> Vec<(NodeId, Point<Points>, Size<Points>, Size<Points>)> {
+            surface
+                .drain_events()
+                .filter_map(|event| match event {
+                    SurfaceEvent::InputScroll(id, offset, content, viewport) => {
+                        Some((id, offset, content, viewport))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+        let config = || InputConfig {
+            multiline: true,
+            replaced: true,
+            scrollbar_visible: false,
+            ..Default::default()
+        };
+        let mut surface = form();
+        surface.apply(MountBatch {
+            items: vec![
+                MountItem::Input {
+                    id: 2,
+                    config: Box::new(config()),
+                },
+                MountItem::InputValue {
+                    id: 2,
+                    text: "0\n1\n2\n3\n4\n5\n6\n7\n8\n9".into(),
+                    count: 0,
+                },
+            ],
+        });
+        surface.selection(2, 0, 0);
+        assert_eq!(
+            reports(&mut surface),
+            [(
+                2,
+                point(px(0.0), px(0.0)),
+                Size::new(px(160.0), px(160.0)),
+                Size::new(px(160.0), px(32.0))
+            )]
+        );
+        surface.snapshot();
+        assert!(reports(&mut surface).is_empty());
+        surface.handle_wheel(
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            1,
+        );
+        assert_eq!(reports(&mut surface)[0].1.y, px(48.0));
+        surface.apply(MountBatch {
+            items: vec![MountItem::Command {
+                id: 2,
+                command: Command::ScrollTo {
+                    x: px(99.0),
+                    y: px(96.0),
+                    animated: false,
+                },
+            }],
+        });
+        assert_eq!(reports(&mut surface)[0].1, point(px(0.0), px(96.0)));
+        assert_eq!(surface.node(2).unwrap().editor.selection(), (0, 0));
+        assert_eq!(surface.node(2).unwrap().scroll.count, 0);
+        surface.apply(MountBatch {
+            items: vec![MountItem::InputContent {
+                id: 2,
+                content: Bounds::new(Point::default(), Size::new(px(160.0), px(16.0))),
+            }],
+        });
+        let resized = reports(&mut surface);
+        assert_eq!(resized[0].1.y, px(96.0));
+        assert_eq!(resized[0].3.height, px(16.0));
+        surface.apply(MountBatch {
+            items: vec![MountItem::InputValue {
+                id: 2,
+                text: "short".into(),
+                count: 0,
+            }],
+        });
+        let shrunk = reports(&mut surface);
+        assert_eq!(shrunk[0].1.y, px(0.0));
+        assert_eq!(shrunk[0].2.height, px(16.0));
+        let mut plain = config();
+        plain.replaced = false;
+        surface.apply(MountBatch {
+            items: vec![MountItem::Input {
+                id: 2,
+                config: Box::new(plain),
+            }],
+        });
+        assert!(reports(&mut surface).is_empty());
+        surface.apply(MountBatch {
+            items: vec![MountItem::Input {
+                id: 2,
+                config: Box::new(config()),
+            }],
+        });
+        assert_eq!(
+            reports(&mut surface).len(),
+            1,
+            "rebound bar receives current geometry"
+        );
+        surface.apply(MountBatch {
+            items: vec![MountItem::Delete { id: 2 }],
+        });
+        assert!(reports(&mut surface).is_empty());
+        surface.apply(MountBatch {
+            items: create(2, ViewKind::Input, ROOT_ID, 0.0),
+        });
+        assert!(
+            reports(&mut surface).is_empty(),
+            "reused id is not still subscribed"
+        );
+        let mut single = config();
+        single.multiline = false;
+        surface.apply(MountBatch {
+            items: vec![MountItem::Input {
+                id: 2,
+                config: Box::new(single),
+            }],
+        });
+        assert!(reports(&mut surface).is_empty());
+    }
+
+    #[test]
+    fn held_mouse_modifiers_update_leave_without_synthesizing_a_resting_move() {
+        use nsh_core::{MountBatch, MountItem};
+        for (button, expected) in [
+            (MouseButton::Left, nsh_core::MouseButton::Left),
+            (MouseButton::Right, nsh_core::MouseButton::Right),
+        ] {
+            let mut surface = form();
+            surface.apply(MountBatch {
+                items: vec![MountItem::Events {
+                    id: 2,
+                    events: mask(&[EventKind::MouseLeave, EventKind::MouseMove]),
+                }],
+            });
+            surface.handle_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(button),
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }));
+            if button == MouseButton::Right {
+                assert!(
+                    surface.pointer.is_none(),
+                    "right button has no gesture capture"
+                );
+                surface.handle_wheel(
+                    MouseEvent {
+                        kind: MouseEventKind::ScrollDown,
+                        column: 1,
+                        row: 0,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                    1,
+                );
+            }
+            surface.drain_events().for_each(drop);
+            key(&mut surface, KeyCode::Null, KeyModifiers::SHIFT);
+            assert!(
+                !surface
+                    .drain_events()
+                    .any(|event| matches!(event, SurfaceEvent::Event(_, EventKind::MouseMove, _))),
+                "modifier changes do not synthesize moves while a button is held"
+            );
+            surface.pointer_left();
+            let left = surface
+                .drain_events()
+                .find_map(|event| match event {
+                    SurfaceEvent::Event(2, EventKind::MouseLeave, EventPayload::Mouse(mouse)) => {
+                        Some(mouse)
+                    }
+                    _ => None,
+                })
+                .expect("the held pointer left the input");
+            assert!(left.modifiers.shift);
+            assert_eq!(left.pressed_button, Some(expected));
+        }
+    }
+
+    #[test]
+    fn mouse_events_report_each_ancestor_local_position_buttons_and_modifiers() {
+        use nsh_core::{MountBatch, MountItem};
+        fn mouse_events(surface: &mut Surface) -> Vec<(NodeId, EventKind, nsh_core::MouseEvent)> {
+            surface
+                .drain_events()
+                .filter_map(|event| match event {
+                    SurfaceEvent::Event(id, kind, EventPayload::Mouse(mouse)) => {
+                        Some((id, kind, mouse))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+        let mut surface = Surface::new(40, 12, crate::CellMetrics::default());
+        let mut items = create(2, ViewKind::View, ROOT_ID, 16.0);
+        items.extend(create(4, ViewKind::View, 2, 16.0));
+        for id in [2, 4] {
+            items.push(MountItem::Events {
+                id,
+                events: mask(&[
+                    EventKind::MouseEnter,
+                    EventKind::MouseLeave,
+                    EventKind::MouseMove,
+                ]),
+            });
+        }
+        surface.apply(MountBatch { items });
+        let mouse = |kind, modifiers| {
+            Event::Mouse(MouseEvent {
+                kind,
+                column: 2,
+                row: 2,
+                modifiers,
+            })
+        };
+        surface.handle_event(mouse(MouseEventKind::Moved, KeyModifiers::SHIFT));
+        let entered = mouse_events(&mut surface);
+        assert_eq!(
+            entered
+                .iter()
+                .map(|(id, kind, _)| (*id, *kind))
+                .collect::<Vec<_>>(),
+            [
+                (2, EventKind::MouseEnter),
+                (4, EventKind::MouseEnter),
+                (4, EventKind::MouseMove),
+                (2, EventKind::MouseMove)
+            ]
+        );
+        assert_eq!(entered[2].2.position, point(px(20.0), px(8.0)));
+        assert_eq!(entered[3].2.position, point(px(20.0), px(24.0)));
+        for (_, _, event) in entered {
+            assert_eq!(event.page_position, point(px(20.0), px(40.0)));
+            assert!(event.modifiers.shift);
+            assert_eq!(event.pressed_button, None);
+        }
+        surface.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            KeyModifiers::NONE,
+        ));
+        assert!(mouse_events(&mut surface).is_empty());
+        surface.handle_event(mouse(
+            MouseEventKind::Drag(MouseButton::Right),
+            KeyModifiers::CONTROL,
+        ));
+        let dragged = mouse_events(&mut surface);
+        assert_eq!(dragged.len(), 2);
+        assert!(
+            dragged
+                .iter()
+                .all(|(_, kind, event)| *kind == EventKind::MouseMove
+                    && event.pressed_button == Some(nsh_core::MouseButton::Right)
+                    && event.modifiers.ctrl)
+        );
+        surface.handle_event(mouse(
+            MouseEventKind::Up(MouseButton::Right),
+            KeyModifiers::NONE,
+        ));
+        mouse_events(&mut surface);
+        key(&mut surface, KeyCode::Null, KeyModifiers::ALT);
+        let modified = mouse_events(&mut surface);
+        assert_eq!(modified.len(), 2);
+        assert!(
+            modified
+                .iter()
+                .all(|(_, _, event)| event.modifiers.alt && event.pressed_button.is_none())
+        );
+        surface.apply(MountBatch {
+            items: vec![MountItem::TrackStates {
+                id: 4,
+                states: state::HOVERED,
+            }],
+        });
+        assert!(
+            mouse_events(&mut surface).is_empty(),
+            "content reconciliation is not mouse motion"
+        );
+        surface.pointer_left();
+        assert_eq!(
+            mouse_events(&mut surface)
+                .iter()
+                .map(|(id, kind, _)| (*id, *kind))
+                .collect::<Vec<_>>(),
+            [(4, EventKind::MouseLeave), (2, EventKind::MouseLeave)]
+        );
+        key(&mut surface, KeyCode::Null, KeyModifiers::NONE);
+        assert!(
+            mouse_events(&mut surface).is_empty(),
+            "a departed pointer has no resting move"
+        );
+    }
+
+    #[test]
     fn multiline_input_wheel_keeps_selection_and_shares_the_viewport_with_hit_and_reveal() {
         use nsh_core::{InputConfig, MountBatch, MountItem};
         use ratatui::layout::{Position, Rect};
@@ -6497,6 +7197,7 @@ mod tests {
                     id: 4,
                     horizontal: true,
                     scrollbar_visible: false,
+                    replaced: false,
                     scroll_value: None,
                     pull_value: None,
                     keyboard_dismiss: Default::default(),
@@ -7480,6 +8181,7 @@ mod tests {
             id: 2,
             horizontal: false,
             scrollbar_visible: false,
+            replaced: false,
             scroll_value: None,
             pull_value: None,
             keyboard_dismiss: Default::default(),

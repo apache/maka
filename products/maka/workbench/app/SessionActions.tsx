@@ -22,10 +22,10 @@ import { errorText, message, renderText, type UiText } from './text';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ViewRef } from 'nsh';
 import { Button, Dialog, Popover } from 'nsh/base';
 import { windowSize } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import { forkTitle, sessionActionTarget, SessionRevisionConflict } from './sessionLifecycle';
 import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
 import {
@@ -43,16 +43,18 @@ import {
 } from './ui';
 import { Icon } from './Icon';
 import { dialogTop } from './chrome';
+import { SessionCompactionPrompt } from './SessionCompactionPrompt';
 
-type Page = 'actions' | 'rename' | 'fork' | 'remove';
+type Page = 'actions' | 'rename' | 'fork' | 'remove' | 'compaction_prompt';
 export function SessionActions(props: {
   session: SessionActionTarget;
-  anchor(): YNode | null;
+  anchor(): ViewRef | null;
   current(): boolean;
   close(): void;
   notice(message: UiText): void;
   change(action: SessionAction): Promise<void>;
 }) {
+  const host = useHost();
   const session = signal(props.session);
   const page = signal<Page>('actions');
   const title = signal('');
@@ -76,7 +78,7 @@ export function SessionActions(props: {
   const dismiss = (from: Page) => {
     if (active() && !pending() && page() === from) props.close();
   };
-  const menuChanged = (next: boolean) => {
+  const menuChanged = ({ open: next }: { open: boolean }) => {
     if (!next) back('actions');
   };
   effect(() => {
@@ -176,8 +178,8 @@ export function SessionActions(props: {
                 accessibilityLabel={tr('Rename conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'rename', original: session() })}
               >
@@ -187,12 +189,27 @@ export function SessionActions(props: {
                 </Text>
               </Button>
               <Button
+                disabled={pending() || session().archived}
+                accessibilityLabel={tr('Edit conversation compaction prompt')}
+                role="menuitem"
+                style={menuRowStyle()}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+                disabledStyle={controlDisabledStyle}
+                onPress={inputAction(edit, { to: 'compaction_prompt', original: session() })}
+              >
+                <Icon name="edit" color={C.secondary} />
+                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
+                  {tr('Compaction prompt')}
+                </Text>
+              </Button>
+              <Button
                 disabled={pending()}
                 accessibilityLabel={tr('Fork conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'fork', original: session() })}
               >
@@ -208,8 +225,8 @@ export function SessionActions(props: {
                 }
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(submit, {
                   kind: session().archived ? 'restore' : 'archive',
@@ -232,8 +249,8 @@ export function SessionActions(props: {
                 accessibilityLabel={tr('Delete conversation')}
                 role="menuitem"
                 style={menuRowStyle()}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
                 onPress={inputAction(edit, { to: 'remove', original: session() })}
               >
@@ -264,7 +281,15 @@ export function SessionActions(props: {
           </Scroll>
         </Popover>
       </If>
-      <If when={page() !== 'actions'}>
+      <If when={page() === 'compaction_prompt'}>
+        <SessionCompactionPrompt
+          session={session()}
+          current={() => active() && page() === 'compaction_prompt'}
+          close={props.close}
+          change={props.change}
+        />
+      </If>
+      <If when={page() !== 'actions' && page() !== 'compaction_prompt'}>
         <Dialog
           animation="none"
           closeOnEscape={false}
@@ -277,7 +302,7 @@ export function SessionActions(props: {
             alignItems: 'center',
             padding: 16,
             paddingTop: dialogTop(16),
-            backgroundColor: '#00000099',
+            backgroundColor: C.scrim,
           }}
         >
           <View
@@ -300,8 +325,8 @@ export function SessionActions(props: {
                 tooltip={textTooltip(() => tr('Back · Esc'))}
                 onPress={inputAction(back, page())}
                 style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Icon name="back" color={C.secondary} />
@@ -326,8 +351,8 @@ export function SessionActions(props: {
                 tooltip={textTooltip(() => tr('Close'))}
                 onPress={inputAction(dismiss, page())}
                 style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
                 disabledStyle={controlDisabledStyle}
               >
                 <Icon name="close" color={C.secondary} />
@@ -362,7 +387,20 @@ export function SessionActions(props: {
                     accessibilityLabel={tr('Conversation title')}
                     value={title()}
                     readonly={pending()}
-                    onChange={(value) => title.set(value)}
+                    onChange={({ value }) => title.set(value)}
+                    // Enter saves, as the button below does.
+                    onSubmit={() =>
+                      void submit(
+                        page() === 'fork'
+                          ? {
+                              kind: 'fork',
+                              session: session(),
+                              title: title(),
+                              position: { kind: 'end' },
+                            }
+                          : { kind: 'rename', session: session(), title: title() },
+                      )
+                    }
                     placeholder={tr('Conversation title')}
                     style={{
                       height: 32,
@@ -397,7 +435,12 @@ export function SessionActions(props: {
                     onPress={inputAction(
                       submit,
                       page() === 'fork'
-                        ? { kind: 'fork', session: session(), title: title(), turnId: null }
+                        ? {
+                            kind: 'fork',
+                            session: session(),
+                            title: title(),
+                            position: { kind: 'end' },
+                          }
                         : { kind: 'rename', session: session(), title: title() },
                     )}
                   >
@@ -416,8 +459,8 @@ export function SessionActions(props: {
                     disabled={pending()}
                     accessibilityLabel={tr('Confirm delete conversation')}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                     onPress={inputAction(submit, { kind: 'remove', session: session() })}
                   >
@@ -427,8 +470,8 @@ export function SessionActions(props: {
                     disabled={pending()}
                     onPress={inputAction(back, 'remove')}
                     style={controlStyle}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <Text style={{ color: C.text }}>{tr('Keep conversation')}</Text>
@@ -448,6 +491,7 @@ const menuRowStyle = () => ({
   height: compact() ? 32 : 40,
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
+  justifyContent: 'flex-start' as const,
   paddingHorizontal: 8,
   paddingVertical: 6,
   gap: 8,

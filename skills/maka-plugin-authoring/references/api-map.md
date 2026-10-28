@@ -24,7 +24,10 @@ In the bundled skill, `references/sdk/` contains the SDK sources from the same b
 | Need | File within the SDK |
 | --- | --- |
 | `HostService`, `RequestContext` and public exports | `index.ts` |
-| `UiContext`, `UiExports` and contribution props | `workbench.ts` |
+| `UiContext`, `UiActivation`, contribution props and typed view resolution | `workbench.ts` |
+| Workbench conversation, settings and composer view contracts | `workbench-views.ts` |
+| Composer session, draft, send and attachment presentation inputs | `composer-view.ts` |
+| Workspace preview input contract, resource actions and view handle | `workspace-view.ts` |
 | Package, composition, catalog and wire types | `generated/runtime.ts` |
 | Public service contracts | `contracts.ts`, or `contracts/<name>.ts` in bundled resources |
 | Native configuration schemas | `configurations.ts` |

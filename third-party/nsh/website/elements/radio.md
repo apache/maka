@@ -84,7 +84,7 @@ mount(App);
 
 `Radio` and `RadioGroup` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is
 the app's: the group holds none. Each radio is told whether it is checked; a press on an unchecked radio reports
-`onChange(true)`, the app sets its value, and every radio shows the `checked` the app passes back. In Rust, `radio()`
+`onChange({ checked: true })`, the app sets its value, and every radio shows the `checked` the app passes back. In Rust, `radio()`
 and `radio_group()` make them, with a setter per prop (`.checked(..)`), a listener per event (`.on_change(..)`), the
 typed style methods and `.child(..)` for their content.
 
@@ -113,7 +113,7 @@ typed style methods and `.child(..)` for their content.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onChange` (`Radio`) | `.on_change(\|checked: &bool\| ..)` | An unchecked radio was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation. It asks to be checked, so the value is `true`. It runs before anything changes: the radio shows the `checked` the app passes back. |
+| `onChange` (`Radio`) | `.on_change(\|checked: &bool\| ..)` | An unchecked radio was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation; or an arrow key of its group moved the keyboard focus to it. It asks to be checked, so `checked` is `true`. It runs before anything changes: the radio shows the `checked` the app passes back. |
 
 A checked radio stays checked and reports nothing, as a radio cannot uncheck itself; a disabled radio reports nothing
 either.
@@ -157,14 +157,30 @@ A disabled radio takes no presses, and screen readers announce it as dimmed. Its
   element of its own.
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
-- On macOS and the web each radio is a stop of the keyboard focus: Tab reaches it, Space and Return check it, and
-  `focus:` styles show where the focus is.
+- On macOS and the web a `RadioGroup` is one stop of the keyboard focus, and the arrow keys move between its radios
+  and check them (below).
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.
+
+## Keyboard
+
+On macOS and the web, where Tab reaches the views that take presses, a `RadioGroup` follows the
+[WAI-ARIA radio group pattern](https://www.w3.org/WAI/ARIA/apg/patterns/radio/):
+
+| Key | What it does |
+|---|---|
+| Tab, Shift+Tab | Enters the group at the checked radio (the first radio that is not disabled while none is), and leaves it in one step. |
+| Down, Right | Moves the focus to the next radio, from the last to the first, and checks it. |
+| Up, Left | Moves the focus to the previous radio, from the first to the last, and checks it. |
+| Space | Checks the focused radio. |
+
+The arrow keys skip disabled radios; the radio they move to asks to be checked with `onChange`, and the app checks it.
+`focus:` styles show where the focus is. A `Radio` outside a `RadioGroup` is a stop of its own, which Tab reaches
+and Space and Return check.
 
 ## Platform notes
 
 - iOS, Android and Mac Catalyst: a press is a tap that ends on the radio, its label included.
 - Desktops (macOS, Windows, Linux, GPUI) and the web: a press is a click. On macOS and the web, Space and Return also
-  check the radio that has the keyboard focus.
+  check the radio that has the keyboard focus, and the arrow keys move it ([Keyboard](#keyboard)).
 - Every platform draws what the app styles: the indicator, the label and their transitions.

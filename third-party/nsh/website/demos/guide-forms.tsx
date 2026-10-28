@@ -1,4 +1,4 @@
-import { type JSX, mount, Scroll, signal, Text, View, type YNode } from "nsh";
+import { type InputRef, type JSX, mount, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { button, buttonText, desktop, field, Inspector, Panel, Stage, ui, wide } from "./palette";
 
@@ -12,9 +12,9 @@ function App() {
   const notesHeight = signal(0);
   const focused = signal("nothing");
   const sent = signal("");
-  let emailInput!: YNode;
-  let passwordInput!: YNode;
-  let notesInput!: YNode;
+  let emailInput!: InputRef;
+  let passwordInput!: InputRef;
+  let notesInput!: InputRef;
 
   let tries = 0;
   const submit = () => sent.set(`#${++tries}: signed up ${name() || "nobody"} <${email() || "no e-mail"}>`);
@@ -24,7 +24,7 @@ function App() {
     <Input
       {...field({ style })}
       value={name()}
-      onChange={(t) => name.set(t)}
+      onChange={({ value }) => name.set(value)}
       placeholder="Ada Lovelace"
       autoCapitalize="words"
       autoComplete="name"
@@ -39,7 +39,7 @@ function App() {
       ref={emailInput}
       {...field({ style })}
       value={email()}
-      onChange={(t) => email.set(t.trim().toLowerCase())}
+      onChange={({ value }) => email.set(value.trim().toLowerCase())}
       placeholder="ada@example.com"
       keyboardType="email-address"
       autoCapitalize="none"
@@ -68,7 +68,7 @@ function App() {
     <Input
       {...field({ style })}
       value={code()}
-      onChange={(t) => code.set(t.replace(/[^0-9]/g, ""))}
+      onChange={({ value }) => code.set(value.replace(/[^0-9]/g, ""))}
       keyboardType="number-pad"
       autoComplete="one-time-code"
       maxLength={6}
@@ -81,8 +81,8 @@ function App() {
       multiline
       maxLength={200}
       value={notes()}
-      onChange={(t) => notes.set(t)}
-      onContentSizeChange={(e) => notesHeight.set(Math.min(e.height, 120))}
+      onChange={({ value }) => notes.set(value)}
+      onContentSizeChange={({ size }) => notesHeight.set(Math.min(size.height, 120))}
       placeholder="Return adds a line"
       {...field({ style })}
       onFocus={() => focused.set("notes")}

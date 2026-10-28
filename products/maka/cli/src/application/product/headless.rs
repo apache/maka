@@ -806,7 +806,40 @@ mod tests {
             serde_json::to_vec(&manifest).unwrap(),
         );
         let previous = super::super::Package::new(files).unwrap();
+        let current_ui = initial
+            .packages()
+            .iter()
+            .find(|package| package.application_ref().id == "maka.workbench")
+            .unwrap();
+        let mut files = current_ui.files().clone();
+        let mut manifest: Value = serde_json::from_slice(&files["maka.extension.json"]).unwrap();
+        manifest["application"]["ui"]["configuration"] =
+            json!({"type":"object","additionalProperties":false});
+        let conversations = initial
+            .packages()
+            .iter()
+            .find(|package| package.application_ref().id == "maka.conversations")
+            .unwrap();
+        let declaration: Value =
+            serde_json::from_slice(&conversations.files()["maka.extension.json"]).unwrap();
+        manifest["application"]["ui"]["imports"] =
+            declaration["application"]["ui"]["imports"].clone();
+        files.insert(
+            "maka.extension.json".into(),
+            serde_json::to_vec(&manifest).unwrap(),
+        );
+        let previous_ui = super::super::Package::new(files).unwrap();
         let mut input = initial.source().input.clone();
+        let workbench = input.instances.get_mut("workbench-ui").unwrap();
+        workbench.package = previous_ui.application_ref().into();
+        workbench.configuration = Default::default();
+        workbench.bindings = initial.source().input.instances["conversations-ui"]
+            .bindings
+            .clone();
+        let new_ui = ["conversations-ui", "composer-ui", "settings-ui"];
+        for name in new_ui {
+            input.instances.remove(name);
+        }
         let settings = input.instances.get_mut("settings").unwrap();
         settings.package = previous.application_ref().into();
         settings
@@ -823,6 +856,8 @@ mod tests {
             .map(|package| {
                 if package.application_ref() == current.application_ref() {
                     previous.clone()
+                } else if package.application_ref() == current_ui.application_ref() {
+                    previous_ui.clone()
                 } else {
                     package.clone()
                 }
@@ -872,6 +907,21 @@ mod tests {
             .unwrap();
         let (updated, _) = prepare(&store, Roots::Saved).await.unwrap();
         input.instances.get_mut("settings").unwrap().package = current.application_ref().into();
+        let previous_keys: std::collections::BTreeSet<_> =
+            input.instances.values().map(|node| node.key).collect();
+        let workbench = input.instances.get_mut("workbench-ui").unwrap();
+        workbench.package = current_ui.application_ref().into();
+        workbench.configuration = initial.source().input.instances["workbench-ui"]
+            .configuration
+            .clone();
+        workbench.bindings.clear();
+        for name in new_ui {
+            let actual = &updated.source().input.instances[name];
+            assert!(!previous_keys.contains(&actual.key));
+            let mut expected = initial.source().input.instances[name].clone();
+            expected.key = actual.key;
+            input.instances.insert(name.into(), expected);
+        }
         assert_eq!(updated.source().input, input);
         assert_eq!(updated.source().reference.revision, fixed.revision + 1);
         let record = store.application_launch().await.unwrap().unwrap();

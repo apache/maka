@@ -1,15 +1,25 @@
-//! Markdown (CommonMark with GFM's strikethrough), read with the
-//! `markdown` crate's syntax tree and written as prosemirror-markdown
+//! Markdown (CommonMark with GFM's strikethrough, tables and task lists), read with
+//! the `markdown` crate's syntax tree and written as prosemirror-markdown
 //! writes: escaped text, marks opened and closed around runs, whitespace
 //! moved outside delimiters, fences longer than the code's backtick runs.
+//!
+//! Tables (the schema's types with table roles, `tables::table_role`)
+//! read from GFM pipe tables, the first row as header cells, and from
+//! HTML `<table>` blocks. A table GFM can express (a header row of header
+//! cells, no merged cells, each cell one paragraph without line breaks)
+//! is written as a pipe table; any other is written as its HTML, which
+//! reads back as it was.
 
 use std::collections::BTreeSet;
 
 use markdown::mdast;
 use serde_json::Value;
 
-use super::{DocFormat, FormatError};
-use crate::rich_editor::model::{Attrs, Fragment, Mark, Node, Schema};
+use super::{DocFormat, DomParser, DomSerializer, FormatError, ParseOptions};
+use crate::rich_editor::{
+    model::{Attrs, Fragment, Mark, Node, Schema},
+    tables::{TableRole, colspan, rowspan, table_node_types, table_role},
+};
 
 /// The schema's names for what Markdown expresses. The defaults are the
 /// starter schema's (`extensions::starter`); an app with other names maps
@@ -53,6 +63,12 @@ pub struct MarkdownNames {
     pub link: String,
     /// Strikethrough (`strike`).
     pub strike: String,
+    /// GFM task lists (`taskList`).
+    pub task_list: String,
+    /// Their items (`taskItem`).
+    pub task_item: String,
+    /// A task item's checked attribute (`checked`).
+    pub task_checked: String,
 }
 
 impl Default for MarkdownNames {
@@ -76,12 +92,15 @@ impl Default for MarkdownNames {
             code: "code".into(),
             link: "link".into(),
             strike: "strike".into(),
+            task_list: "taskList".into(),
+            task_item: "taskItem".into(),
+            task_checked: "checked".into(),
         }
     }
 }
 
 impl MarkdownNames {
-    fn node_names(&self) -> [&str; 10] {
+    fn node_names(&self) -> [&str; 12] {
         [
             &self.paragraph,
             &self.heading,
@@ -93,6 +112,8 @@ impl MarkdownNames {
             &self.bullet_list,
             &self.ordered_list,
             &self.list_item,
+            &self.task_list,
+            &self.task_item,
         ]
     }
 
@@ -128,7 +149,9 @@ impl MarkdownFormat {
         for i in 0..node.child_count() {
             let child = node.child(i);
             let name = child.ty().name();
-            if !child.is_text() && !self.names.node_names().contains(&name) {
+            // Tables are written as GFM tables or as HTML.
+            let in_table = table_role(child.ty()).is_some();
+            if !child.is_text() && !in_table && !self.names.node_names().contains(&name) {
                 lost.insert(name.to_string());
             }
             for mark in child.marks() {
@@ -218,6 +241,13 @@ impl Reader<'_> {
         self.schema.mark(name, Some(attrs)).ok()
     }
 
+    // Whether the schema's paragraphs have `textAlign`.
+    fn aligns_paragraphs(&self) -> bool {
+        self.schema
+            .node_type(&self.names.paragraph)
+            .is_some_and(|t| t.spec().attrs.iter().any(|(name, _)| name == TEXT_ALIGN))
+    }
+
     fn paragraph(&self, inline: Vec<Node>) -> Result<Node, FormatError> {
         self.node(&self.names.paragraph, Attrs::new(), inline)
     }
@@ -280,21 +310,64 @@ impl Reader<'_> {
                 } else {
                     (&n.bullet_list, Attrs::new())
                 };
+                let tasks =
+                    !l.ordered && self.has_node(&n.task_list) && self.has_node(&n.task_item);
                 if self.has_node(name) && self.has_node(&n.list_item) {
+                    // GFM task items (`- [x]`) make a task list; a run of
+                    // them inside a bullet list splits it there.
+                    let mut run: Option<bool> = None;
                     let mut items = Vec::new();
                     for item in &l.children {
+                        let checked = match item {
+                            mdast::Node::ListItem(i) if tasks => i.checked,
+                            _ => None,
+                        };
+                        if run.is_some_and(|task| task != checked.is_some()) {
+                            let list = if run == Some(true) {
+                                &n.task_list
+                            } else {
+                                name
+                            };
+                            out.push(self.node(list, attrs.clone(), std::mem::take(&mut items))?);
+                        }
+                        run = Some(checked.is_some());
                         let children = item.children().map(Vec::as_slice).unwrap_or(&[]);
                         let mut inner = self.blocks(children)?;
                         if inner.is_empty() {
                             inner.push(self.paragraph(Vec::new())?);
                         }
-                        items.push(self.node(&n.list_item, Attrs::new(), inner)?);
+                        items.push(match checked {
+                            Some(done) => {
+                                let mut a = Attrs::new();
+                                a.insert(n.task_checked.clone(), Value::Bool(done));
+                                self.node(&n.task_item, a, inner)?
+                            }
+                            None => self.node(&n.list_item, Attrs::new(), inner)?,
+                        });
                     }
-                    out.push(self.node(name, attrs, items)?);
+                    let list = if run == Some(true) {
+                        &n.task_list
+                    } else {
+                        name
+                    };
+                    out.push(self.node(list, attrs, items)?);
                 } else {
                     for item in &l.children {
                         out.extend(self.blocks(item.children().map(Vec::as_slice).unwrap_or(&[]))?);
                     }
+                }
+            }
+            mdast::Node::Table(t) if table_node_types(self.schema).is_some() => {
+                out.push(self.table(t)?);
+            }
+            mdast::Node::Html(h)
+                if is_html_table(&h.value) && table_node_types(self.schema).is_some() =>
+            {
+                // A table written as HTML: read with the schema's rules.
+                let parsed =
+                    DomParser::from_schema(self.schema).parse(&h.value, &ParseOptions::default());
+                for i in 0..parsed.child_count() {
+                    out.push(parsed.child(i).clone());
                 }
             }
             mdast::Node::Html(h) => {
@@ -316,6 +389,61 @@ impl Reader<'_> {
             },
         }
         Ok(())
+    }
+
+    // A GFM table: its first row of header cells, each cell a paragraph,
+    // rows short of the header's cells filled with empty ones.
+    fn table(&self, table: &mdast::Table) -> Result<Node, FormatError> {
+        let Some(types) = table_node_types(self.schema) else {
+            return Err(FormatError::Schema("the schema has no tables".into()));
+        };
+        let width = table.align.len().max(1);
+        let make = |e: crate::rich_editor::model::SchemaError| FormatError::Schema(e.to_string());
+        let mut rows = Vec::new();
+        for (i, row) in table.children.iter().enumerate() {
+            let ty = if i == 0 {
+                &types.header_cell
+            } else {
+                &types.cell
+            };
+            let cells_in = row.children().map(Vec::as_slice).unwrap_or(&[]);
+            let mut cells = Vec::new();
+            for j in 0..width {
+                let inline = match cells_in.get(j) {
+                    Some(cell) => {
+                        self.inlines(cell.children().map(Vec::as_slice).unwrap_or(&[]), &[])
+                    }
+                    None => Vec::new(),
+                };
+                // A column's alignment (`:---:`) is its paragraphs'
+                // `textAlign`, where the schema has it.
+                let mut attrs = Attrs::new();
+                if let Some(align) = table.align.get(j).and_then(|a| match a {
+                    mdast::AlignKind::Left => Some("left"),
+                    mdast::AlignKind::Center => Some("center"),
+                    mdast::AlignKind::Right => Some("right"),
+                    mdast::AlignKind::None => None,
+                }) && self.aligns_paragraphs()
+                {
+                    attrs.insert(TEXT_ALIGN.into(), Value::from(align));
+                }
+                let paragraph = self.node(&self.names.paragraph, attrs, inline)?;
+                cells.push(
+                    ty.create(None, Fragment::from(vec![paragraph]), Vec::new())
+                        .map_err(make)?,
+                );
+            }
+            rows.push(
+                types
+                    .row
+                    .create(None, Fragment::from(cells), Vec::new())
+                    .map_err(make)?,
+            );
+        }
+        types
+            .table
+            .create(None, Fragment::from(rows), Vec::new())
+            .map_err(make)
     }
 
     fn text(&self, text: &str, marks: Vec<Mark>) -> Vec<Node> {
@@ -405,6 +533,17 @@ impl Reader<'_> {
     }
 }
 
+// An HTML block holding a table.
+// The paragraph attribute a table column's alignment reads and writes.
+const TEXT_ALIGN: &str = "textAlign";
+
+// An HTML block holding a table.
+fn is_html_table(html: &str) -> bool {
+    html.trim_start()
+        .get(..6)
+        .is_some_and(|start| start.eq_ignore_ascii_case("<table"))
+}
+
 fn is_block(node: &mdast::Node) -> bool {
     matches!(
         node,
@@ -471,8 +610,10 @@ impl Writer<'_> {
             format!("{fence}{lang}\n{text}\n{fence}")
         } else if name == n.horizontal_rule {
             "---".into()
-        } else if name == n.bullet_list || name == n.ordered_list {
+        } else if name == n.bullet_list || name == n.ordered_list || name == n.task_list {
             self.list(node, name == n.ordered_list)
+        } else if table_role(node.ty()) == Some(TableRole::Table) {
+            self.table(node)
         } else if node.is_textblock() {
             self.inline(node.content())
         } else if node.is_leaf() {
@@ -480,6 +621,67 @@ impl Writer<'_> {
         } else {
             self.blocks(node)
         }
+    }
+
+    // A pipe table when GFM can express it, else the table's HTML (one
+    // line, so it stays one HTML block).
+    fn table(&self, table: &Node) -> String {
+        match self.pipe_table(table) {
+            Some(text) => text,
+            None => DomSerializer::from_schema(table.ty().schema())
+                .serialize_node(table)
+                .replace('\n', " "),
+        }
+    }
+
+    fn pipe_table(&self, table: &Node) -> Option<String> {
+        let mut lines = Vec::new();
+        let mut width = None;
+        // Each column's alignment: its first row's cell's paragraph's.
+        let mut aligns = Vec::new();
+        for i in 0..table.child_count() {
+            let row = table.child(i);
+            let mut cells = Vec::new();
+            for j in 0..row.child_count() {
+                let cell = row.child(j);
+                let header = table_role(cell.ty()) == Some(TableRole::HeaderCell);
+                if header != (i == 0) || colspan(cell) != 1 || rowspan(cell) != 1 {
+                    return None;
+                }
+                let paragraph = cell.first_child()?;
+                if cell.child_count() != 1
+                    || paragraph.ty().name() != self.names.paragraph
+                    || (0..paragraph.child_count()).any(|k| !paragraph.child(k).is_text())
+                {
+                    return None;
+                }
+                let text = self.inline(paragraph.content());
+                if text.contains('\n') {
+                    return None;
+                }
+                if i == 0 {
+                    aligns.push(
+                        match paragraph.attrs().get(TEXT_ALIGN).and_then(Value::as_str) {
+                            Some("left") => ":---",
+                            Some("center") => ":---:",
+                            Some("right") => "---:",
+                            _ => "---",
+                        },
+                    );
+                }
+                cells.push(escape_cell_pipes(&text));
+            }
+            match width {
+                None => width = Some(cells.len()),
+                Some(w) if w != cells.len() => return None,
+                _ => {}
+            }
+            lines.push(format!("| {} |", cells.join(" | ")));
+            if i == 0 {
+                lines.push(format!("| {} |", aligns.join(" | ")));
+            }
+        }
+        (width? > 0).then(|| lines.join("\n"))
     }
 
     fn list(&self, node: &Node, ordered: bool) -> String {
@@ -493,12 +695,23 @@ impl Writer<'_> {
         let tight = (0..node.child_count()).all(|i| node.child(i).child_count() <= 1);
         let mut items = Vec::new();
         for i in 0..node.child_count() {
+            let child = node.child(i);
             let marker = if ordered {
                 format!("{}. ", start + i as u64)
             } else {
                 "- ".to_string()
             };
             let indent = " ".repeat(marker.len());
+            let marker = if child.ty().name() == self.names.task_item {
+                let done = child
+                    .attrs()
+                    .get(&self.names.task_checked)
+                    .and_then(Value::as_bool)
+                    == Some(true);
+                format!("{marker}[{}] ", if done { 'x' } else { ' ' })
+            } else {
+                marker
+            };
             let body = self.blocks(node.child(i));
             let mut item = String::new();
             for (j, line) in body.split('\n').enumerate() {
@@ -733,6 +946,22 @@ fn escape(text: &str, mut line_start: bool) -> String {
     out
 }
 
+/// `text` with each pipe the inline writer left bare escaped (in code
+/// spans), so a GFM table cell ends only at its own pipes: pipes already
+/// escaped (after an odd run of backslashes) stay as they are.
+fn escape_cell_pipes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut backslashes = 0;
+    for c in text.chars() {
+        if c == '|' && backslashes % 2 == 0 {
+            out.push('\\');
+        }
+        backslashes = if c == '\\' { backslashes + 1 } else { 0 };
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,6 +998,23 @@ mod tests {
         assert_eq!(out, "- a\n\n- b\n\n  - nested\n\n3. three\n4. four\n");
         assert_eq!(doc.child(0).ty().name(), "bulletList");
         assert_eq!(doc.child(1).attrs().get("start"), Some(&Value::from(3)));
+    }
+
+    #[test]
+    fn task_lists_round_trip() {
+        let (doc, out) = round_trip("- a\n\n- [x] done\n- [ ] todo\n");
+        assert_eq!(doc.child(0).ty().name(), "bulletList");
+        let tasks = doc.child(1);
+        assert_eq!(tasks.ty().name(), "taskList");
+        assert_eq!(
+            tasks.child(0).attrs().get("checked"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            tasks.child(1).attrs().get("checked"),
+            Some(&Value::Bool(false))
+        );
+        assert!(out.ends_with("- [x] done\n- [ ] todo\n"), "{out:?}");
     }
 
     #[test]
@@ -869,6 +1115,69 @@ mod tests {
         assert_eq!(f.serialize(&doc).unwrap(), "u\n");
         let plain = f.parse(&schema, "plain").unwrap();
         assert!(f.losses(&plain).is_empty());
+    }
+
+    #[test]
+    fn gfm_tables_round_trip() {
+        use crate::rich_editor::tables::test_util::schema;
+        let schema = schema();
+        let f = MarkdownFormat::default();
+        let md = "| a | **b** |\n| --- | --- |\n| c \\| d |  |\n";
+        let doc = f.parse(&schema, md).unwrap();
+        let table = doc.child(0);
+        assert_eq!(table.ty().name(), "table");
+        assert_eq!(table.child(0).child(0).ty().name(), "tableHeader");
+        assert_eq!(table.child(1).child(0).ty().name(), "tableCell");
+        assert_eq!(table.child(1).child(0).text_content(), "c | d");
+        let out = f.serialize(&doc).unwrap();
+        assert_eq!(out, md);
+        assert!(f.losses(&doc).is_empty());
+        // Rows short of cells are filled.
+        let doc = f.parse(&schema, "| a | b |\n| - | - |\n| c |\n").unwrap();
+        assert_eq!(doc.child(0).child(1).child_count(), 2);
+    }
+
+    #[test]
+    fn gfm_column_alignment_is_its_paragraphs_text_align() {
+        let schema = crate::rich_editor::tables::test_util::schema();
+        let schema = &schema;
+        let f = MarkdownFormat::default();
+        let md = "| a | b | c |\n| :--- | :---: | --- |\n| 1 | 2 | 3 |\n";
+        let doc = f.parse(schema, md).unwrap();
+        let align = |row: usize, col: usize| {
+            doc.child(0)
+                .child(row)
+                .child(col)
+                .child(0)
+                .attrs()
+                .get("textAlign")
+                .cloned()
+        };
+        assert_eq!(align(1, 0), Some(Value::from("left")));
+        assert_eq!(align(0, 1), Some(Value::from("center")));
+        assert_eq!(align(1, 2), Some(Value::Null));
+        assert_eq!(f.serialize(&doc).unwrap(), md);
+    }
+
+    #[test]
+    fn other_tables_are_written_as_html() {
+        use crate::rich_editor::tables::test_util::{doc, table, td, tds, tr};
+        let schema = crate::rich_editor::tables::test_util::schema();
+        let f = MarkdownFormat::default();
+        // Merged cells and no header row: GFM cannot hold them.
+        let d = doc(vec![table(vec![
+            tr(vec![tds("a", 2, 1)]),
+            tr(vec![td("c"), td("d")]),
+        ])]);
+        let out = f.serialize(&d).unwrap();
+        assert!(out.starts_with("<table"), "{out}");
+        let back = f.parse(&schema, &out).unwrap();
+        assert!(back.eq(&d), "{out}");
+        // Without tables in the schema, a pipe table keeps its text.
+        let plain = f
+            .parse(&starter::schema(), "| a | b |\n| - | - |\n| c | d |\n")
+            .unwrap();
+        assert!(plain.text_content().contains('c'));
     }
 
     #[test]

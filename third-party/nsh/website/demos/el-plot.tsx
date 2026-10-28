@@ -1,12 +1,13 @@
 import { mount, signal, Text, View } from "nsh";
-import { Area, Bar, Grid, Line, Plot } from "nsh/base/plot";
+import { Area, Bar, Grid, Line, Plot, PlotAxis } from "nsh/base/plot";
 import { desktop, Log, Panel, Segmented, size, Split, tint, ui } from "./palette";
 
 // A price chart built from the plot's parts: the rows are the app's, the
 // look is the palette's (paint as styles: `stroke`, `fill`,
-// `strokeDasharray`). The y domain is the app's, so its labels sit at the
-// grid's values; the row under the pointer drives the value in the header,
-// and the plot's cross line, dot and tooltip follow it natively. Grid lines
+// `strokeDasharray`). The y domain is the app's, and its axis labels the
+// grid's values; the axes lay their labels along the plot's edges. The row
+// under the pointer drives the value in the header, and the plot's cross
+// line, dot and tooltip follow it natively. Grid lines
 // are solid hairlines and the bottom one a firmer baseline; the one dashed
 // line is a reference, the opening price the change is measured from. The
 // area is a wash of the line's color that fades out toward the baseline
@@ -70,6 +71,8 @@ const domain = (rows: Row[]): [number, number] => {
 };
 
 const num = { fontVariant: ["tabular-nums" as const], textAlign: "right" as const };
+/** The room under a plot for its x axis' labels: their 12 above a line of 14. */
+const AXIS_BELOW = 12 + 14;
 
 /** A series' key: a swatch in its color, its name and the shown month's value. */
 function Key(props: { color: string; label: string; value: string }) {
@@ -104,11 +107,11 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
         <Key color={ui().info} label="Online" value={`${shown().online}k`} />
         <Key color={ui().violet} label="In store" value={`${shown().store}k`} />
       </View>
-      <View class="flex-row gap-2">
+      <View>
         <Plot
           data={SALES}
           // Half the inner gap at the ends: the bands' middles divide the
-          // width evenly, under the months' equal cells.
+          // width evenly.
           xScale={{ type: "band", paddingInner: 0.3, paddingOuter: 0.15, maxBandWidth: 56, groupPadding: 0.12 }}
           yScale={{ type: "linear", domain: [0, SALES_TOP] }}
           accessibilityLabel={`Sales per month, online and in store, highest in Jul at ${total(SALES[6])}k`}
@@ -118,11 +121,11 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
           // The month under the pointer: a faint band over its bars.
           crossLineClass="w-full h-full"
           crossLineStyle={{ backgroundColor: tint(ui().text, 0.05) }}
-          onHoverChange={(index) => {
+          onHoverChange={({ index }) => {
             hovered.set(index);
             props.onHover(index);
           }}
-          style={{ flex: 1, height }}
+          style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
         >
           <Grid y={[40, 80, 120]} style={{ stroke: tint(ui().text, 0.08) }} />
           <Grid y={[0]} style={{ stroke: tint(ui().text, 0.2) }} />
@@ -147,19 +150,14 @@ function SalesCard(props: { mode: Mode; onHover: (index: number | null) => void 
             labelStyle={labelStyle()}
             style={{ fill: ui().violet }}
           />
+          {/* The grid's values right of the plot, a month centered under each band. */}
+          <PlotAxis
+            placement="right"
+            tickValues={[0, 40, 80, 120]}
+            labelStyle={{ width: 36, paddingLeft: 8, textAlign: "right", fontSize: 11, color: ui().muted, ...num }}
+          />
+          <PlotAxis format={(i) => SALES[i].month} labelStyle={{ fontSize: 11, lineHeight: 14, paddingTop: 12, color: ui().muted }} />
         </Plot>
-        <View style={{ width: 28, height }}>
-          {[0, 40, 80, 120].map((v) => (
-            <Text style={{ position: "absolute", right: 0, top: (1 - v / SALES_TOP) * height - 7, fontSize: 11, color: ui().muted, ...num }}>
-              {String(v)}
-            </Text>
-          ))}
-        </View>
-      </View>
-      <View class="flex-row" style={{ marginRight: 36 }}>
-        {SALES.map((d) => (
-          <Text style={{ flex: 1, textAlign: "center", fontSize: 11, color: ui().muted }}>{d.month}</Text>
-        ))}
       </View>
     </View>
   );
@@ -259,8 +257,7 @@ function App() {
               </View>
             </View>
 
-            {/* Above the x axis' labels, so the tooltip covers them. */}
-            <View class="flex-row gap-2" style={{ zIndex: 1 }}>
+            <View>
               <Plot
                 data={rows()}
                 y="price"
@@ -282,13 +279,13 @@ function App() {
                     <Text style={{ fontSize: 11, color: ui().text, ...num }}>{RANGES[range()].time(Math.min(tipRow(), rows().length - 1))}</Text>
                   </View>
                 }
-                onHoverChange={(index) => {
+                onHoverChange={({ index }) => {
                   hovered.set(index);
                   if (index != null) tipRow.set(index);
                   const line = index == null ? "null: left the chart" : `${index}: ${rows()[index].price.toFixed(2)}`;
                   events.set([line, ...events()].slice(0, 5));
                 }}
-                style={{ flex: 1, height }}
+                style={{ height, marginRight: 36, marginBottom: AXIS_BELOW }}
               >
                 <Grid y={[(lo() + hi()) / 2, hi()]} style={{ stroke: tint(ui().text, 0.08) }} />
                 {/* A wash that fades out toward the baseline; the line has the dot. */}
@@ -305,17 +302,19 @@ function App() {
                   style={{ stroke: color(), strokeWidth: 2 }}
                   hoverDotStyle={{ backgroundColor: color(), borderColor: ui().card.backgroundColor }}
                 />
+                {/* The grid's values right of the plot, the range's times under it. */}
+                <PlotAxis
+                  placement="right"
+                  tickValues={[lo(), (lo() + hi()) / 2, hi()]}
+                  format={label}
+                  labelStyle={{ fontSize: 11, paddingLeft: 8, color: ui().muted, ...num }}
+                />
+                <PlotAxis
+                  ticks={RANGES[range()].ticks.length}
+                  format={(_, i) => RANGES[range()].ticks[i]}
+                  labelStyle={{ fontSize: 11, lineHeight: 14, paddingTop: 12, color: ui().muted }}
+                />
               </Plot>
-              <View style={{ justifyContent: "space-between", marginVertical: -7, width: 28 }}>
-                {[hi(), (lo() + hi()) / 2, lo()].map((v) => (
-                  <Text style={{ fontSize: 11, color: ui().muted, ...num }}>{label(v)}</Text>
-                ))}
-              </View>
-            </View>
-            <View class="flex-row justify-between" style={{ marginRight: 36 }}>
-              {RANGES[range()].ticks.map((t) => (
-                <Text style={{ fontSize: 11, color: ui().muted }}>{t}</Text>
-              ))}
             </View>
           </View>
         </If>

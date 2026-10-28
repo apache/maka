@@ -181,8 +181,8 @@ const toggle = (id: number) =>
 | `keyExtractor` | `.keys(..)` | `(item, index) => string` | | 可见性回调中的键；在 Rust 中是各行的标识。 |
 | `refreshing` / `onRefresh` | `.refreshing(..)` / `.on_refresh(..)` | `boolean` / `() => void` | | 下拉刷新。 |
 | `refreshIndicator` | `.refresh_indicator(..)` | `{ height: number }` | | 应用自己的下拉刷新指示器，取代平台的转圈（见[滚动](./scrolling.md#自己的指示器)）。 |
-| `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 显示滚动条。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
-| `ref` | `.element_ref(&list)` | `YNode` | | `scrollToIndex`、`scrollToOffset`、`scrollToEnd`、`scrollTo`。 |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](../elements/scrollbar.md#内置滚动条)；对象是该视图自己的主题。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
+| `ref` | `.element_ref(&list)` | `ListRef` | | `scrollToIndex`、`scrollToOffset`、`scrollToEnd`、`scrollTo`。 |
 
 头部、尾部和空状态插槽接受元素（在 TSX 中也可以是组件：`header={Header}`）。它们是独立的单元格，从不被复用，并且和其他元素一样是响应式的。
 
@@ -448,7 +448,7 @@ function Chat() {
       <View style={{ flexDirection: "row", gap: 8, padding: 8 }}>
         <Input
           value={draft()}
-          onChange={(t) => draft.set(t)}
+          onChange={({ value }) => draft.set(value)}
           onSubmit={send}
           multiline
           submitBehavior="submit"
@@ -750,9 +750,9 @@ list.scroll_to_index(120, percentage(0.5), px(0.0), true);
 ```
 
 ```tsx tabs
-import { List, type YNode } from "nsh";
+import { List, type ListRef } from "nsh";
 
-let list!: YNode;
+let list!: ListRef;
 
 <List ref={list} each={items} estimatedItemSize={48} style={{ flex: 1 }}>…</List>
 

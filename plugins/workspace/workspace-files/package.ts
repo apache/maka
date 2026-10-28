@@ -18,7 +18,7 @@
  */
 
 import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
+import { native, one } from '../../shared/package.js';
 export default {
   schemaVersion: 1,
   id: 'maka.agent.workspace-files',
@@ -37,7 +37,12 @@ export default {
         required: [],
         additionalProperties: false,
       },
+      imports: {
+        agent: one(sdk.contracts.agent),
+        terminal: { contract: sdk.contracts.terminal, cardinality: { kind: 'optional' } },
+      },
       contributions: {
+        workspace: { kind: 'view', contract: 'maka.workspace.preview' },
         changes: {
           kind: 'panel',
           title: {

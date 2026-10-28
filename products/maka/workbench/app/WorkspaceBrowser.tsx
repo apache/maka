@@ -32,8 +32,9 @@ import {
   View,
   Image,
   List,
+  platform,
 } from 'nsh';
-import type { YNode } from 'nsh';
+import type { ListRef, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import logo from './assets/maka.png';
 import { keymap } from 'nsh';
@@ -54,15 +55,16 @@ import {
   type SessionActionTarget,
 } from './sessionLifecycle';
 import { sessionStatusCaption } from './sessionStatus';
-import { controlsLeft, docked, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
+import { controlsLeft, ownTitleBar, TITLE_BAR_HEIGHT, windowDrag } from './chrome';
 
 export type WorkspaceBrowserProps = {
+  docked(): boolean;
   browsing: Browsing;
   selected(): string | null;
   switching(): boolean;
   focusRequest(): boolean;
   focusHandled(): void;
-  attach(node: YNode): void;
+  attach(node: ViewRef): void;
   close(): void;
   selectSession(id: string, expectedSessionId: string | null): Promise<void>;
   create(workspace: BrowserWorkspace, expectedSessionId: string | null): Promise<void>;
@@ -73,15 +75,15 @@ export type WorkspaceBrowserProps = {
 };
 
 export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
-  const titleBarRow = () => ownTitleBar && docked.browser();
+  const titleBarRow = () => ownTitleBar && props.docked();
   const browser = props.browsing;
   const choosingWorkspace = signal(false);
   const actions = signal<{ session: SessionActionTarget; origin: string | null } | null>(null);
-  const actionsAnchor = signal<YNode | null>(null);
+  const actionsAnchor = signal<ViewRef | null>(null);
   const navigationNotice = signal<{ kind: 'draft' | 'action'; message: UiText } | null>(null);
   const viewportHeight = signal(160);
-  let navigationTarget: YNode | undefined;
-  let list: YNode | undefined;
+  let navigationTarget: ViewRef | undefined;
+  let list: ListRef | undefined;
   let removeEscape = () => {};
   let alive = true;
   cleanup(() => {
@@ -145,7 +147,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   };
   const openActions = (
     target: { session: SessionActionTarget; origin: string | null },
-    anchor: YNode,
+    anchor: ViewRef,
   ) => {
     if (
       alive &&
@@ -310,8 +312,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           backgroundColor: C.background,
           borderRadius: 8,
         }}
-        hoverStyle={controlHoverStyle}
-        focusStyle={controlFocusStyle}
+        hoverStyle={controlHoverStyle()}
+        focusStyle={controlFocusStyle()}
       >
         <Icon name="search" color={C.secondary} />
         <Text style={[{ color: C.muted, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
@@ -333,8 +335,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           accessibilityLabel={tr('Show active conversations')}
           style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           onPress={inputAction(chooseFilter, 'all')}
         >
           <Text style={{ color: browser.filter() === 'all' ? C.text : C.muted }}>
@@ -346,8 +348,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           accessibilityLabel={tr('Show archived conversations')}
           style={{ ...controlStyle, flex: 1, alignItems: 'center', paddingHorizontal: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           onPress={inputAction(chooseFilter, 'archived')}
         >
           <Text style={{ color: browser.filter() === 'archived' ? C.text : C.muted }}>
@@ -370,7 +372,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             </If>
           </View>
         )}
-        onLayout={(frame) => viewportHeight.set(frame.size.height)}
+        onLayout={({ bounds: frame }) => viewportHeight.set(frame.size.height)}
         onLoadMore={() => {
           if (!choosingWorkspace()) void browser.loadMore();
         }}
@@ -403,8 +405,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         justifyContent: 'center',
                         borderRadius: 8,
                       }}
-                      hoverStyle={controlHoverStyle}
-                      focusStyle={controlFocusStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
                     >
                       <Text style={[{ color: C.text }, { numberOfLines: 1 }]}>
                         {scope()?.title}
@@ -441,7 +443,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 );
               }
               const session = () => sessionsById().get(key());
-              let actionTrigger: YNode | undefined;
+              let actionTrigger: ViewRef | undefined;
               cleanup(() => {
                 if (alive && actionsAnchor() === actionTrigger) actionsAnchor.set(null);
               });
@@ -452,98 +454,140 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 if (actionTrigger && target.session.id === key())
                   openActions(target, actionTrigger);
               };
+              // On the desktop the More button sits inside the row and shows on
+              // the selected row, while the pointer is on the row, or while its
+              // menu is open.
+              const hovered = signal(false);
+              const actionsShown = () =>
+                platform.isTerminal ||
+                hovered() ||
+                props.selected() === key() ||
+                actionsAnchor() === actionTrigger;
               return (
                 <View
+                  // A secondary click opens the row's actions, as its More button does.
+                  onContextMenu={
+                    session()
+                      ? inputAction(showActions, {
+                          session: sessionActionTarget(session()!),
+                          origin: props.selected(),
+                        })
+                      : undefined
+                  }
                   style={{
                     flexDirection: 'row',
                     height: compact() ? 32 : 48,
                     paddingVertical: compact() ? 0 : 2,
                   }}
                 >
-                  <Button
-                    accessibilityLabel={tr('Open conversation {title}', {
-                      title: session()?.title || tr('Untitled conversation'),
-                    })}
-                    disabled={props.switching() || !session()}
-                    selected={props.selected() === key()}
-                    onPress={inputAction(select, { id: key(), origin: props.selected() })}
+                  <View
+                    onMouseEnter={() => hovered.set(true)}
+                    onMouseLeave={() => hovered.set(false)}
                     style={{
                       flex: 1,
                       minWidth: 0,
-                      paddingHorizontal: 8,
-                      justifyContent: 'center',
+                      flexDirection: 'row',
                       borderRadius: 8,
-                      backgroundColor: props.selected() === key() ? C.line : C.surface,
+                      ...(platform.isTerminal
+                        ? {}
+                        : {
+                            backgroundColor:
+                              props.selected() === key() || hovered() ? C.line : C.surface,
+                          }),
                     }}
-                    hoverStyle={{ backgroundColor: C.line }}
-                    focusStyle={{ backgroundColor: C.raised }}
                   >
-                    <View
-                      style={[
-                        { flexDirection: 'row', alignItems: 'center', gap: 8 },
-                        { pointerEvents: 'none' },
-                      ]}
+                    <Button
+                      accessibilityLabel={tr('Open conversation {title}', {
+                        title: session()?.title || tr('Untitled conversation'),
+                      })}
+                      disabled={props.switching() || !session()}
+                      selected={props.selected() === key()}
+                      onPress={inputAction(select, { id: key(), origin: props.selected() })}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        paddingHorizontal: 8,
+                        justifyContent: 'center',
+                        borderRadius: 8,
+                        backgroundColor: platform.isTerminal
+                          ? props.selected() === key()
+                            ? C.line
+                            : C.surface
+                          : 'transparent',
+                      }}
+                      hoverStyle={platform.isTerminal ? { backgroundColor: C.line } : {}}
+                      focusStyle={{ backgroundColor: C.raised }}
                     >
+                      <View
+                        style={[
+                          { flexDirection: 'row', alignItems: 'center', gap: 8 },
+                          { pointerEvents: 'none' },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            {
+                              color:
+                                props.selected() === key() || session()?.hasUnread
+                                  ? C.accent
+                                  : C.text,
+                              flex: 1,
+                            },
+                            { numberOfLines: 1 },
+                          ]}
+                        >
+                          {session()?.title || tr('Untitled conversation')}
+                        </Text>
+                        <If when={session()?.hasUnread}>
+                          <Icon name="unread" color={C.accent} />
+                        </If>
+                      </View>
                       <Text
                         style={[
-                          {
-                            color:
-                              props.selected() === key() || session()?.hasUnread
-                                ? C.accent
-                                : C.text,
-                            flex: 1,
-                          },
+                          { color: C.muted, fontSize: 12, lineHeight: 16 },
                           { numberOfLines: 1 },
                         ]}
                       >
-                        {session()?.title || tr('Untitled conversation')}
+                        {session()?.activity === 'working'
+                          ? `${sessionStatusCaption.working} · `
+                          : session()?.activity === 'waiting'
+                            ? `${sessionStatusCaption.waiting} · `
+                            : ''}
+                        {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
+                          session()?.workspace.path}
                       </Text>
-                      <If when={session()?.hasUnread}>
-                        <Icon name="unread" color={C.accent} />
-                      </If>
-                    </View>
-                    <Text
-                      style={[
-                        { color: C.muted, fontSize: 12, lineHeight: 16 },
-                        { numberOfLines: 1 },
-                      ]}
+                    </Button>
+                    <Button
+                      ref={(node) => {
+                        actionTrigger = node;
+                      }}
+                      accessibilityLabel={tr('Actions for {title}', {
+                        title: session()?.title || tr('Untitled conversation'),
+                      })}
+                      disabled={props.switching() || !session()}
+                      onPress={
+                        session()
+                          ? inputAction(showActions, {
+                              session: sessionActionTarget(session()!),
+                              origin: props.selected(),
+                            })
+                          : undefined
+                      }
+                      style={{
+                        width: 32,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: 8,
+                        opacity: actionsShown() ? 1 : 0,
+                      }}
+                      hoverStyle={controlHoverStyle()}
+                      // Closing the menu returns focus here, and a click elsewhere
+                      // keeps it, so the desktop shows focus as the icon alone.
+                      focusStyle={platform.isTerminal ? controlFocusStyle() : { opacity: 1 }}
                     >
-                      {session()?.activity === 'working'
-                        ? `${sessionStatusCaption.working} · `
-                        : session()?.activity === 'waiting'
-                          ? `${sessionStatusCaption.waiting} · `
-                          : ''}
-                      {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
-                        session()?.workspace.path}
-                    </Text>
-                  </Button>
-                  <Button
-                    ref={(node) => {
-                      actionTrigger = node;
-                    }}
-                    accessibilityLabel={tr('Actions for {title}', {
-                      title: session()?.title || tr('Untitled conversation'),
-                    })}
-                    disabled={props.switching() || !session()}
-                    onPress={
-                      session()
-                        ? inputAction(showActions, {
-                            session: sessionActionTarget(session()!),
-                            origin: props.selected(),
-                          })
-                        : undefined
-                    }
-                    style={{
-                      width: 32,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: 8,
-                    }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
-                  >
-                    <Icon name="more" color={C.muted} />
-                  </Button>
+                      <Icon name="more" color={C.muted} />
+                    </Button>
+                  </View>
                 </View>
               );
             }}
@@ -566,8 +610,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           <Button
             onPress={inputAction(props.close, null)}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ color: C.accent }}>{tr('Return to draft')}</Text>
           </Button>
@@ -580,8 +624,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         <Button
           onPress={inputAction(refresh, null)}
           style={controlStyle}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Text style={{ color: C.accent }}>{tr('Refresh browser')}</Text>
         </Button>
@@ -598,8 +642,21 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
       >
         <Button
           accessibilityLabel={tr('Open settings')}
+          // The application menu owns ⌘, only where the app draws its own title bar.
+          tooltip={textTooltip(() =>
+            ownTitleBar ? `${tr('Settings')} · ${keymap.label('mod+,')}` : undefined,
+          )}
           onPress={inputAction(props.settings, props.selected())}
-          style={{ ...controlStyle, flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+          // Starts where New conversation's icon and label do, like the rows above it.
+          style={{
+            ...controlStyle,
+            flex: 1,
+            flexDirection: 'row',
+            justifyContent: 'flex-start',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 8,
+          }}
           hoverStyle={{ backgroundColor: C.raised }}
           focusStyle={{ backgroundColor: C.line }}
         >

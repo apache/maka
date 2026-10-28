@@ -108,7 +108,7 @@ add up to the number of columns, or of the level below.
 
 The table asks for rows by position, and the app serves them. `rowCount` is the total number of rows, `data` the rows
 the app holds, and `dataStart` the position of the first of them. Rows outside `data` are empty until the app supplies
-them. `onVisibleRowsChange` reports the rows in view, `{ start, end }`, at every scroll step, and is the place to fetch
+them. `onVisibleRowsChange` reports the rows in view, `{ range: { start, end } }`, at every scroll step, and is the place to fetch
 the page around them.
 
 ```tsx
@@ -120,7 +120,7 @@ const page = signal({ start: 0, rows: load(0) });
   data={page().rows}
   dataStart={page().start}
   rowCount={ROWS}
-  onVisibleRowsChange={({ start, end }) => {
+  onVisibleRowsChange={({ range: { start, end } }) => {
     // Keep the rows in view inside the page held.
     const held = page();
     if (start < held.start || end > held.start + held.rows.length) {
@@ -184,8 +184,8 @@ selection, and Escape gives the keyboard back.
 
 ## Sorting
 
-A `sortable` column has a sort button at the end of its title, a small ghost button dimmed while the column is unsorted. Pressing it reports the next sort in the cycle of unsorted,
-ascending, descending and unsorted again, with `onSortChange({ key, direction })` (`null` to clear). The table does
+A `sortable` column has a sort button at the end of its title, a small ghost button dimmed while the column is unsorted. Pressing it reports the next sort (`{ key, direction }`) in the cycle of unsorted,
+ascending, descending and unsorted again, with `onSortChange({ sort })` (`null` to clear). The table does
 not reorder the rows: the app sorts its data, or asks its server for rows in the new order, and sets `sort` so the
 title shows it. Because the app owns the order, sorting works the same over a million rows the app never holds.
 
@@ -194,7 +194,7 @@ title shows it. Because the app owns the order, sorting works the same over a mi
   columns={columns}
   data={rows()}
   sort={sort()}
-  onSortChange={(next) => {
+  onSortChange={({ sort: next }) => {
     sort.set(next ?? undefined);
     rows.set(sorted(people, next));
   }}
@@ -204,7 +204,7 @@ title shows it. Because the app owns the order, sorting works the same over a mi
 
 ## Resizing and moving columns
 
-A drag of a column's trailing edge resizes it within its `minWidth` and `maxWidth`, and `onColumnResize(key, width)`
+A drag of a column's trailing edge resizes it within its `minWidth` and `maxWidth`, and `onColumnResize({ key, width })`
 reports every step. Pressing the edge twice in a row fits the column to its widest text and title. A drag of a title moves the column, and a line shows where it will drop; `onColumnMove` reports
 `{ key, from, to, order }`, `order` being the `key`s of all the columns in the order shown. Fixed columns stay among
 the fixed ones. `resizableColumns` and `movableColumns` turn both off for the table, and a column's `resizable` and
@@ -373,15 +373,15 @@ parts provide the table's structure and alignment; their classes supply the appe
 
 | Event | Rust | Description |
 |---|---|---|
-| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | The user changed the selection: `{ row?, column? }`, or `null`. |
+| `onSelectionChange` | `.on_selection_change(\|selection: &Option<DataTableSelection>\| ..)` | The user changed the selection: `{ selection }`, a `{ row?, column? }` or `null`. |
 | `onRowPress` | `.on_row_press(\|event: &DataTablePress\| ..)` | A row or cell was pressed: `{ row, column?, clicks, shift, control, alt, platform }`. |
-| `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | A row, cell or title was pressed twice: `{ row?, column? }`. |
+| `onDoublePress` | `.on_double_press(\|target: &DataTableTarget\| ..)` | A row, cell or title was pressed twice: `{ target }`, a `{ row?, column? }`. |
 | `onContextMenu` | `.on_context_menu(\|event: &DataTableContextMenu\| ..)` | A context menu was asked for: `{ row?, column?, x, y }`, the point in the root view. |
-| `onSortChange` | `.on_sort_change(\|sort: &Option<DataTableSort>\| ..)` | A sort button was pressed: the next sort `{ key, direction }`, or `null`. |
-| `onColumnResize` | `.on_column_resize(\|key: &SharedString, width: &Points\| ..)` | A column was resized, at every step of a drag and once more when a fit sets it. |
+| `onSortChange` | `.on_sort_change(\|sort: &Option<DataTableSort>\| ..)` | A sort button was pressed: `{ sort }`, the next sort `{ key, direction }` or `null`. |
+| `onColumnResize` | `.on_column_resize(\|key: &SharedString, width: &Points\| ..)` | A column was resized (`{ key, width }`), at every step of a drag and once more when a fit sets it. |
 | `onColumnMove` | `.on_column_move(\|event: &DataTableColumnMove\| ..)` | A column was moved: `{ key, from, to, order }`. |
-| `onVisibleRowsChange` | `.on_visible_rows_change(\|range: &DataTableRange\| ..)` | The rows in view changed: `{ start, end }`. Fetch rows from here. |
-| `onVisibleColumnsChange` | `.on_visible_columns_change(\|range: &DataTableRange\| ..)` | The scrolling columns in view changed. |
+| `onVisibleRowsChange` | `.on_visible_rows_change(\|range: &DataTableRange\| ..)` | The rows in view changed: `{ range }`, a `{ start, end }`. Fetch rows from here. |
+| `onVisibleColumnsChange` | `.on_visible_columns_change(\|range: &DataTableRange\| ..)` | The scrolling columns in view changed: `{ range }`. |
 | `onLoadMore` | `.on_load_more(\|\| ..)` | The rows in view came within `loadMoreThreshold` of the last while `hasMore` and not `loading`. |
 
 ## Related

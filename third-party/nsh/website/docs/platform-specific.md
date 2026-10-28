@@ -156,7 +156,7 @@ Rust apps draw their own title bars with `nsh_core::element::desktop` ([Building
 
 | Export | Description |
 |---|---|
-| `Window` | The window: `setTitle`, `setTitleBar("hidden")` for a title bar of the app's own, `minimize`, `toggleMaximize`, `toggleFullScreen`, `close`. |
+| `Window` | The window: `setTitle`, `setTitleBar({ style: "hidden" })` for a title bar of the app's own, `minimize`, `toggleMaximize`, `toggleFullScreen`, `close`. |
 | `titleBar` | The hidden title bar's height and the room the system's window controls take (reactive). |
 | `Menu` | `setApplicationMenu(items)` (the menu bar, with shortcuts) and `popup(items, at?)` (context menus). |
 | `isAvailable` | `true` on macOS, Windows and Linux. |

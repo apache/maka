@@ -193,10 +193,11 @@ async fn original_response(client: &Client, request_id: &str) -> Operation {
         "one physical click must reserve one attempt"
     );
     let original = originals.remove(0);
+    let target = client.describe("agent").await.unwrap();
     assert_eq!(original.method, "respond");
     assert_eq!(
         original.correlation,
-        json!({"kind":"agent-control","requestId":request_id})
+        json!({"kind":"agent-control","owner":{"namespace":target.provider,"export":target.export},"requestId":request_id})
     );
     assert!(original.reference.is_some());
     assert!(original.receipt.is_none());
@@ -673,9 +674,10 @@ async fn app_stop_controls_remain_independent_while_another_original_receipt_is_
                     && operation.correlation["operationId"] == "first"
             })
             .expect("original app Stop receipt missing");
+        let target = client.describe("agent").await.unwrap();
         assert_eq!(
             first.correlation,
-            json!({"kind":"agent-control","operationId":"first"})
+            json!({"kind":"agent-control","owner":{"namespace":target.provider,"export":target.export},"operationId":"first"})
         );
         wait_enabled_node(&mut view, "Stop access to Second controlled app").await;
         tab_to_label(&mut view, "Computer application access").await;

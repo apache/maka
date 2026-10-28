@@ -62,6 +62,9 @@ pub enum Tag {
     /// `Overlay` of `nsh`), outside its parent's layout and clipping, laid
     /// out on its own and placed by the core ([`crate::overlay`]).
     Overlay,
+    /// A view whose box a shader draws, under its children (`<shader>`,
+    /// TS: `Shader` of `nsh`; [`crate::shader`]).
+    Shader,
 }
 
 impl Tag {
@@ -86,6 +89,7 @@ impl Tag {
             "video" => Tag::Video,
             "native" => Tag::Native,
             "overlay" => Tag::Overlay,
+            "shader" => Tag::Shader,
             _ => return None,
         })
     }
@@ -207,18 +211,17 @@ events! {
     Clipboard = "onClipboard": "A clipboard read finished (root only; payload: `id`, `has`: whether it holds what was asked; for text `text`, unless only `has` was asked; for an image `uri` (a `data:` URI), `width` and `height`, unless only `has` was asked; for files `files`, their `file:` URLs one per line).",
     KeyCommand = "onKeyCommand": "A key matched a binding of `keymap` (`nsh`) (root only; payload: the binding's id, [`crate::keymap::KeyBinding::id`]).",
     Menu = "onMenu": "A menu item was chosen: the application menu's or a context menu's (root only; desktops; payload: `id`), or a context menu closed (`closed`: true, after its item).",
-    HoverIn = "onHoverIn": "The mouse came over the view or a view inside it (never on touches).",
-    HoverOut = "onHoverOut": "The mouse left the view and the views inside it, or the window.",
+    MouseEnter = "onMouseEnter": "The mouse came over the view or a view inside it (never on touches; payload: [`EventPayload::Mouse`]).",
+    MouseLeave = "onMouseLeave": "The mouse left the view and the views inside it, or the window (payload: [`EventPayload::Mouse`], where it was last).",
     FileDragEnter = "onFileDragEnter": "A local file drag entered an eligible desktop drop destination.",
     FileDragLeave = "onFileDragLeave": "A local file drag left its desktop drop destination.",
     FileDrop = "onFileDrop": "Local files were dropped (payload: [`EventPayload::FileDrop`]).",
-    HoverMove = "onHoverMove": "The mouse moved over a hovered view, with no button down (payload: [`EventPayload::Hover`]; at most one per frame).",
+    MouseMove = "onMouseMove": "The mouse moved over the view or a view inside it, with or without a button down, or a modifier key changed while it rests there with none down (payload: [`EventPayload::Mouse`]; at most one per frame).",
     ContextMenu = "onContextMenu": "The secondary button was pressed over the view (payload: [`EventPayload::ContextMenu`]): the nearest listener around the view under the pointer hears it, unless a text input or selectable text is nearer.",
     CompositionChange = "onCompositionChange": "An input method's composition in an input started, changed or ended (payload: `composing`, `text`: the text being composed, empty once it ends; after the `onChangeText` of the committed text).",
     PressOutside = "onPressOutside": "A press went down outside an overlay, its anchor and the overlays inside it (payload: `pageX`, `pageY`; raised by the core).",
     Cancel = "onCancel": "Escape or the Android back button was pressed while the overlay was the top one listening to it (raised by the core).",
     Position = "onPosition": "The core placed an overlay (payload: `placement`, the side it went on, `x`, `y`, `width`, `height` in the root view, `availableWidth`, `availableHeight`: the room on that side).",
-    MouseMove = "onMouseMove": "The mouse moved inside the view, including with a button down (desktops and web; local coordinates `x`, `y`; at most once per frame).",
     ScrollIntent = "onScrollIntent": "The user requested scrolling, before the offset changes, including at a boundary (payload: `intent`: `\"start\"`, `\"end\"` or `\"scroll\"`; once when a drag starts, before `onScrollDragStart`; programmatic scrolling does not emit it).",
     Host = "onHost": "The embedding host answered a [`Command::HostCall`] or sent an event to `host`'s (`nsh`) listeners (root only; payload: [`EventPayload::Json`], `{ type: \"reply\", id, ok, value?, error? }` or `{ type: \"event\", event, payload }`).",
     Pick = "onPick": "A picker closed (root only; payload: [`EventPayload::Picked`], no files when cancelled).",
@@ -363,10 +366,12 @@ pub struct TouchPoint {
     pub changed: bool,
 }
 
-/// Where the mouse is over a hovered view ([`EventKind::HoverMove`]), in
-/// points.
+/// Where the mouse is over a view ([`EventKind::MouseEnter`],
+/// [`EventKind::MouseMove`], [`EventKind::MouseLeave`]), in points, as
+/// GPUI's `MouseMoveEvent`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct HoverEvent {
+#[non_exhaustive]
+pub struct MouseEvent {
     /// Position in the view, its transforms undone.
     pub position: Point<Points>,
     /// Position in the root view the view is in (the surface, or its
@@ -374,6 +379,55 @@ pub struct HoverEvent {
     pub page_position: Point<Points>,
     /// The modifier keys held.
     pub modifiers: crate::keymap::Modifiers,
+    /// The button held down, if any (a drag).
+    pub pressed_button: Option<MouseButton>,
+}
+
+impl MouseEvent {
+    /// The mouse at `position` in the view and `page_position` in its root
+    /// view, with `modifiers` held and `pressed_button` down.
+    pub fn new(
+        position: Point<Points>,
+        page_position: Point<Points>,
+        modifiers: crate::keymap::Modifiers,
+        pressed_button: Option<MouseButton>,
+    ) -> Self {
+        Self {
+            position,
+            page_position,
+            modifiers,
+            pressed_button,
+        }
+    }
+}
+
+/// A mouse button, as GPUI's `MouseButton` (TS: `"left"`, `"right"`,
+/// `"middle"`, `"back"`, `"forward"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MouseButton {
+    /// The primary button.
+    Left,
+    /// The secondary button.
+    Right,
+    /// The middle button (the wheel).
+    Middle,
+    /// The back button (the DOM's button 3).
+    Back,
+    /// The forward button (the DOM's button 4).
+    Forward,
+}
+
+impl MouseButton {
+    /// Its TS name.
+    pub fn name(self) -> &'static str {
+        match self {
+            MouseButton::Left => "left",
+            MouseButton::Right => "right",
+            MouseButton::Middle => "middle",
+            MouseButton::Back => "back",
+            MouseButton::Forward => "forward",
+        }
+    }
 }
 
 /// Where the pointer was at a press ([`EventKind::Press`],
@@ -732,8 +786,9 @@ pub enum EventPayload {
     },
     /// Touches (`onTouch`).
     Touch(Box<TouchEvent>),
-    /// The mouse over a hovered view (`onHoverMove`).
-    Hover(HoverEvent),
+    /// The mouse over a view (`onMouseEnter`, `onMouseMove`,
+    /// `onMouseLeave`).
+    Mouse(MouseEvent),
     /// A context menu asked for over a view (`onContextMenu`).
     ContextMenu(ContextMenuEvent),
     /// Where the pointer was at a press (`onPress`, `onLongPress`,
@@ -742,6 +797,14 @@ pub enum EventPayload {
     Press(PressEvent),
     /// Local file URLs dropped by the user, in the platform's order.
     FileDrop(Vec<String>),
+    /// [`Self::FileDrop`] with where the files were let go, in the
+    /// window's coordinates, from backends that know it.
+    FileDropAt {
+        /// The files' URLs, as [`Self::FileDrop`]'s.
+        uris: Vec<String>,
+        /// The drop point in the window's coordinates.
+        page_position: Point<Points>,
+    },
     /// What the user pasted into an input.
     Paste(Box<PasteEvent>),
     /// The lines of a text block.
@@ -1176,6 +1239,27 @@ pub enum KeyboardTaps {
     Handled,
 }
 
+/// Which scroll bar a scroll view or list shows (`scrollbar`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ScrollbarSetting {
+    /// Its scroll bar (`true`, the default): the platform's indicator, or
+    /// the app's built-in bar once the app set a theme for every view
+    /// (`nsh/base`'s `Scrollbar.setTheme`).
+    #[default]
+    Shown,
+    /// None (`false`).
+    Hidden,
+    /// The app's built-in bar drawn as this theme says (an object): the
+    /// `ScrollbarTheme` of `nsh/base`, which reads it.
+    Themed(Arc<crate::JsonValue>),
+}
+
+impl From<bool> for ScrollbarSetting {
+    fn from(shows: bool) -> Self {
+        if shows { Self::Shown } else { Self::Hidden }
+    }
+}
+
 /// How an `<image>` is shown, besides its source.
 #[derive(Debug, Clone, PartialEq, HostProps)]
 pub enum ImageProp {
@@ -1354,6 +1438,10 @@ pub enum ScreenProp {
     /// Android).
     #[prop(js = "headerVisible", default = true, on = SCREEN)]
     HeaderVisible(bool),
+    /// `hidesBottomBarWhenPushed`: the system tab bar leaves while this page
+    /// is on top, moving with the transition (iOS and Android).
+    #[prop(js = "hidesBottomBarWhenPushed", on = SCREEN)]
+    HidesBottomBarWhenPushed(bool),
     /// `headerLargeTitle` (iOS: the system header; ignored elsewhere): a
     /// large title; the content scrolls under the header.
     #[prop(js = "headerLargeTitle", on = SCREEN)]
@@ -1472,7 +1560,7 @@ pub enum OverlayProp {
     /// root view, as an input's caret `pageBounds`) it is placed against,
     /// following a view as it moves; without one it is laid out as a
     /// `position: fixed` box of its root view.
-    #[prop(js = "anchor", with = crate::js::host_values::overlay_anchor, reset = OverlayProp::Anchor(OverlayAnchor::None), ts = "YNode | Point | Bounds | null", on = OVERLAY)]
+    #[prop(js = "anchor", with = crate::js::host_values::overlay_anchor, reset = OverlayProp::Anchor(OverlayAnchor::None), ts = "ViewRef | Point | Bounds | null", on = OVERLAY)]
     Anchor(OverlayAnchor),
     /// `placement`: the side of the anchor it goes on (default `"bottom"`);
     /// the other side when only that one has room.
@@ -1899,6 +1987,22 @@ pub enum Prop {
     /// prop's Rust type ([`crate::element::PropSpec::decode`]); `None` resets it
     /// to its default.
     RustProp(&'static str, Option<crate::element::AnyValue>),
+    /// `source` (shaders): the WGSL defining `fn shade(uv: vec2f) -> vec4f`,
+    /// the color of each point of the box (`uv` 0..1 from the top left;
+    /// straight sRGB with alpha), which reads `nsh.size`, `nsh.time`,
+    /// `nsh.scale` and its `struct Uniforms` as `uniforms`.
+    #[prop(js = "source", on = SHADER)]
+    ShaderSource(Option<Arc<str>>),
+    /// A compiled shader, as Rust sets it (TS sets `source`).
+    Shader(Option<crate::shader::Shader>),
+    /// `uniforms` (shaders): the values of the members of the shader's
+    /// `struct Uniforms`, by name: numbers, colors, lists of them (vectors,
+    /// arrays of `vec4f`) and animated values, which move it natively.
+    #[prop(js = "uniforms", on = SHADER)]
+    Uniforms(crate::shader::ShaderUniforms),
+    /// `paused` (shaders): its clock (`nsh.time`) stands still.
+    #[prop(js = "paused", on = SHADER, shared)]
+    ShaderPaused(bool),
     /// `src`: a URL, `asset:/path`, or an imported asset.
     #[prop(js = "src", on = IMAGE, shared)]
     Source(Option<ImageSource>),
@@ -1908,10 +2012,12 @@ pub enum Prop {
     /// Scrolling behavior of a scroll view or list.
     #[prop(nested)]
     Scroll(ScrollProp),
-    /// `scrollbar`: the scroll indicator shows (default true). On the
-    /// desktop a horizontal view keeps it: it is the mouse's scroll bar.
-    #[prop(js = "scrollbar", default = true, on = SCROLL | LIST)]
-    Scrollbar(bool),
+    /// `scrollbar`: the scroll indicator shows (default true), or the
+    /// app's built-in bar of a theme (an object, `nsh/base`'s
+    /// `ScrollbarTheme`). On the desktop a horizontal view keeps it: it is
+    /// the mouse's scroll bar. A multiline input's is its text's.
+    #[prop(js = "scrollbar", with = crate::js::host_values::scrollbar, reset = Prop::Scrollbar(ScrollbarSetting::Shown), ts = "boolean | import(\"nsh/base\").ScrollbarTheme", on = SCROLL | LIST | INPUT)]
+    Scrollbar(ScrollbarSetting),
     /// `refreshing`: the pull-to-refresh spinner shows.
     #[prop(js = "refreshing", on = SCROLL | LIST)]
     Refreshing(bool),
@@ -2130,6 +2236,10 @@ pub enum Prop {
     /// `indeterminateStyle`: the style while `accessibilityState.checked`
     /// is mixed (a checkbox's `indeterminate`), and not disabled.
     IndeterminateStyle(Option<std::rc::Rc<StylePatch>>),
+    /// `expandedStyle`: the style while `accessibilityState.expanded` (a
+    /// `Popover`'s or `Menu`'s trigger while its popup is open), and not
+    /// disabled.
+    ExpandedStyle(Option<std::rc::Rc<StylePatch>>),
     /// The states a part of a control shows its classes and state styles
     /// as its control has them ([`crate::tailwind::state`] bits: `checked`,
     /// `indeterminate`, `disabled`): a switch's thumb styled `checked:`
@@ -2137,7 +2247,7 @@ pub enum Prop {
     /// presses away: the control announces and handles them. Set by
     /// components (`Interactive::project_checked`, `project_indeterminate`,
     /// `project_disabled`), never by JS.
-    ProjectedStates(u8),
+    ProjectedStates(u16),
     /// `headerStyle` of a page: `backgroundColor`, `color` (the title's) and
     /// `tintColor` (the buttons') of its header.
     HeaderStyle(Option<std::rc::Rc<StylePatch>>),
@@ -2336,7 +2446,7 @@ pub enum NativeProp {
     )]
     BackForwardGestures(bool),
     /// `paused` (videos): playback is paused.
-    #[prop(js = "paused", on = VIDEO)]
+    #[prop(js = "paused", on = VIDEO, shared)]
     Paused(bool),
     /// `muted` (videos): no sound.
     #[prop(js = "muted", on = VIDEO)]
@@ -2529,9 +2639,9 @@ mod event_mask_tests {
             hint_watch: Some(watch),
             ..Default::default()
         };
-        mask.observe(EventKind::HoverIn, watch);
-        mask.set(EventKind::HoverIn, true);
-        mask.set(EventKind::HoverIn, false);
+        mask.observe(EventKind::MouseEnter, watch);
+        mask.set(EventKind::MouseEnter, true);
+        mask.set(EventKind::MouseEnter, false);
         assert!(!mask.is_empty());
         assert_eq!(mask.bits(), 1u128 << 64);
         assert_eq!(mask.listeners, [0; 2]);
@@ -2548,21 +2658,21 @@ mod event_mask_tests {
             ..Default::default()
         };
         let mut lower = EventMask::default();
-        lower.observe(EventKind::HoverIn, second);
+        lower.observe(EventKind::MouseEnter, second);
         let mut conflicted = upper | lower;
         assert_eq!(conflicted.hint_watch(), None);
         assert_eq!((conflicted | upper).hint_watch(), None);
         assert_eq!((upper | conflicted).hint_watch(), None);
-        conflicted.set(EventKind::HoverIn, false);
+        conflicted.set(EventKind::MouseEnter, false);
         assert_eq!(conflicted.bits(), 1u128 << 127);
         assert_eq!(conflicted.hint_watch(), None);
         assert_eq!((conflicted | upper).hint_watch(), None);
         assert_eq!((upper | conflicted).hint_watch(), None);
-        conflicted.observe(EventKind::HoverOut, first);
+        conflicted.observe(EventKind::MouseLeave, first);
         assert_eq!(conflicted.hint_watch(), None);
         assert_eq!(conflicted.listeners, [0; 2]);
         let mut observed = upper;
-        observed.observe(EventKind::HoverIn, second);
+        observed.observe(EventKind::MouseEnter, second);
         assert_eq!(observed.hint_watch(), None);
         assert_eq!(observed, upper | lower);
     }
@@ -2576,7 +2686,7 @@ mod event_mask_tests {
             ..Default::default()
         };
         let mut lower = EventMask::default();
-        lower.observe(EventKind::HoverIn, watch);
+        lower.observe(EventKind::MouseEnter, watch);
         assert_eq!((upper | lower).hint_watch(), Some(watch));
         assert_eq!((lower | upper).hint_watch(), Some(watch));
         assert_eq!((upper | EventMask::default()).hint_watch(), Some(watch));

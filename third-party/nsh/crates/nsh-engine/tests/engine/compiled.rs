@@ -179,7 +179,7 @@ mount(() => (
         </NavPage>
       )}
     </NavStack>
-    <Dialog open={open()} onOpenChange={(o) => open.set(o)}>
+    <Dialog open={open()} onOpenChange={({ open: o }) => open.set(o)}>
       <Text>in modal</Text>
     </Dialog>
   </View>
@@ -660,20 +660,20 @@ fn an_if_hands_its_function_child_the_value() {
 }
 
 const REFS: &str = r#"
-import { mount, signal, Text, View, type YNode } from "nsh";
+import { mount, signal, Text, View, type InputRef, type ViewRef } from "nsh";
 import { Input } from "nsh/base";
 import { Stepper, type StepperRef } from "test/ui";
 
-function Field(props: { ref?: (node: YNode) => void }) {
+function Field(props: { ref?: (node: InputRef) => void }) {
   return <Input ref={props.ref} />;
 }
 
-let assigned: YNode | undefined;
-const held = signal<YNode | undefined>(undefined);
-const fields: { input?: YNode; [key: string]: YNode | undefined } = {};
+let assigned: ViewRef | undefined;
+const held = signal<InputRef | undefined>(undefined);
+const fields: { input?: InputRef; [key: string]: InputRef | undefined } = {};
 const key = () => "computed";
-let called: YNode | undefined;
-let forwarded: YNode | undefined;
+let called: ViewRef | undefined;
+let forwarded: InputRef | undefined;
 const stepper = signal<StepperRef | undefined>(undefined);
 const report = signal("");
 
@@ -724,7 +724,7 @@ mount(() => (
     <Input
       placeholder="A much longer placeholder"
       style={{ width: 300, height: 40 }}
-      onContentSizeChange={(e) => size.set(`${e.width}x${e.height}`)}
+      onContentSizeChange={({ size: e }) => size.set(`${e.width}x${e.height}`)}
     />
     <Text>{`size ${size()}`}</Text>
   </View>
@@ -863,7 +863,7 @@ mount(() => (
       backdropClass="bg-black/50"
       onOpen={() => add("open")}
       onCancel={() => add("cancel")}
-      onOpenChange={(o, reason) => { add(`change ${o} ${reason}`); open.set(o); }}
+      onOpenChange={({ open: o, reason }) => { add(`change ${o} ${reason}`); open.set(o); }}
     >
       <Text>in dialog</Text>
     </Dialog>
@@ -981,7 +981,7 @@ mount(() => (
       class="bg-white p-4"
       backdropStyle={backdrop() ? { backgroundColor: "#00000080" } : undefined}
       onCancel={() => add("cancel")}
-      onOpenChange={(o, reason) => add(`change ${o} ${reason}`)}
+      onOpenChange={({ open: o, reason }) => add(`change ${o} ${reason}`)}
       onClose={() => add("close")}
     >
       <Text>in dialog</Text>
@@ -1226,7 +1226,7 @@ mount(() => (
     <Text>{log()}</Text>
     <Input
       testID="field"
-      onChange={(text) => log.set(`change ${text}`)}
+      onChange={({ value: text }) => log.set(`change ${text}`)}
       onSubmit={(e) => log.set(`submit ${e.text}`)}
     />
     <Text onPress={() => items.set([1, 2])}>fill</Text>

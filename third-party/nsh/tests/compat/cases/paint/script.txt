@@ -581,6 +581,29 @@ tap id:disable
 style id:box opacity 1
 style id:box borderWidth 2
 covers [props] indeterminateStyle
+# state-expanded
+tap id:case-state-expanded
+# Closed: the plain classes, on the trigger and on the chevron.
+prop id:trigger accessibilityState expanded=false
+style id:trigger backgroundColor #ccccccff
+style id:trigger borderWidth 0
+style id:chevron backgroundColor #ffffffff
+# Open: `aria-expanded:` and `expandedStyle` on the trigger,
+# `group-aria-expanded:` on the chevron.
+tap id:trigger
+expect Popup
+prop id:trigger accessibilityState expanded=true
+style id:trigger backgroundColor #3355ffff
+style id:trigger borderWidth 2
+style id:trigger borderColor #000000ff
+style id:chevron backgroundColor #222222ff
+# Closed again.
+tap id:trigger
+prop id:trigger accessibilityState expanded=false
+style id:trigger backgroundColor #ccccccff
+style id:trigger borderWidth 0
+style id:chevron backgroundColor #ffffffff
+covers [props] expandedStyle
 # paint-inline-align
 tap id:case-paint-inline-align
 # The headless engine's 16.8 pt line has its baseline at the bottom and a

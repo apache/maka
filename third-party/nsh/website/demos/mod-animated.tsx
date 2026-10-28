@@ -33,7 +33,7 @@ function App() {
       dots.map((x, i) => Animated.timing(x, { toValue: there ? TRACK : 0, duration: 1000, easing: curves[i][1] })),
     )
       .start()
-      .then((finished) => status.set(finished ? "finished" : "stopped"));
+      .then(({ finished }) => status.set(finished ? "finished" : "stopped"));
   };
 
   const turn = () => {

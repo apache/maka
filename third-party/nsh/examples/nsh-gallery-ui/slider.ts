@@ -1,6 +1,6 @@
 import type { TextStyle, ViewStyle } from "nsh";
 import { platform } from "nsh";
-import { alpha, colors } from "./theme";
+import { alpha, colors, finish } from "./theme";
 
 /** Options of `sliderLook`. */
 export interface SliderLookOptions {
@@ -20,14 +20,12 @@ export const sliderValueClass = "w-[42px] text-right font-mono text-[11px] leadi
 export const sliderValueStyle = (): TextStyle => ({ color: alpha(colors.text, 0.6) });
 
 /**
- * A `Slider`'s parts (spread them: `<Slider {...sliderLook()}>`), after BJORK
- * UI's slider: an 8-point rail in the track's tone with a faint glow of the
- * accent, the thumb a 16 × 8 pill as tall as the rail, sitting in it. Under
- * the pointer the pill brightens, more while dragged, and neither while
- * disabled; the keyboard's focus rings the rail; a disabled slider fades to
- * 35% (transitions still with reduced motion). With a pointer the rail is the
- * track, the thumbs travel inside it; on a touch screen the track is a
- * 32-point band around the rail, so a finger finds it.
+ * A `Slider`'s parts (spread them: `<Slider {...sliderLook()}>`): a rail
+ * sunk into the surface and a round thumb on it: a 6-point rail and a
+ * 14-point thumb with a pointer (a 20-point band around the rail takes
+ * presses), 8 and 20 on a touch screen (a 32-point band). Under the pointer the thumb lightens, the
+ * keyboard's focus rings the rail in the theme's `ring`, a disabled slider
+ * fades to 35% (transitions still with reduced motion).
  *
  * Only what never changes is here, so the spread reads no signal: a spread
  * is evaluated where the slider is made, and a signal read there would make
@@ -38,49 +36,43 @@ export const sliderValueStyle = (): TextStyle => ({ color: alpha(colors.text, 0.
 export function sliderLook(o: SliderLookOptions = {}) {
   const vertical = !!o.vertical;
   const pointer = platform.idiom === "desktop";
-  const rail = `${vertical ? "w-2" : "h-2"} rounded-full bg-track dark:bg-inset`;
-  const focus = "focus-within:ring-2 focus-within:ring-brand/36 focus-within:ring-offset-2 focus-within:ring-offset-card";
+  const thumb = pointer ? 14 : 20;
+  // The band keeps half a thumb free at each end, so the thumbs stay inside.
+  const band = vertical
+    ? `${pointer ? "w-5" : "w-8"} ${pointer ? "h-32" : "h-36"} items-center ${pointer ? "py-[7px]" : "py-[10px]"}`
+    : `${pointer ? "h-5" : "h-8"} justify-center ${pointer ? "px-[7px]" : "px-[10px]"}`;
+  const focus = "focus-within:ring-2 focus-within:ring-ring/50 focus-within:ring-offset-2 focus-within:ring-offset-card";
   const fade = "transition duration-150 motion-reduce:transition-none";
-  const railStyle = (): ViewStyle => ({
-    boxShadow: `inset 0 1px 1px rgba(255, 255, 255, 0.04), 0 0 14px ${alpha(colors.accent, 0.06)}`,
-  });
-  const track = pointer ? `${rail} ${vertical ? "h-32 py-2" : "px-2"} ${focus}` : vertical ? "w-8 h-36 items-center" : "h-8 justify-center";
   return {
     class: o.value ? "flex-row items-center gap-2" : undefined,
-    trackClass: `${track} ${o.value ? "flex-1" : ""} cursor-pointer ${fade} disabled:opacity-35 disabled:cursor-not-allowed`,
-    get trackStyle(): ViewStyle | undefined {
-      return pointer ? railStyle() : undefined;
+    trackClass: `${band} ${o.value ? "flex-1" : ""} cursor-pointer ${fade} disabled:opacity-35 disabled:cursor-not-allowed`,
+    indicatorClass: `${vertical ? (pointer ? "w-1.5" : "w-2") + " h-full" : pointer ? "h-1.5" : "h-2"} rounded-full ${focus}`,
+    get indicatorStyle(): ViewStyle {
+      return {
+        backgroundColor: colors.track,
+        boxShadow: `inset 0 0 0 1px ${finish.track.borderColor}, ${finish.track.boxShadow}`,
+      };
     },
-    indicatorClass: pointer ? (vertical ? "flex-1" : "h-full") : `${rail} ${vertical ? "h-full" : ""} ${focus}`,
-    get indicatorStyle(): ViewStyle | undefined {
-      return pointer ? undefined : railStyle();
-    },
-    // From the rail's own edge, past the thumbs' inset, with a pointer.
-    rangeClass: `rounded-full ${pointer ? (vertical ? "-mb-2" : "-ml-2") : ""}`,
+    rangeClass: "rounded-full",
     // `focus:` has the platform report the thumb's keyboard focus, which the
     // rail's `focus-within:` ring follows, and drops its default outline.
-    thumbClass: `${vertical ? "w-2 h-4" : "w-4 h-2"} rounded-full ${fade} hover:brightness-110 active:brightness-125 focus:outline-none disabled:brightness-100`,
+    thumbClass: `rounded-full ${fade} hover:brightness-105 active:brightness-95 focus:outline-none disabled:brightness-100`,
     get thumbStyle(): ViewStyle {
-      return {
-        backgroundColor: colors.faint,
-        boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.42)",
-      };
+      return { width: thumb, height: thumb, borderWidth: 1, ...finish.knob };
     },
   };
 }
 
 /**
- * A `Slider`'s fill (`rangeStyle`), after BJORK UI's: the accent, deepening
- * toward the fill's start and fading into the thumb's tone at the thumb,
- * the accent stopping 14% of the track before it. `from` and `to` are where
- * the fill starts and ends along the track, from 0 to 1 (a single value's
- * starts at 0).
+ * A `Slider`'s fill (`rangeStyle`): the accent's run along the rail, a
+ * little lighter at the top, edged a shade deeper. `from` and `to` are where
+ * the fill starts and ends along the track, from 0 to 1 (unused: the run is
+ * one color along its length, kept for the callers).
  */
-export function sliderFill(from: number, to: number, vertical = false): ViewStyle {
-  const length = Math.max(to - from, 0);
-  const accentAt = length > 0 ? (Math.max(length - 0.14, 0) / length) * 100 : 0;
-  const deep = `color-mix(in oklab, ${colors.accent} 80%, black)`;
+export function sliderFill(_from: number, _to: number, vertical = false): ViewStyle {
   return {
-    backgroundImage: `linear-gradient(${vertical ? 0 : 90}deg, ${deep} 0%, ${colors.accent} ${accentAt}%, ${colors.faint} 100%)`,
+    backgroundImage: vertical ? finish.fill.backgroundImage?.replace("180deg", "90deg") : finish.fill.backgroundImage,
+    borderWidth: 1,
+    borderColor: finish.fill.borderColor,
   };
 }

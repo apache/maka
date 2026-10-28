@@ -706,8 +706,8 @@ mod tests {
         }
         log.connection.run(|db| Box::pin(async move {
             let mut tx = db.begin().await?;
-            let request = maka_agent_facts::session::CopyRequest {source_session_id:"source".into(),target_session_id:"target".into(),expected_source_revision:1,purpose:maka_agent_facts::session::CopyPurpose::Branch {turn_id:None,side_conversation:false}};
-            let lineage = maka_agent_facts::session::Lineage::Branch {origin:maka_agent_facts::session::BranchOrigin {parent_session_id:"source".into(),turn_id:None}};
+            let request = maka_agent_facts::session::CopyRequest {source_session_id:"source".into(),target_session_id:"target".into(),expected_source_revision:1,purpose:maka_agent_facts::session::CopyPurpose::Branch {position: maka_agent_facts::session::ForkPosition::End,side_conversation:false}};
+            let lineage = maka_agent_facts::session::Lineage::Branch {origin:maka_agent_facts::session::BranchOrigin {parent_session_id:"source".into(),position: maka_agent_facts::session::ForkPosition::End}};
             sqlx::query("INSERT INTO session_history_copies(session_id,source_session_id,source_revision,through_sequence,observed_through,request_json,lineage_json,state) VALUES('target','source',1,1,2,?,?,'committed')").bind(serde_json::to_string(&request)?).bind(serde_json::to_string(&lineage)?).execute(&mut *tx).await?;
             crate::connection::worker_query(&mut tx, |worker| Box::pin(async move {
                 let sequence: i64 = sqlx::query_scalar("INSERT INTO session_history_members SELECT 'target',sequence,NULL FROM runtime_events WHERE event_session='source' RETURNING sequence").fetch_one(&mut *worker).await?;

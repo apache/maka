@@ -148,10 +148,10 @@ pub fn browser() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, View, WebView, type WebViewNavigation, type YNode } from "nsh";
+import { mount, signal, Text, View, WebView, type WebViewNavigation, type WebViewRef } from "nsh";
 
 function Browser() {
-  let web!: YNode;
+  let web!: WebViewRef;
   const nav = signal<WebViewNavigation | null>(null);
   const button = (label: string, enabled: boolean, action: () => void) => (
     <Text onPress={enabled ? action : undefined} style={{ padding: 12, color: enabled ? "#0969da" : "#8c959f" }}>
@@ -231,7 +231,7 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, View, WebView, type YNode } from "nsh";
+import { mount, signal, Text, View, WebView, type WebViewRef } from "nsh";
 
 const page = `<!doctype html>
 <html><head><meta name="viewport" content="width=device-width"></head>
@@ -248,7 +248,7 @@ const page = `<!doctype html>
 </body></html>`;
 
 function App() {
-  let web!: YNode;
+  let web!: WebViewRef;
   const last = signal("");
   return (
     <View style={{ flex: 1, paddingTop: 50, gap: 12 }}>
@@ -349,10 +349,10 @@ pub fn player() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, Text, Video, View, type YNode } from "nsh";
+import { mount, signal, Text, Video, type VideoRef, View } from "nsh";
 
 function Player() {
-  let video!: YNode;
+  let video!: VideoRef;
   const paused = signal(true);
   const time = signal("");
   return (

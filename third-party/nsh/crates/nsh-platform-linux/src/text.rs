@@ -521,10 +521,11 @@ impl PangoTextEngine {
     /// font ([`ui_family`], read on the main thread).
     pub(crate) fn new(ui_family: Arc<str>) -> Self {
         let font_map = pangocairo::FontMap::new();
-        for file in FONT_FILES.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-            if let Err(err) = add_font_file(font_map.upcast_ref(), file) {
-                log::warn!("cannot add font {}: {err}", file.display());
-            }
+        let files = FONT_FILES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !files.is_empty()
+            && let Err(err) = set_font_files(&font_map, &files)
+        {
+            log::warn!("cannot load app fonts: {err}");
         }
         let ltr = context(&font_map, pangocairo::cairo::HintStyle::None);
         ltr.set_base_dir(pango::Direction::Ltr);
@@ -1030,9 +1031,9 @@ impl TextEngine for PangoTextEngine {
         if !files.contains(&path) {
             files.push(path.clone());
         }
+        let snapshot = files.clone();
         drop(files);
-        add_font_file(self.font_map.upcast_ref(), &path)
-            .map_err(|e| format!("font rejected: {e}"))?;
+        set_font_files(&self.font_map, &snapshot).map_err(|e| format!("font rejected: {e}"))?;
         // Fonts resolve differently now (a family may have been missing).
         self.ltr.changed();
         self.rtl.changed();
@@ -1050,26 +1051,26 @@ mod fontconfig {
 
     #[link(name = "fontconfig")]
     unsafe extern "C" {
+        pub(super) fn FcInitLoadConfigAndFonts() -> *mut c_void;
+        pub(super) fn FcConfigDestroy(config: *mut c_void);
         pub(super) fn FcConfigAppFontAddFile(config: *mut c_void, file: *const c_char) -> c_int;
     }
 
     #[link(name = "pangoft2-1.0")]
     unsafe extern "C" {
         pub(super) fn pango_fc_font_map_get_type() -> usize;
+        #[cfg(test)]
         pub(super) fn pango_fc_font_map_get_config(map: *mut c_void) -> *mut c_void;
-        pub(super) fn pango_fc_font_map_config_changed(map: *mut c_void);
+        pub(super) fn pango_fc_font_map_set_config(map: *mut c_void, config: *mut c_void);
     }
 }
 
-/// Adds the font in `file` to `map` (a Fontconfig font map, as Pango's on
-/// Linux are): to the map's Fontconfig configuration, which the
-/// process's other font maps share, then drops the map's cached fonts.
-fn add_font_file(map: &pango::FontMap, file: &std::path::Path) -> Result<(), String> {
+/// Give this map a fresh configuration containing the system and app fonts.
+/// Never mutate Fontconfig's current config, or a config already used for
+/// shaping: other engines and Pango's workers can be reading it concurrently.
+fn set_font_files(map: &pango::FontMap, files: &[PathBuf]) -> Result<(), String> {
     use std::os::unix::ffi::OsStrExt;
 
-    use gtk::glib::translate::ToGlibPtr;
-    let path = std::ffi::CString::new(file.as_os_str().as_bytes())
-        .map_err(|_| "the font's path has a NUL byte".to_owned())?;
     let ptr: *mut pango::ffi::PangoFontMap = map.to_glib_none().0;
     // SAFETY: a GType query with no arguments.
     let fc_type = unsafe { fontconfig::pango_fc_font_map_get_type() };
@@ -1080,17 +1081,31 @@ fn add_font_file(map: &pango::FontMap, file: &std::path::Path) -> Result<(), Str
     if !is_fc {
         return Err("the font map does not use Fontconfig".to_owned());
     }
-    // SAFETY: `ptr` is a PangoFcFontMap (checked above); a null config is
-    // Fontconfig's current one, which the map then uses.
-    let added = unsafe {
-        let config = fontconfig::pango_fc_font_map_get_config(ptr.cast());
-        fontconfig::FcConfigAppFontAddFile(config, path.as_ptr())
-    };
-    if added == 0 {
-        return Err("Fontconfig could not read it".to_owned());
+    struct Config(*mut c_void);
+    impl Drop for Config {
+        fn drop(&mut self) {
+            // SAFETY: this is our owned reference to a non-null FcConfig.
+            unsafe { fontconfig::FcConfigDestroy(self.0) };
+        }
     }
-    // SAFETY: as above; this only invalidates the map's caches.
-    unsafe { fontconfig::pango_fc_font_map_config_changed(ptr.cast()) };
+    // SAFETY: creates an owned config without changing the process's current one.
+    let config = unsafe { fontconfig::FcInitLoadConfigAndFonts() };
+    if config.is_null() {
+        return Err("Fontconfig could not load the system configuration".to_owned());
+    }
+    let config = Config(config);
+    for file in files {
+        let path = std::ffi::CString::new(file.as_os_str().as_bytes())
+            .map_err(|_| "the font's path has a NUL byte".to_owned())?;
+        // SAFETY: the config is exclusively ours until set_config below, and
+        // the nul-terminated path outlives this synchronous call.
+        if unsafe { fontconfig::FcConfigAppFontAddFile(config.0, path.as_ptr()) } == 0 {
+            return Err(format!("Fontconfig could not read {}", file.display()));
+        }
+    }
+    // SAFETY: `ptr` is a PangoFcFontMap. set_config takes its own reference
+    // and invalidates the map's caches; our reference is released on return.
+    unsafe { fontconfig::pango_fc_font_map_set_config(ptr.cast(), config.0) };
     Ok(())
 }
 
@@ -1140,10 +1155,8 @@ fn main_font(desc: &Arc<str>) -> Option<pango::Font> {
         if files.len() > fonts.files
             && let Some(map) = fonts.context.font_map()
         {
-            for file in &files[fonts.files..] {
-                if let Err(err) = add_font_file(&map, file) {
-                    log::warn!("cannot add font {}: {err}", file.display());
-                }
+            if let Err(err) = set_font_files(&map, &files) {
+                log::warn!("cannot load app fonts: {err}");
             }
             fonts.files = files.len();
             fonts.context.changed();
@@ -2468,6 +2481,22 @@ mod tests {
         let engine = PangoTextEngine::new("sans-serif".into());
         let data = include_bytes!("../../../examples/gallery/fonts/Pacifico-Regular.ttf");
         engine.register_font(data).expect("registered");
+        let other = PangoTextEngine::new("sans-serif".into());
+        let config = |engine: &PangoTextEngine| {
+            let map: *mut pango::ffi::PangoFontMap = engine.font_map.to_glib_none().0;
+            // SAFETY: these engines own live PangoFc font maps.
+            unsafe { fontconfig::pango_fc_font_map_get_config(map.cast()) }
+        };
+        assert!(
+            !config(&engine).is_null(),
+            "app fonts must not mutate the global config"
+        );
+        assert!(!config(&other).is_null());
+        assert_ne!(
+            config(&engine),
+            config(&other),
+            "engines must own separate font configs"
+        );
         assert!(engine.register_font(b"not a font").is_err());
         let style = ResolvedTextStyle {
             font_family: Some(nsh_core::FontFamily::new("Pacifico")),

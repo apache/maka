@@ -24,12 +24,15 @@ use super::super::{
 use gpui::{AppContext, Application, Bounds, Focusable, WindowBounds, WindowOptions, point, px};
 use nsh_core::prelude::*;
 use nsh_engine::{App, Bundle, EngineConfig};
-use nsh_gpui_terminal::{SubmittedFrame, TerminalPlatform};
+use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};
 use std::{
     cell::RefCell,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 use termina::{
@@ -38,7 +41,9 @@ use termina::{
 };
 
 #[class]
-struct RailHost {}
+struct RailHost {
+    scale: Arc<AtomicU32>,
+}
 
 #[class]
 impl RailHost {
@@ -47,10 +52,9 @@ impl RailHost {
         "en".into()
     }
     #[getter]
-    pub fn ui_scale_supported(&self) -> bool {
-        true
+    pub fn ui_scale_factor(&self) -> f32 {
+        f32::from_bits(self.scale.load(Ordering::Relaxed))
     }
-    pub fn preview_ui_scale(&self, _scale: f32) {}
 }
 
 #[test]
@@ -110,17 +114,23 @@ fn check_marks(source: &str) {
         sixel_geometry: Default::default(),
     };
     let viewport = caps.logical_viewport().unwrap();
-    let frames = Rc::new(RefCell::new(Vec::<SubmittedFrame>::new()));
+    let frames = Rc::new(RefCell::new(Vec::<CandidateFrame>::new()));
     let received = frames.clone();
     let platform = TerminalPlatform::new(
         Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-        Box::new(move |frame| received.borrow_mut().push(frame)),
+        Box::new(move |frame| {
+            received
+                .borrow_mut()
+                .push(frame.submit().unwrap().complete().unwrap());
+        }),
         Arc::new(|| {}),
     )
     .unwrap();
     let errors = Rc::new(RefCell::new(None));
     let failed = errors.clone();
     let source = source.to_owned();
+    let scale = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    let host_scale = scale.clone();
     let application = Application::with_platform(platform.clone()).run_embedded(move |cx| {
         cx.open_window(
             WindowOptions {
@@ -143,7 +153,11 @@ fn check_marks(source: &str) {
                     );
                     view.on_error(move |message| *failed.borrow_mut() = Some(message.to_owned()));
                     let mut host = Registry::ui_set("maka/host");
-                    host.value("host", move || Instance::new(RailHost {}));
+                    host.value("host", move || {
+                        Instance::new(RailHost {
+                            scale: host_scale.clone(),
+                        })
+                    });
                     view.load_with_config(EngineConfig {
                         ui_sets: vec![nsh_base::registry(), host],
                         ..EngineConfig::new(App::Js(Bundle::source(source)))
@@ -155,8 +169,9 @@ fn check_marks(source: &str) {
         )
         .unwrap();
     });
-    for (stage, scale) in [1.0, 0.8, 0.5, 2.0].into_iter().enumerate() {
-        caps.ui_scale = scale;
+    for (stage, factor) in [1.0f32, 0.8, 0.5, 2.0].into_iter().enumerate() {
+        scale.store(factor.to_bits(), Ordering::Relaxed);
+        caps.ui_scale = factor;
         platform
             .set_viewport(caps.pixel_size().unwrap(), caps.scale_factor())
             .unwrap();
@@ -188,7 +203,6 @@ fn check_marks(source: &str) {
             );
             let mut found = None;
             for frame in frames.borrow_mut().drain(..) {
-                let frame = frame.complete().unwrap();
                 let width = frame.size().width.0 as usize;
                 let height = frame.size().height.0 as usize;
                 if frame.pixels()[..3] != [22 + stage as u8, 23 + stage as u8, 25 + stage as u8] {
@@ -246,9 +260,7 @@ fn check_marks(source: &str) {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 platform.pump();
-                for frame in frames.borrow_mut().drain(..) {
-                    frame.complete().unwrap();
-                }
+                frames.borrow_mut().clear();
                 assert!(
                     errors.borrow().is_none(),
                     "rail input failed: {:?}",
@@ -284,7 +296,6 @@ fn check_marks(source: &str) {
             loop {
                 platform.pump();
                 for frame in frames.borrow_mut().drain(..) {
-                    let frame = frame.complete().unwrap();
                     let width = frame.size().width.0 as usize;
                     let preview = frame.pixels().as_chunks::<4>().0.iter().enumerate().any(
                         |(index, pixel)| index % width < width - 48 && pixel[..3] == [32, 33, 35],

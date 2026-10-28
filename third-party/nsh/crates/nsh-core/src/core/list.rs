@@ -402,7 +402,7 @@ pub(super) struct ListState {
     /// Native interaction tracking stays enabled after an automatic request.
     pub(super) automatic: bool,
     /// A direct native snapshot, unknown until the initial TrackStates report.
-    interaction: Option<u8>,
+    interaction: Option<u16>,
     /// `viewport="parent"`: virtualized against the view around it.
     pub(super) parent: bool,
     /// The parent mode's view, once found.
@@ -843,7 +843,7 @@ impl ListState {
 
     /// The platform reports the list's own hover and focus-within together.
     /// Child focus style propagation cannot temporarily make this list idle.
-    pub(super) fn interaction(&mut self, states: u8) {
+    pub(super) fn interaction(&mut self, states: u16) {
         if !self.automatic {
             return;
         }
@@ -1578,6 +1578,14 @@ impl ListState {
     fn set_extra(&mut self, kind: ExtraKind, cell: u32) {
         self.extras[kind as usize] = Extra { cell, size: 0.0 };
         self.dirty = true;
+    }
+
+    /// Whether cell `cell` is a slot's the list freed: bound to no item, it
+    /// still holds what it showed last until the list binds it again.
+    pub(super) fn frees(&self, cell: u32) -> bool {
+        self.slots
+            .iter()
+            .any(|s| s.cell == cell && s.index.is_none())
     }
 
     pub(super) fn remove_cell(&mut self, cell: u32) {

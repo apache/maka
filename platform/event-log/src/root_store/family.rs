@@ -205,7 +205,9 @@ impl RootStore {
         use maka_agent_facts::session::CopyPurpose;
         if let CopyPurpose::Revision { turn_id }
         | CopyPurpose::Branch {
-            turn_id: Some(turn_id),
+            position:
+                maka_agent_facts::session::ForkPosition::ThroughTurn { turn_id }
+                | maka_agent_facts::session::ForkPosition::BeforeTurn { turn_id },
             ..
         } = &request.purpose
         {

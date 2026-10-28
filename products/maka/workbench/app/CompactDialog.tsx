@@ -19,8 +19,8 @@
 
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import type { ConversationHandle } from './Conversation';
-import { host } from './host';
+import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
+import { useHost } from './host';
 import { tr } from './locale';
 import { SettingsEditor } from './SettingsField';
 import { createText, errorText } from './text';
@@ -31,6 +31,7 @@ export function CompactDialog(props: {
   prompt?: string;
   close(): void;
 }) {
+  const host = useHost();
   const draft = signal('');
   const state = signal<'loading' | 'ready' | 'failed' | 'submitting'>('loading');
   const error = createText();
@@ -83,7 +84,7 @@ export function CompactDialog(props: {
         justifyContent: 'center',
         alignItems: 'center',
         padding: 16,
-        backgroundColor: '#00000099',
+        backgroundColor: C.scrim,
       }}
     >
       <View
@@ -126,8 +127,8 @@ export function CompactDialog(props: {
             disabled={state() === 'submitting'}
             onPress={inputAction(close, null)}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ color: C.text }}>{tr('Cancel compaction')}</Text>
           </Button>
@@ -145,8 +146,8 @@ export function CompactDialog(props: {
             disabled={state() !== 'ready'}
             onPress={inputAction(submit, draft())}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ color: C.accent }}>{tr('Compact now')}</Text>
           </Button>

@@ -24,19 +24,20 @@ import type {
   SettingsCredentialLoginResult,
   SettingsLoginPrompt,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { host } from './host';
+import type { Host } from './host';
 import { errorText, message, UiError } from './text';
 import { settingsRejection, settingsValue, type SettingsOperations } from './settingsOperations';
 
 export type LoginAction = { editor: number; input: SettingsCredentialLogin };
 type Saved = Extract<SettingsCredentialLoginResult, { kind: 'saved' }>;
-type Original = Awaited<ReturnType<typeof host.beginSetting>>;
+type Original = Awaited<ReturnType<Host['beginSetting']>>;
 type Login = { occurrence: number; prompt: SettingsLoginPrompt | null; cancelling: boolean };
 type CopyAction = { occurrence: number; field: 'url' | 'userCode'; value: string };
 
 // The native Mutation owns the original call, receipt and cleanup. This is only
 // the progress shown by its one consumer in the existing connection editor.
 export function createConnectionLogin(
+  host: Host,
   operations: SettingsOperations,
   owner: {
     accepts(action: LoginAction): boolean;

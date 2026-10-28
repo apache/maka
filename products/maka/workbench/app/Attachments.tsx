@@ -18,17 +18,18 @@
  */
 
 import { textTooltip } from './ui';
-import { renderText } from './text';
 import { tr } from './locale';
 import { inputAction, Scroll, Text, View } from 'nsh';
+import type { JSX } from 'nsh';
 import { Button } from 'nsh/base';
-import { AttachmentPicker } from 'maka/host';
 import type { AgentHistoryAttachment } from '../../../../packages/plugin-sdk/src/index.js';
-import type { AttachmentDraft } from './attachmentDraft';
+import type { ComposerAttachments } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Position } from './history';
 import { ImageThumbnail, type ImagePreview } from './ImageThumbnail';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
+import { useHost } from './host';
+import { immutableAsset } from './immutableAsset';
 
 const image = (mime: string) =>
   ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'].includes(mime);
@@ -38,38 +39,41 @@ const size = (bytes: number) =>
     : bytes < 1024 * 1024
       ? `${Math.ceil(bytes / 1024)} KB`
       : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-const fileTileStyle = {
-  width: 240,
-  height: 64,
-  flexShrink: 0,
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: 8,
-  paddingHorizontal: 12,
-  borderWidth: 1,
-  borderColor: C.line,
-  borderRadius: 8,
-  backgroundColor: C.surface,
-} as const;
-const removeStyle = {
-  position: 'absolute',
-  top: 4,
-  right: 4,
-  width: 24,
-  height: 24,
-  alignItems: 'center',
-  justifyContent: 'center',
-  borderRadius: 12,
-  backgroundColor: C.raised,
-  borderWidth: 1,
-  borderColor: C.line,
-} as const;
+const fileTileStyle = () =>
+  ({
+    width: 240,
+    height: 64,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: C.line,
+    borderRadius: 8,
+    backgroundColor: C.surface,
+  }) as const;
+const removeStyle = () =>
+  ({
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    backgroundColor: C.raised,
+    borderWidth: 1,
+    borderColor: C.line,
+  }) as const;
 
 export function DraftAttachments(props: {
-  draft: AttachmentDraft;
+  draft: ComposerAttachments<JSX.Element>;
   preview(image: ImagePreview): void;
 }) {
   const owner = props.draft;
+  const Picker = owner.renderPicker;
   return (
     <View style={{ gap: 8 }}>
       <If when={owner.picker()}>
@@ -88,15 +92,13 @@ export function DraftAttachments(props: {
       </If>
       {/* Keep this native owner mounted. Hiding only closes its private picker;
         the original selected path and in-flight resource retain their owner. */}
-      <AttachmentPicker
-        client={owner.client}
+      <Picker
         pathLabel={tr('Attachment path')}
         pathPlaceholder={tr('Absolute file path…')}
         uploadLabel={tr('Upload selected file')}
         uploadingLabel={tr('Uploading…')}
         visible={owner.picker()}
         disabled={owner.restoring()}
-        onStatus={owner.status}
       />
       <If when={owner.files().length > 0}>
         <Scroll horizontal accessibilityLabel={tr('Draft attachments')} style={{ flexShrink: 0 }}>
@@ -104,6 +106,11 @@ export function DraftAttachments(props: {
             <Each of={owner.files()} key={(file) => file.id}>
               {(file) => {
                 const original = file();
+                const read = {
+                  sessionId: owner.sessionId,
+                  source: { kind: 'uploaded' as const, id: original.id },
+                  offset: 0,
+                };
                 return (
                   <View style={{ flexShrink: 0 }}>
                     <If
@@ -111,7 +118,7 @@ export function DraftAttachments(props: {
                       else={
                         <View
                           tooltip={textTooltip(() => `${original.name}\n${size(original.bytes)}`)}
-                          style={fileTileStyle}
+                          style={fileTileStyle()}
                         >
                           <Icon name="file" color={C.secondary} />
                           <View style={{ flex: 1, minWidth: 0, paddingRight: 24, gap: 4 }}>
@@ -129,14 +136,8 @@ export function DraftAttachments(props: {
                     >
                       <ImageThumbnail
                         compact
-                        source={{
-                          kind: 'attachment-image',
-                          read: {
-                            sessionId: owner.sessionId,
-                            source: { kind: 'uploaded', id: original.id },
-                            offset: 0,
-                          },
-                        }}
+                        source={{ kind: 'attachment-image', read }}
+                        uri={owner.imageUri(read)}
                         label={tr('Open attachment {name}', { name: original.name })}
                         tooltip={`${original.name}\n${size(original.bytes)}`}
                         preview={props.preview}
@@ -150,7 +151,7 @@ export function DraftAttachments(props: {
                         id: original.id,
                       })}
                       style={{
-                        ...removeStyle,
+                        ...removeStyle(),
                         ...(image(original.mimeType) ? { right: undefined, left: 36 } : {}),
                       }}
                       hoverStyle={{ backgroundColor: C.line }}
@@ -188,30 +189,35 @@ export function DraftAttachments(props: {
                     : tr('Upload failed')}
             </Text>
             <If when={row().error}>
-              <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
-                {renderText(row().error!)}
-              </Text>
+              <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{row().error!}</Text>
             </If>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               <If when={row().kind === 'unknown'}>
                 <Button
                   disabled={owner.recovering() !== null}
                   accessibilityLabel={
-                    row().original ? tr('Recover original upload') : tr('Check original upload')
+                    row().recovery === 'inspect'
+                      ? tr('Check original upload')
+                      : tr('Recover original upload')
                   }
-                  onPress={inputAction(row().original ? owner.recover : owner.inspect, {
-                    owner: owner.sessionId,
-                    id: row().id,
-                  })}
+                  onPress={inputAction(
+                    row().recovery === 'inspect' ? owner.inspect : owner.recover,
+                    {
+                      owner: owner.sessionId,
+                      id: row().id,
+                    },
+                  )}
                   style={controlStyle}
                   hoverStyle={{ backgroundColor: C.line }}
                   focusStyle={{ backgroundColor: C.line }}
                 >
                   <Text style={{ color: C.accent }}>
-                    {row().original ? tr('Recover original upload') : tr('Check original upload')}
+                    {row().recovery === 'inspect'
+                      ? tr('Check original upload')
+                      : tr('Recover original upload')}
                   </Text>
                 </Button>
-                <If when={row().original && !row().original.reference}>
+                <If when={row().recovery === 'recover_or_abandon'}>
                   <Button
                     disabled={owner.recovering() !== null}
                     onPress={inputAction(owner.abandon, {
@@ -270,6 +276,7 @@ export function HistoryAttachments(props: {
   preview(image: ImagePreview): void;
   userScroll(): void;
 }) {
+  const host = useHost();
   return (
     <Scroll
       horizontal
@@ -284,6 +291,28 @@ export function HistoryAttachments(props: {
         >
           {(attachment) => {
             const original = attachment();
+            const HistoryImage = () => {
+              const read = {
+                sessionId: props.sessionId,
+                offset: 0,
+                source: {
+                  kind: 'history' as const,
+                  through: props.through,
+                  position: { ...props.position! },
+                  attachmentIndex: original.index,
+                },
+              };
+              return (
+                <ImageThumbnail
+                  compact
+                  source={{ kind: 'attachment-image', read }}
+                  uri={host.assetUri(immutableAsset('attachment-image', read))}
+                  label={tr('Open attachment {name}', { name: original.name })}
+                  tooltip={`${original.name}\n${size(original.bytes)} · ${original.kind}`}
+                  preview={props.preview}
+                />
+              );
+            };
             return (
               <If
                 when={image(original.mimeType) && props.position !== undefined}
@@ -292,7 +321,7 @@ export function HistoryAttachments(props: {
                     tooltip={textTooltip(
                       () => `${original.name}\n${size(original.bytes)} · ${original.kind}`,
                     )}
-                    style={fileTileStyle}
+                    style={fileTileStyle()}
                   >
                     <Icon name={image(original.mimeType) ? 'image' : 'file'} color={C.secondary} />
                     <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
@@ -306,25 +335,7 @@ export function HistoryAttachments(props: {
                   </View>
                 }
               >
-                <ImageThumbnail
-                  compact
-                  source={{
-                    kind: 'attachment-image',
-                    read: {
-                      sessionId: props.sessionId,
-                      offset: 0,
-                      source: {
-                        kind: 'history',
-                        through: props.through,
-                        position: { ...props.position! },
-                        attachmentIndex: original.index,
-                      },
-                    },
-                  }}
-                  label={tr('Open attachment {name}', { name: original.name })}
-                  tooltip={`${original.name}\n${size(original.bytes)} · ${original.kind}`}
-                  preview={props.preview}
-                />
+                <HistoryImage />
               </If>
             );
           }}

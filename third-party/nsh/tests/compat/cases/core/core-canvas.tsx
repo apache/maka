@@ -2,8 +2,8 @@
 // A headless run paints nothing, so the script checks what JS sees: the
 // size `draw` gets, the canvas's layout, and what the kept context answers
 // natively from what it recorded (hit tests on `Path2D` paths, its line
-// dash, text measures, gradients made). Its script checks
-// each.
+// dash, text measures, gradients made); and the operations the platform is
+// told to draw (`drawing` steps). Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Canvas, CanvasGradient, CanvasRenderingContext2D, Path2D } from "nsh";
 

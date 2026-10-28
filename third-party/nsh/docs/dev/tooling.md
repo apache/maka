@@ -7,7 +7,7 @@
   (the UI sets as data: `nsh_core::element::description::SetDescription`, each with its generated declarations)
   makes the declarations of everything NSH serves (`nsh-js` `declarations.rs`), and `nsh_bundler::type_definitions()`
   the asset imports. The files: `nsh/index.d.ts` (`nsh`), one per module (`nsh/base.d.ts`, `nsh/mobile.d.ts`,
-  an app's set's `app/native.d.ts`, ...), `nsh/types.d.ts` (the styles, the elements' props and events, `YNode`, the JSX namespace; `nsh` exports them),
+  an app's set's `app/native.d.ts`, ...), `nsh/types.d.ts` (the styles, the elements' props and events, the refs (`ViewRef` and each element's own over it), the JSX namespace; `nsh` exports them),
   `nsh/jsx-runtime.d.ts` (where `jsxImportSource` finds `JSX`: no intrinsic elements, so every tag is checked as the
   component it names and generic ones are inferred: `native-pipeline.md`), `nsh/globals.d.ts` (console, timers,
   frames, the web APIs and the control flow components `If` / `Each`), and from the bundler `nsh/assets.d.ts` (what
@@ -120,9 +120,17 @@ before every `cargo run`): `✓` lines for its builds, cargo's and the tools' ou
 
 ## Dev server (nsh dev / nsh run)
 
-- The CLI watches sources with notify and pushes every rebuild over WebSocket (`/ws`, default port 8790, the next free port if taken) to all
+- The CLI watches sources with notify and pushes every rebuild over WebSocket (`/ws`, default port 8790, or `--port`) to all
   connected hosts; new clients subscribe before receiving the current state, so no event is missed. Protocol: `crates/nsh-dev/src/protocol.rs`
   (JSON text frames + binary frames).
+- `nsh run` and `nsh dev` replace the previous NSH development command on the chosen port. The CLI
+  holds an OS file lock in the existing NSH cache's `dev-sessions/` directory for the entire command,
+  including Rust rebuilds and host / Android forwarding cleanup. A local stop file asks the owner to
+  exit through its normal cleanup path; the replacement waits up to ten seconds for the lock before
+  starting. A second simultaneous takeover fails. Locks release on process exit, and stale stop files
+  are cleared by the next owner. All cooperating commands use the same cache directory. A listener
+  outside this mechanism (including an older CLI) produces a bind error naming the port; `--port 0`
+  asks the OS for a free port. The control files stay local to the machine.
 - Imported source directories and theme files outside the entry directory are watched too, using the last
   successful bundle's dependencies. The gallery and website demos share `examples/nsh-gallery-ui`; saving one of
   its components or its theme rebuilds the app as saving a file inside the app does.
@@ -257,7 +265,7 @@ the span around them), found by their characters (`text:`, a bare string) and pr
 the events go to the span's node; they are not texts of their own (`texts()` lists the text view's).
 `Screen::span_style` reads the resolved style of characters a selector names (`id:<testID>` a nested text's test id,
 `text:<text>` where the text reads it), the first character's, including a nested text's background. `app.spanStyle`
-returns that style. A span's test id is listed on its block's text (`AttributedText::test_ids`). Setting the id
+returns that style; on a real host the agent's model answers it (`TestStep::SpanStyle`, a `protocol::SpanStyle`). A span's test id is listed on its block's text (`AttributedText::test_ids`). Setting the id
 later updates the block's metadata and remounts its existing final layout, including fitted font sizes, without
 preparing or laying out the text again or reporting `onTextLayout`. Empty spans have no first character:
 queries report an error, including bare selectors whose test id matches an empty span. Steps acting on a view are strict, as Playwright's: the matches
@@ -292,13 +300,21 @@ report it:
   when released past `ScrollBehavior::refreshes`) takes it, and the press under it is cancelled once it moves away;
 - `hover` (`headless/pointer.rs`): on a desktop environment the mouse comes over the match's middle: the views from it
   out that hovering matters to (`input::hoverable`: `hover:` styles or hover events) replace those hovered before
-  (`Screen::set_hovered`), `input::hover_changes` says which hear `HoverOut` and `HoverIn` (with their `HOVERED` state
-  reported, `EngineControl::set_states`), and the hovered views hear `HoverMove`;
+  (`Screen::set_hovered`), `input::hover_changes` says which hear `MouseLeave` and `MouseEnter` (with their `HOVERED`
+  state reported, `EngineControl::set_states`), and the hovered views hear `MouseMove` (no button down);
 - `right_click`, `choose_menu_item`, `close_menu` (`headless/menus.rs`): on a desktop environment the match, or the
   nearest view around it listening, hears `ContextMenu`; the menu the app then shows (`Menu.popup`,
   `DesktopCommand::PopupMenu`) is the model's (`Screen::menu`, read through `menu.rs`: its actions by label, a
   submenu's as `"Share > Mail"`) until it is chosen from (the root hears `Menu` with the action's id, then
   `Menu { closed }`) or closed;
+- `drag_and_hold` / `drop_held` (`headless/pointer.rs`, `app.dragAndHold` / `app.drop`): a drag whose `Finger` stays
+  in `Headless.finger` until `drop()` lifts it (a new drag lifts it first), so a test reads the screen mid-drag.
+  On a real target `TestStep::DragAndHold` / `Drop` reach `Native::drag_and_hold` / `drop_at` (Linux; the others
+  refuse them for now).
+- `hold_keys` (`headless/keyboard.rs`, `app.keyboard.down` / `up`): the modifiers held, which `press_payload` and
+  hover events carry; a drag's press is a full press payload (its start in the pressed view), and on a desktop a
+  drag presses at once even in a scroll view, as a mouse does. On Linux the agent holds them for its simulated
+  pointer (`input::hold`); other real targets refuse.
 - `press_key` (`headless/keyboard.rs`, `app.keyboard.press`): the keystroke as `nsh`'s `keymap` parses it for the
   environment's OS; on every environment (a hardware keyboard: phones and tablets have one too) the root's keymap
   (`MountItem::Keymap`, `Screen::keymap`) finds the binding that fires where the focus is (`Keymap::find`) and the
@@ -490,7 +506,8 @@ chosen item carried out after; GTK's popover with the item's action's work done 
 menus of its own; the web, whose `Menu.popup` is the app's own UI, has none), the mouse's hover (`hover`, when
 `Native::mouse`: macOS hands the move to the surface's input, as AppKit gives posted
 moves to the first responder only), keystrokes (`press_keys`: macOS's posted key events, Windows' and GPUI's key entry points with
-`keymap::Key::virtual_key`, the web's CDP key events, Linux's bindings fired as its shortcut controller would, as GTK
+`keymap::Key::virtual_key`, the web's CDP key events (printable keys carry their physical code, modifiers and US-layout
+text, so shortcuts get the key before a field types it), Linux's bindings fired as its shortcut controller would, as GTK
 takes no made-up keys; iOS's IOHID keyboard events (`synth::key`, modifiers down first) that UIKit takes as a
 real keyboard's, Android's `KeyEvent`s handed to the window's root view as its input stage hands them over),
 `back`, dialogs, screenshots, the window's size and appearance),
@@ -677,7 +694,8 @@ program that describes them, builds the hosts and runners with them, and does ev
     `nsh_tui_app::main`; console applications on all three desktops), `android` (the app's `libnsh.so`:
     `nsh::ui_sets!`, which the Android runtime looks up
     when an engine starts) and `web` (the app's web runtime, a `cdylib` for `wasm32-unknown-unknown` built with the
-    `web` profile: `nsh_platform_web::ui_sets!`, whose `nsh_app_init` export `nsh.js` calls; `docs/dev/web.md`, "Apps
+    `web` profile, or the generated incremental `web-dev` one for `nsh run --target web`: `nsh_platform_web::ui_sets!`,
+    whose `nsh_app_init` export `nsh.js` calls; `docs/dev/web.md`, "Apps
     with Rust components"). `gpui-host` (`nsh_platform_gpui::set_ui_sets`, under `cfg(any(target_os = "linux",
     target_os = "macos", windows))`) is a workspace of its own in `.nsh/rust/gpui` (excluded from the main one), written
     only when the GPUI host is built (`RustApp::gpui_workspace`), so builds for the other targets never resolve GPUI's crates.
@@ -714,7 +732,8 @@ program that describes them, builds the hosts and runners with them, and does ev
   through tsconfig's `"*"` path, which falls back to `node_modules`), the dev server serves their files and tells hosts
   which sets a bundle needs. The hosts `run` and `package` need are built for the app instead of taken from the runtime
   (iOS `--target` triples; Linux's, macOS's, Windows' and the terminal's `*-host` / `*-app` and GPUI's `gpui-host` for this machine; Android: the
-  prebuilt `classes.dex` with the app's `libnsh.so` for each ABI of the prebuilt runtime, cross-compiled with the NDK;
+  prebuilt `classes.dex` with the app's `libnsh.so` for each ABI the APK takes (`nsh package --abi`, else
+  `arm64-v8a` and `armeabi-v7a`; `nsh run`: the device's alone), cross-compiled with the NDK;
   the web: the app's `nsh.wasm` / `nsh-dev.wasm`, with nsh's `nsh.js`).
 - `nsh test` builds the app's headless runner (`RustApp::test_runner`) and runs the test files in it, building the
   entries it asks for (`nsh test`, above); the runner's log lines come back as `RunnerMessage`s, which `nsh` shows as

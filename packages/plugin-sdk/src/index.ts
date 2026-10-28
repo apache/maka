@@ -23,6 +23,7 @@ export type { ServiceMethods } from './generated/methods.js';
 export { contracts } from './contracts.js';
 export { configurations } from './configurations.js';
 export type * from './workbench.js';
+export { defineUiViewContract } from './workbench.js';
 
 import type {
   HostRequest,
@@ -47,3 +48,4 @@ export type HostService = Record<
 >;
 
 export { nativeImplementations } from './native.js';
+export * from './workbench-views.js';

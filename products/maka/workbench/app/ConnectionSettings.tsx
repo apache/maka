@@ -20,7 +20,7 @@
 import { textTooltip } from './ui';
 import { inputAction, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ListRef } from 'nsh';
 import { Button } from 'nsh/base';
 import type { ModelSettingsOwner } from './settings';
 import { ConnectionForm } from './ConnectionForm';
@@ -44,9 +44,9 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
   const owner = props.owner;
   const unavailable = () => owner.busy() || !owner.pendingKnown() || owner.pending().length > 0;
   const disabled = () => unavailable() || owner.loading();
-  let connectionsList: YNode | undefined;
-  let providersList: YNode | undefined;
-  let modelsList: YNode | undefined;
+  let connectionsList: ListRef | undefined;
+  let providersList: ListRef | undefined;
+  let modelsList: ListRef | undefined;
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
       <If when={owner.confirmation()}>
@@ -74,8 +74,8 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
             accessibilityLabel={tr('Confirm removal')}
             onPress={inputAction(owner.remove, owner.removalAction())}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Confirm removal')}</Text>
@@ -84,8 +84,8 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
             disabled={owner.busy()}
             onPress={inputAction(owner.cancelRemoval, owner.removalAction())}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Cancel')}</Text>
@@ -100,8 +100,8 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
               accessibilityLabel={tr('Add connection')}
               onPress={inputAction(owner.newConnection, null)}
               style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Icon name="plus" color={C.accent} />
@@ -111,8 +111,8 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
               disabled={owner.loading() || owner.busy()}
               onPress={inputAction(owner.loadConnections, false)}
               style={controlStyle}
-              hoverStyle={controlHoverStyle}
-              focusStyle={controlFocusStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
               disabledStyle={controlDisabledStyle}
             >
               <Text style={{ ...captionTextStyle, color: C.muted }}>
@@ -272,8 +272,8 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
             accessibilityLabel={tr('Add model manually')}
             onPress={inputAction(owner.editModel, { ...owner.action(), id: null })}
             style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="plus" color={C.secondary} />
@@ -328,8 +328,8 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
                     style={{ ...controlStyle, height: 48, flex: 1, minWidth: 0 }}
                     accessibilityLabel={tr('Edit model {id}', { id: id() })}
                     onPress={inputAction(owner.editModel, { ...owner.action(), id: id() })}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <View style={[{ minWidth: 0 }, { pointerEvents: 'none' }]}>
@@ -383,8 +383,8 @@ export function ConnectionSettings(props: { owner: ModelSettingsOwner }) {
                       paddingVertical: 0,
                       alignItems: 'center',
                     }}
-                    hoverStyle={controlHoverStyle}
-                    focusStyle={controlFocusStyle}
+                    hoverStyle={controlHoverStyle()}
+                    focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}
                   >
                     <ChoiceIndicator
@@ -416,7 +416,7 @@ function Search(props: {
     <Input
       accessibilityLabel={props.label}
       value={props.value()}
-      onChange={props.change}
+      onChange={({ value }) => props.change(value)}
       placeholder={props.placeholder}
       style={{
         ...inputTextStyle,

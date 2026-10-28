@@ -177,7 +177,9 @@ async fn branch_export_keeps_archive_proofs_and_owned_bytes_without_parent_futur
             target_session_id: "branch".into(),
             expected_source_revision: revision,
             purpose: CopyPurpose::Branch {
-                turn_id: Some("old".into()),
+                position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                    turn_id: "old".into(),
+                },
                 side_conversation: false,
             },
         },
@@ -299,5 +301,72 @@ async fn branch_export_keeps_archive_proofs_and_owned_bytes_without_parent_futur
     end(&log, "busy").await;
     materials::verify_nested_copy(&log).await;
     tamper::verify_deleted_upload(&log).await;
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn imported_start_position_rejects_nonempty_branch_history() {
+    use maka_agent_facts::session::ForkPosition;
+    use maka_event_log::bundle::StagedBundle;
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("source.sqlite"))
+        .await
+        .unwrap();
+    log.create_session("source", "source", &json!({}), 1)
+        .await
+        .unwrap();
+    open(&log, "first", "retained input".into()).await;
+    end(&log, "first").await;
+    let revision = log
+        .get_session::<Value>("source")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    for (target, position) in [
+        ("nonempty", ForkPosition::End),
+        ("empty", ForkPosition::Start),
+    ] {
+        log.copy_session(
+            SessionCopy {
+                source_session_id: "source".into(),
+                target_session_id: target.into(),
+                expected_source_revision: revision,
+                purpose: CopyPurpose::Branch {
+                    position,
+                    side_conversation: true,
+                },
+            },
+            &json!({}),
+            2,
+        )
+        .await
+        .unwrap();
+        let inventory = log.preview_bundle(target).await.unwrap();
+        let (bytes, _) = log
+            .export_bundle(target, &inventory.subtree_digest, Vec::new())
+            .await
+            .unwrap();
+        let mut valid = StagedBundle::read(bytes.as_slice()).await.unwrap();
+        valid.validate_history().await.unwrap();
+        valid.close().await.unwrap();
+        if target == "nonempty" {
+            let forged = frames::rewrite_records(&bytes, |record| {
+                if record["kind"] == "copy" {
+                    record["request"]["purpose"]["position"] = json!({"kind":"start"});
+                    record["lineage"]["origin"]["position"] = json!({"kind":"start"});
+                }
+                true
+            });
+            let mut staged = StagedBundle::read(forged.as_slice()).await.unwrap();
+            let result = staged.validate_history().await;
+            assert!(
+                matches!(result, Err(BundleError::Store(StoreError::InvalidTransition(ref message)))
+                if message == "empty branch contains history"),
+                "{result:?}"
+            );
+            staged.close().await.unwrap();
+        }
+    }
     log.close().await.unwrap();
 }

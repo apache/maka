@@ -17,17 +17,17 @@
  * under the License.
  */
 
-import { inputAction, Text, View, type YNode } from 'nsh';
+import { inputAction, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { displayText, tr } from '../locale';
 import { Icon } from '../Icon';
 import { C, controlStyle, captionTextStyle } from '../ui';
 import { controlsRight, windowDrag } from '../chrome';
 import { PluginView } from './PluginView';
-import { pluginContext } from './context';
+import type { WorkbenchPlugins } from './context';
 
-export function PluginPanel(props: { docked: boolean; attach?(node: YNode): void }) {
-  const plugins = pluginContext()!;
+export function PluginPanel(props: { docked: boolean; controller: WorkbenchPlugins }) {
+  const plugins = props.controller;
   return (
     <Each
       of={plugins.panel() ? [plugins.panel()!] : []}
@@ -38,7 +38,6 @@ export function PluginPanel(props: { docked: boolean; attach?(node: YNode): void
         const declaration = current.contribution.declaration;
         return (
           <View
-            ref={props.attach}
             style={{ flex: 1, minHeight: 0, backgroundColor: C.background, gap: 8, padding: 8 }}
           >
             <View
@@ -62,6 +61,7 @@ export function PluginPanel(props: { docked: boolean; attach?(node: YNode): void
               </Button>
             </View>
             <PluginView
+              runtime={plugins.runtime}
               contribution={current.contribution}
               sessionId={plugins.sessionId}
               input={() => current.input}

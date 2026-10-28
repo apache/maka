@@ -20,7 +20,8 @@
 import { UiError } from './text';
 import { tr } from './locale';
 import { host as nativeHost } from 'maka/host';
-import type { CapturedFile, ScopedHost } from 'maka/host';
+import { context } from 'nsh';
+import type { ApplicationHost, CapturedFile, ScopedHost } from 'maka/host';
 import type {
   AgentFileKind,
   ClientDraft,
@@ -35,8 +36,6 @@ import type { UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 // retaining the admitted native Host object and its original request custody.
 export const uiHost = nativeHost as UiHost;
 
-// The default root declares these service contracts in its composition. The
-// Host validates values against the selected contracts; this facade types the calls.
 type Services = {
   agent: ServiceMethods['agent'];
   settings: ServiceMethods['settings'];
@@ -137,81 +136,102 @@ function attempt(value: unknown): Attempt {
   return { operationId: value.operationId, reply: value.reply };
 }
 
-async function query<E extends Endpoint, M extends Method<E, 'query'>>(
-  endpoint: E,
-  method: M,
-  input: Input<E, M>,
-): Promise<Output<E, M>> {
-  return nativeHost.query(endpoint, method, input) as Promise<Output<E, M>>;
-}
-function subscribe<E extends Endpoint, M extends StreamMethod<E>>(
-  endpoint: E,
-  method: M,
-  input: Input<E, M>,
-): Promise<Subscription<Output<E, M>>> {
-  return nativeHost.subscribe(endpoint, method, input) as Promise<Subscription<Output<E, M>>>;
-}
-async function readFile(input: Input<'agent', 'readFile'>): Promise<FileSubscription> {
-  const opened = await nativeHost.readFile(input);
-  return {
-    readFile: async () => fileView(await opened.readFile()),
-    close: () => opened.close(),
-  };
-}
-
-// Local journal methods serialize these actual Rust DTOs. Their receipt business
-// values remain unknown and continue through the application's existing guards.
-export const host = {
-  markdownImageSource(target: string) {
-    const source = nativeHost.markdownImageSource(target);
-    return source.kind === 'workspace'
-      ? { kind: 'workspace' as const, path: { bytesBase64: source.path } }
-      : source;
-  },
-  async openLink(target: string) {
-    const link = await nativeHost.openLink(target);
-    return link === null
-      ? null
-      : {
-          path: { bytesBase64: link.path },
-          parent: link.parent == null ? null : { bytesBase64: link.parent },
-        };
-  },
-  query,
-  hasService: (endpoint: string) => nativeHost.hasService(endpoint),
-  refresh: () => nativeHost.refresh(),
-  subscribe,
-  readFile,
-  get initialSession() {
-    return nativeHost.initialSession;
-  },
-  session(sessionId: string) {
-    return nativeHost.session(sessionId);
-  },
-  pathLabel(path: unknown) {
-    return nativeHost.pathLabel(path);
-  },
-  async control(method: string, input: unknown) {
-    return attempt(await nativeHost.control(method, input));
-  },
-  async settingsMutation(endpoint: string, method: string, input: unknown, secret?: string | null) {
-    return attempt(await nativeHost.settingsMutation(endpoint, method, input, secret));
-  },
-  beginSetting<E extends Exclude<Endpoint, 'agent' | 'terminal'>, M extends Method<E, 'mutation'>>(
+export function createHost(application: UiHost) {
+  const nativeHost = application as ApplicationHost;
+  async function query<E extends Endpoint, M extends Method<E, 'query'>>(
     endpoint: E,
     method: M,
     input: Input<E, M>,
-    secret?: string | null,
-  ): Promise<OriginalMutation> {
-    return nativeHost.beginSetting(endpoint, method, input, secret) as Promise<OriginalMutation>;
-  },
-  pendingSettings: () => nativeHost.pendingSettings() as Promise<ClientOperation[]>,
-  recoverSetting: (id: string) => nativeHost.recoverSetting(id) as Promise<OperationReply>,
-  abandonSetting: (id: string) => nativeHost.abandonSetting(id) as Promise<ClientOperation>,
-  pendingControls: () => nativeHost.pendingControls() as Promise<ClientOperation[]>,
-  recoverControl: (id: string) => nativeHost.recoverControl(id) as Promise<OperationReply>,
-  abandonControl: (id: string) => nativeHost.abandonControl(id) as Promise<ClientOperation>,
-};
+  ): Promise<Output<E, M>> {
+    return nativeHost.query(endpoint, method, input) as Promise<Output<E, M>>;
+  }
+  function subscribe<E extends Endpoint, M extends StreamMethod<E>>(
+    endpoint: E,
+    method: M,
+    input: Input<E, M>,
+  ): Promise<Subscription<Output<E, M>>> {
+    return nativeHost.subscribe(endpoint, method, input) as Promise<Subscription<Output<E, M>>>;
+  }
+  async function readFile(input: Input<'agent', 'readFile'>): Promise<FileSubscription> {
+    const opened = await nativeHost.readFile(input);
+    return {
+      readFile: async () => fileView(await opened.readFile()),
+      close: () => opened.close(),
+    };
+  }
+
+  // Local journal methods serialize these actual Rust DTOs. Their receipt business
+  // values remain unknown and continue through the application's existing guards.
+  return {
+    assetUri: (uri: string) => nativeHost.assetUri(uri),
+    markdownImageSource(target: string) {
+      const source = nativeHost.markdownImageSource(target);
+      return source.kind === 'workspace'
+        ? { kind: 'workspace' as const, path: { bytesBase64: source.path } }
+        : source;
+    },
+    async openLink(target: string) {
+      const link = await nativeHost.openLink(target);
+      return link === null
+        ? null
+        : {
+            path: { bytesBase64: link.path },
+            parent: link.parent == null ? null : { bytesBase64: link.parent },
+          };
+    },
+    query,
+    hasService: (endpoint: string) => nativeHost.hasService(endpoint),
+    refresh: () => nativeHost.refresh(),
+    subscribe,
+    readFile,
+    get initialSession() {
+      return nativeHost.initialSession;
+    },
+    session(sessionId: string) {
+      return nativeHost.session(sessionId);
+    },
+    pathLabel(path: unknown) {
+      return nativeHost.pathLabel(path);
+    },
+    async control(method: string, input: unknown) {
+      return attempt(await nativeHost.control(method, input));
+    },
+    async settingsMutation(
+      endpoint: string,
+      method: string,
+      input: unknown,
+      secret?: string | null,
+    ) {
+      return attempt(await nativeHost.settingsMutation(endpoint, method, input, secret));
+    },
+    beginSetting<
+      E extends Exclude<Endpoint, 'agent' | 'terminal'>,
+      M extends Method<E, 'mutation'>,
+    >(
+      endpoint: E,
+      method: M,
+      input: Input<E, M>,
+      secret?: string | null,
+    ): Promise<OriginalMutation> {
+      return nativeHost.beginSetting(endpoint, method, input, secret) as Promise<OriginalMutation>;
+    },
+    pendingSettings: () => nativeHost.pendingSettings() as Promise<ClientOperation[]>,
+    recoverSetting: (id: string) => nativeHost.recoverSetting(id) as Promise<OperationReply>,
+    abandonSetting: (id: string) => nativeHost.abandonSetting(id) as Promise<ClientOperation>,
+    pendingControls: () => nativeHost.pendingControls() as Promise<ClientOperation[]>,
+    recoverControl: (id: string) => nativeHost.recoverControl(id) as Promise<OperationReply>,
+    abandonControl: (id: string) => nativeHost.abandonControl(id) as Promise<ClientOperation>,
+  };
+}
+
+export type Host = ReturnType<typeof createHost>;
+const hostContext = context<Host | null>(null);
+export const HostProvider = hostContext.Provider;
+export function useHost(): Host {
+  const host = hostContext();
+  if (host === null) throw new Error('A bound application Host must be provided.');
+  return host;
+}
 
 // Session methods take the original native Instance. In particular, the same
 // instance still goes directly into AttachmentPicker.client.
@@ -221,8 +241,11 @@ type SavedDraft = ClientDraft & Required<Pick<ClientDraft, 'attachments'>>;
 export const loadDraft = (scope: ScopedHost) => scope.loadDraft() as Promise<SavedDraft>;
 export const saveDraft = (scope: ScopedHost, revision: number, edit: ClientDraftEdit) =>
   scope.saveDraft(revision, edit) as Promise<SavedDraft>;
-export async function sendDraft(scope: ScopedHost, revision: number, selection: unknown) {
-  return attempt(await scope.send(revision, selection));
+// Once the returned operation id resolves, new draft saves never join this send.
+export const reserveSend = (scope: ScopedHost, revision: number, selection: unknown) =>
+  scope.reserveSend(revision, selection) as Promise<string>;
+export async function confirmSend(scope: ScopedHost, id: string) {
+  return attempt(await scope.confirmSend(id));
 }
 export const pendingSends = (scope: ScopedHost) => scope.pending() as Promise<ClientOperation[]>;
 export const recoverSend = (scope: ScopedHost, id: string) =>

@@ -3,12 +3,12 @@
 import { beforeEach, describe, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
-describe("the Form demo", () => {
+describe("the Input demo", () => {
   // Each test starts on the demo, in an app of its own.
   let app: App;
   beforeEach(async () => {
     app = await open("../App.tsx", { clock: {} });
-    await app.press("label:Form");
+    await app.press("label:Input");
   });
 
   test("a controlled input shows what the app makes of each key", async () => {
@@ -16,6 +16,13 @@ describe("the Form demo", () => {
     expect(app.value("id:shout")).toBe("HELLO");
     await app.clear("id:shout");
     expect(app.value("id:shout")).toBe("");
+  });
+
+  test("Shift with a key types its shifted character", async () => {
+    await app.type("id:shout", "a");
+    await app.keyboard.press("shift+8");
+    await app.keyboard.press("shift+2");
+    expect(app.value("id:shout")).toBe("A*@");
   });
 
   test("an input stops at its maxLength", async () => {

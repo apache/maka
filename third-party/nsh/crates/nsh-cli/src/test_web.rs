@@ -16,6 +16,7 @@ use std::{
 use nsh_core::{
     NodeId,
     geometry::{Bounds, Point, Points, Size, point},
+    keymap::shifted,
 };
 use nsh_dev::{
     DevServer,
@@ -205,7 +206,7 @@ fn dom_key(key: nsh_core::keymap::Key, shift: bool) -> Option<(String, String)> 
                 '\'' => "Quote".into(),
                 _ => return None,
             };
-            let typed = if shift { c.to_ascii_uppercase() } else { c };
+            let typed = if shift { shifted(c) } else { c };
             Some((typed.to_string(), code))
         }
     }
@@ -250,7 +251,15 @@ impl WebNative {
     /// A key's press and release. `commands` are the editing commands the
     /// key runs on macOS, where the browser leaves them to the system's
     /// key bindings (none reach it headless), as Playwright sends them.
-    fn press_key(&self, key: &str, code: &str, vk: u32, modifiers: u32, commands: &[&str]) {
+    fn press_key(
+        &self,
+        key: &str,
+        code: &str,
+        vk: u32,
+        modifiers: u32,
+        commands: &[&str],
+        text: Option<(&str, &str)>,
+    ) {
         let commands: &[&str] = if cfg!(target_os = "macos") {
             commands
         } else {
@@ -271,6 +280,11 @@ impl WebNative {
             down["text"] = "\r".into();
             down["unmodifiedText"] = "\r".into();
         }
+        if let Some((typed, unmodified)) = text {
+            down["type"] = "keyDown".into();
+            down["text"] = typed.into();
+            down["unmodifiedText"] = unmodified.into();
+        }
         if !commands.is_empty() {
             down["commands"] = json!(commands);
         }
@@ -283,6 +297,20 @@ impl Native for WebNative {
     fn bounds(&self, id: NodeId) -> Option<Bounds<Points>> {
         let [x, y, width, height] = self
             .query::<Option<[f32; 4]>>(SceneQuery::Bounds { id })
+            .ok()??;
+        Some(Bounds::new(
+            point(Points(x), Points(y)),
+            Size::new(Points(width), Points(height)),
+        ))
+    }
+
+    fn text_bounds(&self, text: NodeId, start: u32, end: u32) -> Option<Bounds<Points>> {
+        let [x, y, width, height] = self
+            .query::<Option<[f32; 4]>>(SceneQuery::TextBounds {
+                id: text,
+                start,
+                end,
+            })
             .ok()??;
         Some(Bounds::new(
             point(Points(x), Points(y)),
@@ -342,6 +370,72 @@ impl Native for WebNative {
         true
     }
 
+    fn focused(&self) -> Option<NodeId> {
+        // A field is a child of its view, which holds the view's id.
+        let found = self
+            .page
+            .call(
+                "Runtime.evaluate",
+                json!({
+                    "expression": "(() => { let n = document.activeElement; \
+                        while (n && n._id === undefined) n = n.parentElement; \
+                        return n ? n._id : null })()",
+                    "returnByValue": true,
+                }),
+            )
+            .ok()?;
+        found["result"]["value"]
+            .as_u64()
+            .and_then(|id| NodeId::try_from(id).ok())
+    }
+
+    fn paste(&self, content: &nsh_core::PasteEvent) -> Result<(), String> {
+        use base64::Engine as _;
+        let files: Vec<Value> = content
+            .files
+            .iter()
+            .map(|f| {
+                json!({
+                    "name": f.name,
+                    "type": f.mime,
+                    "data": base64::engine::general_purpose::STANDARD.encode(&f.data),
+                })
+            })
+            .collect();
+        let content_json = json!({
+            "text": content.text,
+            "html": content.html,
+            "uris": content.uris,
+            "files": files,
+        });
+        // The content on the paste's own clipboard data, as the browser
+        // gives a user's paste (the system's clipboard stays as it was).
+        let expression = format!(
+            "(() => {{ const c = {content_json}; const data = new DataTransfer(); \
+             if (c.text) data.setData('text/plain', c.text); \
+             if (c.html) data.setData('text/html', c.html); \
+             if (c.uris.length) data.setData('text/uri-list', c.uris.join('\\r\\n')); \
+             for (const f of c.files) data.items.add(new File(\
+               [Uint8Array.from(atob(f.data), (ch) => ch.charCodeAt(0))], f.name, {{ type: f.type }})); \
+             const target = document.activeElement ?? document.body; \
+             return target.dispatchEvent(new ClipboardEvent('paste', \
+               {{ clipboardData: data, bubbles: true, cancelable: true }})); }})()"
+        );
+        let result = self.page.call(
+            "Runtime.evaluate",
+            json!({ "expression": expression, "returnByValue": true }),
+        )?;
+        if let Some(error) = result.get("exceptionDetails") {
+            return Err(format!("the page refused the paste: {error}"));
+        }
+        // A page's event has no default action: what the browser's paste
+        // would insert where nothing prevented it, with its trusted input.
+        if result["result"]["value"].as_bool() == Some(true) && !content.text.is_empty() {
+            self.call("Input.insertText", json!({ "text": content.text }));
+        }
+        Ok(())
+    }
+
     fn right_click(&self, at: Point<Points>) -> Result<(), String> {
         self.mouse("mouseMoved", at, 0);
         for kind in ["mousePressed", "mouseReleased"] {
@@ -375,14 +469,6 @@ impl Native for WebNative {
         let stroke = nsh_core::keymap::Keystroke::parse_with(keys, cfg!(target_os = "macos"))
             .map_err(|e| e.to_string())?;
         let m = stroke.modifiers;
-        if !(m.ctrl || m.alt || m.cmd)
-            && let nsh_core::keymap::Key::Char(c) = stroke.key
-        {
-            // A character's key types it.
-            let typed = if m.shift { c.to_ascii_uppercase() } else { c };
-            self.type_text(&typed.to_string());
-            return Ok(());
-        }
         let (key, code) = dom_key(stroke.key, m.shift)
             .ok_or_else(|| format!("{keys:?} has no key on a browser's keyboard"))?;
         let vk = u32::from(stroke.key.virtual_key().unwrap_or(0));
@@ -397,7 +483,18 @@ impl Native for WebNative {
                 modifiers |= bit;
             }
         }
-        self.press_key(&key, &code, vk, modifiers, &[]);
+        let unmodified = match stroke.key {
+            nsh_core::keymap::Key::Char(c) if !(m.ctrl || m.alt || m.cmd) => Some(c.to_string()),
+            _ => None,
+        };
+        self.press_key(
+            &key,
+            &code,
+            vk,
+            modifiers,
+            &[],
+            unmodified.as_deref().map(|c| (key.as_str(), c)),
+        );
         Ok(())
     }
 
@@ -417,8 +514,10 @@ impl Native for WebNative {
 
     fn key(&self, key: Key) {
         match key {
-            Key::Return => self.press_key("Enter", "Enter", 13, 0, &[]),
-            Key::Backspace => self.press_key("Backspace", "Backspace", 8, 0, &["deleteBackward"]),
+            Key::Return => self.press_key("Enter", "Enter", 13, 0, &[], None),
+            Key::Backspace => {
+                self.press_key("Backspace", "Backspace", 8, 0, &["deleteBackward"], None)
+            }
             Key::SelectAll => {
                 // The platform's command key: Command on macOS, else Ctrl.
                 let (name, code, vk, bit) = if cfg!(target_os = "macos") {
@@ -436,7 +535,7 @@ impl Native for WebNative {
                     })
                 };
                 self.call("Input.dispatchKeyEvent", modifier("rawKeyDown"));
-                self.press_key("a", "KeyA", 65, bit, &["selectAll"]);
+                self.press_key("a", "KeyA", 65, bit, &["selectAll"], None);
                 self.call("Input.dispatchKeyEvent", modifier("keyUp"));
             }
         }

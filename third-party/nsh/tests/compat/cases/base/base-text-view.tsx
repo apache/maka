@@ -118,7 +118,7 @@ function App() {
       />
       <TextView
         document={{ blocks: [{ type: "paragraph", content: [{ type: "image", src: "https://example.com/default.png", alt: "Default logo", width: 24, height: 24 }] }] }}
-        onImagePress={(pressed) => image.set(pressed.alt ?? "")}
+        onImagePress={({ image: pressed }) => image.set(pressed.alt ?? "")}
       />
       <TextView
         markdown={"# Classed heading\n\nStyled paragraph."}

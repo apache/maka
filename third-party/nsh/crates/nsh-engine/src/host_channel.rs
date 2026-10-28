@@ -25,7 +25,7 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender};
-#[cfg(feature = "js")]
+#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 use nsh_core::host_channel::HostBridge;
 use nsh_core::{
     JsonValue,
@@ -172,7 +172,7 @@ impl HostChannel {
         self.lock().handlers.remove(name);
     }
 
-    #[cfg(feature = "js")]
+    #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
     fn handler(&self, name: &str) -> Option<Handler> {
         self.lock().handlers.get(name).cloned()
     }
@@ -244,7 +244,7 @@ impl HostChannel {
 
     /// The bridge an app's `nsh/host` reaches this channel through, from
     /// the engine whose queue is `tx`: its parameters as they are now.
-    #[cfg(feature = "js")]
+    #[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
     pub(crate) fn bridge(&self, tx: Sender<Message>) -> EngineBridge {
         EngineBridge {
             params: JsonValue::Object(self.params()),
@@ -294,14 +294,14 @@ impl Drop for HostAttachment {
 
 /// What an engine's `nsh/host` reaches of the channel
 /// ([`nsh_core::host_channel::HostBridge`]).
-#[cfg(feature = "js")]
+#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 pub(crate) struct EngineBridge {
     params: JsonValue,
     channel: HostChannel,
     tx: Sender<Message>,
 }
 
-#[cfg(feature = "js")]
+#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 impl EngineBridge {
     /// Runs `handler` with `call`; a handler that panics drops the call,
     /// which fails it in the app.
@@ -314,7 +314,7 @@ impl EngineBridge {
     }
 }
 
-#[cfg(feature = "js")]
+#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 impl HostBridge for EngineBridge {
     fn available(&self) -> bool {
         self.channel.lock().configured
@@ -547,7 +547,7 @@ impl Drop for HostReply {
     }
 }
 
-#[cfg(all(test, feature = "js", not(target_arch = "wasm32")))]
+#[cfg(all(test, feature = "js-core", not(target_arch = "wasm32")))]
 mod tests {
     use std::time::Duration;
 

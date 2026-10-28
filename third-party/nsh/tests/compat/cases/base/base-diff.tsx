@@ -95,7 +95,7 @@ export default function BaseDiff() {
               </View>
             </View>
           )}
-          onChange={change => {
+          onChange={({ change }) => {
             oldValue.set(change.oldValue);
             newValue.set(change.newValue);
           }}
@@ -116,8 +116,8 @@ export default function BaseDiff() {
           ref={r => (added = r)}
           patch={ADDED}
           softWrap
-          onLineSelectionChange={r => selection.set(r ? `${r.side} ${r.start}-${r.end}` : "none")}
-          onLineNumberPress={l => pressed.set(`${l.side} ${l.line}`)}
+          onLineSelectionChange={({ range: r }) => selection.set(r ? `${r.side} ${r.start}-${r.end}` : "none")}
+          onLineNumberPress={({ line: l }) => pressed.set(`${l.side} ${l.line}`)}
           renderAddAnnotation={r => <Text>{`Add ${r.side} ${r.start}-${r.end}`}</Text>}
           style={{ flex: 1 }}
         />
@@ -159,7 +159,7 @@ export default function BaseDiff() {
               <Text>{`File ${file.index} ${file.path} ${file.status} +${file.added} -${file.deleted}${file.collapsed ? " collapsed" : ""}`}</Text>
             </View>
           )}
-          onFileToggle={file => toggled.set(`${file.path} ${file.collapsed}`)}
+          onFileToggle={({ file }) => toggled.set(`${file.path} ${file.collapsed}`)}
           style={{ flex: 1 }}
         />
       </View>

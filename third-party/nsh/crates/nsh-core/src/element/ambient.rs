@@ -315,6 +315,17 @@ pub fn measure_text(font: &str, text: &str) -> Points {
     text_metrics(font, text).width
 }
 
+/// Captures the platform text measurer while a component's runtime is entered.
+/// The returned function can also be called by synchronous JS session queries,
+/// where the Rust reactive runtime is not entered.
+pub fn text_measurer() -> impl Fn(&str, &str) -> Points + Clone {
+    let measure = with_data(|d| d.ambient.measure.clone()).expect("the core sets the text engine");
+    move |font, text| {
+        let font = CanvasFont::parse(font).unwrap_or_default();
+        measure(&font, text).width
+    }
+}
+
 /// How `text` sits on one line in `font` (the CSS `font` shorthand; an
 /// invalid one measures in `10px sans-serif`), by the platform's text
 /// engine: its width and the font's ascent, descent and line height, to
@@ -527,6 +538,17 @@ pub fn fetch(request: impl Into<crate::platform::HttpRequest>) -> super::Fetch {
 /// `setColorScheme`).
 pub fn set_color_scheme(appearance: Appearance) {
     act(Action::Appearance(appearance));
+}
+
+/// Draws the bar of every scroll view and list whose `scrollbar` is `true`
+/// with the built-in bar `source` makes of `theme` (the UI set's, which
+/// `source` gets back: [`BuiltInScrollbar::app_theme`](super::BuiltInScrollbar::app_theme)),
+/// or (`None`, the default) with the platform's indicator. A view whose `scrollbar` is a theme shows the bar
+/// of the UI set that makes one
+/// ([`Registry::scrollbars_from`](super::Registry::scrollbars_from)).
+/// `nsh-base`'s `set_scrollbar_theme` calls it.
+pub fn set_builtin_scrollbars(source: super::ScrollbarSource, theme: Option<super::AnyValue>) {
+    act(Action::BuiltInScrollbars(source, theme));
 }
 
 // --- Tasks and timers --------------------------------------------------------
@@ -789,6 +811,17 @@ pub fn reserved_key_os() -> Os {
         })
 }
 
+/// [`apple_keys`] where an engine runs, else `None` (as [`try_os`]).
+pub fn try_apple_keys() -> Option<bool> {
+    super::reactive::try_with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .flatten()
+        .map(|env| {
+            env.with_untracked(|e| {
+                !e.uses_terminal_keyboard() && crate::keymap::apple_keys(e.os, e.apple_keyboard)
+            })
+        })
+}
+
 /// Runs `handler` when `keystroke` is pressed while the current owner
 /// lives (TS: `keymap.bind`): `"mod+k"` (`mod` is Command on Apple
 /// graphical platforms, Control in terminals and elsewhere),
@@ -834,6 +867,55 @@ pub fn on_key_with(keystroke: &str, options: KeyOptions, handler: impl Fn(&str) 
     });
 }
 
+/// Watches the scroll view or list `target` names while the current owner
+/// lives: `handler` hears its offset, content size and viewport (zoomed, as
+/// `on_scroll` reports them) when it is first found and whenever one of
+/// them changes, whether or not anything listens to its `on_scroll`. A
+/// view of the app's own that follows a scroll view it did not make (a
+/// scroll bar) watches it this way.
+///
+/// `target` is asked again in every commit (untracked), so a ref set later
+/// in the same render is found when its element is mounted; while it names
+/// no scroll view, nothing is heard. The handler runs at the end of the
+/// commit round that saw the change, and what it changes goes out in the
+/// same batch.
+pub fn watch_scroll(
+    target: impl Fn() -> Option<NodeId> + 'static,
+    handler: impl Fn(&crate::element::ScrollEvent) + 'static,
+) {
+    let owner = Owner::current();
+    let handler = Rc::new(move |e: &crate::element::ScrollEvent| owner.run(|| handler(e)));
+    add_watch(Rc::new(target), handler);
+}
+
+impl super::NodeRef {
+    /// Scrolls the scroll view (or list, along its axis) to a content
+    /// offset, as [`super::ElementRef::scroll_to`] does: for a view holding
+    /// a node, not a ref (a prop a JS `ref` fills, a watch's target).
+    pub fn scroll_to(&self, offset: crate::geometry::Point<Points>, animated: bool) {
+        act(Action::Command(
+            self.0,
+            Command::ScrollTo {
+                x: offset.x,
+                y: offset.y,
+                animated,
+            },
+        ));
+    }
+}
+
+fn add_watch(target: Rc<dyn Fn() -> Option<NodeId>>, handler: super::watch::ScrollHandler) {
+    let watches = executor().watches.clone();
+    let id = watches.borrow_mut().add(target, handler);
+    let weak = Rc::downgrade(&watches);
+    cleanup(move || {
+        if let Some(watches) = weak.upgrade() {
+            let removed = watches.borrow_mut().remove(id);
+            drop(removed);
+        }
+    });
+}
+
 /// `keystroke` as menus and hints show it here (TS: `keymap.label`):
 /// `"⇧⌘L"` on Apple platforms (and in a browser on one), `"Ctrl+Shift+L"`
 /// elsewhere, for `"mod+shift+l"`.
@@ -872,4 +954,24 @@ pub(crate) fn desktop_command(command: crate::desktop::DesktopCommand) {
         crate::ROOT_ID,
         Command::Desktop(Box::new(command)),
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{element::Runtime, geometry::px};
+
+    #[test]
+    fn captured_text_measurer_works_without_runtime_entry() {
+        let runtime = Runtime::default();
+        runtime.set_measure(Rc::new(|_, text| crate::canvas::TextMetrics {
+            width: px(text.chars().count() as f32),
+            ..Default::default()
+        }));
+        let measure = {
+            let _entered = runtime.enter();
+            text_measurer()
+        };
+        assert_eq!(measure("16px sans-serif", "选择 text"), px(7.0));
+    }
 }

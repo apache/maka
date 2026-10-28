@@ -29,7 +29,9 @@ import {
   Text,
   View,
   type GestureResponderEvent,
-  type YNode,
+  type InputRef,
+  type ScrollRef,
+  type ViewRef,
 } from 'nsh';
 import { Input } from 'nsh/base';
 import { Button, Dialog } from 'nsh/base';
@@ -129,10 +131,10 @@ export function Terminal(props: { model: TerminalModel }) {
   const confirmation = signal(false);
   const copyStatus = createText();
   const copied = signal(false);
-  let input: YNode | null = null;
-  let scroll: YNode | null = null;
-  let body: YNode | null = null;
-  let fallback: YNode | null = null;
+  let input: InputRef | null = null;
+  let scroll: ScrollRef | null = null;
+  let body: ViewRef | null = null;
+  let fallback: ViewRef | null = null;
   let mounted = true;
   let reset: ReturnType<typeof setTimeout> | null = null;
   let unbind = () => {};
@@ -175,7 +177,7 @@ export function Terminal(props: { model: TerminalModel }) {
       }
     }
   };
-  const attach = (node: YNode) => {
+  const attach = (node: InputRef) => {
     input = node;
     unbind();
     const bindings: Record<string, () => void> = {};
@@ -361,8 +363,8 @@ export function Terminal(props: { model: TerminalModel }) {
           selected={model.control() === 'held'}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
           selectedStyle={{ backgroundColor: C.raised }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
           disabledStyle={controlDisabledStyle}
         >
           <Icon name="terminal" color={C.secondary} />
@@ -373,8 +375,8 @@ export function Terminal(props: { model: TerminalModel }) {
             onPress={inputAction(model.release, null)}
             tooltip={textTooltip(() => tr('Release terminal input · Ctrl+Shift+Space'))}
             style={controlStyle}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
           >
             <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Release input')}</Text>
           </Button>
@@ -385,8 +387,8 @@ export function Terminal(props: { model: TerminalModel }) {
           accessibilityLabel={tr('Copy visible terminal')}
           tooltip={textTooltip(() => tr('Copy visible terminal · Ctrl+Shift+C'))}
           style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="copy" color={C.secondary} />
         </Button>
@@ -399,8 +401,8 @@ export function Terminal(props: { model: TerminalModel }) {
               model.stopping() ? tr('Stopping process…') : tr('Stop terminal process'),
             )}
             style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-            hoverStyle={controlHoverStyle}
-            focusStyle={controlFocusStyle}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
             disabledStyle={controlDisabledStyle}
           >
             <Icon name="stop" color={C.warning} />
@@ -433,8 +435,8 @@ export function Terminal(props: { model: TerminalModel }) {
             alignItems: 'center',
             gap: 8,
           }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
         >
           <Icon name="refresh" color={C.secondary} />
           <Text style={{ ...captionTextStyle, color: C.secondary }}>
@@ -458,7 +460,7 @@ export function Terminal(props: { model: TerminalModel }) {
         ref={(node) => {
           body = node;
         }}
-        onLayout={(event) => dimensions.set(event.size)}
+        onLayout={({ bounds: event }) => dimensions.set(event.size)}
         onPress={() => {
           input?.focus();
           if (!model.agentOwned()) model.takeControl();
@@ -592,7 +594,7 @@ export function Terminal(props: { model: TerminalModel }) {
           <Input
             ref={attach}
             value={inputValue()}
-            onChange={text}
+            onChange={({ value }) => text(value)}
             onKeyPress={typedKey}
             onFocus={() => {
               if (!model.agentOwned()) model.takeControl();
@@ -647,8 +649,8 @@ export function Terminal(props: { model: TerminalModel }) {
               <Button
                 onPress={() => confirmation.set(false)}
                 style={{ ...controlStyle, backgroundColor: C.raised }}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>
                   {tr('Keep running')}
@@ -661,8 +663,8 @@ export function Terminal(props: { model: TerminalModel }) {
                   void model.stop();
                 }}
                 style={controlStyle}
-                hoverStyle={controlHoverStyle}
-                focusStyle={controlFocusStyle}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
               >
                 <Text style={{ ...captionTextStyle, color: C.danger }}>{tr('Stop process')}</Text>
               </Button>

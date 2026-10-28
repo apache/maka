@@ -1,7 +1,10 @@
 //! The rules of a number taken in a range with a step, shared by the
-//! controls that take one (`Slider`; a number input next): where a value
-//! snaps to, how far a key moves it, where it sits along a control (on a
-//! linear or a logarithmic scale) and how it reads as text.
+//! controls that take one (`Slider`, `NumberInput`): where a value snaps
+//! to, how far a key moves it, where it sits along a control (on a linear
+//! or a logarithmic scale) and how it reads as text; and the rules of a
+//! number typed as text (`NumberInput`): which text is a number or on the
+//! way to one, what other keyboards' digits and signs read as, and how a
+//! step moves the text.
 //!
 //! Values are `f64`, JS's numbers: a value the app gets back is exactly
 //! the one it would write (an `f32` `0.1` reaches JS as
@@ -189,6 +192,126 @@ impl Range {
     }
 }
 
+/// A number's text with its other spellings made ASCII (`gpui-base`'s
+/// `normalize_number_input`): full-width digits, signs and dot, the minus
+/// sign (U+2212) and the ideographic full stop; and a decimal comma (a
+/// full-width one too), which the decimal key of many languages' keyboards
+/// types, read as the decimal point while the text has no point of its own.
+pub(crate) fn normalize_number_text(text: &str) -> String {
+    let ascii: String = text
+        .chars()
+        .map(|c| match c {
+            '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + '0' as u32).unwrap_or(c),
+            '\u{FF0B}' => '+',
+            '\u{FF0D}' | '\u{2212}' => '-',
+            '\u{FF0E}' | '\u{3002}' => '.',
+            '\u{FF0C}' => ',',
+            c => c,
+        })
+        .collect();
+    if !ascii.contains('.') && ascii.matches(',').count() == 1 {
+        ascii.replacen(',', ".", 1)
+    } else {
+        ascii
+    }
+}
+
+/// Whether `text` is a number or on the way to one, as the user types it
+/// (`gpui-base`'s `MaskPattern::Number` without a group separator): digits
+/// with at most one decimal point and one sign, the sign first. The empty
+/// text, `-`, `+`, `.`, `-.` and `1.` are on the way.
+pub(crate) fn is_number_text(text: &str) -> bool {
+    let mut parts = text.split('.');
+    let int = parts.next().unwrap_or("");
+    let fraction = parts.next();
+    if parts.next().is_some() {
+        return false;
+    }
+    let digits = int.strip_prefix(['+', '-']).unwrap_or(int);
+    digits.chars().all(|c| c.is_ascii_digit())
+        && fraction.is_none_or(|f| f.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The number `text` reads as: none for the empty text and the ones on the
+/// way to a number (`-`, `.`), `1` for `1.`, `0.5` for `.5`.
+pub(crate) fn parse_number(text: &str) -> Option<f64> {
+    let text = text.trim();
+    if !is_number_text(text) {
+        return None;
+    }
+    text.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// `v` as a number input shows a value it did not type: the shortest text
+/// that reads back as `v` (`0.3`, `12`, never `-0`).
+pub(crate) fn number_text(v: f64) -> String {
+    if v == 0.0 {
+        "0".to_owned()
+    } else {
+        format!("{v}")
+    }
+}
+
+/// `step` times `n`, with the step's decimals and no float noise (`0.3`
+/// times 10 is `3`, not `3.0000000000000004`): a page of steps.
+pub(crate) fn steps(step: f64, n: f64) -> f64 {
+    let scale = 10f64.powi(decimals(step));
+    (step * scale * n).round() / scale
+}
+
+/// `v` held to `min` and `max`, either of which may be absent.
+pub(crate) fn clamp_to(v: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+    let v = min.map_or(v, |min| v.max(min));
+    max.map_or(v, |max| v.min(max))
+}
+
+/// The text a step up (`up`) or down by `step` makes of `text`, held to
+/// `min` and `max` (`gpui-base`'s `step_value`): an empty text, or one on
+/// the way to a number, counts as 0; the result keeps the decimals of the
+/// text, of the step and of a bound it was held to (`0.1` up by `0.2` is
+/// `0.3`, `99.5` up by 1 to at most 100 is `100.0`). `None` when the step
+/// would not move the value the way it goes (at a bound, or outside the
+/// range on the other side): the step does nothing.
+pub(crate) fn step_text(
+    text: &str,
+    up: bool,
+    step: f64,
+    min: Option<f64>,
+    max: Option<f64>,
+) -> Option<String> {
+    fn fraction_digits(text: &str) -> usize {
+        text.split('.').nth(1).map_or(0, str::len)
+    }
+    let current = parse_number(text);
+    let from = current.unwrap_or(0.0);
+    let mut next = if up { from + step } else { from - step };
+    let mut digits = fraction_digits(text.trim()).max(fraction_digits(&step.to_string()));
+    if let Some(min) = min
+        && next < min
+    {
+        next = min;
+        digits = digits.max(fraction_digits(&min.to_string()));
+    }
+    if let Some(max) = max
+        && next > max
+    {
+        next = max;
+        digits = digits.max(fraction_digits(&max.to_string()));
+    }
+    if let Some(current) = current {
+        let moved = if up { next > current } else { next < current };
+        if !moved {
+            return None;
+        }
+    }
+    let text = format!("{next:.digits$}");
+    // A step to zero with a little float noise below it (`-0.0`): no sign.
+    match text.strip_prefix('-') {
+        Some(zero) if zero.chars().all(|c| c == '0' || c == '.') => Some(zero.to_owned()),
+        _ => Some(text),
+    }
+}
+
 /// How many decimals `x` has (at most 10): 0 for `5`, 1 for `0.5`, 2 for
 /// `0.25`.
 fn decimals(x: f64) -> i32 {
@@ -306,5 +429,104 @@ mod tests {
         assert_eq!(linear(0.0, 100.0, 1.0).format(40.0), "40");
         assert_eq!(linear(0.0, 1.0, 0.01).format(0.3), "0.3");
         assert_eq!(linear(-1.0, 1.0, 1.0).format(-0.0), "0");
+    }
+
+    #[test]
+    fn steps_keep_the_decimals_and_go_the_way_they_are_pressed() {
+        // `gpui-base`'s `number_input.rs` tests and its styled layer's
+        // `test_step_value`, case by case.
+        let up = |t: &str, step, min, max| step_text(t, true, step, min, max);
+        let down = |t: &str, step, min, max| step_text(t, false, step, min, max);
+        let some = |t: &str| Some(t.to_owned());
+        // From an empty text, or one on the way to a number: from 0.
+        assert_eq!(up("", 1.0, None, None), some("1"));
+        assert_eq!(down("", 1.0, None, None), some("-1"));
+        assert_eq!(up("-", 1.0, None, None), some("1"));
+        assert_eq!(up("1", 1.0, None, None), some("2"));
+        assert_eq!(up("-2", 1.0, None, None), some("-1"));
+        // No float noise: 0.1 + 0.2 is 0.3.
+        assert_eq!(up("0.1", 0.2, None, None), some("0.3"));
+        assert_eq!(down("0.3", 0.1, None, None), some("0.2"));
+        // The text's decimals stay.
+        assert_eq!(up("1.25", 1.0, None, None), some("2.25"));
+        // From empty, into the range both ways.
+        assert_eq!(up("", 1.0, Some(10.0), None), some("10"));
+        assert_eq!(down("", 1.0, Some(10.0), None), some("10"));
+        // Held to the bounds, with the decimals of the text or the bound.
+        assert_eq!(up("99.5", 1.0, None, Some(100.0)), some("100.0"));
+        assert_eq!(down("1000", 1.0, None, Some(100.0)), some("100"));
+        assert_eq!(down("1", 1.0, Some(0.25), None), some("0.25"));
+        assert_eq!(down("5", 10.0, Some(0.0), None), some("0"));
+        // Nothing at a bound, nor against the way pressed.
+        assert_eq!(down("10", 1.0, Some(10.0), None), None);
+        assert_eq!(up("100", 1.0, None, Some(100.0)), None);
+        assert_eq!(down("5", 1.0, Some(10.0), None), None);
+        assert_eq!(up("1000", 1.0, None, Some(100.0)), None);
+        // No sign on zero.
+        assert_eq!(up("-0.5", 0.5, None, None), some("0.0"));
+        assert_eq!(down("0.3", 0.3, None, None), some("0.0"));
+    }
+
+    #[test]
+    fn number_texts_take_what_is_on_the_way_to_a_number() {
+        // `gpui-base`'s `test_signed_number_numbers` and
+        // `test_number_leading_dot`, without a group separator.
+        for ok in [
+            "",
+            "-",
+            "+",
+            ".",
+            "-.",
+            "1.",
+            "-1.",
+            ".5",
+            "-.5",
+            "+1234567.89",
+            "007",
+        ] {
+            assert!(is_number_text(ok), "{ok:?}");
+        }
+        for bad in [
+            "+-", "-+", "+-1", "12-3", "1.2.3", "1..", "+1.-", "1e5", "abc", "1 2", "1,5",
+        ] {
+            assert!(!is_number_text(bad), "{bad:?}");
+        }
+        assert_eq!(parse_number("1."), Some(1.0));
+        assert_eq!(parse_number(".5"), Some(0.5));
+        assert_eq!(parse_number("+3"), Some(3.0));
+        assert_eq!(parse_number("-"), None);
+        assert_eq!(parse_number("."), None);
+        assert_eq!(parse_number(""), None);
+        assert_eq!(parse_number("inf"), None);
+        assert_eq!(parse_number("NaN"), None);
+    }
+
+    #[test]
+    fn other_keyboards_digits_and_signs_read_as_ascii() {
+        // `gpui-base`'s `test_normalize_number_input`.
+        assert_eq!(normalize_number_text("０１２３４５６７８９"), "0123456789");
+        assert_eq!(normalize_number_text("＋1．5"), "+1.5");
+        assert_eq!(normalize_number_text("−1.5"), "-1.5");
+        assert_eq!(normalize_number_text("12。5"), "12.5");
+        assert_eq!(normalize_number_text("ab 中 1"), "ab 中 1");
+        // A decimal comma, while the text has no point.
+        assert_eq!(normalize_number_text("1,5"), "1.5");
+        assert_eq!(normalize_number_text("－1，5"), "-1.5");
+        assert_eq!(normalize_number_text("1,234.5"), "1,234.5");
+        assert_eq!(normalize_number_text("1,2,3"), "1,2,3");
+    }
+
+    #[test]
+    fn values_read_as_their_shortest_text() {
+        assert_eq!(number_text(0.3), "0.3");
+        assert_eq!(number_text(12.0), "12");
+        assert_eq!(number_text(-0.0), "0");
+        assert_eq!(number_text(-2.5), "-2.5");
+        assert_eq!(clamp_to(5.0, Some(10.0), None), 10.0);
+        assert_eq!(clamp_to(500.0, None, Some(100.0)), 100.0);
+        assert_eq!(clamp_to(50.0, None, None), 50.0);
+        assert_eq!(steps(0.3, 10.0), 3.0);
+        assert_eq!(steps(0.01, 10.0), 0.1);
+        assert_eq!(steps(5.0, 10.0), 50.0);
     }
 }

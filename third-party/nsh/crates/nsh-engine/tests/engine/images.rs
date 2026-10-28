@@ -99,8 +99,11 @@ const icon = { url: "asset:/img.png", size: { width: 40, height: 30 }, scales: [
 const single = { url: "asset:/single.png", size: { width: 10, height: 10 } };
 const big = { url: "asset:/big.png", size: { width: 20, height: 20 }, scales: [1, 2, 4] };
 
+// At their own sizes, on whole points: layout rounds frames to device pixels,
+// so stretched to the width (292.5 points tall) they would move as the ratio
+// changes, which is not what these tests are about.
 mount(() => (
-  <View>
+  <View style={{ alignItems: "flex-start" }}>
     <Image src={icon} />
     <Image src={single} />
     <Image src={big} />
@@ -202,7 +205,8 @@ const shown = signal("waiting");
 setTimeout(async () => {
   const size = await Image.getSize(icon);
   const plain = await Image.getSize({ url: "asset:/single.png", size: { width: 999, height: 999 } });
-  const ready = await Image.prefetch(icon);
+  // Resolves once loaded (rejects with the error when it cannot).
+  const ready = await Image.prefetch(icon).then(() => true, () => false);
   shown.set(`${size.width}x${size.height} ${plain.width}x${plain.height} ${ready}`);
 }, 0);
 

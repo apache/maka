@@ -72,11 +72,11 @@ impl WindowsNative {
         let (x, y) = (at.x.0, at.y.0);
         // A real pointer arrives before it presses (hover state).
         self.on_main(move |s| {
-            synth::pointer(s, PointerKind::Move, x, y, 0);
-            synth::pointer(s, PointerKind::Down, x, y, button);
+            synth::pointer(s, PointerKind::Move, x, y, 0, 0);
+            synth::pointer(s, PointerKind::Down, x, y, button, 1 << button);
         });
         std::thread::sleep(hold);
-        self.on_main(move |s| synth::pointer(s, PointerKind::Up, x, y, button));
+        self.on_main(move |s| synth::pointer(s, PointerKind::Up, x, y, button, 0));
     }
 }
 
@@ -145,19 +145,20 @@ impl Native for WindowsNative {
     fn drag(&self, from: Point<Points>, to: Point<Points>) {
         let (x, y) = (from.x.0, from.y.0);
         self.on_main(move |s| {
-            synth::pointer(s, PointerKind::Move, x, y, 0);
-            synth::pointer(s, PointerKind::Down, x, y, 0);
+            synth::pointer(s, PointerKind::Move, x, y, 0, 0);
+            synth::pointer(s, PointerKind::Down, x, y, 0, 1);
         });
         std::thread::sleep(nsh_testing::agent::LANDING);
         let mut last = from;
         for at in nsh_testing::agent::drag_path(from, to) {
             next_frame();
             let (x, y) = (at.x.0, at.y.0);
-            self.on_main(move |s| synth::pointer(s, PointerKind::Move, x, y, 0));
+            // The primary button is held: a drag.
+            self.on_main(move |s| synth::pointer(s, PointerKind::Move, x, y, 0, 1));
             last = at;
         }
         let (x, y) = (last.x.0, last.y.0);
-        self.on_main(move |s| synth::pointer(s, PointerKind::Up, x, y, 0));
+        self.on_main(move |s| synth::pointer(s, PointerKind::Up, x, y, 0, 0));
     }
 
     fn type_text(&self, text: &str) {
@@ -205,7 +206,7 @@ impl Native for WindowsNative {
 
     fn hover(&self, at: Point<Points>) -> Result<(), String> {
         let (x, y) = (at.x.0, at.y.0);
-        self.on_main(move |s| synth::pointer(s, PointerKind::Move, x, y, 0))
+        self.on_main(move |s| synth::pointer(s, PointerKind::Move, x, y, 0, 0))
             .ok_or_else(|| "the window is gone".to_owned())
     }
 

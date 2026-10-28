@@ -807,7 +807,7 @@ impl PluginSpec for ClickLink {
                 handled |= match &self.options.open {
                     Some(open) => open(&press),
                     None => {
-                        drop(nsh_core::element::ambient::open_url(press.href));
+                        drop(nsh_core::element::open_url(press.href));
                         true
                     }
                 };

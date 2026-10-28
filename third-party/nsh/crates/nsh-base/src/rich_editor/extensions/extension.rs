@@ -721,6 +721,16 @@ impl ExtensionManager {
         if !paste.is_empty() {
             plugins.push(paste_rules_plugin(paste));
         }
+        // As Tiptap's plugins per extension: the plugins of an extension
+        // above the default priority (an app's key captures) see a key
+        // before the keymap merged from every extension's bindings.
+        let order = self.runtime_order();
+        let (early, late): (Vec<_>, Vec<_>) = order
+            .into_iter()
+            .partition(|extension| extension.priority > DEFAULT_PRIORITY);
+        for extension in early {
+            plugins.extend(extension.plugins(&self.schema, &self.commands));
+        }
         let (control, apple): (Vec<_>, Vec<_>) = self
             .runtime_order()
             .into_iter()
@@ -731,7 +741,7 @@ impl ExtensionManager {
         if !control.is_empty() || !apple.is_empty() {
             plugins.push(keymap_plugin(Keymap::platform_bindings(control, apple)));
         }
-        for extension in self.runtime_order() {
+        for extension in late {
             plugins.extend(extension.plugins(&self.schema, &self.commands));
         }
         plugins
@@ -769,10 +779,29 @@ struct RegisteredExtensions {
 /// Outside an engine (where no reactive runtime runs).
 pub fn register_extension(name: &str, make: impl Fn() -> Extension + Send + Sync + 'static) {
     let make: MakeExtension = Arc::new(make);
+    share_extension(name, make.clone());
     let name = name.to_owned();
     global::<RegisteredExtensions>().update(move |r| {
         r.by_name.insert(name, make);
     });
+}
+
+/// Keeps `make` as `name` for every engine (module calls included).
+fn share_extension(name: &str, make: MakeExtension) {
+    process_extensions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(name.to_owned(), make);
+}
+
+/// Every extension a UI set registered, on any engine: what JS's module
+/// calls, which run outside the engine's reactive runtime, find them in.
+/// Sets register the same extension for each engine, so one table serves
+/// them all.
+fn process_extensions() -> &'static std::sync::Mutex<HashMap<String, MakeExtension>> {
+    static TABLE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, MakeExtension>>> =
+        std::sync::OnceLock::new();
+    TABLE.get_or_init(Default::default)
 }
 
 /// The extension `name`: one this engine's UI sets registered, else a
@@ -781,6 +810,14 @@ pub fn extension_named(name: &str) -> Option<Extension> {
     if let Some(registered) = try_global::<RegisteredExtensions>()
         && let Some(make) = registered.with_untracked(|r| r.by_name.get(name).cloned())
     {
+        return Some(make());
+    }
+    let shared = process_extensions()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(name)
+        .cloned();
+    if let Some(make) = shared {
         return Some(make());
     }
     super::kit::builtin(name)
@@ -969,6 +1006,49 @@ mod tests {
             state.apply(next.unwrap()).unwrap().doc().text_content(),
             "hi"
         );
+    }
+
+    #[test]
+    fn registered_extensions_resolve_off_the_engine() {
+        // JS's module calls (`richExtension(name)`) run outside the engine's
+        // reactive runtime, where only the shared table is seen.
+        share_extension("appOwn", Arc::new(|| Extension::new("appOwn")));
+        assert_eq!(extension_named("appOwn").unwrap().name, "appOwn");
+    }
+
+    /// A plugin doing nothing, keyed `name`.
+    struct Named(&'static str);
+
+    impl crate::rich_editor::state::PluginSpec for Named {
+        fn key(&self) -> crate::rich_editor::state::PluginKey {
+            crate::rich_editor::state::PluginKey::new(self.0)
+        }
+    }
+
+    #[test]
+    fn high_priority_plugins_see_keys_before_the_keymap() {
+        let capture = Extension::new("capture")
+            .with_priority(1000)
+            .add_plugins(|_| vec![Arc::new(Named("capture")) as Plugin]);
+        let late = Extension::new("late").add_plugins(|_| vec![Arc::new(Named("late")) as Plugin]);
+        let manager = ExtensionManager::new(vec![
+            doc(),
+            block("para"),
+            text(),
+            Extension::new("keys")
+                .add_keyboard_shortcuts(|_| vec![("Enter".into(), command(|_, _| false))]),
+            capture,
+            late,
+        ])
+        .unwrap();
+        let names: Vec<String> = manager
+            .plugins()
+            .iter()
+            .map(|p| p.key().name().to_owned())
+            .collect();
+        let at = |name: &str| names.iter().position(|n| n.starts_with(name)).unwrap();
+        assert!(at("capture") < at("keymap"), "{names:?}");
+        assert!(at("keymap") < at("late"), "{names:?}");
     }
 
     #[test]

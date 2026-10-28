@@ -1158,14 +1158,55 @@ impl ApproxLayout {
 /// promote from the previous one; when the current generation is full it
 /// becomes the previous one. O(1), and never more than `2 * GENERATION`
 /// entries.
-#[derive(Default)]
+///
+/// It also holds the surface's pixel ratio: measurements are rounded up to
+/// its device pixels ([`MeasureCache::pixel_ratio`]), so they are only
+/// valid for one ratio and go when it changes.
 pub(crate) struct MeasureCache {
     current: FxHashMap<(u64, u32), Size<Points>>,
     previous: FxHashMap<(u64, u32), Size<Points>>,
+    pixel_ratio: f32,
+}
+
+impl Default for MeasureCache {
+    fn default() -> Self {
+        Self {
+            current: FxHashMap::default(),
+            previous: FxHashMap::default(),
+            pixel_ratio: 1.0,
+        }
+    }
 }
 
 impl MeasureCache {
     const GENERATION: usize = 512;
+
+    /// The device pixels per point the measurements are rounded to.
+    pub(crate) fn pixel_ratio(&self) -> f32 {
+        self.pixel_ratio
+    }
+
+    /// Measures for `ratio` from now on; returns whether it changed (the
+    /// measurements cached for the previous ratio are dropped).
+    pub(crate) fn set_pixel_ratio(&mut self, ratio: f32) -> bool {
+        let ratio = if ratio.is_finite() && ratio > 0.0 {
+            ratio
+        } else {
+            1.0
+        };
+        if ratio == self.pixel_ratio {
+            return false;
+        }
+        self.pixel_ratio = ratio;
+        self.clear();
+        true
+    }
+
+    /// Drops every measurement (the fonts changed), keeping the ratio.
+    pub(crate) fn clear(&mut self) {
+        self.current.clear();
+        self.previous.clear();
+    }
 
     #[inline]
     fn key(layout_hash: u64, max_width: Option<Points>) -> (u64, u32) {

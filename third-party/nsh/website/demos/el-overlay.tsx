@@ -1,4 +1,4 @@
-import { mount, Overlay, signal, Text, View, type YNode } from "nsh";
+import { mount, Overlay, signal, Text, View, type ViewRef } from "nsh";
 import { button, buttonText, desktop, Inspector, Panel, Segmented, Stage, ui, wide } from "./palette";
 
 type Placement = "top" | "bottom" | "left" | "right";
@@ -10,7 +10,7 @@ function App() {
   const align = signal<Align>("center");
   const position = signal("—");
   const closed = signal("—");
-  let anchor: YNode | undefined;
+  let anchor: ViewRef | undefined;
 
   const placements = () => (
     <Segmented

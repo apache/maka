@@ -72,7 +72,7 @@ A motion moves opacity and transform only. Spreading `m.style` sets the view's `
 | `createMotion({ enter, delay, duration, ... })` | `motion().entering(spec)` | Starts where `enter` starts and plays it at once; the other options change its timing. `enter` sets the channels it moves, over `initial`. |
 | `style={m.style}`, `m.transform` | `.bind_motion(&m)` | Binds the channels: `m.style` is `{ opacity, transform }`, its `transform` a list of seven steps (`scale` is folded into `scaleX` and `scaleY`). They apply after the view's `translate`, `rotate` and `scale`; a perspective before them gives a 3D flip its depth: `transform: [{ perspective: 800 }, ...m.transform]`. In Rust the motion's transform applies after the view's own. |
 | `m.opacity`, `m.translateX`, ... | `m.value(MotionChannel::Opacity)`, ... | One channel's animated value, to interpolate or drive by hand. |
-| `m.play(motion, options?)` | `m.play(spec)` | Plays a preset or a motion of your own; a new one interrupts the one playing. Resolves with `true` when it finished (`AnimationEnd` in Rust). |
+| `m.play(motion, options?)` | `m.play(spec)` | Plays a preset or a motion of your own; a new one interrupts the one playing. Resolves with `{ finished }`, `true` when it finished (`AnimationEnd` in Rust). |
 | `m.animation(motion, options?)` | `m.animation(spec)` | The same motion as a [composite animation](#composite-animations), not started, to sequence, stagger or loop with others. |
 | `play(motion, { ignoreReduceMotion: true })` | `m.play_ignoring_reduce_motion(spec)` | Plays it even when the user asks for less motion. |
 | `m.stop()` | `m.stop()` | Stops it where it is. |
@@ -454,7 +454,7 @@ The value is kept alive by the views bound to it and by the component that made 
 | TSX | Rust | Description |
 |---|---|---|
 | `set(value)` | `set(value)` | Jumps to `value`, stopping any animation. |
-| `stop()` | `stop()` | Stops the running animation where it is; in TSX, resolves with the value there. |
+| `stop()` | `stop()` | Stops the running animation where it is; in TSX, resolves with `{ value }`, the value there. |
 | `getValue()` | `value()` | The current value, read on the UI thread where it moves (it settles within a frame): a promise in TSX, an awaitable answer in Rust. |
 | `setOffset(offset)` | `set_offset(offset)` | Adds `offset` to what the value shows: bindings see value + offset, while `set`, animations and drags move the value. |
 | `flattenOffset()` | `flatten_offset()` | Adds the offset to the value and makes the offset 0. |
@@ -463,7 +463,7 @@ The value is kept alive by the views bound to it and by the component that made 
 | `spring(to, { stiffness?, damping?, mass?, velocity? })` | `spring(to, Spring { .. })` | Springs to `to` (defaults: stiffness 170, damping 26, mass 1). |
 | `decay({ velocity?, deceleration?, clamp?, bounce? })` | `decay(velocity, deceleration)`, `decay_within(velocity, deceleration, (min, max), bounce)` | Coasts from `velocity` (units per second) and slows down (deceleration 0.998 per ms by default). With a clamp of `[min, max]` it stops at a bound, or bounces back from it keeping `bounce` (0..1) of its speed. |
 
-Each animation gives an answer you can await: `true` when it finished, `false` when something stopped it (`stop()`, `set()`, or a new animation on the same value). It is a `Promise<boolean>` in TSX and an `AnimationEnd` in Rust. Starting a new animation on a moving value interrupts the old one smoothly: a spring or decay without a velocity continues with the value's current velocity.
+Each animation gives an answer you can await, whether it finished: `true` when it played to the end, `false` when something stopped it (`stop()`, `set()`, or a new animation on the same value). It is a `Promise<{ finished: boolean }>` in TSX and an `AnimationEnd` in Rust, which a task awaits for the `bool`. Starting a new animation on a moving value interrupts the old one smoothly: a spring or decay without a velocity continues with the value's current velocity.
 
 ```rust tabs
 // Spring settings: lower damping overshoots more, higher stiffness is faster.
@@ -488,10 +488,10 @@ x.spring(200, { stiffness: 180, damping: 8 });   // wobbly
 x.spring(200, { stiffness: 400, damping: 30 });  // stiff, no overshoot
 
 // A fling that coasts to a stop, from a pan's release velocity.
-<View pan={{ x }} onPanEnd={(e) => x.decay({ velocity: e.velocityX })} />
+<View pan={{ x }} onPanEnd={(e) => x.decay({ velocity: e.velocity.x })} />
 
 // A fling that stays on its track and bounces softly off its ends.
-x.decay({ velocity: e.velocityX, clamp: [0, 300], bounce: 0.3 });
+x.decay({ velocity: e.velocity.x, clamp: [0, 300], bounce: 0.3 });
 
 // Where a value is now (it moves on the UI thread, so the answer is async).
 const where = await x.getValue();
@@ -540,7 +540,7 @@ They play as in CSS and the Web Animations API:
 - Each iteration starts with a jump to its first keyframe. Without a keyframe at offset 0, the value goes from where it is.
 - During a `delay`, the value already holds the first keyframe (CSS `animation-fill-mode: backwards`), so a delayed entrance shows its first frame rather than the view at rest. This holds for motions too.
 - `reverse` and the backward iterations of `alternate` run the segments backwards, each with its curve reversed.
-- The value stays where the last iteration leaves it. The answer is `true` when they finished, `false` when something stopped them.
+- The value stays where the last iteration leaves it. The answer says whether they finished: `true` when they did, `false` when something stopped them.
 
 ### Interpolation
 
@@ -687,9 +687,9 @@ hop.start(({ finished }) => console.log(finished ? "landed" : "stopped"));
 | `Animated.delay(ms)` | `Animation::delay(ms)` | Waits. |
 | `Animated.loop(animation, { iterations?, resetBeforeIteration? })` | `.looped(iterations)`, `.reset_before_iteration(..)` | Repeats (forever by default; `None` in Rust). |
 
-A composite animation has `start()` (in TSX also with a callback and a promise of `finished`; in Rust an awaitable `bool`; calling it again runs it again), `stop()` (stops where it is) and `reset()` (stops and puts its values back where they were when it started). The callback runs once for the whole tree.
+A composite animation has `start()` (in TSX also with a callback and a promise, both given `{ finished }`; in Rust an awaitable `bool`; calling it again runs it again), `stop()` (stops where it is) and `reset()` (stops and puts its values back where they were when it started). The callback runs once for the whole tree.
 
-A running animation does not keep its values alive: when the component that owns them goes (its views and variables), an endless loop stops with them, and its answer is `false`.
+A running animation does not keep its values alive: when the component that owns them goes (its views and variables), an endless loop stops with them, and its answer is that it did not finish (`false`).
 
 ## Easing
 
@@ -827,7 +827,7 @@ Reach for `requestAnimationFrame` (a global in TSX, following the display) only 
 
 When the user asks for less motion (iOS "Reduce Motion", Android "Remove animations"), `reduce_motion()` in Rust and `reduceMotion()` from `nsh` in TSX are `true`, and the `motion-reduce:` / `motion-safe:` Tailwind variants apply.
 
-[Motions](#motion) follow the setting on their own: `play` and `enter` land where the motion ends at once, without moving, and the answer is `true` as for a motion that played. An exit still ends hidden, an entrance still ends at rest. Pass `ignoreReduceMotion: true` (`play_ignoring_reduce_motion` in Rust) for a motion that carries meaning the user needs, such as a progress spinner.
+[Motions](#motion) follow the setting on their own: `play` and `enter` land where the motion ends at once, without moving, and the answer is that it finished (`true`), as for a motion that played. An exit still ends hidden, an entrance still ends at rest. Pass `ignoreReduceMotion: true` (`play_ignoring_reduce_motion` in Rust) for a motion that carries meaning the user needs, such as a progress spinner.
 
 Transitions, keyframe animations, animated values, keyframes and composites play as written; use these to choose a calmer alternative:
 

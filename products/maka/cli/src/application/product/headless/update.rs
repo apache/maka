@@ -188,9 +188,11 @@ pub(crate) async fn live_update_available(
     let authoring = super::super::authoring()?;
     super::super::verified_fingerprint(&authoring, &packages, &version)?;
     let replacements = bundled_replacements(&packages)?;
-    if pins(&metadata.source.input)
-        .values()
-        .any(|package| replacement(package, &replacements).is_some())
+    if super::super::update_default_ui(&metadata.source.input, &packages).await?
+        != metadata.source.input
+        || pins(&metadata.source.input)
+            .values()
+            .any(|package| replacement(package, &replacements).is_some())
         || (metadata
             .source
             .input
@@ -322,11 +324,12 @@ async fn synchronize_loaded_packages(
         available.insert(package.application_ref(), package.clone());
     }
     let available: Vec<_> = available.into_values().collect();
-    let next = updated_source(&loaded, &available, &replacements)?;
+    let input = super::super::update_default_ui(&loaded.source().input, &bundled).await?;
+    let next = updated_source(input, &available, &replacements)?;
     let changes = changes(Some(&loaded.source().input), &next);
     let mut outcome = Outcome {
         scope: Scope::SelectedPackages,
-        changed: !changes.is_empty(),
+        changed: next != loaded.source().input,
         changes,
         ..Default::default()
     };
@@ -423,18 +426,10 @@ fn replacement<'a>(
 }
 
 fn updated_source(
-    loaded: &maka_event_log::applications::LoadedDeployment,
+    mut input: Input,
     available: &[Package],
     replacements: &BTreeMap<String, PackageRef>,
 ) -> Result<Input, HostError> {
-    if !loaded
-        .plan()
-        .instances()
-        .values()
-        .any(|instance| replacement(&instance.package, replacements).is_some())
-    {
-        return Ok(loaded.source().input.clone());
-    }
     let mut declarations = maka_plugin_core::package::Packages::default();
     for package in available {
         declarations.insert_checked(
@@ -447,7 +442,6 @@ fn updated_source(
                 .clone(),
         )?;
     }
-    let mut input = loaded.source().input.clone();
     let (_, changes) =
         Plan::prepare_replacing(&input, &declarations, &Default::default(), |package| {
             replacement(package, replacements).cloned()
@@ -497,11 +491,11 @@ fn pins(input: &Input) -> BTreeMap<String, &PackageRef> {
     pins
 }
 fn changes(previous: Option<&Input>, next: &Input) -> Vec<String> {
-    let previous = previous.map(pins).unwrap_or_default();
-    pins(next)
+    let old_pins = previous.map(pins).unwrap_or_default();
+    let mut changes: Vec<_> = pins(next)
         .into_iter()
         .filter_map(|(path, package)| {
-            let old = previous.get(&path).copied();
+            let old = old_pins.get(&path).copied();
             (old != Some(package)).then(|| {
                 let old = old.map_or_else(
                     || "(unselected)".into(),
@@ -510,7 +504,25 @@ fn changes(previous: Option<&Input>, next: &Input) -> Vec<String> {
                 format!("{path}: {old} -> {}@{}", package.id, package.revision)
             })
         })
-        .collect()
+        .collect();
+    if let Some(previous) = previous {
+        for (name, node) in &next.instances {
+            if let Some(old) = previous.instances.get(name) {
+                let name = name.replace('~', "~0").replace('/', "~1");
+                if old.configuration != node.configuration {
+                    changes.push(format!(
+                        "/instances/{name}/configuration: update bundled UI layout"
+                    ));
+                }
+                if old.bindings != node.bindings {
+                    changes.push(format!(
+                        "/instances/{name}/bindings: update bundled UI layout"
+                    ));
+                }
+            }
+        }
+    }
+    changes
 }
 
 fn check_pending(

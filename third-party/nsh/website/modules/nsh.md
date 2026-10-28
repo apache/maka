@@ -322,10 +322,10 @@ effect(() => console.log("primary is", token("primary"), "radius", token("radius
 ## View, Text, Scroll, Overlay
 
 ```ts
-function View(props: ViewProps): YNode;
-function Text(props: TextProps): YNode;
-function Scroll(props: ScrollProps): YNode;
-function Overlay(props: OverlayProps): YNode;
+function View(props: ViewProps): JSX.Element;
+function Text(props: TextProps): JSX.Element;
+function Scroll(props: ScrollProps): JSX.Element;
+function Overlay(props: OverlayProps): JSX.Element;
 ```
 
 The host elements `nsh` exports, written as tags: `<View>`, `<Text>`, `<Scroll>`, `<Overlay>` (its
@@ -399,6 +399,7 @@ See [Animation](../docs/animation.md) for the guide.
 | Gestures | `.pan_values(Some(&x), Some(&y))`, `.pinch_value(&scale)`, `.rotation_value(&angle)` | `pan={{ x, y }}`, `pinch={{ scale }}`, `rotation={{ angle }}` on any element: the gesture writes the values directly (see [Touch and gestures](../docs/touch-and-gestures.md)) |
 | Where views stick | `.sticky().bind_sticky_top(&value)` (`.bind_sticky_left` in a horizontal scroll view), `.bind_sticky_header_offset(&value)` on a list | `style={{ position: "sticky", top: value }}`, `<List stickyHeaderOffset={value}>`: sticky views and headers stick that far from the start of the viewport, following the value every frame |
 | Canvas | an animated argument of a painter's call | Any number or color argument of a [canvas](./nsh-canvas.md) drawing call |
+| Shader | `.uniform(name, &value)` | A member of a [shader](../elements/shader.md)'s `struct Uniforms`: `uniforms={{ name: value }}` (numbers, or a node of colors for a `vec3f` / `vec4f`) |
 
 Other style properties take plain values; to animate the layout itself (sizes, positions in the flow), use [`LayoutAnimation`](#layoutanimation).
 
@@ -455,7 +456,7 @@ mount(App);
 ```
 
 > [!NOTE]
-> An animated value lives on the UI thread and changes there every frame, so the app reads it asynchronously: `await value.getValue()` (or the promise `stop()` returns) gives the value at that moment, and in Rust `value.value().await` in a task. Keep the target in a variable or a signal when your code needs it right away, as above. Gesture events report the values at their end (`PanEvent.valueX` / `valueY`).
+> An animated value lives on the UI thread and changes there every frame, so the app reads it asynchronously: `await value.getValue()` (or the `{ value }` that `stop()` resolves with) gives the value at that moment, and in Rust `value.value().await` in a task. Keep the target in a variable or a signal when your code needs it right away, as above. Gesture events report the values at their end (`PanEvent.value`).
 
 ### AnimatedValue
 
@@ -463,22 +464,22 @@ mount(App);
 class AnimatedValue extends AnimatedNode {
   constructor(value: number);
   set(value: number): void;
-  stop(): Promise<number>;
+  stop(): Promise<{ value: number }>;
   getValue(): Promise<number>;
   setOffset(offset: number): void;
   flattenOffset(): void;
   extractOffset(): void;
-  timing(to: number, options?: { duration?: number; easing?: Easing; delay?: number }): Promise<boolean>;
-  spring(to: number, options?: { stiffness?: number; damping?: number; mass?: number; velocity?: number }): Promise<boolean>;
-  decay(options?: { velocity?: number; deceleration?: number; clamp?: [number, number]; bounce?: number }): Promise<boolean>;
-  keyframes(keyframes: KeyframeValue[], options?: KeyframeTiming): Promise<boolean>;
+  timing(to: number, options?: { duration?: number; easing?: Easing; delay?: number }): Promise<{ finished: boolean }>;
+  spring(to: number, options?: { stiffness?: number; damping?: number; mass?: number; velocity?: number }): Promise<{ finished: boolean }>;
+  decay(options?: { velocity?: number; deceleration?: number; clamp?: [number, number]; bounce?: number }): Promise<{ finished: boolean }>;
+  keyframes(keyframes: KeyframeValue[], options?: KeyframeTiming): Promise<{ finished: boolean }>;
 }
 ```
 
 | Method | Rust | Description |
 |---|---|---|
 | `set(value)` | `set(value)` | Jumps to `value`, stopping any running animation. |
-| `stop()` | `stop()`, then `value().await` | Stops the running animation where it is; resolves with the value there. |
+| `stop()` | `stop()`, then `value().await` | Stops the running animation where it is; resolves with `{ value }`, the value there. |
 | `getValue()` | `value().await` | Resolves with the current value (with its offset), read on the UI thread. |
 | `setOffset(offset)` | `set_offset(offset)` | An offset added to the value: bindings see value + offset; `set`, animations and drags move the value. |
 | `flattenOffset()` | `flatten_offset()` | Adds the offset to the value and makes it 0. |
@@ -488,7 +489,7 @@ class AnimatedValue extends AnimatedNode {
 | `decay(options)` | `decay(velocity, deceleration)`, `decay_within(velocity, deceleration, (min, max), bounce)` | Coasts from `velocity` (units per second) and slows down by `deceleration` per millisecond (default 0.998). Use it after a fling, with the velocity from `onPanEnd`. With `clamp: [min, max]` it stops at a bound, or bounces back from it keeping `bounce` (0..1, default 0) of its speed. |
 | `keyframes(frames, options)` | `keyframes(frames, KeyframeTiming)` | Plays [keyframes](#keyframes) as CSS keyframes play: an easing per segment, `iterations` times in `direction`. |
 
-Each animation method returns a promise that resolves with `true` when the animation finished and `false` when it was stopped (by `stop`, `set` or another animation of the same value). In Rust it returns an `AnimationEnd`, which a task awaits for the same `bool`.
+Each animation method returns a promise that resolves with `{ finished }`: `true` when the animation finished, `false` when it was stopped (by `stop`, `set` or another animation of the same value). In Rust it returns an `AnimationEnd`, which a task awaits for the same `bool`.
 
 ```rust tabs
 let opacity = animated_value(1.0);
@@ -501,7 +502,7 @@ spawn(async move {
 
 ```tsx tabs
 const opacity = createAnimatedValue(1);
-const finished = await opacity.timing(0, { duration: 200 });
+const { finished } = await opacity.timing(0, { duration: 200 });
 if (finished) visible.set(false);
 ```
 
@@ -586,7 +587,7 @@ interface KeyframeTiming {
 }
 ```
 
-`value.keyframes(frames, options)` plays a value through keyframes and resolves with whether they finished; `Animated.keyframes(value, { keyframes, ...options })` is the same as a step of a composite. Rust: `value.keyframes(frames, KeyframeTiming)` and `Animation::keyframes(&value, frames, KeyframeTiming)`, with `Keyframe::new(value)` (spread evenly), `Keyframe::at(offset, value)` and `.ease(easing)`, and `KeyframeTiming::new(ms)` with `.delay(ms)`, `.easing(e)`, `.iterations(Some(n))`, `.infinite()` and `.direction(PlaybackDirection::…)`.
+`value.keyframes(frames, options)` plays a value through keyframes and resolves with `{ finished }`, whether they finished; `Animated.keyframes(value, { keyframes, ...options })` is the same as a step of a composite. Rust: `value.keyframes(frames, KeyframeTiming)` and `Animation::keyframes(&value, frames, KeyframeTiming)`, with `Keyframe::new(value)` (spread evenly), `Keyframe::at(offset, value)` and `.ease(easing)`, and `KeyframeTiming::new(ms)` with `.delay(ms)`, `.easing(e)`, `.iterations(Some(n))`, `.infinite()` and `.direction(PlaybackDirection::…)`.
 
 They play as CSS keyframes play: an easing shapes one segment (a keyframe's the segment that starts at it, the timing's every other one); offsets missing from keyframes spread evenly, the first at 0 and the last at 1; each iteration starts with a jump to its first keyframe, and without a keyframe at 0 the value goes from where it is; during a `delay` the value holds the first keyframe (CSS `animation-fill-mode: backwards`); backward iterations run the segments backwards with their curves reversed; the value stays where the last iteration leaves it.
 
@@ -629,7 +630,7 @@ interface Motion {
   readonly scaleY: AnimatedValue;
   readonly style: { opacity: AnimatedValue; transform: MotionTransform };
   readonly transform: MotionTransform;
-  play(motion: MotionName | MotionSpec, options?: MotionPlayOptions): Promise<boolean>;
+  play(motion: MotionName | MotionSpec, options?: MotionPlayOptions): Promise<{ finished: boolean }>;
   animation(motion: MotionName | MotionSpec, options?: MotionPlayOptions): CompositeAnimation;
   stop(): void;
   reset(): void;
@@ -642,7 +643,7 @@ Creates a motion: an animated value for each channel of a view's opacity and tra
 |---|---|---|
 | `opacity`, `translateX`, ... `scaleY` | `value(MotionChannel::Opacity)`, ... | The channels' animated values. |
 | `style`, `transform` | `.bind_motion(&m)` on the element | The bindings. |
-| `play(motion, options?)` | `play(spec)`, `play_ignoring_reduce_motion(spec)` | Plays a preset by name or a [`MotionSpec`](#motions) on the channels; a new one interrupts the one playing. `options` change its timing. Resolves with `true` when it finished, `false` when something stopped it (`AnimationEnd` in Rust). |
+| `play(motion, options?)` | `play(spec)`, `play_ignoring_reduce_motion(spec)` | Plays a preset by name or a [`MotionSpec`](#motions) on the channels; a new one interrupts the one playing. `options` change its timing. Resolves with `{ finished }`: `true` when it finished, `false` when something stopped it (`AnimationEnd` in Rust). |
 | `animation(motion, options?)` | `animation(spec)` | The same motion as a [`CompositeAnimation`](#animated), not started, to compose: `Animated.stagger(60, cards.map((m) => m.animation("fadeInUp")), { from: "center" })` (Rust: `Animation::stagger_from(60.0, StaggerFrom::Center, cards.iter().map(\|m\| m.animation(MotionPreset::FadeInUp)))`). Reduced motion is decided when it is made. |
 | `stop()` | `stop()` | Stops it where it is. |
 | `reset()` | `reset()` | Stops it and puts every channel back at rest. |
@@ -718,7 +719,7 @@ const Animated: {
 };
 
 interface CompositeAnimation {
-  start(callback?: (result: { finished: boolean }) => void): Promise<boolean>;
+  start(callback?: (result: { finished: boolean }) => void): Promise<{ finished: boolean }>;
   stop(): void;
   reset(): void;
 }
@@ -742,7 +743,7 @@ interface CompositeAnimation {
 
 | Method | Rust (`Animation`) | Description |
 |---|---|---|
-| `start(callback?)` | `start()`, an `AnimationEnd` to await | Runs it (again). Resolves, and calls `callback`, once for the whole tree with whether it finished rather than being stopped. |
+| `start(callback?)` | `start()`, an `AnimationEnd` to await | Runs it (again). Resolves, and calls `callback`, once for the whole tree with `{ finished }`: whether it finished rather than being stopped. |
 | `stop()` | `stop()` | Stops it where it is. |
 | `reset()` | `reset()` | Stops it and puts its values back where they were when it started. |
 
@@ -1073,7 +1074,7 @@ const shadow = platform.select({
 const pixelRatio: Accessor<number>;
 ```
 
-Device pixels per point (e.g. `3` on most iPhones). Reactive: it changes when the window moves to a screen of another density (on Mac Catalyst, the desktops, or an external display). Rust: `pixel_ratio() -> f32`, and `round_to_nearest_pixel(points)` for a length on whole device pixels; in TSX that length is `Math.round(x * pixelRatio()) / pixelRatio()`.
+Device pixels per point (e.g. `3` on most iPhones). Reactive: it changes when the window moves to a screen of another density (on Mac Catalyst, the desktops, or an external display) and when Android's display size setting changes the density. Rust: `pixel_ratio() -> f32`, and `round_to_nearest_pixel(points)` for a length on whole device pixels; in TSX that length is `Math.round(x * pixelRatio()) / pixelRatio()`.
 
 ```rust tabs
 let hairline = move || px(1.0 / pixel_ratio());
@@ -1086,10 +1087,14 @@ const hairline = () => 1 / pixelRatio();
 ### openUrl
 
 ```ts
-function openUrl(url: string): Promise<boolean>;
+function openUrl(url: string): Promise<OpenUrlResult>;
+
+interface OpenUrlResult {
+  opened: boolean;
+}
 ```
 
-Opens `url` outside the app: a web page in the browser, a `mailto:` link in the mail app, a `tel:` link in the phone app, and any scheme another app registered (`maps:`, a host app's own `lb://` links). It resolves to whether something opened it: `false` when no app handles the scheme. Rust: `open_url(url)` of `nsh_core::prelude`, an answer to await in a task (or to drop).
+Opens `url` outside the app: a web page in the browser, a `mailto:` link in the mail app, a `tel:` link in the phone app, and any scheme another app registered (`maps:`, a host app's own `lb://` links). It resolves with `{ opened }`, whether something opened it: `false` when no app handles the scheme. Rust: `open_url(url)` of `nsh_core::prelude`, an answer to await in a task (or to drop), the same `bool`.
 
 ```rust tabs
 button()
@@ -1106,7 +1111,8 @@ button()
 ```tsx tabs
 <Button
   onPress={async () => {
-    if (!(await openUrl("mailto:help@example.com"))) {
+    const { opened } = await openUrl("mailto:help@example.com");
+    if (!opened) {
       console.warn("no mail app");
     }
   }}
@@ -1117,7 +1123,7 @@ button()
 
 - The URL is absolute (it has a scheme). URLs that would run code or reach the app's own data, `javascript:`, `data:`, `blob:`, `file:`, `about:` and `asset:`, throw a `TypeError`, as do relative addresses.
 - An app that declares capabilities needs `openUrl`: `"openUrl": true` for every scheme, or `"openUrl": { "schemes": ["https", "mailto"] }` for those listed; other URLs throw a `TypeError` (see [Sandbox and capabilities](../docs/sandbox-and-capabilities.md)).
-- The embedding app sees the URL first and can route it through its own router instead (Swift `NshAppView.onOpenURL`, Java `NshView.setOpenUrlHandler`, Rust `AppView::host().handle_open_url`; see [iOS](../docs/ios.md#links-the-app-opens) and [Android](../docs/android.md#links-the-app-opens)). The promise then resolves to `true`.
+- The embedding app sees the URL first and can route it through its own router instead (Swift `NshAppView.onOpenURL`, Java `NshView.setOpenUrlHandler`, Rust `AppView::host().handle_open_url`; see [iOS](../docs/ios.md#links-the-app-opens) and [Android](../docs/android.md#links-the-app-opens)). `opened` is then `true`.
 - Each platform opens it with its own opener: `UIApplication.open` on iOS (the host app's application when embedded), an `ACTION_VIEW` intent on Android, `NSWorkspace` on macOS, `ShellExecuteW` on Windows, `GtkUriLauncher` on Linux, GPUI's `open_url`, a new tab on the web. `nsh test` records the URLs instead of opening them.
 - A [`TextView`](../elements/text-view.md) opens its links this way with `links="open"`.
 
@@ -2063,15 +2069,15 @@ use nsh_core::prelude::*; // on_key, on_key_with, KeyOptions, key_label
 ```
 
 ```tsx tabs
-import type { YNode } from "nsh";
+import type { ViewRef } from "nsh";
 import { keymap } from "nsh";
 ```
 
 ```ts
 const keymap: {
-  bind(keystroke: string, handler: (keystroke: string) => void, options?: KeyBindingOptions): () => void;
-  bind(bindings: Record<string, (keystroke: string) => void>, options?: KeyBindingOptions): () => void;
-  focusedWithin(node: YNode): boolean;
+  bind(keystroke: string, handler: (e: { keystroke: string }) => void, options?: KeyBindingOptions): () => void;
+  bind(bindings: Record<string, (e: { keystroke: string }) => void>, options?: KeyBindingOptions): () => void;
+  focusedWithin(node: ViewRef): boolean;
   label(keystroke: string): string;
 };
 
@@ -2079,7 +2085,7 @@ interface KeyBindingOptions {
   when?: "always" | "notEditing";
   repeat?: boolean;
   fallback?: boolean;
-  within?: YNode;
+  within?: ViewRef;
 }
 ```
 
@@ -2097,10 +2103,10 @@ Shortcuts work on macOS, Windows, Linux and in browsers (the browser's own keys,
 ### keymap.bind
 
 ```ts
-bind(keystroke: string, handler: (keystroke: string) => void, options?: KeyBindingOptions): () => void;
+bind(keystroke: string, handler: (e: { keystroke: string }) => void, options?: KeyBindingOptions): () => void;
 ```
 
-Runs `handler` when `keystroke` is pressed and returns a function that removes the binding. The handler gets the keystroke as you wrote it, in its case. Rust: `on_key(keystroke, handler)`.
+Runs `handler` when `keystroke` is pressed and returns a function that removes the binding. The handler gets `{ keystroke }`: the keystroke as you wrote it, in its case. Rust: `on_key(keystroke, handler)`, whose handler gets the keystroke itself.
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -2162,25 +2168,23 @@ With the dev server, editing a module removes the bindings its top-level code ma
 
 #### Native focus scopes
 
-On a host with native focus scopes, `within` limits a binding to keyboard focus on that node or one of its descendants. Pass a `YNode`
+On a host with native focus scopes, `within` limits a binding to keyboard focus on that node or one of its descendants. Pass a `ViewRef`
 from the running app. NSH checks the native focus path when each key arrives, together with `when` and `repeat`.
 If the scope does not match, NSH tries older bindings of the same keystroke, then its ordinary input handling.
 A scope with no focused descendant, including a removed scope, leaves those routes available.
 
 ```tsx
-import { Scroll, Text } from "nsh";
+import { Scroll, Text, type ScrollRef } from "nsh";
 import { keymap } from "nsh";
 
 function ActivityPanel() {
-  const panel = Scroll({
-    style: { height: 160 },
-    children: <Text>Activity</Text>,
-  });
-  keymap.bind("mod+end", () => panel.scrollToEnd({ animated: false }), {
-    within: panel,
-    when: "always",
-  });
-  return panel;
+  const bindPanel = (panel: ScrollRef) => {
+    keymap.bind("mod+end", () => panel.scrollToEnd({ animated: false }), {
+      within: panel,
+      when: "always",
+    });
+  };
+  return <Scroll ref={bindPanel} style={{ height: 160 }}><Text>Activity</Text></Scroll>;
 }
 ```
 
@@ -2190,12 +2194,12 @@ keeps its existing app-wide behavior.
 ### keymap.focusedWithin
 
 ```ts
-focusedWithin(node: YNode): boolean;
+focusedWithin(node: ViewRef): boolean;
 ```
 
 Reads whether `node` or one of its descendants has keyboard focus in the host's latest focus
 snapshot. It returns `false` when no node has focus or the node is outside that path, including after removal.
-The argument is a `YNode` from the running app; calling it without native focus-scope support throws `TypeError`.
+The argument is a `ViewRef` from the running app; calling it without native focus-scope support throws `TypeError`.
 
 This is a nonreactive snapshot read. Calling it inside an effect adds no focus dependency; other reactive reads,
 such as `windowSize()`, determine when that effect runs. Each call reads the latest snapshot supplied by the host.
@@ -2316,7 +2320,7 @@ See [Native components](../docs/native-components.md) for registering the native
 function nativeComponent<P extends object = {}, E extends object = {}>(
   name: string,
   spec: NativeComponentSpec<P, E>,
-): (props: NativeComponentProps<P, E>) => YNode;
+): (props: NativeComponentProps<P, E>) => JSX.Element;
 
 interface NativeComponentSpec<P, E> {
   /** Its own props: sent to the component (any JSON value), each when it changes. */
@@ -2343,7 +2347,7 @@ The component is laid out like a view, at the size its style gives it. Where the
 
 #### Commands
 
-Its `ref` receives a `YNode`; `ref.command(name, args)` calls command `name` of the native component with `args` (any JSON value). Rust: `ElementRef::command(name, args)`.
+Its `ref` receives a `NativeComponentRef`; `ref.command(name, args)` calls command `name` of the native component with `args` (any JSON value). Rust: `ElementRef::command(name, args)`.
 
 ```rust tabs
 map.command("zoomTo", json!({ "level": 3 }));
@@ -2393,7 +2397,7 @@ pub fn App() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { mount, signal, type YNode } from "nsh";
+import { mount, type NativeComponentRef, signal } from "nsh";
 import { nativeComponent } from "nsh";
 import { View } from "nsh";
 
@@ -2404,7 +2408,7 @@ const Badge = nativeComponent<{ text: string; color?: string }, { tap: { count: 
 
 function App() {
   const taps = signal(0);
-  let badge: YNode | undefined;
+  let badge: NativeComponentRef | undefined;
   return (
     <View style={{
       flex: 1,
@@ -2565,7 +2569,7 @@ The screen reader reads `message` (a VoiceOver announcement, TalkBack). Use it f
 ### setAccessibilityFocus
 
 ```ts
-function setAccessibilityFocus(node: YNode): void;
+function setAccessibilityFocus(node: ViewRef): void;
 ```
 
 Moves the screen reader's focus to `node` (an element's `ref`). Rust: `ElementRef::set_accessibility_focus()`.
@@ -2590,11 +2594,11 @@ fn Saved() -> impl IntoElement {
 ```
 
 ```tsx tabs
-import { effect, Text, View, type YNode } from "nsh";
+import { effect, Text, View, type ViewRef } from "nsh";
 import { announce, screenReaderEnabled, setAccessibilityFocus } from "nsh";
 
 function Saved() {
-  let note!: YNode;
+  let note!: ViewRef;
   const save = () => {
     announce("Saved");
     setAccessibilityFocus(note);
@@ -2622,11 +2626,11 @@ function Saved() {
 | `Context<T>` | What `context` returns |
 | `Component<P>` | `(props: P) => JSX.Element` |
 | `JSX` | The JSX namespace (`JSX.Element`) |
-| `YNode` | What a `ref` receives: focus, scroll and other commands. See [Elements](../elements/index.md) |
+| `ViewRef`, `InputRef`, `ScrollRef`, `ListRef`, `WebViewRef`, `VideoRef`, `NativeComponentRef` | What a `ref` receives, each element's own type (`ViewRef` and the types over it): focus, scroll and other commands. `ViewRef` is also what an element is (`JSX.Element`). See [ref methods](../elements/index.md#ref-methods) |
 | `ViewProps`, `TextProps`, `ImageProps`, `ScrollProps`, `CommonProps`, `TouchProps` | Props of host elements |
 | `ViewStyle`, `TextStyle`, `InputStyle`, `ImageStyle`, `LayoutStyle`, `StyleProp<T>` | Style objects; see the [style reference](./style-reference.md) |
 | `ColorValue`, `DimensionValue`, `LengthValue`, `TransformStep` | Values inside styles |
-| `GestureResponderEvent`, `HoverEvent`, `ContextMenuEvent`, `ScrollEvent`, `PanEvent`, `TouchPoint` | Event payloads |
+| `GestureResponderEvent`, `MouseEvent`, `MouseButton`, `ContextMenuEvent`, `PressEvent`, `ScrollEvent`, `PanEvent`, `TouchPoint` | Event payloads |
 | `Point`, `Size`, `Bounds`, `Edges`, `Modifiers` | The shapes payloads and props are made of, with GPUI's fields (`nsh_core::geometry`) |
 | `PixelSize` | An image's or a video's own size in pixels (`onLoad`, `Image.getSize`, the clipboard's and the picker's images), where `Size` is points |
 | `ImageAsset` | What importing an image file gives (`{ url, size: Size, scales? }`; `scales` lists its [pixel-density variants](../docs/images-and-assets.md#pixel-densities)) |
@@ -2634,9 +2638,9 @@ function Saved() {
 | `AccessibilityRole`, `AccessibilityState` | Accessibility props |
 
 ```tsx
-import { type GestureResponderEvent, type YNode, signal } from "nsh";
+import { type GestureResponderEvent, type InputRef, signal } from "nsh";
 
-let field: YNode | undefined;
+let field: InputRef | undefined;
 const onPress = (e: GestureResponderEvent) => field?.focus();
 ```
 

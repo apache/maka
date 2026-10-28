@@ -29,18 +29,16 @@ const cell = (initial) => {
   };
   return read;
 };
-const fixtures = { query: null, login: null };
+const fixtures = { login: null };
 globalThis.__terminalSettingsFixtures = fixtures;
 const modules = {
   nsh: 'export const signal = (initial) => { let value = initial; const read = () => value; read.set = next => { value = next; }; return read; }; export const computed = f => f; export const cleanup = () => {};',
-  './host':
-    'export const host = { query: (...args) => globalThis.__terminalSettingsFixtures.query(...args) };',
   './text':
     'export const message = (key, values) => values ? key.replace(/\\{(\\w+)\\}/g, (_, key) => values[key]) : key; export class UiError extends Error { constructor(key, values) { super(message(key, values)); } }',
   './settingsOperations':
     'export const credentialBasis = status => status?.configured ? { locator: status.locator, credentialId: status.credentialId, revision: status.revision } : null; export const settingsRejection = result => new Error(result.kind);',
   './connectionLoginState.ts':
-    'export const createConnectionLogin = (_, owner) => { globalThis.__terminalSettingsFixtures.login = owner; return {}; };',
+    'export const createConnectionLogin = (_, __, owner) => { globalThis.__terminalSettingsFixtures.login = owner; return {}; };',
 };
 const settingsUrl = new URL('../../products/maka/workbench/app/settings.ts', import.meta.url).href;
 const hooks = registerHooks({
@@ -132,7 +130,7 @@ function setup({ apiKey = '', original = null, fetchResult = 'ready', beforeFetc
       throw new Error(`Unexpected mutation ${method}`);
     },
   };
-  fixtures.query = async (endpoint, method, input) => {
+  const query = async (endpoint, method, input) => {
     if (method === 'connection') {
       if (input.revision !== detail.target.revision)
         return { kind: 'stale', actual: detail.target };
@@ -145,7 +143,9 @@ function setup({ apiKey = '', original = null, fetchResult = 'ready', beforeFetc
     if (method === 'resolveModel') return { kind: 'missing' };
     throw new Error(`Unexpected query ${endpoint}.${method}`);
   };
+  const host = { query };
   const owner = createModelSettings(
+    host,
     () => {},
     state,
     () => active,
@@ -165,7 +165,7 @@ function setup({ apiKey = '', original = null, fetchResult = 'ready', beforeFetc
   });
   owner.page.set('connection');
   owner.credential.set({ configured: true, credentialId: 'key', revision: 1 });
-  return { owner, state, calls, fresh };
+  return { owner, host, state, calls, fresh };
 }
 
 test('saving a new connection and credential fetches once using the committed credential revision', async () => {
@@ -284,4 +284,41 @@ test('invalid token input remains editable and cannot write a model mutation', a
   assert.equal(calls.length, 0);
   assert.equal(owner.model().limits.contextWindow, '1.5');
   assert.equal(owner.page(), 'model');
+});
+
+test('reload preserves an unsaved connection and its original CAS basis without saving credentials', () => {
+  const { owner, host, state, calls, fresh } = setup({ apiKey: 'unsaved-key' });
+  owner.editor.set({
+    ...owner.editor(),
+    baseline: fresh(7),
+    name: 'Draft name',
+    overlay: '{"temperature":0.3}',
+  });
+  owner.connectionQuery.set('draft search');
+  const saved = JSON.parse(JSON.stringify(owner.snapshot()));
+  const restored = createModelSettings(
+    host,
+    () => {},
+    state,
+    () => false,
+    undefined,
+    saved,
+  );
+  assert.equal(restored.page(), 'connection');
+  assert.equal(restored.connectionQuery(), 'draft search');
+  assert.equal(restored.editor().name, 'Draft name');
+  assert.equal(restored.editor().overlay, '{"temperature":0.3}');
+  assert.equal(restored.editor().apiKey, 'unsaved-key');
+  assert.equal(restored.editor().baseline.target.revision, 7);
+  assert.equal(calls.length, 0);
+});
+
+test('an editor snapshot refuses an in-flight settings action until its original receipt is consumed', () => {
+  const { owner, state, calls } = setup({ apiKey: 'unsaved-key' });
+  state.busy.set(true);
+  assert.throws(() => owner.snapshot(), /Wait for the current settings action to finish/);
+  assert.equal(owner.editor().apiKey, 'unsaved-key');
+  assert.equal(calls.length, 0);
+  state.busy.set(false);
+  assert.equal(owner.snapshot().editor.apiKey, 'unsaved-key');
 });

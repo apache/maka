@@ -44,7 +44,7 @@ scroll().flex_1().child(
 |---|---|---|---|---|
 | `horizontal` | `.horizontal()` | `boolean` | `false` | 横向滚动。 |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | 用户可以滚动。 |
-| `scrollbar` | `.scrollbar(..)` | `boolean` | `true` | 显示滚动条。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
+| `scrollbar` | `.scrollbar(..)` | `boolean \| ScrollbarTheme` | `true` | 显示滚动条：平台的滚动指示器，或应用设置主题后的[内置滚动条](./scrollbar.md#内置滚动条)；对象是该视图自己的主题。在桌面和桌面浏览器中，横向视图始终保留滚动条：它是鼠标的滚动条。 |
 | `bounces` | `.bounces(..)` | `boolean` | `true` | 允许越过边缘回弹。 |
 | `pagingEnabled` | `.paging(..)` | `boolean` | `false` | 停在视口尺寸的整数倍处。 |
 | `snapToInterval` | `.snap_interval(px(..))` | `number` | `0` | 停在该长度的整数倍处（0 表示关闭）。 |
@@ -130,7 +130,7 @@ scroll()
 ```
 
 ```tsx tabs
-let photo!: YNode;
+let photo!: ScrollRef;
 <Scroll ref={photo} maximumZoomScale={4} centerContent style={{ flex: 1, backgroundColor: "#000" }}>
   <Image src={picture} style={{ width: 390, height: 520 }} onPress={() => photo.zoomTo({ scale: 1, animated: true })} />
 </Scroll>;
@@ -141,9 +141,9 @@ let photo!: YNode;
 | 事件 | Rust | 载荷 | 触发时机 |
 |---|---|---|---|
 | `onScroll` | `.on_scroll` | `ScrollEvent` | 偏移量变化（每帧最多一次，且不比 `scrollEventThrottle` 更频繁）。 |
-| `onScrollDragStart` / `onScrollDragEnd` | `.on_scroll_drag_start` / `.on_scroll_drag_end` | `{ x, y }`（`Point<Points>`） | 用户开始 / 停止拖动。 |
-| `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ x, y }` | 拖动后的惯性滑动开始 / 停止。被新一次拖动打断的滑动同样以 `onMomentumEnd` 结束。 |
-| `onScrollEnd` | `.on_scroll_end` | `{ x, y }` | 滚动停了下来。 |
+| `onScrollDragStart` / `onScrollDragEnd` | `.on_scroll_drag_start` / `.on_scroll_drag_end` | `{ offset }`（`Point<Points>`） | 用户开始 / 停止拖动。 |
+| `onMomentumStart` / `onMomentumEnd` | `.on_momentum_start` / `.on_momentum_end` | `{ offset }` | 拖动后的惯性滑动开始 / 停止。被新一次拖动打断的滑动同样以 `onMomentumEnd` 结束。 |
+| `onScrollEnd` | `.on_scroll_end` | `{ offset }` | 滚动停了下来。 |
 | `onRefresh` | `.on_refresh` | 无 | 触发了下拉刷新。 |
 
 `ScrollEvent` 为 `{ offset: Point; contentSize: Size; size: Size; zoomScale }`（Rust 中为 `offset`、`content_size`、`size`、`zoom_scale`）：偏移量、（缩放后的）内容尺寸、视口尺寸和缩放比例（不缩放时为 1）。
@@ -166,7 +166,7 @@ scroller.scroll_to(point(px(0.0), px(0.0)), true);
 ```
 
 ```tsx tabs
-let scroller!: YNode;
+let scroller!: ScrollRef;
 <Scroll ref={scroller}>…</Scroll>;
 scroller.scrollTo({ y: 0, animated: true });
 ```

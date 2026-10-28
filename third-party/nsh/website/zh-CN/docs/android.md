@@ -42,6 +42,8 @@ Rust 应用的 APK 带有它自己的 `libnsh.so`，用你的 crate 构建，其
 APK 用 SDK 的 build tools 构建，不需要 Gradle；除非传入发布用的 keystore，否则用调试密钥签名。发布签名和图标见[打包](./packaging.md#android)。
 
 NSH 以 16 KB ELF 对齐构建 `libnsh.so`，并将未压缩的原生库按 16 KB ZIP 边界打包。
+release APK 中的 `libnsh.so` 不带符号表和调试信息。完整的库位于运行时旁的 `symbols/<abi>/libnsh.so`（Rust 应用的在
+`.nsh/rust/android-rust-release/symbols/<abi>/`）：把它交给 `ndk-stack`，或作为原生调试符号上传到 Play Console，即可还原原生崩溃堆栈。
 
 ## 嵌入 Android 应用
 
@@ -66,7 +68,8 @@ dist/nsh/embed/android/nsh.aar       release: bundles and signed packages
 dist/nsh/embed/android/nsh-dev.aar   also connects to a `nsh dev` server
 ```
 
-AAR 包含 Java 运行时以及适用于 `arm64-v8a`、`armeabi-v7a` 和 `x86_64` 的 `libnsh.so`。它声明了 `INTERNET`
+AAR 包含 Java 运行时以及适用于 `arm64-v8a`、`armeabi-v7a` 和 `x86_64` 的 `libnsh.so`，库中带有符号：应用的 Gradle
+构建在打包时去除符号，并保留它们用于崩溃报告。它声明了 `INTERNET`
 权限，要求 **API 28**（Android 9）或更高版本。
 
 把它加入应用模块，例如从 `libs` 文件夹引入：
@@ -348,7 +351,7 @@ adb reverse tcp:8790 tcp:8790
       android:windowSoftInputMode="adjustResize" />
   ```
 
-  `NshView` 会自行适应新的尺寸、配色方案、字体缩放和布局方向。
+  `NshView` 会自行适应新的尺寸、配色方案、字体缩放、显示密度和布局方向，应用状态保持不变。滚动位置会按逻辑坐标恢复，并限制在新的内容范围内；吸顶视图和已打开的模态窗口也会适应新的密度。
 - **生命周期。** 宿主 Activity 或 Fragment 销毁时调用 `destroy()`。
 
 ## 另请参阅

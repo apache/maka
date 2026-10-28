@@ -491,16 +491,19 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         let fixture = Fixture::new().await;
         fixture.counter.blocked.store(true,Ordering::SeqCst);
         let client = fixture.client().await;
+        let target = client.describe("agent").await.unwrap();
+        let owner = json!({"namespace":target.provider,"export":target.export});
         assert_eq!(client.control(Uuid::new_v4(),"send",Value::Null).await.err().unwrap(),"unsupported agent control method");
         let unrelated = client.mutation(Uuid::new_v4(),"agent","selectBackend",Value::Null,Attachments::new(),None,Value::Null).await.unwrap();
         assert_eq!(client.operation_for_control(unrelated.id()).await.unwrap_err(),"original client operation belongs to another control owner");
         unrelated.close().await.unwrap();
         assert!(client.pending_controls().await.unwrap().is_empty());
-        for (method, input, expected) in [
+        for (method, input, mut expected) in [
             ("stop", json!({"sessionId":"session-one","invocationId":"run-A"}), json!({"kind":"agent-control","invocationId":"run-A"})),
             ("respond", json!({"sessionId":"session-one","requestId":"interaction-A"}), json!({"kind":"agent-control","requestId":"interaction-A"})),
             ("stopComputerApp", json!({"sessionId":"session-one","operationId":"native-effect-A"}), json!({"kind":"agent-control","operationId":"native-effect-A"})),
         ] {
+            expected["owner"] = owner.clone();
             assert_eq!(client.control(Uuid::new_v4(),method,json!({"sessionId":"session-one"})).await.err().unwrap(), if method == "stopComputerApp" {"agent control requires a valid operationId"} else {"agent control requires a valid invocationId or requestId"});
             let control = client.control(Uuid::new_v4(),method,input).await.unwrap();
             let original = client.operation_for_control(control.id()).await.unwrap();
@@ -523,11 +526,13 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         }
         // Lifecycle originals retain their captured CAS and action identity in
         // the same journal; recovering them cannot become a new user action.
-        for (method, input, expected) in [
+        for (method, input, mut expected) in [
             ("metadata", json!({"sessionId":"session-one","expectedRevision":7,"title":"Private title","labels":[]}), json!({"kind":"agent-control","expectedRevision":7})),
             ("changeSession", json!({"sessionId":"session-one","expectedRevision":8,"action":"archive"}), json!({"kind":"agent-control","expectedRevision":8,"action":"archive"})),
-            ("fork", json!({"sessionId":"session-one","expectedRevision":9,"turnId":null,"title":"Private fork title","labels":[]}), json!({"kind":"agent-control","expectedRevision":9,"turnId":null})),
+            ("fork", json!({"sessionId":"session-one","expectedRevision":9,"position":{"kind":"end"},"title":"Private fork title","labels":[]}), json!({"kind":"agent-control","expectedRevision":9,"position":{"kind":"end"}})),
+            ("fork", json!({"sessionId":"session-one","expectedRevision":10,"position":{"kind":"before_turn","turnId":"edited-turn"},"title":"Private edit title","labels":[]}), json!({"kind":"agent-control","expectedRevision":10,"position":{"kind":"before_turn","turnId":"edited-turn"}})),
         ] {
+            expected["owner"] = owner.clone();
             let control = client.control(Uuid::new_v4(),method,input).await.unwrap();
             let original = client.operation_for_control(control.id()).await.unwrap();
             assert_eq!(original.session_id.as_deref(),Some("session-one"));
@@ -541,6 +546,12 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
             assert_eq!(client.operation_for_control(unrelated.id()).await.unwrap_err(),"original client operation belongs to another control owner");
             assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
             unrelated.close().await.unwrap();
+            let mut foreign_owner = expected.clone();
+            foreign_owner["owner"]["export"] = json!("another-agent");
+            let foreign_id = Uuid::new_v4();
+            assert_eq!(client.mutation(foreign_id,"agent",method,Value::Null,Attachments::new(),Some("session-one".into()),foreign_owner).await.err().unwrap(),"client operation target changed before opening its original call");
+            assert_eq!(client.operation_for_control(foreign_id).await.unwrap_err(),"original client operation belongs to another control owner");
+            assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
             assert!(client.abandon_unprepared(control.id()).await.unwrap().abandoned);
             control.close().await.unwrap();
         }
@@ -549,7 +560,7 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[id]);
         let original = mutation.prepare().await.unwrap();
         assert_eq!(original.session_id.as_deref(),Some("session-one"));
-        assert_eq!(original.correlation,json!({"kind":"agent-control"}));
+        assert_eq!(original.correlation,json!({"kind":"agent-control","owner":owner}));
         assert_eq!(client.operation(id).await.unwrap().reference,original.reference);
         assert_eq!(client.query("agent","read",Value::Null).await.unwrap(),json!({"sent":0}));
         assert!(client.mutation(id,"agent","send",Value::Null,Attachments::new(),None,Value::Null).await.is_err());

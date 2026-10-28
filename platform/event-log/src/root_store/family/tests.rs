@@ -71,7 +71,7 @@ async fn copy_and_authority_inherit_source_instead_of_target_hash() {
         .collect();
     for (target, purpose) in targets.iter().zip([
         CopyPurpose::Branch {
-            turn_id: None,
+            position: maka_agent_facts::session::ForkPosition::End,
             side_conversation: false,
         },
         CopyPurpose::EmptySideConversation,

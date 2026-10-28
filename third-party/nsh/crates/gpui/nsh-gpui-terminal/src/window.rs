@@ -16,8 +16,8 @@ use gpui::{
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use crate::{FrameToken, SubmittedFrame};
-type SubmissionSink = Box<dyn FnMut(SubmittedFrame)>;
+use crate::{FrameToken, PreparedFrame};
+type PreparationSink = Box<dyn FnMut(PreparedFrame)>;
 type Wake = Arc<dyn Fn() + Send + Sync>;
 type Resize = Box<dyn FnMut(Size<Pixels>, f32)>;
 
@@ -64,7 +64,7 @@ pub(crate) struct WindowState {
     error: Option<String>,
     renderer: Box<gpui_wgpu::WgpuHeadlessRenderer>,
     atlas: Arc<dyn PlatformAtlas>,
-    sink: Option<SubmissionSink>,
+    sink: Option<PreparationSink>,
     wake: Wake,
 }
 
@@ -106,7 +106,7 @@ impl TerminalWindow {
         handle: AnyWindowHandle,
         params: WindowParams,
         renderer: Box<gpui_wgpu::WgpuHeadlessRenderer>,
-        sink: SubmissionSink,
+        sink: PreparationSink,
         wake: Wake,
         viewport: Option<(Size<DevicePixels>, f32)>,
     ) -> Result<(Self, WindowRef)> {
@@ -681,16 +681,16 @@ impl PlatformWindow for TerminalWindow {
         if self.0.borrow().closed {
             return;
         }
-        let submitted = (|| -> Result<SubmittedFrame> {
+        let prepared = (|| -> Result<PreparedFrame> {
             let mut state = self.0.borrow_mut();
             let size = state.size;
             let sequence = state
                 .sequence
                 .checked_add(1)
                 .ok_or_else(|| anyhow!("terminal candidate sequence exhausted"))?;
-            let readback = state.renderer.submit_scene(scene, size)?;
+            let readback = state.renderer.prepare_scene(scene, size)?;
             state.sequence = sequence;
-            Ok(SubmittedFrame {
+            Ok(PreparedFrame {
                 token: FrameToken {
                     issuer: Some(state.issuer.clone()),
                     sequence: state.sequence,
@@ -699,11 +699,11 @@ impl PlatformWindow for TerminalWindow {
                 readback,
             })
         })();
-        match submitted {
-            Ok(submitted) => {
+        match prepared {
+            Ok(prepared) => {
                 let sink = self.0.borrow_mut().sink.take();
                 if let Some(mut sink) = sink {
-                    sink(submitted);
+                    sink(prepared);
                     self.0.borrow_mut().sink = Some(sink);
                 }
             }

@@ -12,9 +12,11 @@ Build web apps with Native Shell using the same components, styles and applicati
 
 `nsh package --target web` publishes the app as a static site for any web server or CDN ([Publish an app](#publish-an-app)), and `nsh run --target web` runs it in the browser while you edit it ([Develop in the browser](#develop-in-the-browser)). Every live demo on this site uses this web backend.
 
+Published TSX apps use the browser JavaScript engine. Packaging selects a lite runtime for apps that use the core components and standard APIs it serves, and the full runtime for other apps. Syntax highlighting data loads when code is first highlighted.
+
 ## What runs where
 
-The page is built from HTML elements styled with CSS. NSH turns component updates into batches of DOM changes, while the browser displays the interface and handles scrolling, text selection and input. WebAssembly hosts the shared Rust engine for component state, layout and updates: with a Rust app's crate compiled in, or with QuickJS for a TSX app.
+The page is built from HTML elements styled with CSS. NSH turns component updates into batches of DOM changes, while the browser displays the interface and handles scrolling, text selection and input. WebAssembly hosts the shared Rust engine for component state, layout and updates: with a Rust app's crate compiled in, or alongside the browser JavaScript engine for a published TSX app. Development and embedded players use QuickJS.
 
 On every native platform the engine has its own thread and hands one `MountBatch` per commit to the main thread. A browser page has one thread, so the web build drives the same engine step by step from the page's event loop (`nsh_engine::LocalEngine`):
 
@@ -31,7 +33,7 @@ requestAnimationFrame ──────────────┘             
 - **Native animations run in Rust** on `requestAnimationFrame`: `Animated` timing, spring and decay, `interpolate`, animated values bound to `opacity`, `translate`, `rotate`, `scale`, the steps of `transform` and `backgroundColor`, drags bound with `pan`, scroll-linked values and canvas arguments. JS is not involved per frame, as on devices. `LayoutAnimation`, style transitions, the `animate-*` keyframes and screen transitions move as on the desktop backends, and `prefers-reduced-motion` turns them off (screens fade).
 - **Input:** presses with `activeStyle` / `active:` feedback and long presses, the responder system (`onTouch*`, `PanResponder`), native drags and two-finger pinch and rotation, scroll views (the browser's scrolling), pull to refresh, zooming scroll views (pinch, ctrl+wheel and touchpad pinches, `zoomTo`), `<Input>` with controlled values, focus and submit, `Canvas`, `NavStack` and `NavPage` with the page's `header`, `Dialog`.
 - **System UI is drawn in the page:** `AlertDialog` looks like the desktop backends' dialogs on desktop browsers and like iOS's on phones (with the `desktop` idiom, see below). Custom fonts are measured again once the browser has loaded them, and an app waits for the fonts it imports before its first frame shows.
-- **Dialogs** are a layer over the whole app that shows the app's popup and backdrop, as on the desktop backends. Escape, the browser's back button and a press on the backdrop close them (`closeOnEscape`, `closeOnBackdropPress`), and `animation`, `onOpen`, `onClose`, `onCancel` and `onOpenChange` work as on devices.
+- **Dialogs** are a layer over the whole app that shows the app's popup and backdrop, as on the desktop backends. Escape, the browser's back button and a press on the backdrop close them (`closeOnEscape`, `closeOnBackdropPress`), and `animation`, `onOpen`, `onClose`, `onCancel` and `onOpenChange` work as on devices. A page that [embeds the app](#embed-it-in-a-page) in part of its layout can show dialogs and alerts over the whole browser window instead (`dialogs: "viewport"`), as iOS and Android show them over the whole screen.
 
 ## Keyboard, mouse and touch
 
@@ -63,7 +65,8 @@ components and modules.
 
 Either way the crate's assets (`assets!()`) are published with the app's, and its fonts load before the first frame.
 During `nsh run --target web`, a change to the crate's Rust code builds the runtime again and the open page loads it by
-itself; TSX edits stay hot updates.
+itself; TSX edits stay hot updates. The development runtime builds incrementally, so a change to the crate is ready in
+about a second; `nsh package` builds the published one optimized for size.
 
 Rust code that runs on every platform, the web included, uses the engine's services: `fetch(url).await` makes
 HTTP requests through the same network stack as JS's `fetch` (the browser's here, with its CORS rules); `timer`,
@@ -145,13 +148,13 @@ page and files named after their content.
 | `index.html` | The app's page: its name as the title, the icons, the colors of its `appearance`, a loading indicator, and a message when the app cannot load or start |
 | `manifest.webmanifest` | The name, id, icons and colors browsers install the app with |
 | `nsh.<digest>.js` | The DOM runtime, minified (79 KB, 22.5 KB with brotli) |
-| `nsh.<digest>.wasm` | A Rust app: the engine, the components and your crate (3.3 MB for the whole Rust gallery, 0.75 MB with brotli). A TSX app: the engine, the core, the runtime's modules and QuickJS without its compiler (about 3.5 MB, 1.2 MB gzipped, 0.93 MB with brotli) |
+| `nsh.<digest>.wasm` | The Rust engine, layout and components, plus a Rust app’s own crate. TSX runs in browser JavaScript; packaging selects the lite or full runtime from the APIs the app imports. |
+| `nsh-syntaxes.<digest>.bin` | The syntaxes code is highlighted with (bat's set: 0.92 MB, 0.8 MB with brotli), downloaded the first time a code block, an `Editor` or a `DiffView` shows code in a language |
 | `nsh-bindgen.<digest>.js` | The wasm-bindgen glue of an app whose crates call [browser APIs from Rust](#browser-apis-from-rust), minified |
 | `snippets.<digest>/<crate>-<hash>/…` | The JS of those crates that the glue imports (`inline_js`, `module = "/js/…"`), under the paths wasm-bindgen gives it |
-| `app.<digest>.nshc` | A TSX app, built as `nsh build --release --split` builds it, compiled to QuickJS bytecode: nothing is compiled in the browser, so it starts sooner |
-| `harden.<digest>.nshc` | With a TSX app, the [sandbox's](./sandbox-and-capabilities.md) hardening, compiled likewise (1.4 KB) |
+| `app.<digest>.js` | The compiled TSX entry as an ES module, loaded by the browser. |
 | `host.<digest>.js` | The page's host, `nsh.json` `web.host` ([the host's functions](#the-hosts-functions)) |
-| `chunks/<name>.<digest>.nshc` | With a TSX app, what `import()` loads, compiled likewise, downloaded the first time it is imported ([split bundles](#split-bundles)) |
+| `<name>.<digest>.js` | ES modules loaded on demand by `import()`. |
 | `assets/<path>.<digest>.<ext>` | Every asset the app imports, loaded from its URL when it is used (fonts before the code that registers them runs, as text is measured with them: before the app starts, or with the chunk that imports them) |
 | `icons/<size>.<digest>.png` | The icon of `nsh.json` at 32 (favicon), 180 (`apple-touch-icon`), 192 and 512 pixels |
 
@@ -213,7 +216,8 @@ The output directory holds:
 
 | File | What it is |
 |---|---|
-| `gallery/nsh.<digest>.wasm` | The runtime of published apps (about 3.5 MB, 1.2 MB gzipped, 0.93 MB with brotli; built with the `web` profile), shared by the player and the gallery |
+| `gallery/nsh.<digest>.wasm` | The runtime of published apps (about 15.1 MB, 4.6 MB gzipped, 3.4 MB with brotli; built with the `web` profile), shared by the player and the gallery |
+| `gallery/nsh-syntaxes.<digest>.bin` | The syntaxes the runtime highlights code with, fetched the first time a demo shows code in a language |
 | `nsh-playground.wasm` | The same plus NSH's TSX compiler, for the [playground](#the-playground) (about 8 MB, 2.4 MB gzipped) |
 | `gallery/nsh.<digest>.js` | The DOM runtime (minified): loads the wasm, applies batches, turns input into events |
 | `index.html` | A player page: runs `demos/<name>.nshc` for `#<name>` |
@@ -244,11 +248,12 @@ const player = await createPlayer(document.querySelector("#phone"), {
   // dark: true,            // force an appearance; otherwise it follows the system
   // idiom: "phone",        // force "phone", "pad" or "desktop"; otherwise the pointer and the size decide
   // history: false,        // pages and dialogs as browser history entries; by default only when the app is the page, not in an iframe
+  // dialogs: "viewport",   // Dialog, Sheet and AlertDialog over the whole browser window; by default over the container
 });
 player.run(await (await fetch("./bundle.nshc")).arrayBuffer());
 ```
 
-`assets` (a map from `asset:/` paths to URLs) replaces `assetBase`, `readAsset(uri)` returns the bytes of an asset the engine needs at once (a font) or `null`, and `glue` is the URL of the wasm-bindgen glue of a runtime whose crates call [browser APIs from Rust](#browser-apis-from-rust) (`nsh-bindgen.<digest>.js`), which the player loads with the runtime; `player.run(code, { release: true, capabilities })` runs a bundle as a release under the capabilities it declares (the default is development settings); with bytecode, a release also takes the hardening's bytecode (`harden`, the bytes of `harden.<digest>.nshc`). The page `nsh package --target web` writes uses all of them.
+`assets` (a map from `asset:/` paths to URLs) replaces `assetBase`, `readAsset(uri)` returns the bytes of an asset the engine needs at once (a font) or `null`, `data` maps the files the runtime fetches when it first needs them to their URLs (`syntaxes`: `nsh-syntaxes.<digest>.bin`; by default `nsh-<name>.bin` next to `nsh.js`), and `glue` is the URL of the wasm-bindgen glue of a runtime whose crates call [browser APIs from Rust](#browser-apis-from-rust) (`nsh-bindgen.<digest>.js`), which the player loads with the runtime; `player.run(code, { release: true, capabilities })` runs a bundle as a release under the capabilities it declares (the default is development settings); with bytecode, a release also takes the hardening's bytecode (`harden`, the bytes of `harden.<digest>.nshc`). The page `nsh package --target web` writes uses all of them.
 
 `run(code, { chunks, chunkBase })` also takes where the chunks of a [split bundle](#split-bundles) are.
 
@@ -257,6 +262,28 @@ A page that runs code it does not own, as an app embedding NSH does, gives it li
 With `nsh-playground.wasm`, `player.runSource(tsx, name, options)` compiles TSX first, runs it with `run`'s options and returns the compile error, or `null`; `player.compile(tsx)` returns `{ code }` or `{ error }`. The website's playground runs its visitors' code with `{ limits: "" }`.
 
 The container's size is the app's window (`windowSize()`); resizing the container resizes the app. `player.setDark(true)` switches the appearance at run time, which apps observe through `colorScheme()` and `dark:` classes.
+
+Dialogs and alerts cover the container. With `dialogs: "viewport"` they cover the whole browser window, as a page's own modal dialogs do, while the app keeps the container as its window: a `Dialog` lays out at the window's size and safe area and slides in from its bottom edge, its backdrop covers the whole page, and the mouse wheel over it leaves the page in place. The dialog shows in the browser's top layer (Chrome 114, Safari 17, Firefox 125 and later), so it is above the rest of the page wherever the container is; in earlier browsers it covers the container.
+
+
+`Sheet` follows the same presentation setting as `Dialog` and `AlertDialog`. In a same-origin iframe,
+viewport presentation automatically covers the outer page, while the app keeps its original layout size.
+The iframe returns to its original position and size when the last popup closes; its engine and state stay alive.
+The documentation demos enable this presentation.
+
+For a cross-origin or sandboxed iframe, the embedding page registers the host before loading the player:
+
+```js
+import { hostPlayerFrame } from "./nsh.js";
+const frame = document.querySelector("iframe");
+const disconnect = hostPlayerFrame(frame);
+frame.src = "https://apps.example.com/player.html"; // player uses dialogs: "viewport"
+// When removing the embedding: disconnect();
+```
+
+The host accepts requests from this iframe's window, keeps the surrounding page inert and locks its scrolling
+while a popup is visible, and restores both on close. Each cross-origin embedding boundary requires its host's
+cooperation; without it, presentation remains within that document and the player reports a warning.
 
 ## The host's functions
 

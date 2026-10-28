@@ -108,11 +108,23 @@ test('WorkHub product binds independent agents and direct UI management in the a
       assert.equal(ui.key, keys['workbench-ui']);
       assert.deepEqual(ui.package, { source: 'pinned', package: read('packages').workbench });
       assert.equal(ui.usePackage, 'ui');
-      assert.deepEqual(ui.bindings.agent, [{ kind: 'instance', path: ['agent'], export: 'agent' }]);
-      assert.deepEqual(ui.bindings.coordinator, [
+      assert.deepEqual(ui.bindings, {});
+      assert.deepEqual(ui.configuration.values.session, {
+        path: ['conversations-ui'],
+        id: 'session',
+      });
+      const conversationUi = host.instances['conversations-ui'];
+      assert.deepEqual(conversationUi.configuration.values.composer, {
+        path: ['composer-ui'],
+        id: 'composer',
+      });
+      assert.deepEqual(conversationUi.bindings.agent, [
+        { kind: 'instance', path: ['agent'], export: 'agent' },
+      ]);
+      assert.deepEqual(conversationUi.bindings.coordinator, [
         { kind: 'instance', path: ['workhub'], export: 'agent' },
       ]);
-      assert.deepEqual(ui.bindings.coordinatorTerminal, [
+      assert.deepEqual(conversationUi.bindings.coordinatorTerminal, [
         {
           kind: 'instance',
           path: ['coordinator-workspace-processes'],

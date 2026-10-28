@@ -359,13 +359,16 @@ fn unsaved() -> Screen {
         .on_back_press(move || {
             let answer = alert_dialog()
                 .title("Discard your changes?")
-                .cancel("Keep editing")
-                .destructive("Discard")
+                .cancel("keep", "Keep editing")
+                .destructive("discard", "Discard")
                 .close_on_escape(true)
                 .close_on_backdrop_press(true)
                 .show();
             spawn(async move {
-                if answer.await == Ok(Some("Discard".into())) {
+                if answer
+                    .await
+                    .is_ok_and(|r| r.action.as_deref() == Some("discard"))
+                {
                     // TS's draft is the screen's own and goes with it.
                     draft.update(|draft| draft.0.clear());
                     nav::pop();

@@ -130,7 +130,7 @@ async fn repeated_checkpoints_cross_old_history_limits_with_bounded_tail_and_exa
                 target_session_id: "copied-session".into(),
                 expected_source_revision: revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false
                 },
             },
