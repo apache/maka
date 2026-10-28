@@ -35,10 +35,12 @@ just build
 通过启动器启动：
 
 ```sh
+/absolute/path/to/maka desktop
+# 或指定其他 Host Root：
 /absolute/path/to/maka desktop --root /absolute/path/to/business-host
 ```
 
-`--root` 为必填项，指定实际的业务 Host Root。启动器把缺失的 Root 初始化为标准只读业务 Host，或重开其已保存的部署；随后对照已连接 Host 的端点、来源和 epoch 校验发现信息，并把 `MAKA_HOST_ROOT`、`MAKA_HOST_ENDPOINT` 和 `MAKA_HOST_EPOCH` 传给 shell，同时用 `MAKA_LAUNCHER` 传入启动器自身的路径。shell 以与终端 shell 相同的方式接入该 Host，并把客户端数据保存在该 Root 下。
+`--root` 可选，指定业务 Host Root，默认使用 `~/.maka/application/host`。启动器把缺失的 Root 初始化为标准只读业务 Host，或重开其已保存的部署；随后对照已连接 Host 的端点、来源和 epoch 校验发现信息，并把 `MAKA_HOST_ROOT`、`MAKA_HOST_ENDPOINT` 和 `MAKA_HOST_EPOCH` 传给 shell，同时用 `MAKA_LAUNCHER` 传入启动器自身的路径。shell 以与终端 shell 相同的方式接入该 Host，并把客户端数据保存在该 Root 下。
 
 关闭窗口、应用菜单的退出项和退出快捷键都会关闭窗口；shell 随后与 Host 断开并退出。启动器同样只断开连接，因此 Host 会完成已接受的工作，在没有客户端后停止。取消启动器只会停止它启动的 shell。
 

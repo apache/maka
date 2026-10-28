@@ -35,7 +35,7 @@ pub(crate) use headless::{
 };
 pub(super) use update::Update;
 
-pub(super) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
+pub(crate) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
     match root {
         Some(root) => Ok(std::path::absolute(root)?),
         None => Ok(crate::serve::home_directory()?

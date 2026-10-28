@@ -33,7 +33,7 @@
 
 在仓库根目录运行 `just run`。Cargo 编译选中的插件和共享工作台，并将它们嵌入 CLI，debug 与 release 构建均如此。修改这些源文件后需重新构建，无需提前单独构建产品 bundle。
 
-通过 `just build` 构建 CLI 和桌面 shell，支持 `--release` 和 `--target`；macOS 上 shell 放在 `Maka.app` 中。运行 `target/debug/maka desktop --root HOST_ROOT` 初始化或重开业务 Host，并从任意工作目录启动桌面；启动器校验 endpoint 和 epoch，在子进程退出前保留自己的客户端，随后断开连接，Host 会完成已接受的工作。
+通过 `just build` 构建 CLI 和桌面 shell，支持 `--release` 和 `--target`；macOS 上 shell 放在 `Maka.app` 中。运行 `target/debug/maka desktop` 初始化或重开 `~/.maka/application/host` 的业务 Host，并从任意工作目录启动桌面，`--root HOST_ROOT` 可指定其他 Root；启动器校验 endpoint 和 epoch，在子进程退出前保留自己的客户端，随后断开连接，Host 会完成已接受的工作。
 
 在终端界面的 **设置 → 外观 → 语言** 中选择共享语言。选择后自动保存在业务 Root 中，与各终端界面的主题和自定义颜色分开；其他已打开的终端界面在重新进入设置或显式刷新时更新，不持续广播。原先分别保存的终端界面语言需要重新选择一次，外观数据保留。
 

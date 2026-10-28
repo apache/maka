@@ -24,7 +24,7 @@ mod serve;
 
 pub(crate) use product::{
     LivePublication, ProductHost, Roots, configure_workspace_locations, directories,
-    live_update_available, open_host, prepare_live_publication, select_committed_host,
+    live_update_available, open_host, prepare_live_publication, root_path, select_committed_host,
 };
 
 use std::path::{Path, PathBuf};

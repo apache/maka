@@ -40,7 +40,7 @@ just run
 
 In WSL, `just run` builds the CLI without the local `native-desktop` capability or its Linux X11 dependencies; Computer Use selects the Windows desktop by default. Source builds need `MAKA_CUA_WINDOWS_EXECUTABLE` set to the absolute WSL-visible path of a matching Windows `maka.exe`. `MAKA_CUA_BUILD_MODE=auto|native|bridge` controls this development build selection. See [Computer Use](platform/computer-use/README.md) for setup. `just build` and release packaging still build the full native product, including the desktop shell and its Linux GUI dependencies.
 
-Launch the desktop with `target/release/maka desktop --root HOST_ROOT`, selecting its actual business Host Root. The launcher initializes or reopens that Host and keeps its client alive while the shell runs; closing the window detaches, and the Host finishes the work it accepted. See [desktop-shell](products/maka/desktop-shell/README.md) for the packaged layout.
+Launch the desktop with `target/release/maka desktop`, using `~/.maka/application/host` by default; `--root HOST_ROOT` selects another business Host Root. The launcher initializes or reopens that Host and keeps its client alive while the shell runs; closing the window detaches, and the Host finishes the work it accepted. See [desktop-shell](products/maka/desktop-shell/README.md) for the packaged layout.
 
 ## Repository
 
