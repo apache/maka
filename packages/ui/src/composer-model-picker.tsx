@@ -18,13 +18,14 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Button, Card, Item, Spinner, Stack, Text } from '@astryxdesign/core';
-import { Selector, SelectorOption, type SelectorOptionType } from '@astryxdesign/core/Selector';
+import { createPortal } from 'react-dom';
+import { Button, Card, Item, Spinner, Stack, Text, Tooltip } from '@astryxdesign/core';
+import { Selector, SelectorOption, type SelectorOptionType, type SelectorProps } from '@astryxdesign/core/Selector';
 import type { ExecutorCatalogEntry, ExecutorConfiguration, ExecutorSelection } from '@maka/core/executor-catalog';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ProviderType } from '@maka/core/llm-connections';
 import { type UiLocale, defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
-import { AlertCircle, RotateCcw, RefreshCcw, Settings, ICON_SIZE } from './icons.js';
+import { AlertCircle, Brain, CircleGauge, Cpu, RotateCcw, RefreshCcw, Settings, ICON_SIZE } from './icons.js';
 import { ComposerModelLabel } from './composer-model-label.js';
 import { buildModelPickerOptions, providerMarkIcon, renderChatModelPickerOption } from './model-picker-internals.js';
 import { exactModelChoiceValue, modelMenuGroups, type ChatModelChoice } from './chat-model-helpers.js';
@@ -176,7 +177,7 @@ function ExecutorRefreshFailure({ name, message }: { name: string; message: stri
 }
 
 
-/** Session recovery is separate from model configuration so it can occupy a full row. */
+/** Session recovery lives above the input card, separate from model configuration. */
 export function ComposerExecutorRecovery(props: {
   executor: ComposerExecutorPicker;
   disabled?: boolean;
@@ -207,6 +208,7 @@ export function ComposerExecutorRecovery(props: {
     return <Card key={entry.id}
       className="maka-executor-recovery" data-state={readiness}
       variant="muted" padding={0} role="status"
+      onClick={event => event.stopPropagation()}
     ><Item
       align="center" density="spacious"
       label={<Text type="label" maxLines={1}>{entry.displayName}</Text>}
@@ -237,6 +239,29 @@ const externalValue = (entry: ExecutorCatalogEntry, model: string | undefined) =
   return JSON.stringify([entry.id, group ? 'group:' + group.id : 'model:' + (model ?? '')]);
 };
 
+/** The slot owns width allocation; Selector owns interaction and its popup.
+ * Container CSS changes only the trigger's presentation, keeping selection,
+ * search and focus mounted throughout a resize. */
+function ComposerSelector({ icon, kind, ...props }: SelectorProps<SelectorOptionType> & {
+  icon: ReactNode;
+  kind: 'model' | 'thinking' | 'mode';
+}) {
+  return <div className="maka-composer-selector-slot" data-kind={kind}>
+    <Tooltip content={props.label} focusTrigger="always" isEnabled={!(props.isDisabled && props.disabledMessage)}>
+      <Selector {...props}
+        className={[props.className, 'maka-composer-selector'].filter(Boolean).join(' ')}
+        width="100%"
+        data-composer-selector-trigger=""
+        aria-label={props.label}
+        startIcon={<span className="maka-composer-selector-icon" aria-hidden="true">{icon}</span>}
+        renderValue={option => <span className="maka-composer-selector-value">
+          {props.renderValue ? props.renderValue(option) : option.label}
+        </span>}
+      />
+    </Tooltip>
+  </div>;
+}
+
 export function ThinkingLevelSelector(props: {
   levels: readonly ThinkingLevel[];
   current?: ThinkingLevel;
@@ -251,8 +276,11 @@ export function ThinkingLevelSelector(props: {
   const selection = usePendingSelection(props.current ?? DEFAULT_EFFORT, value =>
     props.onChange?.(value === DEFAULT_EFFORT ? undefined : value as ThinkingLevel));
   if (!props.levels.length || !props.onChange) return null;
-  return <Selector
-    label={copy.thinkingLevel}
+  const currentLabel = selection.value === DEFAULT_EFFORT ? copy.defaultLevel : copy.level[selection.value as ThinkingLevel];
+  return <ComposerSelector
+    kind="thinking"
+    icon={<Brain size={ICON_SIZE.control} />}
+    label={`${copy.thinkingLevel}: ${currentLabel ?? copy.defaultLevel}`}
     isLabelHidden
     value={selection.value}
     options={[
@@ -271,6 +299,10 @@ export function ThinkingLevelSelector(props: {
 
 /** One selection flow for native models and configured external agents. */
 export function ComposerModelPicker(props: {
+  /** Composer owns the feedback region; standalone pickers render it inline.
+   * Keep local selection failures and plugin contributions in this component's
+   * React scope while placing their feedback outside the toolbar. */
+  feedbackContainer?: HTMLElement | null;
   label: string;
   choices: ChatModelChoice[];
   value?: string;
@@ -384,12 +416,24 @@ export function ComposerModelPicker(props: {
     executor?.onSelect({ executorId: executor.selection!.executorId, configuration: executor.fixed || (configuration.model !== undefined && configuration.model !== selectedModel)
       ? configuration : { ...executor.selection!.configuration, ...configuration } });
   const mode = executor?.selection?.configuration.mode ?? selected?.currentMode;
+  const feedback = <>
+    {executor && !executor.fixed && <ComposerExecutorRecovery
+      executor={{ ...executor, catalog }} disabled={props.disabled || props.isReadOnly}
+    />}
+    {(failed || invalid || executor?.error || (unavailable && !selected) || contribution?.error) && <span className="maka-executor-notice" role="status" onClick={event => event.stopPropagation()}>
+      {contribution?.error ? contribution.label + ': ' + copy.unavailable : unavailable && !selected ? copy.unavailable : invalid ? copy.invalid : copy.selectionFailed}
+      {contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={contribution.loading} onClick={contribution.onLoad} />}
+      {executor && !contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={executor.error ? executor.loading : !!executor.selection && isExecutorLoading(executor, executor.selection.executorId)} onClick={() => executor.onRetry(executor.error ? undefined : executor.selection?.executorId)} />}
+    </span>}
+  </>;
   return <>
     {/* Keep portaled search clicks from focusing the composer editor. */}
     <Stack direction="horizontal" className="maka-model-picker-root"
       onClick={event => { event.stopPropagation(); contribution?.onLoad(); }}
       onKeyDownCapture={event => { if (['Enter', ' ', 'ArrowDown', 'ArrowUp'].includes(event.key)) contribution?.onLoad(); }}>
-      <Selector
+      <ComposerSelector
+        kind="model"
+        icon={<Cpu size={ICON_SIZE.control} />}
         key={String(props.openNonce ?? 0) + ':' + String(acknowledged)}
         label={props.sessionId ? modelCopy.switchAriaLabel + ': ' + label : modelCopy.newChatAriaLabel(label)}
         isLabelHidden
@@ -439,8 +483,10 @@ export function ComposerModelPicker(props: {
         if (variant) return commit(() => externalConfiguration({ model: variant.modelId }));
       }}
     /> : props.renderThinkingControl?.(pending)}
-    {executor?.selection && !!selected?.modes?.length && <Selector
-      label={copy.mode} isLabelHidden
+    {executor?.selection && !!selected?.modes?.length && <ComposerSelector
+      kind="mode"
+      icon={<CircleGauge size={ICON_SIZE.control} />}
+      label={`${copy.mode}: ${selected.modes.find(item => item.id === mode)?.name ?? copy.default}`} isLabelHidden
       options={selected.modes.map(item => ({ value: item.id, label: item.name }))}
       value={mode} placeholder={copy.default}
       variant="ghost" size="sm" placement="above"
@@ -460,17 +506,16 @@ export function ComposerModelPicker(props: {
       variant="ghost" size="sm" isIconOnly icon={<Settings size={ICON_SIZE.control} />}
       onClick={() => executor.onSetup()} />}
     {!executor && !actions.size && props.onOpenSettings && <Button
-      label={modelCopy.configureTitle} variant="ghost" size="sm"
-      icon={<Settings size={ICON_SIZE.control} />} onClick={props.onOpenSettings} />}
+      label={modelCopy.configureTitle} tooltip={modelCopy.configureTitle} variant="ghost" size="sm"
+      className="maka-composer-configure-models"
+      children={<span className="maka-composer-button-content">
+        <Settings size={ICON_SIZE.control} />
+        <span className="maka-composer-configure-label">{modelCopy.configureTitle}</span>
+      </span>}
+      onClick={props.onOpenSettings} />}
     {executor && catalog.filter(entry => entry.refreshFailed && !isExecutorLoading(executor, entry.id)).map(entry =>
       <ExecutorRefreshFailure key={entry.id} name={entry.displayName} message={copy.refreshFailed} />)}
-    {executor && !executor.fixed && <ComposerExecutorRecovery
-      executor={{ ...executor, catalog }} disabled={props.disabled || props.isReadOnly}
-    />}
-    {(failed || invalid || executor?.error || (unavailable && !selected) || contribution?.error) && <span className="maka-executor-notice" role="status">
-      {contribution?.error ? contribution.label + ': ' + copy.unavailable : unavailable && !selected ? copy.unavailable : invalid ? copy.invalid : copy.selectionFailed}
-      {contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={contribution.loading} onClick={contribution.onLoad} />}
-      {executor && !contribution?.error && <Button label={copy.retry} variant="ghost" size="sm" isLoading={executor.error ? executor.loading : !!executor.selection && isExecutorLoading(executor, executor.selection.executorId)} onClick={() => executor.onRetry(executor.error ? undefined : executor.selection?.executorId)} />}
-    </span>}
+    {props.feedbackContainer === undefined ? feedback
+      : props.feedbackContainer ? createPortal(feedback, props.feedbackContainer) : null}
   </>;
 }

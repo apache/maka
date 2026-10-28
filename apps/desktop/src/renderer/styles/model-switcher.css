@@ -20,7 +20,9 @@
 /* Model + thinking sit as one left-footer pair after permission. */
 .maka-model-selection-controls {
   display: inline-flex;
-  flex-wrap: wrap;
+  /* Flex wraps before shrinking its items. Keep this row intact so the model
+     label truncates before a trailing action is moved onto a second line. */
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
@@ -52,12 +54,6 @@
   min-width: 0;
   max-width: min(280px, 60vw);
   flex: 0 1 auto;
-}
-
-.maka-workspace-picker-end {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
 }
 
 /* Turns over while open, as the Selector chevrons do. */
@@ -140,7 +136,6 @@
 
 .maka-executor-notice {
   display: flex;
-  flex-basis: 100%;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);

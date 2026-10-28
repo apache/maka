@@ -19,10 +19,8 @@
 
 /**
  * Pins the one copy of each shell layout number that its consumer cannot
- * reach: JS cannot read var()s and container queries cannot read custom
- * properties, so the same lengths legitimately exist in three places —
- * maka-tokens.css, the renderer contract's JS mirrors, and the composer
- * container query literal. If one moves, they all must.
+ * reach: JS cannot read CSS var()s, so the same lengths exist in maka-tokens.css
+ * and the renderer contract's JS mirrors. If one moves, they all must.
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -41,7 +39,6 @@ import { SESSION_WORKBAR_MIN_WIDTH } from '../../renderer/features/workbar/testi
 const desktopRoot = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
 const rendererRoot = join(desktopRoot, 'src', 'renderer');
 const tokens = readFileSync(join(rendererRoot, 'maka-tokens.css'), 'utf8');
-const composer = readFileSync(join(rendererRoot, 'styles', 'composer.css'), 'utf8');
 const frameStyle = readFileSync(join(rendererRoot, 'shell', 'frame-style.ts'), 'utf8');
 const mainWindow = readFileSync(join(desktopRoot, 'src', 'main', 'main-window.ts'), 'utf8');
 
@@ -54,12 +51,6 @@ describe('shell layout width single-sourcing', () => {
   it('keeps the JS mirrors equal to the CSS tokens they duplicate', () => {
     assert.equal(SHELL_CONVERSATION_MIN_WIDTH_PX, tokenPx('--maka-conversation-min-width'));
     assert.equal(SHELL_CONTENT_AREA_GAP_PX, tokenPx('--agents-content-area-gap'));
-  });
-
-  it('keeps the composer container-query literal at the conversation floor', () => {
-    const match = composer.match(/@container\s+maka-composer\s+\(max-width:\s*(\d+)px\)/);
-    assert.ok(match, 'composer.css must size its narrow-footer query off the floor');
-    assert.equal(Number(match[1]), SHELL_CONVERSATION_MIN_WIDTH_PX);
   });
 
   it('keeps the frame Workbar cap on the same two tokens', () => {
