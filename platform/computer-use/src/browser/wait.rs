@@ -1218,7 +1218,7 @@ mod tests {
                         url: "about:blank".into(),
                         kind: "page".into(),
                         websocket: None,
-                        driver: None,
+                        extension: None,
                     },
                 },
                 InitialState::Deferred,

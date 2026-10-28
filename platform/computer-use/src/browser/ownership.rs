@@ -292,7 +292,7 @@ impl Host {
                         "a previous tab close has not settled; close was not replayed".into(),
                     ));
                 }
-                let mut connection = Cdp::connect(&creator.generation, creator.provider.cdp()?)
+                let connection = Cdp::connect(&creator.generation, creator.provider.cdp()?)
                     .await
                     .map_err(cleanup)?;
                 for identity in &pending {

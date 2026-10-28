@@ -635,7 +635,7 @@ async fn completed_pre_registration_refusal_creates_no_finish_or_ipc() {
     let browser = browser(&provider);
     let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
     bounded(register(&host, owner, &provider)).await.unwrap();
-    let call = scope(&mut host.lock().await, owner, &provider);
+    let call = scope(&mut *host.lock().await, owner, &provider);
     // This fixture supports inventory, not provider-session preparation. The
     // actual Core capability check rejects before logical request registration.
     assert!(matches!(
@@ -683,7 +683,7 @@ async fn registered_refusal_with_the_same_error_still_requires_actual_finish() {
     let browser = browser(&provider);
     let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
     bounded(register(&host, owner, &provider)).await.unwrap();
-    let call = scope(&mut host.lock().await, owner, &provider);
+    let call = scope(&mut *host.lock().await, owner, &provider);
     let reply = async {
         let frame = read_frame(&mut fixture.server).await;
         assert_eq!(frame["request"]["method"], "inventory");
@@ -771,7 +771,7 @@ async fn reused_call_view_keeps_pending_registration_across_local_refusal() {
     let browser = browser(&provider);
     let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
     bounded(register(&host, owner, &provider)).await.unwrap();
-    let first = scope(&mut host.lock().await, owner, &provider);
+    let first = scope(&mut *host.lock().await, owner, &provider);
     let second = host
         .lock()
         .await
@@ -887,7 +887,7 @@ async fn closed_transport_registers_before_zero_byte_failure_and_keeps_finish_de
     let browser = browser(&provider);
     let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
     bounded(register(&host, owner, &provider)).await.unwrap();
-    let call = scope(&mut host.lock().await, owner, &provider);
+    let call = scope(&mut *host.lock().await, owner, &provider);
     fixture.assert_no_frame_and_close().await;
     assert!(
         matches!(bounded(call.dispatch(call.control.list_session_tabs(&[]))).await,

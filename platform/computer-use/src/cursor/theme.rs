@@ -185,30 +185,3 @@ pub(crate) fn write_artifacts(directory: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn svg_path(points: &[[f32; 2]]) -> String {
-    let mut value = String::new();
-    for (i, [x, y]) in points.iter().enumerate() {
-        use std::fmt::Write;
-        let _ = write!(value, "{} {x} {y} ", if i == 0 { "M" } else { "L" });
-    }
-    value
-}
-pub(crate) fn svg(color: Color) -> String {
-    use std::fmt::Write;
-    let mut svg =
-        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">"#.to_owned();
-    for ([r, g, b, a], width) in layers(color) {
-        for mark in MARK {
-            let cap = if mark.cap == 1 { "butt" } else { "round" };
-            let join = if mark.join == 1 { "miter" } else { "round" };
-            let _ = write!(
-                svg,
-                r#"<path d="{}" stroke="rgb({r},{g},{b})" stroke-opacity="{}" stroke-width="{width}" stroke-linecap="{cap}" stroke-linejoin="{join}"/>"#,
-                svg_path(mark.points),
-                f32::from(a) / 255.0
-            );
-        }
-    }
-    svg.push_str("</svg>");
-    svg
-}

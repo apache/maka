@@ -98,7 +98,7 @@ struct TabInfo {
     #[serde(rename = "webSocketDebuggerUrl")]
     websocket: Option<String>,
     #[serde(skip)]
-    driver: Option<cua_driver_core::browser::ExtensionTabInfo>,
+    extension: Option<cua_driver_core::browser::ExtensionTabInfo>,
 }
 struct TabSource {
     provider: Provider,
@@ -121,8 +121,8 @@ struct Tab {
     extension_wire: Option<cua_driver_core::browser::ExtensionWireContext>,
     extension_host_operation: Option<cua_driver_core::browser::ExtensionHostOperation>,
     // Actual acknowledged provenance/order, never a metadata-derived grant.
-    extension_acquisition: Option<driver::Acquisition>,
-    fixed_presentation: Option<driver::FixedPresentationScope>,
+    extension_acquisition: Option<extension::Acquisition>,
+    fixed_presentation: Option<extension::FixedPresentationScope>,
     frame: Option<String>,
     refs: HashMap<u64, ElementRef>,
     frames: frames::Frames,
@@ -244,7 +244,7 @@ struct Cdp {
     connection: std::sync::Arc<cua_driver_core::browser::cdp_ws::CdpConnection>,
     dialogs: Option<dialogs::Link>,
     extension_context: Option<cua_driver_core::browser::ExtensionWireContext>,
-    preparation: driver::PreparationTransport,
+    preparation: extension::PreparationTransport,
 }
 
 // Preserve the Host's typed pre-dispatch refusal/uncertainty through existing
@@ -271,7 +271,10 @@ impl Cdp {
         factory: impl FnOnce(Cdp) -> crate::HostEffectFuture + Send + 'static,
         rejected: Box<dyn FnOnce(ToolError) + Send>,
     ) -> Result<(), ToolError> {
-        if matches!(self.preparation, driver::PreparationTransport::NotRequired) {
+        if matches!(
+            self.preparation,
+            extension::PreparationTransport::NotRequired
+        ) {
             // Generic CDP and metadata-only adapters retain their existing
             // effect path. No artificial driver preparation scope is needed.
             host.spawn_guarded(factory(self.clone()), rejected)
@@ -350,7 +353,7 @@ impl Cdp {
             connection: std::sync::Arc::new(connection),
             dialogs: None,
             extension_context: None,
-            preparation: driver::PreparationTransport::NotRequired,
+            preparation: extension::PreparationTransport::NotRequired,
         })
     }
     async fn raw_call(
@@ -397,7 +400,7 @@ impl Cdp {
             }
         }
     }
-    async fn request(&mut self, method: &str, params: Value) -> Result<Value, ToolError> {
+    async fn request(&self, method: &str, params: Value) -> Result<Value, ToolError> {
         self.request_in(None, method, params).await
     }
     async fn request_in(
@@ -541,15 +544,15 @@ async fn inventory(provider: &BrowserConnection) -> Result<(String, Vec<TabInfo>
     ))
 }
 fn tab_info(provider: &Provider, tab: &TabInfo) -> Value {
-    if let Some(driver) = &tab.driver {
-        return driver::tab_info(driver);
+    if let Some(extension) = &tab.extension {
+        return extension::tab_info(extension);
     }
     json!({"id":provider.public_tab_id(&tab.id),"providerTabId":tab.id,"browserId":provider.id(),"title":tab.title,"url":tab.url})
 }
 fn tab_matches(provider: &Provider, tab: &TabInfo, id: &str) -> bool {
     id == tab.id
         || id == provider.public_tab_id(&tab.id)
-        || (provider.driver().is_some()
+        || (provider.extension().is_some()
             && cua_driver_core::browser::parse_browser_tab_id(id)
                 .is_some_and(|raw| raw.to_string() == tab.id))
 }
@@ -1336,7 +1339,7 @@ impl Browsers {
         let (generation, _) = provider.inventory().await?;
         let identity = BrowserIdentity::of(&provider, &generation)?;
         check_input(cancellation)?;
-        let mut browser = Cdp::connect(&generation, provider.cdp()?).await?;
+        let browser = Cdp::connect(&generation, provider.cdp()?).await?;
         let host = self.host().await;
         let mut host = host.lock().await;
         host.known(&identity)?;
@@ -4735,7 +4738,7 @@ mod tests {
             endpoint: format!("http://127.0.0.1:{endpoint}"),
         };
         let (generation, _) = inventory(&provider).await.unwrap();
-        let mut fixture_browser = Cdp::connect(&generation, &provider).await.unwrap();
+        let fixture_browser = Cdp::connect(&generation, &provider).await.unwrap();
         let fixture_page = fixture_browser
             .request(
                 "Target.createTarget",

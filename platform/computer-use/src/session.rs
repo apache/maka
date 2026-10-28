@@ -109,7 +109,7 @@ impl Session {
         }
         let cursor = self.owner.cursor();
         self.browsers
-            .adopt_native_popup(request, invocation, &cursor, cancellation, language)
+            .adopt_extension_popup(request, invocation, &cursor, cancellation, language)
             .await
     }
 

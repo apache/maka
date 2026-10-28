@@ -63,6 +63,12 @@ struct FixedUiAttempt {
 }
 
 #[derive(Clone)]
+struct FixedClearAttempt {
+    operation: Option<ExtensionHostOperation>,
+    dispatch: Arc<AtomicU8>,
+}
+
+#[derive(Clone)]
 struct FixedUiRecord {
     operation: ExtensionHostOperation,
     epoch: crate::desktop::NativeEpochId,
@@ -86,7 +92,7 @@ pub(in crate::browser) struct FixedResource {
     last_ui: Option<FixedUiRecord>,
     current_ui: ExtensionFixedUiRequest,
     pending_ui: Option<FixedUiAttempt>,
-    clear_operation: Option<ExtensionHostOperation>,
+    clear_attempt: Option<FixedClearAttempt>,
     phase: FixedPhase,
     // Clearing the exact resource never erases uncertainty in its earlier effect.
     uncertainty: Option<String>,
@@ -130,12 +136,6 @@ impl FixedPreparation {
     pub(super) fn cleanup_confirmed(&self) -> bool {
         matches!(self, Self::Retained(resource)
             if matches!(resource.phase, FixedPhase::Cleared { .. }))
-    }
-    pub(super) fn unknown(&self) -> Option<&str> {
-        match self {
-            Self::Retained(resource) => resource.uncertainty.as_deref(),
-            _ => None,
-        }
     }
     fn matches_attempt(&self, expected: &FixedAttempt) -> bool {
         self.attempt().is_some_and(|current| {
@@ -470,7 +470,7 @@ impl Host {
             receipt: Some(prepared.receipt.clone()),
             acknowledged: Some(prepared),
             last_ui: None,
-            clear_operation: None,
+            clear_attempt: None,
             phase: if uncertainty.is_some() {
                 FixedPhase::Unknown
             } else {
@@ -514,9 +514,9 @@ impl Host {
                 acknowledged: prior
                     .as_ref()
                     .and_then(|resource| resource.acknowledged.clone()),
-                clear_operation: prior
+                clear_attempt: prior
                     .as_ref()
-                    .and_then(|resource| resource.clear_operation.clone()),
+                    .and_then(|resource| resource.clear_attempt.clone()),
                 last_ui: prior.and_then(|resource| resource.last_ui),
                 phase: FixedPhase::Unknown,
                 uncertainty: Some(reason.to_owned()),
@@ -545,14 +545,22 @@ impl Host {
             ExtensionOperation::ClearSessionPreparation { .. }
         ) && let Some(context) = context
         {
-            if resource
-                .clear_operation
-                .as_ref()
-                .is_some_and(|issued| issued != context)
-            {
+            if resource.clear_attempt.as_ref().is_some_and(|issued| {
+                issued
+                    .operation
+                    .as_ref()
+                    .is_some_and(|operation| operation != context)
+            }) {
                 return Err(unknown("fixed unknown Clear changed its issued operation"));
             }
-            resource.clear_operation = Some(context.clone());
+            if let Some(clear) = &mut resource.clear_attempt {
+                clear.operation = Some(context.clone());
+            } else {
+                resource.clear_attempt = Some(FixedClearAttempt {
+                    operation: Some(context.clone()),
+                    dispatch: Arc::new(AtomicU8::new(UI_MAY_DISPATCH)),
+                });
+            }
         }
         resource
             .uncertainty
@@ -681,19 +689,27 @@ impl Host {
         {
             return Err(unknown("fixed clear proof changed its actual scope"));
         }
-        if resource
-            .clear_operation
-            .as_ref()
-            .is_some_and(|issued| issued != context)
-        {
+        if resource.clear_attempt.as_ref().is_some_and(|issued| {
+            issued
+                .operation
+                .as_ref()
+                .is_some_and(|operation| operation != context)
+        }) {
             return Err(unknown(
                 "fixed clear ACK changed its reserved cleanup operation",
             ));
         }
-        if resource.clear_operation.is_none() && !matches!(resource.phase, FixedPhase::Clearing) {
+        if resource.clear_attempt.is_none() && !matches!(resource.phase, FixedPhase::Clearing) {
             return Err(unknown("fixed clear ACK has no actual pending cleanup"));
         }
-        resource.clear_operation = Some(context.clone());
+        if let Some(clear) = &mut resource.clear_attempt {
+            clear.operation = Some(context.clone());
+        } else {
+            resource.clear_attempt = Some(FixedClearAttempt {
+                operation: Some(context.clone()),
+                dispatch: Arc::new(AtomicU8::new(UI_MAY_DISPATCH)),
+            });
+        }
         resource.phase = FixedPhase::Cleared { proof };
         // This actual matching Clear ACK drains the issued logical scope, including
         // later UI within it. The caller may already have dropped its observer.
@@ -760,6 +776,26 @@ impl Host {
         {
             return Err(unknown("fixed cleanup changed its actual scope"));
         }
+        if matches!(resource.phase, FixedPhase::Clearing | FixedPhase::Unknown)
+            && let Some(clear) = &resource.clear_attempt
+        {
+            let _ = clear.dispatch.compare_exchange(
+                UI_RESERVED,
+                UI_RETIRED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            if clear.dispatch.load(Ordering::SeqCst) == UI_RETIRED {
+                // The original clear future owns this exact cell and can no
+                // longer enter the SDK. Independent earlier uncertainty stays.
+                resource.clear_attempt = None;
+                resource.phase = if resource.uncertainty.is_some() {
+                    FixedPhase::Unknown
+                } else {
+                    FixedPhase::Ready
+                };
+            }
+        }
         match &resource.phase {
             FixedPhase::Cleared { proof }
                 if proof.scope_id() == receipt.scope_id() && proof.tab_id() == receipt.tab_id() =>
@@ -771,16 +807,145 @@ impl Host {
                     "fixed cleanup remains pending; not replayed".into(),
                 ));
             }
-            FixedPhase::Unknown if resource.clear_operation.is_some() => {
+            FixedPhase::Unknown if resource.clear_attempt.is_some() => {
                 return Err(ToolError::CleanupUnconfirmed(
                     "fixed cleanup outcome remains unknown; not replayed".into(),
                 ));
             }
             _ => {}
         }
-        resource.clear_operation = context.cloned();
+        resource.clear_attempt = Some(FixedClearAttempt {
+            operation: context.cloned(),
+            dispatch: Arc::new(AtomicU8::new(UI_RESERVED)),
+        });
         resource.phase = FixedPhase::Clearing;
         Ok(true)
+    }
+    pub(super) fn apply_fixed_not_dispatched(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        operation: &ExtensionOperation,
+        context: Option<&ExtensionHostOperation>,
+    ) -> Result<(), ToolError> {
+        if matches!(operation, ExtensionOperation::PrepareFixedSessionTab { .. }) {
+            let (identity, expected) =
+                self.fixed_attempt_for(owner, provider, operation, context)?;
+            let state = self.fixed_state_mut(owner, &identity)?;
+            if let FixedPreparation::Pending(attempt) = &state.fixed_preparation
+                && Arc::ptr_eq(&attempt.dispatch, &expected.dispatch)
+                && attempt.dispatch.load(Ordering::SeqCst) == UI_MAY_DISPATCH
+            {
+                attempt.dispatch.store(UI_RETIRED, Ordering::SeqCst);
+                state.fixed_preparation = FixedPreparation::NotAttempted;
+            }
+            return Ok(());
+        }
+        let (receipt, ui) = match operation {
+            ExtensionOperation::SessionUi { receipt, ui } => (receipt, Some(ui)),
+            ExtensionOperation::ClearSessionPreparation { receipt } => (receipt, None),
+            _ => {
+                return Err(unknown(
+                    "no-dispatch fixed result has another issued operation",
+                ));
+            }
+        };
+        let identity = self.fixed_identity(owner, provider, receipt.tab_id())?;
+        let context =
+            context.ok_or_else(|| unknown("fixed no-dispatch lost its actual Host operation"))?;
+        let call = self
+            .extension
+            .get(&(owner, identity.browser.clone()))
+            .and_then(|state| state.calls.get(&context.operation_id))
+            .ok_or_else(|| unknown("fixed no-dispatch lost its actual CallContext"))?;
+        if call.turn != context.turn_id {
+            return Err(unknown("fixed no-dispatch changed its issued turn"));
+        }
+        let epoch = call.epoch;
+        let state = self.fixed_state_mut(owner, &identity)?;
+        let FixedPreparation::Retained(resource) = &mut state.fixed_preparation else {
+            return Ok(());
+        };
+        if !resource
+            .receipt
+            .as_ref()
+            .is_some_and(|old| same_receipt(old, receipt))
+        {
+            return Err(unknown("fixed no-dispatch changed its actual SDK scope"));
+        }
+        if let Some(ui) = ui {
+            if ui.owner_epoch() != epoch.to_string()
+                || ui.cursor_id() != receipt.ui_identity().cursor_id()
+            {
+                return Err(unknown(
+                    "fixed no-dispatch UI changed its actual epoch/cursor",
+                ));
+            }
+            if resource.matches_ui_ack(
+                context,
+                epoch,
+                ui.operation(),
+                ui.cursor_id(),
+                ui.owner_epoch(),
+            ) && let Some(pending) = &resource.pending_ui
+                && pending.dispatch.load(Ordering::SeqCst) == UI_MAY_DISPATCH
+            {
+                pending.dispatch.store(UI_RETIRED, Ordering::SeqCst);
+                resource.pending_ui = None;
+            }
+        } else if let Some(clear) = &resource.clear_attempt
+            && clear
+                .operation
+                .as_ref()
+                .is_none_or(|issued| issued == context)
+            && clear.dispatch.load(Ordering::SeqCst) == UI_MAY_DISPATCH
+        {
+            clear.dispatch.store(UI_RETIRED, Ordering::SeqCst);
+            resource.clear_attempt = None;
+            resource.phase = if resource.uncertainty.is_some() {
+                FixedPhase::Unknown
+            } else {
+                FixedPhase::Ready
+            };
+        }
+        Ok(())
+    }
+    fn finish_fixed_clear_error(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: &TabIdentity,
+        expected: &FixedClearAttempt,
+        not_dispatched: bool,
+        reason: &str,
+    ) {
+        let Ok(state) = self.fixed_state_mut(owner, identity) else {
+            return;
+        };
+        let FixedPreparation::Retained(resource) = &mut state.fixed_preparation else {
+            return;
+        };
+        if !resource
+            .clear_attempt
+            .as_ref()
+            .is_some_and(|clear| Arc::ptr_eq(&clear.dispatch, &expected.dispatch))
+            || matches!(resource.phase, FixedPhase::Cleared { .. })
+        {
+            return;
+        }
+        if not_dispatched {
+            expected.dispatch.store(UI_RETIRED, Ordering::SeqCst);
+            resource.clear_attempt = None;
+            resource.phase = if resource.uncertainty.is_some() {
+                FixedPhase::Unknown
+            } else {
+                FixedPhase::Ready
+            };
+        } else {
+            resource
+                .uncertainty
+                .get_or_insert_with(|| reason.to_owned());
+            resource.phase = FixedPhase::Unknown;
+        }
     }
     fn fixed_undispatched_error(
         &mut self,
@@ -862,7 +1027,7 @@ impl Host {
                     receipt: None,
                     acknowledged: None,
                     last_ui: None,
-                    clear_operation: None,
+                    clear_attempt: None,
                     phase: FixedPhase::Unknown,
                     uncertainty: Some(error.into()),
                 });
@@ -946,15 +1111,22 @@ async fn clear_for_replacement(
         if !ledger.begin_fixed_clear(scope.owner, &identity, receipt, Some(&scope.context))? {
             return Ok(());
         }
-        ledger
+        match &ledger
             .fixed_state(scope.owner, &identity)?
             .fixed_preparation
-            .attempt()
-            .ok_or_else(|| unknown("fixed clear lost its actual attempt"))?
-            .clone()
+        {
+            FixedPreparation::Retained(resource) => resource
+                .clear_attempt
+                .clone()
+                .ok_or_else(|| unknown("fixed clear lost its actual attempt"))?,
+            _ => return Err(unknown("fixed clear lost its actual resource")),
+        }
     };
     let result = scope
-        .dispatch(scope.control.clear_session_preparation(receipt))
+        .dispatch(async {
+            enter_fixed_ui(&expected.dispatch)?;
+            scope.control.clear_session_preparation(receipt).await
+        })
         .await;
     let reconciled = host
         .lock()
@@ -962,9 +1134,15 @@ async fn clear_for_replacement(
         .reconcile_provider(scope.owner, &scope.provider)
         .await;
     if let Err(error) = &result {
-        host.lock()
-            .await
-            .fixed_caller_error(scope.owner, &identity, &expected, &error.to_string());
+        host.lock().await.finish_fixed_clear_error(
+            scope.owner,
+            &identity,
+            &expected,
+            reconciled.is_ok()
+                && (expected.dispatch.load(Ordering::SeqCst) != UI_MAY_DISPATCH
+                    || scope.control.undispatched_control(error).is_some()),
+            &error.to_string(),
+        );
     }
     reconciled?;
     result.map_err(provider::extension_error)?;
@@ -1094,10 +1272,11 @@ pub(super) async fn prepare_fixed_tab(
         .reconcile_provider(scope.owner, &scope.provider)
         .await;
     if let Err(error) = &result {
-        let not_dispatched = host
-            .lock()
-            .await
-            .fixed_undispatched_error(scope, &identity, &expected, error);
+        let not_dispatched = reconciled.is_ok()
+            && host
+                .lock()
+                .await
+                .fixed_undispatched_error(scope, &identity, &expected, error);
         if !not_dispatched {
             retain_prepare_error(scope, host, &identity, &expected, &error.to_string()).await;
         }
@@ -1798,11 +1977,7 @@ impl Host {
             ));
         }
         let state = self.fixed_state(owner, identity)?;
-        let expected = state
-            .fixed_preparation
-            .attempt()
-            .ok_or_else(|| unknown("fixed cleanup lost its actual attempt"))?
-            .clone();
+
         if self
             .cursor_scopes
             .get(&(owner, identity.clone()))
@@ -1852,12 +2027,30 @@ impl Host {
         if !self.begin_fixed_clear(owner, identity, receipt, None)? {
             return Ok(());
         }
+        let expected = match &self.fixed_state(owner, identity)?.fixed_preparation {
+            FixedPreparation::Retained(resource) => resource
+                .clear_attempt
+                .clone()
+                .ok_or_else(|| unknown("fixed cleanup lost its actual clear attempt"))?,
+            _ => return Err(unknown("fixed cleanup lost its actual resource")),
+        };
         let result = scope
-            .dispatch_retirement(cleanup_control.clear_session_preparation(receipt))
+            .dispatch_retirement(async {
+                enter_fixed_ui(&expected.dispatch)?;
+                cleanup_control.clear_session_preparation(receipt).await
+            })
             .await;
         let reconciled = self.reconcile_provider(owner, &provider).await;
         if let Err(error) = &result {
-            self.fixed_caller_error(owner, identity, &expected, &error.to_string());
+            self.finish_fixed_clear_error(
+                owner,
+                identity,
+                &expected,
+                reconciled.is_ok()
+                    && (expected.dispatch.load(Ordering::SeqCst) != UI_MAY_DISPATCH
+                        || cleanup_control.undispatched_control(error).is_some()),
+                &error.to_string(),
+            );
         }
         reconciled?;
         result.map_err(provider::extension_error)?;
@@ -1936,6 +2129,15 @@ impl Host {
 mod tests {
     use super::*;
 
+    impl FixedPreparation {
+        pub(super) fn unknown(&self) -> Option<&str> {
+            match self {
+                Self::Retained(resource) => resource.uncertainty.as_deref(),
+                _ => None,
+            }
+        }
+    }
+
     // Local lifecycle projections only: no SDK receipt/actual UI proof/Host
     // permission/Chrome effect/physical claim/T2 is constructed by these cases.
     fn projected_ui(turn: &str, epoch: crate::desktop::NativeEpochId) -> FixedUiAttempt {
@@ -1971,7 +2173,7 @@ mod tests {
             last_ui: None,
             current_ui: ui.request,
             pending_ui: None,
-            clear_operation: None,
+            clear_attempt: None,
             phase: FixedPhase::Unknown,
             uncertainty: Some("retained cause".into()),
         })
@@ -2093,6 +2295,7 @@ mod tests {
 #[cfg(all(test, unix))]
 mod actual_call_scope_tests {
     use super::*;
+    use crate::browser::cursor::CursorEndpoint;
     use cua_driver_core::browser::{ExtensionProviderError, ValidatedExtensionEndpoint};
     use std::{fs::Permissions, future::Future, os::unix::fs::PermissionsExt};
     use tokio::{
@@ -2393,12 +2596,15 @@ mod actual_call_scope_tests {
             bounded(ledger.reconcile_provider(pending.owner, &pending.scope.provider))
                 .await
                 .unwrap();
-            assert!(ledger.fixed_undispatched_error(
-                &pending.scope,
-                &pending.identity,
-                &pending.attempt,
-                &error
-            ));
+            assert!(
+                !ledger.fixed_undispatched_error(
+                    &pending.scope,
+                    &pending.identity,
+                    &pending.attempt,
+                    &error
+                ),
+                "canonical recovery already retired this same attempt"
+            );
             assert!(matches!(
                 ledger
                     .fixed_state(pending.owner, &pending.identity)
@@ -2456,6 +2662,474 @@ mod actual_call_scope_tests {
         fixture.assert_no_frame_and_close().await;
         // This establishes typed Rust phase/call custody, not actual Chrome,
         // Host grants, Native activation or aggregate T1/T2 completion.
+    }
+
+    async fn retained_completion(
+        control: &ExtensionBrowserProvider,
+        id: u64,
+    ) -> cua_driver_core::browser::ExtensionOperationCompletion {
+        bounded(async {
+            loop {
+                if let Some(completion) = control
+                    .pending_completions()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|completion| completion.id == id)
+                {
+                    return completion;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+    }
+    async fn reply_not_dispatched(server: &mut UnixStream, id: u64) {
+        write_frame(server, json!({"kind":"controlEvent", "event":{"kind":"reply","data":{
+            "id":id, "outcome":{"kind":"notDispatched","data":{
+                "kind":"not_dispatched", "message":"trusted Rust phase before native frame", "details":null
+            }}
+        }}})).await;
+    }
+
+    #[tokio::test]
+    async fn retained_no_dispatch_without_caller_folds_before_ack_and_cannot_retire_replacement() {
+        let mut fixture = Fixture::open_with_lifecycle("host").await;
+        let PendingScope {
+            host,
+            owner,
+            identity,
+            scope,
+            policy,
+            ui,
+            attempt,
+            ..
+        } = PendingScope::new(&fixture).await;
+        let provider = scope.provider.clone();
+        let context = scope.context.clone();
+        let epoch = scope.epoch;
+        let control = scope.control.clone();
+        let mut original = Box::pin(scope.dispatch(async {
+            enter_fixed_ui(&attempt.dispatch)?;
+            scope
+                .control
+                .prepare_fixed_session_tab(17, &policy, &ui)
+                .await
+        }));
+        let frame = bounded(async {
+            tokio::select! {
+                result = &mut original => panic!("original waits for same retained reply: {result:?}"),
+                frame = read_frame(&mut fixture.server) => frame,
+            }
+        }).await;
+        let old_id = frame["request"]["id"].as_u64().unwrap();
+        drop(original);
+        drop(scope);
+        // Block the automatic observer; exercise the production synchronous fold
+        // exactly before its ACK await, while the actual Core row stays retained.
+        let mut ledger = host.lock().await;
+        reply_not_dispatched(&mut fixture.server, old_id).await;
+        let old = retained_completion(&control, old_id).await;
+        let recovered = control.recover_completion(old_id).await.unwrap();
+        ledger
+            .apply_extension_completion(owner, &provider, &old, recovered)
+            .unwrap();
+        assert!(matches!(
+            ledger
+                .fixed_state(owner, &identity)
+                .unwrap()
+                .fixed_preparation,
+            FixedPreparation::NotAttempted
+        ));
+        assert_eq!(attempt.dispatch.load(Ordering::SeqCst), UI_RETIRED);
+        assert!(
+            ledger.extension[&(owner, identity.browser.clone())]
+                .applied
+                .contains(&old_id)
+        );
+        assert!(
+            control
+                .pending_completions()
+                .await
+                .unwrap()
+                .iter()
+                .any(|entry| entry.id == old_id),
+            "the original SDK ACK has deliberately not been sent or consumed"
+        );
+        let replacement = ledger
+            .extension_context(
+                owner,
+                &provider,
+                context,
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap();
+        ledger
+            .begin_fixed_preparation(&replacement, &identity, policy.clone(), ui.clone())
+            .unwrap();
+        let next = ledger
+            .fixed_state(owner, &identity)
+            .unwrap()
+            .fixed_preparation
+            .attempt()
+            .unwrap()
+            .clone();
+        let mut next_future = Box::pin(replacement.dispatch(async {
+            enter_fixed_ui(&next.dispatch)?;
+            replacement
+                .control
+                .prepare_fixed_session_tab(17, &policy, &ui)
+                .await
+        }));
+        let next_frame = bounded(async {
+            tokio::select! {
+                result = &mut next_future => panic!("replacement waits for its own reply: {result:?}"),
+                frame = read_frame(&mut fixture.server) => frame,
+            }
+        }).await;
+        assert_ne!(
+            frame["request"]["scopeId"],
+            next_frame["request"]["scopeId"]
+        );
+        assert_eq!(next.dispatch.load(Ordering::SeqCst), UI_MAY_DISPATCH);
+        // Re-read the SAME real old completion while B has identical Host
+        // operation/epoch/UI and has actually crossed its own SDK firstpoll.
+        let recovered = control.recover_completion(old_id).await.unwrap();
+        ledger
+            .apply_extension_completion(owner, &provider, &old, recovered)
+            .unwrap();
+        assert!(
+            ledger
+                .fixed_state(owner, &identity)
+                .unwrap()
+                .fixed_preparation
+                .matches_attempt(&next)
+        );
+        assert_eq!(next.dispatch.load(Ordering::SeqCst), UI_MAY_DISPATCH);
+        drop(next_future);
+        drop(replacement);
+        let next_id = next_frame["request"]["id"].as_u64().unwrap();
+        reply_not_dispatched(&mut fixture.server, next_id).await;
+        let next_completion = retained_completion(&control, next_id).await;
+        let recovered = control.recover_completion(next_id).await.unwrap();
+        ledger
+            .apply_extension_completion(owner, &provider, &next_completion, recovered)
+            .unwrap();
+        assert!(matches!(
+            ledger
+                .fixed_state(owner, &identity)
+                .unwrap()
+                .fixed_preparation,
+            FixedPreparation::NotAttempted
+        ));
+        control.acknowledge_completion(old_id).await.unwrap();
+        control.acknowledge_completion(next_id).await.unwrap();
+        assert!(control.pending_operations().await.unwrap().is_empty());
+        drop(ledger);
+        fixture.assert_no_frame_and_close().await;
+        // Real public Core/Unix actor + Main fold ordering only. The independent
+        // Core broker writer keeper proves the zero-write producer; this peer is
+        // a trusted-phase consumer fixture, not actual Chrome or Host T1/T2.
+    }
+
+    #[tokio::test]
+    async fn retained_ui_and_clear_no_dispatch_preserve_scope_and_old_unknown_without_callers() {
+        for case in 0..3 {
+            let mut fixture = Fixture::open_with_lifecycle("host").await;
+            let pending = PendingScope::new(&fixture).await;
+            let prepare = pending.scope.dispatch(async {
+                enter_fixed_ui(&pending.attempt.dispatch)?;
+                pending
+                    .scope
+                    .control
+                    .prepare_fixed_session_tab(17, &pending.policy, &pending.ui)
+                    .await
+            });
+            let reply = async {
+                let frame = read_frame(&mut fixture.server).await;
+                let outcome = if case == 2 {
+                    json!({"kind":"unknown","data":{
+                        "reason":"original preparation remains independently unknown",
+                        "details":{"acknowledgedResult":known_preparation_result(&frame)}
+                    }})
+                } else {
+                    json!({"kind":"result","data":known_preparation_result(&frame)})
+                };
+                write_frame(
+                    &mut fixture.server,
+                    json!({"kind":"controlEvent","event":{"kind":"reply","data":{
+                        "id":frame["request"]["id"],"outcome":outcome
+                    }}}),
+                )
+                .await;
+            };
+            let (result, ()) = bounded(async { tokio::join!(prepare, reply) }).await;
+            if case == 2 {
+                assert!(matches!(
+                    result,
+                    Err(ExtensionProviderError::OutcomeUnknown { .. })
+                ));
+            } else {
+                assert!(result.is_ok());
+            }
+            let mut ledger = pending.host.lock().await;
+            bounded(ledger.reconcile_provider(pending.owner, &pending.scope.provider))
+                .await
+                .unwrap();
+            let (receipt, old_unknown, old_ui) = match &ledger
+                .fixed_state(pending.owner, &pending.identity)
+                .unwrap()
+                .fixed_preparation
+            {
+                FixedPreparation::Retained(resource) => (
+                    resource.receipt.clone().unwrap(),
+                    resource.uncertainty.clone(),
+                    serde_json::to_value(&resource.current_ui).unwrap(),
+                ),
+                _ => panic!("real SDK preparation must retain its actual scope"),
+            };
+            let control = pending.scope.control.clone();
+            if case == 0 {
+                let request = ui_request(
+                    &pending.cursor,
+                    pending.scope.epoch,
+                    Some([7.0, 9.0]),
+                    "idle",
+                    ExtensionFixedUiOperation::Update,
+                )
+                .unwrap();
+                let dispatch = ledger
+                    .begin_fixed_ui(pending.owner, &pending.identity, &pending.scope, &request)
+                    .unwrap();
+                let mut original = Box::pin(pending.scope.dispatch(async {
+                    enter_fixed_ui(&dispatch)?;
+                    pending.scope.control.session_ui(&receipt, &request).await
+                }));
+                let frame = bounded(async {
+                    tokio::select! {
+                        result=&mut original=>panic!("UI waits for retained reply: {result:?}"),
+                        frame=read_frame(&mut fixture.server)=>frame,
+                    }
+                })
+                .await;
+                assert_eq!(frame["request"]["method"], "sessionUi");
+                drop(original);
+                let id = frame["request"]["id"].as_u64().unwrap();
+                reply_not_dispatched(&mut fixture.server, id).await;
+                let completion = retained_completion(&control, id).await;
+                let recovered = control.recover_completion(id).await.unwrap();
+                ledger
+                    .apply_extension_completion(
+                        pending.owner,
+                        &pending.scope.provider,
+                        &completion,
+                        recovered,
+                    )
+                    .unwrap();
+                let FixedPreparation::Retained(resource) = &ledger
+                    .fixed_state(pending.owner, &pending.identity)
+                    .unwrap()
+                    .fixed_preparation
+                else {
+                    panic!("UI keeps actual scope");
+                };
+                assert!(same_receipt(resource.receipt.as_ref().unwrap(), &receipt));
+                assert!(resource.pending_ui.is_none());
+                assert_eq!(resource.uncertainty, old_unknown);
+                assert_eq!(serde_json::to_value(&resource.current_ui).unwrap(), old_ui);
+                assert_eq!(dispatch.load(Ordering::SeqCst), UI_RETIRED);
+                control.acknowledge_completion(id).await.unwrap();
+            } else {
+                assert!(
+                    ledger
+                        .begin_fixed_clear(
+                            pending.owner,
+                            &pending.identity,
+                            &receipt,
+                            Some(&pending.scope.context)
+                        )
+                        .unwrap()
+                );
+                let clear = match &ledger
+                    .fixed_state(pending.owner, &pending.identity)
+                    .unwrap()
+                    .fixed_preparation
+                {
+                    FixedPreparation::Retained(resource) => resource.clear_attempt.clone().unwrap(),
+                    _ => unreachable!(),
+                };
+                let mut original = Box::pin(pending.scope.dispatch(async {
+                    enter_fixed_ui(&clear.dispatch)?;
+                    pending
+                        .scope
+                        .control
+                        .clear_session_preparation(&receipt)
+                        .await
+                }));
+                let frame = bounded(async {
+                    tokio::select! {
+                        result=&mut original=>panic!("clear waits for retained reply: {result:?}"),
+                        frame=read_frame(&mut fixture.server)=>frame,
+                    }
+                })
+                .await;
+                drop(original);
+                let id = frame["request"]["id"].as_u64().unwrap();
+                reply_not_dispatched(&mut fixture.server, id).await;
+                let completion = retained_completion(&control, id).await;
+                let recovered = control.recover_completion(id).await.unwrap();
+                ledger
+                    .apply_extension_completion(
+                        pending.owner,
+                        &pending.scope.provider,
+                        &completion,
+                        recovered,
+                    )
+                    .unwrap();
+                {
+                    let FixedPreparation::Retained(resource) = &ledger
+                        .fixed_state(pending.owner, &pending.identity)
+                        .unwrap()
+                        .fixed_preparation
+                    else {
+                        panic!("clear keeps actual scope");
+                    };
+                    assert!(same_receipt(resource.receipt.as_ref().unwrap(), &receipt));
+                    assert!(resource.clear_attempt.is_none());
+                    assert_eq!(resource.uncertainty, old_unknown);
+                    assert_eq!(serde_json::to_value(&resource.current_ui).unwrap(), old_ui);
+                    assert!(if old_unknown.is_some() {
+                        matches!(resource.phase, FixedPhase::Unknown)
+                    } else {
+                        matches!(resource.phase, FixedPhase::Ready)
+                    });
+                }
+                assert_eq!(clear.dispatch.load(Ordering::SeqCst), UI_RETIRED);
+                assert!(
+                    ledger
+                        .begin_fixed_clear(
+                            pending.owner,
+                            &pending.identity,
+                            &receipt,
+                            Some(&pending.scope.context)
+                        )
+                        .unwrap()
+                );
+                let next = match &ledger
+                    .fixed_state(pending.owner, &pending.identity)
+                    .unwrap()
+                    .fixed_preparation
+                {
+                    FixedPreparation::Retained(resource) => resource.clear_attempt.clone().unwrap(),
+                    _ => unreachable!(),
+                };
+                let mut next_future = Box::pin(pending.scope.dispatch(async {
+                    enter_fixed_ui(&next.dispatch)?;
+                    pending
+                        .scope
+                        .control
+                        .clear_session_preparation(&receipt)
+                        .await
+                }));
+                let next_frame=bounded(async {tokio::select! {
+                    result=&mut next_future=>panic!("next clear waits for own reply: {result:?}"),
+                    frame=read_frame(&mut fixture.server)=>frame,
+                }}).await;
+                assert_eq!(next.dispatch.load(Ordering::SeqCst), UI_MAY_DISPATCH);
+                // A remains retained without ACK, but its completed fold cannot
+                // refund a newer Clear even with the same scope/Host context.
+                let recovered = control.recover_completion(id).await.unwrap();
+                ledger
+                    .apply_extension_completion(
+                        pending.owner,
+                        &pending.scope.provider,
+                        &completion,
+                        recovered,
+                    )
+                    .unwrap();
+                ledger.finish_fixed_clear_error(
+                    pending.owner,
+                    &pending.identity,
+                    &clear,
+                    true,
+                    "late old caller",
+                );
+                {
+                    let FixedPreparation::Retained(resource) = &ledger
+                        .fixed_state(pending.owner, &pending.identity)
+                        .unwrap()
+                        .fixed_preparation
+                    else {
+                        unreachable!()
+                    };
+                    assert!(Arc::ptr_eq(
+                        &resource.clear_attempt.as_ref().unwrap().dispatch,
+                        &next.dispatch
+                    ));
+                    assert!(matches!(resource.phase, FixedPhase::Clearing));
+                    assert_eq!(resource.uncertainty, old_unknown);
+                }
+                drop(next_future);
+                let next_id = next_frame["request"]["id"].as_u64().unwrap();
+                reply_not_dispatched(&mut fixture.server, next_id).await;
+                let next_completion = retained_completion(&control, next_id).await;
+                let recovered = control.recover_completion(next_id).await.unwrap();
+                ledger
+                    .apply_extension_completion(
+                        pending.owner,
+                        &pending.scope.provider,
+                        &next_completion,
+                        recovered,
+                    )
+                    .unwrap();
+                control.acknowledge_completion(id).await.unwrap();
+                control.acknowledge_completion(next_id).await.unwrap();
+                // A dropped unpolled retry is retired by the real same-cell CAS;
+                // it cannot later borrow this replacement clear's admission.
+                assert!(
+                    ledger
+                        .begin_fixed_clear(
+                            pending.owner,
+                            &pending.identity,
+                            &receipt,
+                            Some(&pending.scope.context)
+                        )
+                        .unwrap()
+                );
+                let unpolled = match &ledger
+                    .fixed_state(pending.owner, &pending.identity)
+                    .unwrap()
+                    .fixed_preparation
+                {
+                    FixedPreparation::Retained(resource) => resource.clear_attempt.clone().unwrap(),
+                    _ => unreachable!(),
+                };
+                assert!(
+                    ledger
+                        .begin_fixed_clear(
+                            pending.owner,
+                            &pending.identity,
+                            &receipt,
+                            Some(&pending.scope.context)
+                        )
+                        .unwrap()
+                );
+                assert_eq!(unpolled.dispatch.load(Ordering::SeqCst), UI_RETIRED);
+                assert!(
+                    matches!(enter_fixed_ui(&unpolled.dispatch),Err(ExtensionProviderError::Refused{kind,..})if kind=="retired_fixed_ui")
+                );
+            }
+            assert!(control.pending_operations().await.unwrap().is_empty());
+            drop(ledger);
+            fixture.assert_no_frame_and_close().await;
+        }
+        // Public Core transport plus Main state/retained-ACK behavior only, not
+        // native Chrome execution, independent Host grants or aggregate T1/T2.
     }
 
     #[tokio::test]
@@ -2849,14 +3523,25 @@ mod actual_call_scope_tests {
                 );
             }
             let mut events = fixture.extension.subscribe_events();
-            let mut clear = Box::pin(
-                original.scope.dispatch(
-                    original
-                        .scope
-                        .control
-                        .clear_session_preparation(&prepared.receipt),
-                ),
-            );
+            let clear_attempt = {
+                let ledger = original.host.lock().await;
+                match &ledger
+                    .fixed_state(original.owner, &original.identity)
+                    .unwrap()
+                    .fixed_preparation
+                {
+                    FixedPreparation::Retained(resource) => resource.clear_attempt.clone().unwrap(),
+                    _ => panic!("actual clear lost its admitted resource"),
+                }
+            };
+            let mut clear = Box::pin(original.scope.dispatch(async {
+                enter_fixed_ui(&clear_attempt.dispatch)?;
+                original
+                    .scope
+                    .control
+                    .clear_session_preparation(&prepared.receipt)
+                    .await
+            }));
             let frame = bounded(async {
                 tokio::select! {
                     result = &mut clear => panic!("held Clear must wait for actual reply: {result:?}"),
@@ -3993,26 +4678,20 @@ mod actual_call_scope_tests {
                     initial_sequence
                 );
                 assert_eq!(ledger.tabs[&initial.identity].creator.turn, creator_turn);
-                assert_eq!(
-                    state
-                        .user_prepared_operation
-                        .as_ref()
-                        .map(PreparedOperation::context),
-                    acquisition.as_ref().map(PreparedOperation::context)
-                );
                 let (
                     Some(PreparedOperation::Acquired {
+                        operation: current_operation,
                         epoch: current_epoch,
-                        ..
                     }),
                     Some(PreparedOperation::Acquired {
+                        operation: original_operation,
                         epoch: original_epoch,
-                        ..
                     }),
                 ) = (state.user_prepared_operation.as_ref(), acquisition.as_ref())
                 else {
                     panic!("actual initial SDK preparation must remain the acquisition");
                 };
+                assert_eq!(current_operation, original_operation);
                 assert_eq!(current_epoch, original_epoch);
                 if case == "unknown" {
                     assert!(state.fixed_preparation.unknown().is_some());

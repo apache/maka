@@ -476,6 +476,19 @@ const playwrightFor = (handle, identity) => {
         throw new ErrorClass('playwright.waitForTimeout requires a non-negative integer');
       await invoke('browserWait', { handle, operation: { kind: 'timeout', timeoutMs } });
     },
+    expectNavigation: async (action, options = {}) => {
+      const navigation = options.url
+        ? playwrightTarget.waitForURL(options.url, {
+            timeoutMs: options.timeoutMs,
+            waitUntil: options.waitUntil,
+          })
+        : playwrightTarget.waitForLoadState({
+            timeoutMs: options.timeoutMs,
+            state: options.waitUntil,
+          });
+      const [value] = await Promise.all([action(), navigation]);
+      return value;
+    },
     waitForEvent: async (event, options = {}) => {
       if (event !== 'download')
         throw new ErrorClass("playwright.waitForEvent only supports 'download' and 'filechooser'");

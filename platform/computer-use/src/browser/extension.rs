@@ -101,18 +101,11 @@ struct CreatedOperation {
 
 #[derive(Clone)]
 enum PreparedOperation {
-    Observed(ExtensionHostOperation),
+    Observed,
     Acquired {
         operation: ExtensionHostOperation,
         epoch: crate::desktop::NativeEpochId,
     },
-}
-impl PreparedOperation {
-    fn context(&self) -> &ExtensionHostOperation {
-        match self {
-            Self::Observed(operation) | Self::Acquired { operation, .. } => operation,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -2188,18 +2181,18 @@ impl Host {
                     .recover_completion(completion.id)
                     .await
                     .map_err(provider::extension_error)?;
-                self.apply_extension_completion(
-                    owner,
-                    provider,
-                    &completion.operation,
-                    completion.host_operation.as_ref(),
-                    recovered,
-                )?;
-                self.extension
-                    .get_mut(&(owner, browser.clone()))
-                    .ok_or_else(|| failed("extension provider owner retired"))?
-                    .applied
-                    .insert(completion.id);
+                let completed = cua_driver_core::browser::ExtensionOperationCompletion {
+                    id: completion.id,
+                    provider: completion.provider.clone(),
+                    host_operation: completion.host_operation.clone(),
+                    wire_context: completion.wire_context.clone(),
+                    operation: completion.operation.clone(),
+                    outcome: completion
+                        .outcome
+                        .clone()
+                        .expect("completed outcome checked"),
+                };
+                self.apply_extension_completion(owner, provider, &completed, recovered)?;
             }
             let retained_cleanup = self.tabs.values().any(|lease| {
                 lease.creator.owner == owner
@@ -2446,7 +2439,7 @@ impl Host {
         let sequence = match (&receipt, lease.extension_sequence) {
             (_, Some(sequence)) => Some(sequence),
             (PreparedOperation::Acquired { .. }, None) => Some(self.allocate_extension_sequence()?),
-            (PreparedOperation::Observed(_), None) => None,
+            (PreparedOperation::Observed, None) => None,
         };
         let lease = self
             .tabs
@@ -2485,14 +2478,27 @@ impl Host {
         &mut self,
         owner: uuid::Uuid,
         provider: &Provider,
-        operation: &ExtensionOperation,
-        context: Option<&ExtensionHostOperation>,
+        completion: &cua_driver_core::browser::ExtensionOperationCompletion,
         recovered: ExtensionRecoveredOperation,
     ) -> Result<(), ToolError> {
+        let operation = &completion.operation;
+        let context = completion.host_operation.as_ref();
         let extension = provider
             .extension()
             .ok_or_else(|| failed("extension provider required"))?;
         let browser = BrowserIdentity::of(provider, &extension.identity().generation)?;
+        if completion.provider != *extension.identity() {
+            return Err(unknown(
+                "extension completion changed its actual provider generation",
+            ));
+        }
+        if self
+            .extension
+            .get(&(owner, browser.clone()))
+            .is_some_and(|state| state.applied.contains(&completion.id))
+        {
+            return Ok(());
+        }
         let call = context
             .and_then(|context| {
                 self.extension
@@ -2779,15 +2785,14 @@ impl Host {
                 self.apply_fixed_cleanup_observation(owner, provider, observation)?;
             }
             ExtensionRecoveredOperation::Prepared(prepared) => {
-                let operation = context
-                    .cloned()
+                context
                     .ok_or_else(|| unknown("extension preparation ACK lost its Host operation"))?;
                 self.apply_user_preparation(
                     owner,
                     provider,
                     &browser,
                     target,
-                    PreparedOperation::Observed(operation),
+                    PreparedOperation::Observed,
                     prepared.tab,
                 )?;
             }
@@ -2812,6 +2817,16 @@ impl Host {
             ExtensionRecoveredOperation::NotDispatched { message, .. }
             | ExtensionRecoveredOperation::Refused { message, .. }
             | ExtensionRecoveredOperation::ChromeRejected { message, .. } => {
+                if not_dispatched
+                    && matches!(
+                        operation,
+                        ExtensionOperation::PrepareFixedSessionTab { .. }
+                            | ExtensionOperation::SessionUi { .. }
+                            | ExtensionOperation::ClearSessionPreparation { .. }
+                    )
+                {
+                    self.apply_fixed_not_dispatched(owner, provider, operation, context)?;
+                }
                 // Only the Rust writer/admission phase proves no native frame.
                 // A remote refusal can follow effects and retains cleanup custody.
                 if not_dispatched
@@ -2867,7 +2882,14 @@ impl Host {
                         .get_mut(&(owner, browser.clone()))
                         .ok_or_else(|| unknown("extension finish owner retired"))?
                         .finish_phases
-                        .insert(call.turn.clone(), FinishPhase::Refused(message));
+                        .insert(
+                            call.turn.clone(),
+                            if not_dispatched {
+                                FinishPhase::Required
+                            } else {
+                                FinishPhase::Refused(message)
+                            },
+                        );
                 }
             }
             ExtensionRecoveredOperation::Unknown {
@@ -3099,6 +3121,13 @@ impl Host {
                 }
             }
         }
+        // Commit the fold before any ACK await. A retained old SDK receipt may
+        // still be present while a replacement intent begins; it never folds twice.
+        self.extension
+            .get_mut(&(owner, browser))
+            .ok_or_else(|| unknown("extension completion owner retired before fold"))?
+            .applied
+            .insert(completion.id);
         Ok(())
     }
     fn seal_extension_controls(
@@ -3474,6 +3503,20 @@ impl Host {
                         .dispatch_retirement(scope.control.finish_turn(None))
                         .await;
                     self.reconcile_provider(owner, &provider).await?;
+                    if finish
+                        .as_ref()
+                        .err()
+                        .is_some_and(|error| scope.control.undispatched_control(error).is_some())
+                        && let Some(state) = self.extension.get_mut(&(owner, browser.clone()))
+                        && matches!(
+                            state.finish_phases.get(&cleanup_turn),
+                            Some(FinishPhase::Pending)
+                        )
+                    {
+                        state
+                            .finish_phases
+                            .insert(cleanup_turn.clone(), FinishPhase::Required);
+                    }
                     finish.map_err(provider::extension_error)?;
                 }
                 // The logical ACK is deliberately insufficient. This operation
