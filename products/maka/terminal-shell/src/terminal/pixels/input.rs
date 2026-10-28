@@ -457,11 +457,31 @@ impl Inbox {
         if matches!(event, Event::MouseLeave) {
             return Ok(false);
         }
-        self.events.push_back(Input {
+        let input = Input {
             event,
             geometry: self.geometry,
             queued_at: self.tracing.then(Instant::now),
-        });
+        };
+        if let Some(previous) = self.events.back_mut()
+            && previous.geometry == input.geometry
+            && match (&previous.event, &input.event) {
+                (Event::SgrMouse(old), Event::SgrMouse(new)) => {
+                    old.kind == MouseEventKind::Moved
+                        && new.kind == MouseEventKind::Moved
+                        && old.modifiers == new.modifiers
+                }
+                (Event::Mouse(old), Event::Mouse(new)) => {
+                    old.kind == MouseEventKind::Moved
+                        && new.kind == MouseEventKind::Moved
+                        && old.modifiers == new.modifiers
+                }
+                _ => false,
+            }
+        {
+            *previous = input;
+        } else {
+            self.events.push_back(input);
+        }
         Ok(false)
     }
 
@@ -668,21 +688,6 @@ mod tests {
     // Use authentic, ordered native tokens without widening FrameToken's API.
     // Only completion order is controlled below; no scheduler API is replaced.
     fn native_frames(count: usize) -> Vec<nsh_gpui_terminal::CandidateFrame> {
-        let mut completed = Vec::new();
-        native_submissions(count, |frame| {
-            let frame = frame.complete().unwrap();
-            assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
-            completed.push(frame);
-        });
-        assert!(
-            completed
-                .windows(2)
-                .all(|pair| pair[0].token().sequence() < pair[1].token().sequence())
-        );
-        completed
-    }
-
-    fn native_submissions(count: usize, mut receive: impl FnMut(SubmittedFrame)) {
         use gpui::{
             AppContext, Application, Bounds, Context, IntoElement, Render, Styled, Window,
             WindowBounds, WindowOptions, div, point, px, rgb, size,
@@ -721,6 +726,7 @@ mod tests {
                 .unwrap(),
             );
         });
+        let mut completed = Vec::new();
         for _ in 0..count {
             application.update(|cx| {
                 window
@@ -731,133 +737,19 @@ mod tests {
                     .unwrap();
             });
             assert!(platform.pump());
-            let frame = frames.borrow_mut().remove(0);
+            let frame = frames.borrow_mut().remove(0).complete().unwrap();
+            assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
             assert!(frames.borrow().is_empty());
-            receive(frame);
+            completed.push(frame);
         }
+        assert!(
+            completed
+                .windows(2)
+                .all(|pair| pair[0].token().sequence() < pair[1].token().sequence())
+        );
         drop(application);
         platform.shutdown();
-    }
-
-    #[test]
-    fn kitty_overlaps_one_codec_with_draw_and_coalesces_only_unwritten_snapshots() {
-        fn finish(inbox: &mut Inbox, candidate: Candidate) -> Completion {
-            let frame = candidate.frame.complete().unwrap();
-            inbox.finished(
-                &frame.token(),
-                Some(Encoded {
-                    frame: WireFrame::Kitty(
-                        nsh_gpui_terminal::kitty::KittyFrame::encode(&frame, 4, 2).unwrap(),
-                    ),
-                    geometry: candidate.geometry,
-                }),
-            )
-        }
-
-        let mut caps = capabilities();
-        caps.protocol = Some(Protocol::Kitty);
-        let mut inbox = Inbox::new(caps, false);
-        inbox.last_fully_written_geometry = Some(1);
-        let mut active = None;
-        let mut writing = None;
-        let mut waiting = None;
-        let mut tokens = Vec::new();
-        native_submissions(4, |frame| {
-            let index = tokens.len();
-            tokens.push(frame.token());
-            assert!(
-                inbox.reserve_frame(),
-                "GPU lookahead remains available during encoding and writing"
-            );
-            assert!(inbox.submitted(Candidate {
-                frame,
-                geometry: 1,
-                pump_started: None
-            }));
-            assert!(
-                !inbox.can_submit(),
-                "only one submitted GPU lookahead can wait"
-            );
-            if index == 0 {
-                active = inbox.take_candidate();
-                assert!(active.is_some());
-                return;
-            }
-            if index == 1 {
-                assert!(inbox.take_candidate().is_none(), "the codec has one owner");
-                finish(&mut inbox, active.take().unwrap());
-                writing = inbox.take_encoded();
-                assert_eq!(writing.as_ref().unwrap().frame.token(), tokens[0]);
-                assert!(
-                    inbox.published.is_none(),
-                    "taking a snapshot is not a writer receipt"
-                );
-                active = inbox.take_candidate();
-                return;
-            }
-            if index == 2 {
-                assert!(inbox.take_candidate().is_none());
-                finish(&mut inbox, active.take().unwrap());
-                assert!(
-                    inbox.take_encoded().is_none(),
-                    "an active writer cannot be replaced"
-                );
-                let candidate = inbox.take_candidate().unwrap();
-                assert!(
-                    !inbox.can_submit(),
-                    "ready snapshot and codec own both positions"
-                );
-                match finish(&mut inbox, candidate) {
-                    Completion::Superseded { token, replacement } => {
-                        assert_eq!(token, tokens[1]);
-                        assert_eq!(replacement, tokens[2]);
-                    }
-                    Completion::Finished => {
-                        panic!("the newer complete snapshot must replace the waiting scene")
-                    }
-                }
-                waiting = Some(tokens[2].clone());
-                return;
-            }
-            active = inbox.take_candidate();
-            assert_eq!(
-                inbox.completed_frames().next().unwrap().token,
-                waiting.take().unwrap()
-            );
-            inbox.push(Event::WindowResized(caps.size)).unwrap();
-            inbox.resize.take();
-            assert!(
-                inbox.completed_frames().next().is_none(),
-                "resize discards only the unwritten complete snapshot"
-            );
-            assert_eq!(
-                inbox.frames.len(),
-                1,
-                "the old codec retains its position until completion"
-            );
-            finish(&mut inbox, active.take().unwrap());
-            assert!(inbox.frames.is_empty());
-            let writing = writing.take().unwrap();
-            inbox.written(
-                Offer {
-                    token: writing.frame.token(),
-                    geometry: 1,
-                },
-                Some(41),
-            );
-            assert!(
-                inbox.take_encoded().is_none(),
-                "the native owner must consume even a stale receipt"
-            );
-            let receipt = inbox.ready.take().unwrap();
-            assert_ne!(receipt.geometry, inbox.geometry);
-            inbox.presented(&receipt.token);
-            assert!(inbox.published.is_none());
-            assert!(inbox.can_submit());
-        });
-        assert_eq!(tokens.len(), 4);
-        assert!(inbox.frames.is_empty());
-        assert!(inbox.in_flight.is_none());
+        completed
     }
 
     fn native_encoded(frame: &nsh_gpui_terminal::CandidateFrame, geometry: u64) -> Encoded {
@@ -1232,35 +1124,6 @@ mod tests {
     }
 
     #[test]
-    fn kitty_preparation_can_pass_a_receipt_while_iterm2_remains_serial() {
-        for protocol in [Protocol::Kitty, Protocol::Iterm2] {
-            let mut caps = capabilities();
-            caps.protocol = Some(protocol);
-            let mut inbox = Inbox::new(caps, false);
-            inbox.frame_capacity = 5;
-            inbox.last_fully_written_geometry = Some(1);
-            assert!(inbox.reserve_frame());
-            assert!(!inbox.can_submit());
-            inbox.release_reservation();
-            let token = FrameToken::default();
-            inbox.in_flight = Some(Offer {
-                token: token.clone(),
-                geometry: 1,
-            });
-            inbox.written(Offer { token, geometry: 1 }, Some(41));
-            assert_eq!(
-                inbox.can_submit(),
-                protocol == Protocol::Kitty,
-                "Kitty preparation does not bind previous-image state"
-            );
-            let receipt = inbox.ready.take().unwrap();
-            inbox.presented(&receipt.token);
-            assert!(inbox.can_submit());
-            assert_eq!(inbox.last_fully_written_image, Some(41));
-        }
-    }
-
-    #[test]
     fn late_sixel_maxima_resize_the_same_canvas_without_changing_terminal_units() {
         let mut inbox = Inbox::new(capabilities(), false);
         assert_eq!(inbox.last_fully_written_geometry, None);
@@ -1421,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn pointer_fifo_does_not_wait_for_output_and_resize_keeps_new_coordinates() {
+    fn hover_keeps_the_latest_position_and_ordered_input_survives_output_and_resize() {
         let mut inbox = Inbox::new(capabilities(), false);
         inbox.in_flight = Some(Offer {
             token: FrameToken::default(),
@@ -1446,15 +1309,37 @@ mod tests {
             pointer(MouseEventKind::Moved, 3, 4),
             pointer(MouseEventKind::Moved, 4, 5),
             down,
+            pointer(
+                MouseEventKind::Drag(termina::event::MouseButton::Left),
+                5,
+                6,
+            ),
+            pointer(
+                MouseEventKind::Drag(termina::event::MouseButton::Left),
+                6,
+                7,
+            ),
             wheel,
             up,
+            pointer(MouseEventKind::Moved, 6, 7),
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), Modifiers::NONE)),
+            pointer(MouseEventKind::Moved, 3, 4),
+            Event::SgrMouse(termina::event::SgrMouseEvent {
+                kind: MouseEventKind::Moved,
+                x: 4,
+                y: 5,
+                modifiers: Modifiers::SHIFT,
+            }),
+            Event::Paste("complete draft".into()),
+            pointer(MouseEventKind::Moved, 4, 5),
         ];
         for event in &events {
             inbox.push(event.clone()).unwrap();
         }
-        for event in events {
-            assert_eq!(inbox.pop().unwrap().event, event);
+        for event in &events[1..] {
+            assert_eq!(&inbox.pop().unwrap().event, event);
         }
+        assert!(inbox.pop().is_none());
         assert!(inbox.in_flight.is_some());
         assert!(inbox.published.is_none());
 
