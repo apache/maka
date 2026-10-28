@@ -45,7 +45,7 @@ impl EventLog {
         crate::sessions::validate_id(message)?;
         let (session, message) = (session.to_owned(), message.to_owned());
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     execution(&mut tx, &session, &message).await

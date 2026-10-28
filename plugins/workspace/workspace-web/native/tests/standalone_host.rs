@@ -32,12 +32,10 @@ use maka_host_runtime::application::{
 use maka_packages::MANIFEST_FILE;
 use maka_packages::Package;
 use maka_plugin_core::{
-    composition::{
-        Configuration, Environment, ExecutionLocation, Input, InstanceId, Node, PackageUse, Target,
-    },
+    composition::{Configuration, Input, InstanceId, Node, PackageUse, Target},
     contract::{Availability, Cardinality, Export, Import},
     operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt},
-    package::{Declaration, EntryDeclaration, EntryTarget, Implementation},
+    package::{Declaration, EntryDeclaration, Implementation},
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
@@ -75,7 +73,6 @@ fn package(provider: bool) -> Package {
                 "fixture.caller".into()
             },
         },
-        scene: None,
         configuration: if provider {
             definition.configuration
         } else {
@@ -106,14 +103,14 @@ fn package(provider: bool) -> Package {
     };
     Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
         "schemaVersion":1, "id": if provider { "independent.web" } else { "independent.caller" },
-        "application": Declaration { entries: BTreeMap::from([(EntryTarget::Host, entry)]), composition: None }
+        "application": Declaration { host: Some(entry), ui: None, composition: None }
     })).unwrap())])).unwrap()
 }
 fn input(web: &Package, caller: &Package) -> Input {
     let node = |package: &Package, key, provider| Node {
         key: Uuid::from_u128(key),
         package: package.application_ref().into(),
-        use_package: PackageUse::Entry,
+        use_package: PackageUse::Host,
         configuration: Configuration {
             values: if provider {
                 BTreeMap::from([("network".into(), json!("denied"))])
@@ -138,16 +135,11 @@ fn input(web: &Package, caller: &Package) -> Input {
         overrides: vec![],
     };
     Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
+        ui: None,
         instances: BTreeMap::from([
             ("web".into(), node(web, 1, true)),
             ("caller".into(), node(caller, 2, false)),
         ]),
-        recovery: None,
-        launch: None,
     }
 }
 async fn open(store: Arc<RootStore>, deployment: Uuid, issuer: &Issuer) -> Application {

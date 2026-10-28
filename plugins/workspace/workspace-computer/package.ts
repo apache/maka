@@ -32,8 +32,6 @@ export default {
     },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.workspaceComputer),
-    },
+    host: native(sdk.nativeImplementations.workspaceComputer),
   },
 };

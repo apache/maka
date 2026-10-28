@@ -185,18 +185,13 @@ async fn activate_backend(
         let (mut input, mut packages) = input(&settings);
         let mut manifest = packages[0].manifest().clone();
         let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-        manifest_application
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap()
-            .imports
-            .insert(
-                "executor".into(),
-                Import {
-                    contract: executor::contract(),
-                    cardinality: Cardinality::One,
-                },
-            );
+        manifest_application.host.as_mut().unwrap().imports.insert(
+            "executor".into(),
+            Import {
+                contract: executor::contract(),
+                cardinality: Cardinality::One,
+            },
+        );
         let provider = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
             manifest.application = Some(
                 maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap(),
@@ -221,18 +216,13 @@ async fn activate_backend(
             let mut manifest = provider.manifest().clone();
             let mut manifest_application =
                 manifest.application.as_ref().unwrap().declaration().clone();
-            manifest_application
-                .entries
-                .get_mut(&EntryTarget::Host)
-                .unwrap()
-                .imports
-                .insert(
-                    "setup".into(),
-                    Import {
-                        contract: executor::setup::contract(),
-                        cardinality: Cardinality::One,
-                    },
-                );
+            manifest_application.host.as_mut().unwrap().imports.insert(
+                "setup".into(),
+                Import {
+                    contract: executor::setup::contract(),
+                    cardinality: Cardinality::One,
+                },
+            );
             let provider = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
                 manifest.application = Some(
                     maka_plugin_core::package::CheckedDeclaration::new(manifest_application)
@@ -311,17 +301,17 @@ async fn activate_backend(
                     }],
                 );
                 let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
-                    "schemaVersion":1,"id":format!("fixture-acp-{name}"),"application":{"entries":{"host":{
+                    "schemaVersion":1,"id":format!("fixture-acp-{name}"),"application":{"host":{
                         "implementation":{"kind":"native","implementation":implementation},"configuration":schema,"imports":{},
                         "exports":{(export):{"contract":contract,"availability":"required"}}
-                    }}}
+                    }}
                 })).unwrap())])).unwrap();
                 input.instances.insert(
                     name.into(),
                     Node {
                         key: Uuid::from_u128(key),
                         package: package.application_ref().into(),
-                        use_package: PackageUse::Entry,
+                        use_package: PackageUse::Host,
                         configuration: NodeConfiguration {
                             values: serde_json::from_value(configuration).unwrap(),
                             parameters: BTreeMap::new(),
@@ -350,10 +340,10 @@ async fn activate_backend(
                 json!({"contract":executor::setup::contract(),"availability":"required"}),
             );
         }
-        let mut files=BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"entries":{"host":{
+        let mut files=BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"fixture-executor","application":{"host":{
             "implementation":implementation,"configuration":configuration_schema,"imports":imports,
             "exports":exports
-        }}}})).unwrap())]);
+        }}})).unwrap())]);
         if probe.is_none() && acp.is_none() {
             files.insert("executor.mjs".into(),format!(r#"export function activate(){{return {{executor:{{contract:{},service:['backend']}}}};}} export const backend={{async execute(input, observation, context){{
                 for (const value of [
@@ -372,7 +362,7 @@ async fn activate_backend(
             Node {
                 key: Uuid::from_u128(21),
                 package: package.application_ref().into(),
-                use_package: PackageUse::Entry,
+                use_package: PackageUse::Host,
                 configuration: acp
                     .as_ref()
                     .map(|c| NodeConfiguration {
@@ -543,11 +533,7 @@ async fn executor_service_selects_the_exact_authorized_import_member() {
         let executor_name = format!("external-{}", "x".repeat(160));
         let import_name = format!("executor-{}", "r".repeat(300));
         let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-        let imports = &mut manifest_application
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap()
-            .imports;
+        let imports = &mut manifest_application.host.as_mut().unwrap().imports;
         let mut selected_import = imports.remove("executor").unwrap();
         selected_import.cardinality = Cardinality::Many { min: 0, max: 8 };
         imports.insert(import_name.clone(), selected_import);

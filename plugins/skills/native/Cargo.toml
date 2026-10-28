@@ -48,5 +48,5 @@ uuid.workspace = true
 [dev-dependencies]
 maka-packages.workspace = true
 maka-host-js.workspace = true
-maka-ui-runtime.workspace = true
+maka-ui-support.workspace = true
 tempfile.workspace = true

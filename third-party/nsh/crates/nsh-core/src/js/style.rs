@@ -59,7 +59,7 @@ export type TextShadowLayer = { x: number; y: number; blur?: number; color?: Col
  * direction) follow the writing direction, as in CSS; `flex-start` /
  * `flex-end` follow the flex direction; `normal` is CSS's (`stretch` for
  * items without an aspect ratio). */
-type Align = "flex-start" | "flex-end" | "center" | "stretch" | "baseline" | "start" | "end" | "self-start" | "self-end" | "normal";
+type LayoutAlign = "flex-start" | "flex-end" | "center" | "stretch" | "baseline" | "start" | "end" | "self-start" | "self-end" | "normal";
 /** An OpenType number or letter form (`fontVariant`). */
 export type FontVariantName = "small-caps" | "oldstyle-nums" | "lining-nums" | "tabular-nums" | "proportional-nums";
 /** `normal` is the default: `flex-start` in flex containers, while grid

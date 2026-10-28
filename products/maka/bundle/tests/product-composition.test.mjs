@@ -23,11 +23,10 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const sdk = await import(pathToFileURL(resolve(root, 'dist/authoring/sdk.mjs')));
 
-test('the product ships checked business Host packages without a default presenter', () => {
+test('the product ships complete Host and shared UI packages', () => {
   const inputs = JSON.parse(readFileSync(resolve(root, 'package-inputs.json'), 'utf8'));
   const names = readdirSync(resolve(root, 'dist/packages')).sort();
   assert.deepEqual(names, Object.keys(inputs).sort());
@@ -35,101 +34,39 @@ test('the product ships checked business Host packages without a default present
     const manifest = JSON.parse(
       readFileSync(resolve(root, 'dist/packages', name, 'maka.extension.json'), 'utf8'),
     );
-    assert.deepEqual(Object.keys(manifest.application.entries), ['host'], name);
+    assert.ok(
+      manifest.application.host || manifest.application.ui || manifest.application.composition,
+      name,
+    );
+    if (manifest.application.ui)
+      assert.ok(
+        existsSync(resolve(root, 'dist/packages', name, manifest.application.ui.module)),
+        name,
+      );
     assert.ok(manifest.displayName?.trim(), name);
     assert.ok(manifest.description?.trim(), name);
     assert.ok(manifest.localizations?.['zh-CN']?.description?.trim(), name);
   }
 });
 
-test('typed scene constructors serialize directly into the actual Rust scene schemas', async () => {
-  const terminalText = sdk.ui.terminal.text({
-    key: 'terminal-text',
-    text: '界面',
-    color: 0xffffff,
-  });
-  const terminal = sdk.ui.terminal.stack({
-    key: 'terminal',
-    direction: 'column',
-    gap: 1,
-    padding: 0,
-    background: 0,
-    children: [terminalText],
-    scroll: 'anchor',
-  });
-  const terminalScenes = [
-    terminal,
-    terminalText,
-    sdk.ui.terminal.button({ key: 'button', label: 'Save' }),
-    sdk.ui.terminal.dialog({
-      key: 'dialog',
-      label: 'Dialog',
-      background: terminal,
-      content: terminalText,
-      open: true,
-      width: 40,
-      height: 10,
-      background_color: 0,
-      border_color: 0xffffff,
-    }),
-    sdk.ui.terminal.reading({
-      key: 'reading',
-      binding: 'reading',
-      props: { content: terminal },
-      on: { observed: 'viewport' },
-    }),
-  ];
-  const encoded = JSON.stringify(terminal);
-  assert.deepEqual(JSON.parse(encoded), {
-    key: 'terminal',
-    direction: 'column',
-    gap: 1,
-    padding: 0,
-    background: 0,
-    children: [{ key: 'terminal-text', text: '界面', color: 0xffffff, kind: 'text' }],
-    scroll: 'anchor',
-    kind: 'stack',
-  });
-  assert.equal(terminalScenes.at(-1).member, 0);
-  if (process.env.MAKA_PRODUCT_CLI_CHECK) {
-    const binary = resolve(
-      root,
-      '../../..',
-      process.env.CARGO_TARGET_DIR ?? 'target',
-      'debug/maka',
-    );
-    const catalog = JSON.parse(
-      execFileSync(binary, ['application', 'schema'], {
-        encoding: 'utf8',
-        maxBuffer: 4 * 1024 * 1024,
-      }),
-    );
-    const { default: Ajv } = await import('ajv/dist/2020.js');
-    for (const [name, scenes] of [['TerminalScene', terminalScenes]]) {
-      const validate = new Ajv({ strict: false }).compile({
-        $ref: '#/$defs/' + name,
-        $defs: catalog.schema.$defs,
-      });
-      for (const scene of scenes)
-        assert.equal(
-          validate(JSON.parse(JSON.stringify(scene))),
-          true,
-          JSON.stringify(validate.errors),
-        );
-    }
-  }
-});
-
-test('WorkHub product authors two independent Agent graphs with explicit native grants in actual CLI', {
-  skip: !process.env.MAKA_PRODUCT_CLI_CHECK,
-}, async () => {
-  const binary = resolve(root, '../../..', process.env.CARGO_TARGET_DIR ?? 'target', 'debug/maka');
+test('WorkHub product binds independent agents and direct UI management in the actual CLI', async () => {
+  const binary = process.env.MAKA_UI_BUNDLER;
+  assert.ok(binary, 'Run npm --workspace @maka-agent/product test to build the current CLI');
   const directory = mkdtempSync(resolve(tmpdir(), 'maka-workhub-composition-'));
   try {
     const agent = {
       workspaceRoots: [{ label: 'Project', path: '/private/product-workspace' }],
       permissions: { access: 'workspace_write', requestPermissions: true },
-      tools: [],
+      tools: [
+        {
+          name: 'ReadPlugins',
+          description: 'Read enabled UI plugins',
+          import: 'ui',
+          method: 'readUi',
+          result: 'json',
+          confirmation: 'preapproved',
+        },
+      ],
     };
     {
       const configuration = {
@@ -166,7 +103,26 @@ test('WorkHub product authors two independent Agent graphs with explicit native 
       const { keys, hostDeployment } = read('installation');
       const host = read('host');
       assert.match(hostDeployment, /^[0-9a-f-]{36}$/);
-      assert.deepEqual(host.environment, { location: 'host' });
+      assert.deepEqual(host.ui, { path: ['workbench-ui'], id: 'root' });
+      const ui = host.instances['workbench-ui'];
+      assert.equal(ui.key, keys['workbench-ui']);
+      assert.deepEqual(ui.package, { source: 'pinned', package: read('packages').workbench });
+      assert.equal(ui.usePackage, 'ui');
+      assert.deepEqual(ui.bindings.agent, [{ kind: 'instance', path: ['agent'], export: 'agent' }]);
+      assert.deepEqual(ui.bindings.coordinator, [
+        { kind: 'instance', path: ['workhub'], export: 'agent' },
+      ]);
+      assert.deepEqual(ui.bindings.coordinatorTerminal, [
+        {
+          kind: 'instance',
+          path: ['coordinator-workspace-processes'],
+          export: 'terminal',
+        },
+      ]);
+      const workbench = JSON.parse(
+        readFileSync(resolve(root, 'dist/packages/workbench/maka.extension.json'), 'utf8'),
+      );
+      assert.deepEqual(workbench.application.ui.contributions.root, { kind: 'root' });
       assert.equal(existsSync(resolve(output, 'ui.json')), false);
       assert.equal(existsSync(resolve(output, 'management-host.json')), false);
       assert.deepEqual(host.instances.workhub.bindings.worker, [
@@ -203,9 +159,25 @@ test('WorkHub product authors two independent Agent graphs with explicit native 
             grant.methods.includes('execute'),
         ),
       );
-      assert.equal(
-        grants.some((grant) => grant.origin[0] === keys.agent),
-        false,
+      assert.deepEqual(host.instances.agent.bindings.ui, [
+        {
+          kind: 'instance',
+          path: ['host-deployment-manager'],
+          export: 'Management',
+        },
+      ]);
+      assert.deepEqual(
+        grants.filter((grant) => grant.origin[0] === keys.agent),
+        [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys['host-deployment-manager']],
+            export: 'Management',
+            methods: ['readUi'],
+            recovery: true,
+          },
+        ],
       );
       const installation = read('installation');
       writeFileSync(path, JSON.stringify(installation));

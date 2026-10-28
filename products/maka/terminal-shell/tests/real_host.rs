@@ -57,6 +57,8 @@ mod support;
 mod terminal_workbench;
 #[path = "real_host/tool_cards.rs"]
 mod tool_cards;
+#[path = "real_host/ui_plugins.rs"]
+mod ui_plugins;
 #[path = "real_host/workspace_locations.rs"]
 mod workspace_locations;
 
@@ -1043,7 +1045,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         drop(client);
         #[cfg(unix)]
         {
-            let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&session));
+            let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&session));
             terminal.wait_for("SETTINGS_CONNECTION_SINGLE_SEND_DONE").await;
             terminal.wait_for("发送消息，或开始一项任务…").await;
             let restored = terminal.wait_for("Manual UI Agent · high").await;
@@ -2676,7 +2678,7 @@ async fn real_agent_history_and_live_stream_render_and_the_app_sends_once() {
         fixture.idle(&client, &fixture.session).await;
         wait_view(&mut view, |screen| screen.contains("SECOND_TURN_FINAL")).await;
 
-        support::load_application(&mut view);
+        support::load_application(&mut view, &bindings, Some(fixture.session.clone()));
         let reloaded = wait_view(&mut view, |screen| screen.contains("SECOND_TURN_FINAL")).await;
         assert!(!reloaded.contains("Details ·") && !reloaded.contains("NATIVE_THINK_SOURCE_FIRST"));
         evidence("single-work-presentation-after-reload", &reloaded);
@@ -3112,7 +3114,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
     use image::{ExtendedColorType, ImageEncoder, codecs::png};
     use nsh_platform_tui::ServiceOutput;
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut fixture = Fixture::open().await;
+        let mut fixture = Fixture::workspace_ui().await;
         let client = fixture.client().await;
         let workspace = fixture.directory.path().join("workspace");
         let text_path = workspace.join("000-preview.txt");
@@ -3265,7 +3267,10 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         assert_ne!(first_version, next_version);
         assert!(view.accessibility_snapshot().iter().any(|node| node.id == copy && !node.state.disabled));
         assert!(!view.snapshot().contains("File copied"), "copy feedback must belong to its captured version");
-        support::click_label(&mut view, "Browse current changes");
+        shortcut(&mut view, 'p');
+        wait_focused_input(&mut view, "Search commands").await;
+        view.handle_event(Event::Paste("Changes".into()));
+        support::click_button(&mut view, "Changes").await;
         wait_view(&mut view, |screen| screen.contains("Current changes") && screen.contains("000-preview.txt") && !screen.contains("Reading current changes…")).await;
         support::click_label(&mut view, "Open Worktree diff: 000-preview.txt");
         let diff = wait_view(&mut view, |screen| screen.contains("Current worktree diff") && screen.contains("-BEFORE_CURRENT_EDIT") && screen.contains("+REFRESHED_CURRENT_EDIT")).await;
@@ -3275,7 +3280,7 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         view.resize(80, 24);
         // The dock has the same text and close button. Wait until the native
         // Dialog input scope hides the still-resident composer before Escape.
-        let narrow = wait_view_state(&mut view, |view, screen| screen.contains("Current worktree diff") && screen.contains("+REFRESHED_CURRENT_EDIT") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close workspace preview" && !node.state.disabled) && !view.accessibility_snapshot().iter().any(|node| node.id == composer)).await;
+        let narrow = wait_view_state(&mut view, |view, screen| screen.contains("Current worktree diff") && screen.contains("+REFRESHED_CURRENT_EDIT") && view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close panel" && !node.state.disabled) && !view.accessibility_snapshot().iter().any(|node| node.id == composer)).await;
         evidence("workspace-current-diff-dialog", &narrow);
         support::evidence_cells("workspace-current-diff-dialog", &view);
         view.handle_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
@@ -3340,6 +3345,13 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
         support::evidence_cells("workspace-files-automatic-pagination-and-watch", &view);
         support::click_button(&mut view, "Close workspace preview").await;
         wait_view_state(&mut view, |view, screen| !screen.contains("page-139v2.txt") && !view.accessibility_snapshot().iter().any(|node| node.role == nsh_core::AccessibilityRole::Button && node.label == "Close workspace preview")).await;
+        shortcut(&mut view, 'p');
+        wait_focused_input(&mut view, "Search commands").await;
+        view.handle_event(Event::Paste("Changes".into()));
+        support::click_button(&mut view, "Changes").await;
+        wait_view(&mut view, |screen| screen.contains("Current changes") && screen.contains("000-preview.txt") && !screen.contains("Reading current changes…")).await;
+        support::click_label(&mut view, "Open Worktree diff: 000-preview.txt");
+        wait_view(&mut view, |screen| screen.contains("Current worktree diff") && screen.contains("+REFRESHED_CURRENT_EDIT")).await;
         let roots = client.query("agent", "directories", json!({"kind":"roots"})).await.unwrap();
         let other = support::mutate(&client, "create", json!({"title":"Other preview owner","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
         shortcut(&mut view, 'o');
@@ -3348,6 +3360,10 @@ async fn current_workspace_previews_keep_real_contents_drafts_and_session_owners
             let nodes = view.accessibility_snapshot();
             screen.contains("Other preview owner")
                 && !screen.contains("UNSENT_PREVIEW_DRAFT")
+                && screen.contains("Current changes")
+                && !screen.contains("Current diff")
+                && !screen.contains("Current worktree diff")
+                && nodes.iter().any(|node| node.label == "Changes")
                 && !nodes.iter().any(|node| node.label == "Search conversation history")
                 && nodes.iter().any(|node| node.label == "Message composer" && node.id != composer)
         }).await;
@@ -3468,7 +3484,7 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         drop(view);
         bindings.close().await.unwrap();
 
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
         terminal.wait_for("fixture-model").await;
         terminal.wait_for_absent("Loading session history").await;
         terminal.wait_for("Working…").await;
@@ -3499,7 +3515,7 @@ async fn immutable_tool_images_render_and_preview_without_stopping_the_running_t
         terminal.resize(120, 40);
         terminal.wait_for("Open image · 192 × 128").await;
         terminal.wait_for("192 × 128 · Original image").await;
-        terminal.click_text_in_row("×", "Changes");
+        terminal.click_text_in_row("×", "Original image");
         terminal.wait_for_absent("Image preview").await;
         terminal.wait_for("Open image · 192 × 128").await;
         request.delta("IMAGE_RUN_CONTINUES_AFTER_ESCAPE").await;
@@ -3558,8 +3574,11 @@ async fn production_sixel_negotiates_from_real_queries_and_resize_keeps_unicode_
 
         // Only the simulated terminal's response changes. The actual binary
         // must first emit DA1 + CSI 16t and choose Sixel through its sole reader.
-        let mut terminal = support::pty::Pty::spawn_sixel(&fixture.directory.path().join("host"), Some(&fixture.session));
-        // The emulator appends this ordinary Ctrl+P to its cell-size reply.
+        let mut terminal = support::pty::Pty::spawn_sixel(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
+        // The packaged App binds Ctrl+P asynchronously. Wait for its real session
+        // content, then send the original cell-size reply and key together once.
+        terminal.wait_for("Read the graphics image").await;
+        terminal.reply_initial_sixel_cells();
         terminal.wait_for("Search commands…").await;
         let palette = terminal.wait_for("Resume a conversation").await;
         assert!(palette.contains("Search commands…") && palette.contains("Sessions") && palette.contains('×'));
@@ -3697,7 +3716,7 @@ async fn a_lost_confirmation_recovers_its_original_reference_and_reload_keeps_a_
         assert!(restarted.pending_operations("agent", &fixture.session, EDITOR).await.unwrap().is_empty());
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2, "recovering a receipt must never send A or draft B again");
 
-        support::load_application(&mut view);
+        support::load_application(&mut view, &bindings, Some(fixture.session.clone()));
         wait_editable_composer(&mut view).await;
         let reloaded = wait_view(&mut view, |screen| screen.contains("Later unsent draft B survives recovery") && screen.contains("REAL_RECOVERED_PROVIDER_ANSWER")).await;
         evidence("reloaded-draft", &reloaded);
@@ -3746,6 +3765,7 @@ async fn production_workspace_picker_browses_deep_folders_and_restores_the_real_
         std::fs::create_dir_all(&child_path).unwrap();
         let client = fixture.client().await;
         let mut terminal = support::pty::Pty::spawn(
+            env!("CARGO_BIN_EXE_maka"),
             &fixture.directory.path().join("host"),
             Some(&fixture.session),
         );
@@ -3913,7 +3933,7 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
         let gate = ReplyGate::history(fixture.directory.path(), fixture.address.clone());
         gate.arm();
         fixture.register_at(&gate.address);
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), None);
+        let mut terminal = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), None);
         let home = terminal.wait_for("Make something remarkable.").await;
         evidence("production-pty-home", &home);
         // A held navigation key can arrive as a burst in one reader turn.
@@ -3951,7 +3971,11 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
             assert!(awaiting.elapsed() < Duration::from_secs(20), "real first history did not reach its gate");
         }
         drop(held);
-        let loading = terminal.wait_for("Loading session history").await;
+        // The history list has its own loading caption; wait for the
+        // composer's blocked-send status before typing into that frame.
+        let loading = terminal
+            .wait_for("Loading session history… Your draft is kept.")
+            .await;
         assert!(loading.contains("Loading session history… Your draft is kept."));
         terminal.paste("Production PTY user message");
         terminal.wait_for("Production PTY user message").await;
@@ -4006,7 +4030,7 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
         drop(terminal);
         // A new OS process uses the same original Root and the same single
         // presentation: completed work is folded, and the source opens on request.
-        let mut restarted = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let mut restarted = support::pty::Pty::spawn(env!("CARGO_BIN_EXE_maka"), &fixture.directory.path().join("host"), Some(&fixture.session));
         let folded = restarted.wait_for("REAL_PRODUCTION_PTY_STREAM").await;
         assert!(folded.contains("completed.") && !folded.contains("Details ·"));
         restarted.wait_for("Completed").await;
@@ -4036,6 +4060,24 @@ async fn production_binary_sends_renders_provider_text_and_restores_its_actual_t
 async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_and_reader() {
     use maka_app_client::{Client, Journal};
     use maka_host_runtime::application::host::Client as HostClient;
+    use std::sync::{Arc, atomic::AtomicUsize};
+    use tokio_util::task::AbortOnDropHandle;
+
+    async fn delta_progress(
+        terminal: &mut support::pty::Pty,
+        count: &AtomicUsize,
+        before: usize,
+    ) -> usize {
+        loop {
+            terminal.read();
+            let after = count.load(Ordering::SeqCst);
+            if after > before {
+                return after;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
     tokio::time::timeout(Duration::from_secs(90), async {
         let mut fixture = Fixture::registered().await;
         fixture.seed_history(1).await;
@@ -4052,7 +4094,8 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
             "receipts".into(),
         ).unwrap();
         terminal_client.save_draft("agent", &fixture.session, EDITOR, None, "RECOVERY_ORIGINAL_A".into()).await.unwrap();
-        let mut terminal = support::pty::Pty::spawn(&fixture.directory.path().join("host"), Some(&fixture.session));
+        let binary = std::env::var_os("MAKA_TEST_CLI_BINARY").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_BIN_EXE_maka")));
+        let mut terminal = support::pty::Pty::spawn(&binary, &fixture.directory.path().join("host"), Some(&fixture.session));
         let failed = terminal.wait_for("Retry loading conversation").await;
         assert!(failed.contains("History unavailable."));
         assert!(failed.contains("History unavailable. Retrying automatically; your draft is kept."));
@@ -4082,14 +4125,102 @@ async fn production_history_retry_and_live_reconnect_preserve_the_draft_receipt_
         let focus_frame = terminal.wire().len();
         terminal.send(b"\x0c");
         terminal.wait_for_wire(b"\x1b[?2026l", focus_frame).await;
-        terminal.paste(" + LATER_UNSENT_B");
-        terminal.wait_for("RECOVERY_ORIGINAL_A + LATER_UNSENT_B").await;
-        support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A + LATER_UNSENT_B").await;
         request.delta("ACTIVE_PREFIX_ABCD").await;
         terminal.wait_for("ACTIVE_PREFIX_ABCD").await;
+        let epoch = Instant::now();
+        let submitted = Arc::new(AtomicUsize::new(0));
+        let (stop_stream, mut stopped) = tokio::sync::oneshot::channel();
+        let producer = AbortOnDropHandle::new(tokio::spawn({
+            let submitted = submitted.clone();
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(20));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut sequence = 0;
+                let mut deltas = Vec::new();
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut stopped => return (request, deltas),
+                        _ = interval.tick() => {
+                            let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+                            request.delta(".").await;
+                            sequence += 1;
+                            submitted.store(sequence, Ordering::SeqCst);
+                            deltas.push(json!({"sequence":sequence,"started_ms":started_ms,"submitted_ms":epoch.elapsed().as_secs_f64()*1000.0}));
+                        }
+                    }
+                }
+            }
+        }));
+        delta_progress(&mut terminal, &submitted, 0).await;
+        terminal.paste(" + ");
+        terminal.wait_for("RECOVERY_ORIGINAL_A +").await;
+        support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A + ").await;
+        let mut samples = Vec::new();
+        let mut phases = Vec::new();
+        let phase_before = submitted.load(Ordering::SeqCst);
+        let mut expected = String::from("RECOVERY_ORIGINAL_A + ");
+        for key in b"LATER_UNSENT_B" {
+            expected.push(char::from(*key));
+            assert!(!terminal.snapshot().contains(&expected), "a typing target must not already be visible");
+            let before = submitted.load(Ordering::SeqCst);
+            let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+            let started = Instant::now();
+            terminal.send(&[*key]);
+            terminal.wait_for(&expected).await;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            samples.push(json!({"phase":"typing","key":char::from(*key).to_string(),"target":expected,"started_ms":started_ms,"elapsed_ms":elapsed_ms,"deltas_before":before,"deltas_at_target":submitted.load(Ordering::SeqCst)}));
+        }
+        let phase_after = delta_progress(&mut terminal, &submitted, phase_before).await;
+        phases.push(json!({"phase":"typing","deltas_before":phase_before,"deltas_after_progress_fence":phase_after}));
+        support::wait_draft(&terminal_client, &fixture.session, "RECOVERY_ORIGINAL_A + LATER_UNSENT_B").await;
 
         // Move the reader to old history while the same model part stays open.
         // Recovery must preserve both this anchor and its already shown prefix.
+        assert!(!terminal.snapshot().contains("History 00 paragraph 00"));
+        let before = submitted.load(Ordering::SeqCst);
+        let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let focus_frame = terminal.wire().len();
+        terminal.send(b"\x1b[1;3A");
+        terminal.wait_for_wire(b"\x1b[?2026l", focus_frame).await;
+        terminal.send(b"\x1b[H");
+        terminal.wait_for("History 00 paragraph 00").await;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        samples.push(json!({"phase":"history_navigation","input":"Alt+Up then Home","target":"History 00 paragraph 00","started_ms":started_ms,"elapsed_ms":elapsed_ms,"deltas_before":before,"deltas_at_target":submitted.load(Ordering::SeqCst)}));
+        let after = delta_progress(&mut terminal, &submitted, before).await;
+        phases.push(json!({"phase":"history_navigation","deltas_before":before,"deltas_after_progress_fence":after}));
+        assert!(!terminal.snapshot().contains("ACTIVE_PREFIX_ABCD"));
+        let before = submitted.load(Ordering::SeqCst);
+        let started_ms = epoch.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        terminal.send(b"\x0c");
+        terminal.wait_for("ACTIVE_PREFIX_ABCD").await;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        samples.push(json!({"phase":"return_to_live","input":"Ctrl+L","target":"ACTIVE_PREFIX_ABCD","started_ms":started_ms,"elapsed_ms":elapsed_ms,"deltas_before":before,"deltas_at_target":submitted.load(Ordering::SeqCst)}));
+        let after = delta_progress(&mut terminal, &submitted, before).await;
+        phases.push(json!({"phase":"return_to_live","deltas_before":before,"deltas_after_progress_fence":after}));
+        stop_stream.send(()).unwrap();
+        let (mut request, deltas) = producer.await.unwrap();
+        let delivered = format!("STREAM_SAMPLE_END_{}", submitted.load(Ordering::SeqCst));
+        request.delta(&format!(" {delivered}")).await;
+        terminal.wait_for(&delivered).await;
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+        if let Some(directory) = std::env::var_os("MAKA_NSH_EVIDENCE") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("production-streaming-interactions.json"), serde_json::to_vec_pretty(&json!({
+                "metric":"PTY input write to target text in a complete synchronized terminal frame",
+                "excludes":"pixel protocol transport, terminal rendering, physical display scanout and FPS",
+                "binary":binary,
+                "terminal_cells":[120,40],
+                "model_requests":fixture.request_count.load(Ordering::SeqCst),
+                "fixture":"real Host and ordinary product UI package from the test build",
+                "workload":{"delta_interval_ms":20,"delta_text":".","input_suffix":"LATER_UNSENT_B"},
+                "progress_fence":"delta progress is checked after target-frame timing; a sample may finish within one producer interval",
+                "delivery_marker":delivered,"samples":samples,"phases":phases,"deltas":deltas
+            })).unwrap()).unwrap();
+        }
         let focus_frame = terminal.wire().len();
         terminal.send(b"\x1b[1;3A");
         terminal.wait_for_wire(b"\x1b[?2026l", focus_frame).await;

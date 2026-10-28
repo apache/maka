@@ -28,8 +28,6 @@ export default {
     'zh-CN': { displayName: '主机插件管理', description: '管理所连接主机上的插件配置。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.deploymentManager),
-    },
+    host: native(sdk.nativeImplementations.deploymentManager),
   },
 };

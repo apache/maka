@@ -22,10 +22,10 @@ use crate::applications::tests::store;
 use maka_packages::MANIFEST_FILE;
 use maka_packages::Package;
 use maka_plugin_core::{
-    composition::{Configuration, Environment, ExecutionLocation, Input, Node, PackageUse},
+    composition::{Configuration, Input, Node, PackageUse},
     contract::{Contract, Interface, Method, MethodMode, Transport},
     operation::RecoveryProtocol,
-    package::{Declaration, EntryDeclaration, EntryTarget, Implementation},
+    package::{Declaration, EntryDeclaration, Implementation},
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -67,22 +67,19 @@ fn reference() -> RecoveryRef {
     }
 }
 async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> DeploymentRef {
-    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"caller","application":Declaration {entries:BTreeMap::from([(EntryTarget::Host,EntryDeclaration {scene:None,implementation:Implementation::Native {implementation:"test.caller".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::new()})]),composition:None}})).unwrap())])).unwrap();
+    let package = Package::new(BTreeMap::from([(MANIFEST_FILE.into(),serde_json::to_vec(&json!({"schemaVersion":1,"id":"caller","application":Declaration {host: Some(EntryDeclaration { implementation:Implementation::Native {implementation:"test.caller".into()},configuration:json!({"type":"object"}).into(),imports:BTreeMap::new(),exports:BTreeMap::new()}), ui: None,composition:None}})).unwrap())])).unwrap();
     store
         .commit_application(
             deployment,
             expected,
             Input {
-                environment: Environment {
-                    location: ExecutionLocation::Host,
-                    presentation: None,
-                },
+                ui: None,
                 instances: BTreeMap::from([(
                     "caller".into(),
                     Node {
                         key: Uuid::from_u128(42),
                         package: package.application_ref().into(),
-                        use_package: PackageUse::Entry,
+                        use_package: PackageUse::Host,
                         configuration: Configuration::default(),
                         parameters: Configuration::default(),
                         bindings: BTreeMap::new(),
@@ -90,8 +87,6 @@ async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> Deployment
                         overrides: vec![],
                     },
                 )]),
-                recovery: None,
-                launch: None,
             },
             vec![],
             vec![package],
@@ -525,10 +520,6 @@ async fn original_source_snapshot_keeps_its_checked_instances_without_reloading_
     loaded.check_store(&store).unwrap();
     assert!(loaded.plan().instances().contains_key(&consumer()));
     let snapshot = loaded.snapshot();
-    assert!(
-        store.ui_checkpoints_from(&snapshot, &consumer()).is_err(),
-        "Host origin cannot create UI checkpoint access"
-    );
     // Consuming a checked snapshot permits editing source, never its old plan or proof.
     let (mut edited, _, plan, original) = loaded.into_parts();
     edited.reference.deployment = Uuid::new_v4();

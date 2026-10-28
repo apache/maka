@@ -43,6 +43,9 @@ name = "terminal_real_host"
 path = "../terminal-shell/tests/real_host.rs"
 
 [dependencies]
+nsh-bundler = { workspace = true, features = ["bundle"] }
+nsh-core.workspace = true
+nsh-base.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
 maka-agent-facts.workspace = true
@@ -85,13 +88,15 @@ tempfile.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "tracing-log"] }
 
 [build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
 nsh-bundler = { workspace = true, features = ["bundle"] }
 nsh-core.workspace = true
 nsh-base.workspace = true
 
 [dev-dependencies]
 maka-capabilities.workspace = true
-maka-ui-runtime.workspace = true
+maka-ui-support.workspace = true
 crossterm.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 maka-agent-native.workspace = true
@@ -99,9 +104,6 @@ maka-app-client.workspace = true
 maka-files-native.workspace = true
 maka-providers.workspace = true
 maka-workbench.workspace = true
-nsh-base.workspace = true
-nsh-bundler.workspace = true
-nsh-core.workspace = true
 nsh-engine.workspace = true
 nsh-platform-tui.workspace = true
 ratatui.workspace = true
@@ -124,6 +126,6 @@ libc.workspace = true
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_System_Ole"] }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Diagnostics_Debug", "Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
-# Shared integration fixtures use schema derives from ui-js.
+# Shared Host integration fixtures declare their wire schemas.
 [package.metadata.cargo-machete]
 ignored = ["schemars"]

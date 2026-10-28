@@ -28,8 +28,6 @@ export default {
     'zh-CN': { displayName: '操作结果', description: '查询操作的执行结果，避免重复执行。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.receiptReader),
-    },
+    host: native(sdk.nativeImplementations.receiptReader),
   },
 };

@@ -52,6 +52,13 @@ is an additional user decision, never a substitute for method authorization.
 Use the actual generated `AgentConfiguration` and `AgentServiceTool` types to check
 fields. A declaration does not add a global tool or confer filesystem/process access.
 
+The same Host service can be consumed by its package's UI or by another UI plugin.
+Declare the contract in `application.ui.imports`, bind its providers in the UI
+instance, and call `context.services[importName][providerIndex]`. These service
+calls use the actual UI consumer's session and original mutation receipt. The
+trusted module also retains the full client `context.host`; import bindings do
+not introduce a separate UI permission boundary. See [Shared NSH UI plugins](ui-plugins.md).
+
 Skills use the ordinary Library contract, actual registered tool names and independent
 `search`, `load` and `prepare` grants. `agent.skillLibrary` explicitly selects input
 preparation. Prepared inputs and receipts remain in the original message record;

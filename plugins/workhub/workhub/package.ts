@@ -29,11 +29,9 @@ export default {
     'zh-CN': { displayName: 'WorkHub 协作', description: '协调多个助手和工作区中的任务。' },
   },
   application: {
-    entries: {
-      host: {
-        ...native(sdk.nativeImplementations.workhub),
-        imports: { ...agentImports, worker: one(sdk.contracts.agent) },
-      },
+    host: {
+      ...native(sdk.nativeImplementations.workhub),
+      imports: { ...agentImports, worker: one(sdk.contracts.agent) },
     },
   },
 };

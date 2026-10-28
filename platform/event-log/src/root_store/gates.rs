@@ -29,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum Key {
+    Creation(String),
     // Session gates precede binding gates for operations that need both.
     Session(String),
     Work(String),

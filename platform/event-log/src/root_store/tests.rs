@@ -32,6 +32,90 @@ fn namespaces(path: &Path) -> root::RootNamespaces {
 }
 
 #[tokio::test]
+async fn concurrent_creation_retries_share_identity_and_conflicts_keep_one_winner() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let configuration = serde_json::json!({"title":"original"});
+    let (first, retry) = tokio::join!(
+        store.create_session("same", "same", &configuration, 1),
+        store.create_session("same", "same", &configuration, 1),
+    );
+    for session in [first.unwrap(), retry.unwrap()] {
+        let record = session.get::<serde_json::Value>().await.unwrap().unwrap();
+        assert_eq!(record.configuration, configuration);
+        assert_eq!(record.created_at, 1);
+    }
+    let (first, second) = tokio::join!(
+        store.create_session("conflict", "first", &configuration, 1),
+        store.create_session("conflict", "second", &configuration, 1),
+    );
+    assert!(matches!(
+        (first, second),
+        (Ok(_), Err(StoreError::SessionConflict)) | (Err(StoreError::SessionConflict), Ok(_))
+    ));
+    store.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn blocked_creation_binding_does_not_block_another_identity_in_its_partition() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(RootStore::open(owner(directory.path())).await.unwrap());
+    let binding = store
+        .attach_workspace("owner", &serde_json::json!({"path":"/blocked"}))
+        .await
+        .unwrap();
+    let blocked = store
+        .gates
+        .write([gates::Key::Binding(binding.id)])
+        .await
+        .unwrap();
+    let partition = partition_for(b"session", "blocked");
+    let independent = (0..100)
+        .map(|index| format!("independent-{index}"))
+        .find(|id| partition_for(b"session", id) == partition)
+        .unwrap();
+    let creating = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            store
+                .create_session(
+                    "blocked",
+                    "blocked",
+                    &serde_json::json!({"workspace":binding,"boundary_revision":0}),
+                    1,
+                )
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reserved: bool = store.control.connection.read(|db| Box::pin(async move {
+                Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM session_routes WHERE session_id='blocked' AND ready=0)")
+                    .fetch_one(db).await?)
+            })).await.unwrap();
+            if reserved {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("blocked creation reserves its identity before waiting for its binding");
+    let session = tokio::time::timeout(
+        Duration::from_secs(10),
+        store.create_session(&independent, "independent", &serde_json::json!({}), 1),
+    )
+    .await
+    .expect("an unrelated creation in the same partition must finish")
+    .unwrap();
+    assert!(session.get::<serde_json::Value>().await.unwrap().is_some());
+    assert!(!creating.is_finished());
+    drop(blocked);
+    creating.await.unwrap().unwrap();
+    Arc::try_unwrap(store).ok().unwrap().close().await.unwrap();
+}
+
+#[tokio::test]
 async fn reservations_recover_before_becoming_visible_and_never_move() {
     let directory = tempfile::tempdir().unwrap();
     let owner = owner(directory.path());
@@ -384,10 +468,6 @@ async fn rejects_legacy_non_session_journals_without_orphaning_rows() {
             "application_intents",
             "INSERT INTO application_intents (deployment,consumer,operation,source_revision,reference_json) VALUES ('deployment','[]','operation',1,'{}')",
         ),
-        (
-            "application_ui_checkpoints",
-            "INSERT INTO application_ui_checkpoints VALUES ('deployment','[]','key',1,'v1','{}','{}',x'010203')",
-        ),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let owner = owner(directory.path());
@@ -421,3 +501,117 @@ async fn rejects_legacy_non_session_journals_without_orphaning_rows() {
 }
 
 mod prepared_cache;
+mod prepared_owner;
+
+#[tokio::test]
+async fn committed_sequence_validates_history_when_another_session_outpaces_its_hint() {
+    use maka_agent_facts::event::{
+        EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+    };
+    use maka_agent_ports::session::history::{Page, Position};
+    async fn turn(session: &SessionStore, text: &str) -> u64 {
+        let invocation = Invocation {
+            session_id: session.id().into(),
+            turn_id: format!("turn-{}", session.id()),
+            run_id: format!("run-{}", session.id()),
+            invocation_id: format!("inv-{}", session.id()),
+        };
+        session
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    invocation.clone(),
+                    Fact::InvocationOpened {
+                        configuration: None,
+                        input: InvocationInput::Message {
+                            content: text.to_owned().into(),
+                            source_messages: vec![],
+                            request_fingerprint: None,
+                        },
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        session
+            .append(
+                &EventWrite::plain(RuntimeEvent::new(
+                    invocation,
+                    Fact::InvocationEnded {
+                        outcome: InvocationOutcome::Completed,
+                    },
+                ))
+                .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let store = RootStore::open(owner(directory.path())).await.unwrap();
+    let partition = partition_for(b"session", "watched");
+    let peer = (0..)
+        .map(|index| format!("peer-{index}"))
+        .find(|id| partition_for(b"session", id) == partition)
+        .unwrap();
+    let watched = store
+        .create_session("watched", "watched", &serde_json::json!({}), 1)
+        .await
+        .unwrap();
+    let peer = store
+        .create_session(&peer, &peer, &serde_json::json!({}), 1)
+        .await
+        .unwrap();
+    let mut hints = watched.subscribe_commits().unwrap();
+    let own_sequence = turn(&watched, "watched text").await;
+    assert_eq!(*hints.borrow_and_update(), own_sequence);
+    let peer_sequence = turn(&peer, "peer text").await;
+    assert!(
+        !hints.has_changed().unwrap(),
+        "unrelated facts must preserve scoped wakeups"
+    );
+    let observed = watched
+        .observe_session::<serde_json::Value>("watched")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed.through_sequence, peer_sequence);
+    assert!(
+        observed.through_sequence > *hints.borrow(),
+        "the observation fence is partition-wide, while this retained hint is Session-scoped"
+    );
+    let committed = watched.committed_sequence().await.unwrap();
+    assert_eq!(committed, observed.through_sequence);
+    let limits = crate::transcript::HistoryLimits {
+        max_bytes: 8192,
+        max_chunks: Some(8),
+        max_json_bytes: 32768,
+    };
+    let Page::Ready {
+        through, chunks, ..
+    } = watched
+        .history_text(
+            "watched",
+            observed.through_sequence,
+            Position::Start,
+            false,
+            limits,
+        )
+        .await
+        .unwrap();
+    assert_eq!(through, committed);
+    assert_eq!(
+        chunks
+            .iter()
+            .map(|chunk| chunk.text.as_str())
+            .collect::<String>(),
+        "watched text"
+    );
+    let error = watched
+        .history_text("watched", committed + 1, Position::Start, false, limits)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, StoreError::InvalidTransition(reason) if reason == "transcript fence exceeds committed log")
+    );
+    store.close().await.unwrap();
+}

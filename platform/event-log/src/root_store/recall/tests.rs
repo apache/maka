@@ -27,6 +27,7 @@ use maka_agent_facts::import::{Content, Record, Source};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
+use unicode_normalization::UnicodeNormalization;
 
 fn query(term: &str) -> SearchQuery {
     SearchQuery {
@@ -87,6 +88,182 @@ async fn import(root: &RootStore, id: &str, records: Vec<Record>) {
     .unwrap();
 }
 
+#[derive(Clone, Debug)]
+struct LiteralDocument {
+    session_id: String,
+    message_id: String,
+    turn_id: String,
+    timestamp: u64,
+    role: String,
+    body: String,
+}
+
+#[derive(Debug)]
+struct LiteralHit {
+    document: LiteralDocument,
+    matched_terms: Vec<String>,
+    score: f64,
+}
+
+async fn literal_documents(root: &RootStore) -> Vec<LiteralDocument> {
+    let mut documents = Vec::new();
+    for log in &root.partitions {
+        let rows:Vec<(String,String,String,i64,String,String)>=log.connection.read(|db|Box::pin(async move {
+            Ok(sqlx::query_as("SELECT session_id,message_id,turn_id,timestamp,role,body FROM recall_documents").fetch_all(db).await?)
+        })).await.unwrap();
+        documents.extend(rows.into_iter().map(
+            |(session_id, message_id, turn_id, timestamp, role, body)| LiteralDocument {
+                session_id,
+                message_id,
+                turn_id,
+                timestamp: u64::try_from(timestamp).unwrap(),
+                role,
+                body,
+            },
+        ));
+    }
+    documents
+}
+
+fn literal_hits(
+    documents: &[LiteralDocument],
+    prefix: &str,
+    input: &SearchQuery,
+) -> Vec<LiteralHit> {
+    let mut terms = Vec::new();
+    for term in &input.terms {
+        let normalized = term.trim().nfc().collect::<String>().to_lowercase();
+        if !terms.contains(&normalized) {
+            terms.push(normalized);
+        }
+    }
+    let mut hits = Vec::new();
+    for document in documents {
+        if !document.session_id.starts_with(prefix)
+            || input
+                .session_id
+                .as_ref()
+                .is_some_and(|id| id != &document.session_id)
+            || input.since.is_some_and(|since| document.timestamp < since)
+            || input.until.is_some_and(|until| document.timestamp > until)
+            || input.exclude.as_ref().is_some_and(|(session, turn)| {
+                session == &document.session_id && turn == &document.turn_id
+            })
+        {
+            continue;
+        }
+        let text = document
+            .body
+            .nfc()
+            .collect::<String>()
+            .to_lowercase()
+            .chars()
+            .collect::<Vec<_>>();
+        let mut matched_terms = Vec::new();
+        let mut covered = 0;
+        for term in &terms {
+            let needle = term.chars().collect::<Vec<_>>();
+            let mut offset = 0;
+            let mut count = 0;
+            while offset + needle.len() <= text.len() {
+                if text[offset..offset + needle.len()] == needle {
+                    count += 1;
+                    offset += needle.len();
+                } else {
+                    offset += 1;
+                }
+            }
+            if count > 0 {
+                matched_terms.push(term.clone());
+                covered += count * needle.len();
+            }
+        }
+        if matched_terms.is_empty() {
+            continue;
+        }
+        let score = covered as f64 / text.len() as f64
+            * if document.role == "tool_result" {
+                0.5
+            } else {
+                1.0
+            };
+        hits.push(LiteralHit {
+            document: document.clone(),
+            matched_terms,
+            score,
+        });
+    }
+    hits.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| b.document.timestamp.cmp(&a.document.timestamp))
+            .then_with(|| a.document.message_id.cmp(&b.document.message_id))
+            .then_with(|| a.document.session_id.cmp(&b.document.session_id))
+            .then_with(|| a.document.turn_id.cmp(&b.document.turn_id))
+    });
+    let mut turns = BTreeSet::new();
+    hits.retain(|hit| {
+        turns.insert((
+            hit.document.session_id.clone(),
+            hit.document.turn_id.clone(),
+        ))
+    });
+    if let Some(limit) = input.limit {
+        hits.truncate(limit);
+    }
+    hits
+}
+
+async fn assert_literal_search(
+    root: &RootStore,
+    prefix: &str,
+    documents: &[LiteralDocument],
+    input: SearchQuery,
+) -> Vec<crate::recall::SearchHit> {
+    let expected = literal_hits(documents, prefix, &input);
+    let description = format!(
+        "terms={:?}, session={:?}, since={:?}, until={:?}, exclude={:?}, limit={:?}",
+        input.terms, input.session_id, input.since, input.until, input.exclude, input.limit
+    );
+    let found = root
+        .search_history(prefix, input, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(found.gaps.is_empty(), "{description}: {:?}", found.gaps);
+    assert_eq!(found.hits.len(), expected.len(), "{description}");
+    for (actual, expected) in found.hits.iter().zip(expected) {
+        assert_eq!(
+            (
+                &actual.session_id,
+                &actual.message_id,
+                &actual.turn_id,
+                actual.timestamp,
+                &actual.body
+            ),
+            (
+                &expected.document.session_id,
+                &expected.document.message_id,
+                &expected.document.turn_id,
+                expected.document.timestamp,
+                &expected.document.body
+            ),
+            "{description}"
+        );
+        assert_eq!(
+            actual.matched_terms, expected.matched_terms,
+            "{description}"
+        );
+        assert!(
+            (actual.score - expected.score).abs()
+                <= f64::EPSILON * 8.0 * expected.score.abs().max(1.0),
+            "{description}: density {} vs {}",
+            actual.score,
+            expected.score
+        );
+    }
+    found.hits
+}
+
 #[tokio::test]
 async fn indexed_recall_preserves_sources_scope_and_context_across_ten_thousand_messages() {
     const PREFIX: &str = "recall-owner-";
@@ -129,10 +306,64 @@ async fn indexed_recall_preserves_sources_scope_and_context_across_ten_thousand_
         ("best", "same-turn", "dedupword dedupword dedupword".into()),
         ("false-grams", "false-grams-turn", "abc bcd ".repeat(8)),
         ("shared-a", "shared-a-turn", "sharedneedle".into()),
+        ("unicode", "unicode-turn", "Ω qx 汉字 🙂🚀".into()),
+        ("repeated", "repeated-turn", "aaaaaa".into()),
+        (
+            "punctuation",
+            "punctuation-turn",
+            "prefix within.word, spaced words\tinside suffix".into(),
+        ),
+        ("nul-text", "nul-turn", "prenul\0postnul".into()),
+        (
+            "maximum",
+            "maximum-turn",
+            "\u{10ffff}\u{10ffff}\u{10ffff}".into(),
+        ),
     ] {
         let timestamp = 1_700_000_000_000 + records.len() as u64;
         records.push(record(id, turn, text, timestamp));
     }
+    let dense = "densitymark densitymark";
+    let sparse = "densitymark ...........";
+    assert_eq!(dense.chars().count(), sparse.chars().count());
+    records.push(record(
+        "density-high",
+        "equal-density-turn",
+        dense.into(),
+        1_700_000_007_000,
+    ));
+    records.push(record(
+        "density-low",
+        "equal-density-turn",
+        sparse.into(),
+        1_700_000_007_001,
+    ));
+    records.push(record(
+        "weight-user",
+        "weight-user-turn",
+        "weightmark......".into(),
+        1_700_000_007_500,
+    ));
+    records.push(Record {
+        source_message_id: "weight-tool".into(),
+        source_turn_id: "weight-tool-turn".into(),
+        timestamp: Some(1_700_000_007_600),
+        content: Content::ToolResult {
+            call_id: "weighted-call".into(),
+            output: json!("weightmark"),
+            is_error: false,
+        },
+    });
+    let tie_time = 1_700_000_008_500;
+    for id in ["tie-a-first", "tie-a-second"] {
+        records.push(record(id, "tie-a-turn", "tiebreakword".into(), tie_time));
+    }
+    records.push(record(
+        "tie-newest",
+        "tie-newest-turn",
+        "tiebreakword".into(),
+        tie_time + 1,
+    ));
     let mut total_messages = records.len();
     import(&root, &a, records).await;
     let mut records = background();
@@ -148,6 +379,9 @@ async fn indexed_recall_preserves_sources_scope_and_context_across_ten_thousand_
         "sharedneedle".into(),
         1_700_000_008_001,
     ));
+    for id in ["tie-b-first", "tie-b-second"] {
+        records.push(record(id, id, "tiebreakword".into(), tie_time));
+    }
     total_messages += records.len();
     import(&root, &b, records).await;
     import(
@@ -194,6 +428,112 @@ async fn indexed_recall_preserves_sources_scope_and_context_across_ten_thousand_
             .unwrap();
         assert_eq!(found.hits.len(), 1);
         assert_eq!(found.hits[0].body, original);
+    }
+    let documents = literal_documents(&root).await;
+    assert_eq!(
+        documents.len(),
+        total_messages,
+        "the scan oracle must contain every imported source, including foreign-prefix sources"
+    );
+    for terms in [
+        vec!["锚"],
+        vec!["锚点"],
+        vec!["x"],
+        vec!["Ω"],
+        vec!["qx"],
+        vec!["汉字"],
+        vec!["🙂"],
+        vec!["🙂🚀"],
+        vec!["CAFÉ"],
+        vec!["Cafe\u{301}"],
+        vec!["within.word"],
+        vec!["spaced words"],
+        vec!["words\tinside"],
+        vec!["aaaa"],
+        vec!["abc"],
+        vec!["abcd"],
+        vec!["prenul"],
+        vec!["postnul"],
+        vec!["\u{10ffff}"],
+        vec!["\u{10ffff}\u{10ffff}"],
+        vec!["\u{10ffff}\u{10ffff}\u{10ffff}"],
+        vec!["abcd", "锚点", "notpresentmarker"],
+        vec![" CAFÉ ", "Cafe\u{301}", "café", "notpresentmarker"],
+    ] {
+        let mut input = query(terms[0]);
+        input.terms = terms.into_iter().map(str::to_owned).collect();
+        assert_literal_search(&root, PREFIX, &documents, input).await;
+    }
+    let mut overlap = query("aaa");
+    overlap.terms.push("aa".into());
+    let overlap = assert_literal_search(&root, PREFIX, &documents, overlap).await;
+    assert_eq!(overlap.len(), 1);
+    assert!(
+        overlap[0].score > 1.0,
+        "separate terms may cover the same scalars"
+    );
+    let density = assert_literal_search(&root, PREFIX, &documents, query("densitymark")).await;
+    assert_eq!(density.len(), 1);
+    assert_eq!(
+        density[0].body, dense,
+        "density must choose the older equal-length message within the Turn"
+    );
+    let weighted = assert_literal_search(&root, PREFIX, &documents, query("weightmark")).await;
+    assert_eq!(weighted.len(), 2);
+    assert_eq!(
+        weighted[0].role,
+        maka_agent_ports::session::history::Role::User
+    );
+    assert_eq!(
+        weighted[1].role,
+        maka_agent_ports::session::history::Role::ToolResult
+    );
+    assert!(
+        weighted[0].score > weighted[1].score,
+        "tool-result downweight must beat its otherwise denser, newer text"
+    );
+    let ties = assert_literal_search(&root, PREFIX, &documents, query("tiebreakword")).await;
+    assert_eq!(ties.len(), 4);
+    assert_eq!(ties[0].timestamp, tie_time + 1);
+    assert_eq!(
+        ties.iter()
+            .map(|hit| hit.session_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([a.as_str(), b.as_str()])
+    );
+    for limit in [1, 2, 3, 8] {
+        let mut input = query("tiebreakword");
+        input.limit = Some(limit);
+        let limited = assert_literal_search(&root, PREFIX, &documents, input).await;
+        assert_eq!(
+            limited
+                .iter()
+                .map(|hit| &hit.message_id)
+                .collect::<Vec<_>>(),
+            ties.iter()
+                .take(limit)
+                .map(|hit| &hit.message_id)
+                .collect::<Vec<_>>(),
+            "partition-local pruning and global merge must preserve the complete ordered prefix"
+        );
+    }
+    let mut scoped = query("tiebreakword");
+    scoped.session_id = Some(a.clone());
+    assert_literal_search(&root, PREFIX, &documents, scoped).await;
+    let mut timed = query("tiebreakword");
+    timed.since = Some(tie_time);
+    timed.until = Some(tie_time);
+    assert_literal_search(&root, PREFIX, &documents, timed).await;
+    let mut excluded = query("tiebreakword");
+    excluded.exclude = Some((ties[0].session_id.clone(), ties[0].turn_id.clone()));
+    assert_literal_search(&root, PREFIX, &documents, excluded).await;
+    for invalid in ["\0", "post\0nul"] {
+        assert!(
+            root.search_history(PREFIX, query(invalid), CancellationToken::new())
+                .await
+                .is_err(),
+            "NUL queries remain rejected even though indexed bodies may contain NUL"
+        );
     }
     let mut literal = query("abcd");
     literal.limit = Some(1);

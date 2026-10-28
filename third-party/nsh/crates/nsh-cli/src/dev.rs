@@ -222,6 +222,12 @@ impl DevSession {
         if self.release {
             match build::compile(&self.entry, true) {
                 Ok(built) => {
+                    self.server.serve_files(
+                        built
+                            .assets
+                            .iter()
+                            .map(|asset| (asset.path.clone(), asset.source.clone())),
+                    );
                     self.watch_files.replace(built.watch_files.clone());
                     let capabilities = built.capabilities_json();
                     let summary = self.summary(&built);
@@ -244,6 +250,12 @@ impl DevSession {
         }
         match build::compile_hot(&self.entry) {
             Ok((built, hot)) => {
+                self.server.serve_files(
+                    built
+                        .assets
+                        .iter()
+                        .map(|asset| (asset.path.clone(), asset.source.clone())),
+                );
                 self.watch_files.replace(built.watch_files.clone());
                 let summary = self.summary(&built);
                 // Other capabilities: the app starts again under them.

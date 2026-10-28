@@ -29,7 +29,7 @@ import { C, captionTextStyle, controlFocusStyle } from './ui';
 
 type Reading = { stream: Awaited<ReturnType<typeof openFile>> | null };
 const openFile = (sessionId: string, path: { bytesBase64: string }) =>
-  host.subscribe('agent', 'readFile', { sessionId, path });
+  host.readFile({ sessionId, path });
 const close = async (reading: Reading | null) => {
   const stream = reading?.stream;
   if (reading) reading.stream = null;

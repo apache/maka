@@ -403,10 +403,10 @@ impl JsValue for crate::geometry::DevicePixels {
     }
 }
 
-/// A size in pixels: TS's `Size` (`{ width, height }`).
+/// A size in pixels: TS's `PixelSize` (`{ width, height }`).
 impl JsValue for crate::geometry::Size<crate::geometry::DevicePixels> {
     fn ts_type(_types: &mut TsTypes) -> String {
-        "Size".into()
+        "PixelSize".into()
     }
 
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {

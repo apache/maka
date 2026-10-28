@@ -30,7 +30,7 @@ function App() {
       </List>
       <List
         each={range(10)}
-        viewabilityConfig={{ itemVisiblePercentThreshold: 100 }}
+        viewabilityConfig={{ itemVisibleThreshold: 1 }}
         onViewableItemsChange={(info) => viewable.set(info.viewableItems.map((t) => t.index).join(","))}
         style={{ height: 100 }}
       >

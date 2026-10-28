@@ -33,149 +33,6 @@ pub struct ToolJournal {
     invocation: Invocation,
 }
 
-#[cfg(test)]
-mod admission_tests {
-    use super::*;
-    use crate::{
-        event::{CommitError, CommitFuture},
-        tools::EffectAdmission,
-    };
-    use std::{
-        future::{Future, poll_fn},
-        sync::{
-            Mutex,
-            atomic::{AtomicBool, Ordering},
-        },
-        task::{Context, Poll, Waker},
-    };
-
-    #[derive(Default)]
-    struct Sink {
-        dispatch_ready: AtomicBool,
-        reject_dispatch: bool,
-        settled: AtomicBool,
-    }
-    impl EventSink for Sink {
-        fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
-            Box::pin(async move {
-                if matches!(&event.event().fact, Fact::ToolDispatched { .. }) {
-                    poll_fn(|_| {
-                        if self.reject_dispatch {
-                            Poll::Ready(Err(CommitError::OutcomeUnknown(
-                                "original commit observer lost".into(),
-                            )))
-                        } else if self.dispatch_ready.load(Ordering::SeqCst) {
-                            Poll::Ready(Ok(7))
-                        } else {
-                            Poll::Pending
-                        }
-                    })
-                    .await
-                } else {
-                    assert!(matches!(&event.event().fact, Fact::ToolSettled { .. }));
-                    self.settled.store(true, Ordering::SeqCst);
-                    Ok(8)
-                }
-            })
-        }
-    }
-    fn journal(sink: Arc<Sink>) -> ToolJournal {
-        ToolJournal::new(
-            sink,
-            Invocation {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
-            },
-        )
-    }
-
-    #[test]
-    fn admission_ack_follows_real_t1_and_precedes_the_original_unsettled_effect() {
-        let sink = Arc::new(Sink::default());
-        let acknowledgments = Arc::new(Mutex::new(Vec::new()));
-        let observed = acknowledgments.clone();
-        let started = Arc::new(AtomicBool::new(false));
-        let effect_started = started.clone();
-        let released = Arc::new(AtomicBool::new(false));
-        let effect_released = released.clone();
-        let effect = PreparedEffect::new(move |_| {
-            Box::pin(async move {
-                effect_started.store(true, Ordering::SeqCst);
-                poll_fn(|_| {
-                    if effect_released.load(Ordering::SeqCst) {
-                        Poll::Ready(Ok(serde_json::json!({"done":true}).into()))
-                    } else {
-                        Poll::Pending
-                    }
-                })
-                .await
-            })
-        })
-        .on_admission(move |admission| observed.lock().unwrap().push(admission));
-        let mut call = journal(sink.clone()).invoke_prepared_output(
-            "operation".into(),
-            ToolCallIdentity::standalone("call".into()),
-            "effect".into(),
-            serde_json::json!({}),
-            CancellationToken::new(),
-            effect,
-        );
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(call.as_mut().poll(&mut context).is_pending());
-        assert!(acknowledgments.lock().unwrap().is_empty());
-        assert!(!started.load(Ordering::SeqCst));
-        sink.dispatch_ready.store(true, Ordering::SeqCst);
-        assert!(call.as_mut().poll(&mut context).is_pending());
-        assert_eq!(
-            *acknowledgments.lock().unwrap(),
-            vec![EffectAdmission::Durable { sequence: 7 }]
-        );
-        assert!(started.load(Ordering::SeqCst));
-        assert!(!sink.settled.load(Ordering::SeqCst));
-        released.store(true, Ordering::SeqCst);
-        assert!(matches!(
-            call.as_mut().poll(&mut context),
-            Poll::Ready(Ok(_))
-        ));
-        assert!(sink.settled.load(Ordering::SeqCst));
-        assert_eq!(acknowledgments.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn failed_or_abandoned_dispatch_acknowledges_no_native_start_without_claiming_rollback() {
-        for reject in [false, true] {
-            let sink = Arc::new(Sink {
-                reject_dispatch: reject,
-                ..Default::default()
-            });
-            let observed = Arc::new(Mutex::new(Vec::new()));
-            let acknowledgments = observed.clone();
-            let effect = PreparedEffect::new(|_| panic!("unadmitted effect must never execute"))
-                .on_admission(move |admission| acknowledgments.lock().unwrap().push(admission));
-            let mut call = journal(sink).invoke_prepared_output(
-                "operation".into(),
-                ToolCallIdentity::standalone("call".into()),
-                "effect".into(),
-                serde_json::json!({}),
-                CancellationToken::new(),
-                effect,
-            );
-            let mut context = Context::from_waker(Waker::noop());
-            if reject {
-                assert!(matches!(
-                    call.as_mut().poll(&mut context),
-                    Poll::Ready(Err(ToolError::Persistence(_)))
-                ));
-            } else {
-                assert!(call.as_mut().poll(&mut context).is_pending());
-            }
-            drop(call);
-            assert_eq!(*observed.lock().unwrap(), vec![EffectAdmission::NotStarted]);
-        }
-    }
-}
 impl ToolJournal {
     pub fn new(sink: Arc<dyn EventSink>, invocation: Invocation) -> Self {
         Self { sink, invocation }
@@ -415,5 +272,149 @@ impl ToolJournal {
             drop(effect);
             result
         })
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use crate::{
+        event::{CommitError, CommitFuture},
+        tools::EffectAdmission,
+    };
+    use std::{
+        future::poll_fn,
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Poll, Waker},
+    };
+
+    #[derive(Default)]
+    struct Sink {
+        dispatch_ready: AtomicBool,
+        reject_dispatch: bool,
+        settled: AtomicBool,
+    }
+    impl EventSink for Sink {
+        fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
+            Box::pin(async move {
+                if matches!(&event.event().fact, Fact::ToolDispatched { .. }) {
+                    poll_fn(|_| {
+                        if self.reject_dispatch {
+                            Poll::Ready(Err(CommitError::OutcomeUnknown(
+                                "original commit observer lost".into(),
+                            )))
+                        } else if self.dispatch_ready.load(Ordering::SeqCst) {
+                            Poll::Ready(Ok(7))
+                        } else {
+                            Poll::Pending
+                        }
+                    })
+                    .await
+                } else {
+                    assert!(matches!(&event.event().fact, Fact::ToolSettled { .. }));
+                    self.settled.store(true, Ordering::SeqCst);
+                    Ok(8)
+                }
+            })
+        }
+    }
+    fn journal(sink: Arc<Sink>) -> ToolJournal {
+        ToolJournal::new(
+            sink,
+            Invocation {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: "run".into(),
+                invocation_id: "invocation".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn admission_ack_follows_real_t1_and_precedes_the_original_unsettled_effect() {
+        let sink = Arc::new(Sink::default());
+        let acknowledgments = Arc::new(Mutex::new(Vec::new()));
+        let observed = acknowledgments.clone();
+        let started = Arc::new(AtomicBool::new(false));
+        let effect_started = started.clone();
+        let released = Arc::new(AtomicBool::new(false));
+        let effect_released = released.clone();
+        let effect = PreparedEffect::new(move |_| {
+            Box::pin(async move {
+                effect_started.store(true, Ordering::SeqCst);
+                poll_fn(|_| {
+                    if effect_released.load(Ordering::SeqCst) {
+                        Poll::Ready(Ok(serde_json::json!({"done":true}).into()))
+                    } else {
+                        Poll::Pending
+                    }
+                })
+                .await
+            })
+        })
+        .on_admission(move |admission| observed.lock().unwrap().push(admission));
+        let mut call = journal(sink.clone()).invoke_prepared_output(
+            "operation".into(),
+            ToolCallIdentity::standalone("call".into()),
+            "effect".into(),
+            serde_json::json!({}),
+            CancellationToken::new(),
+            effect,
+        );
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(call.as_mut().poll(&mut context).is_pending());
+        assert!(acknowledgments.lock().unwrap().is_empty());
+        assert!(!started.load(Ordering::SeqCst));
+        sink.dispatch_ready.store(true, Ordering::SeqCst);
+        assert!(call.as_mut().poll(&mut context).is_pending());
+        assert_eq!(
+            *acknowledgments.lock().unwrap(),
+            vec![EffectAdmission::Durable { sequence: 7 }]
+        );
+        assert!(started.load(Ordering::SeqCst));
+        assert!(!sink.settled.load(Ordering::SeqCst));
+        released.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            call.as_mut().poll(&mut context),
+            Poll::Ready(Ok(_))
+        ));
+        assert!(sink.settled.load(Ordering::SeqCst));
+        assert_eq!(acknowledgments.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_or_abandoned_dispatch_acknowledges_no_native_start_without_claiming_rollback() {
+        for reject in [false, true] {
+            let sink = Arc::new(Sink {
+                reject_dispatch: reject,
+                ..Default::default()
+            });
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let acknowledgments = observed.clone();
+            let effect = PreparedEffect::new(|_| panic!("unadmitted effect must never execute"))
+                .on_admission(move |admission| acknowledgments.lock().unwrap().push(admission));
+            let mut call = journal(sink).invoke_prepared_output(
+                "operation".into(),
+                ToolCallIdentity::standalone("call".into()),
+                "effect".into(),
+                serde_json::json!({}),
+                CancellationToken::new(),
+                effect,
+            );
+            let mut context = Context::from_waker(Waker::noop());
+            if reject {
+                assert!(matches!(
+                    call.as_mut().poll(&mut context),
+                    Poll::Ready(Err(ToolError::Persistence(_)))
+                ));
+            } else {
+                assert!(call.as_mut().poll(&mut context).is_pending());
+            }
+            drop(call);
+            assert_eq!(*observed.lock().unwrap(), vec![EffectAdmission::NotStarted]);
+        }
     }
 }

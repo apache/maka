@@ -33,27 +33,29 @@ const RETAINED_PAGES: i64 = 8192;
 pub(crate) async fn initialize(db: &mut SqliteConnection) -> Result<(), StoreError> {
     sqlx::raw_sql(
         "PRAGMA temp_store=FILE;
-         ATTACH DATABASE '' AS transcript_cache;
-         PRAGMA transcript_cache.page_size=4096;
-         PRAGMA transcript_cache.auto_vacuum=FULL;
-         PRAGMA transcript_cache.cache_size=-4096;
-         PRAGMA transcript_cache.synchronous=OFF;
-         PRAGMA transcript_cache.journal_mode=DELETE;
-         CREATE TABLE transcript_cache.rows (
+         PRAGMA temp.page_size=4096;
+         PRAGMA temp.auto_vacuum=FULL;
+         PRAGMA temp.cache_size=-4096;
+         PRAGMA temp.synchronous=OFF;
+         PRAGMA temp.journal_mode=DELETE;
+         CREATE TABLE temp.transcript_rows (
              session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence>=1),
              item_index INTEGER NOT NULL CHECK(item_index>=0), turn_id TEXT NOT NULL,
              message_id TEXT NOT NULL, payload BLOB NOT NULL, digest TEXT NOT NULL,
              total_bytes INTEGER NOT NULL CHECK(total_bytes>0),
              PRIMARY KEY(session_id,source_sequence,item_index), UNIQUE(session_id,message_id)
          );
-         CREATE TABLE transcript_cache.text (
+         CREATE TABLE temp.transcript_text (
              session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL CHECK(source_sequence>=1),
              item_index INTEGER NOT NULL CHECK(item_index>=0),
              field TEXT NOT NULL CHECK(field IN ('body','thinking')),
              timestamp INTEGER NOT NULL, role TEXT NOT NULL, body BLOB NOT NULL,
              PRIMARY KEY(session_id,source_sequence,item_index,field)
          );
-         CREATE TABLE transcript_cache.active_source (
+         CREATE TABLE temp.transcript_sessions (
+             session_id TEXT PRIMARY KEY, copy_identity TEXT
+         );
+         CREATE TABLE temp.transcript_active_source (
              singleton INTEGER PRIMARY KEY CHECK(singleton=1),
              session_id TEXT NOT NULL, source_sequence INTEGER NOT NULL
          );",
@@ -64,7 +66,7 @@ pub(crate) async fn initialize(db: &mut SqliteConnection) -> Result<(), StoreErr
 }
 
 /// Keep every ensured row pinned until the original operation has consumed it,
-/// including final history boundaries. Accepted work stays on the writer owner.
+/// including final history boundaries. All work stays on the observation owner.
 pub(super) fn run<'c, T: Send + 'c>(
     db: &'c mut SqliteConnection,
     read: impl for<'a> FnOnce(
@@ -102,8 +104,26 @@ pub(super) fn run<'c, T: Send + 'c>(
     })
 }
 
+pub(crate) async fn purge(db: &mut SqliteConnection, session: &str) -> Result<(), StoreError> {
+    let mut tx = db.begin().await?;
+    for table in [
+        "transcript_text",
+        "transcript_rows",
+        "transcript_sessions",
+        "transcript_active_source",
+    ] {
+        let query = format!("DELETE FROM temp.{table} WHERE session_id=?");
+        sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
+            .bind(session)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn trim(db: &mut SqliteConnection) -> Result<(), StoreError> {
-    let pages: i64 = sqlx::query_scalar("PRAGMA transcript_cache.page_count")
+    let pages: i64 = sqlx::query_scalar("PRAGMA temp.page_count")
         .fetch_one(&mut *db)
         .await?;
     if pages <= RETAINED_PAGES {
@@ -111,13 +131,16 @@ async fn trim(db: &mut SqliteConnection) -> Result<(), StoreError> {
     }
     let mut tx = db.begin().await?;
     sqlx::raw_sql(
-        "DELETE FROM transcript_cache.text WHERE NOT EXISTS (
-             SELECT 1 FROM transcript_cache.active_source a
-             WHERE a.session_id=text.session_id AND a.source_sequence=text.source_sequence
+        "DELETE FROM temp.transcript_text WHERE NOT EXISTS (
+             SELECT 1 FROM temp.transcript_active_source a
+             WHERE a.session_id=transcript_text.session_id AND a.source_sequence=transcript_text.source_sequence
          );
-         DELETE FROM transcript_cache.rows WHERE NOT EXISTS (
-             SELECT 1 FROM transcript_cache.active_source a
-             WHERE a.session_id=rows.session_id AND a.source_sequence=rows.source_sequence
+         DELETE FROM temp.transcript_rows WHERE NOT EXISTS (
+             SELECT 1 FROM temp.transcript_active_source a
+             WHERE a.session_id=transcript_rows.session_id AND a.source_sequence=transcript_rows.source_sequence
+         );
+         DELETE FROM temp.transcript_sessions WHERE NOT EXISTS (
+             SELECT 1 FROM temp.transcript_rows r WHERE r.session_id=transcript_sessions.session_id
          );",
     )
     .execute(&mut *tx)
@@ -133,9 +156,9 @@ async fn retain_source(
     session: &str,
     source: i64,
 ) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO transcript_cache.active_source VALUES(1,?1,?2)
+    sqlx::query("INSERT INTO temp.transcript_active_source VALUES(1,?1,?2)
         ON CONFLICT(singleton) DO UPDATE SET session_id=excluded.session_id,source_sequence=excluded.source_sequence
-        WHERE active_source.session_id!=excluded.session_id OR active_source.source_sequence!=excluded.source_sequence")
+        WHERE transcript_active_source.session_id!=excluded.session_id OR transcript_active_source.source_sequence!=excluded.source_sequence")
         .bind(session).bind(source).execute(db).await?;
     Ok(())
 }
@@ -158,12 +181,36 @@ pub(super) async fn ensure_on_worker(
     position: RowPosition,
 ) -> Result<(), StoreError> {
     let (source, item) = sql_position(position)?;
-    let (turn, message): (String, String) = sqlx::query_as(
-        "SELECT turn_id,message_id FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3",
+    let (turn, message, copy_identity): (String, String, Option<String>) = sqlx::query_as(
+        "SELECT turn_id,message_id,(SELECT json_array(source_session_id,source_revision,through_sequence,observed_through,bundle_digest) FROM session_history_copies WHERE session_id=?1) FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3",
     ).bind(session).bind(source).bind(item).fetch_optional(&mut *db).await?
         .ok_or_else(|| StoreError::InvalidTransition("history row was not found".into()))?;
+    // A copied base can replace previously readable bare claimants. Its durable
+    // marker changes in the same snapshot as the directory, never on appends.
+    let previous: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT copy_identity FROM temp.transcript_sessions WHERE session_id=?")
+            .bind(session)
+            .fetch_optional(&mut *db)
+            .await?;
+    if previous
+        .as_ref()
+        .is_some_and(|(previous,)| previous != &copy_identity)
+    {
+        sqlx::query("DELETE FROM temp.transcript_text WHERE session_id=?")
+            .bind(session)
+            .execute(&mut *db)
+            .await?;
+        sqlx::query("DELETE FROM temp.transcript_rows WHERE session_id=?")
+            .bind(session)
+            .execute(&mut *db)
+            .await?;
+    }
+    if previous.as_ref().map(|(identity,)| identity) != Some(&copy_identity) {
+        sqlx::query("INSERT INTO temp.transcript_sessions VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET copy_identity=excluded.copy_identity")
+            .bind(session).bind(copy_identity).execute(&mut *db).await?;
+    }
     let cached: Option<(String, String)> = sqlx::query_as(
-        "SELECT turn_id,message_id FROM transcript_cache.rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3",
+        "SELECT turn_id,message_id FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3",
     ).bind(session).bind(source).bind(item).fetch_optional(&mut *db).await?;
     if let Some(identity) = cached {
         if identity != (turn, message) {
@@ -215,7 +262,7 @@ pub(super) async fn ensure_on_worker(
             return Err(StoreError::TranscriptConflict);
         }
         let mut insert = QueryBuilder::<Sqlite>::new(
-            "INSERT OR IGNORE INTO transcript_cache.rows (session_id,source_sequence,item_index,turn_id,message_id,payload,digest,total_bytes) ",
+            "INSERT OR IGNORE INTO temp.transcript_rows (session_id,source_sequence,item_index,turn_id,message_id,payload,digest,total_bytes) ",
         );
         insert.push_values(
             &encoded,
@@ -249,7 +296,7 @@ pub(super) async fn ensure_on_worker(
                     .push_bind(bytes);
             },
         );
-        verify.push(") SELECT count(*) FROM wanted JOIN transcript_cache.rows c ON c.item_index=wanted.item_index AND c.turn_id=wanted.turn_id AND c.message_id=wanted.message_id AND c.payload=wanted.payload AND c.digest=wanted.digest AND c.total_bytes=wanted.total_bytes WHERE c.session_id=")
+        verify.push(") SELECT count(*) FROM wanted JOIN temp.transcript_rows c ON c.item_index=wanted.item_index AND c.turn_id=wanted.turn_id AND c.message_id=wanted.message_id AND c.payload=wanted.payload AND c.digest=wanted.digest AND c.total_bytes=wanted.total_bytes WHERE c.session_id=")
             .push_bind(session).push(" AND c.source_sequence=").push_bind(source);
         let matched: i64 = verify.build_query_scalar().fetch_one(&mut *db).await?;
         if matched != encoded.len() as i64 {

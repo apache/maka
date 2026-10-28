@@ -122,7 +122,7 @@ impl Fixture {
         let owner = RootOwner::create(&root, &namespaces).unwrap();
         let writer = RootStore::open(Arc::new(owner)).await.unwrap();
         let input: Input = serde_json::from_value(json!({
-            "environment":{"location":"host"},"instances":{}
+            "instances":{}
         }))
         .unwrap();
         let reference = writer
@@ -246,7 +246,7 @@ async fn inspection_retains_both_original_leases_and_rejects_public_mutation() {
     assert_eq!(
         serde_json::to_value(source.source()).unwrap(),
         json!({
-            "reference":f.reference,"input":{"environment":{"location":"host"},"instances":{}},
+            "reference":f.reference,"input":{"instances":{}},
             "remoteExports":[]
         })
     );

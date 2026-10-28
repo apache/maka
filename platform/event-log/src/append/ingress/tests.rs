@@ -70,6 +70,10 @@ fn counts(path: &std::path::Path) -> Vec<i64> {
         "context_semantic_rows",
         "context_semantic_fragments",
         "context_obligations",
+        "context_safety_heads",
+        "context_execution_steps",
+        "context_execution_work",
+        "context_independent_tools",
     ]
     .iter()
     .map(|table| {
@@ -108,7 +112,7 @@ async fn autocommit_is_rejected_before_any_canonical_insert() {
             .contains("requires an existing transaction")
     );
     log.close().await.unwrap();
-    assert_eq!(counts(&path), vec![0; 8]);
+    assert_eq!(counts(&path), vec![0; 12]);
 }
 
 #[tokio::test]
@@ -117,6 +121,10 @@ async fn projection_faults_roll_back_canonical_and_prior_batch_events_before_reo
         (
             "source",
             "CREATE TEMP TRIGGER ingress_fault BEFORE INSERT ON context_source_prefixes WHEN NEW.kind='session' AND NEW.owner='session' AND NEW.sequence=3 BEGIN SELECT RAISE(ABORT,'source fault'); END;",
+        ),
+        (
+            "obligation",
+            "CREATE TEMP TRIGGER ingress_fault BEFORE INSERT ON context_obligations WHEN NEW.kind='invocation' AND NEW.opened_at=3 BEGIN SELECT RAISE(ABORT,'obligation fault'); END;",
         ),
         (
             "semantic",
@@ -139,7 +147,7 @@ async fn projection_faults_roll_back_canonical_and_prior_batch_events_before_reo
         events.extend(closed("second"));
         assert!(log.append_batch(&events).await.is_err(), "{name}");
         log.close().await.unwrap();
-        assert_eq!(counts(&path), vec![0; 8], "{name}");
+        assert_eq!(counts(&path), vec![0; 12], "{name}");
         let reopened = EventLog::open(&path).await.unwrap();
         assert_eq!(reopened.append_batch(&events).await.unwrap(), [1, 2, 3, 4]);
         reopened.close().await.unwrap();
@@ -172,6 +180,9 @@ async fn explicit_import_sequence_is_captured_before_projection_inserts() {
         assert_eq!(insert(&mut tx, &end, serde_json::to_string(&end)?, Position::Imported(Some(42))).await?, 42);
         let prefix: i64 = sqlx::query_scalar("SELECT MAX(sequence) FROM context_source_prefixes WHERE kind='invocation' AND owner='imported'").fetch_one(&mut *tx).await?;
         assert_eq!(prefix, 42, "each import event publishes its proof before the next event");
+        let safety:i64=sqlx::query_scalar("SELECT through_sequence FROM context_safety_heads WHERE session_id='session'").fetch_one(&mut *tx).await?;
+        assert_eq!(safety,42,"import projects safety at the captured canonical sequence");
+        assert!(!sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM context_obligations WHERE invocation_id='imported')").fetch_one(&mut *tx).await?);
         tx.commit().await?;
         let mut earlier_invocation = opening("imported");
         earlier_invocation.id = "earlier-invocation".into();

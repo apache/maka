@@ -136,7 +136,7 @@ function Done() {
 
 | TSX | Rust | 返回 |
 |---|---|---|
-| `keyboardFrame()` | `keyboard_height()`、`keyboard_duration()` | 软键盘覆盖在 NSH 界面上的高度，单位为点（隐藏时为 0），以及其显示或隐藏动画的时长，单位为秒。 |
+| `keyboardFrame()` | `keyboard_height()`、`keyboard_duration()` | 软键盘覆盖在 NSH 界面上的高度，单位为点（隐藏时为 0），以及其显示或隐藏动画的时长，单位为毫秒。 |
 
 两者都是响应式的：读取它们的 effect、JSX 表达式或样式闭包会在键盘显示、隐藏或改变高度时重新运行。
 

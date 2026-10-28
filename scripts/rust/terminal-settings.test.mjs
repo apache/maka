@@ -39,7 +39,7 @@ const modules = {
     'export const message = (key, values) => values ? key.replace(/\\{(\\w+)\\}/g, (_, key) => values[key]) : key; export class UiError extends Error { constructor(key, values) { super(message(key, values)); } }',
   './settingsOperations':
     'export const credentialBasis = status => status?.configured ? { locator: status.locator, credentialId: status.credentialId, revision: status.revision } : null; export const settingsRejection = result => new Error(result.kind);',
-  './connectionLogin.ts':
+  './connectionLoginState.ts':
     'export const createConnectionLogin = (_, owner) => { globalThis.__terminalSettingsFixtures.login = owner; return {}; };',
 };
 const settingsUrl = new URL('../../products/maka/workbench/app/settings.ts', import.meta.url).href;

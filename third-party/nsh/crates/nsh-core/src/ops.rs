@@ -1307,10 +1307,12 @@ pub enum ListViewport {
 /// Without thresholds, any visible pixel does.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Viewability {
-    /// Percent of the viewport an item must cover.
-    pub view_area_percent: Option<f32>,
-    /// Percent of an item that must be visible.
-    pub item_visible_percent: Option<f32>,
+    /// How much of the viewport an item must cover (TS:
+    /// `viewAreaCoverageThreshold`, 0 to 1).
+    pub view_area_coverage_threshold: Option<Percentage>,
+    /// How much of an item must be visible (TS: `itemVisibleThreshold`, 0
+    /// to 1).
+    pub item_visible_threshold: Option<Percentage>,
 }
 
 /// Where a header item goes (`<headeritem slot>`).

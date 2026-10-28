@@ -158,9 +158,6 @@ pub(crate) struct A11y {
     pub(crate) node_bounds: FxHashMap<NodeId, Bounds<Pixels>>,
     pub(crate) input_origins: FxHashMap<NodeId, std::rc::Weak<crate::DispatchOrigin>>,
     pub(crate) action_listeners: FxHashMap<NodeId, Vec<(Action, A11yActionListener)>>,
-    /// The window's title, used to label the root node so assistive
-    /// technology can tell windows apart.
-    window_title: Option<SharedString>,
     /// The focus id we most recently reported as having no accessibility node,
     /// used to log at most once per focus change rather than every frame.
     last_focus_without_node: Option<FocusId>,
@@ -190,11 +187,7 @@ impl A11y {
         }
     }
 
-    pub(crate) fn new(
-        active_flag: Arc<AtomicBool>,
-        force_disabled: bool,
-        window_title: Option<SharedString>,
-    ) -> Self {
+    pub(crate) fn new(active_flag: Arc<AtomicBool>, force_disabled: bool) -> Self {
         Self {
             force_disabled,
             active_flag,
@@ -204,7 +197,6 @@ impl A11y {
             node_bounds: FxHashMap::default(),
             action_listeners: FxHashMap::default(),
             input_origins: FxHashMap::default(),
-            window_title,
             last_focus_without_node: None,
             debug: debug::A11yDebug::default(),
             #[cfg(debug_assertions)]
@@ -226,10 +218,6 @@ impl A11y {
                  instead. Give it both an `.id(...)` and a `.role(...)` to expose it."
             );
         }
-    }
-
-    pub(crate) fn set_window_title(&mut self, title: impl Into<SharedString>) {
-        self.window_title = Some(title.into());
     }
 
     /// Ensures that [`Self::is_active`] returns up to date information.
@@ -301,24 +289,28 @@ impl A11y {
     }
 
     /// Clear per-frame state and push the root node to start a new frame.
-    pub(crate) fn begin_frame(&mut self) {
+    pub(crate) fn begin_frame(&mut self, window_title: Option<&SharedString>) {
         crate::fast::a11y::begin_frame(self);
         self.focus_ids.clear();
         self.node_bounds.clear();
         self.action_listeners.clear();
         self.input_origins.clear();
-        self.nodes.begin_frame(self.window_title.as_ref());
+        self.nodes.begin_frame(window_title);
     }
 
     /// Finalize the tree and produce a [`TreeUpdate`] for the platform adapter.
-    pub(crate) fn end_frame(&mut self, frame: debug::FrameDebugInfo) -> TreeUpdate {
+    pub(crate) fn end_frame(
+        &mut self,
+        frame: debug::FrameDebugInfo,
+        window_title: Option<&SharedString>,
+    ) -> TreeUpdate {
         crate::fast::a11y::A11yLog::end_frame(&mut self.nodes.fast);
         let update = self.nodes.finalize();
         self.debug.capture(
             &update,
             self.nodes.focus,
             self.nodes.active_descendant,
-            self.window_title.as_ref(),
+            window_title,
             frame,
         );
         #[cfg(debug_assertions)]
@@ -730,8 +722,8 @@ mod tests {
     }
 
     fn new_a11y() -> A11y {
-        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), false, None);
-        a11y.begin_frame();
+        let mut a11y = A11y::new(Arc::new(AtomicBool::new(true)), false);
+        a11y.begin_frame(None);
         a11y
     }
 
@@ -739,7 +731,7 @@ mod tests {
     fn accessibility_enabled_is_independent_of_activation() {
         for force_disabled in [false, true] {
             for active in [false, true] {
-                let mut a11y = A11y::new(Arc::new(AtomicBool::new(active)), force_disabled, None);
+                let mut a11y = A11y::new(Arc::new(AtomicBool::new(active)), force_disabled);
                 a11y.sync_active_flag();
 
                 assert_eq!(a11y.is_enabled(), !force_disabled);
@@ -976,7 +968,7 @@ mod tests {
         a11y.nodes.pop(); // c
         a11y.nodes.pop(); // b
 
-        let update = a11y.end_frame(Default::default());
+        let update = a11y.end_frame(Default::default(), None);
         assert_eq!(update.focus, a);
     }
 }

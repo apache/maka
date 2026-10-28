@@ -119,7 +119,6 @@ jobs:
       - name: Verify Computer Use bridge build
         run: |
           node scripts/rust/check-cua-build.mjs
-          just product
           cargo build --locked -p maka-cli --no-default-features
           target/debug/maka --version
           cargo test --locked -p maka-computer-use --no-default-features --lib --test native --test repl_contract
@@ -244,7 +243,7 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype6-dev libssl-dev \
             libvulkan1 mesa-vulkan-drivers libwayland-dev libx11-xcb-dev libxcb1-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
-      - name: Test GPUI animated prop ordering and focus ownership
+      - name: Test GPUI input ownership, window reload and pixel transport
         shell: bash
         timeout-minutes: 30
         run: |
@@ -253,7 +252,8 @@ jobs:
           test "$available" -ge 17179869184 || { echo "GPUI queue tests require 16 GiB free before compilation" >&2; exit 1; }
           test "$inodes" -ge 100000 || { echo "GPUI queue tests require 100000 free inodes" >&2; exit 1; }
           args=(--locked --manifest-path third-party/nsh/crates/gpui/Cargo.toml
-            -p nsh-platform-gpui --no-default-features --features nsh-platform-gpui/js
+            -p nsh-platform-gpui -p nsh-gpui-terminal --no-default-features
+            --features nsh-platform-gpui/js,nsh-platform-gpui/shot
             --lib)
           queue_filter=native::tests::animated_props_
           cargo test "${args[@]}" "$queue_filter" -- --list | tee "$RUNNER_TEMP/nsh-gpui-queue-tests.txt"
@@ -267,6 +267,18 @@ jobs:
           grep -Fx "$focus_test: test" "$RUNNER_TEMP/nsh-gpui-focus-tests.txt"
           test "$(grep -c ': test$' "$RUNNER_TEMP/nsh-gpui-focus-tests.txt")" -eq 1
           cargo test "${args[@]}" "$focus_test" -- --exact --test-threads=1
+          window_test=tests::windows
+          cargo test "${args[@]}" "$window_test" -- --exact --list | tee "$RUNNER_TEMP/nsh-gpui-window-tests.txt"
+          grep -Fx "$window_test: test" "$RUNNER_TEMP/nsh-gpui-window-tests.txt"
+          test "$(grep -c ': test$' "$RUNNER_TEMP/nsh-gpui-window-tests.txt")" -eq 1
+          cargo test "${args[@]}" "$window_test" -- --exact --test-threads=1
+          kitty_filter=kitty::tests::
+          cargo test "${args[@]}" "$kitty_filter" -- --list | tee "$RUNNER_TEMP/nsh-kitty-tests.txt"
+          for name in rgba_payload_survives_chunking_with_the_previous_image_retained_below complete_frames_preserve_large_scenes_and_reject_previous_slot_reuse; do
+            grep -Fx "kitty::tests::$name: test" "$RUNNER_TEMP/nsh-kitty-tests.txt"
+          done
+          test "$(grep -c ': test$' "$RUNNER_TEMP/nsh-kitty-tests.txt")" -eq 2
+          cargo test "${args[@]}" "$kitty_filter" -- --test-threads=1
       - name: Report NSH storage
         if: ${{ always() }}
         run: |

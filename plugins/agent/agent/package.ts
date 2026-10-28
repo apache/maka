@@ -29,11 +29,9 @@ export default {
     'zh-CN': { displayName: '助手运行', description: '运行对话、执行任务和管理助手状态。' },
   },
   application: {
-    entries: {
-      host: {
-        ...native(sdk.nativeImplementations.agent),
-        imports: agentImports,
-      },
+    host: {
+      ...native(sdk.nativeImplementations.agent),
+      imports: agentImports,
     },
   },
 };

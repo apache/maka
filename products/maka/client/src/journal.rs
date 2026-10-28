@@ -469,6 +469,18 @@ impl Journal {
             .map_err(error)?;
         rows.into_iter().map(decode_operation).collect()
     }
+    pub(crate) async fn pending_ui(
+        &self,
+        host: &DeploymentRef,
+        instance: &InstanceId,
+    ) -> Result<Vec<Operation>> {
+        let rows = sqlx::query("SELECT context,reference,receipt,abandoned FROM operations WHERE domain=? AND deployment=? AND json_extract(context,'$.correlation.kind')='ui' AND json_extract(context,'$.correlation.instance')=? AND receipt IS NULL AND abandoned=0 ORDER BY rowid DESC")
+            .bind(&host.state_domain)
+            .bind(host.deployment.to_string())
+            .bind(serde_json::to_string(instance).map_err(error)?)
+            .fetch_all(&self.pool).await.map_err(error)?;
+        rows.into_iter().map(decode_operation).collect()
+    }
     pub(crate) async fn pending_settings(&self, host: &DeploymentRef) -> Result<Vec<Operation>> {
         let rows = sqlx::query(recovery::SETTINGS)
             .bind(&host.state_domain)

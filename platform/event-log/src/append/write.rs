@@ -23,7 +23,7 @@ use crate::{
     EventLog, StoreError,
     writeback::{Notification, Prepared, Statement},
 };
-use maka_agent_facts::event::{EventWrite, Fact, LogScope};
+use maka_agent_facts::event::{EventWrite, Fact};
 use sqlx::SqliteConnection;
 
 pub(crate) struct WriteAppend {
@@ -32,19 +32,18 @@ pub(crate) struct WriteAppend {
 impl WriteAppend {
     pub(crate) fn from_events(events: &[EventWrite]) -> Option<Self> {
         (!events.is_empty()
-            && events.iter().all(|write| match &write.event().fact {
-                Fact::InvocationOpened { .. }
-                | Fact::ModelObserved { .. }
-                | Fact::ToolDispatched { .. }
-                | Fact::ToolRejected { .. }
-                | Fact::ToolSettled { .. } => true,
-                Fact::ModelRequested {
-                    purpose: maka_agent_facts::context::ModelPurpose::Main,
-                    checkpoint_event_id: None,
-                    source_scope,
-                    ..
-                } => !matches!(source_scope, LogScope::Lineage { .. }),
-                _ => false,
+            && events.iter().all(|write| {
+                matches!(
+                    &write.event().fact,
+                    Fact::InvocationOpened { .. }
+                        | Fact::ModelRequested { .. }
+                        | Fact::ModelObserved { .. }
+                        | Fact::ModelCompleted { .. }
+                        | Fact::ModelInterrupted { .. }
+                        | Fact::ToolDispatched { .. }
+                        | Fact::ToolRejected { .. }
+                        | Fact::ToolSettled { .. }
+                )
             }))
         .then(|| Self {
             events: events.to_vec(),

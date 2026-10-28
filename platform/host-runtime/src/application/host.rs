@@ -88,11 +88,13 @@ struct Session {
     peer: Arc<Peers>,
     transport: Arc<Server>,
     mode: SessionMode,
+    parent: Option<Uuid>,
 }
 enum SessionMode {
     Owned {
         selections: BTreeMap<String, HostEndpoint>,
     },
+    Ui,
     Peer {
         source: DeploymentRef,
         selections: BTreeMap<String, HostEndpoint>,
@@ -494,6 +496,8 @@ impl Host {
                 let session = self.sessions.lock().unwrap().get(&id).cloned();
                 if let Some(session) = session {
                     session.peer.replace(vec![])?;
+                    session.transport.request_close();
+                    self.close_ui_children(id).await?;
                     session.transport.close().await?;
                 }
                 let stop = {
@@ -513,31 +517,34 @@ impl Host {
                 }
                 wire::write(&mut output, &Response::Closed).await
             }
-            request @ (Request::Connect | Request::ConnectPeer { .. }) => {
-                let gate = self.access_gate.lock().await;
+            request @ (Request::Connect
+            | Request::ConnectPeer { .. }
+            | Request::ConnectUi { .. }) => {
+                let mut gate = Some(self.access_gate.lock().await);
                 let principal = self
                     .identify(&authority, opening.client_instance.as_deref())
                     .await?;
-                let (mode, peer, endpoints, selections) = match request {
+                let (mode, peer, endpoints, consumers, source, ui, parent) = match request {
                     Request::Connect => {
                         let selections = {
                             let configuration = self.configuration.lock().unwrap();
                             let Configuration::PublicHost { endpoints, .. } = &*configuration;
                             endpoints.clone()
                         };
+                        let consumers: BTreeMap<_, _> = selections
+                            .iter()
+                            .map(|(name, endpoint)| (name.clone(), endpoint.consumer.clone()))
+                            .collect();
                         (
                             SessionMode::Owned {
                                 selections: selections.clone(),
                             },
-                            Peer::new(
-                                self.source.clone(),
-                                selections
-                                    .values()
-                                    .map(|endpoint| endpoint.consumer.clone())
-                                    .collect(),
-                            )?,
+                            Peer::new(self.source.clone(), consumers.values().cloned().collect())?,
                             Endpoints::capture(&self.application.client(), &selections).await?,
-                            selections,
+                            consumers,
+                            self.source.clone(),
+                            None,
+                            None,
                         )
                     }
                     Request::ConnectPeer {
@@ -550,14 +557,106 @@ impl Host {
                         let peer = Peer::new(source.clone(), consumers)?;
                         let endpoints =
                             Endpoints::capture(&self.application.client(), &selections).await?;
+                        let consumers = selections
+                            .iter()
+                            .map(|(name, endpoint)| (name.clone(), endpoint.consumer.clone()))
+                            .collect();
                         (
-                            SessionMode::Peer {
-                                source,
-                                selections: selections.clone(),
-                            },
+                            SessionMode::Peer { source, selections },
                             peer,
                             endpoints,
-                            selections,
+                            consumers,
+                            self.source.clone(),
+                            None,
+                            None,
+                        )
+                    }
+                    Request::ConnectUi {
+                        owner,
+                        source,
+                        instance,
+                    } => {
+                        let parent = self.ui_parent(owner, &principal)?;
+                        if source.state_domain != self.source.state_domain
+                            || source.deployment != self.source.deployment
+                        {
+                            return Err("foreign UI deployment source".into());
+                        }
+                        drop(gate.take());
+                        let loaded = self
+                            .store
+                            .load_application_at(&source)
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .ok_or("UI deployment source not found")?;
+                        loaded
+                            .plan()
+                            .instances()
+                            .get(&instance)
+                            .filter(|entry| !entry.disabled && entry.ui_entry().is_some())
+                            .ok_or("UI consumer is not declared and enabled")?;
+                        drop(loaded);
+                        let application = self.application.client();
+                        let bindings = tokio::select! {
+                            biased;
+                            () = self.stop.cancelled() => return Err("Host is closing".into()),
+                            () = parent.transport.wait_for_close() => return Err("UI owner session is closing".into()),
+                            bindings = application.capture_ui(source.clone(), instance.clone()) => bindings?,
+                        };
+                        let mut endpoints = BTreeMap::new();
+                        let mut imports = BTreeMap::new();
+                        for (name, providers) in bindings {
+                            let many = providers.len() > 1;
+                            let mut names = Vec::new();
+                            for (index, binding) in providers.into_iter().enumerate() {
+                                let endpoint = if many {
+                                    format!("{name}/{index}")
+                                } else {
+                                    name.clone()
+                                };
+                                let maka_plugin_core::contract::Interface::Service { methods } =
+                                    &binding.contract().interface
+                                else {
+                                    return Err("UI import requires a service".into());
+                                };
+                                let grant = super::transport::Grant {
+                                    methods: methods.keys().cloned().collect(),
+                                    recovery: false,
+                                };
+                                if endpoints
+                                    .insert(
+                                        endpoint.clone(),
+                                        super::transport::Endpoint::new(binding, grant)?,
+                                    )
+                                    .is_some()
+                                {
+                                    return Err("UI import endpoint names collide".into());
+                                }
+                                names.push(endpoint);
+                            }
+                            imports.insert(name, names);
+                        }
+                        let consumers = endpoints
+                            .keys()
+                            .map(|name| (name.clone(), instance.clone()))
+                            .collect();
+                        gate = Some(self.access_gate.lock().await);
+                        if self
+                            .identify(&authority, opening.client_instance.as_deref())
+                            .await?
+                            != principal
+                        {
+                            return Err("UI owner principal changed".into());
+                        }
+                        self.ui_parent(owner, &principal)?;
+                        (
+                            SessionMode::Ui,
+                            Peer::new(source.clone(), [instance.clone()].into())?,
+                            Endpoints::from(endpoints),
+                            consumers,
+                            source,
+                            Some(protocol::UiConnection { instance, imports }),
+                            Some(owner),
                         )
                     }
                     _ => unreachable!(),
@@ -572,6 +671,7 @@ impl Host {
                         endpoints,
                     )?,
                     mode,
+                    parent,
                 });
                 {
                     let mut sessions = self.sessions.lock().unwrap();
@@ -588,12 +688,10 @@ impl Host {
                         version: VERSION,
                         epoch: self.epoch,
                         session: id,
-                        source: self.source.clone(),
-                        consumers: selections
-                            .into_iter()
-                            .map(|(name, endpoint)| (name, endpoint.consumer))
-                            .collect(),
+                        source,
+                        consumers,
                         catalogue: session.transport.catalogue(),
+                        ui,
                     };
                     let response = Response::Connected(connected);
                     tokio::select! {
@@ -717,6 +815,8 @@ impl Host {
                 // Revocation fences late admissions, then the same transport
                 // drains all original calls before releasing the session.
                 session.peer.replace(vec![])?;
+                session.transport.request_close();
+                self.close_ui_children(id).await?;
                 session.transport.close().await?;
                 {
                     let _gate = self.access_gate.lock().await;
@@ -750,7 +850,7 @@ impl Host {
                 wire::write(&mut output, &Response::Accepted).await?;
                 // Carry buffered bytes into the existing bounded transport.
                 match &session.mode {
-                    SessionMode::Owned { .. } => {
+                    SessionMode::Owned { .. } | SessionMode::Ui => {
                         session
                             .transport
                             .serve_owned(input.inner, output, session.peer.clone())?
@@ -766,6 +866,46 @@ impl Host {
             }
         }
     }
+    fn ui_parent(&self, owner: Uuid, principal: &Principal) -> Result<Arc<Session>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(&owner)
+            .filter(|session| {
+                &session.principal == principal
+                    && matches!(session.mode, SessionMode::Owned { .. })
+                    && !session.transport.is_closing()
+            })
+            .cloned()
+            .ok_or("UI binding capture requires a live owner session".into())
+    }
+
+    async fn close_ui_children(&self, owner: Uuid) -> Result<()> {
+        let children: Vec<_> = {
+            let _gate = self.access_gate.lock().await;
+            self.sessions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, session)| session.parent == Some(owner))
+                .map(|(id, session)| (*id, session.clone()))
+                .collect()
+        };
+        for (_, child) in &children {
+            child.peer.replace(vec![])?;
+            child.transport.request_close();
+        }
+        for (_, child) in &children {
+            child.transport.close().await?;
+        }
+        let _gate = self.access_gate.lock().await;
+        let mut sessions = self.sessions.lock().unwrap();
+        for (id, _) in children {
+            sessions.remove(&id);
+        }
+        Ok(())
+    }
+
     fn check_peer_selections(&self, selections: &BTreeMap<String, HostEndpoint>) -> Result<()> {
         if selections.is_empty() {
             return Err("invalid peer endpoint selections".into());

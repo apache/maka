@@ -52,12 +52,14 @@ impl Manifest {
             .application
             .as_ref()
             .ok_or_else(|| Error::Invalid("application declaration is missing".into()))?;
-        for entry in application.entries.values() {
-            if let maka_plugin_core::package::Implementation::JavaScript { module, .. } =
+        if let Some(entry) = &application.host
+            && let maka_plugin_core::package::Implementation::JavaScript { module, .. } =
                 &entry.implementation
-            {
-                validate_path(module)?;
-            }
+        {
+            validate_path(module)?;
+        }
+        if let Some(ui) = &application.ui {
+            validate_path(&ui.module)?;
         }
         if self.localizations.keys().any(|locale| {
             locale.is_empty()

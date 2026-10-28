@@ -378,6 +378,7 @@ async fn prepared_handles_and_wire_views_are_session_bound() {
                 prior_unknown: false,
             },
             "scope-test",
+            None,
         )
         .await
         .unwrap();
@@ -390,12 +391,12 @@ async fn prepared_handles_and_wire_views_are_session_bound() {
         Err(StoreError::InvalidTransition(reason)) if reason == "foreign Session resource"
     ));
     assert!(
-        a.prepare_wire_view(&view, WireFormat::Responses, "codec")
+        a.prepare_wire_view(&view, WireFormat::Responses, "codec", None)
             .await
             .is_err()
     );
     let wire_build = b
-        .prepare_wire_view(&view, WireFormat::Responses, "codec")
+        .prepare_wire_view(&view, WireFormat::Responses, "codec", None)
         .await
         .unwrap();
     assert!(a.finish_prepared_wire(&wire_build).await.is_err());

@@ -33,10 +33,9 @@ pub struct PanGesture {
     pub origin: Point<Points>,
     /// How far the centroid moved since then (TS: `dx`, `dy`).
     pub delta: Point<Points>,
-    /// Its velocity, points per millisecond (smoothed over a few
-    /// samples).
+    /// Its velocity, points per second (smoothed over a few samples).
     pub vx: f32,
-    /// Its velocity, points per millisecond.
+    /// Its velocity, points per second.
     pub vy: f32,
     /// The fingers down.
     pub active_touches: u32,
@@ -81,7 +80,8 @@ impl PanGesture {
         }
         self.active_touches = n;
         if n == ln {
-            let dt = (touch.timestamp - lt).max(1.0) as f32;
+            // Timestamps are milliseconds, velocities per second.
+            let dt = (touch.timestamp - lt).max(1.0) as f32 / 1000.0;
             self.delta.x += px(x - lx);
             self.delta.y += px(y - ly);
             self.vx = self.vx * 0.3 + (x - lx) / dt * 0.7;

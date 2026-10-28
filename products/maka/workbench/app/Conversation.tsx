@@ -2211,10 +2211,7 @@ export function Conversation(props: ConversationProps) {
             }}
             estimatedItemSize={96}
             maintainVisibleContentPosition={
-              atHistoryTail() &&
-              !awayFromLatest() &&
-              innerReader() === null &&
-              navigation() === null
+              atHistoryTail() && innerReader() === null && navigation() === null
                 ? { autoscrollToBottomThreshold: 32 }
                 : {}
             }

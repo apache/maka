@@ -136,7 +136,7 @@ async fn more_than_ten_thousand_actual_observations_remain_readable() {
         .unwrap();
 
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, session))
+        crate::test_store::inspect_cache(&log, |db| rows(db, session))
             .await
             .len(),
         4
