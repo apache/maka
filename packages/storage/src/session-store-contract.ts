@@ -116,6 +116,19 @@ export class SessionMetadataVersionConflictError extends SessionMetadataConflict
   }
 }
 
+export class StoredSessionMessageIncompatibleError extends Error {
+  readonly name = 'StoredSessionMessageIncompatibleError';
+  readonly code = 'stored_session_message_incompatible';
+
+  constructor(
+    readonly sessionId: string,
+    readonly sequence: number,
+    options?: ErrorOptions,
+  ) {
+    super(`Stored Session message ${sequence} for ${sessionId} is incompatible`, options);
+  }
+}
+
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function isSafeSessionId(sessionId: string): boolean {
