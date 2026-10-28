@@ -90,7 +90,7 @@ impl Catalog {
 #[derive(Debug)]
 pub struct Snapshot {
     models: Models,
-    descriptions: BTreeMap<String, ModelInfo>,
+    shared: BTreeMap<String, ModelInfo>,
 }
 
 impl Snapshot {
@@ -129,7 +129,7 @@ impl Snapshot {
         }
         Ok(Self {
             models,
-            descriptions: BTreeMap::new(),
+            shared: BTreeMap::new(),
         })
     }
 
@@ -148,21 +148,6 @@ impl Snapshot {
             .map(openrouter::parse)
             .transpose()?
             .unwrap_or_default();
-        snapshot.descriptions = router
-            .iter()
-            .map(|model| {
-                (
-                    model.id.clone(),
-                    ModelInfo {
-                        id: model.id.clone(),
-                        display_name: model.display_name.clone(),
-                        description: model.description.clone(),
-                        knowledge_cutoff: model.knowledge_cutoff.clone(),
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect();
         let bridges: BTreeMap<_, _> = entries
             .iter()
             .filter(|entry| entry.provider == "openrouter")
@@ -173,21 +158,66 @@ impl Snapshot {
                     .map(|canonical| (entry.model.id.clone(), canonical.clone()))
             })
             .collect();
-        let descriptions = merge::shared_descriptions(&bridges, &router);
+        let shared = merge::shared_metadata(&bridges, &router);
+        let mut aliases = BTreeMap::<&str, Option<&str>>::new();
+        let mut declare = |alias, canonical| {
+            aliases
+                .entry(alias)
+                .and_modify(|current| {
+                    if *current != Some(canonical) {
+                        *current = None;
+                    }
+                })
+                .or_insert(Some(canonical));
+        };
+        for model in &router {
+            declare(
+                model.id.as_str(),
+                bridges
+                    .get(&model.id)
+                    .map_or(model.id.as_str(), String::as_str),
+            );
+        }
+        for entry in &entries {
+            if let Some(canonical) = entry.canonical.as_deref() {
+                declare(entry.model.id.as_str(), canonical);
+            }
+        }
+        for canonical in shared.keys() {
+            declare(canonical.as_str(), canonical.as_str());
+        }
+        let exact: BTreeMap<_, _> = router
+            .iter()
+            .map(|model| (model.id.as_str(), model))
+            .collect();
+        snapshot.shared = aliases
+            .into_iter()
+            .filter_map(|(alias, canonical)| {
+                let mut model = shared.get(canonical?)?.clone();
+                model.id = alias.into();
+                if let Some(exact) = exact.get(alias) {
+                    model.display_name = exact.display_name.clone().or(model.display_name);
+                    model.description = exact.description.clone().or(model.description);
+                    model.knowledge_cutoff =
+                        exact.knowledge_cutoff.clone().or(model.knowledge_cutoff);
+                }
+                Some((alias.into(), model))
+            })
+            .collect();
         for model in snapshot
             .models
             .values_mut()
             .flat_map(|models| models.values_mut())
         {
-            if let Some(description) = snapshot.descriptions.get(&model.id) {
-                merge::fill_description(model, description);
+            if let Some(common) = snapshot.shared.get(&model.id) {
+                merge::fill_metadata(model, common);
             }
         }
         for mut entry in entries {
             if entry.provider != "openrouter"
-                && let Some(common) = entry.canonical.as_ref().and_then(|id| descriptions.get(id))
+                && let Some(common) = entry.canonical.as_ref().and_then(|id| shared.get(id))
             {
-                merge::fill_description(&mut entry.model, common);
+                merge::fill_metadata(&mut entry.model, common);
             }
             // Exact IDs may fill omissions unless both sources explicitly bind
             // that spelling to different canonical models.
@@ -196,9 +226,9 @@ impl Snapshot {
                 .as_ref()
                 .zip(bridges.get(&entry.model.id))
                 .is_none_or(|(route, gateway)| route == gateway)
-                && let Some(description) = snapshot.descriptions.get(&entry.model.id)
+                && let Some(common) = snapshot.shared.get(&entry.model.id)
             {
-                merge::fill_description(&mut entry.model, description);
+                merge::fill_metadata(&mut entry.model, common);
             }
             snapshot
                 .models
@@ -216,13 +246,13 @@ impl Snapshot {
         Ok(snapshot)
     }
 
-    /// An unknown route may borrow prose through an exact public ID. Its
-    /// execution controls, limits and availability remain unknown.
+    /// Shared model capacities and prose fill unknown routes through exact IDs
+    /// or unambiguous public aliases. Route-specific controls stay local.
     pub fn get(&self, provider: &str, exact_model_id: &str) -> Option<&ModelInfo> {
         self.models
             .get(provider)
             .and_then(|models| models.get(exact_model_id))
-            .or_else(|| self.descriptions.get(exact_model_id))
+            .or_else(|| self.shared.get(exact_model_id))
     }
 
     /// Restore the one public observation captured at admission. A captured
@@ -245,7 +275,7 @@ impl Snapshot {
         }
         Ok(Self {
             models,
-            descriptions: BTreeMap::new(),
+            shared: BTreeMap::new(),
         })
     }
 

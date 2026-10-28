@@ -1101,7 +1101,7 @@ impl ModelRequest {
                 );
                 if request.method() == Method::GET && request.uri().path() == "/v1/models" {
                     discovery.fetch_add(1, Ordering::SeqCst);
-                    let body = Bytes::from_static(br#"{"data":[{"id":"fixture-discovered-model","reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["max","high","low","none"],"default_effort":"high"}}]}"#);
+                    let body = Bytes::from_static(br#"{"data":[{"id":"fixture-discovered-model","name":"Discovered UI Model","context_length":131072,"top_provider":{"max_completion_tokens":4096},"reasoning":{"mandatory":false,"default_enabled":true,"supported_efforts":["max","high","low","none"],"default_effort":"high"}}]}"#);
                     return Ok::<Response<ModelBody>, hyper::Error>(
                         Response::builder()
                             .header(hyper::header::CONTENT_TYPE, "application/json")

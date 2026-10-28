@@ -18,7 +18,7 @@
  */
 
 use super::probe::{Capabilities, Protocol, SixelGeometry};
-use nsh_gpui_terminal::{FrameToken, SubmittedFrame};
+use nsh_gpui_terminal::{CandidateFrame, FrameToken};
 use std::{collections::VecDeque, time::Instant};
 use termina::{
     Event, WindowSize,
@@ -37,11 +37,15 @@ pub(in crate::terminal) struct Offer {
     pub geometry: u64,
 }
 
-pub(super) struct Candidate {
-    pub frame: SubmittedFrame,
+pub(super) struct Preparation {
+    pub frame: nsh_gpui_terminal::PreparedFrame,
     pub geometry: u64,
-    /// Present only for the existing opt-in frame trace.
     pub pump_started: Option<Instant>,
+}
+
+pub(super) struct Candidate {
+    pub frame: CandidateFrame,
+    pub geometry: u64,
 }
 
 pub(super) enum WireFrame {
@@ -71,7 +75,7 @@ pub(super) enum Completion {
     },
 }
 
-/// Running readback and codec work retain their original capacity until return.
+/// GPU submission, readback and codec work keep their slots until completion.
 /// Complete snapshots can supersede another completed snapshot before writing.
 struct FrameJob {
     geometry: u64,
@@ -80,7 +84,9 @@ struct FrameJob {
 
 enum FrameWork {
     Reserved,
-    Submitted(Candidate),
+    Prepared(Preparation),
+    Rendering(FrameToken),
+    Rendered(Candidate),
     Encoding(FrameToken),
     Ready(Encoded),
 }
@@ -89,7 +95,9 @@ impl FrameWork {
     fn token(&self) -> Option<FrameToken> {
         match self {
             Self::Reserved => None,
-            Self::Submitted(candidate) => Some(candidate.frame.token()),
+            Self::Prepared(preparation) => Some(preparation.frame.token()),
+            Self::Rendering(token) => Some(token.clone()),
+            Self::Rendered(candidate) => Some(candidate.frame.token()),
             Self::Encoding(token) => Some(token.clone()),
             Self::Ready(encoded) => Some(encoded.frame.token()),
         }
@@ -170,11 +178,17 @@ impl Inbox {
             || self.capabilities.viewport().is_none()
             || self.frames.len() >= capacity
             || (protocol == Some(Protocol::Iterm2) && self.in_flight.is_some())
+            || self.frames.iter().any(|job| {
+                matches!(
+                    job.work,
+                    FrameWork::Reserved | FrameWork::Prepared(_) | FrameWork::Rendering(_)
+                )
+            })
             || (protocol == Some(Protocol::Kitty)
                 && self
                     .frames
                     .iter()
-                    .any(|job| matches!(job.work, FrameWork::Reserved | FrameWork::Submitted(_))))
+                    .any(|job| matches!(job.work, FrameWork::Rendered(_))))
         {
             return false;
         }
@@ -196,16 +210,45 @@ impl Inbox {
         true
     }
 
-    pub(super) fn submitted(&mut self, candidate: Candidate) -> bool {
+    pub(super) fn prepared(&mut self, preparation: Preparation) -> bool {
         let Some(job) = self.frames.iter_mut().find(|job| {
-            job.geometry == candidate.geometry && matches!(job.work, FrameWork::Reserved)
+            job.geometry == preparation.geometry && matches!(job.work, FrameWork::Reserved)
         }) else {
             return false;
         };
-        // A resize may arrive while draw submits. Keep that old readback's
-        // reservation until its worker returns, just like an active codec.
-        job.work = FrameWork::Submitted(candidate);
+        job.work = FrameWork::Prepared(preparation);
         true
+    }
+
+    pub(super) fn take_preparation(&mut self) -> Option<Preparation> {
+        let job = self
+            .frames
+            .iter_mut()
+            .find(|job| matches!(job.work, FrameWork::Prepared(_)))?;
+        let token = job.work.token().expect("prepared native frame");
+        let FrameWork::Prepared(preparation) =
+            std::mem::replace(&mut job.work, FrameWork::Rendering(token))
+        else {
+            unreachable!()
+        };
+        Some(preparation)
+    }
+
+    pub(super) fn rendered(&mut self, candidate: Candidate) -> bool {
+        let token = candidate.frame.token();
+        let Some(job) = self.frames.iter_mut().find(|job| {
+            job.geometry == candidate.geometry
+                && matches!(&job.work, FrameWork::Rendering(active) if active == &token)
+        }) else {
+            return false;
+        };
+        job.work = FrameWork::Rendered(candidate);
+        true
+    }
+
+    pub(super) fn rendering_finished(&mut self, token: &FrameToken) {
+        self.frames
+            .retain(|job| !matches!(&job.work, FrameWork::Rendering(active) if active == token));
     }
 
     pub(super) fn release_reservation(&mut self) {
@@ -234,9 +277,9 @@ impl Inbox {
         let job = self
             .frames
             .iter_mut()
-            .find(|job| matches!(job.work, FrameWork::Submitted(_)))?;
-        let token = job.work.token().expect("submitted native frame");
-        let FrameWork::Submitted(candidate) =
+            .find(|job| matches!(job.work, FrameWork::Rendered(_)))?;
+        let token = job.work.token().expect("rendered native frame");
+        let FrameWork::Rendered(candidate) =
             std::mem::replace(&mut job.work, FrameWork::Encoding(token))
         else {
             unreachable!()
@@ -245,7 +288,7 @@ impl Inbox {
     }
 
     /// A worker can only finish its own immutable token. Stale and cancelled
-    /// jobs release capacity here, after their readback/codec actually returned.
+    /// jobs release capacity here, after their codec actually returned.
     pub(super) fn finished(&mut self, token: &FrameToken, encoded: Option<Encoded>) -> Completion {
         let Some(index) = self
             .frames
@@ -457,11 +500,31 @@ impl Inbox {
         if matches!(event, Event::MouseLeave) {
             return Ok(false);
         }
-        self.events.push_back(Input {
+        let input = Input {
             event,
             geometry: self.geometry,
             queued_at: self.tracing.then(Instant::now),
-        });
+        };
+        if let Some(previous) = self.events.back_mut()
+            && previous.geometry == input.geometry
+            && match (&previous.event, &input.event) {
+                (Event::SgrMouse(old), Event::SgrMouse(new)) => {
+                    old.kind == MouseEventKind::Moved
+                        && new.kind == MouseEventKind::Moved
+                        && old.modifiers == new.modifiers
+                }
+                (Event::Mouse(old), Event::Mouse(new)) => {
+                    old.kind == MouseEventKind::Moved
+                        && new.kind == MouseEventKind::Moved
+                        && old.modifiers == new.modifiers
+                }
+                _ => false,
+            }
+        {
+            *previous = input;
+        } else {
+            self.events.push_back(input);
+        }
         Ok(false)
     }
 
@@ -498,7 +561,7 @@ impl Inbox {
         self.resize = Some(self.capabilities.size);
         self.published = None;
         self.cursor = super::cursor::Cursor::default();
-        // A submitted readback or codec still consumes its original slot.
+        // Running submission, readback and codec work keep their original slots.
         // Completed stale wire is safe to retire immediately.
         self.frames
             .retain(|job| !matches!(job.work, FrameWork::Ready(_)));
@@ -668,21 +731,6 @@ mod tests {
     // Use authentic, ordered native tokens without widening FrameToken's API.
     // Only completion order is controlled below; no scheduler API is replaced.
     fn native_frames(count: usize) -> Vec<nsh_gpui_terminal::CandidateFrame> {
-        let mut completed = Vec::new();
-        native_submissions(count, |frame| {
-            let frame = frame.complete().unwrap();
-            assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
-            completed.push(frame);
-        });
-        assert!(
-            completed
-                .windows(2)
-                .all(|pair| pair[0].token().sequence() < pair[1].token().sequence())
-        );
-        completed
-    }
-
-    fn native_submissions(count: usize, mut receive: impl FnMut(SubmittedFrame)) {
         use gpui::{
             AppContext, Application, Bounds, Context, IntoElement, Render, Styled, Window,
             WindowBounds, WindowOptions, div, point, px, rgb, size,
@@ -699,7 +747,11 @@ mod tests {
         let received = frames.clone();
         let platform = nsh_gpui_terminal::TerminalPlatform::new(
             Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-            Box::new(move |frame| received.borrow_mut().push(frame)),
+            Box::new(move |frame| {
+                received
+                    .borrow_mut()
+                    .push(frame.submit().unwrap().complete().unwrap());
+            }),
             Arc::new(|| {}),
         )
         .unwrap();
@@ -721,6 +773,7 @@ mod tests {
                 .unwrap(),
             );
         });
+        let mut completed = Vec::new();
         for _ in 0..count {
             application.update(|cx| {
                 window
@@ -732,132 +785,18 @@ mod tests {
             });
             assert!(platform.pump());
             let frame = frames.borrow_mut().remove(0);
+            assert_eq!(&frame.pixels()[..4], &[255, 0, 0, 255]);
             assert!(frames.borrow().is_empty());
-            receive(frame);
+            completed.push(frame);
         }
+        assert!(
+            completed
+                .windows(2)
+                .all(|pair| pair[0].token().sequence() < pair[1].token().sequence())
+        );
         drop(application);
         platform.shutdown();
-    }
-
-    #[test]
-    fn kitty_overlaps_one_codec_with_draw_and_coalesces_only_unwritten_snapshots() {
-        fn finish(inbox: &mut Inbox, candidate: Candidate) -> Completion {
-            let frame = candidate.frame.complete().unwrap();
-            inbox.finished(
-                &frame.token(),
-                Some(Encoded {
-                    frame: WireFrame::Kitty(
-                        nsh_gpui_terminal::kitty::KittyFrame::encode(&frame, 4, 2).unwrap(),
-                    ),
-                    geometry: candidate.geometry,
-                }),
-            )
-        }
-
-        let mut caps = capabilities();
-        caps.protocol = Some(Protocol::Kitty);
-        let mut inbox = Inbox::new(caps, false);
-        inbox.last_fully_written_geometry = Some(1);
-        let mut active = None;
-        let mut writing = None;
-        let mut waiting = None;
-        let mut tokens = Vec::new();
-        native_submissions(4, |frame| {
-            let index = tokens.len();
-            tokens.push(frame.token());
-            assert!(
-                inbox.reserve_frame(),
-                "GPU lookahead remains available during encoding and writing"
-            );
-            assert!(inbox.submitted(Candidate {
-                frame,
-                geometry: 1,
-                pump_started: None
-            }));
-            assert!(
-                !inbox.can_submit(),
-                "only one submitted GPU lookahead can wait"
-            );
-            if index == 0 {
-                active = inbox.take_candidate();
-                assert!(active.is_some());
-                return;
-            }
-            if index == 1 {
-                assert!(inbox.take_candidate().is_none(), "the codec has one owner");
-                finish(&mut inbox, active.take().unwrap());
-                writing = inbox.take_encoded();
-                assert_eq!(writing.as_ref().unwrap().frame.token(), tokens[0]);
-                assert!(
-                    inbox.published.is_none(),
-                    "taking a snapshot is not a writer receipt"
-                );
-                active = inbox.take_candidate();
-                return;
-            }
-            if index == 2 {
-                assert!(inbox.take_candidate().is_none());
-                finish(&mut inbox, active.take().unwrap());
-                assert!(
-                    inbox.take_encoded().is_none(),
-                    "an active writer cannot be replaced"
-                );
-                let candidate = inbox.take_candidate().unwrap();
-                assert!(
-                    !inbox.can_submit(),
-                    "ready snapshot and codec own both positions"
-                );
-                match finish(&mut inbox, candidate) {
-                    Completion::Superseded { token, replacement } => {
-                        assert_eq!(token, tokens[1]);
-                        assert_eq!(replacement, tokens[2]);
-                    }
-                    Completion::Finished => {
-                        panic!("the newer complete snapshot must replace the waiting scene")
-                    }
-                }
-                waiting = Some(tokens[2].clone());
-                return;
-            }
-            active = inbox.take_candidate();
-            assert_eq!(
-                inbox.completed_frames().next().unwrap().token,
-                waiting.take().unwrap()
-            );
-            inbox.push(Event::WindowResized(caps.size)).unwrap();
-            inbox.resize.take();
-            assert!(
-                inbox.completed_frames().next().is_none(),
-                "resize discards only the unwritten complete snapshot"
-            );
-            assert_eq!(
-                inbox.frames.len(),
-                1,
-                "the old codec retains its position until completion"
-            );
-            finish(&mut inbox, active.take().unwrap());
-            assert!(inbox.frames.is_empty());
-            let writing = writing.take().unwrap();
-            inbox.written(
-                Offer {
-                    token: writing.frame.token(),
-                    geometry: 1,
-                },
-                Some(41),
-            );
-            assert!(
-                inbox.take_encoded().is_none(),
-                "the native owner must consume even a stale receipt"
-            );
-            let receipt = inbox.ready.take().unwrap();
-            assert_ne!(receipt.geometry, inbox.geometry);
-            inbox.presented(&receipt.token);
-            assert!(inbox.published.is_none());
-            assert!(inbox.can_submit());
-        });
-        assert_eq!(tokens.len(), 4);
-        assert!(inbox.frames.is_empty());
-        assert!(inbox.in_flight.is_none());
+        completed
     }
 
     fn native_encoded(frame: &nsh_gpui_terminal::CandidateFrame, geometry: u64) -> Encoded {
@@ -1139,69 +1078,6 @@ mod tests {
     }
 
     #[test]
-    fn first_flush_opens_parallel_admission_and_every_resize_closes_it() {
-        let mut inbox = Inbox::new(capabilities(), false);
-        inbox.frame_capacity = 5;
-        assert!(inbox.reserve_frame());
-        assert!(!inbox.can_submit(), "the first geometry admits one frame");
-        // A pump which produces no submission must return its reservation.
-        inbox.release_reservation();
-        assert!(inbox.reserve_frame());
-        let token = FrameToken::default();
-        inbox.frames.back_mut().unwrap().work = FrameWork::Encoding(token.clone());
-        inbox.finished(&token, Some(encoded(1)));
-        assert!(!inbox.can_submit(), "codec completion is not a flush");
-        let first = inbox.take_encoded().unwrap();
-        assert!(!inbox.can_submit(), "writer handoff is not a flush");
-        inbox.written(
-            Offer {
-                token: first.frame.token(),
-                geometry: 1,
-            },
-            None,
-        );
-        for _ in 0..5 {
-            assert!(inbox.reserve_frame());
-        }
-        assert!(
-            !inbox.can_submit(),
-            "all unhanded stages share the finite budget"
-        );
-        // Treat these reservations as executor-queued/active workers. Resize
-        // cannot recover their capacity before each worker really returns.
-        for job in &mut inbox.frames {
-            job.work = FrameWork::Encoding(token.clone());
-        }
-        inbox
-            .push(Event::WindowResized(capabilities().size))
-            .unwrap();
-        inbox.resize.take();
-        let receipt = inbox.ready.take().unwrap();
-        inbox.presented(&receipt.token);
-        assert_eq!(inbox.frames.len(), 5);
-        assert!(!inbox.can_submit());
-        inbox.finished(&token, Some(encoded(1)));
-        assert_eq!(
-            inbox.frames.len(),
-            4,
-            "a completed stale result releases only its own slot"
-        );
-        assert!(inbox.reserve_frame());
-        for _ in 0..4 {
-            inbox.finished(&token, None);
-        }
-        assert_eq!(inbox.frames.len(), 1);
-        assert!(
-            !inbox.can_submit(),
-            "new geometry needs its own whole flush even with spare capacity"
-        );
-        inbox.release_reservation();
-        assert!(inbox.frames.is_empty());
-        assert!(inbox.can_submit());
-        assert_eq!(inbox.last_fully_written_geometry, Some(1));
-    }
-
-    #[test]
     fn stale_ready_wire_retires_but_failure_and_cancel_return_only_the_finished_slot() {
         let mut inbox = Inbox::new(capabilities(), false);
         let token = FrameToken::default();
@@ -1229,35 +1105,6 @@ mod tests {
             inbox.ready.is_none(),
             "failure/cancel cannot manufacture a writer receipt"
         );
-    }
-
-    #[test]
-    fn kitty_preparation_can_pass_a_receipt_while_iterm2_remains_serial() {
-        for protocol in [Protocol::Kitty, Protocol::Iterm2] {
-            let mut caps = capabilities();
-            caps.protocol = Some(protocol);
-            let mut inbox = Inbox::new(caps, false);
-            inbox.frame_capacity = 5;
-            inbox.last_fully_written_geometry = Some(1);
-            assert!(inbox.reserve_frame());
-            assert!(!inbox.can_submit());
-            inbox.release_reservation();
-            let token = FrameToken::default();
-            inbox.in_flight = Some(Offer {
-                token: token.clone(),
-                geometry: 1,
-            });
-            inbox.written(Offer { token, geometry: 1 }, Some(41));
-            assert_eq!(
-                inbox.can_submit(),
-                protocol == Protocol::Kitty,
-                "Kitty preparation does not bind previous-image state"
-            );
-            let receipt = inbox.ready.take().unwrap();
-            inbox.presented(&receipt.token);
-            assert!(inbox.can_submit());
-            assert_eq!(inbox.last_fully_written_image, Some(41));
-        }
     }
 
     #[test]
@@ -1421,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn pointer_fifo_does_not_wait_for_output_and_resize_keeps_new_coordinates() {
+    fn hover_keeps_the_latest_position_and_ordered_input_survives_output_and_resize() {
         let mut inbox = Inbox::new(capabilities(), false);
         inbox.in_flight = Some(Offer {
             token: FrameToken::default(),
@@ -1446,15 +1293,37 @@ mod tests {
             pointer(MouseEventKind::Moved, 3, 4),
             pointer(MouseEventKind::Moved, 4, 5),
             down,
+            pointer(
+                MouseEventKind::Drag(termina::event::MouseButton::Left),
+                5,
+                6,
+            ),
+            pointer(
+                MouseEventKind::Drag(termina::event::MouseButton::Left),
+                6,
+                7,
+            ),
             wheel,
             up,
+            pointer(MouseEventKind::Moved, 6, 7),
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), Modifiers::NONE)),
+            pointer(MouseEventKind::Moved, 3, 4),
+            Event::SgrMouse(termina::event::SgrMouseEvent {
+                kind: MouseEventKind::Moved,
+                x: 4,
+                y: 5,
+                modifiers: Modifiers::SHIFT,
+            }),
+            Event::Paste("complete draft".into()),
+            pointer(MouseEventKind::Moved, 4, 5),
         ];
         for event in &events {
             inbox.push(event.clone()).unwrap();
         }
-        for event in events {
-            assert_eq!(inbox.pop().unwrap().event, event);
+        for event in &events[1..] {
+            assert_eq!(&inbox.pop().unwrap().event, event);
         }
+        assert!(inbox.pop().is_none());
         assert!(inbox.in_flight.is_some());
         assert!(inbox.published.is_none());
 

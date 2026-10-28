@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { delayed } from './delayed';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
@@ -58,7 +59,7 @@ import { createBrowsing } from './browsing';
 import type { BrowserWorkspace } from './browsing';
 import { Workbench, canDockBrowser } from './Workbench';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
-import { applicationMenu } from './chrome';
+import { applicationMenu, windowTitle } from './chrome';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
 import { createWorkbenchPlugins, pluginContext, type PanelRoute } from './plugins/context';
@@ -136,6 +137,9 @@ function App(
   const status = createText();
   const switching = signal(false);
   const busy = signal(false);
+  // Shown only when saving a draft or confirming an action takes a while, so a
+  // quick one does not flash the feedback row and move the page.
+  const working = delayed(() => switching() || busy());
   const controls = signal<any[]>([]);
   const controlsKnown = signal(false);
   const recovering = signal(false);
@@ -681,6 +685,7 @@ function App(
     },
     { when: 'always' },
   );
+  windowTitle(() => handle()?.title() ?? null);
   // The bindings above take the same keys first; the menu shows and offers them.
   applicationMenu({
     newConversation: () => newConversation(selected()),
@@ -959,14 +964,7 @@ function App(
                   }}
                 </Each>
                 <If
-                  when={
-                    error() ||
-                    status() ||
-                    switching() ||
-                    busy() ||
-                    !controlsKnown() ||
-                    controls().length
-                  }
+                  when={error() || status() || working() || !controlsKnown() || controls().length}
                 >
                   <Scroll
                     accessibilityLabel={tr('Action feedback')}
@@ -982,7 +980,7 @@ function App(
                         {error()}
                       </Text>
                     </If>
-                    <If when={switching() || busy()}>
+                    <If when={working()}>
                       <Text style={{ ...bodyTextStyle, color: C.muted }}>
                         {switching()
                           ? tr('Saving draft before switching…')

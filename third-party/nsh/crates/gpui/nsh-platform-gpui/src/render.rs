@@ -687,7 +687,8 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     }
     cx.set_transform(world);
     let state = view.state();
-    crate::scroll::draw_indicator(cx, &state);
+    let nested = state.scroll.is_some() && crate::scroll::nested(view);
+    crate::scroll::draw_indicator(cx, &state, nested);
     if clip {
         cx.pop();
     }

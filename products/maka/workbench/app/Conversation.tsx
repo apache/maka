@@ -124,6 +124,8 @@ export type ConversationHandle = ComposerSession & {
   reveal(anchor: ConversationAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
   focusActivity(turnId: string | null): void;
+  /** The title its header shows. */
+  title(): string;
 };
 type ConversationProps = {
   client: ScopedHost;
@@ -1736,6 +1738,7 @@ export function Conversation(props: ConversationProps) {
   };
   const ownHandle: ConversationHandle = {
     sessionId,
+    title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
     computerApps,
@@ -1786,13 +1789,13 @@ export function Conversation(props: ConversationProps) {
         notice.set(uiMessage('Wait for the saved draft before switching.'));
         return false;
       }
+      await flushDraft();
       // Text typed while a send is being reserved can only be saved once it
       // is reserved; switching now would dispose it.
       if (heldDraft !== null) {
         notice.set(uiMessage('Wait for the message to send before switching.'));
         return false;
       }
-      await flushDraft();
       return !savingFailed();
     },
     focus() {

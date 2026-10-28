@@ -1718,6 +1718,7 @@ export type SettingsDefaultModel =
   | {
       kind: 'ready';
       choice: SettingsModelChoice;
+      defaults: SettingsModelDefaults | null;
     };
 export type SettingsConnectionsRead =
   | {
@@ -6478,6 +6479,47 @@ export interface SettingsModelLimits {
   inputLimit: number | null;
   maxOutputTokens: number | null;
   compactionThreshold: number | null;
+}
+export interface SettingsModelDefaults {
+  label: string;
+  contextWindow: number | null;
+  inputLimit: number | null;
+  maxOutputTokens: number | null;
+  compactionThreshold: number | null;
+  codeMode: boolean;
+  codeModeLanguage: CodeLanguage;
+  applyPatch: boolean;
+  /**
+   * @maxItems 8
+   */
+  thinkingLevels:
+    | []
+    | [ThinkingLevel]
+    | [ThinkingLevel, ThinkingLevel]
+    | [ThinkingLevel, ThinkingLevel, ThinkingLevel]
+    | [ThinkingLevel, ThinkingLevel, ThinkingLevel, ThinkingLevel]
+    | [ThinkingLevel, ThinkingLevel, ThinkingLevel, ThinkingLevel, ThinkingLevel]
+    | [ThinkingLevel, ThinkingLevel, ThinkingLevel, ThinkingLevel, ThinkingLevel, ThinkingLevel]
+    | [
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+      ]
+    | [
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+        ThinkingLevel,
+      ];
+  defaultThinkingLevel: ThinkingLevel | null;
 }
 export interface SettingsUpdateModelSettings {
   selection: ModelSelection;

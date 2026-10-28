@@ -19,4 +19,6 @@ pub use wgpu_renderer::{GpuContext, WgpuRenderer, WgpuSurfaceConfig};
         feature = "offscreen"
     )
 ))]
-pub use wgpu_renderer::{SubmittedReadback, WgpuHeadlessRenderer};
+pub use wgpu_renderer::{
+    PreparedReadback, SubmissionTimings, SubmittedReadback, WgpuHeadlessRenderer,
+};

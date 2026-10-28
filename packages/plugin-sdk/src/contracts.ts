@@ -37555,9 +37555,19 @@ export const contracts = {
                       choice: {
                         $ref: '#/$defs/SettingsModelChoice',
                       },
+                      defaults: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/SettingsModelDefaults',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'choice'],
+                    required: ['kind', 'choice', 'defaults'],
                   },
                 ],
               },
@@ -37573,6 +37583,73 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['connectionId', 'modelId'],
+              },
+              SettingsModelDefaults: {
+                type: 'object',
+                properties: {
+                  label: {
+                    type: 'string',
+                  },
+                  contextWindow: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  inputLimit: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxOutputTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  compactionThreshold: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  codeMode: {
+                    type: 'boolean',
+                  },
+                  codeModeLanguage: {
+                    $ref: '#/$defs/CodeLanguage',
+                  },
+                  applyPatch: {
+                    type: 'boolean',
+                  },
+                  thinkingLevels: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ThinkingLevel',
+                    },
+                    maxItems: 8,
+                  },
+                  defaultThinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'label',
+                  'contextWindow',
+                  'inputLimit',
+                  'maxOutputTokens',
+                  'compactionThreshold',
+                  'codeMode',
+                  'codeModeLanguage',
+                  'applyPatch',
+                  'thinkingLevels',
+                  'defaultThinkingLevel',
+                ],
               },
               SettingsModelCursor: {
                 type: 'object',
@@ -38214,7 +38291,7 @@ export const contracts = {
           mode: 'query',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'ConnectionTarget',
+            title: 'SettingsResolveModel',
             type: 'object',
             properties: {
               connectionId: {
@@ -38223,9 +38300,166 @@ export const contracts = {
               modelId: {
                 type: 'string',
               },
+              overrides: {
+                $ref: '#/$defs/ModelOverride',
+                default: null,
+              },
             },
             additionalProperties: false,
             required: ['connectionId', 'modelId'],
+            $defs: {
+              ModelOverride: {
+                type: 'object',
+                properties: {
+                  adapter: {
+                    description:
+                      "Public adapter contribution name; omitted selects the wire's default.",
+                    type: 'string',
+                  },
+                  codeMode: {
+                    description:
+                      'Omitted means model-specific defaults; false is an explicit opt-out.',
+                    type: 'boolean',
+                  },
+                  codeModeLanguage: {
+                    description: 'Code Mode interpreter; omitted selects JavaScript.',
+                    $ref: '#/$defs/CodeLanguage',
+                  },
+                  applyPatch: {
+                    description:
+                      'Independent of Code Mode: select patch editing or structured Edit/Write.',
+                    type: 'boolean',
+                  },
+                  thinkingLevels: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ThinkingLevel',
+                    },
+                  },
+                  defaultThinkingLevel: {
+                    $ref: '#/$defs/ThinkingLevel',
+                  },
+                  vision: {
+                    type: 'boolean',
+                  },
+                  contextWindow: {
+                    description:
+                      'Override total input-plus-output capacity, without subtracting a reply budget.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  compactionThreshold: {
+                    description:
+                      'Optional override of the automatic compaction threshold, in retained tokens.\nBy default Host uses 85% of the smaller total window/input ceiling.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  inputLimit: {
+                    description:
+                      'Independent input ceiling; also caps the default compaction input budget.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxOutputTokens: {
+                    description:
+                      'Requested per-step output budget, subject to provider and remaining-capacity caps.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  displayName: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                  apiProtocol: {
+                    $ref: '#/$defs/ApiProtocol',
+                  },
+                  knowledgeCutoff: {
+                    type: 'string',
+                  },
+                  capabilities: {
+                    $ref: '#/$defs/ModelOverrideCapabilities',
+                  },
+                  modalities: {
+                    $ref: '#/$defs/ModelModalities',
+                  },
+                  serviceTier: {
+                    $ref: '#/$defs/RelayServiceTier',
+                  },
+                },
+                additionalProperties: false,
+              },
+              CodeLanguage: {
+                description: 'Interpreter used only for model-facing Code Mode cells.',
+                type: 'string',
+                enum: ['javascript', 'python'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ApiProtocol: {
+                type: 'string',
+                enum: ['openai-chat-completions', 'openai-responses', 'anthropic-messages'],
+              },
+              ModelOverrideCapabilities: {
+                description: 'Vision has one declaration owner: ModelOverride::vision.',
+                type: 'object',
+                properties: {
+                  chat: {
+                    type: 'boolean',
+                  },
+                  reasoning: {
+                    type: 'boolean',
+                  },
+                  functionCalling: {
+                    type: 'boolean',
+                  },
+                  parallelToolCalls: {
+                    type: 'boolean',
+                  },
+                  imageGeneration: {
+                    type: 'boolean',
+                  },
+                  webSearch: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+              },
+              ModelModalities: {
+                type: 'object',
+                properties: {
+                  input: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelModality',
+                    },
+                  },
+                  output: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ModelModality',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['input', 'output'],
+              },
+              ModelModality: {
+                type: 'string',
+                enum: ['text', 'image', 'audio', 'pdf', 'video'],
+              },
+              RelayServiceTier: {
+                type: 'string',
+                enum: ['fast'],
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -38266,9 +38500,19 @@ export const contracts = {
                   choice: {
                     $ref: '#/$defs/SettingsModelChoice',
                   },
+                  defaults: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SettingsModelDefaults',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
-                required: ['kind', 'choice'],
+                required: ['kind', 'choice', 'defaults'],
               },
             ],
             $defs: {
@@ -38450,6 +38694,73 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              SettingsModelDefaults: {
+                type: 'object',
+                properties: {
+                  label: {
+                    type: 'string',
+                  },
+                  contextWindow: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  inputLimit: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxOutputTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  compactionThreshold: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  codeMode: {
+                    type: 'boolean',
+                  },
+                  codeModeLanguage: {
+                    $ref: '#/$defs/CodeLanguage',
+                  },
+                  applyPatch: {
+                    type: 'boolean',
+                  },
+                  thinkingLevels: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ThinkingLevel',
+                    },
+                    maxItems: 8,
+                  },
+                  defaultThinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ThinkingLevel',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'label',
+                  'contextWindow',
+                  'inputLimit',
+                  'maxOutputTokens',
+                  'compactionThreshold',
+                  'codeMode',
+                  'codeModeLanguage',
+                  'applyPatch',
+                  'thinkingLevels',
+                  'defaultThinkingLevel',
+                ],
               },
             },
           },
