@@ -117,7 +117,7 @@ function App(
   };
   const shell: ConversationShell = {
     sessionId: selected,
-    visible: () => !settingsOpened(),
+    visible: () => !settingsOpened() && !(plugins.panel() && !canDockPreview()),
     blocked,
     openSession,
     openSettings(model) {

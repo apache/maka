@@ -27,6 +27,7 @@ import {
   Text,
   View,
   keymap,
+  windowSize,
   type ViewRef,
   type JSX,
 } from 'nsh';
@@ -826,14 +827,19 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
   };
   let wasDocked = shell()?.sidebarDocked();
+  let previousWidth = windowSize().width;
   effect(() => {
+    const width = windowSize().width;
     const docked = shell()?.sidebarDocked();
     const current = overlay();
-    if (docked && current?.kind === 'sessions') {
+    const visible = shell()?.visible() ?? false;
+    if (visible && docked && current?.kind === 'sessions') {
       closeOverlay(current.instance);
       sidebarExpanded.set(true);
       browserFocus.set(true);
     } else if (
+      visible &&
+      width < previousWidth &&
       !docked &&
       wasDocked &&
       current === null &&
@@ -843,6 +849,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       open({ kind: 'sessions', sessionId: selected() });
     }
     wasDocked = docked;
+    previousWidth = width;
   });
   void refreshControls().catch(report);
   const composerTarget = context.configuration.composer as UiTarget;
@@ -1002,7 +1009,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                     sessionId: id(),
                   })}
                   browser={() => browserHeader(id())}
-                  files={inputAction(invokeCommand, { id: 'files', sessionId: id() })}
+                  files={
+                    workspace()
+                      ? inputAction(invokeCommand, { id: 'files', sessionId: id() })
+                      : undefined
+                  }
                   filesOpener={(node) => resources.attachOpener(id(), node)}
                   previewImage={previewImage}
                   openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
@@ -1300,7 +1311,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     },
     enabled(id: string) {
       if (!shell() || reloading()) return false;
-      if (['files', 'compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
+      if (id === 'files') return handle() !== null && workspace() !== null;
+      if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
       if (id === 'stop') return handle()?.invocation() != null;
       return true;

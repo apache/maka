@@ -100,7 +100,10 @@ impl ApplicationClient {
     async fn refresh(&self, owner: &Owner) -> Result<(), String> {
         match self {
             Self::Root => owner.client.refresh().await,
-            Self::Ui(services) => services.client().await.map(drop),
+            Self::Ui(services) => {
+                owner.refresh_ui(serde_json::json!({})).await?;
+                services.client().await.map(drop)
+            }
         }
     }
 
@@ -199,6 +202,19 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 }
 
 impl Owner {
+    async fn refresh_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
+        self.client.refresh().await?;
+        require_contract(
+            "management",
+            "readUi",
+            &self.client.describe("management").await?.contract,
+        )?;
+        let value = self.client.query("management", "readUi", input).await?;
+        self.plugins
+            .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
+        Ok(value)
+    }
+
     fn spawn<T: Send + 'static>(
         &self,
         operation: impl Future<Output = T> + Send + 'static,
@@ -521,19 +537,7 @@ impl ApplicationHost {
     pub async fn read_ui(this: Instance<Self>, input: JsonValue) -> Result<JsonValue, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        execute(owner.clone(), async move {
-            require_contract(
-                "management",
-                "readUi",
-                &owner.client.describe("management").await?.contract,
-            )?;
-            let value = owner.client.query("management", "readUi", input).await?;
-            owner
-                .plugins
-                .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
-            Ok(value)
-        })
-        .await
+        execute(owner.clone(), async move { owner.refresh_ui(input).await }).await
     }
 
     /// Return an owned generic subscription, with no second handle table.

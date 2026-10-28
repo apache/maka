@@ -213,12 +213,20 @@ async fn markdown_links_open_original_workspace_files_without_replacing_the_draf
         wait_view_state(&mut view, |view, _| message_source_available(view, false)).await;
         wait_mode_layout(&mut view).await;
         support::click_button(&mut view, "Show message source").await;
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node|
+            node.role == nsh_core::AccessibilityRole::Button
+                && node.label == "Show formatted message" && node.state.selected
+        )).await;
         shortcut(&mut view, 'l');
         wait_view_state(&mut view, |view, _| view.surface().focused() == Some(composer)).await;
         // Wrapping changes painted lines, not the original source Text.
         wait_view_state(&mut view, |view, _| message_source_available(view, true) && view.accessibility_snapshot().iter().any(|node| node.label.contains("![Markdown diagram]") && node.label.contains("![Reference diagram][image]"))).await;
         wait_mode_layout(&mut view).await;
         support::click_button(&mut view, "Show formatted message").await;
+        wait_view_state(&mut view, |view, _| view.accessibility_snapshot().iter().any(|node|
+            node.role == nsh_core::AccessibilityRole::Button
+                && node.label == "Show message source" && !node.state.selected
+        )).await;
         shortcut(&mut view, 'l');
         wait_view_state(&mut view, |view, _| view.surface().focused() == Some(composer)).await;
         support::wait_enabled_button(&mut view, "View full image: Markdown diagram").await;

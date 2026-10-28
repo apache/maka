@@ -1462,8 +1462,9 @@ impl Owner {
                         }
                         let execution = execution.expect("accepted execution");
                         let child = child.expect("accepted child scope");
+                        let is_subscription = matches!(kind, CallKind::Subscription { .. });
                         let confirmation = kind.take_confirmation();
-                        if matches!(kind, CallKind::Subscription { .. }) {
+                        if is_subscription {
                             self.observations.insert(
                                 execution.id(),
                                 Observation {
@@ -1539,7 +1540,9 @@ impl Owner {
                                 if scope.cancellation.is_cancelled() { return Err("Host invocation was revoked before callback".into()); }
                                 let service = execution.value();
                                 let value = service.implementation.call(method.clone(), input, context).await?;
-                                service.methods[&method].output.validate(&value).map_err(|e| e.to_string())?;
+                                if !is_subscription || !value.is_null() {
+                                    service.methods[&method].output.validate(&value).map_err(|e| e.to_string())?;
+                                }
                                 Ok(value)
                             };
                             let result = AssertUnwindSafe(invocation).catch_unwind().await;

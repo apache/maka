@@ -184,7 +184,7 @@ type ConversationProps = {
   visible(): boolean;
   foreground(): boolean;
   browser(): BrowserHeader;
-  files(): void;
+  files?(): void;
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;

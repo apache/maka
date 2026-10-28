@@ -43,7 +43,6 @@ import type {
   UiViewContract,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
 import { UiError } from '../text';
-import { uiHost } from '../host';
 import { currentLocale } from '../locale';
 import { sameValue } from '../../../../../plugins/shared/value';
 import { renderContribution, renderEmbeddedView } from './RuntimeView';
@@ -285,29 +284,56 @@ export function createPlugins() {
   };
   const refresh = async () => {
     const generation = ++watchGeneration;
-    await subscription?.close();
-    subscription = undefined;
-    const first = (await uiHost.readUi({})) as Catalog;
-    if (!alive || generation !== watchGeneration) return;
-    const stream = (await nativeHost.subscribe('management', 'watch', {
-      source: first.source,
-    })) as UiSubscription<Catalog['source']>;
-    if (!alive || generation !== watchGeneration) {
-      await stream.close();
-      return;
-    }
-    subscription = stream;
-    publish(first);
-    for (;;) {
-      const source = await stream.next();
-      if (!alive || generation !== watchGeneration || source === null) return;
-      try {
-        const next = (await uiHost.readUi({ source })) as Catalog;
-        if (!alive || generation !== watchGeneration) return;
-        publish(next);
-      } catch (reason) {
-        if (alive && generation === watchGeneration) updateError.set(reason);
+    const isCurrent = () => alive && generation === watchGeneration;
+    try {
+      const previous = subscription;
+      await previous?.close();
+      if (!isCurrent()) return;
+      if (subscription === previous) subscription = undefined;
+      let previousWatchSource: Catalog['source'] | null = null;
+      let interruption: unknown = null;
+      while (isCurrent()) {
+        const first = (await nativeHost.readUi({})) as Catalog;
+        if (!isCurrent()) return;
+        if (previousWatchSource) {
+          if (sameValue(previousWatchSource, first.source))
+            throw interruption ?? new UiError('The interface update could not be completed.');
+          interruption = null;
+        }
+        const stream = (await nativeHost.subscribe('management', 'watch', {
+          source: first.source,
+        })) as UiSubscription<Catalog['source']>;
+        if (!isCurrent()) {
+          await stream.close();
+          return;
+        }
+        subscription = stream;
+        publish(first);
+        try {
+          for (;;) {
+            const source = await stream.next();
+            if (!isCurrent()) return;
+            if (source === null) break;
+            const next = (await nativeHost.readUi({ source })) as Catalog;
+            if (!isCurrent()) return;
+            interruption = null;
+            publish(next);
+          }
+        } catch (reason) {
+          if (!isCurrent()) return;
+          interruption = reason;
+          updateError.set(reason);
+        } finally {
+          if (isCurrent() && subscription === stream) {
+            subscription = undefined;
+            await stream.close();
+          }
+        }
+        if (!isCurrent()) return;
+        previousWatchSource = first.source;
       }
+    } catch (reason) {
+      if (isCurrent()) updateError.set(reason);
     }
   };
   const load = (entry: PluginEntry): Promise<Exports> => {
@@ -533,9 +559,7 @@ export function createPlugins() {
     reloading,
     updateError,
     retryUpdates() {
-      void refresh().catch((reason) => {
-        if (alive) updateError.set(reason);
-      });
+      void refresh();
     },
   };
   const manager = {
@@ -554,11 +578,11 @@ export function createPlugins() {
     alive = false;
     ++watchGeneration;
     entries().forEach(retire);
-    if (subscription) void subscription.close().catch((reason) => console.error(reason));
+    const stream = subscription;
+    subscription = undefined;
+    if (stream) void stream.close().catch((reason) => console.error(reason));
   });
-  void refresh().catch((reason) => {
-    if (alive) updateError.set(reason);
-  });
+  void refresh();
   return manager;
 }
 export type Plugins = ReturnType<typeof createPlugins>;

@@ -589,10 +589,26 @@ async fn standalone_composer_replacement_preserves_the_original_draft_upload_and
         assert_eq!(edited.attachments, vec![attachment]);
         support::click_button(&mut view, "Send message").await;
         let mut request = fixture.next_request().await;
+        let observed = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
+        let history = client.query("agent", "history", json!({
+            "sessionId":fixture.session,"through":observed["through"],"position":{"kind":"tail"},"view":"conversation"
+        })).await.unwrap();
+        let users: Vec<_> = history["chunks"].as_array().unwrap().iter()
+            .filter(|chunk| chunk["role"] == "user").collect();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0]["text"], EDITED);
+        assert_eq!(users[0]["attachments"], json!([{
+            "name":"composer original.png","mimeType":"image/png","bytes":bytes.len(),"kind":"image"
+        }]));
         let parts: Vec<_> = request.body["messages"].as_array().unwrap().iter()
             .filter(|message| message["role"] == "user")
             .filter_map(|message| message["content"].as_array()).flatten().collect();
-        assert!(parts.iter().any(|part| part["type"] == "text" && part["text"] == EDITED));
+        let texts: Vec<_> = parts.iter().filter(|part| part["type"] == "text")
+            .map(|part| part["text"].as_str().unwrap()).collect();
+        assert_eq!(texts.len(), 1);
+        let (sent_text, _) = texts[0].split_once("\n\n<attachment>\n")
+            .expect("the provider input must retain the attachment reference after the original text");
+        assert_eq!(sent_text, EDITED);
         let images: Vec<_> = parts.iter().filter(|part| part["type"] == "image_url").collect();
         assert_eq!(images.len(), 1);
         let image = images[0]["image_url"]["url"].as_str().unwrap();
