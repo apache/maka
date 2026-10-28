@@ -247,7 +247,7 @@ impl Mounter {
                     ViewKind::WebView | ViewKind::Video | ViewKind::Native => {
                         crate::native::resized(view)
                     }
-                    _ => crate::shader::resized(view),
+                    _ => crate::shader::resized(surface, view),
                 }
             }
             MountItem::ViewStyle { id, style } => {

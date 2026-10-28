@@ -79,9 +79,21 @@ pub(crate) fn set_args(view: &NshView, values: &[(u16, AnimationValue)]) {
 
 /// Its size changed: a frame of the new size is rendered.
 pub(crate) fn resized(view: &NshView) {
-    if view.state().shader.is_some() {
-        tick(view);
+    if view.state().shader.is_none() {
+        return;
     }
+    let scale = view
+        .native()
+        .and_then(|n| n.surface())
+        .map_or(view.scale_factor() as f64, |s| s.scale()) as f32;
+    {
+        let mut state = view.state_mut();
+        let size = state.frame.size;
+        if let Some(shader) = state.shader.as_mut() {
+            shader.view.set_size(size, scale);
+        }
+    }
+    tick(view);
 }
 
 /// Starts the view's tick callback if it has a frame to render.

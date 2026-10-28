@@ -201,10 +201,16 @@ pub(crate) fn start_pending() {
 }
 
 /// Its size changed: a frame of the new size is rendered.
-pub(crate) fn resized(view: &NshView) {
-    if view.state().shader.is_some() {
-        tick(view);
+pub(crate) fn resized(surface: &Rc<Surface>, view: &NshView) {
+    {
+        let mut state = view.state_mut();
+        let size = state.frame.size;
+        let Some(shader) = state.shader.as_mut() else {
+            return;
+        };
+        shader.view.set_size(size, surface.scale());
     }
+    tick(view);
 }
 
 /// Starts rendering the view on its surface's frame ticker if it has a
