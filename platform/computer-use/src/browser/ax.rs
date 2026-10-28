@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{ElementRef, failed};
+use super::{DomElement, ElementRef, failed};
 use maka_agent_facts::{language::Language, tools::ToolError};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -143,13 +143,18 @@ impl<'a> Walk<'a> {
                     index
                 };
                 self.retained.insert(identity);
-                if let Some(backend) = node["backendDOMNodeId"].as_u64() {
+                if let Some(dialog) = node.get("makaDialog") {
                     self.refs.insert(
                         index,
-                        ElementRef {
+                        ElementRef::Dialog(serde_json::from_value(dialog.clone()).map_err(failed)?),
+                    );
+                } else if let Some(backend) = node["backendDOMNodeId"].as_u64() {
+                    self.refs.insert(
+                        index,
+                        ElementRef::Dom(DomElement {
                             backend,
                             frame: serde_json::from_value(node["makaFrame"].clone()).ok(),
-                        },
+                        }),
                     );
                 }
                 let mut row = format!("{}{index} {role} {}", "  ".repeat(depth), json!(name));
@@ -214,11 +219,11 @@ mod tests {
         );
         let index = *refs
             .iter()
-            .find(|(_, value)| value.backend == 70)
+            .find(|(_, value)| matches!(value,ElementRef::Dom(element) if element.backend==70))
             .unwrap()
             .0;
         let (_, again) = projection.render("original", &nodes, Language::En).unwrap();
-        assert_eq!(again[&index].backend, 70);
+        assert!(matches!(&again[&index],ElementRef::Dom(element) if element.backend==70));
     }
 
     use super::*;
@@ -245,7 +250,11 @@ mod tests {
             state.contains("value=\"你好\\nvalue\" [focused]"),
             "{state}"
         );
-        let removed = *refs.iter().find(|(_, id)| id.backend == 10).unwrap().0;
+        let removed = *refs
+            .iter()
+            .find(|(_, value)| matches!(value,ElementRef::Dom(element) if element.backend==10))
+            .unwrap()
+            .0;
         let mut replacement = tree.as_array().unwrap().clone();
         replacement.retain(|node| !matches!(node["nodeId"].as_str(), Some("2" | "4" | "5")));
         replacement[0]["childIds"] = json!(["3", "6"]);
@@ -254,7 +263,7 @@ mod tests {
             .render("document1", &replacement, Language::En)
             .unwrap();
         assert!(!fresh.contains_key(&removed));
-        assert_eq!(fresh.get(&2).map(|element| element.backend), Some(11));
+        assert!(matches!(fresh.get(&2),Some(ElementRef::Dom(element)) if element.backend==11));
         let (_, navigated) = projection
             .render("document2", tree.as_array().unwrap(), Language::En)
             .unwrap();

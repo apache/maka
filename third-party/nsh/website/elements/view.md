@@ -98,7 +98,7 @@ and `ios` / `android` / `desktop`.
 ## Selectable views
 
 With `selectable`, a selection runs across the [`Text`](./text.md) elements and [`TextView`](./text-view.md)s inside
-the view, in reading order; texts with `selectable={false}` stay out, and a selectable view inside another is part of
+the view, in reading order; texts with `style={{ userSelect: "none" }}` stay out, and a selectable view inside another is part of
 the outer one. See [Text selection](./text-selection.md) for the gestures on each platform.
 
 ```tsx

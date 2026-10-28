@@ -453,3 +453,62 @@ fn keyboard_conventions_follow_the_host_environment_when_the_editor_focuses() {
         see(&mut app, &doc(""));
     }
 }
+
+#[test]
+fn public_keymap_factories_follow_the_engine_keyboard_convention() {
+    use nsh_base::rich_editor::{
+        commands::{base_keymap, mac_base_keymap, pc_base_keymap},
+        extensions::core_keymap::{core_keymap, mac_core_keymap, pc_core_keymap},
+    };
+    use nsh_core::platform::Renderer;
+
+    fn names<T>(bindings: Vec<(String, T)>) -> Vec<String> {
+        bindings.into_iter().map(|(name, _)| name).collect()
+    }
+
+    let check = |apple: bool| {
+        assert_eq!(
+            names(base_keymap()),
+            names(if apple {
+                mac_base_keymap()
+            } else {
+                pc_base_keymap()
+            })
+        );
+        assert_eq!(
+            names(core_keymap()),
+            names(if apple {
+                mac_core_keymap()
+            } else {
+                pc_core_keymap()
+            })
+        );
+    };
+    assert_eq!(try_os(), None);
+    check(cfg!(any(target_os = "macos", target_os = "ios")));
+
+    for (os, renderer, terminal_keyboard, apple_keyboard, expected_apple) in [
+        (Os::MacOs, Renderer::Native, true, false, false),
+        (Os::MacOs, Renderer::Terminal, false, false, false),
+        (Os::MacOs, Renderer::Native, false, false, true),
+        (Os::Linux, Renderer::Native, false, false, false),
+        (Os::Web, Renderer::Web, false, true, true),
+        (Os::Web, Renderer::Web, false, false, false),
+    ] {
+        let mut config = EngineConfig::new(Root::new::<Harness>(move || {
+            assert_eq!(try_os(), Some(os));
+            check(expected_apple);
+            HarnessProps {
+                session: Some(session(paragraphs(&["factory policy"]))),
+            }
+        }));
+        config.viewport = Size::new(px(800.0), px(900.0));
+        config.environment.os = os;
+        config.environment.renderer = renderer;
+        config.environment.terminal_keyboard = terminal_keyboard;
+        config.environment.apple_keyboard = apple_keyboard;
+        config.environment.idiom = Idiom::Desktop;
+        let mut app = Headless::start(config).unwrap();
+        app.wait_for("text:Ready").unwrap();
+    }
+}

@@ -19,34 +19,16 @@
 
 # State, authority and settlement
 
-A package revision identifies immutable bytes. An instance UUID identifies a state
-owner. Configuration revision, activation epoch and individual invocation identify
-different changes; none grants permission by itself. A replacement must not borrow
-an old activation's capabilities or silently redirect its calls.
+A package revision identifies immutable bytes; an instance UUID identifies a state owner. Configuration revision, activation epoch and individual invocation identify different changes. Preserve instance identity when updating a package or its configuration.
 
-Host entries and UI entries run in separate owners. A Component frame contains only
-bounded JSON state and a declarative scene. Durable domain state belongs to its Host
-service, not to a second UI cache. Native checkpoint components can persist small UI
-preferences; use domain contracts for business data.
+UI modules, including the selected root application, are trusted code in the shared NSH client VM. Their NSH activation owners govern views, reactive state and subscriptions; they are not separate permission domains. The UI can use the client's existing capabilities. The deployment's `ui` selector owns the application choice; activation failures do not authorize choosing a different root. `UiEntry.imports` and composition bindings select services exposed through `context.services`; their calls capture the actual UI consumer session and providers. This preserves service ownership and original receipts without narrowing the full `context.host` client. Durable business state belongs to the owning Host service rather than a second UI cache.
 
-Use only declared imports and resources supplied by the actual request. Host grants
-identify caller/origin, consumer, provider, export and methods. Recovery has its own
-grant and exact persisted owner. A successful package check or compatible remote
-observation proves shape, not current authorization or availability.
+Host services use their captured imports and the resources supplied by the actual request. Host grants identify caller/origin, consumer, provider, export and methods. Recovery retains its own grant and exact persisted owner. A package declaration or service directory describes an interface; it does not replace the current Host publication and configured grants.
 
-Keep an original mutation's `OperationReply.reference`. Only `receipt.kind ===
-"recorded"` describes a journal outcome; inspect both `outcome` and `cleanup`.
-An unknown result is not a failure or permission to issue a fresh mutation. Query
-`recover` with the exact reference, including after the current import disappears.
-`not_recorded` and `unavailable` are different observations and do not trigger replay.
+Keep an original mutation's `OperationReply.reference`. Only `receipt.kind === "recorded"` describes a journal outcome; inspect `outcome` and `cleanup`. An unknown result is not a failure or permission to issue a new mutation. Recover the exact reference after reconnecting. `not_recorded` and `unavailable` remain distinct observations.
 
-Cancellation requests work to stop. Observer loss, a returned handler or a logically
-closed panel does not prove that streams, blocking I/O or processes have settled.
-Native work must retain the actual Call resource ticket through completion, and
-failed cleanup must remain visible to the original owner. See
-[Native Rust](native-rust.md) for the native lifecycle boundary.
+Use `nsh.cleanup` for the subscriptions and timers created by a UI activation or component. Closing a view releases its component resources; disabling or replacing the instance releases its activation. In-flight Host operations retain their original caller and receipt rather than being replayed by a newly mounted component. `context.operations.pending()` and `recover(id)` expose this UI instance's unresolved operations and their original outcomes after reconnecting; `abandon(id)` only fences an attempt that never prepared.
 
-JavaScript application entries obtain effects through explicit services. They have
-no ambient Node filesystem, network, credentials or process APIs. If a needed durable
-capability is absent, add the smallest service that owns it and specify its contract,
-permissions, admission and recovery; do not invent a private global accessor.
+Cancellation requests work to stop. Observer loss or a logically closed panel does not prove native I/O or processes have settled. Native work retains the actual Call resource ticket through physical completion, and cleanup failure remains visible to its original owner. See [Native Rust](native-rust.md).
+
+JavaScript Host services have no ambient Node filesystem, network, credential or process APIs; effects go through their actual service imports. NSH UI modules use the NSH runtime and client capabilities available to the workbench.

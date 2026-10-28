@@ -19,12 +19,17 @@
 
 use super::{
     PENDING_INTERACTIONS,
-    lifecycle::{PENDING_ROOT_PAGE, PENDING_SESSION_PAGE},
+    lifecycle::{ALL_PENDING_SESSION_PAGE, PENDING_ROOT_PAGE, PENDING_SESSION_PAGE},
 };
 use rusqlite::{Connection, StatementStatus, ToSql, params};
 
 fn pending_schema() -> String {
-    crate::schema::fixture(|_, name| name.starts_with("interaction_pending"))
+    format!(
+        "{}{}{}",
+        crate::schema::fixture(|_, name| name.starts_with("interaction_pending")),
+        crate::connection::control::STANDALONE_APP_VIEWS,
+        crate::connection::control::ALL_INTERACTION_PENDING
+    )
 }
 const OLD_PENDING: &str = "SELECT request_id FROM interaction_requests AS request
     WHERE session_id = ? AND NOT EXISTS (SELECT 1 FROM interaction_outcomes AS outcome
@@ -163,6 +168,183 @@ fn pending_work_is_independent_of_completed_history() {
     }
     assert_eq!(work(&db, PENDING_SESSION_PAGE, &[&"s", &""]), before);
     assert_eq!(work(&db, PENDING_ROOT_PAGE, &[&""]).0, 64);
+}
+
+#[test]
+fn mixed_root_pending_work_is_independent_of_completed_app_history() {
+    use crate::connection::control::{ALL_INTERACTION_PENDING, ATTACHED_APP_VIEWS};
+    use rusqlite::OpenFlags;
+    use std::fmt::Write;
+
+    let directory = tempfile::tempdir().unwrap();
+    let root_path = directory.path().join("control.sqlite");
+    let root = Connection::open(&root_path).unwrap();
+    canonical_schema(&root);
+    root.execute_batch(&crate::schema::fixture(|_, name| {
+        name.starts_with("interaction_pending")
+            || name.starts_with("computer_app_")
+            || name == "session_catalog_revision"
+    }))
+    .unwrap();
+    root.execute("INSERT INTO session_catalog_revision VALUES(1,0)", [])
+        .unwrap();
+    let db = Connection::open_with_flags(
+        ":memory:",
+        OpenFlags::default() | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .unwrap();
+    canonical_schema(&db);
+    db.execute_batch(&crate::schema::fixture(|_, name| {
+        name.starts_with("interaction_pending")
+    }))
+    .unwrap();
+    let mut uri = String::from("file:");
+    for byte in root_path.to_str().unwrap().replace('\\', "/").bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-_.~:".contains(&byte) {
+            uri.push(char::from(byte));
+        } else {
+            write!(&mut uri, "%{byte:02X}").unwrap();
+        }
+    }
+    uri.push_str("?mode=ro");
+    db.execute("ATTACH DATABASE ? AS root_control", [uri])
+        .unwrap();
+    assert!(db.is_readonly("root_control").unwrap());
+    db.execute_batch(ATTACHED_APP_VIEWS).unwrap();
+    db.execute_batch(ALL_INTERACTION_PENDING).unwrap();
+    let app_request = |id: &str, session: &str, time: i64| {
+        root.execute(
+            "INSERT INTO interaction_requests VALUES(?1,?2,?3,?4)",
+            params![
+                id,
+                session,
+                time,
+                serde_json::json!({"requestId":id,"request":{
+                    "kind":"computer_app","nativeOperationId":id
+                }})
+                .to_string()
+            ],
+        )
+        .unwrap();
+    };
+    request(&db, "local-active", "s", 2);
+    request(&db, "local-foreign", "other", 0);
+    app_request("root-first", "s", 1);
+    app_request("root-tie", "s", 2);
+    app_request("root-foreign", "other", 0);
+    request(&root, "root-non-app", "s", 0);
+    let mut baseline = None;
+    for (start, end) in [(0, 1000), (1000, 10000)] {
+        root.execute_batch("BEGIN IMMEDIATE").unwrap();
+        for n in start..end {
+            let id = format!("completed-app-{n}");
+            app_request(&id, "s", n + 10);
+            outcome(&root, &id);
+        }
+        root.execute_batch("COMMIT").unwrap();
+        assert_eq!(
+            pending(&db, "s"),
+            ["root-first", "local-active", "root-tie"]
+        );
+        assert_eq!(pending(&db, "other"), ["local-foreign", "root-foreign"]);
+        let current = (
+            work(&db, PENDING_INTERACTIONS, &[&"s"]),
+            work(&db, ALL_PENDING_SESSION_PAGE, &[&"s", &""]),
+        );
+        assert_eq!(current.0.0, 3);
+        assert_eq!(current.1.0, 3);
+        if let Some(expected) = baseline {
+            assert_eq!(
+                current, expected,
+                "query scanned completed root app history"
+            );
+        } else {
+            baseline = Some(current);
+        }
+        eprintln!(
+            "SQLite {} completed_root_apps={end} pending_vm_steps={} terminal_page_vm_steps={}",
+            rusqlite::version(),
+            current.0.1,
+            current.1.1
+        );
+    }
+    for (sql, parameters) in [
+        (PENDING_INTERACTIONS, vec![&"s" as &dyn ToSql]),
+        (ALL_PENDING_SESSION_PAGE, vec![&"s" as &dyn ToSql, &""]),
+    ] {
+        let details = plan(&db, sql, &parameters);
+        assert!(
+            details
+                .iter()
+                .any(|line| line.contains("MERGE (UNION ALL)")),
+            "{details:?}"
+        );
+        assert!(
+            details.iter().all(|line| !line.contains("TEMP B-TREE")),
+            "{details:?}"
+        );
+        assert!(
+            details.iter().any(|line| line.contains("SEARCH")
+                && line.contains("interaction_requests")
+                && line.contains("request_id=?")),
+            "{details:?}"
+        );
+        eprintln!("mixed root plan: {details:?}");
+    }
+    // Populated ranges exercise the same terminal index-bound comparison;
+    // an empty following range can instead finish directly at index EOF.
+    let mut foreign_baseline = None;
+    for (start, end) in [(0, 1000), (1000, 10000)] {
+        root.execute_batch("BEGIN IMMEDIATE").unwrap();
+        for n in start..end {
+            app_request(&format!("foreign-app-{n}"), "unrelated", n);
+        }
+        root.execute_batch("COMMIT").unwrap();
+        for n in start..end {
+            request(&db, &format!("foreign-local-{n}"), "unrelated", n);
+        }
+        assert_eq!(
+            pending(&db, "s"),
+            ["root-first", "local-active", "root-tie"]
+        );
+        let current = (
+            work(&db, PENDING_INTERACTIONS, &[&"s"]),
+            work(&db, ALL_PENDING_SESSION_PAGE, &[&"s", &""]),
+        );
+        assert_eq!(current.0.0, 3);
+        assert_eq!(current.1.0, 3);
+        if let Some(expected) = foreign_baseline {
+            assert_eq!(
+                current, expected,
+                "query scanned unrelated pending sessions"
+            );
+        } else {
+            foreign_baseline = Some(current);
+        }
+        let details = plan(&db, PENDING_INTERACTIONS, &[&"s"]);
+        assert!(
+            details
+                .iter()
+                .any(|line| line.contains("MERGE (UNION ALL)")),
+            "{details:?}"
+        );
+        assert!(
+            details.iter().all(|line| !line.contains("TEMP B-TREE")),
+            "{details:?}"
+        );
+        assert!(
+            details.iter().any(|line| line.contains("SEARCH")
+                && line.contains("interaction_requests")
+                && line.contains("request_id=?")),
+            "{details:?}"
+        );
+        eprintln!(
+            "SQLite {} unrelated_pending_per_source={end} pending_vm_steps={} terminal_page_vm_steps={}",
+            rusqlite::version(),
+            current.0.1,
+            current.1.1
+        );
+    }
 }
 
 #[test]

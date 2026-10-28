@@ -50,7 +50,9 @@
     "indentStyle": "space",
     "indentWidth": 2,
     "lineWidth": 100,
-    "includes": ["**"]
+    // The extracted Playwright payload is checked against its recorded upstream
+    // hash. Format the authored adapter files without rewriting that payload.
+    "includes": ["**", "!third-party/playwright/injected.js"]
   },
   "javascript": {
     "formatter": {

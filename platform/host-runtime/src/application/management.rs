@@ -37,28 +37,23 @@ mod composition;
 mod settings;
 #[cfg(test)]
 mod tests;
+mod ui;
 
 pub const DEPLOYMENT_MANAGER: &str = "maka.application.management";
 
-/// Trusted launcher handle. The target and execution environment never come
-/// from guest configuration or mutation input; every operation uses Host admission.
+/// Trusted launcher handle. Every operation uses the original Root and deployment.
 #[derive(Clone)]
 pub struct ManagementTarget(Manager);
 impl ManagementTarget {
     pub async fn from_source(store: Arc<RootStore>, source: DeploymentRef) -> Result<Self> {
-        let metadata = store
+        store
             .read_application_metadata_at(&source)
             .await
             .map_err(|error| error.to_string())?
             .ok_or("managed source not found")?;
-        let environment = metadata.source.input.environment;
-        environment
-            .entry_target()
-            .map_err(|error| error.to_string())?;
         Ok(Self(Manager {
             source,
             store,
-            environment,
             writes: Arc::new(tokio::sync::Mutex::new(())),
         }))
     }
@@ -68,7 +63,6 @@ impl ManagementTarget {
 struct Manager {
     source: DeploymentRef,
     store: Arc<RootStore>,
-    environment: maka_plugin_core::composition::Environment,
     writes: Arc<tokio::sync::Mutex<()>>,
 }
 impl Manager {
@@ -362,11 +356,11 @@ impl Manager {
         metadata: maka_plugin_core::deployment::management::ManagedDeployment,
         supplied: Vec<Package>,
     ) -> Result<Value> {
-        if document.input.environment != self.environment
-            || (self.environment.location == ExecutionLocation::Host
-                && !document.remote_exports.is_empty())
-        {
-            return rejected(ManagementRejection::ExecutionEnvironment);
+        if !document.remote_exports.is_empty() {
+            return rejected_diagnostic(
+                ManagementRejection::InvalidSource,
+                "Host deployments do not use remote observations".into(),
+            );
         }
         let desired: BTreeSet<_> = document.packages.iter().cloned().collect();
         if desired.len() != document.packages.len() {
@@ -477,9 +471,6 @@ impl Manager {
         packages: Vec<Package>,
         result: impl FnOnce(DeploymentRef) -> T,
     ) -> Result<Value> {
-        if input.environment != self.environment {
-            return rejected(ManagementRejection::ExecutionEnvironment);
-        }
         if let Err(error) = validate_application(&input, &observations, &packages) {
             return rejected_diagnostic(ManagementRejection::InvalidSource, error.to_string());
         }
@@ -544,6 +535,8 @@ impl Handler for Manager {
                         .map_err(|error| error.to_string())
                 }
                 "instances" => manager.instances(input).await,
+                "readUi" => manager.read_ui(input).await,
+                "watch" => manager.watch(input, context).await,
                 "readDocument" => manager.read_document(input).await,
                 "readSettings" => manager.read_settings(input).await,
                 "configure" => manager.configure(input).await,
@@ -571,7 +564,6 @@ impl NativeOwner for Manager {
         Some(serde_json::json!({
             "stateDomain": self.source.state_domain,
             "deployment": self.source.deployment,
-            "environment": self.environment,
         }))
     }
     fn close(&self) -> BoxFuture<'static, Result<()>> {
@@ -711,10 +703,6 @@ fn provide_manager(
                         None => Manager {
                             source: persistence.source().clone(),
                             store: persistence.store().clone(),
-                            environment: maka_plugin_core::composition::Environment {
-                                location: ExecutionLocation::Host,
-                                presentation: None,
-                            },
                             writes,
                         },
                     };

@@ -51,6 +51,7 @@ mod drafts;
 mod progress;
 mod request_custody;
 mod settings;
+mod ui;
 
 #[derive(Default)]
 struct Counter {
@@ -73,6 +74,7 @@ impl Handler for CounterHandler {
         let owner = self.0.clone();
         Box::pin(async move {
             match method.as_str() {
+                "read" if input["fail"] == true => Err("ordinary counter failure".into()),
                 "read" => Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)})),
                 "uploadAttachment" => {
                     let file = context
@@ -190,6 +192,7 @@ impl Fixture {
                 "send":{"mode":"mutation","input":{},"output":{},"progress":{},"resources":{}},
                 "selectBackend":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "stop":{"mode":"mutation","input":{},"output":{},"resources":{}},
+                "stopComputerApp":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "respond":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "editQueue":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "metadata":{"mode":"mutation","input":{},"output":{},"resources":{}},
@@ -224,10 +227,10 @@ impl Fixture {
             Package::new(BTreeMap::from([(
                 "maka.extension.json".into(),
                 serde_json::to_vec(&json!({
-                    "schemaVersion":1,"id":id,"application":{"entries":{"host":{
+                    "schemaVersion":1,"id":id,"application":{"host":{
                         "implementation":{"kind":"native","implementation":implementation},
                         "configuration":{"type":"object"},"imports":imports,"exports":exports
-                    }}}
+                    }}
                 }))
                 .unwrap(),
             )]))
@@ -258,15 +261,34 @@ impl Fixture {
             }),
             json!({}),
         );
+        let ui = Package::new(BTreeMap::from([
+            (
+                "maka.extension.json".into(),
+                serde_json::to_vec(&json!({
+                    "schemaVersion":1, "id":"test.ui", "application":{"ui":{
+                        "module":"index.mjs", "configuration":{"type":"object"},
+                        "imports":{"counter":{"contract":contract,"cardinality":{"kind":"one"}}},
+                        "contributions":{}
+                    }}
+                }))
+                .unwrap(),
+            ),
+            ("index.mjs".into(), b"export default {};".to_vec()),
+        ]))
+        .unwrap();
         let node = |package: &Package, id: u128, bindings: Value| {
             json!({
                 "key":Uuid::from_u128(id),"package":{"source":"pinned","package":package.application_ref()},
-                "usePackage":"entry","bindings":bindings
+                "usePackage":"host","bindings":bindings
             })
         };
         let input = serde_json::from_value(json!({
-            "environment":{"location":"host"},"instances":{
+            "instances":{
                 "business":node(&business,1,json!({})),"reader":node(&reader,2,json!({})),
+                "ui":{
+                    "key":Uuid::from_u128(4), "package":{"source":"pinned","package":ui.application_ref()},
+                    "usePackage":"ui", "bindings":{"counter":[{"kind":"instance","path":["business"],"export":"Counter"}]}
+                },
                 "gateway":node(&gateway,3,json!({
                     "agent":[{"kind":"instance","path":["business"],"export":"Counter"}],
                     "settings":[{"kind":"instance","path":["business"],"export":"Counter"}],
@@ -285,7 +307,7 @@ impl Fixture {
                 0,
                 input,
                 vec![],
-                vec![business, reader, gateway],
+                vec![business, reader, gateway, ui],
             )
             .await
             .unwrap();
@@ -333,6 +355,7 @@ impl Fixture {
                                     "selectBackend".into(),
                                     "updateGlobalInstructions".into(),
                                     "stop".into(),
+                                    "stopComputerApp".into(),
                                     "respond".into(),
                                     "editQueue".into(),
                                     "watch".into(),
@@ -471,8 +494,9 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         for (method, input, expected) in [
             ("stop", json!({"sessionId":"session-one","invocationId":"run-A"}), json!({"kind":"agent-control","invocationId":"run-A"})),
             ("respond", json!({"sessionId":"session-one","requestId":"interaction-A"}), json!({"kind":"agent-control","requestId":"interaction-A"})),
+            ("stopComputerApp", json!({"sessionId":"session-one","operationId":"native-effect-A"}), json!({"kind":"agent-control","operationId":"native-effect-A"})),
         ] {
-            assert_eq!(client.control(Uuid::new_v4(),method,json!({"sessionId":"session-one"})).await.err().unwrap(),"agent control requires a valid invocationId or requestId");
+            assert_eq!(client.control(Uuid::new_v4(),method,json!({"sessionId":"session-one"})).await.err().unwrap(), if method == "stopComputerApp" {"agent control requires a valid operationId"} else {"agent control requires a valid invocationId or requestId"});
             let control = client.control(Uuid::new_v4(),method,input).await.unwrap();
             let original = client.operation_for_control(control.id()).await.unwrap();
             assert_eq!(original.session_id.as_deref(),Some("session-one"));

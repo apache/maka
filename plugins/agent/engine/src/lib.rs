@@ -54,7 +54,7 @@ use maka_agent_facts::execution::InvocationConfiguration;
 use maka_agent_facts::input::MessageInput;
 use maka_agent_facts::tools::ToolError;
 use maka_event_log::StoreError;
-use maka_event_log::root_store::{SessionExecutionScope, SessionStore};
+use maka_event_log::root_store::{InvocationEffects, SessionExecutionScope, SessionStore};
 use maka_model::{ModelError, ModelExecutor, ProviderConfig};
 use maka_tools::CodeExecutor;
 use maka_tools::ToolCatalog;
@@ -227,6 +227,7 @@ struct Inner {
 struct RunContext {
     shared: Arc<Inner>,
     log: Arc<SessionStore>,
+    prepared_history: Mutex<Option<Arc<history::PreparedHistory>>>,
 }
 
 impl RunContext {
@@ -239,6 +240,7 @@ impl RunContext {
         Ok(Arc::new(Self {
             shared,
             log: Arc::new(store),
+            prepared_history: Mutex::new(None),
         }))
     }
 }
@@ -523,8 +525,16 @@ impl Engine {
             tool_names,
             handoff,
             cancellation,
-            move |cancellation, admitted| {
-                runner::run(inner, input, cancellation, admitted, worker_handoff, claim)
+            move |cancellation, admitted, effects| {
+                runner::run(
+                    inner,
+                    input,
+                    cancellation,
+                    admitted,
+                    worker_handoff,
+                    claim,
+                    effects,
+                )
             },
         )
         .await
@@ -540,7 +550,13 @@ impl Engine {
         run: F,
     ) -> Result<RunningInvocation, RunError>
     where
-        F: FnOnce(CancellationToken, tokio::sync::oneshot::Sender<()>) -> Fut + Send + 'static,
+        F: FnOnce(
+                CancellationToken,
+                tokio::sync::oneshot::Sender<()>,
+                Arc<InvocationEffects>,
+            ) -> Fut
+            + Send
+            + 'static,
         Fut: std::future::Future<Output = Result<Invocation, RunError>> + Send + 'static,
     {
         let session_id = invocation.session_id.clone();
@@ -561,14 +577,43 @@ impl Engine {
         let cancellation = cancellation.child_token();
         let cancel_on_drop = cancellation.clone().drop_guard();
         let worker_cancellation = cancellation.clone();
+        let worker_invocation = invocation.clone();
         let (admitted, ready) = tokio::sync::oneshot::channel();
         let cleanup = cleanup::Evidence::default();
         let worker = self.0.workers.spawn(async move {
+            use futures_util::FutureExt;
+
             // Only the original worker accepts physical custody. Its lease Drop
             // fences uncertain cleanup, including panic and runtime teardown.
-            let execution = execution.accept();
             let _admission = admission;
-            let result = cleanup.scope(run(worker_cancellation, admitted)).await;
+            let (execution, effects) =
+                match execution.accept_invocation(worker_invocation, worker_cancellation.clone()) {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        return RunningCompletion {
+                            result: Err(error.into()),
+                            cleanup: Ok(()),
+                        };
+                    }
+                };
+            let effects = Arc::new(effects);
+            let result = cleanup
+                .scope(async {
+                    let result = std::panic::AssertUnwindSafe(async {
+                        run(worker_cancellation.clone(), admitted, effects.clone()).await
+                    })
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| {
+                        worker_cancellation.cancel();
+                        Err(cleanup::unconfirmed())
+                    });
+                    match effects.settle().await {
+                        Ok(()) => result,
+                        Err(error) => Err(error.into()),
+                    }
+                })
+                .await;
             let physical = if cleanup.confirmed()
                 && !result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed)
             {

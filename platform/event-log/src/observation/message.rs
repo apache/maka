@@ -76,7 +76,7 @@ impl EventLog {
         let session = session.to_owned();
         let answer_invocation = answer_invocation.map(str::to_owned);
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let execution = match origin {

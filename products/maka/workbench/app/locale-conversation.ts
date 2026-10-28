@@ -1383,4 +1383,72 @@ export const conversationMessages = {
     '此对话已更改。请核对当前沙箱设置后重新选择。',
     '此對話已變更。請核對目前沙箱設定後重新選擇。',
   ],
+  'Application access request': ['Application access request', '应用访问请求', '應用程式存取請求'],
+  'Application access denied': [
+    'Application access denied',
+    '已拒绝应用访问',
+    '已拒絕應用程式存取',
+  ],
+  'Application access allowed · {scope}': [
+    'Application access allowed · {scope}',
+    '已允许应用访问 · {scope}',
+    '已允許應用程式存取 · {scope}',
+  ],
+  'Allow the requesting tool to inspect and control this application?': [
+    'Allow the requesting tool to inspect and control this application?',
+    '允许请求工具查看和控制此应用吗？',
+    '允許請求工具查看和控制此應用程式嗎？',
+  ],
+  'Application path': ['Application path', '应用路径', '應用程式路徑'],
+  'Bundle identifier': ['Bundle identifier', '应用标识符', '應用程式識別碼'],
+  'Application risk: high': ['Application risk: high', '应用风险：高', '應用程式風險：高'],
+  'Application risk: low': ['Application risk: low', '应用风险：低', '應用程式風險：低'],
+  'Application risk is unknown. Review its identity before allowing access.': [
+    'Application risk is unknown. Review its identity before allowing access.',
+    '应用风险未知。请核对其身份后再允许访问。',
+    '應用程式風險未知。請核對其身分後再允許存取。',
+  ],
+  'Allow once': ['Allow once', '仅允许本次', '僅允許本次'],
+  'Allow for this session': ['Allow for this session', '此会话内允许', '此對話內允許'],
+  'Always allow': ['Always allow', '始终允许', '一律允許'],
+  Always: ['Always', '始终', '一律'],
+  'Always allow applies across sessions in this Maka profile.': [
+    'Always allow applies across sessions in this Maka profile.',
+    '“始终允许”会应用于此 Maka 用户配置下的所有会话。',
+    '「一律允許」會套用至此 Maka 使用者設定下的所有對話。',
+  ],
+  'Computer output audio for this session': [
+    'Computer output audio for this session',
+    '此会话的计算机输出音频权限',
+    '此對話的電腦輸出音訊權限',
+  ],
+  'Browser access for this session': [
+    'Browser access for this session',
+    '此会话的浏览器访问权限',
+    '此對話的瀏覽器存取權限',
+  ],
+  'Computer access this turn': ['Computer access this turn', '本轮计算机访问', '本輪電腦存取'],
+  'Computer application access': [
+    'Computer application access',
+    '计算机应用访问',
+    '電腦應用程式存取',
+  ],
+  'Access stopped for this turn': [
+    'Access stopped for this turn',
+    '本轮访问已停止',
+    '本輪存取已停止',
+  ],
+  'Stop access to {app}': ['Stop access to {app}', '停止访问 {app}', '停止存取 {app}'],
+  "This allows the requesting tool to access pages on the displayed browser origin. The grant lasts for this session's current permission boundary.":
+    [
+      "This allows the requesting tool to access pages on the displayed browser origin. The grant lasts for this session's current permission boundary.",
+      '允许请求工具访问所显示浏览器来源中的页面。此授权持续至该会话当前权限边界失效。',
+      '允許請求工具存取所顯示瀏覽器來源中的頁面。此授權持續至該對話目前權限邊界失效。',
+    ],
+  "This allows the requesting tool to record audio played by the computer. The grant lasts for this session's current permission boundary.":
+    [
+      "This allows the requesting tool to record audio played by the computer. The grant lasts for this session's current permission boundary.",
+      '允许请求工具录制计算机播放的音频。此授权持续至该会话当前权限边界失效。',
+      '允許請求工具錄製電腦播放的音訊。此授權持續至該對話目前權限邊界失效。',
+    ],
 } as const satisfies Catalog;

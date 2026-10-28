@@ -121,14 +121,12 @@ export function toolArguments(kind: ToolFamily, input: unknown): ToolProjection 
     return typeof args.url === 'string'
       ? { kind: 'sections', sections: [{ label: tr('Requested URL'), text: args.url }] }
       : null;
-  if (kind === 'webSearch' || kind === 'glob' || kind === 'grep') {
-    const value = kind === 'webSearch' ? args.query : args.pattern;
+  if (kind === 'webSearch') {
+    const value = args.query;
     return typeof value === 'string'
       ? {
           kind: 'sections',
-          sections: [
-            { label: kind === 'webSearch' ? tr('Web query') : tr('Search pattern'), text: value },
-          ],
+          sections: [{ label: tr('Web query'), text: value }],
         }
       : null;
   }
@@ -271,28 +269,7 @@ export function toolResult(kind: ToolFamily, input: unknown): ToolProjection | n
       },
     };
   }
-  if (kind === 'glob' || kind === 'grep') {
-    const matches = kind === 'glob' ? value.files : value.matches;
-    if (!strings(matches) || typeof value.complete !== 'boolean') return null;
-    return {
-      kind: 'sections',
-      sections: [
-        {
-          label: kind === 'glob' ? tr('Matching files') : tr('Matching lines'),
-          text: matches.length ? matches.join('\n') : tr('No matches.'),
-        },
-        ...(!value.complete
-          ? [
-              {
-                label: tr('Search notice'),
-                text: tr('The tool reported an incomplete search result.'),
-                tone: 'warning' as const,
-              },
-            ]
-          : []),
-      ],
-    };
-  }
+
   if (kind === 'write') {
     if (
       value.kind !== 'file_write' ||

@@ -43,7 +43,7 @@ function Feed() {
           refreshing.set(false);
         }, 800);
       }}
-      viewabilityConfig={{ itemVisiblePercentThreshold: 50 }}
+      viewabilityConfig={{ itemVisibleThreshold: 0.5 }}
       onViewableItemsChange={({ viewableItems }) =>
         visible.set(viewableItems.length ? `${viewableItems[0].index}–${viewableItems[viewableItems.length - 1].index}` : "")
       }

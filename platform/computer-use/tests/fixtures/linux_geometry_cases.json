@@ -1,0 +1,149 @@
+{
+  "case_id": "native.capture-scale-and-window-move",
+  "display": {
+    "width": 3840,
+    "height": 2160,
+    "depth": 24
+  },
+  "fixture": {
+    "window_count": 2,
+    "initial_target": {
+      "x": 100,
+      "y": 100,
+      "width": 2400,
+      "height": 1200
+    },
+    "sibling": {
+      "x": 2800,
+      "y": 100,
+      "width": 320,
+      "height": 240
+    },
+    "input_point": [37, 41],
+    "required_observer_fields": [
+      "window_role",
+      "raw_xid",
+      "raw_pid",
+      "client_geometry",
+      "root_geometry",
+      "pointer",
+      "focus",
+      "button_events"
+    ]
+  },
+  "stages": [
+    {
+      "id": "without_capture",
+      "before": [],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
+      "rebind_public_app": true
+    },
+    {
+      "id": "stable_large_capture",
+      "before": [
+        {
+          "subject": "getScreenshot",
+          "options": {
+            "emit": false
+          }
+        }
+      ],
+      "calls": [
+        "await app.click([37,41]);",
+        "await app.scroll([37,41],'down',{pixels:100});",
+        "await app.click([37,41]);",
+        "await app.scroll([37,41],'up',{pixels:100});"
+      ],
+      "rebind_public_app": true
+    },
+    {
+      "id": "move_after_capture",
+      "before": [
+        {
+          "subject": "getScreenshot",
+          "options": {
+            "emit": false
+          }
+        },
+        {
+          "fixture": "move_resize",
+          "x": 420,
+          "y": 280,
+          "width": 2400,
+          "height": 1200
+        }
+      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
+      "rebind_public_app": true
+    },
+    {
+      "id": "resize_after_capture",
+      "before": [
+        {
+          "subject": "getScreenshot",
+          "options": {
+            "emit": false
+          }
+        },
+        {
+          "fixture": "move_resize",
+          "x": 100,
+          "y": 100,
+          "width": 2600,
+          "height": 1300
+        }
+      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
+      "rebind_public_app": true
+    },
+    {
+      "id": "fresh_capture_after_resize",
+      "before": [
+        {
+          "fixture": "move_resize",
+          "x": 100,
+          "y": 100,
+          "width": 2600,
+          "height": 1300
+        },
+        {
+          "subject": "getScreenshot",
+          "options": {
+            "emit": false
+          }
+        }
+      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
+      "rebind_public_app": true
+    },
+    {
+      "id": "ax_after_resize",
+      "before": [
+        {
+          "subject": "getScreenshot",
+          "options": {
+            "emit": false
+          }
+        },
+        {
+          "fixture": "move_resize",
+          "x": 100,
+          "y": 100,
+          "width": 2600,
+          "height": 1300
+        },
+        {
+          "subject": "getAXState",
+          "options": {
+            "emit": false
+          }
+        }
+      ],
+      "calls": ["await app.click([37,41]);", "await app.scroll([37,41],'down',{pixels:100});"],
+      "rebind_public_app": true
+    }
+  ],
+  "reset_between_stages": "Restore the independently observed initial geometry and repeat the public getApp call before every stage; this does not assert backend object identity or perform an implicit VM reset. Wait for actual geometry acknowledgement. No unlisted screenshots between calls.",
+  "_license": "Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements. See the NOTICE file distributed with this work. Licensed under the Apache License, Version 2.0; https://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law or agreed to in writing, distributed on an AS IS BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.",
+  "scope": "Shared Linux/x64 geometry capture specification; actual original and candidate effects must be independently recorded. No platform parity is assumed."
+}

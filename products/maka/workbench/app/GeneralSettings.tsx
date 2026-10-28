@@ -24,7 +24,7 @@ import {
   assistantLanguages,
   type GeneralAction,
   type GeneralSettingsOwner,
-} from './generalSettings.ts';
+} from './generalSettingsState.ts';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { UiScaleSettings } from './UiScaleSettings';
 import { uiScale } from './uiScale';

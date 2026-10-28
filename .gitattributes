@@ -28,3 +28,6 @@
 /third-party/nsh/examples/gallery/fonts/OFL.txt whitespace=-blank-at-eol
 /third-party/nsh/tests/compat/cases/layout/fonts/OFL.txt whitespace=-blank-at-eol
 /third-party/nsh/third-party/icy_sixel/src/decoder.rs whitespace=-blank-at-eol
+
+# The pinned upstream license checksum includes its published CRLF bytes.
+/third-party/playwright/LICENSE -text whitespace=cr-at-eol

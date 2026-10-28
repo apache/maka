@@ -37,6 +37,8 @@ mod todo_tests;
 
 #[path = "tests/computer.rs"]
 mod computer;
+#[path = "tests/computer_controls.rs"]
+mod computer_controls;
 
 #[path = "tests/request_capture.rs"]
 mod request_capture;
@@ -162,12 +164,11 @@ use maka_packages::MANIFEST_FILE;
 use maka_packages::Package;
 use maka_plugin_core::{
     composition::{
-        Configuration as NodeConfiguration, Environment, ExecutionLocation, Input, InstanceId,
-        Node, PackageUse, Target,
+        Configuration as NodeConfiguration, Input, InstanceId, Node, PackageUse, Target,
     },
     contract::{Availability, Cardinality, Export, Import},
     operation::{OperationOutcome, Receipt},
-    package::{Declaration, EntryDeclaration, EntryTarget, Implementation, Realm},
+    package::{Declaration, EntryDeclaration, Implementation, Realm},
 };
 use serde_json::json;
 use std::sync::Mutex as StdMutex;
@@ -233,7 +234,6 @@ fn id(value: u128) -> InstanceId {
 }
 fn package(provider: bool) -> Package {
     let entry = EntryDeclaration {
-        scene: None,
         implementation: if provider {
             Implementation::Native {
                 implementation: IMPLEMENTATION.into(),
@@ -273,7 +273,8 @@ fn package(provider: bool) -> Package {
         },
     };
     let declaration = Declaration {
-        entries: BTreeMap::from([(EntryTarget::Host, entry)]),
+        host: Some(entry),
+        ui: None,
         composition: None,
     };
     let mut files = BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({"schemaVersion":1,"id":if provider {"agent"} else {"consumer"},"application":declaration})).unwrap())]);
@@ -296,7 +297,7 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
             consumer.application_ref()
         }
         .into(),
-        use_package: PackageUse::Entry,
+        use_package: PackageUse::Host,
         configuration: if provider_node {
             NodeConfiguration {
                 values: serde_json::to_value(settings)
@@ -330,11 +331,11 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
     let receipts = Package::new(BTreeMap::from([(
         MANIFEST_FILE.into(),
         serde_json::to_vec(&json!({
-            "schemaVersion":1,"id":"receipts","application":{"entries":{"host":{
+            "schemaVersion":1,"id":"receipts","application":{"host":{
                 "implementation":{"kind":"native","implementation":"maka.operations.receipts"},
                 "configuration":{"type":"object","additionalProperties":false},"imports":{},
                 "exports":{"Receipts":{"contract":receipt_contract,"availability":"required"}}
-            }}}
+            }}
         }))
         .unwrap(),
     )]))
@@ -342,7 +343,7 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
     let receipt_node = Node {
         key: Uuid::from_u128(4),
         package: receipts.application_ref().into(),
-        use_package: PackageUse::Entry,
+        use_package: PackageUse::Host,
         configuration: Default::default(),
         parameters: Default::default(),
         bindings: BTreeMap::new(),
@@ -350,17 +351,12 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
         overrides: vec![],
     };
     let mut input = Input {
-        environment: Environment {
-            location: ExecutionLocation::Host,
-            presentation: None,
-        },
+        ui: None,
         instances: BTreeMap::from([
             ("provider".into(), node(1, true)),
             ("a".into(), node(2, false)),
             ("b".into(), node(3, false)),
         ]),
-        recovery: None,
-        launch: None,
     };
     input.instances.insert("receipts".into(), receipt_node);
     for name in ["a", "b"] {
@@ -376,18 +372,13 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
     let mut files = consumer.files().clone();
     let mut manifest = consumer.manifest().clone();
     let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    manifest_application
-        .entries
-        .get_mut(&EntryTarget::Host)
-        .unwrap()
-        .imports
-        .insert(
-            "receipts".into(),
-            Import {
-                contract: receipt_contract,
-                cardinality: Cardinality::One,
-            },
-        );
+    manifest_application.host.as_mut().unwrap().imports.insert(
+        "receipts".into(),
+        Import {
+            contract: receipt_contract,
+            cardinality: Cardinality::One,
+        },
+    );
     files.insert(MANIFEST_FILE.into(), {
         manifest.application =
             Some(maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap());
@@ -401,10 +392,7 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
         let mut manifest = provider.manifest().clone();
         let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
         manifest.id = "settings".into();
-        let entry = manifest_application
-            .entries
-            .get_mut(&EntryTarget::Host)
-            .unwrap();
+        let entry = manifest_application.host.as_mut().unwrap();
         entry.implementation = Implementation::Native {
             implementation: maka_settings_native::IMPLEMENTATION.into(),
         };
@@ -428,18 +416,13 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
     let mut files = consumer.files().clone();
     let mut manifest = consumer.manifest().clone();
     let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    manifest_application
-        .entries
-        .get_mut(&EntryTarget::Host)
-        .unwrap()
-        .imports
-        .insert(
-            "settings".into(),
-            Import {
-                contract: maka_settings_native::contract::contract(),
-                cardinality: Cardinality::One,
-            },
-        );
+    manifest_application.host.as_mut().unwrap().imports.insert(
+        "settings".into(),
+        Import {
+            contract: maka_settings_native::contract::contract(),
+            cardinality: Cardinality::One,
+        },
+    );
     files.insert(MANIFEST_FILE.into(), {
         manifest.application =
             Some(maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap());
@@ -451,7 +434,7 @@ fn input(settings: &Configuration) -> (Input, Vec<Package>) {
         Node {
             key: Uuid::from_u128(5),
             package: settings.application_ref().into(),
-            use_package: PackageUse::Entry,
+            use_package: PackageUse::Host,
             configuration: NodeConfiguration::default(),
             parameters: NodeConfiguration::default(),
             disabled: false,

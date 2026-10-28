@@ -61,8 +61,10 @@ impl Connection {
         let (client, directory) = maka_workbench::host::admit(host, root, "desktop").await?;
         let bindings = Bindings::new(client, runtime.clone());
         let mut config = maka_workbench::configuration(bindings.registry(None), runtime);
+        config.context = config.context.with(bindings.reload());
         config.data_dir = Some(directory.clone());
         config.assets = Some(bindings.assets());
+        config.chunk_loader = Some(bindings.chunk_loader());
         Ok(Self {
             bindings,
             config,

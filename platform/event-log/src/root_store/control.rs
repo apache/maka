@@ -78,6 +78,18 @@ impl RootStore {
         let (recovery, released) = self.gates.recovery()?;
         let recovery = Arc::new(recovery);
         let result = async {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| {
+                    StoreError::InvalidTransition("system clock precedes Unix epoch".into())
+                })?
+                .as_millis();
+            let now = u64::try_from(now)
+                .map_err(|_| StoreError::InvalidTransition("timestamp exhausted".into()))?;
+            // Root-owned pending app decisions must close before a partition
+            // can seal its abandoned invocation through the read-only view.
+            self.close_abandoned_computer_apps(now, recovery.clone())
+                .await?;
             let mut recovered = 0usize;
             for partition in &self.partitions {
                 recovered = recovered

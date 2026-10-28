@@ -33,7 +33,7 @@ async fn wsl_uses_windows_targets_input_cursors_and_session_cleanup() {
         session
             .invoke(
                 serde_json::from_value(command).unwrap(),
-                id,
+                &maka_computer_use::InvocationContext::new(id, "fixture-turn"),
                 &CancellationToken::new(),
                 maka_agent_facts::language::Language::En,
             )
@@ -121,7 +121,7 @@ async fn wsl_uses_windows_targets_input_cursors_and_session_cleanup() {
                 json!({"method":"observe","handle":app["handle"],"kind":"ax","options":{}}),
             )
             .unwrap(),
-            "wsl-b",
+            &maka_computer_use::InvocationContext::new("wsl-b", "fixture-turn"),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -218,7 +218,7 @@ async fn closed_or_cancelled_session_cannot_start_native_work() {
             Command::ListApps {
                 options: InventoryOptions::default()
             },
-            "cancelled",
+            &maka_computer_use::InvocationContext::new("cancelled", "fixture-turn"),
             &stop,
             maka_agent_facts::language::Language::En
         )
@@ -236,7 +236,7 @@ async fn closed_or_cancelled_session_cannot_start_native_work() {
             Command::ListApps {
                 options: InventoryOptions::default()
             },
-            "closed",
+            &maka_computer_use::InvocationContext::new("closed", "fixture-turn"),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En
         )
@@ -259,7 +259,7 @@ async fn native_application_observation_and_shutdown() {
             Command::ListApps {
                 options: InventoryOptions::default(),
             },
-            "maka-native-smoke",
+            &maka_computer_use::InvocationContext::new("maka-native-smoke", "fixture-turn"),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -270,7 +270,7 @@ async fn native_application_observation_and_shutdown() {
             Command::ListApps {
                 options: InventoryOptions::default(),
             },
-            "maka-native-second",
+            &maka_computer_use::InvocationContext::new("maka-native-second", "fixture-turn"),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -283,7 +283,7 @@ async fn native_application_observation_and_shutdown() {
             Command::ListWindows {
                 options: InventoryOptions::default(),
             },
-            "maka-native-second",
+            &maka_computer_use::InvocationContext::new("maka-native-second", "fixture-turn"),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -309,7 +309,7 @@ async fn locked_desktop_refuses_target_binding_before_app_resolution() {
                     window_id: u64::MAX,
                 },
             },
-            "locked-fixture",
+            &maka_computer_use::InvocationContext::new("locked-fixture", "fixture-turn"),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )

@@ -50,8 +50,6 @@ def read_frame(stream):
             data.extend(chunk)
         return data
     size = struct.unpack(">I", exact(4))[0]
-    if size > 2 * 1024 * 1024:
-        raise ValueError("Host frame exceeds test budget")
     return json.loads(exact(size))
 
 
@@ -73,23 +71,23 @@ def main():
                        check=True, capture_output=True, timeout=30)
         project = base / "example"
         manifest = json.loads((project / "plugin/maka.extension.json").read_text())
-        contract = manifest["application"]["entries"]["host"]["exports"]["Echo"]["contract"]
+        contract = manifest["application"]["host"]["exports"]["Echo"]["contract"]
         consumer = base / "consumer"
         consumer.mkdir()
         (consumer / "consumer.mjs").write_text("export function activate() { return {}; }")
         save(consumer / "maka.extension.json", {
             "schemaVersion": 1, "id": "example.echo-test",
-            "application": {"entries": {"host": {
+            "application": {"host": {
                 "implementation": {"kind": "javascript", "module": "consumer.mjs", "realm": "dedicated"},
                 "configuration": {"type": "object"}, "exports": {},
                 "imports": {"echo": {"contract": contract, "cardinality": {"kind": "one"}}},
-            }}},
+            }},
         })
         composition = json.loads((project / "composition.json").read_text())
         key = str(uuid.uuid4())
         composition["instances"]["consumer"] = {
             "key": key, "package": {"source": "pinned", "package": run("application", "inspect-package", "--package", consumer)},
-            "usePackage": "entry", "bindings": {"echo": [{"kind": "instance", "path": ["example"], "export": "Echo"}]},
+            "usePackage": "host", "bindings": {"echo": [{"kind": "instance", "path": ["example"], "export": "Echo"}]},
         }
         save(project / "composition.json", composition)
         root = base / "root"
@@ -140,7 +138,7 @@ def main():
                         assert status["value"]["lifecycle_mode"] == "service", status
                         assert status["value"]["source"] == source, status
                         assert not status["value"]["closing"], status
-                    for value, valid in [("hello Maka", True), ("😀" * 4096, True), (42, False), ("x" * 4097, False)]:
+                    for value, valid in [("hello Maka", True), ("😀" * 8192, True), (42, False)]:
                         with connect() as call, call.makefile("rwb", buffering=0) as channel:
                             accepted = opening(channel, {"kind": "call", "session": connected["session"]}, epoch)
                             assert accepted == {"kind": "accepted"}, accepted

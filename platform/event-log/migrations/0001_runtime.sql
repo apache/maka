@@ -350,18 +350,6 @@ CREATE TABLE session_bundle_members (
     CHECK(parent_session_id IS NULL OR parent_session_id!=session_id)
 );
 
-CREATE TABLE application_ui_checkpoints (
-    deployment TEXT NOT NULL,
-    instance TEXT NOT NULL CHECK(json_valid(instance)),
-    key TEXT NOT NULL,
-    revision INTEGER NOT NULL CHECK(revision > 0),
-    format TEXT NOT NULL,
-    data_source_json TEXT NOT NULL CHECK(json_valid(data_source_json)),
-    metadata_json TEXT NOT NULL CHECK(json_valid(metadata_json)),
-    content BLOB NOT NULL,
-    PRIMARY KEY(deployment, instance, key)
-) WITHOUT ROWID;
-
 CREATE TABLE application_launch (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     deployment TEXT NOT NULL,
@@ -410,7 +398,7 @@ CREATE TABLE recall_documents (
 CREATE INDEX recall_document_turn ON recall_documents(session_id, turn_id, source_sequence, item_index);
 CREATE INDEX recall_document_context ON recall_documents(session_id, source_sequence, item_index)
     WHERE body<>'' OR role IN ('tool_call','tool_result');
-CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=full);
+CREATE VIRTUAL TABLE recall_terms USING fts5(grams, content='', contentless_delete=1, detail=none);
 CREATE TRIGGER recall_document_deleted AFTER DELETE ON recall_documents BEGIN
     DELETE FROM recall_terms WHERE rowid=old.id;
 END;
@@ -444,6 +432,38 @@ CREATE TABLE "client_capability_session_grants" (
     authority_key TEXT PRIMARY KEY,
     record_json TEXT NOT NULL
 );
+
+-- App consent uses the existing append-only interaction facts. Only profile
+-- persistence needs mutable authority: revocation advances its revision so a
+-- delayed response cannot restore the previously revoked Always grant.
+CREATE TABLE computer_app_profile_authority (
+    target_key TEXT PRIMARY KEY NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991),
+    source_request TEXT REFERENCES interaction_requests(request_id)
+) STRICT;
+
+-- An observed app remains selectable between completed native calls in the same
+-- logical Turn. Its first source T1 is an immutable, host-resolved selection.
+CREATE TABLE computer_app_turn_activity (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    app_key TEXT NOT NULL,
+    source_event TEXT NOT NULL REFERENCES event_log(event_id),
+    operation_id TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY(session_id,turn_id,app_key),
+    UNIQUE(session_id,operation_id)
+) STRICT;
+
+CREATE TABLE computer_app_turn_stops (
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    app_key TEXT NOT NULL,
+    stopped_at INTEGER NOT NULL CHECK(stopped_at BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY(session_id,turn_id,app_key),
+    FOREIGN KEY(session_id,turn_id,app_key)
+        REFERENCES computer_app_turn_activity(session_id,turn_id,app_key) ON DELETE CASCADE
+) STRICT;
 
 CREATE TABLE "projects" (
     id TEXT PRIMARY KEY NOT NULL,
@@ -572,7 +592,7 @@ CREATE TABLE context_semantic_rows (
     unknown_only INTEGER NOT NULL,
     row_json TEXT NOT NULL,
     PRIMARY KEY(owner_session_id,source_sequence,source_index,revision)
-) WITHOUT ROWID;
+);
 
 CREATE TABLE context_semantic_fragments (
     source_sequence INTEGER NOT NULL,
@@ -588,7 +608,7 @@ CREATE TABLE context_semantic_fragment_pieces (
     piece_index INTEGER NOT NULL,
     bytes BLOB NOT NULL,
     PRIMARY KEY(source_sequence,source_index,piece_index)
-) WITHOUT ROWID;
+);
 
 CREATE TABLE context_semantic_cuts (
     owner_session_id TEXT NOT NULL,
@@ -967,6 +987,26 @@ CREATE INDEX shell_runs_active ON shell_runs(active) WHERE active = 1;
 
 CREATE INDEX interaction_session_pending ON interaction_requests(session_id, created_at, request_id);
 
+CREATE UNIQUE INDEX computer_app_native_effect ON interaction_requests(
+    session_id,
+    json_extract(record_json, '$.request.nativeOperationId')
+) WHERE json_extract(record_json, '$.request.kind') = 'computer_app';
+
+CREATE INDEX interaction_browser_origin_decision ON interaction_requests(
+    session_id,
+    json_extract(record_json,'$.request.target.providerId'),
+    json_extract(record_json,'$.request.target.contractId'),
+    json_extract(record_json,'$.request.target.serverId'),
+    json_extract(record_json,'$.request.target.toolName'),
+    json_extract(record_json,'$.request.target.scope.origin'),
+    json_extract(record_json,'$.request.basis.boundaryRevision'),
+    json_extract(record_json,'$.request.basis.binding.id'),
+    json_extract(record_json,'$.request.basis.binding.permissionEpoch'),
+    request_id
+) WHERE json_extract(record_json,'$.request.kind')='client_capability'
+    AND json_extract(record_json,'$.request.target.capability')='browser'
+    AND json_extract(record_json,'$.request.target.scope.kind')='browser_origin';
+
 CREATE INDEX interaction_permission_basis ON interaction_requests(
     session_id, json_extract(record_json, '$.request.baseRevision'), created_at, request_id
 ) WHERE json_extract(record_json, '$.request.kind') = 'permissions';
@@ -992,7 +1032,7 @@ CREATE INDEX context_semantic_row_order ON context_semantic_rows(owner_session_i
 
 CREATE INDEX context_semantic_invocation_rows ON context_semantic_rows(owner_session_id,invocation_id,kind,source_sequence,source_index,revision);
 
-CREATE INDEX context_semantic_unknown_rows ON context_semantic_rows(owner_session_id,unknown_only,source_sequence,order_sequence) WHERE unknown_only=1;
+CREATE INDEX context_semantic_unknown_rows ON context_semantic_rows(owner_session_id,unknown_only,source_sequence,order_sequence,source_index,revision) WHERE unknown_only=1;
 
 CREATE INDEX context_semantic_notifications ON context_semantic_rows(owner_session_id,invocation_id,source_sequence,source_index,revision) WHERE kind='notification';
 
@@ -1217,99 +1257,6 @@ BEGIN
     ON CONFLICT(owner) DO NOTHING;
 END;
 
-CREATE TRIGGER context_obligations_append AFTER INSERT ON event_log
-WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL AND (
-    NEW.kind IN ('invocation_opened','invocation_ended','tool_dispatched','tool_rejected','tool_settled','model_requested','model_completed','model_interrupted')
-    OR (NEW.kind='model_observed' AND json_extract(NEW.event_json,'$.fact.event.kind')='tool_call'))
-BEGIN
-    INSERT INTO context_safety_heads VALUES(NEW.event_session, NEW.sequence)
-      ON CONFLICT(session_id) DO UPDATE SET through_sequence=MAX(through_sequence, excluded.through_sequence);
-
-    DELETE FROM context_obligations WHERE invocation_id=NEW.invocation_id AND (
-      (NEW.kind='invocation_ended' AND kind='invocation')
-      OR (NEW.kind='tool_settled' AND kind='tool' AND operation_id=NEW.operation_id)
-      OR (NEW.kind IN ('model_completed','model_interrupted') AND kind='model' AND operation_id=NEW.operation_id)
-      OR (NEW.kind IN ('tool_dispatched','tool_rejected') AND kind='call' AND operation_id=NEW.operation_id));
-
-    -- A manual message can observe a sealed unknown dispatch; replay cannot.
-    UPDATE context_obligations SET sealed_unknown=1
-      WHERE NEW.kind='invocation_ended' AND json_extract(NEW.event_json,'$.fact.outcome.class')='outcome_unknown'
-        AND invocation_id=NEW.invocation_id AND kind='tool';
-
-    INSERT INTO context_obligations
-    SELECT e.event_session, e.invocation_id, 'invocation', '', e.sequence,
-           0
-    FROM runtime_events e
-    WHERE e.sequence=NEW.sequence AND e.kind='invocation_opened'
-      AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=e.invocation_id AND t.kind='invocation_ended');
-
-    INSERT INTO context_obligations
-    SELECT e.event_session, e.invocation_id, 'tool', e.operation_id, e.sequence,
-           EXISTS(SELECT 1 FROM runtime_events terminal
-             WHERE terminal.invocation_id=e.invocation_id AND terminal.kind='invocation_ended'
-               AND json_extract(terminal.event_json,'$.fact.outcome.class')='outcome_unknown')
-    FROM runtime_events e
-    WHERE e.sequence=NEW.sequence AND e.kind='tool_dispatched'
-      AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=e.invocation_id AND t.operation_id=e.operation_id AND t.kind='tool_settled');
-
-    INSERT INTO context_obligations
-    SELECT e.event_session, e.invocation_id, 'model', e.operation_id, e.sequence,
-           0
-    FROM runtime_events e
-    WHERE e.sequence=NEW.sequence AND e.kind='model_requested'
-      AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=e.invocation_id AND t.operation_id=e.operation_id AND t.kind IN ('model_completed','model_interrupted'));
-
-    INSERT INTO context_obligations
-    SELECT e.event_session, e.invocation_id, 'call', e.operation_id || ':' || json_extract(p.value,'$.call.id'), e.sequence,
-           0
-    FROM runtime_events e, json_each(e.event_json,'$.fact.output.parts') p
-    WHERE e.sequence=NEW.sequence AND e.kind='model_completed' AND json_extract(p.value,'$.kind')='tool_call'
-      AND json_extract(p.value,'$.call.provider_executed')=0
-      AND NOT EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=e.invocation_id AND r.operation_id=e.operation_id AND r.kind='model_requested' AND json_extract(r.event_json,'$.fact.item_acceptance')=1)
-      AND NOT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=e.invocation_id
-        AND d.operation_id=e.operation_id || ':' || json_extract(p.value,'$.call.id') AND d.kind IN ('tool_dispatched','tool_rejected'));
-
-    INSERT INTO context_obligations
-    SELECT e.event_session, e.invocation_id, 'call', json_extract(e.event_json,'$.fact.step_id') || ':' || json_extract(e.event_json,'$.fact.event.data.id'), e.sequence,
-           0
-    FROM runtime_events e
-    WHERE e.sequence=NEW.sequence AND e.kind='model_observed' AND json_extract(e.event_json,'$.fact.event.kind')='tool_call'
-      AND json_extract(e.event_json,'$.fact.event.data.provider_executed')=0
-      AND EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=e.invocation_id
-        AND r.operation_id=json_extract(e.event_json,'$.fact.step_id') AND r.kind='model_requested' AND json_extract(r.event_json,'$.fact.item_acceptance')=1)
-      AND NOT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=e.invocation_id
-        AND d.operation_id=json_extract(e.event_json,'$.fact.step_id') || ':' || json_extract(e.event_json,'$.fact.event.data.id') AND d.kind IN ('tool_dispatched','tool_rejected'));
-
-    INSERT INTO context_obligations
-    SELECT e.event_session, e.invocation_id, 'completed_provider', e.operation_id, e.sequence,
-           0
-    FROM runtime_events e
-    WHERE e.sequence=NEW.sequence AND e.kind='model_completed'
-      AND EXISTS(SELECT 1 FROM json_each(e.event_json,'$.fact.output.parts') p
-        WHERE json_extract(p.value,'$.kind')='tool_call' AND json_extract(p.value,'$.call.provider_executed')=1
-        AND NOT EXISTS(SELECT 1 FROM json_each(e.event_json,'$.fact.output.parts') result
-          WHERE json_extract(result.value,'$.kind')='tool_result'
-            AND json_extract(result.value,'$.id')=json_extract(p.value,'$.call.id')
-            AND json_extract(result.value,'$.name')=json_extract(p.value,'$.call.name')));
-
-    INSERT INTO context_obligations
-    SELECT e.event_session, e.invocation_id, 'interrupted_provider', e.operation_id, e.sequence,
-           0
-    FROM runtime_events e
-    WHERE e.sequence=NEW.sequence AND e.kind='model_interrupted'
-      AND EXISTS(SELECT 1 FROM runtime_events call WHERE call.invocation_id=e.invocation_id AND call.kind='model_observed'
-        AND CAST(json_extract(call.event_json,'$.fact.step_id') AS TEXT)=e.operation_id
-        AND call.sequence<e.sequence AND json_extract(call.event_json,'$.fact.event.kind')='tool_call'
-        AND json_extract(call.event_json,'$.fact.event.data.provider_executed')=1
-        AND NOT EXISTS(SELECT 1 FROM runtime_events result WHERE result.invocation_id=call.invocation_id
-          AND result.kind='model_observed' AND result.sequence>call.sequence AND result.sequence<e.sequence
-          AND CAST(json_extract(result.event_json,'$.fact.step_id') AS TEXT)=e.operation_id
-          AND json_extract(result.event_json,'$.fact.event.kind')='provider_tool_result'
-          AND json_extract(result.event_json,'$.fact.event.data.id')=json_extract(call.event_json,'$.fact.event.data.id')
-          AND json_extract(result.event_json,'$.fact.event.data.name')=json_extract(call.event_json,'$.fact.event.data.name')));
-
-END;
-
 CREATE TRIGGER context_lineage_index_depth AFTER INSERT ON context_lineage_depths
 BEGIN
  INSERT INTO context_lineage_jumps(invocation_id,level,ancestor_id)
@@ -1348,133 +1295,6 @@ BEGIN
     WHERE request_id=OLD.request_id
       AND NOT EXISTS (SELECT 1 FROM interaction_outcomes WHERE request_id=OLD.request_id)
     ON CONFLICT(request_id) DO NOTHING;
-END;
-
-CREATE TRIGGER context_execution_append AFTER INSERT ON event_log
-WHEN NEW.invocation_id IS NOT NULL AND NEW.event_json IS NOT NULL
-  AND NEW.kind IN ('model_requested','model_observed','model_completed','model_interrupted','tool_dispatched','tool_rejected','tool_settled')
-  AND (NEW.kind != 'model_observed'
-    OR json_extract(NEW.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result')
-    OR EXISTS(SELECT 1 FROM context_execution_steps
-      WHERE invocation_id=NEW.invocation_id
-        AND operation_id=CAST(json_extract(NEW.event_json,'$.fact.step_id') AS TEXT)
-        AND (observed_at IS NULL OR terminal_kind='model_interrupted'
-          OR (barrier_at IS NULL AND (json_extract(NEW.event_json,'$.fact.event.kind')='finished'
-            OR (json_extract(NEW.event_json,'$.fact.event.data.provider_options') IS NOT NULL
-              AND json_extract(NEW.event_json,'$.fact.event.data.provider_options')!='{}')))
-          OR (accepted_at IS NULL AND json_extract(NEW.event_json,'$.fact.event.kind') IN ('source','part_finished')))))
-BEGIN
-    INSERT INTO context_execution_steps(invocation_id,operation_id,requested_at,purpose,item_acceptance)
-    SELECT NEW.invocation_id,NEW.operation_id,NEW.sequence,json_extract(NEW.event_json,'$.fact.purpose'),
-        COALESCE(json_extract(NEW.event_json,'$.fact.item_acceptance'),0)
-    WHERE NEW.kind='model_requested';
-
-    UPDATE context_execution_steps SET
-        observed_at=COALESCE(observed_at,NEW.sequence),
-        tool_observed_at=COALESCE(tool_observed_at,CASE WHEN json_extract(NEW.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result') THEN NEW.sequence END),
-        barrier_at=COALESCE(barrier_at,CASE WHEN (json_extract(NEW.event_json,'$.fact.event.kind') IN ('provider_tool_result','finished')
-    OR (json_extract(NEW.event_json,'$.fact.event.kind')='tool_call' AND json_extract(NEW.event_json,'$.fact.event.data.provider_executed')=1)
-    OR (json_extract(NEW.event_json,'$.fact.event.data.provider_options') IS NOT NULL
-        AND json_extract(NEW.event_json,'$.fact.event.data.provider_options')!='{}')) THEN NEW.sequence END),
-        accepted_at=COALESCE(accepted_at,CASE WHEN json_extract(NEW.event_json,'$.fact.event.kind') IN ('source','part_finished','tool_call','provider_tool_result') THEN NEW.sequence END)
-    WHERE NEW.kind='model_observed' AND invocation_id=NEW.invocation_id
-      AND operation_id=CAST(json_extract(NEW.event_json,'$.fact.step_id') AS TEXT)
-      AND (observed_at IS NULL OR (tool_observed_at IS NULL AND json_extract(NEW.event_json,'$.fact.event.kind') IN ('tool_call','provider_tool_result'))
-        OR (barrier_at IS NULL AND (json_extract(NEW.event_json,'$.fact.event.kind') IN ('provider_tool_result','finished')
-    OR (json_extract(NEW.event_json,'$.fact.event.kind')='tool_call' AND json_extract(NEW.event_json,'$.fact.event.data.provider_executed')=1)
-    OR (json_extract(NEW.event_json,'$.fact.event.data.provider_options') IS NOT NULL
-        AND json_extract(NEW.event_json,'$.fact.event.data.provider_options')!='{}'))) OR (accepted_at IS NULL AND json_extract(NEW.event_json,'$.fact.event.kind') IN ('source','part_finished','tool_call','provider_tool_result')));
-
-    UPDATE context_execution_steps SET terminal_at=NEW.sequence,terminal_kind=NEW.kind,
-        terminal_status=json_extract(NEW.event_json,'$.fact.status')
-    WHERE NEW.kind IN ('model_completed','model_interrupted')
-      AND invocation_id=NEW.invocation_id AND operation_id=NEW.operation_id;
-
-    INSERT INTO context_independent_tools
-    SELECT NEW.invocation_id,NEW.operation_id,NEW.sequence
-    WHERE NEW.kind IN ('tool_dispatched','tool_rejected')
-      AND ((NEW.kind='tool_dispatched' AND json_extract(NEW.event_json,'$.fact.call.origin.kind')='code_cell')
-        OR EXISTS(SELECT 1 FROM context_independent_tools p WHERE p.invocation_id=NEW.invocation_id
-          AND p.operation_id=json_extract(NEW.event_json,'$.fact.call.origin.parent_operation_id')));
-
-    UPDATE context_execution_work SET closed_at=NEW.sequence
-    WHERE NEW.kind='tool_settled' AND invocation_id=NEW.invocation_id AND kind='tool'
-      AND operation_id=NEW.operation_id AND closed_at IS NULL;
-    UPDATE context_execution_work SET closed_at=NEW.sequence
-    WHERE NEW.kind IN ('model_completed','model_interrupted') AND invocation_id=NEW.invocation_id AND kind='model'
-      AND operation_id=NEW.operation_id AND closed_at IS NULL;
-    UPDATE context_execution_work SET closed_at=NEW.sequence
-    WHERE NEW.kind IN ('tool_dispatched','tool_rejected') AND invocation_id=NEW.invocation_id AND kind='call'
-      AND operation_id=NEW.operation_id AND closed_at IS NULL;
-    UPDATE context_execution_work SET closed_at=NEW.sequence
-    WHERE NEW.kind='model_observed' AND json_extract(NEW.event_json,'$.fact.event.kind')='provider_tool_result'
-      AND invocation_id=NEW.invocation_id AND kind='accepted_provider'
-      AND operation_id=CAST(json_extract(NEW.event_json,'$.fact.step_id') AS TEXT)
-      AND call_id=json_extract(NEW.event_json,'$.fact.event.data.id')
-      AND call_name=json_extract(NEW.event_json,'$.fact.event.data.name') AND closed_at IS NULL;
-
-INSERT INTO context_execution_work(invocation_id,kind,operation_id,opened_at,closed_at)
-SELECT e.invocation_id,'tool',e.operation_id,e.sequence,
-    (SELECT MIN(t.sequence) FROM runtime_events t WHERE t.invocation_id=e.invocation_id
-       AND t.operation_id=e.operation_id AND t.kind='tool_settled')
-FROM runtime_events e WHERE e.kind='tool_dispatched' AND e.sequence=NEW.sequence;
-
-INSERT INTO context_execution_work(invocation_id,kind,operation_id,opened_at,closed_at)
-SELECT e.invocation_id,'model',e.operation_id,e.sequence,
-    (SELECT MIN(t.sequence) FROM runtime_events t WHERE t.invocation_id=e.invocation_id
-       AND t.operation_id=e.operation_id AND t.kind IN ('model_completed','model_interrupted'))
-FROM runtime_events e WHERE e.kind='model_requested' AND e.sequence=NEW.sequence;
-
-INSERT INTO context_execution_work(invocation_id,kind,operation_id,opened_at,closed_at)
-SELECT e.invocation_id,'call',e.operation_id || ':' || json_extract(p.value,'$.call.id'),e.sequence,
-    (SELECT MIN(d.sequence) FROM runtime_events d WHERE d.invocation_id=e.invocation_id
-       AND d.operation_id=e.operation_id || ':' || json_extract(p.value,'$.call.id')
-       AND d.kind IN ('tool_dispatched','tool_rejected'))
-FROM runtime_events e,json_each(e.event_json,'$.fact.output.parts') p
-WHERE e.kind='model_completed' AND e.sequence=NEW.sequence AND json_extract(p.value,'$.kind')='tool_call'
-  AND json_extract(p.value,'$.call.provider_executed')=0
-  AND NOT EXISTS(SELECT 1 FROM context_execution_steps s WHERE s.invocation_id=e.invocation_id
-    AND s.operation_id=e.operation_id AND s.item_acceptance=1);
-
-INSERT INTO context_execution_work(invocation_id,kind,operation_id,opened_at,closed_at)
-SELECT e.invocation_id,'call',s.operation_id || ':' || json_extract(e.event_json,'$.fact.event.data.id'),e.sequence,
-    (SELECT MIN(d.sequence) FROM runtime_events d WHERE d.invocation_id=e.invocation_id
-       AND d.operation_id=s.operation_id || ':' || json_extract(e.event_json,'$.fact.event.data.id')
-       AND d.kind IN ('tool_dispatched','tool_rejected'))
-FROM runtime_events e JOIN context_execution_steps s ON s.invocation_id=e.invocation_id
-    AND s.operation_id=CAST(json_extract(e.event_json,'$.fact.step_id') AS TEXT) AND s.item_acceptance=1
-WHERE e.kind='model_observed' AND e.sequence=NEW.sequence AND json_extract(e.event_json,'$.fact.event.kind')='tool_call'
-  AND json_extract(e.event_json,'$.fact.event.data.provider_executed')=0;
-
-INSERT INTO context_execution_work(invocation_id,kind,operation_id,call_id,call_name,opened_at,closed_at)
-SELECT e.invocation_id,'accepted_provider',s.operation_id,
-    json_extract(e.event_json,'$.fact.event.data.id'),json_extract(e.event_json,'$.fact.event.data.name'),e.sequence,
-    (SELECT MIN(t.sequence) FROM runtime_events t WHERE t.invocation_id=e.invocation_id AND t.kind='model_observed'
-       AND CAST(json_extract(t.event_json,'$.fact.step_id') AS TEXT)=s.operation_id
-       AND json_extract(t.event_json,'$.fact.event.kind')='provider_tool_result'
-       AND json_extract(t.event_json,'$.fact.event.data.id')=json_extract(e.event_json,'$.fact.event.data.id')
-       AND json_extract(t.event_json,'$.fact.event.data.name')=json_extract(e.event_json,'$.fact.event.data.name'))
-FROM runtime_events e JOIN context_execution_steps s ON s.invocation_id=e.invocation_id
-    AND s.operation_id=CAST(json_extract(e.event_json,'$.fact.step_id') AS TEXT) AND s.item_acceptance=1
-WHERE e.kind='model_observed' AND e.sequence=NEW.sequence AND json_extract(e.event_json,'$.fact.event.kind')='tool_call'
-  AND json_extract(e.event_json,'$.fact.event.data.provider_executed')=1;
-
-INSERT INTO context_execution_work(invocation_id,kind,operation_id,opened_at)
-SELECT e.invocation_id,'completed_provider',e.operation_id,e.sequence
-FROM runtime_events e WHERE e.kind='model_completed' AND e.sequence=NEW.sequence
-  AND EXISTS(SELECT 1 FROM json_each(e.event_json,'$.fact.output.parts') p
-    WHERE json_extract(p.value,'$.kind')='tool_call' AND json_extract(p.value,'$.call.provider_executed')=1
-      AND NOT EXISTS(SELECT 1 FROM json_each(e.event_json,'$.fact.output.parts') result
-        WHERE json_extract(result.value,'$.kind')='tool_result'
-          AND json_extract(result.value,'$.id')=json_extract(p.value,'$.call.id')
-          AND json_extract(result.value,'$.name')=json_extract(p.value,'$.call.name')));
-
-INSERT OR IGNORE INTO context_execution_work(invocation_id,kind,operation_id,opened_at)
-SELECT s.invocation_id,'interrupted',s.operation_id,
-    MAX(s.terminal_at,s.observed_at,CASE WHEN s.terminal_status='retryable_failure' THEN s.barrier_at ELSE s.observed_at END)
-FROM context_execution_steps s WHERE s.terminal_kind='model_interrupted' AND s.observed_at IS NOT NULL
-  AND (s.terminal_status!='retryable_failure' OR (s.item_acceptance!=1 AND s.barrier_at IS NOT NULL))
-  AND NOT COALESCE(s.purpose='summary' AND s.tool_observed_at IS NULL,0) AND s.invocation_id=NEW.invocation_id AND s.operation_id=CAST(json_extract(NEW.event_json,'$.fact.step_id') AS TEXT);
 END;
 
 INSERT INTO session_catalog_revision VALUES(1,0);

@@ -99,7 +99,13 @@ pub(super) async fn watch(
         owner
             .scoped_session(context.scope(), &input.session_id)
             .await?;
-        let through = *commits.borrow_and_update();
+        commits.borrow_and_update();
+        let through = owner
+            .scoped_store(context.scope(), &input.session_id)
+            .await?
+            .committed_sequence()
+            .await
+            .map_err(|error| error.to_string())?;
         let revision = owner
             .scoped_store(context.scope(), &input.session_id)
             .await?

@@ -29,9 +29,14 @@ import type {
   OperationReply,
   ServiceMethods,
 } from '../../../../packages/plugin-sdk/src/index.js';
+import type { UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 
-// Native checks each exact method contract before querying or subscribing. The Host
-// validates their returned values; callers cannot choose an unrelated result T.
+// Native JSON results have Rust-owned shapes. Project the shared API while
+// retaining the admitted native Host object and its original request custody.
+export const uiHost = nativeHost as UiHost;
+
+// The default root declares these service contracts in its composition. The
+// Host validates values against the selected contracts; this facade types the calls.
 type Services = {
   agent: ServiceMethods['agent'];
   settings: ServiceMethods['settings'];
@@ -139,30 +144,19 @@ async function query<E extends Endpoint, M extends Method<E, 'query'>>(
 ): Promise<Output<E, M>> {
   return nativeHost.query(endpoint, method, input) as Promise<Output<E, M>>;
 }
-function subscribe(
-  endpoint: 'agent',
-  method: 'readFile',
-  input: Input<'agent', 'readFile'>,
-): Promise<FileSubscription>;
 function subscribe<E extends Endpoint, M extends StreamMethod<E>>(
   endpoint: E,
   method: M,
   input: Input<E, M>,
-): Promise<Subscription<Output<E, M>>>;
-async function subscribe(
-  endpoint: Endpoint,
-  method: string,
-  input: unknown,
-): Promise<FileSubscription | Subscription<unknown>> {
-  const opened = await nativeHost.subscribe(endpoint, method, input);
-  if (endpoint === 'agent' && method === 'readFile') {
-    return {
-      readFile: async () => fileView(await opened.readFile()),
-      close: () => opened.close(),
-    };
-  }
-  // Keep the original native subscription and its cleanup, without a handle table.
-  return opened;
+): Promise<Subscription<Output<E, M>>> {
+  return nativeHost.subscribe(endpoint, method, input) as Promise<Subscription<Output<E, M>>>;
+}
+async function readFile(input: Input<'agent', 'readFile'>): Promise<FileSubscription> {
+  const opened = await nativeHost.readFile(input);
+  return {
+    readFile: async () => fileView(await opened.readFile()),
+    close: () => opened.close(),
+  };
 }
 
 // Local journal methods serialize these actual Rust DTOs. Their receipt business
@@ -184,8 +178,10 @@ export const host = {
         };
   },
   query,
+  hasService: (endpoint: string) => nativeHost.hasService(endpoint),
   refresh: () => nativeHost.refresh(),
   subscribe,
+  readFile,
   get initialSession() {
     return nativeHost.initialSession;
   },
@@ -220,8 +216,7 @@ export const host = {
 // Session methods take the original native Instance. In particular, the same
 // instance still goes directly into AttachmentPicker.client.
 export type { ScopedHost };
-// The schema also accepts old inputs without attachments. These native methods
-// serialize Draft without skipping that field, including [] for an empty draft.
+// Native draft results always include attachments, including [] for an empty draft.
 type SavedDraft = ClientDraft & Required<Pick<ClientDraft, 'attachments'>>;
 export const loadDraft = (scope: ScopedHost) => scope.loadDraft() as Promise<SavedDraft>;
 export const saveDraft = (scope: ScopedHost, revision: number, edit: ClientDraftEdit) =>

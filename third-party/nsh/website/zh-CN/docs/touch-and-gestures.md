@@ -548,7 +548,7 @@ fn ball() -> impl IntoElement {
             pos.set((x + d.x.0, y + d.y.0));
         })
         .on_responder_release(move |e: &ResponderEvent| {
-            log::info!("released at {} {} pt/ms", e.gesture.vx, e.gesture.vy)
+            log::info!("released at {} {} pt/s", e.gesture.vx, e.gesture.vy)
         })
 }
 ```
@@ -566,7 +566,7 @@ function Ball() {
       start = pos();
     },
     onPanResponderMove: (_, g) => pos.set({ x: start.x + g.dx, y: start.y + g.dy }),
-    onPanResponderRelease: (_, g) => console.log("released at", g.vx, g.vy, "pt/ms"),
+    onPanResponderRelease: (_, g) => console.log("released at", g.vx, g.vy, "pt/s"),
   });
   return (
     <View
@@ -587,7 +587,7 @@ mount(Ball);
 | `position` | `moveX`、`moveY` | 各触点中心的最新位置，surface 坐标（点）。 |
 | `origin` | `x0`、`y0` | 成为响应者时触点中心的位置。 |
 | `delta` | `dx`、`dy` | 自成为响应者以来移动的距离。 |
-| `vx`、`vy` | `vx`、`vy` | 速度，单位为每**毫秒**的点数。 |
+| `vx`、`vy` | `vx`、`vy` | 速度，单位为每秒的点数。 |
 | `active_touches` | `numberActiveTouches` | 按下的手指数。 |
 
 在 Rust 中，`PanGesture::begin` 和 `PanGesture::update` 根据原始触摸（`.on_touch`）跟踪手势。TSX 回调参数为 `(event, gestureState)`：`onStartShouldSetPanResponder(Capture)`、`onMoveShouldSetPanResponder(Capture)`、`onPanResponderGrant`、`onPanResponderReject`、`onPanResponderStart`、`onPanResponderMove`、`onPanResponderEnd`、`onPanResponderRelease`、`onPanResponderTerminate`、`onPanResponderTerminationRequest` 和 `onShouldBlockNativeResponder`。最后一个默认为 `true`：成为响应者的 PanResponder 会阻止原生滚动视图接管它的触摸。
@@ -624,7 +624,7 @@ view()
 `PanActivation::horizontal(active, fail)` 和 `PanActivation::vertical(active, fail)` 设置常用的组合。没有激活偏移时，任一方向移动 10 点后激活。激活之前，外层的滚动视图会等待它（iOS），视图的其他接管声明也不会被询问。激活后，滚动视图不能再拿走这些触摸，视图成为响应者（先 grant，再收到移动）；失败时滚动视图照常滚动。在 TSX 中，`PanResponder` 的 `panHandlers` 也可以一起用：和这个属性放在同一个视图上，`onPanResponderGrant` 在激活时运行。
 
 > [!NOTE]
-> 不同 API 的速度单位不同：响应者手势的 `vx` / `vy` 是每毫秒的点数，而拖动结束时的速度以及弹簧或衰减的速度是每秒的点数。把 `vx` 传给弹簧前要乘以 1000。
+> 所有速度的单位都是每秒的点数：响应者手势的 `vx` / `vy`、拖动的速度以及弹簧或衰减的速度都是，所以 `vx` 可以直接传给弹簧或衰减。
 
 ## 为什么有些答案是属性
 

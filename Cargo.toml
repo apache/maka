@@ -76,8 +76,7 @@ members = [
     "plugins/skills/core",
     "plugins/agent/tool-catalog",
     "plugins/agent/tools",
-    "platform/ui-runtime",
-    "platform/ui-js",
+    "platform/ui-support",
     "plugins/workspace/workspace-web/native",
     "plugins/workspace/workspace-computer/native",
     "plugins/workhub/core",
@@ -96,10 +95,10 @@ flatbuffers = "25.12.19"
 maka-python-runtime = { path = "platform/python-runtime" }
 maka-mcp = { path = "plugins/agent/mcp" }
 hex = "0.4.3"
-maka-ui-authoring = { path = "plugins/application/authoring/native" }
 maka-app-client = { path = "products/maka/client" }
 nsh-core = { path = "third-party/nsh/crates/nsh-core" }
 nsh-engine = { path = "third-party/nsh/crates/nsh-engine" }
+nsh-js = { path = "third-party/nsh/crates/nsh-js" }
 nsh-platform-tui = { path = "third-party/nsh/crates/nsh-platform-tui" }
 nsh-platform-gpui = { path = "third-party/nsh/crates/gpui/nsh-platform-gpui", default-features = false, features = ["js"] }
 nsh-gpui-terminal = { path = "third-party/nsh/crates/gpui/nsh-gpui-terminal" }
@@ -126,8 +125,8 @@ maka-agent-authority = { path = "plugins/agent/authority" }
 maka-web-api = { path = "plugins/workspace/workspace-web/api" }
 maka-agent-api = { path = "plugins/agent/api" }
 maka-transport = { path = "platform/transport" }
-cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf" }
-cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "afcdf58a76cb9998f4e2fed8c0124d81ac4f1fcf" }
+cua-driver-sdk = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980" }
+cua-driver-contract = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980" }
 agent-client-protocol = { version = "3.5.0", default-features = false, features = ["unstable_protocol_v2"] }
 apply-patch = { path = "plugins/workspace/workspace-files/patch" }
 cap-fs-ext = "4.0.3"
@@ -181,8 +180,7 @@ maka-skills = { path = "plugins/skills/core" }
 maka-tool-catalog = { path = "plugins/agent/tool-catalog" }
 maka-tools = { path = "plugins/agent/tools" }
 maka-terminal-shell = { path = "products/maka/terminal-shell" }
-maka-ui-runtime = { path = "platform/ui-runtime" }
-maka-ui-js = { path = "platform/ui-js" }
+maka-ui-support = { path = "platform/ui-support" }
 maka-web = { path = "plugins/workspace/workspace-web/native" }
 maka-workbench = { path = "products/maka/workbench" }
 maka-workhub = { path = "plugins/workhub/core" }
@@ -192,7 +190,7 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 rusqlite = { version = "0.41.0", features = ["bundled"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
-serde_json = { version = "1.0.154", features = ["raw_value"] }
+serde_json = { version = "1.0.154", features = ["raw_value", "float_roundtrip"] }
 sha2 = "0.11.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 tempfile = "3.27.0"
@@ -200,6 +198,8 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync", "time", "macros", "signal", "io-util"] }
 tokio-tungstenite = "0.30.0"
 tokio-util = { version = "0.7.20", features = ["rt"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
+tracing = "0.1.44"
 unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 sys-locale = "0.3.2"
@@ -251,6 +251,7 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
+nom = { git = "https://github.com/maka-agent/cua", rev = "e53bc79912458a038120fcf7c5b22d76d8301980" }
 reqwest = { path = "third-party/reqwest" }
 gix-index = { path = "third-party/gix-index" }
 gix-discover = { path = "third-party/gix-discover" }

@@ -1435,13 +1435,22 @@ pub fn mac_base_keymap() -> Vec<(String, BoxCommand)> {
     keymap
 }
 
-/// The base key bindings of this platform: [`mac_base_keymap`] on macOS
-/// and iOS, [`pc_base_keymap`] elsewhere.
+/// The base bindings for the current host keyboard convention; outside an
+/// engine, use the compilation target's Apple or PC convention.
 pub fn base_keymap() -> Vec<(String, BoxCommand)> {
-    if cfg!(any(target_os = "macos", target_os = "ios")) {
+    if apple() {
         mac_base_keymap()
     } else {
         pc_base_keymap()
+    }
+}
+
+/// Use the engine's keyboard convention, including terminal and browser hosts;
+/// outside an engine, retain the platform this was built for.
+pub(crate) fn apple() -> bool {
+    match nsh_core::prelude::try_os() {
+        Some(_) => nsh_core::prelude::apple_keys(),
+        None => cfg!(any(target_os = "macos", target_os = "ios")),
     }
 }
 

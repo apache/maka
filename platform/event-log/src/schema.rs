@@ -101,17 +101,14 @@ pub(crate) async fn initialize_connection_with_control(
     }
     crate::sqlite_functions::register(connection).await?;
     MIGRATIONS.run_direct(None, &mut *connection, false).await?;
-    sqlx::raw_sql("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
-        .execute(&mut *connection)
-        .await?;
-    // Cache initialization sets temp_store, which clears the TEMP schema.
-    // Finish that configuration before installing the binding view.
-    crate::transcript::initialize_cache(connection).await?;
+    sqlx::raw_sql(
+        "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
+    )
+    .execute(&mut *connection)
+    .await?;
     // Migrations create the standalone main table; derived Session reads must
     // resolve the root's live bindings before rebuilding any execution state.
-    if let Some(control) = control {
-        control.attach(connection).await?;
-    }
+    crate::connection::control::initialize_views(connection, control).await?;
     crate::message_sources::initialize(connection).await?;
     crate::sessions::initialize_execution(connection).await?;
     Ok(())

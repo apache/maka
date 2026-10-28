@@ -22,6 +22,7 @@ use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::event::ToolOutcome;
+use maka_agent_facts::tool_call::HostSdkParent;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tool_call::ToolRejection;
@@ -332,13 +333,24 @@ fn direct_tool_projection_preserves_hidden_failures_and_large_raw_results() {
             package_id: "package".into(),
             entry_id: "entry".into(),
             activation: "activation".into(),
-            parent_operation_id: Some("first:raw".into()),
+            parent: Some(HostSdkParent::NestedEffect {
+                operation_id: "first:raw".into(),
+            }),
         },
         ToolOrigin::HostSdk {
             package_id: "package".into(),
             entry_id: "entry".into(),
             activation: "activation".into(),
-            parent_operation_id: None,
+            parent: Some(HostSdkParent::EvaluationObserver {
+                operation_id: "first:raw".into(),
+                epoch: "evaluation".into(),
+            }),
+        },
+        ToolOrigin::HostSdk {
+            package_id: "package".into(),
+            entry_id: "entry".into(),
+            activation: "activation".into(),
+            parent: None,
         },
     ] {
         for mode in ["returned", "failed", "unknown", "rejected"] {

@@ -27,7 +27,7 @@ const AUTHORING_RESOURCES: &[&str] = &[
     "agents/openai.yaml",
     "assets/starter/create.mjs",
     "assets/starter/host.mjs",
-    "assets/starter/tui.mjs",
+    "assets/starter/ui.tsx",
     "assets/starter/verify-host.py",
     "references/api-map.md",
     "references/models-and-execution.md",
@@ -36,7 +36,7 @@ const AUTHORING_RESOURCES: &[&str] = &[
     "references/quickstart.md",
     "references/runtime-ui.md",
     "references/state-and-authority.md",
-    "references/terminal-apps.md",
+    "references/ui-plugins.md",
     "references/testing-and-shipping.md",
     "references/tools-and-input.md",
 ];
@@ -44,9 +44,10 @@ const SDK_RESOURCES: &[&str] = &[
     "configurations.ts",
     "contracts.ts",
     "generated/runtime.ts",
+    "generated/methods.ts",
     "index.ts",
     "native.ts",
-    "ui.ts",
+    "workbench.ts",
 ];
 
 fn declared_file(root: &Path, relative: &str) -> PathBuf {
@@ -205,7 +206,6 @@ fn main() {
             split_contracts(&mut files);
             for relative in [
                 "plugins/shared",
-                "plugins/application/authoring",
                 "plugins/application/gateway",
                 "products/maka/bundle/src",
             ] {

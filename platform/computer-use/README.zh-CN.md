@@ -25,6 +25,8 @@
 
 Session 管理 REPL 变量、目标绑定和观察，Host 管理权限检查与原生驱动。每次操作使用当前权限，保留 JavaScript 对象不会保留授权。REPL 不提供环境级 Node、文件系统或任意网络 API。
 
+原生嵌入方为 `Session::invoke` 传入可信 `InvocationContext`。HTTP(S) 页面读取和输入需要其中的 `BrowserAuthorization`，导航则检查目标站点。未提供回调的原始 Session 会拒绝受保护的站点访问。回调使用 Host 的真实调用身份和权限体系，不能由 REPL 命令提供。
+
 新 REPL 先选择入口，阅读自动输出的状态后再操作：
 
 ```js
@@ -38,6 +40,8 @@ const app = await cua.getApp("Calculator");
 `desktop` 默认为 `auto`：WSL 中选择 Windows 主机，其他环境选择本地桌面。`local` 在 WSL 中选择 Linux，`windows` 要求 Windows helper。原生分发通过经过验证的缓存准备匹配版本的 helper。此模式需要 WSL 互操作及交互式 Windows 桌面。
 
 浏览器提供方是显式配置的 CDP 连接，使用已有 profile。没有配置提供方时，可操作原生浏览器窗口。配置与平台方法见 API 说明；缺少提供方不会触发重启浏览器或开启调试。
+
+录制计算机输出音频需要 Host 显式配置 `audio: true`，默认关闭。启用后提供 `cua.computer.start_audio_recording`、`stop_audio_recording` 和 `nodeRepl.emitAudio`；仅录制输出音频，不选择麦克风。macOS 还需要单独的音频 Session 授权。重置和 Session 清理会丢弃其录音。
 
 ## 原生与 WSL 开发构建
 
@@ -55,6 +59,6 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 
 ## 生命周期
 
-重置清除本 Session 的绑定，不关闭用户应用或标签页。导航、窗口变化和新观察可能使原输入目标失效。取消或超时后需要重置，结果不确定的动作不会自动重放。关闭流程等待已接受的原生工作完成清理。
+临时标签页由创建它的 Session 持有，并归当前使用它的 Turn 管理，Turn 完成时关闭；其他 Session 无法列出或取得这些标签页。重置清除本 Session 的绑定并关闭其临时标签页，保留用户应用和原有标签页。导航、窗口变化和新观察可能使原输入目标失效。取消或超时后需要重置，结果不确定的动作不会自动重放。关闭流程等待已接受的原生工作完成清理。
 
 输入与捕获行为应在目标桌面验证；REPL 单元测试不能证明原生焦点或无障碍行为。

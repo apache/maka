@@ -27,6 +27,7 @@ mod assistant;
 mod attachments;
 mod auxiliary;
 mod compaction;
+mod computer_apps;
 mod context;
 mod execution;
 mod files;
@@ -568,12 +569,15 @@ impl Owner {
         if !self.owns(id) {
             return Err("agent_session_unavailable".into());
         }
-        if self
-            .store
-            .session_is_available(id)
-            .await
-            .map_err(|_| "agent_store_unavailable".to_owned())?
-        {
+        if self.store.session_is_available(id).await.map_err(|error| {
+            tracing::error!(
+                stage = "session_availability",
+                session_id = id,
+                cause = ?error,
+                "Agent session availability read failed"
+            );
+            "agent_store_unavailable".to_owned()
+        })? {
             Ok(())
         } else {
             Err("agent_session_unavailable".into())

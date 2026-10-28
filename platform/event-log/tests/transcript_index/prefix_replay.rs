@@ -155,7 +155,7 @@ async fn sibling_sources_match_full_canonical_replay_with_empty_cache_after_reop
     let log = EventLog::open(&path).await.unwrap();
     let (through, expected) = seed(&log).await;
     assert!(
-        crate::test_store::inspect(&log, |db| rows(db, "a"))
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a"))
             .await
             .is_empty()
     );
@@ -163,12 +163,12 @@ async fn sibling_sources_match_full_canonical_replay_with_empty_cache_after_reop
         .await
         .unwrap();
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
         expected
     );
     let canonical = log.prefix(32, 65536).await.unwrap().digest;
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -176,7 +176,7 @@ async fn sibling_sources_match_full_canonical_replay_with_empty_cache_after_reop
 
     let reopened = EventLog::open(&path).await.unwrap();
     assert!(
-        crate::test_store::inspect(&reopened, |db| rows(db, "a"))
+        crate::test_store::inspect_cache(&reopened, |db| rows(db, "a"))
             .await
             .is_empty()
     );
@@ -184,7 +184,7 @@ async fn sibling_sources_match_full_canonical_replay_with_empty_cache_after_reop
         .await
         .unwrap();
     assert_eq!(
-        crate::test_store::inspect(&reopened, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&reopened, |db| rows(db, "a")).await,
         expected
     );
     assert_eq!(reopened.prefix(32, 65536).await.unwrap().digest, canonical);
@@ -211,16 +211,16 @@ async fn selected_raw_damage_and_cached_identity_conflict_are_not_repaired() {
         .await
         .unwrap();
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
         expected[..5]
     );
-    let before = crate::test_store::inspect(&log, |db| rows(db, "a")).await;
+    let before = crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await;
     assert!(
         matches!(crate::transcript_cache::materialize_all_rows(&log,"a",through).await,
         Err(StoreError::InvalidTransition(message)) if message=="missing or inconsistent durable tool payload")
     );
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
         before,
         "failed full header batch must roll back its new rows"
     );
@@ -233,24 +233,24 @@ async fn selected_raw_damage_and_cached_identity_conflict_are_not_repaired() {
         .await
         .unwrap();
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
         expected
     );
-    crate::test_store::inspect(&log, move |db| {
+    crate::test_store::inspect_cache(&log, move |db| {
         db.execute(
-            "UPDATE transcript_cache.rows SET turn_id='wrong-turn' WHERE source_sequence=9",
+            "UPDATE temp.transcript_rows SET turn_id='wrong-turn' WHERE source_sequence=9",
             [],
         )
         .unwrap()
     })
     .await;
-    let damaged = crate::test_store::inspect(&log, |db| rows(db, "a")).await;
+    let damaged = crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await;
     assert!(matches!(
         crate::transcript_cache::materialize_all_rows(&log, "a", through).await,
         Err(StoreError::TranscriptConflict)
     ));
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "a")).await,
+        crate::test_store::inspect_cache(&log, |db| rows(db, "a")).await,
         damaged
     );
     log.close().await.unwrap();

@@ -45,6 +45,7 @@ pub struct Call<R, W> {
     phase: Phase,
     cancel_sent: bool,
     settlement_phase: Option<Phase>,
+    binding_retired: bool,
 }
 struct Channel<R, W> {
     reader: Reader<R>,
@@ -96,6 +97,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Call<R, W> {
             phase: Phase::New,
             cancel_sent: false,
             settlement_phase: None,
+            binding_retired: false,
         }
     }
     pub fn reference(&self) -> Option<&RecoveryRef> {
@@ -106,6 +108,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Call<R, W> {
     }
     pub fn holds_caller_intent(&self) -> bool {
         self.recorded.is_some()
+    }
+    pub fn binding_retired(&self) -> bool {
+        self.binding_retired
     }
     /// The original physical call has not begun a confirmation or transferred caller custody.
     pub fn awaiting_confirmation(&self) -> bool {
@@ -165,7 +170,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Call<R, W> {
         if !matches!(reply, Reply::Ready) {
             self.accept_reply(&reply)?;
             return match reply {
-                Reply::Aborted { reason, .. } => Err(reason),
+                Reply::Aborted { reason, .. } | Reply::BindingRetired { reason, .. } => Err(reason),
                 _ => Err("remote call did not reserve resources".into()),
             };
         }
@@ -390,6 +395,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Call<R, W> {
     }
     fn accept_reply(&mut self, reply: &Reply) -> Result<()> {
         match reply {
+            Reply::BindingRetired { .. } => self.binding_retired = true,
             Reply::Subscribed if self.phase == Phase::Open => self.phase = Phase::Streaming,
             Reply::Subscribed => return Err("unexpected subscription acceptance".into()),
             Reply::Item { .. } if self.phase != Phase::Streaming => {

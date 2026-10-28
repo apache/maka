@@ -85,7 +85,7 @@ view 用 flexbox 布局子元素，默认值为：`flexDirection: "column"`、`f
 
 ## 可选择的视图
 
-设置 `selectable` 后，选区按阅读顺序跨越视图中的 [`Text`](./text.md) 元素和 [`TextView`](./text-view.md)；设置了 `selectable={false}` 的文字不参与，可选择视图中的另一个可选择视图属于外层视图。各平台的手势参见[文字选择](./text-selection.md)。
+设置 `selectable` 后，选区按阅读顺序跨越视图中的 [`Text`](./text.md) 元素和 [`TextView`](./text-view.md)；设置了 `style={{ userSelect: "none" }}` 的文字不参与，可选择视图中的另一个可选择视图属于外层视图。各平台的手势参见[文字选择](./text-selection.md)。
 
 ```tsx
 <View selectable class="gap-3 p-4">

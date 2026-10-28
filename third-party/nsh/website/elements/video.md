@@ -101,7 +101,7 @@ an aspect ratio when you want the video's own proportions.
 | Event | Rust | Payload | When |
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | none | Loading began. |
-| `onLoad` | `.on_load` | `{ duration, size }` (`VideoInfo`: `duration`, `size`) | The video is ready: its duration in seconds and its size. |
+| `onLoad` | `.on_load` | `{ duration, size }` (`VideoInfo`: `duration`, `size`) | The video is ready: its duration in seconds and its size in pixels. |
 | `onProgress` | `.on_progress` | `{ currentTime, duration }` (`VideoProgress`: `current_time`, `duration`) | Every `progressUpdateInterval` while playing (seconds). |
 | `onBuffer` | `.on_buffer` | `{ isBuffering }` (`bool`) | Playback stalled for data / resumed. |
 | `onEnd` | `.on_end` | none | Playback reached the end (with `repeat`, at the end of each loop). |

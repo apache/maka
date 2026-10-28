@@ -1417,8 +1417,8 @@ mod tests {
     fn host_elements_static_and_dynamic_props() {
         let code = flat(&compile(
             r#"import { View } from "nsh";
-            const n = 1; let f = (x: number) => x;
-            export const a = <View testID="a" accessible pointerEvents={n} accessibilityLabel={f(n)} onPress={f} onLongPress={n > 0 ? f : undefined} />;"#,
+            const n = 1; let label = (x: number) => String(x); let f = () => {};
+            export const a = <View testID="a" accessible delayLongPress={n} accessibilityLabel={label(n)} onPress={f} onLongPress={n > 0 ? f : undefined} />;"#,
         )
         .unwrap());
         assert!(
@@ -1430,11 +1430,11 @@ mod tests {
             "{code}"
         );
         assert!(
-            code.contains(r#"prop(__nsh_hv0, "pointerEvents", n);"#),
+            code.contains(r#"prop(__nsh_hv0, "delayLongPress", n);"#),
             "{code}"
         );
         assert!(
-            code.contains(r#"bindProp(__nsh_hv0, "accessibilityLabel", () => f(n));"#),
+            code.contains(r#"bindProp(__nsh_hv0, "accessibilityLabel", () => label(n));"#),
             "{code}"
         );
         assert!(code.contains(r#"prop(__nsh_hv0, "onPress", f);"#), "{code}");

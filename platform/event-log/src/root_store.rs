@@ -33,11 +33,17 @@ mod execution;
 mod family;
 mod gates;
 mod lifecycle;
-pub use execution::{SessionExecutionLease, SessionExecutionScope};
+pub use execution::{
+    InvocationEffectLease, InvocationEffects, SessionExecutionLease, SessionExecutionScope,
+};
 pub(crate) use lifecycle::{StageOwner, StageRegistration};
 mod applications;
 mod attachments;
+mod computer_apps;
 mod control;
+pub(crate) use computer_apps::activity::{
+    record_computer_app_activity, require_computer_app_running,
+};
 mod plugins;
 mod recall;
 mod recovery;
@@ -72,7 +78,6 @@ pub struct RootStore {
     control: Arc<EventLog>,
     partitions: Vec<Arc<EventLog>>,
     closed: Arc<AtomicBool>,
-    creation_gates: [tokio::sync::Mutex<()>; PARTITION_COUNT],
     gates: Arc<gates::Gates>,
     lifecycle: Option<lifecycle::Lifecycle>,
     project_mutations: Arc<tokio::sync::Mutex<()>>,
@@ -152,7 +157,8 @@ impl SessionStore {
 }
 
 impl RootStore {
-    /// Observe each original owner once: control first, then partition order.
+    /// Observe canonical owners once: control first, then partition order.
+    /// Disposable prepared actors are excluded.
     pub async fn sqlite_resource_stats(
         &self,
     ) -> Result<Vec<crate::connection::ConnectionResourceStats>, StoreError> {
@@ -177,7 +183,6 @@ impl RootStore {
             control,
             partitions: Vec::with_capacity(PARTITION_COUNT),
             closed: Arc::new(AtomicBool::new(false)),
-            creation_gates: std::array::from_fn(|_| tokio::sync::Mutex::new(())),
             gates: gates::Gates::new(),
             lifecycle: None,
             project_mutations: Arc::new(tokio::sync::Mutex::new(())),
@@ -256,9 +261,9 @@ impl RootStore {
         self.closed.store(true, Ordering::Release);
         self.gates.close();
         if self.lifecycle.is_none() {
-            self.control.connection.request_shutdown();
+            self.control.request_shutdown();
             for partition in &self.partitions {
-                partition.connection.request_shutdown();
+                partition.request_shutdown();
             }
         }
     }
@@ -339,10 +344,6 @@ pub(crate) async fn initialize_control(
             (
                 "application_intents",
                 "SELECT EXISTS(SELECT 1 FROM application_intents)",
-            ),
-            (
-                "application_ui_checkpoints",
-                "SELECT EXISTS(SELECT 1 FROM application_ui_checkpoints)",
             ),
         ] {
             let exists: bool = sqlx::query_scalar(

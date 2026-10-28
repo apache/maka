@@ -24,7 +24,6 @@ use serde::Serialize;
 use sqlx::Connection;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::{mpsc, oneshot};
-use tokio_util::sync::CancellationToken;
 
 /// One live prepared statement, without bound values. SQLite's raw signed
 /// 32-bit counters can wrap; observations never reset or widen them.
@@ -142,82 +141,46 @@ impl OwnedConnection {
     /// Observe writer and both reader slots without opening unused connections.
     /// Byte counts include every database attached to each connection.
     pub async fn resource_stats(&self) -> Result<ConnectionResourceStats, StoreError> {
-        // Reserve both actors atomically: concurrent observations cannot each
-        // hold one reader while waiting for the other.
-        let mut permits = self
-            .readers
-            .clone()
-            .acquire_many_owned(2)
+        let reader = |jobs: mpsc::Sender<ReadEnvelope>,
+                      admission: std::sync::Arc<tokio::sync::Semaphore>| async move {
+            let permit = admission
+                .acquire_owned()
+                .await
+                .map_err(|_| StoreError::ConnectionClosed)?;
+            let (reply, result) = oneshot::channel();
+            jobs.send(ReadEnvelope {
+                custody: self.custody.clone(),
+                job: ReadJob::Observe(Box::new(move |_, connection| {
+                    Box::pin(async move {
+                        let _permit = permit;
+                        let stats = AssertUnwindSafe(async {
+                            match connection {
+                                Ok(Some(connection)) => observe(connection).await.map(Some),
+                                Ok(None) => Ok(None),
+                                Err(error) => Err(error),
+                            }
+                        })
+                        .catch_unwind()
+                        .await;
+                        let reusable = !matches!(
+                            &stats,
+                            Err(_) | Ok(Err(StoreError::Sqlx(sqlx::Error::WorkerCrashed)))
+                        );
+                        let _ = reply.send(stats.unwrap_or(Err(StoreError::OperationUnknown)));
+                        reusable
+                    })
+                })),
+            })
             .await
             .map_err(|_| StoreError::ConnectionClosed)?;
-        let first_permit = permits.split(1).expect("two reserved reader permits");
-        let release = CancellationToken::new();
-        let _release_on_drop = release.clone().drop_guard();
-        let (observed, mut observations) =
-            mpsc::channel::<Result<(usize, Option<SqliteResourceStats>), StoreError>>(2);
-        let reader = |observed: mpsc::Sender<
-            Result<(usize, Option<SqliteResourceStats>), StoreError>,
-        >,
-                      permit| {
-            let release = release.clone();
-            async move {
-                let (reply, result) = oneshot::channel();
-                self.read_jobs
-                    .send(ReadEnvelope {
-                        custody: self.custody.clone(),
-                        job: ReadJob::Observe(Box::new(move |slot, connection| {
-                            Box::pin(async move {
-                                let _permit = permit;
-                                let observed_stats = AssertUnwindSafe(async {
-                                    match connection {
-                                        Ok(Some(connection)) => observe(connection).await.map(Some),
-                                        Ok(None) => Ok(None),
-                                        Err(error) => Err(error),
-                                    }
-                                })
-                                .catch_unwind()
-                                .await;
-                                let reusable = !matches!(
-                                    &observed_stats,
-                                    Err(_) | Ok(Err(StoreError::Sqlx(sqlx::Error::WorkerCrashed)))
-                                );
-                                let stats =
-                                    observed_stats.unwrap_or(Err(StoreError::OperationUnknown));
-                                let _ = observed.send(stats.map(|stats| (slot, stats))).await;
-                                // Holding this actor forces the other observation onto its peer.
-                                release.cancelled().await;
-                                let _ = reply.send(());
-                                reusable
-                            })
-                        })),
-                    })
-                    .await
-                    .map_err(|_| StoreError::ConnectionClosed)?;
-                result.await.map_err(|_| StoreError::OperationUnknown)
-            }
+            result.await.map_err(|_| StoreError::OperationUnknown)?
         };
-        let collect = async {
-            let first = observations
-                .recv()
-                .await
-                .ok_or(StoreError::ConnectionClosed)??;
-            let second = observations
-                .recv()
-                .await
-                .ok_or(StoreError::ConnectionClosed)??;
-            release.cancel();
-            Ok::<_, StoreError>(if first.0 < second.0 {
-                [first.1, second.1]
-            } else {
-                [second.1, first.1]
-            })
-        };
-        let (_, _, readers, writer) = tokio::try_join!(
-            reader(observed.clone(), first_permit),
-            reader(observed, permits),
-            collect,
-            self.run(|connection| Box::pin(observe(connection)))
+        let (pure, observation, writer) = tokio::try_join!(
+            reader(self.read_jobs.clone(), self.readers.clone()),
+            reader(self.observation_jobs.clone(), self.observations.clone()),
+            self.run(|connection| Box::pin(observe(connection))),
         )?;
+        let readers = [pure, observation];
         Ok(ConnectionResourceStats { writer, readers })
     }
 }

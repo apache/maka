@@ -221,7 +221,7 @@ Hover entry and exit are reported, but continuous `onHoverMove` and
 `View selectable` shares one `nsh_core::selection::SelectionModel` across
 its text nodes, including multiline text and `TextView` blocks. It uses
 the shaped text's UTF-16 hit positions and text values, rather than copying
-terminal cells; `selectable={false}` labels and control captions stay out. Mouse
+terminal cells; labels and control captions with `style={{ userSelect: "none" }}` stay out. Mouse
 dragging and Shift+click extend the selection, and dragging beyond a Scroll
 edge scrolls while the pointer is held. Ctrl+A selects the area, Ctrl+C or
 Ctrl+Insert copies, and Escape clears a nonempty selection. App keymaps
@@ -263,7 +263,7 @@ Encoded images are limited to 64 MiB, 8192 pixels on either side and
 Canvas rasterization is limited to 8192 pixels per side and 8 million
 pixels; it supports paths, clips, transforms, gradients, blend modes,
 alpha, shadows, image cropping and native animation argument slots.
-Image `defaultSource` remains visible during loading and after failure.
+Image `placeholder` remains visible during loading and after failure.
 `blurRadius` applies a bounded premultiplied-alpha Gaussian approximation
 on the worker, including every animation frame. An explicit `fadeDuration`
 fades the new source over its full-opacity placeholder; the terminal
@@ -414,6 +414,7 @@ runners remain console applications.
 | `AppSource::{Rust(Root), Bundle(Box<Bundle>), DevServer(String)}` | Standalone source (`DevServer` requires `dev`) |
 | `AppView::new(AppOptions) -> Self` | Independent embeddable engine and surface |
 | `AppView::load(App) -> io::Result<()>`; `connect(String)` (`dev`) | Load trusted code or start a development session |
+| `AppView::load_with_config(EngineConfig) -> io::Result<()>` | Load a shared application configuration with its registries, assets, module loader, context and runtime; use the terminal's actual viewport and environment |
 | `AppView::poll()`, `tick(f64) -> io::Result<bool>` | Process engine commits and advance native frames |
 | `AppView::handle_event(Event) -> bool`; `resize(u16, u16)` | Route local terminal input and region dimensions |
 | `AppView::render(Rect, &mut Buffer)`; `snapshot() -> String` | Render the assigned area or get UTF-8 characters |

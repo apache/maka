@@ -92,6 +92,9 @@ impl Endpoints {
         client: &Client,
         selections: &BTreeMap<String, HostEndpoint>,
     ) -> Result<Endpoints> {
+        if selections.is_empty() {
+            return Err("invalid Host endpoint selections".into());
+        }
         let mut endpoints = Endpoints::empty();
         for (name, selection) in selections {
             selection.validate()?;
@@ -134,7 +137,7 @@ impl Endpoints {
         Ok(())
     }
     pub(super) fn validate(&self) -> Result<()> {
-        if self.entries.is_empty() || self.entries.keys().any(|name| name.is_empty()) {
+        if self.entries.keys().any(|name| name.is_empty()) {
             return Err("invalid Application endpoints".into());
         }
         Ok(())

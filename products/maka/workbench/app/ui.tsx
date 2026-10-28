@@ -19,7 +19,7 @@
 
 import { tr } from './locale';
 import { Text, View } from 'nsh';
-import type { YNode } from 'nsh';
+import type { JSX, YNode } from 'nsh';
 import { Button, Tooltip } from 'nsh/base';
 import { keymap, platform, windowSize } from 'nsh';
 import { Icon } from './Icon';
@@ -33,7 +33,7 @@ import {
   windowDrag,
 } from './chrome';
 
-export function textTooltip(text: () => string | undefined): YNode {
+export function textTooltip(text: () => string | undefined): JSX.Element {
   return (
     <Tooltip disabled={!text()} class="rounded-md border border-border bg-popover px-2 py-1">
       <Text class="text-xs text-popover-foreground">{text()}</Text>

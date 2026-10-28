@@ -32,12 +32,16 @@ use maka_model::{
     ModelError, ProviderConfig, ProviderKind, ToolDefinition,
     prompt::{Message, Prompt, PromptCursor, PromptSource},
 };
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct PreparedHistory {
     log: Arc<SessionStore>,
     view: PreparedView,
+    wire: Mutex<Option<PreparedWireView>>,
     language: Language,
     vision: bool,
     provider: ProviderKind,
@@ -52,6 +56,7 @@ pub(crate) async fn capture(
     vision: bool,
     provider: &ProviderKind,
     cancellation: &CancellationToken,
+    prior: Option<&PreparedHistory>,
 ) -> Result<Arc<PreparedHistory>, RunError> {
     #[derive(serde::Serialize)]
     struct Policy<'a> {
@@ -68,7 +73,9 @@ pub(crate) async fn capture(
     })?;
     let session = selection.session.clone();
     let replay = selection.replay.clone();
-    let build = log.prepare_model_view(selection, &policy).await?;
+    let build = log
+        .prepare_model_view(selection, &policy, prior.map(|history| &history.view))
+        .await?;
     let mut after = None;
     loop {
         if cancellation.is_cancelled() {
@@ -109,6 +116,13 @@ pub(crate) async fn capture(
     Ok(Arc::new(PreparedHistory {
         log: log.clone(),
         view,
+        wire: Mutex::new(prior.and_then(|history| {
+            history
+                .wire
+                .lock()
+                .expect("prepared wire lock poisoned")
+                .clone()
+        })),
         language,
         vision,
         provider: provider.clone(),
@@ -138,9 +152,14 @@ impl PreparedHistory {
         let encoding = maka_model::WireEncoding::new(self.language, provider, options, tools)?;
         let codec = encoding.codec().to_owned();
         let format = encoding.format();
+        let prior = self
+            .wire
+            .lock()
+            .expect("prepared wire lock poisoned")
+            .clone();
         let build = self
             .log
-            .prepare_wire_view(&self.view, format, &codec)
+            .prepare_wire_view(&self.view, format, &codec, prior.as_ref())
             .await?;
         let mut after = None;
         loop {
@@ -155,14 +174,10 @@ impl PreparedHistory {
                 break;
             }
             for group in groups {
-                let rows = self
-                    .log
-                    .prepared_view_group_rows(&self.view, &group)
-                    .await?;
-                let snapshot = self.log.prepared_group_snapshot(&self.view, &group).await?;
+                let semantic = self.log.prepared_view_group(&self.view, &group).await?;
                 let (messages, _) = super::render_semantic_group(
                     &self.log,
-                    &rows,
+                    &semantic.rows,
                     super::semantic::RenderContext {
                         session: &self.session,
                         vision: self.vision,
@@ -171,7 +186,7 @@ impl PreparedHistory {
                         replay: self.replay.as_ref(),
                     },
                     cancellation,
-                    Some(&snapshot),
+                    Some(&semantic.manifest),
                 )
                 .await?;
                 let needed = maka_model::wire_preparation_dependencies(&messages, &provider.kind);
@@ -193,6 +208,7 @@ impl PreparedHistory {
             }
         }
         let view = self.log.finish_prepared_wire(&build).await?;
+        *self.wire.lock().expect("prepared wire lock poisoned") = Some(view.clone());
         Ok(self.prompt().with_wire(
             format,
             codec,
@@ -244,44 +260,34 @@ impl PromptCursor for Cursor {
                 let Some(position) = self.position else {
                     return Ok(None);
                 };
-                let page = self
+                let Some(group) = self
                     .log
-                    .prepared_semantic_page(&self.view, position, 1)
+                    .prepared_semantic_group(&self.view, position)
                     .await
-                    .map_err(model_error)?;
-                self.position = page.next_cursor;
-                for slice in page.groups {
-                    let rows = self
-                        .log
-                        .prepared_view_group_rows(&self.view, &slice.group)
-                        .await
-                        .map_err(model_error)?;
-                    let snapshot = self
-                        .log
-                        .prepared_group_snapshot(&self.view, &slice.group)
-                        .await
-                        .map_err(model_error)?;
-                    let (messages, _) = super::render_semantic_group(
-                        &self.log,
-                        &rows,
-                        super::semantic::RenderContext {
-                            session: &self.session,
-                            vision: self.vision,
-                            language: self.language,
-                            provider: &self.provider,
-                            replay: self.replay.as_ref(),
-                        },
-                        &CancellationToken::new(),
-                        Some(&snapshot),
-                    )
-                    .await
-                    .map_err(model_error)?;
-                    // Keep only this active semantic group; do not re-render it
-                    // for each message-sized metadata page.
-                    self.page.extend(messages.into_iter().skip(slice.skip));
-                    let next = position + self.page.len();
-                    self.position = (next < self.view.message_count).then_some(next);
-                }
+                    .map_err(model_error)?
+                else {
+                    self.position = None;
+                    continue;
+                };
+                let (messages, _) = super::render_semantic_group(
+                    &self.log,
+                    &group.rows,
+                    super::semantic::RenderContext {
+                        session: &self.session,
+                        vision: self.vision,
+                        language: self.language,
+                        provider: &self.provider,
+                        replay: self.replay.as_ref(),
+                    },
+                    &CancellationToken::new(),
+                    Some(&group.manifest),
+                )
+                .await
+                .map_err(model_error)?;
+                // Retain only the active logical group's remaining messages.
+                self.page.extend(messages.into_iter().skip(group.skip));
+                let next = position + self.page.len();
+                self.position = (next < self.view.message_count).then_some(next);
             }
         })
     }

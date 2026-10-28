@@ -20,15 +20,178 @@
 use super::*;
 use crate::cursor::Spec;
 
-impl Browsers {
-    pub(crate) async fn configure_cursor(&mut self, cursor: &Spec, language: Language) {
-        for tab in self.targets.values_mut() {
-            if tab.verify(language).await.is_ok() {
-                let _ = tab
-                    .draw_cursor(cursor, None, "idle", "update", language)
-                    .await;
+#[derive(Clone)]
+pub(super) struct CursorEndpoint {
+    socket: Cdp,
+    provider: BrowserConnection,
+    frame: String,
+    context: u64,
+    epoch: crate::desktop::NativeEpochId,
+}
+
+#[derive(Clone, Copy)]
+enum CursorOperation {
+    Configure,
+    Finalize,
+}
+
+impl CursorEndpoint {
+    async fn execute(
+        &mut self,
+        identity: &TabIdentity,
+        cursor: &Spec,
+        operation: CursorOperation,
+    ) -> Result<Option<crate::cursor::RenderState>, ToolError> {
+        let observed = async {
+            let tree = self.socket.request("Page.getFrameTree", json!({})).await?;
+            let frame = &tree["frameTree"]["frame"];
+            let current = format!(
+                "{}:{}",
+                frame["id"]
+                    .as_str()
+                    .ok_or_else(|| failed("cursor cleanup frame unavailable"))?,
+                frame["loaderId"].as_str().unwrap_or_default()
+            );
+            if current != self.frame {
+                return Ok(None);
+            }
+            let method = match operation {
+                CursorOperation::Configure => "update",
+                CursorOperation::Finalize => "finalize",
+            };
+            let input = json!({"cursor":cursor,"ownerEpoch":self.epoch.to_string(),"point":null,"action":"idle","operation":method,"svg":crate::cursor::theme::svg(cursor.color)});
+            let value = self
+                .socket
+                .request(
+                    "Runtime.evaluate",
+                    json!({
+                        "expression":format!("({})({input})",include_str!("cursor.js")),
+                        "contextId":self.context,"returnByValue":true,"awaitPromise":true,
+                    }),
+                )
+                .await?;
+            if value.get("exceptionDetails").is_some() {
+                return Err(failed("browser cursor finalization failed"));
+            }
+            let state: crate::cursor::RenderState =
+                serde_json::from_value(value["result"]["value"].clone()).map_err(failed)?;
+            if (matches!(operation, CursorOperation::Finalize) && state.visible) || state.error.is_some() {
+                return Err(failed("browser cursor finalization was not confirmed"));
+            }
+            Ok(Some(state))
+        }
+        .await;
+        let error = match observed {
+            Ok(result) => return Ok(result),
+            Err(error) => error,
+        };
+        match inventory(&self.provider).await {
+            Ok((generation, tabs))
+                if BrowserIdentity::new(&self.provider, &generation)? != identity.browser
+                    || !tabs.iter().any(|tab| tab.id == identity.target) =>
+            {
+                Ok(None)
+            }
+            Ok(_) => Err(ToolError::CleanupUnconfirmed(error.to_string())),
+            Err(inventory) => Err(ToolError::CleanupUnconfirmed(format!(
+                "{error}; cursor cleanup inventory: {inventory}"
+            ))),
+        }
+    }
+}
+
+impl Host {
+    fn record_cursor(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: TabIdentity,
+        endpoint: CursorEndpoint,
+    ) {
+        let key = (owner, identity);
+        if self
+            .cursor_scopes
+            .get(&key)
+            .is_some_and(|current| current.epoch > endpoint.epoch)
+        {
+            return;
+        }
+        self.cursor_scopes.insert(key, endpoint);
+    }
+
+    pub(super) async fn finalize_cursors(
+        &mut self,
+        owner: uuid::Uuid,
+        cursor: &Spec,
+    ) -> Result<(), ToolError> {
+        let keys: Vec<_> = self
+            .cursor_scopes
+            .keys()
+            .filter(|(current, _)| *current == owner)
+            .cloned()
+            .collect();
+        let mut failures = Vec::new();
+        for key in keys {
+            let mut endpoint = self.cursor_scopes[&key].clone();
+            match endpoint
+                .execute(&key.1, cursor, CursorOperation::Finalize)
+                .await
+            {
+                Ok(_) => {
+                    self.cursor_scopes.remove(&key);
+                }
+                Err(error) => failures.push(error.to_string()),
             }
         }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(ToolError::CleanupUnconfirmed(failures.join("; ")))
+        }
+    }
+
+    async fn configure_cursors(
+        &mut self,
+        owner: uuid::Uuid,
+        epoch: crate::desktop::NativeEpochId,
+        cursor: &Spec,
+    ) -> Vec<Value> {
+        let keys: Vec<_> = self
+            .cursor_scopes
+            .keys()
+            .filter(|(current, _)| *current == owner)
+            .cloned()
+            .collect();
+        let mut states = Vec::new();
+        for key in keys {
+            let mut endpoint = self.cursor_scopes[&key].clone();
+            if endpoint.epoch > epoch {
+                continue;
+            }
+            endpoint.epoch = epoch;
+            self.cursor_scopes.insert(key.clone(), endpoint.clone());
+            match endpoint
+                .execute(&key.1, cursor, CursorOperation::Configure)
+                .await
+            {
+                Ok(Some(state)) => states.push(json!({"tab":key.1.target,"state":state})),
+                Ok(None) => {
+                    self.cursor_scopes.remove(&key);
+                }
+                Err(error) => states.push(json!({"tab":key.1.target,"error":error.to_string()})),
+            }
+        }
+        states
+    }
+}
+
+impl Browsers {
+    pub(crate) async fn configure_cursor(&mut self, cursor: &Spec) -> Vec<Value> {
+        self.host()
+            .await
+            .lock()
+            .await
+            .configure_cursors(self.owner, self.epoch, cursor)
+            .await
     }
     pub(crate) async fn cursor_state(&mut self, cursor: &Spec, language: Language) -> Vec<Value> {
         let mut states = Vec::new();
@@ -86,11 +249,40 @@ impl Tab {
                 let context = world["executionContextId"]
                     .as_u64()
                     .ok_or_else(|| failed("cursor isolated world unavailable"))?;
-                self.cursor_world = Some((identity, context));
+                if self.frame().await? != identity {
+                    return Err(failed(
+                        "stale_document: cursor world changed during creation",
+                    ));
+                }
+                self.cursor_world = Some((identity.clone(), context));
                 context
             }
         };
-        let input = json!({"cursor":cursor,"point":point,"action":action,"operation":operation,"svg":crate::cursor::theme::svg(cursor.color)});
+        if operation == "update" {
+            // Retain cleanup before delivery can become uncertain or caches retire.
+            let endpoint = CursorEndpoint {
+                socket: self
+                    .socket
+                    .as_ref()
+                    .ok_or_else(|| failed("cursor connection unavailable"))?
+                    .clone(),
+                provider: self.provider.clone(),
+                frame: identity,
+                context,
+                epoch: self.cursor_epoch,
+            };
+            self.cursor_host.lock().await.record_cursor(
+                self.cursor_owner,
+                self.identity()?,
+                endpoint,
+            );
+        }
+        let current_cursor = self
+            .cursor_spec
+            .as_ref()
+            .map(|cursor| cursor.lock().unwrap().clone());
+        let cursor = current_cursor.as_ref().unwrap_or(cursor);
+        let input = json!({"cursor":cursor,"ownerEpoch":self.cursor_epoch.to_string(),"point":point,"action":action,"operation":operation,"svg":crate::cursor::theme::svg(cursor.color)});
         let value = self
             .request(
                 "Runtime.evaluate",

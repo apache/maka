@@ -28,8 +28,40 @@ export default {
     'zh-CN': { displayName: '工作区文件', description: '在获准的工作区范围内读取和修改文件。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.workspaceFiles),
+    host: native(sdk.nativeImplementations.workspaceFiles),
+    ui: {
+      module: 'ui/index.js',
+      configuration: {
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+      contributions: {
+        changes: {
+          kind: 'panel',
+          title: {
+            fallback: 'Changes',
+            translations: { 'zh-CN': '更改', 'zh-TW': '變更' },
+          },
+        },
+        'change-diff': {
+          kind: 'panel',
+          title: {
+            fallback: 'Current diff',
+            translations: { 'zh-CN': '当前差异', 'zh-TW': '目前差異' },
+          },
+        },
+        'show-changes': {
+          kind: 'command',
+          title: {
+            fallback: 'Changes',
+            translations: { 'zh-CN': '更改', 'zh-TW': '變更' },
+          },
+        },
+        glob: { kind: 'tool_renderer', presentation: 'maka.workspace.Files@1/glob' },
+        grep: { kind: 'tool_renderer', presentation: 'maka.workspace.Files@1/grep' },
+      },
     },
   },
 };

@@ -73,6 +73,7 @@ pub(crate) fn start_with(
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment,
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),
@@ -1401,6 +1402,94 @@ fn inputs_and_selectable_text_carry_their_traits() {
         text.selection_color,
         Some(nsh_core::Color::rgba(255, 0, 0, 255))
     );
+}
+
+#[test]
+fn compiled_primitive_styles_reach_the_platform_and_follow_signals() {
+    let (engine, rx) = start(
+        r#"import { mount, signal, View, Text, Image } from "nsh";
+const changed = signal(false);
+mount(() => <View testID="styled-view" onPress={() => changed.set(!changed())}
+  style={[{ width: 160 }, { pointerEvents: changed() ? "auto" : "box-none" }]}>
+  <Text style={[{ fontSize: 14 }, {
+    numberOfLines: changed() ? 2 : 1,
+    textOverflow: changed() ? "clip" : "ellipsis",
+    userSelect: changed() ? "none" : "text"
+  }]}>Styled text</Text>
+  <Image src="asset:/styled.png"
+    style={[{ width: 32, height: 32 }, { objectFit: changed() ? "fill" : "contain" }]} />
+</View>);
+"#,
+    );
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let view = first
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MountItem::ViewProps { id, props }
+                if props.test_id.as_deref() == Some("styled-view") =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect("the styled view");
+    let check = |batch: &MountBatch, changed| {
+        let pointer = batch.items.iter().find_map(|item| match item {
+            MountItem::ViewProps { id, props } if *id == view => Some(props.pointer_events),
+            _ => None,
+        });
+        assert_eq!(
+            pointer,
+            Some(if changed {
+                nsh_core::PointerEvents::Auto
+            } else {
+                nsh_core::PointerEvents::BoxNone
+            })
+        );
+        let text = batch
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Text { text, .. } if text.text == "Styled text" => Some(text),
+                _ => None,
+            })
+            .expect("the styled text");
+        assert_eq!(text.max_lines, if changed { 2 } else { 1 });
+        assert_eq!(
+            text.ellipsize,
+            if changed {
+                nsh_core::EllipsizeMode::Clip
+            } else {
+                nsh_core::EllipsizeMode::Tail
+            }
+        );
+        assert_eq!(text.is_selectable(), !changed);
+        let fit = batch.items.iter().find_map(|item| match item {
+            MountItem::Image { resize_mode, .. } => Some(*resize_mode),
+            _ => None,
+        });
+        assert_eq!(
+            fit,
+            Some(if changed {
+                nsh_core::ResizeMode::Stretch
+            } else {
+                nsh_core::ResizeMode::Contain
+            })
+        );
+    };
+    check(&first, false);
+    for changed in [true, false] {
+        engine
+            .control()
+            .dispatch_event(view, EventKind::Press, EventPayload::None);
+        let next = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the updated primitive styles");
+        check(&next, changed);
+    }
 }
 
 const ROWS: &str = r#"import { mount, Text } from "nsh";

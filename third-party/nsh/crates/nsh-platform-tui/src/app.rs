@@ -201,6 +201,7 @@ impl AppView {
         surface.set_components(options.components.clone());
         surface.set_reduce_motion(options.reduce_motion);
         let assets = Arc::new(AssetsProvider(RwLock::new(options.asset_base.clone())));
+        surface.set_assets(Some(assets.clone()));
         Self {
             surface,
             environment,
@@ -233,31 +234,7 @@ impl AppView {
 
     /// Runs `app`, replacing the current engine and retained views.
     pub fn load(&mut self, app: App) -> io::Result<()> {
-        self.stop_engine();
-        let mut surface = Surface::new(
-            self.options.size.0,
-            self.options.size.1,
-            self.options.metrics,
-        );
-        surface.inherit_image_protocol(&mut self.surface);
-        self.surface = surface;
-        self.focus_path.clear();
-        self.surface
-            .set_dark(self.environment.color_scheme == ColorScheme::Dark);
-        self.surface.set_components(self.options.components.clone());
-        self.surface.set_reduce_motion(self.options.reduce_motion);
-        self.surface.set_image_protocol(self.image_protocol);
-        let access = match &app {
-            App::Js(bundle) => bundle.policy.access(),
-            App::Rust(_) => nsh_engine::Policy::default().access(),
-        };
         let assets: Arc<dyn nsh_engine::Assets> = self.assets.clone();
-        self.surface.set_assets(Some(assets.clone()));
-        self.surface.set_access(access);
-        self.surface.services.enabled = self.services.is_some();
-        if let Some(services) = &self.services {
-            services.reset(self.surface.access.clone());
-        }
         let config = EngineConfig {
             viewport: self.surface.viewport(),
             trace: self.options.trace,
@@ -274,6 +251,41 @@ impl AppView {
             host: self.host.clone(),
             ..EngineConfig::new(app)
         };
+        self.load_with_config(config)
+    }
+
+    /// Runs a host-supplied engine configuration with this view's viewport and
+    /// terminal environment. Registries, assets, module loader, runtime and
+    /// engine context stay with the supplied configuration.
+    pub fn load_with_config(&mut self, mut config: EngineConfig) -> io::Result<()> {
+        self.stop_engine();
+        let mut surface = Surface::new(
+            self.options.size.0,
+            self.options.size.1,
+            self.options.metrics,
+        );
+        surface.inherit_image_protocol(&mut self.surface);
+        self.surface = surface;
+        self.focus_path.clear();
+        self.surface
+            .set_dark(self.environment.color_scheme == ColorScheme::Dark);
+        self.surface.set_components(self.options.components.clone());
+        self.surface.set_reduce_motion(self.options.reduce_motion);
+        self.surface.set_image_protocol(self.image_protocol);
+        let access = match &config.app {
+            App::Js(bundle) => bundle.policy.access(),
+            App::Rust(_) => nsh_engine::Policy::default().access(),
+        };
+        self.surface.set_assets(config.assets.clone());
+        self.surface.set_access(access);
+        self.surface.services.enabled = self.services.is_some();
+        if let Some(services) = &self.services {
+            services.reset(self.surface.access.clone());
+        }
+        config.viewport = self.surface.viewport();
+        config.environment = self.environment;
+        config.header_heights = nsh_core::NO_NATIVE_HEADER;
+        self.host = config.host.clone();
         let (tx, rx) = mpsc::channel();
         let metrics = self.options.metrics;
         let fonts = self.surface.fonts.clone();
@@ -502,12 +514,12 @@ impl AppView {
         self.last_error.as_deref()
     }
 
-    /// Sets where subsequently loaded app resources resolve. Images and
-    /// engine resources in a running app use the new source too.
+    /// Sets where resources of apps started with [`Self::load`] resolve.
+    /// Their running readers follow the new base. An app started with
+    /// [`Self::load_with_config`] keeps its supplied reader.
     pub fn set_asset_base(&mut self, base: Option<AssetBase>) {
         self.options.asset_base = base;
         *self.assets.0.write().unwrap_or_else(|e| e.into_inner()) = self.options.asset_base.clone();
-        self.surface.set_assets(Some(self.assets.clone()));
     }
 
     /// Sets the host appearance. An app's explicit appearance still wins.
@@ -1609,6 +1621,43 @@ mod tests {
 
     use super::*;
 
+    fn wait_focus_probe(
+        view: &mut AppView,
+        editor: &str,
+        loaded: Instant,
+        ready: impl Fn(&AppView) -> bool,
+        stage: &str,
+    ) {
+        let diagnostic = |view: &AppView| {
+            format!(
+                "{editor}: {stage}, {:?} since load; focused={:?}, error={:?}\n{}",
+                loaded.elapsed(),
+                view.surface().focused(),
+                view.last_error(),
+                view.snapshot()
+            )
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            view.poll()
+                .unwrap_or_else(|error| panic!("{error}: {}", diagnostic(view)));
+            let (tx, rx) = mpsc::channel();
+            view.control()
+                .unwrap()
+                .advance_clock(Duration::ZERO, move || {
+                    let _ = tx.send(());
+                });
+            rx.recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|error| panic!("engine barrier {error:?}: {}", diagnostic(view)));
+            view.poll()
+                .unwrap_or_else(|error| panic!("{error}: {}", diagnostic(view)));
+            if ready(view) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "{}", diagnostic(view));
+        }
+    }
+
     #[component]
     fn PlainInputFocusProbe() -> impl IntoElement {
         let value = signal(String::new());
@@ -1638,6 +1687,7 @@ mod tests {
                 nsh_base::editor::editor()
                     .accessibility_label("Focus probe input")
                     .auto_focus(true)
+                    .font_family(Some(SharedString::from("Pacifico")))
                     .w(px(400.0))
                     .h(px(160.0))
                     .on_focus(move || focused.set(true))
@@ -1653,38 +1703,23 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use nsh_core::ViewKind;
 
-        fn settle(view: &mut AppView) {
-            view.poll().unwrap();
-            let (tx, rx) = mpsc::channel();
-            view.control()
-                .unwrap()
-                .advance_clock(Duration::ZERO, move || tx.send(()).unwrap());
-            rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            view.poll().unwrap();
-        }
-        fn wait(view: &mut AppView, ready: impl Fn(&AppView) -> bool, stage: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                settle(view);
-                if ready(view) {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "{stage}: {:?}\n{}",
-                    view.last_error(),
-                    view.snapshot()
-                );
-            }
-        }
         for editor in [false, true] {
             let app: App = if editor {
-                Root::of::<CodeEditorFocusProbe>().into()
+                Root::of::<CodeEditorFocusProbe>()
+                    .font(
+                        include_bytes!(
+                            "../../../tests/compat/cases/layout/fonts/Pacifico-Regular.ttf"
+                        )
+                        .as_slice(),
+                    )
+                    .into()
             } else {
                 Root::of::<PlainInputFocusProbe>().into()
             };
             let mut view = AppView::new(AppOptions::default());
+            let loaded = Instant::now();
             view.load(app).unwrap();
+            let editor_name = if editor { "CodeEditor" } else { "Input" };
             let sink = |view: &AppView| {
                 view.accessibility_snapshot()
                     .into_iter()
@@ -1699,14 +1734,18 @@ mod tests {
             };
             // Readiness comes from the real mounted Input and rendered callback state,
             // not a guessed frame count, direct Surface focus assignment or a click.
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| sink(view).is_some() && view.snapshot().contains("Probe focused:"),
                 "probe did not mount",
             );
             let id = sink(&view).unwrap();
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| {
                     view.surface().focused() == Some(id)
                         && view.snapshot().contains("Probe focused:true")
@@ -1721,8 +1760,10 @@ mod tests {
                 KeyCode::Char('x'),
                 KeyModifiers::NONE,
             )));
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| view.snapshot().contains("Probe focused:true value:x"),
                 if editor {
                     "code Editor did not receive native typing"
@@ -1783,31 +1824,6 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         use nsh_core::ViewKind;
 
-        fn settle(view: &mut AppView) {
-            view.poll().unwrap();
-            let (tx, rx) = mpsc::channel();
-            view.control()
-                .unwrap()
-                .advance_clock(Duration::ZERO, move || tx.send(()).unwrap());
-            rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            view.poll().unwrap();
-        }
-        fn wait(view: &mut AppView, ready: impl Fn(&AppView) -> bool, stage: &str) {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                settle(view);
-                if ready(view) {
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "{stage}: focused={:?}, error={:?}\n{}",
-                    view.surface().focused(),
-                    view.last_error(),
-                    view.snapshot()
-                );
-            }
-        }
         for editor in [false, true] {
             let app: App = if editor {
                 Root::of::<RichEditorFocusProbe>().into()
@@ -1815,7 +1831,9 @@ mod tests {
                 Root::of::<PlainInputFocusProbe>().into()
             };
             let mut view = AppView::new(AppOptions::default());
+            let loaded = Instant::now();
             view.load(app).unwrap();
+            let editor_name = if editor { "RichEditor" } else { "Input" };
             let sink = |view: &AppView| {
                 view.accessibility_snapshot()
                     .into_iter()
@@ -1830,14 +1848,18 @@ mod tests {
             };
             // Readiness comes from the real mounted Input and rendered callback state,
             // not a guessed frame count, direct Surface focus assignment or a click.
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| sink(view).is_some() && view.snapshot().contains("Probe focused:"),
                 "probe did not mount",
             );
             let id = sink(&view).unwrap();
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| {
                     view.surface().focused() == Some(id)
                         && view.snapshot().contains("Probe focused:true")
@@ -1852,8 +1874,10 @@ mod tests {
                 KeyCode::Char('x'),
                 KeyModifiers::NONE,
             )));
-            wait(
+            wait_focus_probe(
                 &mut view,
+                editor_name,
+                loaded,
                 |view| view.snapshot().contains("Probe focused:true value:x"),
                 if editor {
                     "RichEditor did not receive native typing"

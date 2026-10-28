@@ -82,7 +82,7 @@ impl List {
             Self::Drafts | Self::Uploads => query.bind(serde_json::to_string(key).unwrap()),
             Self::Controls => {
                 query = query.bind(serde_json::to_string(&CONTROL_METHODS).unwrap());
-                for _ in 0..6 {
+                for _ in 0..7 {
                     query = query.bind(json!({"kind":CONTROL_KIND}).to_string());
                 }
                 query
@@ -257,7 +257,12 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
     let mut eligible = Vec::new();
     for (index, list) in LISTS.into_iter().enumerate() {
         let base = 100_000 + index as u128 * 100;
-        let original = operation(list, base, &host, &key);
+        let mut original = operation(list, base, &host, &key);
+        if matches!(list, List::Controls) {
+            original.method = "stopComputerApp".into();
+            original.session_id = Some(key.session_id.clone());
+            original.correlation = json!({"kind":CONTROL_KIND,"operationId":"native-effect-A"});
+        }
         journal.reserve(&original).await.unwrap();
         let mut other_domain = original.clone();
         other_domain.id = Uuid::from_u128(base + 1);

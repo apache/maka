@@ -84,6 +84,98 @@ pub(super) async fn granted(
     call: &Scope,
     basis: PermissionBasis,
 ) -> Result<(), ToolError> {
+    granted_target(owner, call, basis, &api::target()).await
+}
+
+pub(super) async fn audio_granted(
+    owner: &Computer,
+    call: &Scope,
+    basis: PermissionBasis,
+) -> Result<(), ToolError> {
+    granted_target(owner, call, basis, &api::audio_target()).await
+}
+
+/// An admitted effect keeps its real Run lifetime after its VM observer has
+/// ended. Canonical grant changes and Host retirement still request cancellation
+/// of that same effect; its original future must then confirm settlement.
+pub(super) async fn settle<F, Fut>(
+    owner: &Computer,
+    call: &Scope,
+    basis: PermissionBasis,
+    targets: &[maka_agent_facts::interaction::GrantTarget],
+    action: F,
+) -> Result<Value, ToolError>
+where
+    F: FnOnce(CancellationToken) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, ToolError>>,
+{
+    let invocation = call.identity.agent().expect("checked Agent");
+    let store = maka_agent_authority::permissions::execution(
+        &owner.store,
+        invocation,
+        call.execution().map(|token| token.as_ref()),
+    )?;
+    let mut changes = store.subscribe_commits().map_err(failed)?;
+    for target in targets {
+        granted_target(owner, call, basis, target).await?;
+    }
+    let monitor = async {
+        loop {
+            changes.borrow_and_update();
+            for target in targets {
+                granted_target(owner, call, basis, target).await?;
+            }
+            changes.changed().await.map_err(failed)?;
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), ToolError>(())
+    };
+    let child = call.cancellation.child_token();
+    let effect = action(child.clone());
+    tokio::pin!(effect);
+    let reason = tokio::select! {
+        biased;
+        result = &mut effect => return result,
+        () = call.cancellation.cancelled() => failed("Computer Run stopped"),
+        () = owner.stopping.cancelled() => failed("Computer owner closed"),
+        result = monitor => result.err().unwrap_or_else(|| failed("Computer grant monitor closed")),
+    };
+    child.cancel();
+    match effect.await {
+        Err(
+            error @ (ToolError::Persistence(_)
+            | ToolError::CleanupUnconfirmed(_)
+            | ToolError::OutcomeUnknown(_)
+            | ToolError::OperationUnknown { .. }
+            | ToolError::OperationCleanupUnconfirmed { .. }),
+        ) => Err(error),
+        _ => Err(reason),
+    }
+}
+
+pub(super) async fn browser_decision(
+    owner: &Computer,
+    call: &Scope,
+    basis: PermissionBasis,
+    target: &maka_agent_facts::interaction::GrantTarget,
+) -> Result<Option<Decision>, ToolError> {
+    let invocation = call.identity.agent().expect("checked Agent");
+    maka_agent_authority::permissions::execution(
+        &owner.store,
+        invocation,
+        call.execution().map(|token| token.as_ref()),
+    )?
+    .browser_origin_decision(&invocation.session_id, target, &basis)
+    .await
+    .map_err(|error| ToolError::Persistence(message(error)))
+}
+
+pub(super) async fn granted_target(
+    owner: &Computer,
+    call: &Scope,
+    basis: PermissionBasis,
+    target: &maka_agent_facts::interaction::GrantTarget,
+) -> Result<(), ToolError> {
     let (current, _) = current(owner, call, "cua_repl").await?;
     if current.permission_basis() != basis {
         return Err(failed("Computer Use permission boundary changed"));
@@ -96,12 +188,15 @@ pub(super) async fn granted(
     let grant = store
         .client_capability_grant(
             &call.identity.agent().expect("checked Agent").session_id,
-            &api::target(),
+            target,
         )
         .await
         .map_err(|e| ToolError::Persistence(message(e)))?;
     if grant.is_none_or(|grant| grant.basis != Some(basis)) {
-        return Err(failed("Computer Use Session grant is missing or revoked"));
+        return Err(failed(format!(
+            "{} Session grant is missing or revoked",
+            capability_name(target)
+        )));
     }
     Ok(())
 }
@@ -111,18 +206,63 @@ pub(super) async fn approve(
     configuration: &ResolvedConfiguration,
     cancellation: &CancellationToken,
 ) -> Result<(), ToolError> {
+    approve_target(
+        owner,
+        call,
+        configuration,
+        cancellation,
+        api::target(),
+        None,
+    )
+    .await
+}
+
+pub(super) async fn approve_audio(
+    owner: &Computer,
+    call: &Scope,
+    configuration: &ResolvedConfiguration,
+    cancellation: &CancellationToken,
+    cell: &maka_code_runtime::CellContext,
+) -> Result<(), ToolError> {
+    approve_target(
+        owner,
+        call,
+        configuration,
+        cancellation,
+        api::audio_target(),
+        Some(cell),
+    )
+    .await
+}
+
+pub(super) async fn approve_target(
+    owner: &Computer,
+    call: &Scope,
+    configuration: &ResolvedConfiguration,
+    cancellation: &CancellationToken,
+    target: maka_agent_facts::interaction::GrantTarget,
+    cell: Option<&maka_code_runtime::CellContext>,
+) -> Result<(), ToolError> {
     let context = ToolCallContext {
         execution: call.execution().cloned(),
         invocation: call.identity.agent().expect("checked Agent").clone(),
         operation_id: call.identity.operation_id().expect("checked tool").into(),
     };
-    let target = api::target();
     let store = maka_agent_authority::permissions::execution(
         &owner.store,
         &context.invocation,
         context.execution.as_deref(),
     )?;
-    if store
+    let browser = target.capability == maka_agent_facts::interaction::GrantCapability::Browser;
+    if browser {
+        match browser_decision(owner, call, configuration.permission_basis(), &target).await? {
+            Some(Decision::Allow) => return Ok(()),
+            Some(Decision::Deny) => {
+                return Err(failed("Browser site access was denied for this Session"));
+            }
+            None => {}
+        }
+    } else if store
         .client_capability_grant(&context.invocation.session_id, &target)
         .await
         .map_err(|e| ToolError::Persistence(message(e)))?
@@ -130,10 +270,15 @@ pub(super) async fn approve(
     {
         return Ok(());
     }
-    if !configuration.permissions.request_permissions {
-        return Err(failed(
-            "Current policy does not allow requesting Computer Use access",
-        ));
+    let unattended_browser = target.capability
+        == maka_agent_facts::interaction::GrantCapability::Browser
+        && configuration.permissions.access == WorkspaceAccess::DangerFullAccess
+        && !configuration.permissions.request_permissions;
+    if !configuration.permissions.request_permissions && !unattended_browser {
+        return Err(failed(format!(
+            "Current policy does not allow requesting {} access",
+            capability_name(&target)
+        )));
     }
     let record = InteractionRecord {
         session_id: context.invocation.session_id.clone(),
@@ -154,7 +299,7 @@ pub(super) async fn approve(
         created_at: maka_agent_authority::now(),
         request: InteractionRequest::ClientCapability {
             tool_use_id: context.tool_use_id(),
-            target,
+            target: target.clone(),
             basis: Some(configuration.permission_basis()),
         },
         outcome: None,
@@ -167,6 +312,19 @@ pub(super) async fn approve(
         if !committed.matches {
             return Err("Computer approval identity conflict");
         }
+        if unattended_browser {
+            store
+                .commit_interaction_outcome(
+                    &record.request_id,
+                    InteractionOutcome::ClientCapabilityDecision {
+                        decision: Decision::Allow,
+                        committed_at: maka_agent_authority::now(),
+                    },
+                )
+                .await
+                .map_err(|_| "Browser policy decision unavailable")?;
+        }
+        let _timeout = cell.map(maka_code_runtime::CellContext::suspend_timeout);
         maka_agent_authority::interaction_wait::wait(&store, &record, cancellation).await
     }
     .await;
@@ -190,9 +348,29 @@ pub(super) async fn approve(
             ..
         }
     ) {
-        return Err(failed("Computer Use access was not granted"));
+        return Err(failed(format!(
+            "{} access was not granted",
+            capability_name(&target)
+        )));
     }
-    granted(owner, call, configuration.permission_basis()).await
+    if browser {
+        if browser_decision(owner, call, configuration.permission_basis(), &target).await?
+            != Some(Decision::Allow)
+        {
+            return Err(failed("Browser site approval is no longer current"));
+        }
+        Ok(())
+    } else {
+        granted_target(owner, call, configuration.permission_basis(), &target).await
+    }
+}
+
+fn capability_name(target: &maka_agent_facts::interaction::GrantTarget) -> &'static str {
+    match target.capability {
+        maka_agent_facts::interaction::GrantCapability::ComputerAudio => "Computer audio recording",
+        maka_agent_facts::interaction::GrantCapability::Browser => "Browser site",
+        _ => "Computer Use",
+    }
 }
 
 /// T1 is committed under the original grant fence. T2 must still settle even
@@ -200,14 +378,31 @@ pub(super) async fn approve(
 pub(super) struct Journal {
     pub store: maka_event_log::SessionStore,
     pub basis: PermissionBasis,
+    pub targets: Vec<maka_agent_facts::interaction::GrantTarget>,
+    pub app: Option<(
+        maka_agent_facts::interaction::GrantTarget,
+        maka_agent_facts::interaction::ComputerAppDisplay,
+    )>,
 }
 impl EventSink for Journal {
     fn commit(self: Arc<Self>, event: EventWrite) -> CommitFuture {
         Box::pin(async move {
             if matches!(event.event().fact, Fact::ToolDispatched { .. }) {
-                self.store
-                    .append_capability_dispatch(&event, &api::target(), &self.basis)
-                    .await
+                if let Some((app, display)) = &self.app {
+                    self.store
+                        .append_computer_app_dispatch(
+                            &event,
+                            &self.targets,
+                            app,
+                            display,
+                            &self.basis,
+                        )
+                        .await
+                } else {
+                    self.store
+                        .append_capability_dispatch(&event, &self.targets, &self.basis)
+                        .await
+                }
             } else {
                 self.store.append(&event).await
             }

@@ -24,7 +24,7 @@ import { Icon } from './Icon';
 import { bodyTextStyle, C, captionTextStyle, codeTextStyle } from './ui';
 
 type Request = Extract<InteractionRequest, { kind: 'client_capability' }>;
-// The Agent's response gate accepts this exact producer-owned Computer target.
+// The Agent's response gate accepts these exact producer-owned Computer capabilities.
 // It never turns a generic capability request into a broad client grant.
 export function computerCapability(request: Request): boolean {
   const target = request.target;
@@ -43,8 +43,9 @@ export function computerCapability(request: Request): boolean {
     target.contractId === 'maka_workspace_computer_v1' &&
     target.serverId === 'maka_workspace_computer' &&
     target.toolName === 'cua_repl' &&
-    target.capability === 'computer_use' &&
-    target.scope.kind === 'capability'
+    (((target.capability === 'computer_use' || target.capability === 'computer_audio') &&
+      target.scope.kind === 'capability') ||
+      (target.capability === 'browser' && target.scope.kind === 'browser_origin'))
   );
 }
 export function CapabilityRequest(props: { request: Request; sessionId: string }) {
@@ -64,7 +65,11 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
         <View style={{ flex: 1, minWidth: 0, gap: 8 }}>
           <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '600' }}>
             {computerCapability(props.request)
-              ? tr('Computer access for this session')
+              ? props.request.target.capability === 'computer_audio'
+                ? tr('Computer output audio for this session')
+                : props.request.target.capability === 'browser'
+                  ? tr('Browser access for this session')
+                  : tr('Computer access for this session')
               : tr('Requested client capability')}
           </Text>
           <Text style={[{ ...codeTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
@@ -75,9 +80,17 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
           </Text>
           <If when={computerCapability(props.request)}>
             <Text style={[{ ...bodyTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
-              {tr(
-                "This allows the requesting tool to inspect and control the local computer, including screenshots, keyboard and pointer actions. The grant lasts for this session's current permission boundary.",
-              )}
+              {props.request.target.capability === 'computer_audio'
+                ? tr(
+                    "This allows the requesting tool to record audio played by the computer. The grant lasts for this session's current permission boundary.",
+                  )
+                : props.request.target.capability === 'browser'
+                  ? tr(
+                      "This allows the requesting tool to access pages on the displayed browser origin. The grant lasts for this session's current permission boundary.",
+                    )
+                  : tr(
+                      "This allows the requesting tool to inspect and control the local computer, including screenshots, keyboard and pointer actions. The grant lasts for this session's current permission boundary.",
+                    )}
             </Text>
           </If>
         </View>

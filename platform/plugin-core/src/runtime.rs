@@ -35,9 +35,6 @@ use crate::{
     plan::{Binding, Instance, Plan, Provider, RemoteCapability},
 };
 
-mod mount;
-pub use mount::{Mount, MountStatus};
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Origin {
     Local(InstanceId),
@@ -190,14 +187,12 @@ pub struct Status {
     pub failures: Vec<String>,
 }
 
-/// Host and UI each own one runtime per deployment/resource domain. All changes
-/// serialize through its owner task or foreground event loop. There is no
-/// platform requirement on T; Rust's auto traits constrain cross-thread use.
+/// Host activations and their resources share one runtime per deployment domain.
+/// The owner task serializes changes; this kernel does not execute UI modules.
 pub struct Runtime<T> {
     identity: Uuid,
     desired: Plan,
     live: BTreeMap<Origin, Live<T>>,
-    mounts: BTreeMap<Uuid, mount::Mounted<T>>,
 }
 
 impl<T> Runtime<T> {
@@ -206,7 +201,6 @@ impl<T> Runtime<T> {
             identity: Uuid::new_v4(),
             desired: plan,
             live: BTreeMap::new(),
-            mounts: BTreeMap::new(),
         }
     }
 
@@ -218,14 +212,6 @@ impl<T> Runtime<T> {
     }
 
     pub fn install(&mut self, plan: Plan) -> Vec<Activation> {
-        for kind in [
-            crate::composition::RootKind::Launch,
-            crate::composition::RootKind::Recovery,
-        ] {
-            if self.desired.root(kind) != plan.root(kind) {
-                self.retire_root_mounts(kind);
-            }
-        }
         let changed: Vec<_> = self
             .live
             .iter()
@@ -264,6 +250,32 @@ impl<T> Runtime<T> {
     }
 
     pub fn begin(&mut self, instance: &InstanceId) -> Result<Activation, Error> {
+        if self
+            .desired
+            .instances()
+            .get(instance)
+            .and_then(Instance::ui_entry)
+            .is_some()
+        {
+            return Err(Error::Lifecycle("UI instances execute in the client"));
+        }
+        self.begin_instance(instance)
+    }
+
+    /// Register a client consumer. Publication checks its live imports without executing UI code.
+    pub fn begin_ui_consumer(&mut self, instance: &InstanceId) -> Result<Activation, Error> {
+        let plan = self
+            .desired
+            .instances()
+            .get(instance)
+            .ok_or(Error::Retired)?;
+        if plan.ui_entry().is_none() {
+            return Err(Error::Lifecycle("instance has no UI consumer"));
+        }
+        self.begin_instance(instance)
+    }
+
+    fn begin_instance(&mut self, instance: &InstanceId) -> Result<Activation, Error> {
         if self.live.contains_key(&Origin::Local(instance.clone())) {
             return Err(Error::Lifecycle(
                 "previous activation has not completed cleanup",
@@ -375,8 +387,18 @@ impl<T> Runtime<T> {
                 return Err(Error::Lifecycle("activation is not loading"));
             }
             if let Some(entry) = &self.instance(activation)?.entry {
-                entry.check_exports(&batch, |value| &value.contract)?;
-                for name in entry.imports.keys() {
+                match entry {
+                    crate::plan::InstanceEntry::Host(entry) => {
+                        entry.check_exports(&batch, |value| &value.contract)?;
+                    }
+                    crate::plan::InstanceEntry::Ui(_) if !batch.is_empty() => {
+                        return Err(Error::Contract(
+                            "UI consumers cannot publish Host exports".into(),
+                        ));
+                    }
+                    crate::plan::InstanceEntry::Ui(_) => {}
+                }
+                for name in entry.imports().keys() {
                     self.bind(activation, name)?;
                 }
             } else if !batch.is_empty() {
@@ -418,7 +440,7 @@ impl<T> Runtime<T> {
         let declaration = plan
             .entry
             .as_ref()
-            .and_then(|entry| entry.imports.get(import))
+            .and_then(|entry| entry.imports().get(import))
             .ok_or_else(|| {
                 Error::Contract(format!(
                     "undeclared executable import: {import} in {}",
@@ -617,17 +639,15 @@ impl<T> Runtime<T> {
             let before = affected.len();
             for (origin, live) in &self.live {
                 let Some(plan) = &live.plan else { continue };
-                if plan
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| affected.contains(&Origin::Local(parent.clone())))
-                    || (plan.entry.is_some()
-                        && plan
-                            .bindings
-                            .values()
-                            .flatten()
-                            .any(|binding| affected.contains(&provider_origin(&binding.provider))))
-                {
+                if plan.dependencies().any(|dependency| {
+                    let origin = match dependency {
+                        crate::plan::Dependency::Local(id) => Origin::Local(id.clone()),
+                        crate::plan::Dependency::Remote(capability) => {
+                            Origin::Remote(capability.clone())
+                        }
+                    };
+                    affected.contains(&origin)
+                }) {
                     affected.insert(origin.clone());
                 }
             }
@@ -643,7 +663,6 @@ impl<T> Runtime<T> {
                 retired.push(live.activation.clone());
             }
         }
-        self.retire_invalid_mounts();
         Ok(retired)
     }
 
@@ -659,7 +678,6 @@ impl<T> Runtime<T> {
         }
         if !live.calls.is_empty()
             || !live.resources.is_empty()
-            || self.mounts_depend_on(activation)
             || self.live.values().any(|child| {
                 child
                     .plan
@@ -753,13 +771,6 @@ fn failures<T>(live: &Live<T>) -> Vec<String> {
         .collect()
 }
 
-fn provider_origin(provider: &Provider) -> Origin {
-    match provider {
-        Provider::Local { instance, .. } => Origin::Local(instance.clone()),
-        Provider::Remote { capability } => Origin::Remote(capability.clone()),
-    }
-}
-
 fn remote_expected(plan: &Plan, target: &RemoteCapability, actual: &Contract) -> bool {
     let mut found = false;
     for binding in plan.instances().values().flat_map(|instance| {
@@ -780,14 +791,7 @@ fn remote_expected(plan: &Plan, target: &RemoteCapability, actual: &Contract) ->
 }
 
 fn same_instance(left: &Instance, right: &Instance) -> bool {
-    left.identity == right.identity
-        && left.parent == right.parent
-        && left.package == right.package
-        && left.disabled == right.disabled
-        && left.configuration == right.configuration
-        && left.entry == right.entry
-        && left.bindings == right.bindings
-        && left.exports == right.exports
+    left.activation_basis() == right.activation_basis()
 }
 
 #[cfg(test)]

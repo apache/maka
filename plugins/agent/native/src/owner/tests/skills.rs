@@ -168,14 +168,14 @@ async fn bundled_authoring_resources_reach_the_actual_model_without_added_author
         let (mut socket, catalog) = next(&listener).await;
         assert_eq!(catalog["totalEligible"], 1, "{catalog}");
         assert_eq!(catalog["matches"][0]["ref"], "bundled:maka-plugin-authoring");
-        tool(&mut socket, "Skill", json!({"name":"maka-plugin-authoring","revision":catalog["revision"],"resource":{"path":"references/sdk/ui.ts"}})).await;
+        tool(&mut socket, "Skill", json!({"name":"maka-plugin-authoring","revision":catalog["revision"],"resource":{"path":"references/sdk/workbench.ts"}})).await;
         let (mut socket, mut resource) = next(&listener).await;
         let mut complete = String::new();
         loop {
             assert_eq!(resource["kind"], "resource", "{resource}");
             assert_eq!(resource["revision"], catalog["revision"]);
             assert_eq!(resource["reference"], "bundled:maka-plugin-authoring");
-            assert_eq!(resource["path"], "references/sdk/ui.ts");
+            assert_eq!(resource["path"], "references/sdk/workbench.ts");
             assert_eq!(resource["receipt"]["success"], true);
             assert_eq!(resource["receipt"]["ref"], "bundled:maka-plugin-authoring");
             complete.push_str(resource["content"].as_str().unwrap());
@@ -194,7 +194,7 @@ async fn bundled_authoring_resources_reach_the_actual_model_without_added_author
             socket = next_socket;
             resource = page;
         }
-        assert_eq!(complete, include_str!("../../../../../../packages/plugin-sdk/src/ui.ts"));
+        assert_eq!(complete, include_str!("../../../../../../packages/plugin-sdk/src/workbench.ts"));
         tool(&mut socket, "Skill", json!({"name":"maka-cua","revision":catalog["revision"]})).await;
         let (mut socket, unavailable) = next(&listener).await;
         assert_eq!(unavailable["reason"], "host_incompatible");

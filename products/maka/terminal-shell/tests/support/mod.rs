@@ -78,9 +78,30 @@ fn frame_time() -> f64 {
     STARTED.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
 
-pub fn load_application(view: &mut AppView) {
-    view.load(maka_workbench::application_bundle().into())
-        .unwrap();
+pub(super) async fn product_package(name: &'static str) -> Package {
+    tokio::task::spawn_blocking(move || {
+        Package::read_from(
+            &PathBuf::from(env!("OUT_DIR"))
+                .join("product/packages")
+                .join(name),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap()
+}
+
+pub fn load_application(
+    view: &mut AppView,
+    bindings: &maka_workbench::bindings::Bindings,
+    initial_session: Option<String>,
+) {
+    let registry = bindings.registry(initial_session);
+    let mut config = maka_workbench::configuration(registry, tokio::runtime::Handle::current());
+    config.assets = Some(bindings.assets());
+    config.chunk_loader = Some(bindings.chunk_loader());
+    config.context = config.context.with(bindings.reload());
+    view.load_with_config(config).unwrap();
     // load resets Surface; seed its clock before poll can apply an animation.
     view.surface_mut().tick(frame_time());
 }
@@ -118,6 +139,7 @@ enum InitialCatalog {
 
 enum AdditionalServices {
     None,
+    WorkspaceUi,
     #[cfg(unix)]
     Terminals,
     ObservedGateway(gateway::Publications),
@@ -192,12 +214,24 @@ impl Fixture {
         )
         .await
     }
+    pub async fn workspace_ui() -> Self {
+        Self::open_with_services(
+            false,
+            false,
+            InitialCatalog::Configured { reasoning: false },
+            true,
+            None,
+            None,
+            AdditionalServices::WorkspaceUi,
+        )
+        .await
+    }
     pub async fn files(method: &str) -> Self {
         Self::open_with_services(
             false,
             false,
             InitialCatalog::Configured { reasoning: false },
-            false,
+            true,
             None,
             Some(json!({
                 "name":"WorkspaceDocument", "description":"Use the actual workspace Files service.",
@@ -242,8 +276,11 @@ impl Fixture {
         file_tool: Option<Value>,
         services: AdditionalServices,
     ) -> Self {
+        let workspace_ui =
+            file_tool.is_some() || matches!(&services, AdditionalServices::WorkspaceUi);
         let (terminals, gateway_publications) = match services {
             AdditionalServices::None => (false, None),
+            AdditionalServices::WorkspaceUi => (false, None),
             #[cfg(unix)]
             AdditionalServices::Terminals => (true, None),
             AdditionalServices::ObservedGateway(published) => (false, Some(published)),
@@ -280,10 +317,10 @@ impl Fixture {
             Package::new(BTreeMap::from([(
                 "maka.extension.json".into(),
                 serde_json::to_vec(&json!({
-                    "schemaVersion":1,"id":id,"application":{"entries":{"host":{
+                    "schemaVersion":1,"id":id,"application":{"host":{
                         "implementation":{"kind":"native","implementation":implementation},
                         "configuration":configuration,"imports":imports,"exports":exports
-                    }}}
+                    }}
                 }))
                 .unwrap(),
             )]))
@@ -299,6 +336,8 @@ impl Fixture {
         let terminal_contract = maka_workspace_api::terminal::contract();
         let management_contract =
             maka_plugin_core::deployment::management::deployment_manager_contract();
+        let outcomes_contract = maka_skills_api::outcomes::contract();
+        let logs_contract = maka_host_runtime::application::logs::contract();
         let empty = json!({"type":"object","additionalProperties":false});
         let agent = package(
             "test.nsh.agent",
@@ -372,12 +411,11 @@ impl Fixture {
             "settings":{"contract":settings_contract,"cardinality":{"kind":"one"}},
             "authentication":{"contract":authentication_contract,"cardinality":{"kind":"one"}},
             "setup":{"contract":setup_contract,"cardinality":{"kind":"one"}},
-            "receipts":{"contract":receipts_contract,"cardinality":{"kind":"one"}}
+            "receipts":{"contract":receipts_contract,"cardinality":{"kind":"one"}},
+            "management":{"contract":management_contract,"cardinality":{"kind":"one"}},
+            "skillOutcomes":{"contract":outcomes_contract,"cardinality":{"kind":"one"}},
+            "hostLogs":{"contract":logs_contract,"cardinality":{"kind":"one"}}
         });
-        if plugins {
-            gateway_imports["management"] =
-                json!({"contract":management_contract,"cardinality":{"kind":"one"}});
-        }
         if terminals {
             gateway_imports["terminal"] =
                 json!({"contract":terminal_contract,"cardinality":{"kind":"one"}});
@@ -396,7 +434,7 @@ impl Fixture {
         let node = |package: &Package, key: u128, configuration: Value, bindings: Value| {
             json!({
                 "key":Uuid::from_u128(key),"package":{"source":"pinned","package":package.application_ref()},
-                "usePackage":"entry","configuration":{"values":configuration},"bindings":bindings
+                "usePackage":"host","configuration":{"values":configuration},"bindings":bindings
             })
         };
         let deployment = Uuid::new_v4();
@@ -427,7 +465,7 @@ impl Fixture {
         } else {
             json!({"access":"read_only","requestPermissions":true})
         };
-        let mut plan = json!({"environment":{"location":"host"},"instances":{
+        let mut plan = json!({"instances":{
             "agent":node(&agent, 1, json!({"locale":"en","workspaceRoots":[{"label":"Workspace","path":workspace}],"tools":tools,"todo":true,"permissions":permissions}), if has_files { json!({"files":[{"kind":"instance","path":["files"],"export":"files"}]}) } else { json!({}) }),
             "settings":node(&settings, 2, json!({"workspaceLocations":{"agent":"agent","skills":null,"processes":if terminals { Some("processes") } else { None }}}), json!({})),
             "authentication":node(&authentication, 6, json!({}), json!({})),
@@ -447,10 +485,10 @@ impl Fixture {
             plan["instances"]["agent"]["configuration"]["values"]["assistant"] =
                 json!({"home":home});
         }
+        plan["instances"]["management"] = node(&manager, 8, json!({}), json!({}));
+        plan["instances"]["gateway"]["bindings"]["management"] =
+            json!([{"kind":"instance","path":["management"],"export":"Management"}]);
         if plugins {
-            plan["instances"]["management"] = node(&manager, 8, json!({}), json!({}));
-            plan["instances"]["gateway"]["bindings"]["management"] =
-                json!([{"kind":"instance","path":["management"],"export":"Management"}]);
             let optional_roots: Vec<_> = (0..40)
                 .map(|index| {
                     let path = directory
@@ -471,13 +509,47 @@ impl Fixture {
                 plan["instances"][format!("optional-agent-{index}")] = optional;
             }
         }
-        let mut packages = vec![agent, settings, authentication, setup, receipts, gateway];
-        if plugins {
-            packages.push(manager);
-        }
+        let mut packages = vec![
+            agent,
+            settings,
+            authentication,
+            setup,
+            receipts,
+            gateway,
+            manager,
+        ];
+        let workbench = product_package("workbench").await;
+        let outcomes = product_package("skill-outcomes").await;
+        let logs = product_package("host-logs").await;
+        plan["instances"]["skill-outcomes"] = node(&outcomes, 15, json!({}), json!({}));
+        plan["instances"]["host-logs"] = node(&logs, 16, json!({}), json!({}));
+        plan["instances"]["gateway"]["bindings"]["skillOutcomes"] =
+            json!([{"kind":"instance","path":["skill-outcomes"],"export":"Outcomes"}]);
+        plan["instances"]["gateway"]["bindings"]["hostLogs"] =
+            json!([{"kind":"instance","path":["host-logs"],"export":"HostLogs"}]);
+        plan["instances"]["workbench-ui"] = json!({
+            "key": Uuid::from_u128(14),
+            "package":{"source":"pinned","package":workbench.application_ref()},
+            "usePackage":"ui",
+            "configuration":{"values":{}},
+            "bindings":plan["instances"]["gateway"]["bindings"]
+        });
+        plan["ui"] = json!({"path":["workbench-ui"],"id":"root"});
+        packages.extend([workbench, outcomes, logs]);
         if has_files {
             plan["instances"]["files"] = node(&files, 5, json!({}), json!({}));
             packages.push(files);
+        }
+        if workspace_ui {
+            let ui = product_package("workspace-files").await;
+            plan["instances"]["workspace-files-ui"] = json!({
+                "key": Uuid::from_u128(13),
+                "package":{"source":"pinned","package":ui.application_ref()},
+                "usePackage":"ui",
+                "configuration":{"values":{}},
+                "bindings":{}
+            });
+            packages.push(ui);
         }
         if terminals {
             plan["instances"]["processes"] = node(
@@ -493,6 +565,8 @@ impl Fixture {
             );
             plan["instances"]["gateway"]["bindings"]["terminal"] =
                 json!([{"kind":"instance","path":["processes"],"export":"terminal"}]);
+            plan["instances"]["workbench-ui"]["bindings"]["terminal"] =
+                plan["instances"]["gateway"]["bindings"]["terminal"].clone();
             packages.push(processes);
         }
         let input = serde_json::from_value(plan).unwrap();
@@ -507,14 +581,7 @@ impl Fixture {
         let public_catalog = Arc::new(maka_product_native::catalog::Catalog::new(
             maka_product_native::catalog::Snapshot::bundled().unwrap(),
         ));
-        if terminals {
-            // Use the product's original factories; composition still admits
-            // only the services explicitly installed in this fixture.
-            maka_product_native::provide(&mut native, public_catalog).unwrap();
-        } else {
-            maka_agent_native::provide(&mut native, public_catalog.clone()).unwrap();
-            maka_settings_native::provide(&mut native, public_catalog).unwrap();
-        }
+        maka_product_native::provide(&mut native, public_catalog).unwrap();
         if let Some(handler) = login_handler.clone() {
             let contract = authentication_contract.clone();
             native
@@ -538,9 +605,6 @@ impl Fixture {
                     }),
                 )
                 .unwrap();
-        }
-        if has_files && !terminals {
-            maka_files_native::provide(&mut native).unwrap();
         }
         let endpoint = |import: &str, methods: &[&str], recovery| HostEndpoint {
             consumer: InstanceId(vec![Uuid::from_u128(4)]),
@@ -581,6 +645,8 @@ impl Fixture {
                                 "fork",
                                 "send",
                                 "stop",
+                                "computerApps",
+                                "stopComputerApp",
                                 "execution",
                                 "queue",
                                 "queueMessage",
@@ -655,18 +721,37 @@ impl Fixture {
                         endpoint("setup", &["discoverModels"], false),
                     ),
                     ("receipts".into(), endpoint("receipts", &["read"], true)),
-                ])
-                .into_iter()
-                .chain(plugins.then(|| {
+                    (
+                        "skillOutcomes".into(),
+                        endpoint("skillOutcomes", &["read"], true),
+                    ),
+                    (
+                        "hostLogs".into(),
+                        endpoint("hostLogs", &["read", "watch"], false),
+                    ),
                     (
                         "management".into(),
                         endpoint(
                             "management",
-                            &["instances", "readSettings", "setEnabled", "configure"],
+                            &[
+                                "instances",
+                                "readSettings",
+                                "setEnabled",
+                                "configure",
+                                "readUi",
+                                "watch",
+                                "exportPackage",
+                                "installSource",
+                                "editComposition",
+                                "replaceSource",
+                                "read",
+                                "readPackage",
+                            ],
                             false,
                         ),
-                    )
-                }))
+                    ),
+                ])
+                .into_iter()
                 .chain(terminals.then(|| {
                     (
                         "terminal".into(),
@@ -835,6 +920,44 @@ impl Fixture {
         }
         client.close().await.unwrap();
     }
+    pub async fn install_ui_root(&self, package: Package, configuration: Value) {
+        let client = self.client().await;
+        let deployment = client.source().deployment;
+        client.close().await.unwrap();
+        let loaded = self
+            .store
+            .load_application(deployment)
+            .await
+            .unwrap()
+            .unwrap();
+        let (mut source, mut packages, _, _) = loaded.into_parts();
+        source.input.instances.insert(
+            "fixture-ui".into(),
+            serde_json::from_value(json!({
+                "key": Uuid::new_v4(),
+                "package":{"source":"pinned","package":package.application_ref()},
+                "usePackage":"ui",
+                "configuration":{"values":configuration},
+                "bindings":{}
+            }))
+            .unwrap(),
+        );
+        source.input.ui = Some(maka_plugin_core::composition::UiTarget {
+            path: vec!["fixture-ui".into()],
+            id: "root".into(),
+        });
+        packages.push(package);
+        self.store
+            .commit_application(
+                deployment,
+                source.reference.revision,
+                source.input,
+                source.remote_exports,
+                packages,
+            )
+            .await
+            .unwrap();
+    }
     pub fn view(
         &self,
         client: Client,
@@ -842,7 +965,7 @@ impl Fixture {
     ) -> (AppView, maka_workbench::bindings::Bindings) {
         let bindings =
             maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
-        let registry = bindings.registry(initial_session);
+        let registry = bindings.registry(initial_session.clone());
         if let Some(directory) = std::env::var_os("MAKA_NSH_EVIDENCE") {
             let directory = PathBuf::from(directory);
             std::fs::create_dir_all(&directory).unwrap();
@@ -855,11 +978,10 @@ impl Fixture {
         let mut view = AppView::new(AppOptions {
             size: evidence_size(),
             data_dir: Some(self.directory.path().join("nsh")),
-            ui_sets: Some(vec![nsh_base::registry(), registry]),
+            ui_sets: Some(vec![nsh_base::registry(), registry.clone()]),
             ..Default::default()
         });
-        load_application(&mut view);
-        view.surface_mut().set_assets(Some(bindings.assets()));
+        load_application(&mut view, &bindings, initial_session);
         (view, bindings)
     }
     pub async fn finish(self) {
@@ -1426,6 +1548,16 @@ impl ReplyGate {
     pub fn respond(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "respond", "mutation", false, None)
     }
+    pub fn stop_computer_app(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(
+            directory,
+            target,
+            "stopComputerApp",
+            "mutation",
+            false,
+            None,
+        )
+    }
     #[cfg(unix)]
     pub fn history(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "history", "finished", false, None)
@@ -1541,7 +1673,7 @@ impl Drop for ReplyGate {
     }
 }
 
-fn socket(directory: &Path, name: &str) -> PathBuf {
+pub(super) fn socket(directory: &Path, name: &str) -> PathBuf {
     #[cfg(unix)]
     {
         directory.join(format!("{name}.sock"))

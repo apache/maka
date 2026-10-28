@@ -172,6 +172,7 @@ const gpuiUpstreamFiles = new Set(
     'image-webp',
     'termina',
     'nsh',
+    'playwright',
   ].flatMap((project) =>
     Object.keys(
       JSON.parse(

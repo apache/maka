@@ -373,7 +373,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
     };
     log.append_capability_dispatch(
         &dispatch("before"),
-        &target,
+        std::slice::from_ref(&target),
         &PermissionBasis {
             boundary_revision: 0,
             ..basis
@@ -403,7 +403,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
     assert!(matches!(
         log.append_capability_dispatch(
             &dispatch("revoked"),
-            &target,
+            std::slice::from_ref(&target),
             &PermissionBasis {
                 boundary_revision: 0,
                 ..basis
@@ -458,7 +458,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
         matches!(
             log.append_capability_dispatch(
                 &dispatch("stale_worker"),
-                &target,
+                std::slice::from_ref(&target),
                 &PermissionBasis {
                     boundary_revision: 0,
                     ..basis
@@ -471,7 +471,7 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
     );
     log.append_capability_dispatch(
         &dispatch("after"),
-        &target,
+        std::slice::from_ref(&target),
         &PermissionBasis {
             boundary_revision: 1,
             ..basis
@@ -509,6 +509,136 @@ async fn capability_approval_and_dispatch_share_the_original_permission_boundary
         })
         .collect();
     assert_eq!(admitted, ["before", "after"]);
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_audio_dispatch_requires_both_current_capability_grants() {
+    use maka_agent_facts::event::{
+        CommitError, EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent,
+    };
+    use maka_agent_facts::tool_call::ToolCallIdentity;
+    use serde_json::{Value, json};
+
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("audio.sqlite"))
+        .await
+        .unwrap();
+    let basis = bound_session(&log, "session", 0).await;
+    let invocation = Invocation {
+        session_id: "session".into(),
+        turn_id: "turn".into(),
+        run_id: "run".into(),
+        invocation_id: "invocation".into(),
+    };
+    let event = |fact| EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap();
+    log.append(&event(Fact::InvocationOpened {
+        input: InvocationInput::Message {
+            content: "Record computer audio".into(),
+            source_messages: vec![],
+            request_fingerprint: None,
+        },
+        configuration: None,
+    }))
+    .await
+    .unwrap();
+    let computer = GrantTarget {
+        provider_id: "maka_workspace_computer".into(),
+        contract_id: "maka_workspace_computer_v1".into(),
+        server_id: "maka_workspace_computer".into(),
+        tool_name: "cua_repl".into(),
+        capability: GrantCapability::ComputerUse,
+        scope: GrantScope::Capability {},
+    };
+    let audio = GrantTarget {
+        capability: GrantCapability::ComputerAudio,
+        ..computer.clone()
+    };
+    let targets = [computer, audio];
+    let approve = async |id: &str, target: &GrantTarget, basis| {
+        let record = InteractionRecord {
+            request: InteractionRequest::ClientCapability {
+                tool_use_id: "audio-use".into(),
+                basis: Some(basis),
+                target: target.clone(),
+            },
+            ..request(id)
+        };
+        log.establish_run_interaction(&invocation, &record)
+            .await
+            .unwrap();
+        assert!(
+            log.commit_interaction_outcome(id, decision(Decision::Allow, 20))
+                .await
+                .unwrap()
+                .matches
+        );
+    };
+    let dispatch = |operation: &str| {
+        event(Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: operation.into(),
+            call: ToolCallIdentity::standalone(format!("{operation}-call")),
+            name: "cua_operation".into(),
+            input: json!({"operation":"start_audio_recording"}),
+        })
+    };
+    approve("computer", &targets[0], basis).await;
+    assert!(matches!(
+        log.append_capability_dispatch(&dispatch("missing-audio"), &targets, &basis)
+            .await,
+        Err(CommitError::PermissionRevoked)
+    ));
+    approve("audio", &targets[1], basis).await;
+    log.append_capability_dispatch(&dispatch("both"), &targets, &basis)
+        .await
+        .unwrap();
+    let current = log.get_session::<Value>("session").await.unwrap().unwrap();
+    log.update_session_permissions("session", current.revision, 30, |value: &mut Value| {
+        value["boundary_revision"] = json!(1);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let renewed = PermissionBasis {
+        boundary_revision: 1,
+        ..basis
+    };
+    approve("renewed-audio", &targets[1], renewed).await;
+    assert!(matches!(
+        log.append_capability_dispatch(&dispatch("missing-computer"), &targets, &renewed)
+            .await,
+        Err(CommitError::PermissionRevoked)
+    ));
+    approve("renewed-computer", &targets[0], renewed).await;
+    assert!(matches!(
+        log.append_capability_dispatch(&dispatch("old-worker"), &targets, &basis)
+            .await,
+        Err(CommitError::PermissionRevoked)
+    ));
+    log.append_capability_dispatch(&dispatch("renewed"), &targets, &renewed)
+        .await
+        .unwrap();
+    let events = log
+        .scoped_prefix(
+            maka_agent_facts::event::LogScope::Session {
+                id: "session".into(),
+            },
+            64,
+            1024 * 1024,
+        )
+        .await
+        .unwrap()
+        .events;
+    let admitted: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.event.fact {
+            Fact::ToolDispatched { operation_id, .. } => Some(operation_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(admitted, ["both", "renewed"]);
     log.close().await.unwrap();
 }
 

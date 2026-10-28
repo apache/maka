@@ -20,7 +20,7 @@
 import * as sdk from '../../packages/plugin-sdk/src/index.js';
 
 export const agentImports = {
-  ui: { contract: sdk.contracts.uiAuthoring, cardinality: { kind: 'optional' } },
+  ui: { contract: sdk.contracts.deploymentManager, cardinality: { kind: 'optional' } },
   executorSetups: {
     contract: sdk.contracts.executorSetup,
     cardinality: { kind: 'many', min: 0, max: 8 },

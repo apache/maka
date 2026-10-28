@@ -84,13 +84,18 @@ pub enum Reply {
         reason: String,
         cleanup: Result<()>,
     },
+    BindingRetired {
+        reason: String,
+        cleanup: Result<()>,
+    },
 }
 impl Reply {
     pub fn cleanup(&self) -> Option<&Result<()>> {
         match self {
             Self::Finished { cleanup, .. }
             | Self::Mutation { cleanup, .. }
-            | Self::Aborted { cleanup, .. } => Some(cleanup),
+            | Self::Aborted { cleanup, .. }
+            | Self::BindingRetired { cleanup, .. } => Some(cleanup),
             _ => None,
         }
     }

@@ -23,35 +23,89 @@ use crate::StoreError;
 use sqlx::SqliteConnection;
 use std::path::Path;
 
+pub(crate) const STANDALONE_APP_VIEWS: &str = "
+    CREATE TEMP VIEW root_app_requests AS
+        SELECT request_id,session_id,created_at,record_json FROM main.interaction_requests WHERE 0;
+    CREATE TEMP VIEW root_app_outcomes AS
+        SELECT request_id,outcome_json FROM main.interaction_outcomes WHERE 0;
+    CREATE TEMP VIEW root_app_pending AS
+        SELECT request_id,session_id,created_at FROM main.interaction_pending WHERE 0;
+    CREATE TEMP VIEW root_app_revision AS SELECT 0 AS revision;";
+
+pub(crate) const ALL_INTERACTION_PENDING: &str = "
+    CREATE TEMP VIEW all_interaction_pending AS
+        SELECT request_id,session_id,created_at FROM main.interaction_pending
+        UNION ALL SELECT request_id,session_id,created_at FROM root_app_pending;";
+
+pub(crate) const ATTACHED_APP_VIEWS: &str = "
+    CREATE TEMP VIEW root_app_requests AS
+        SELECT request_id,session_id,created_at,record_json FROM root_control.interaction_requests
+        WHERE json_extract(record_json,'$.request.kind')='computer_app';
+    CREATE TEMP VIEW root_app_outcomes AS
+        SELECT outcome.request_id,outcome.outcome_json FROM root_control.interaction_outcomes outcome
+        JOIN root_app_requests request ON request.request_id=outcome.request_id;
+    CREATE TEMP VIEW root_app_pending AS
+        SELECT pending.request_id,pending.session_id,pending.created_at FROM root_control.interaction_pending pending
+        JOIN root_app_requests request ON request.request_id=pending.request_id;
+    CREATE TEMP VIEW root_app_revision AS
+        SELECT revision FROM root_control.session_catalog_revision WHERE singleton=1;";
+
+pub(crate) async fn initialize_views(
+    connection: &mut SqliteConnection,
+    control: Option<&ReadOnlyControl>,
+) -> Result<(), StoreError> {
+    if let Some(control) = control {
+        control.attach(connection).await?;
+    } else {
+        sqlx::raw_sql(STANDALONE_APP_VIEWS)
+            .execute(&mut *connection)
+            .await?;
+    }
+    sqlx::raw_sql(ALL_INTERACTION_PENDING)
+        .execute(&mut *connection)
+        .await?;
+    if let Some(control) = control {
+        control.validate(connection).await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(crate) struct ReadOnlyControl {
     uri: String,
 }
 
+pub(crate) fn database_uri(path: &Path, mode: &str) -> Result<String, StoreError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| StoreError::InvalidTransition("database path must be UTF-8".into()))?;
+    #[cfg(windows)]
+    let path = path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('\\', "/");
+    // Escape URI delimiters as well as spaces: the filename cannot inject
+    // another mode or immutable flag into SQLite's attachment URI.
+    let mut uri = String::from("file:");
+    for byte in path.as_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-_.~:".contains(byte) {
+            uri.push(char::from(*byte));
+        } else {
+            use std::fmt::Write;
+            write!(&mut uri, "%{byte:02X}").expect("write URI");
+        }
+    }
+    uri.push_str("?mode=");
+    uri.push_str(mode);
+    Ok(uri)
+}
+
 impl ReadOnlyControl {
     pub(crate) fn new(path: &Path) -> Result<Self, StoreError> {
         let path = path.canonicalize()?;
-        let path = path.to_str().ok_or_else(|| {
-            StoreError::InvalidTransition("control database path must be UTF-8".into())
-        })?;
-        #[cfg(windows)]
-        let path = path
-            .strip_prefix(r"\\?\")
-            .unwrap_or(path)
-            .replace('\\', "/");
-        // Escape URI delimiters as well as spaces: the filename cannot inject
-        // another mode or immutable flag into SQLite's attachment URI.
-        let mut uri = String::from("file:");
-        for byte in path.as_bytes() {
-            if byte.is_ascii_alphanumeric() || b"/-_.~:".contains(byte) {
-                uri.push(char::from(*byte));
-            } else {
-                use std::fmt::Write;
-                write!(&mut uri, "%{byte:02X}").expect("write URI");
-            }
-        }
-        uri.push_str("?mode=ro");
-        Ok(Self { uri })
+        Ok(Self {
+            uri: database_uri(&path, "ro")?,
+        })
     }
 
     pub(crate) async fn attach(&self, connection: &mut SqliteConnection) -> Result<(), StoreError> {
@@ -66,7 +120,10 @@ impl ReadOnlyControl {
         .await?;
         sqlx::query("CREATE TEMP VIEW application_sources AS SELECT * FROM root_control.application_sources")
             .execute(&mut *connection).await?;
-        self.validate(connection).await
+        sqlx::raw_sql(ATTACHED_APP_VIEWS)
+            .execute(&mut *connection)
+            .await?;
+        Ok(())
     }
 
     pub(crate) async fn validate(
@@ -94,7 +151,28 @@ impl ReadOnlyControl {
         sqlx::query("SELECT id,owner_scope,selection_digest,workspace_json,permission_epoch,metadata_epoch FROM temp.workspace_bindings LIMIT 0")
             .execute(&mut *connection).await?;
         sqlx::query("SELECT deployment,revision,input_json,remote_exports_json FROM temp.application_sources LIMIT 0")
-            .execute(connection).await?;
+            .execute(&mut *connection).await?;
+        sqlx::query("SELECT request_id,session_id,created_at,record_json FROM temp.root_app_requests LIMIT 0")
+            .execute(&mut *connection).await?;
+        sqlx::query("SELECT request_id,outcome_json FROM temp.root_app_outcomes LIMIT 0")
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query("SELECT request_id,session_id,created_at FROM temp.root_app_pending LIMIT 0")
+            .execute(&mut *connection)
+            .await?;
+        sqlx::query(
+            "SELECT request_id,session_id,created_at FROM temp.all_interaction_pending LIMIT 0",
+        )
+        .execute(&mut *connection)
+        .await?;
+        let revision: i64 = sqlx::query_scalar("SELECT revision FROM temp.root_app_revision")
+            .fetch_one(connection)
+            .await?;
+        if !(0..=9_007_199_254_740_991).contains(&revision) {
+            return Err(StoreError::InvalidTransition(
+                "invalid root control revision".into(),
+            ));
+        }
         Ok(())
     }
 }

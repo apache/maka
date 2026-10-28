@@ -224,7 +224,8 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         let commits = self.commits.session(&session);
-        let prepared = self.prepared.clone();
+        let prepared = self.prepared_store()?.cleanup();
+        let observations = self.connection.observations();
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
@@ -233,6 +234,11 @@ impl EventLog {
                         .await?
                         .ok_or(StoreError::SessionNotFound)?;
                     if !state.pending() {
+                        tx.rollback().await?;
+                        if state == SessionRetirement::Removed {
+                            prepared.retire_owner(session.clone()).await?;
+                            observations.purge_session(session).await?;
+                        }
                         return Ok(state);
                     }
                     if !settled(&mut tx, &session).await? {
@@ -256,13 +262,11 @@ impl EventLog {
                     // The caller's physical-drain contract above releases this
                     // owner's lazy prepared views. Other owners' copied metadata
                     // and immutable shared payloads remain independently pinned.
-                    crate::context::prepared::gc::retire_owner(&mut tx, &session).await?;
+                    prepared.retire_owner(session.clone()).await?;
                     crate::context::semantic::gc::retire_owner(&mut tx, &session).await?;
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_revision_sources WHERE session_id=?",
-                        "DELETE FROM transcript_cache.rows WHERE session_id=?",
-                        "DELETE FROM transcript_cache.text WHERE session_id=?",
                         "DELETE FROM transcript_directory WHERE session_id=?",
                         "DELETE FROM transcript_failures WHERE session_id=?",
                         "DELETE FROM catalog_messages WHERE session_id=?",
@@ -285,8 +289,8 @@ impl EventLog {
                         .await?;
                     advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    prepared.wake();
                     commits.metadata();
+                    observations.purge_session(session).await?;
                     Ok(SessionRetirement::Removed)
                 })
             })
@@ -304,7 +308,7 @@ async fn settled(connection: &mut SqliteConnection, session: &str) -> Result<boo
          OR EXISTS(SELECT 1 FROM session_processes WHERE session_id=?1 AND cleaned=0)
          OR EXISTS(SELECT 1 FROM host_effects WHERE outcome IS NULL
             AND json_extract(request, '$.boundary.boundary.sessionId')=?1)
-         OR EXISTS(SELECT 1 FROM interaction_pending WHERE session_id=?1)
+         OR EXISTS(SELECT 1 FROM all_interaction_pending WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM message_admissions WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM event_log a WHERE a.kind='auxiliary_model_started'
             AND json_extract(a.event_json,'$.source.kind')='session_title'
