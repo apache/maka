@@ -671,10 +671,14 @@ fn add_reversed(path: &CFRetained<CGMutablePath>, rect: CGRect, radii: CornerRad
 /// Configures `g` to draw `gradient` over a `size` box.
 fn shape_gradient(g: &CAGradientLayer, gradient: &Gradient, size: CGSize) {
     let (w, h) = (size.width.max(1.0), size.height.max(1.0));
-    let stops = gradient.resolved_stops(nsh_core::Size::new(
-        nsh_core::Points(w as f32),
-        nsh_core::Points(h as f32),
-    ));
+    // How far along the gradient line the layer's `0..1` reaches: the
+    // line, but a repeating radial gradient's rings past the ending shape
+    // to the farthest corner (Core Animation repeats nothing).
+    let reach = shape_gradient_geometry(g, gradient, w, h);
+    let stops = gradient.unrolled_stops(
+        nsh_core::Size::new(nsh_core::Points(w as f32), nsh_core::Points(h as f32)),
+        nsh_core::geometry::Percentage(reach as f32),
+    );
     // A transparent stop takes its neighbor's hue (as CSS's premultiplied
     // mixing does), so fades to transparent do not darken.
     let colors: Vec<Retained<objc2::runtime::AnyObject>> = (0..stops.len())
@@ -707,6 +711,16 @@ fn shape_gradient(g: &CAGradientLayer, gradient: &Gradient, size: CGSize) {
     // SAFETY: an array of CGColors, as `colors` documents.
     unsafe { g.setColors(Some(&NSArray::from_retained_slice(&colors))) };
     g.setLocations(Some(&NSArray::from_retained_slice(&locations)));
+}
+
+/// Sets `g`'s type and its start and end points for `gradient` over a
+/// `w` × `h` box; how far along the gradient line its end point is.
+fn shape_gradient_geometry(
+    g: &CAGradientLayer,
+    gradient: &Gradient,
+    w: CGFloat,
+    h: CGFloat,
+) -> CGFloat {
     match gradient.kind {
         GradientKind::Radial {
             circle,
@@ -742,8 +756,15 @@ fn shape_gradient(g: &CAGradientLayer, gradient: &Gradient, size: CGSize) {
             } else {
                 (dx, dy)
             };
+            // The farthest corner, in radii of the ending shape.
+            let reach = if gradient.repeating && rx > 0.0 && ry > 0.0 {
+                (cx.max(w - cx) / rx).hypot(cy.max(h - cy) / ry).max(1.0)
+            } else {
+                1.0
+            };
             g.setStartPoint(CGPoint::new(cx / w, cy / h));
-            g.setEndPoint(CGPoint::new((cx + rx) / w, (cy + ry) / h));
+            g.setEndPoint(CGPoint::new((cx + rx * reach) / w, (cy + ry * reach) / h));
+            reach
         }
         GradientKind::Conic { from, x, y } => {
             // SAFETY: an immutable Core Animation constant.
@@ -754,6 +775,7 @@ fn shape_gradient(g: &CAGradientLayer, gradient: &Gradient, size: CGSize) {
             // from the right; CSS starts up.
             let a = from.0 as f64 - std::f64::consts::FRAC_PI_2;
             g.setEndPoint(CGPoint::new(x + a.cos() / 2.0, y + a.sin() / 2.0));
+            1.0
         }
         kind => {
             // SAFETY: an immutable Core Animation constant.
@@ -771,6 +793,7 @@ fn shape_gradient(g: &CAGradientLayer, gradient: &Gradient, size: CGSize) {
             let (cx, cy) = (w / 2.0, h / 2.0);
             g.setStartPoint(CGPoint::new((cx - dx) / w, (cy - dy) / h));
             g.setEndPoint(CGPoint::new((cx + dx) / w, (cy + dy) / h));
+            1.0
         }
     }
 }

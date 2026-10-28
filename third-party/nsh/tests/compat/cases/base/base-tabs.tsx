@@ -3,7 +3,8 @@
 // of their own: the roles and states screen readers get
 // (`accessibilityLabel`), a press reported with `onPress` (the selected
 // tab's too) while the app owns which tab is selected (`selected`) and
-// shows its content, `disabled`, and the app's look of a tab
+// shows its content, `disabled`, the list as one stop of the keyboard
+// focus (only the selected tab is `focusable`), and the app's look of a tab
 // (`selectedStyle`) and of the marker it puts inside, whose
 // `group-selected:` and `group-disabled:` classes follow the tab. The
 // marker's widths move the label after it, which is how its script sees

@@ -8,17 +8,14 @@
 //! <out>/nsh-playground.wasm   the engine plus the TSX compiler (the playground)
 //! <out>/demos/<name>.nshc     a demo compiled to bytecode
 //! <out>/gallery/      the gallery as `nsh package --target web` writes it,
-//!                     with the runtime the player loads too:
+//!                     with its browser-host runtime:
 //! <out>/gallery/nsh.<digest>.js     the DOM runtime (minified)
-//! <out>/gallery/nsh.<digest>.wasm   the engine, the core and QuickJS
+//! <out>/gallery/nsh.<digest>.wasm   the engine and core (no QuickJS)
 //! ```
 //!
-//! The player and the gallery share one runtime, so the site carries one
-//! `nsh.wasm`, the runtime of published apps (no QuickJS parser: it runs
-//! bytecode only): the player's page is written with the gallery's file
-//! names. Only the playground, which compiles in the page, has a parser.
-//! (`astro dev` serves the player from its sources instead,
-//! `website/src/lib/play-dev.js`.)
+//! The embedded demo player retains the bytecode-only QuickJS runtime.
+//! The standalone gallery uses browser JavaScript and a separate Wasm.
+//! `astro dev` serves the embedded player from its sources instead.
 
 use std::{fs, path::Path};
 
@@ -36,7 +33,7 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
     let root = android::root();
     // Relative to the workspace, wherever `cargo xtask` runs from.
     let out = root.join(out);
-    // `nsh.wasm` is built by `nsh package` (the gallery's, below).
+    // The playground retains its compiler and QuickJS host.
     // Its own target directory: switching the feature would rebuild the
     // other one every time.
     cargo(
@@ -65,10 +62,29 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
         &out.join("nsh-playground.wasm"),
     )?;
     let web = root.join("crates/nsh-platform-web/web");
-    // From before the player shared the gallery's runtime.
-    for file in ["nsh.js", "nsh.wasm"] {
-        let _ = fs::remove_file(out.join(file));
-    }
+    // Embedded demos still load bytecode with the existing player API.
+    // Do not substitute the standalone gallery's browser host here.
+    cargo(
+        &[
+            "build",
+            "--profile",
+            "web",
+            "-p",
+            "nsh-platform-web",
+            "--features",
+            "bytecode-only",
+            "--target",
+            WASM,
+        ],
+        "the embedded web runtime",
+    )?;
+    let embedded = root.join("target").join(WASM).join("web");
+    copy(
+        &embedded.join("nsh_platform_web.wasm"),
+        &embedded.join("nsh.wasm"),
+    )?;
+    copy(&embedded.join("nsh.wasm"), &out.join("nsh.wasm"))?;
+    copy(&web.join("nsh.js"), &out.join("nsh.js"))?;
 
     let nsh = root.join(format!(
         "target/release/nsh{}",
@@ -139,21 +155,17 @@ pub(crate) fn build(out: &Path) -> anyhow::Result<()> {
     fs::rename(&site, &gallery).or_else(|_| copy_dir(&site, &gallery))?;
     step.done("packaged the gallery");
 
-    // The player loads the gallery's runtime.
-    let runtime = |ext: &str| -> anyhow::Result<String> {
-        fs::read_dir(&gallery)?
-            .filter_map(Result::ok)
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .find(|name| name.starts_with("nsh.") && name.ends_with(ext))
-            .with_context(|| format!("the gallery has no nsh.<digest>{ext}"))
-    };
-    let mut player = fs::read_to_string(web.join("index.html"))?;
-    for (file, ext) in [("./nsh.js", ".js"), ("./nsh.wasm", ".wasm")] {
-        let quoted = format!("\"{file}\"");
-        anyhow::ensure!(player.contains(&quoted), "the player does not load {file}");
-        player = player.replace(&quoted, &format!("\"./gallery/{}\"", runtime(ext)?));
-    }
-    fs::write(out.join("index.html"), player)?;
+    copy(&web.join("index.html"), &out.join("index.html"))?;
+    // The embedded player and playground share the gallery's syntax data.
+    let syntaxes = fs::read_dir(&gallery)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("nsh-syntaxes."))
+        })
+        .context("the gallery has no syntax data")?;
+    copy(&syntaxes, &out.join("nsh-syntaxes.bin"))?;
     term::note(out.strip_prefix(&root).unwrap_or(&out).display());
     Ok(())
 }

@@ -145,9 +145,10 @@ pub use self::{
     },
     flow::{Each, If, IntoElements, Reset, catch_error, dynamic, each, when},
     host::{
-        CanvasArg, CanvasPaint, CanvasView, Input, InputAccessoryView, Modal, NativeView,
-        Orientation, Overlay, Painter, Screen, Scroll, Stack, Video, WebView, canvas, input,
-        input_accessory_view, native, overlay, scroll, video, web_view, web_view_html,
+        CanvasArg, CanvasPaint, CanvasView, Input, InputAccessoryView, IntoUniform, Modal,
+        NativeView, Orientation, Overlay, Painter, Screen, Scroll, ShaderView, Stack, Uniform,
+        Video, WebView, canvas, input, input_accessory_view, native, overlay, scroll, shader,
+        video, web_view, web_view_html,
     },
     js::{JsHost, JsIn, JsKind, JsOwned, JsRaw},
     keyboard::Keyboard,
@@ -250,7 +251,7 @@ pub mod __private {
         fn pick(event: &Self) -> Option<&Self::Data>;
     }
 
-    pub use super::{callback::NamedArgs, class::__private::*};
+    pub use super::{callback::NamedArgs, class::__private::*, value::object_field};
 
     /// Implemented by nothing: what the generated workspace of an app
     /// calls when a crate of the app has no `#[native_module]`

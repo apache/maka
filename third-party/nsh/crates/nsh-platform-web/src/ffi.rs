@@ -105,6 +105,8 @@ unsafe extern "C" {
     fn js_websocket_cancel(id: u32);
     #[link_name = "load_chunk"]
     fn js_load_chunk(id: *const u8, id_len: usize);
+    #[link_name = "load_data"]
+    fn js_load_data(name: *const u8, name_len: usize);
     #[link_name = "storage_load"]
     fn js_storage_load(prefix: *const u8, prefix_len: usize) -> u32;
     #[link_name = "storage_set"]
@@ -362,6 +364,13 @@ pub(crate) fn fetch_cancel(id: u32) {
 pub(crate) fn load_chunk(id: &str) {
     // SAFETY: the slice is valid for the call; JS copies it.
     unsafe { js_load_chunk(id.as_ptr(), id.len()) }
+}
+
+/// Asks the page for the runtime's data `name` (`nsh_core::runtime_data`):
+/// it fetches `nsh-<name>.bin` and hands it over with `nsh_data`.
+pub(crate) fn load_data(name: &str) {
+    // SAFETY: the slice is valid for the call; JS copies it.
+    unsafe { js_load_data(name.as_ptr(), name.len()) }
 }
 
 /// What a `storage_*` call returned: `done` 1, or 0 with the error, which

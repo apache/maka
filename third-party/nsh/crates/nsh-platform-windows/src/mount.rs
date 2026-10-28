@@ -247,7 +247,7 @@ impl Mounter {
                     ViewKind::WebView | ViewKind::Video | ViewKind::Native => {
                         crate::native::resized(view)
                     }
-                    _ => {}
+                    _ => crate::shader::resized(view),
                 }
             }
             MountItem::ViewStyle { id, style } => {
@@ -347,6 +347,11 @@ impl Mounter {
             MountItem::Canvas { id, drawing } => {
                 if let Some(view) = &self.get(*id) {
                     crate::canvas::set(surface, view, drawing.clone());
+                }
+            }
+            MountItem::Shader { id, layer } => {
+                if let Some(view) = &self.get(*id) {
+                    crate::shader::set(surface, view, layer.clone());
                 }
             }
             MountItem::Gestures { id, values } => {
@@ -551,6 +556,7 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::ScrollBehavior { id, .. }
         | MountItem::Refreshing { id, .. }
         | MountItem::Canvas { id, .. }
+        | MountItem::Shader { id, .. }
         | MountItem::ViewProps { id, .. }
         | MountItem::Input { id, .. }
         | MountItem::InputValue { id, .. }

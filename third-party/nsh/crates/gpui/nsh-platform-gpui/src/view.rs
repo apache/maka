@@ -8,7 +8,7 @@
 //! Views form a tree of reference-counted nodes: a parent holds its
 //! children in drawing order (bottom to top), a child its parent weakly.
 //! A view draws itself in [`crate::render`]: shadows and background
-//! ([`crate::decor`]), its content (text, image, canvas), its children
+//! ([`crate::decor`]), its content (shader, text, image, canvas), its children
 //! (clipped to the rounded bounds when `overflow: hidden`), the items it
 //! hosts ([`ViewState::natives`]: text editors, headers, ...), then its
 //! border, as UIKit draws layer borders over the content.
@@ -123,6 +123,8 @@ pub(crate) struct ViewState {
     pub(crate) image: Option<crate::image::ImageState>,
     /// Canvas content.
     pub(crate) canvas: Option<crate::canvas::CanvasState>,
+    /// What a shader draws under the children ([`crate::shader`]).
+    pub(crate) shader: Option<crate::shader::ShaderState>,
     /// Text field (input views).
     pub(crate) input: Option<Rc<crate::text_input::InputState>>,
     /// Hosted items, drawn above the children.
@@ -153,6 +155,7 @@ impl ViewState {
             text: None,
             image: None,
             canvas: None,
+            shader: None,
             input: None,
             natives: Vec::new(),
             overflow: None,

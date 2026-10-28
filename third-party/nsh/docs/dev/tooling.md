@@ -120,9 +120,17 @@ before every `cargo run`): `✓` lines for its builds, cargo's and the tools' ou
 
 ## Dev server (nsh dev / nsh run)
 
-- The CLI watches sources with notify and pushes every rebuild over WebSocket (`/ws`, default port 8790, the next free port if taken) to all
+- The CLI watches sources with notify and pushes every rebuild over WebSocket (`/ws`, default port 8790, or `--port`) to all
   connected hosts; new clients subscribe before receiving the current state, so no event is missed. Protocol: `crates/nsh-dev/src/protocol.rs`
   (JSON text frames + binary frames).
+- `nsh run` and `nsh dev` replace the previous NSH development command on the chosen port. The CLI
+  holds an OS file lock in the existing NSH cache's `dev-sessions/` directory for the entire command,
+  including Rust rebuilds and host / Android forwarding cleanup. A local stop file asks the owner to
+  exit through its normal cleanup path; the replacement waits up to ten seconds for the lock before
+  starting. A second simultaneous takeover fails. Locks release on process exit, and stale stop files
+  are cleared by the next owner. All cooperating commands use the same cache directory. A listener
+  outside this mechanism (including an older CLI) produces a bind error naming the port; `--port 0`
+  asks the OS for a free port. The control files stay local to the machine.
 - Imported source directories and theme files outside the entry directory are watched too, using the last
   successful bundle's dependencies. The gallery and website demos share `examples/nsh-gallery-ui`; saving one of
   its components or its theme rebuilds the app as saving a file inside the app does.
@@ -677,7 +685,8 @@ program that describes them, builds the hosts and runners with them, and does ev
     `nsh_tui_app::main`; console applications on all three desktops), `android` (the app's `libnsh.so`:
     `nsh::ui_sets!`, which the Android runtime looks up
     when an engine starts) and `web` (the app's web runtime, a `cdylib` for `wasm32-unknown-unknown` built with the
-    `web` profile: `nsh_platform_web::ui_sets!`, whose `nsh_app_init` export `nsh.js` calls; `docs/dev/web.md`, "Apps
+    `web` profile, or the generated incremental `web-dev` one for `nsh run --target web`: `nsh_platform_web::ui_sets!`,
+    whose `nsh_app_init` export `nsh.js` calls; `docs/dev/web.md`, "Apps
     with Rust components"). `gpui-host` (`nsh_platform_gpui::set_ui_sets`, under `cfg(any(target_os = "linux",
     target_os = "macos", windows))`) is a workspace of its own in `.nsh/rust/gpui` (excluded from the main one), written
     only when the GPUI host is built (`RustApp::gpui_workspace`), so builds for the other targets never resolve GPUI's crates.
@@ -714,7 +723,8 @@ program that describes them, builds the hosts and runners with them, and does ev
   through tsconfig's `"*"` path, which falls back to `node_modules`), the dev server serves their files and tells hosts
   which sets a bundle needs. The hosts `run` and `package` need are built for the app instead of taken from the runtime
   (iOS `--target` triples; Linux's, macOS's, Windows' and the terminal's `*-host` / `*-app` and GPUI's `gpui-host` for this machine; Android: the
-  prebuilt `classes.dex` with the app's `libnsh.so` for each ABI of the prebuilt runtime, cross-compiled with the NDK;
+  prebuilt `classes.dex` with the app's `libnsh.so` for each ABI the APK takes (`nsh package --abi`, else
+  `arm64-v8a` and `armeabi-v7a`; `nsh run`: the device's alone), cross-compiled with the NDK;
   the web: the app's `nsh.wasm` / `nsh-dev.wasm`, with nsh's `nsh.js`).
 - `nsh test` builds the app's headless runner (`RustApp::test_runner`) and runs the test files in it, building the
   entries it asks for (`nsh test`, above); the runner's log lines come back as `RunnerMessage`s, which `nsh` shows as

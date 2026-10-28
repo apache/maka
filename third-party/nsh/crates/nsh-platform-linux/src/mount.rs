@@ -215,7 +215,7 @@ impl Mounter {
                     ViewKind::Stack => crate::navigation::stack_resized(surface, view),
                     ViewKind::Scroll => crate::scroll::resized(surface, view),
                     ViewKind::Canvas => view.changed(),
-                    _ => {}
+                    _ => crate::shader::resized(view),
                 }
             }
             MountItem::ViewStyle { id, style } => {
@@ -316,6 +316,11 @@ impl Mounter {
             MountItem::Canvas { id, drawing } => {
                 if let Some(view) = self.get(*id) {
                     crate::canvas::set(surface, view, drawing.clone());
+                }
+            }
+            MountItem::Shader { id, layer } => {
+                if let Some(view) = self.get(*id) {
+                    crate::shader::set(surface, view, layer.clone());
                 }
             }
             MountItem::Gestures { id, values } => {

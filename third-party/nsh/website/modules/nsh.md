@@ -399,6 +399,7 @@ See [Animation](../docs/animation.md) for the guide.
 | Gestures | `.pan_values(Some(&x), Some(&y))`, `.pinch_value(&scale)`, `.rotation_value(&angle)` | `pan={{ x, y }}`, `pinch={{ scale }}`, `rotation={{ angle }}` on any element: the gesture writes the values directly (see [Touch and gestures](../docs/touch-and-gestures.md)) |
 | Where views stick | `.sticky().bind_sticky_top(&value)` (`.bind_sticky_left` in a horizontal scroll view), `.bind_sticky_header_offset(&value)` on a list | `style={{ position: "sticky", top: value }}`, `<List stickyHeaderOffset={value}>`: sticky views and headers stick that far from the start of the viewport, following the value every frame |
 | Canvas | an animated argument of a painter's call | Any number or color argument of a [canvas](./nsh-canvas.md) drawing call |
+| Shader | `.uniform(name, &value)` | A member of a [shader](../elements/shader.md)'s `struct Uniforms`: `uniforms={{ name: value }}` (numbers, or a node of colors for a `vec3f` / `vec4f`) |
 
 Other style properties take plain values; to animate the layout itself (sizes, positions in the flow), use [`LayoutAnimation`](#layoutanimation).
 
@@ -1073,7 +1074,7 @@ const shadow = platform.select({
 const pixelRatio: Accessor<number>;
 ```
 
-Device pixels per point (e.g. `3` on most iPhones). Reactive: it changes when the window moves to a screen of another density (on Mac Catalyst, the desktops, or an external display). Rust: `pixel_ratio() -> f32`, and `round_to_nearest_pixel(points)` for a length on whole device pixels; in TSX that length is `Math.round(x * pixelRatio()) / pixelRatio()`.
+Device pixels per point (e.g. `3` on most iPhones). Reactive: it changes when the window moves to a screen of another density (on Mac Catalyst, the desktops, or an external display) and when Android's display size setting changes the density. Rust: `pixel_ratio() -> f32`, and `round_to_nearest_pixel(points)` for a length on whole device pixels; in TSX that length is `Math.round(x * pixelRatio()) / pixelRatio()`.
 
 ```rust tabs
 let hairline = move || px(1.0 / pixel_ratio());

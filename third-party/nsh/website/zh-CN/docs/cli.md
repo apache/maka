@@ -94,7 +94,7 @@ Rust 应用（`nsh.json` 中有 `"root"`，见[用 Rust 开发](./rust.md)）运
 |---|---|---|
 | `--target <TARGET>` | macOS 上为 `macos`，Linux 上为 `linux`，Windows 上为 `windows` | `catalyst`：Mac Catalyst 宿主，一个 iPhone 大小的窗口（390×844）。`ios`：iOS 模拟器中的宿主。`android`：Android 设备或模拟器上的宿主。`macos`：AppKit 宿主，一个 1200×800 的窗口（[macOS](./macos.md)）。`linux`：GTK 宿主，一个 390×844 的窗口（[Linux](./linux.md)）。`windows`：Win32 宿主，一个 1200×800 的窗口（[Windows](./windows.md)）。`gpui`：GPUI 宿主，一个 1200×800 的窗口，可在 macOS、Windows 或 Linux 上运行，以嵌入它的 GPUI 应用的方式显示 TSX 应用（[GPUI](./gpui.md)）。`tui`：当前终端，提供键盘焦点、鼠标输入和 Unicode 编辑（[终端](./tui.md)）。`web`：开发服务器的页面，地址会打印出来（[Web](./web.md#在浏览器里开发)）。 |
 | `--device <DEVICE>` | | 要使用的 iOS 模拟器，按名称（`"iPhone 16 Pro"`）或 UDID 指定。默认：已启动的模拟器，否则启动最新的 iPhone。 |
-| `--port <PORT>` | `8790` | 开发服务器端口。被占用时使用下一个空闲端口。 |
+| `--port <PORT>` | `8790` | 开发服务器端口。等待此端口上的旧 NSH 开发会话清理完成后接管。 |
 | `--release` | | 压缩代码并去掉调试信息。release 包没有热模块替换：每次保存都会重新加载应用。 |
 | `--limits [<LIMITS>]` | | 按嵌入在其他应用中的方式运行应用，使用宿主应用设置的限制：`memory` 和 `stack`（单位为 `KB`、`MB` 或 `GB`）、`load` 和 `call`（单位为 `ms` 或 `s`）以及 `nodes`，例如 `--limits memory=128MB,call=500ms`。没写的项保持嵌入时的默认值，只写 `--limits` 就全部使用默认值（[沙箱与能力](./sandbox-and-capabilities.md#限制)）。不带它时，应用像打包后的应用一样独立运行。仅 TSX 入口。 |
 | `--trace` | | 宿主把每次 commit 的耗时（JS、布局、挂载项）记录到终端。 |
@@ -104,6 +104,8 @@ Rust 应用（`nsh.json` 中有 `"root"`，见[用 Rust 开发](./rust.md)）运
 | `--display <N>` | 主显示器 | 窗口在哪个显示器上居中打开：`1` 是主显示器（带菜单栏的那个），`2` 是下一个，依此类推；没有这个编号的显示器时在主显示器上打开（`--target macos`，TSX 入口）。 |
 
 使用 `--target android` 时，会选用 `adb devices` 列出的第一台设备；开发服务器的端口通过 `adb reverse` 转发到设备上。参见[快速开始](./getting-started.md)和[开发服务器与调试](./dev-server-and-debugging.md)。
+
+新会话最多等待十秒，让旧会话完成清理。端口被其他程序或旧版 NSH CLI 占用时，会报错并指出端口。同时运行多个应用时，为它们指定不同的 `--port`；`--port 0` 由操作系统分配空闲端口。
 
 ## nsh dev
 
@@ -209,6 +211,7 @@ nsh package [ENTRY] --target ios|ios-simulator|android|macos|linux|windows|tui|w
 | `--keystore <FILE>` | Android：release keystore。默认使用 `~/.android/debug.keystore` 中的调试密钥（不存在时创建）。 |
 | `--key-alias <ALIAS>` | Android：keystore 中的密钥别名。 |
 | `--keystore-password <PASSWORD>` | Android：keystore 密码，也可从 `NSH_KEYSTORE_PASSWORD` 读取。 |
+| `--abi <ABI>` | Android：APK 包含的 ABI（`arm64-v8a`、`armeabi-v7a`、`x86_64`），可重复或用逗号分隔。默认：`arm64-v8a` 和 `armeabi-v7a`，加上 `--run` 时还有设备的 ABI。 |
 | `--run` | 打包完成后安装并启动应用：在模拟器中（`ios-simulator`）或在已连接的 Android 设备上；`macos`、`linux` 和 `windows` 则直接启动它；`tui` 在当前终端中运行直到退出；`web` 在本机提供站点服务，并打印其地址。 |
 
 ```sh

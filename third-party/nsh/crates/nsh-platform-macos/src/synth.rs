@@ -3,10 +3,14 @@
 //! of the window. The agent of `nsh test --target macos` acts with them
 //! ([`crate::agent`]).
 
+use std::rc::Rc;
+
 use objc2::{MainThreadMarker, rc::Retained};
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
 use objc2_core_foundation::CGFloat;
 use objc2_foundation::{NSPoint, NSString};
+
+use crate::surface::Surface;
 
 /// A point of the content view (points from its top left) in window
 /// coordinates (from its bottom left).
@@ -138,10 +142,10 @@ pub(crate) fn wheel_with(
     }
 }
 
-pub(crate) fn type_text(window: &NSWindow, text: &str) {
+pub(crate) fn type_text(surface: &Rc<Surface>, window: &NSWindow, text: &str) {
     for c in text.chars() {
         let s = c.to_string();
-        key_event(window, &s, 0, NSEventModifierFlags::empty());
+        key_event(surface, window, &s, 0, NSEventModifierFlags::empty());
     }
 }
 
@@ -156,7 +160,7 @@ pub(crate) fn modifier(name: &str) -> Option<NSEventModifierFlags> {
     })
 }
 
-pub(crate) fn key(window: &NSWindow, name: &str) {
+pub(crate) fn key(surface: &Rc<Surface>, window: &NSWindow, name: &str) {
     let mut flags = NSEventModifierFlags::empty();
     let mut name = name;
     // `cmd++` is Command and `+`.
@@ -208,10 +212,16 @@ pub(crate) fn key(window: &NSWindow, name: &str) {
             }
         }
     };
-    key_event(window, &chars, code, flags);
+    key_event(surface, window, &chars, code, flags);
 }
 
-pub(crate) fn key_event(window: &NSWindow, chars: &str, code: u16, flags: NSEventModifierFlags) {
+pub(crate) fn key_event(
+    surface: &Rc<Surface>,
+    window: &NSWindow,
+    chars: &str,
+    code: u16,
+    flags: NSEventModifierFlags,
+) {
     let s = NSString::from_str(chars);
     for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
         let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
@@ -232,6 +242,10 @@ pub(crate) fn key_event(window: &NSWindow, chars: &str, code: u16, flags: NSEven
         if window.isKeyWindow() || flags.contains(NSEventModifierFlags::Command) {
             objc2_app_kit::NSApplication::sharedApplication(MainThreadMarker::from(window))
                 .sendEvent(&event);
+        } else if kind == NSEventType::KeyDown && crate::keymap::fires(surface, &event) {
+            // The app's key monitor never sees a window's own events: it
+            // gets the key first, as it would in the key window (the test
+            // window often is not one, its app left in the background).
         } else {
             window.sendEvent(&event);
         }

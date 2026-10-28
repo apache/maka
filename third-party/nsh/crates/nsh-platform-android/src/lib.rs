@@ -31,6 +31,7 @@ mod net;
 #[cfg(feature = "js")]
 mod package;
 mod selectable_view;
+mod shader;
 mod svg;
 mod text;
 

@@ -64,6 +64,15 @@ covers [nsh] createAnimatedValue
 # core-canvas
 tap id:case-core-canvas
 frame id:canvas 0 64 200 100
+drawing id:canvas fillStyle createLinearGradient(0, 0, 200, 0)...
+drawing id:canvas fill path(moveTo 0 0, lineTo 100 0, lineTo 100 100, closePath)
+drawing id:canvas lineWidth 4
+drawing id:canvas setLineDash 4 2
+drawing id:canvas strokeStyle #000000ff
+drawing id:canvas font 16px sans-serif
+drawing id:canvas fillText "Hi" 120 50
+drawing id:canvas rect 120 10 60 40
+nodrawing id:canvas clearRect...
 expect Not checked
 tap id:check
 expect size 200x100 canvas 200x100 drawn true context true gradient true in true out false added true current true stroke true dash 3,1 measured true
@@ -72,6 +81,13 @@ covers [nsh] CanvasGradient
 covers [nsh] CanvasRenderingContext2D
 covers [nsh] Path2D
 covers [props] Canvas.draw
+# core-shader
+tap id:case-core-shader
+expect Over the shader
+frame id:shader 0 64 200 100
+frame id:label 10 10 180 17
+frame id:still 0 164 50 50
+covers [nsh] Shader
 # core-elements
 tap id:case-core-elements
 expect In scroll

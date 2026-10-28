@@ -25,7 +25,7 @@ log.workspace = true
 # Empty off macOS (like the other platform crates off their targets).
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-core = { workspace = true, features = ["svg"] }
-nsh-engine.workspace = true
+nsh-engine = { workspace = true, features = ["shader"] }
 nsh-base = { workspace = true, features = ["highlight"] }
 block2.workspace = true
 crossbeam-channel.workspace = true

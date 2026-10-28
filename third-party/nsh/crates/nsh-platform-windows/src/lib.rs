@@ -47,6 +47,7 @@ mod picker;
 mod render;
 mod scroll;
 mod selectable_view;
+mod shader;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;

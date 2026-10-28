@@ -37,7 +37,7 @@ log.workspace = true
 # Empty off the desktop (like the other platform crates off their targets).
 [target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
 nsh-core = { workspace = true, features = ["svg"] }
-nsh-engine = { workspace = true, features = ["net"] }
+nsh-engine = { workspace = true, features = ["net", "shader"] }
 nsh-base = { workspace = true, features = ["highlight"] }
 gpui.workspace = true
 gpui_platform.workspace = true

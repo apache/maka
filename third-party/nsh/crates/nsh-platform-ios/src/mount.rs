@@ -622,6 +622,8 @@ pub(crate) struct Mounter {
     areas: Vec<(NodeId, Retained<crate::selectable_view::AreaResponder>)>,
     /// The performance monitor, while it measures ([`Mounter::measure`]).
     fps: Option<std::rc::Rc<crate::fps::Fps>>,
+    /// Shader views and the GPU device they render with.
+    shaders: crate::shader::Shaders,
     mtm: MainThreadMarker,
 }
 
@@ -677,6 +679,7 @@ impl Mounter {
             created: Vec::new(),
             disappearing: Default::default(),
             frame_link: crate::animation::frame_link(&target_for_link),
+            shaders: crate::shader::Shaders::new(&target_for_link),
             hosts: Default::default(),
             dirty_stacks: Vec::new(),
             deferred_stacks: Vec::new(),
@@ -1088,6 +1091,7 @@ impl Mounter {
                     }
                     self.animated.retain(|&v| v != id);
                 }
+                self.shaders.remove(id);
             }
             MountItem::Frame { id, frame } => {
                 self.frames_applied = true;
@@ -1182,6 +1186,9 @@ impl Mounter {
                         .view()
                         .layer()
                         .setTransform(dynamic_transform(s, &self.animator));
+                }
+                if self.shaders.has(id) {
+                    self.layout_shader(id);
                 }
             }
             MountItem::TrackStates { id, states } => self.track_states(id, states),
@@ -1410,6 +1417,15 @@ impl Mounter {
             }
             MountItem::Refreshing { id, refreshing } => self.set_refreshing(id, refreshing),
             MountItem::Canvas { id, drawing } => self.set_drawing(id, drawing),
+            MountItem::Shader { id, layer } => {
+                let scale = self.display_scale();
+                if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
+                    self.shaders
+                        .set(id, s.native.view(), &s.style, scale, layer);
+                }
+                // Bindings that came before it.
+                self.push_shader_args(id);
+            }
             MountItem::AnimationBindings { id, bindings } => {
                 if let Some(s) = self.slot_mut(id) {
                     // Properties no longer animated fall back to the static style.
@@ -1426,6 +1442,7 @@ impl Mounter {
                     if let Some(s) = self.slot(id) {
                         apply_dynamic(s, &self.animator);
                     }
+                    self.push_shader_args(id);
                     // A component gets what is bound again.
                     if let Some(Some(s)) = self.views.get_mut(id as usize)
                         && let Native::Component(host) = &mut s.native
@@ -2532,6 +2549,10 @@ impl Mounter {
                 self.pending_images.push(id);
             }
         }
+        // Its corners clip the shader.
+        if self.shaders.has(id) {
+            self.layout_shader(id);
+        }
     }
 
     /// Restyles with Core Animation's implicit animations on.
@@ -2757,7 +2778,9 @@ impl Mounter {
     /// The surface's traits changed: on a screen of another scale (an
     /// external display, Catalyst), images decode again for it.
     pub(crate) fn traits_changed(&mut self) {
-        if self.display_scale() == self.image_scale {
+        let scale = self.display_scale();
+        self.shaders.rescale(scale);
+        if scale == self.image_scale {
             return;
         }
         for (id, slot) in self.views.iter_mut().enumerate() {
@@ -4134,6 +4157,28 @@ impl Mounter {
         self.control.frame();
     }
 
+    /// The shaders' display link fired.
+    pub(crate) fn shader_frame(&mut self) {
+        self.shaders.frame();
+    }
+
+    /// Shader view `id` follows its frame and corners.
+    fn layout_shader(&mut self, id: NodeId) {
+        let scale = self.display_scale();
+        if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref) {
+            self.shaders.layout(id, &s.style, scale);
+        }
+    }
+
+    /// The bound uniforms of shader view `id` onto its shader.
+    fn push_shader_args(&mut self, id: NodeId) {
+        if let Some(s) = self.views.get(id as usize).and_then(Option::as_ref)
+            && self.shaders.has(id)
+        {
+            self.shaders.set_args(id, shader_args(s, &self.animator));
+        }
+    }
+
     /// Fades or grows in the views a layout animation created.
     fn animate_appearing(&mut self, animation: &LayoutAnimation) {
         let Some(t) = animation.create else { return };
@@ -4400,6 +4445,14 @@ impl Mounter {
                 apply_dynamic(s, animator);
             }
         }
+        // Shaders get their bound uniforms.
+        for &id in &self.animated {
+            if self.shaders.has(id)
+                && let Some(s) = self.views.get(id as usize).and_then(Option::as_ref)
+            {
+                self.shaders.set_args(id, shader_args(s, animator));
+            }
+        }
         // Components get their bound props' changes (no view borrowed while
         // they run but their own slot).
         for &id in &self.animated {
@@ -4641,6 +4694,17 @@ fn apply_bound_decor(slot: &Slot, animator: &Animator) {
             slot.decor.set_border_color(view, Color(c))
         }
     }
+}
+
+/// The values of a shader view's animated uniforms (its slots).
+fn shader_args<'a>(
+    slot: &'a Slot,
+    animator: &'a Animator,
+) -> impl Iterator<Item = (u16, AnimationValue)> + 'a {
+    slot.bindings.iter().filter_map(|&(prop, node)| match prop {
+        AnimationProp::CanvasArg(k) => Some((k, animator.eval(node))),
+        _ => None,
+    })
 }
 
 /// Opacity, background color and transform: static values overridden by

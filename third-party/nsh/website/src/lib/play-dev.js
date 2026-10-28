@@ -5,7 +5,8 @@
 // `nsh.wasm` is the one built by `bun run dev` (rebuilt on the next start:
 // the runtime of published apps, `nsh.wasm` next to the build's output),
 // read from the target directory (the built site's player loads the
-// gallery's copy, `play/gallery/nsh.<digest>.wasm`).
+// gallery's copy, `play/gallery/nsh.<digest>.wasm`), as are the syntaxes it
+// fetches to highlight code (`nsh-syntaxes.bin`).
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -45,10 +46,10 @@ export function playDev(base) {
           if (!existsSync(file)) return next();
           return send(rest.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'text/html; charset=utf-8', readFileSync(file));
         }
-        if (rest === 'nsh.wasm') {
-          const file = join(root, 'target/wasm32-unknown-unknown/web/nsh.wasm');
+        if (rest === 'nsh.wasm' || rest === 'nsh-syntaxes.bin') {
+          const file = join(root, 'target/wasm32-unknown-unknown/web', rest);
           if (!existsSync(file)) return next();
-          return send('application/wasm', readFileSync(file));
+          return send(rest === 'nsh.wasm' ? 'application/wasm' : 'application/octet-stream', readFileSync(file));
         }
         const demo = /^demos\/([\w-]+)\.nshc$/.exec(rest);
         if (!demo || !existsSync(nsh)) return next();

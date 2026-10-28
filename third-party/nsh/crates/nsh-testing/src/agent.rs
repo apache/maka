@@ -725,6 +725,7 @@ pub fn answer(model: &Model, step: &TestStep) -> Option<Result<serde_json::Value
                 .map(|()| Value::Null),
             SceneQuery::OpenedUrls => Ok(Value::from(model.opened_urls())),
             SceneQuery::Bounds { .. }
+            | SceneQuery::TextBounds { .. }
             | SceneQuery::Viewport
             | SceneQuery::InputText { .. }
             | SceneQuery::Animating
@@ -1351,6 +1352,11 @@ impl Agent {
             SceneQuery::OpenedUrls => scene.opened_urls().map(Value::from),
             SceneQuery::Bounds { id } => {
                 json(to_value(self.native.bounds(id).map(|b| {
+                    [b.origin.x.0, b.origin.y.0, b.size.width.0, b.size.height.0]
+                })))
+            }
+            SceneQuery::TextBounds { id, start, end } => {
+                json(to_value(self.native.text_bounds(id, start, end).map(|b| {
                     [b.origin.x.0, b.origin.y.0, b.size.width.0, b.size.height.0]
                 })))
             }

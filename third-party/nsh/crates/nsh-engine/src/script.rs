@@ -4,7 +4,7 @@
 //! uninhabited, so the loop needs no `cfg`).
 
 /// Host-owned permissions, data root and event wakeup for native system modules.
-#[cfg(feature = "js")]
+#[cfg(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32")))]
 pub(crate) struct SystemConfig {
     pub(crate) access: nsh_core::access::Access,
     pub(crate) websocket: Option<std::sync::Arc<dyn nsh_core::websocket::WebSocketTransport>>,
@@ -16,15 +16,21 @@ pub(crate) struct SystemConfig {
     pub(crate) host: std::rc::Rc<dyn nsh_core::host_channel::HostBridge>,
 }
 
-#[cfg(not(feature = "js"))]
+#[cfg(not(any(feature = "js-core", all(feature = "browser", target_arch = "wasm32"))))]
 pub(crate) struct SystemConfig;
 
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub(crate) use imp::Script;
-#[cfg(not(feature = "js"))]
+#[cfg(all(
+    not(feature = "js-core"),
+    not(all(feature = "browser", target_arch = "wasm32"))
+))]
 pub(crate) use stub::Script;
 
-#[cfg(feature = "js")]
+#[cfg(all(feature = "browser", target_arch = "wasm32", not(feature = "js-core")))]
+pub(crate) use crate::browser::Script;
+
+#[cfg(feature = "js-core")]
 mod imp {
     use std::{
         cell::{Cell, RefCell},
@@ -344,18 +350,22 @@ mod imp {
     }
 }
 
-#[cfg(not(feature = "js"))]
+#[cfg(not(feature = "js-core"))]
 mod stub {
+    #[cfg(not(all(feature = "browser", target_arch = "wasm32")))]
     use std::{
         rc::Rc,
         sync::{Arc, atomic::AtomicBool},
     };
 
+    #[cfg(not(all(feature = "browser", target_arch = "wasm32")))]
     use nsh_core::{EventKind, EventPayload, NodeId, Op, TextEngine, time::Instant};
 
+    #[cfg(not(all(feature = "browser", target_arch = "wasm32")))]
     use crate::{AppError, AppErrorKind, Bundle, Chunk, Environment, HotUpdate, Limits, MountSink};
 
     /// No JS in this build: never made.
+    #[cfg(not(all(feature = "browser", target_arch = "wasm32")))]
     pub(crate) enum Script {}
 
     /// What JS asked of its requests (nothing without JS).
@@ -364,6 +374,7 @@ mod stub {
         pub(crate) ops: Vec<(u32, crate::FetchOp)>,
     }
 
+    #[cfg(not(all(feature = "browser", target_arch = "wasm32")))]
     impl Script {
         #[allow(clippy::too_many_arguments, reason = "as the real one's")]
         pub(crate) fn start<M: TextEngine + 'static>(
@@ -511,10 +522,10 @@ mod stub {
     }
 }
 
-#[cfg(feature = "js")]
+#[cfg(feature = "js-core")]
 pub(crate) use nsh_js::{NetworkQueue, RequestId};
-#[cfg(not(feature = "js"))]
+#[cfg(not(feature = "js-core"))]
 pub(crate) use stub::NetworkQueue;
 /// Identifies a request between JS and the network stack.
-#[cfg(not(feature = "js"))]
+#[cfg(not(feature = "js-core"))]
 pub(crate) type RequestId = u32;

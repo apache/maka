@@ -122,7 +122,7 @@ methods and `.child(..)` for their content.
 
 | Event | Rust | Description |
 |---|---|---|
-| `onPress` (`Tab`) | `.on_press(\|_: &()\| ..)` | The tab was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation. It runs before anything changes: the tab shows the `selected` the app passes back. |
+| `onPress` (`Tab`) | `.on_press(\|_: &()\| ..)` | The tab was pressed: a tap, a click, Space or Return while it has the keyboard focus, or a screen reader's activation; or an arrow key, Home or End of its list moved the keyboard focus to it. It runs before anything changes: the tab shows the `selected` the app passes back. |
 
 The selected tab reports its presses too, so the app can act on a second press (scroll its section to the top, say).
 A disabled tab reports nothing.
@@ -163,14 +163,30 @@ A disabled tab takes no presses, and screen readers announce it as dimmed. Its `
   own.
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
-- On macOS and the web each tab is a stop of the keyboard focus: Tab reaches it, Space and Return press it, and
-  `focus:` styles show where the focus is.
+- On macOS and the web the list is one stop of the keyboard focus, and the arrow keys move between its tabs (below).
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.
+
+## Keyboard
+
+On macOS and the web, where Tab reaches the views that take presses, a `Tabs` list follows the
+[WAI-ARIA tabs pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/):
+
+| Key | What it does |
+|---|---|
+| Tab, Shift+Tab | Enters the list at the selected tab (the first tab that is not disabled while none is), and leaves it in one step. |
+| Right, Down | Moves the focus to the next tab, from the last to the first. |
+| Left, Up | Moves the focus to the previous tab, from the first to the last. |
+| Home, End | Moves the focus to the first or the last tab. |
+| Space, Return | Presses the focused tab. |
+
+The arrow keys skip disabled tabs, and the tab they move to reports `onPress`, so the app selects it as the focus
+moves: the section follows the focus. Both pairs of arrows move, whatever the list's layout, which is the app's
+class. `focus:` styles show where the focus is. A `Tab` outside a `Tabs` is a stop of its own.
 
 ## Platform notes
 
 - iOS, Android and Mac Catalyst: a press is a tap that ends on the tab, its label included.
 - Desktops (macOS, Windows, Linux, GPUI) and the web: a press is a click. On macOS and the web, Space and Return also
-  press the tab that has the keyboard focus.
+  press the tab that has the keyboard focus, and the arrow keys, Home and End move it ([Keyboard](#keyboard)).
 - Every platform draws what the app styles: the tabs, the selected one's surface and the sections' content.

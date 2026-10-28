@@ -240,6 +240,118 @@ impl Gradient {
             i = end;
         }
     }
+
+    /// The stops over a box of `size` as a toolkit gradient that repeats
+    /// nothing and takes stops within `0..=1` (Core Animation's, Android's
+    /// shaders) draws them over `0..reach` of the gradient line (1: the
+    /// whole line of a linear or conic gradient; a radial gradient's rings
+    /// go on past its ending shape, to the box's farthest corner): the
+    /// positions as fractions of `reach`. A repeating gradient's stops are
+    /// repeated over all of it, with period last − first, both ways (CSS
+    /// Images 3), and cut at both ends with the colors there. A
+    /// non-repeating gradient's, or one whose period is too short to
+    /// repeat, are [`Gradient::resolved_stops`].
+    pub fn unrolled_stops(
+        &self,
+        size: Size<Points>,
+        reach: Percentage,
+    ) -> Vec<(Color, Percentage)> {
+        let stops = self.resolved_stops(size);
+        let reach = reach.0.max(f32::EPSILON);
+        let mut out = match self
+            .repeating
+            .then(|| repeat_stops(&stops, reach))
+            .flatten()
+        {
+            Some(tiled) => cut_stops(&tiled, Percentage(reach)),
+            None => stops,
+        };
+        if reach != 1.0 {
+            for s in &mut out {
+                s.1 = Percentage(s.1.0 / reach);
+            }
+        }
+        out
+    }
+}
+
+/// Most stops [`Gradient::unrolled_stops`] repeats a gradient's into: a
+/// period of 1pt along a long line fits, a vanishing one is drawn once.
+const MAX_UNROLLED_STOPS: usize = 16_384;
+
+/// The copies of `stops` (ascending fractions of the line), one period
+/// (last − first) apart, that reach into `0..reach`: from the one ending
+/// before it to the one starting after it. `None` for a period too short
+/// to repeat, or more copies than [`MAX_UNROLLED_STOPS`] holds.
+fn repeat_stops(stops: &[(Color, Percentage)], reach: f32) -> Option<Vec<(Color, Percentage)>> {
+    let (first, last) = (stops.first()?.1.0, stops.last()?.1.0);
+    let period = last - first;
+    if period <= 1e-4 {
+        return None;
+    }
+    let start = ((0.0 - last) / period).floor();
+    let end = ((reach - first) / period).ceil();
+    let copies = end - start + 1.0;
+    if copies * stops.len() as f32 > MAX_UNROLLED_STOPS as f32 {
+        return None;
+    }
+    let mut out: Vec<(Color, Percentage)> = (start as i32..=end as i32)
+        .flat_map(|k| {
+            let shift = k as f32 * period;
+            stops
+                .iter()
+                .map(move |&(c, p)| (c, Percentage(p.0 + shift)))
+        })
+        .collect();
+    // A copy's first stop may round to a hair before the last one's.
+    let mut max = Percentage(f32::NEG_INFINITY);
+    for s in &mut out {
+        max = max.max(s.1);
+        s.1 = max;
+    }
+    Some(out)
+}
+
+/// `stops` (ascending positions) cut to `0..=reach`: those inside as they
+/// are, and at each end the color there, between the stops around it (at
+/// a hard edge, two stops at one position, the later one's).
+pub(crate) fn cut_stops(
+    stops: &[(Color, Percentage)],
+    reach: Percentage,
+) -> Vec<(Color, Percentage)> {
+    let color_at = |t: f32| {
+        let Some(i) = stops.iter().rposition(|s| s.1.0 <= t) else {
+            return stops.first().map_or(Color::TRANSPARENT, |s| s.0);
+        };
+        match stops.get(i + 1) {
+            Some(&(c, p)) if p.0 > stops[i].1.0 => {
+                mix(stops[i].0, c, (t - stops[i].1.0) / (p.0 - stops[i].1.0))
+            }
+            _ => stops[i].0,
+        }
+    };
+    let mut out = Vec::with_capacity(stops.len() + 2);
+    out.push((color_at(0.0), Percentage(0.0)));
+    out.extend(stops.iter().copied().filter(|s| s.1.0 > 0.0 && s.1 < reach));
+    out.push((color_at(reach.0), reach));
+    out
+}
+
+/// `a` mixed with `b` by `t` (0: `a`) with premultiplied alpha, as CSS
+/// interpolates gradients: a fade to transparent keeps its hue.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let channel = |c: Color, shift: u32| ((c.0 >> shift) & 0xff) as f32;
+    let (alpha_a, alpha_b) = (channel(a, 0), channel(b, 0));
+    let alpha = alpha_a + (alpha_b - alpha_a) * t;
+    let color = |shift: u32| {
+        if alpha <= 0.0 {
+            return 0;
+        }
+        let (x, y) = (channel(a, shift) * alpha_a, channel(b, shift) * alpha_b);
+        ((x + (y - x) * t) / alpha).round().clamp(0.0, 255.0) as u32
+    };
+    let alpha_byte = alpha.round().clamp(0.0, 255.0) as u32;
+    Color((color(24) << 24) | (color(16) << 16) | (color(8) << 8) | alpha_byte)
 }
 
 /// The radii of a radial gradient's ending shape centered at `cx`, `cy`
@@ -969,6 +1081,133 @@ mod tests {
             .collect();
         assert_eq!(p[0], 0.0);
         assert!(p.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    /// A linear gradient of the stops `stops` (colors at fractions of the
+    /// line).
+    fn bands(stops: &[(Color, f32)], repeating: bool) -> Gradient {
+        Gradient {
+            kind: GradientKind::Linear { angle: deg(90.0) },
+            stops: stops
+                .iter()
+                .map(|&(color, p)| ColorStop {
+                    color,
+                    position: Some(DefiniteLength::from(percentage(p))),
+                })
+                .collect(),
+            repeating,
+        }
+    }
+
+    /// A repeating gradient's stops over the whole line, within `0..=1`:
+    /// a band of 0..0.1 again every tenth, the ends cut at the colors
+    /// there; over more than the line (a radial gradient's rings past its
+    /// ending shape) as fractions of that.
+    #[test]
+    fn repeating_stops_unroll_over_the_line() {
+        let (red, blue) = (Color(0xff00_00ff), Color(0x0000_ffff));
+        let box_size = size(px(100.0), px(100.0));
+        let g = bands(&[(red, 0.0), (blue, 0.1)], true);
+        let stops = g.unrolled_stops(box_size, percentage(1.0));
+        assert!(stops.iter().all(|s| (0.0..=1.0).contains(&s.1.0)));
+        assert!(stops.windows(2).all(|w| w[0].1 <= w[1].1));
+        assert_eq!(stops[0], (red, percentage(0.0)));
+        assert_eq!(stops[stops.len() - 1].1, percentage(1.0));
+        for k in 1..10 {
+            let at = |c: Color| {
+                stops
+                    .iter()
+                    .any(|s| s.0 == c && (s.1.0 - k as f32 * 0.1).abs() < 1e-4)
+            };
+            assert!(at(red) && at(blue), "{k}: {stops:?}");
+        }
+        // Half a band later, both ways: the ends cut halfway through a
+        // band, at the color between.
+        let g = bands(&[(red, 0.125), (blue, 0.375)], true);
+        let stops = g.unrolled_stops(box_size, percentage(1.0));
+        let purple = Color(0x8000_80ff);
+        assert_eq!(stops[0], (purple, percentage(0.0)));
+        assert_eq!(stops[stops.len() - 1], (purple, percentage(1.0)));
+        assert!(stops.windows(2).all(|w| w[0].1 <= w[1].1));
+        // A fade to transparent keeps its hue where it is cut.
+        let g = bands(&[(red, 0.0), (Color::TRANSPARENT, 0.3)], true);
+        let stops = g.unrolled_stops(box_size, percentage(1.0));
+        assert_eq!(stops[stops.len() - 1].0.0 & 0xffff_ff00, 0xff00_0000);
+        // Over twice the line.
+        let g = bands(&[(red, 0.0), (blue, 0.1)], true);
+        let stops = g.unrolled_stops(box_size, percentage(2.0));
+        assert_eq!(stops[stops.len() - 1].1, percentage(1.0));
+        let blue_at = |p: f32| {
+            stops
+                .iter()
+                .any(|s| s.0 == blue && (s.1.0 - p).abs() < 1e-4)
+        };
+        assert!(blue_at(0.05) && blue_at(0.95), "{stops:?}");
+    }
+
+    /// A hatch's copies stay in order over any box: a copy's first stop,
+    /// shifted by whole periods, rounds a hair before the one ending the
+    /// copy before it on most line lengths, and CoreGraphics draws stops
+    /// out of order as a smeared band.
+    #[test]
+    fn repeating_stops_stay_in_order() {
+        let (red, clear) = (Color(0xff00_004d), Color::TRANSPARENT);
+        let stop = |color, at: f32| ColorStop {
+            color,
+            position: Some(DefiniteLength::from(px(at))),
+        };
+        let hatch = Gradient {
+            kind: GradientKind::Linear { angle: deg(-45.0) },
+            stops: vec![
+                stop(red, 0.0),
+                stop(red, 1.0),
+                stop(clear, 1.0),
+                stop(clear, 6.0),
+            ],
+            repeating: true,
+        };
+        for width in 100..400 {
+            let box_size = size(px(width as f32 * 0.75), px(140.0));
+            let stops = hatch.unrolled_stops(box_size, percentage(1.0));
+            assert!(
+                stops.windows(2).all(|w| w[0].1 <= w[1].1),
+                "{width}: {stops:?}"
+            );
+        }
+    }
+
+    /// Stops that do not repeat come out as resolved: a gradient that is
+    /// not repeating (stops past the end too), and one whose period
+    /// vanishes; a period of 1pt along a long line still repeats.
+    #[test]
+    fn other_stops_unroll_as_resolved() {
+        let (red, blue) = (Color(0xff00_00ff), Color(0x0000_ffff));
+        let box_size = size(px(100.0), px(100.0));
+        for g in [
+            bands(&[(red, 0.0), (blue, 0.1)], false),
+            bands(&[(red, 0.0), (blue, 1.5)], false),
+            bands(&[(red, 0.5), (blue, 0.5)], true),
+        ] {
+            assert_eq!(
+                g.unrolled_stops(box_size, percentage(1.0)),
+                g.resolved_stops(box_size)
+            );
+        }
+        let hatch = Gradient {
+            stops: vec![
+                ColorStop {
+                    color: red,
+                    position: Some(DefiniteLength::from(px(0.0))),
+                },
+                ColorStop {
+                    color: blue,
+                    position: Some(DefiniteLength::from(px(1.0))),
+                },
+            ],
+            ..bands(&[], true)
+        };
+        let stops = hatch.unrolled_stops(size(px(4000.0), px(10.0)), percentage(1.0));
+        assert!(stops.len() > 4000, "{}", stops.len());
     }
 
     #[test]
