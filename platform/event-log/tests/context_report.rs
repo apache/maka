@@ -320,7 +320,7 @@ async fn context_report_tracks_latest_own_main_at_exact_fences_and_survives_reop
                 target_session_id: "branch".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false
                 },
             },

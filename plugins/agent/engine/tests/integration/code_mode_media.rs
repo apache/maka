@@ -236,7 +236,7 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
         server.await.unwrap(); engine.drain().await; drop(engine);
         let revision = log.get_session::<Value>("session").await.unwrap().unwrap().revision;
         log.root().copy_session(maka_event_log::sessions::SessionCopy { source_session_id:"session".into(), target_session_id:"copy".into(), expected_source_revision:revision,
-            purpose:maka_agent_facts::session::CopyPurpose::Branch { turn_id:None, side_conversation:false } }, &json!({}), 2).await.unwrap();
+            purpose:maka_agent_facts::session::CopyPurpose::Branch { position: maka_agent_facts::session::ForkPosition::End, side_conversation:false } }, &json!({}), 2).await.unwrap();
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
         let log = Arc::new(SessionFixture::open(&path).await.unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

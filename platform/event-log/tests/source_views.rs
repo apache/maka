@@ -102,7 +102,7 @@ async fn imported_first_branch_message_keeps_inherited_lineage_before_and_after_
                 target_session_id: "branch".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },

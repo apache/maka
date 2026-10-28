@@ -223,6 +223,7 @@ export type RuntimeProtocol =
   | AgentProjectChange
   | AgentProjectResult
   | AgentCreated
+  | AgentForkPosition
   | AgentFork
   | AgentForkResult
   | AgentForkReceipt
@@ -1060,6 +1061,24 @@ export type WorkHubCoordinator =
   | {
       kind: 'rejected';
       reason: AgentRejection;
+    };
+/**
+ * A complete logical Turn boundary within the source session.
+ */
+export type AgentForkPosition =
+  | {
+      kind: 'start';
+    }
+  | {
+      kind: 'end';
+    }
+  | {
+      kind: 'through_turn';
+      turnId: string;
+    }
+  | {
+      kind: 'before_turn';
+      turnId: string;
     };
 /**
  * The next turn's choice, independent of an already admitted execution.
@@ -5721,7 +5740,7 @@ export interface AgentSession {
  */
 export interface AgentSessionBranch {
   sessionId: string;
-  turnId: string | null;
+  position: AgentForkPosition;
 }
 /**
  * Stable business-data origin, independent of package or activation revisions.
@@ -7583,10 +7602,7 @@ export interface AgentProjectLocation {
 export interface AgentFork {
   sessionId: string;
   expectedRevision: number;
-  /**
-   * Include history through a complete logical Turn, or all current history when null.
-   */
-  turnId: string | null;
+  position: AgentForkPosition;
   title: string;
   labels: string[];
 }

@@ -215,7 +215,7 @@ mod bare_copy {
                 target_session_id: "target".into(),
                 expected_source_revision: source.revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             };

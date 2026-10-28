@@ -22,9 +22,7 @@ use crate::{
     StoreError,
     bundle::format::{Copy, Record},
 };
-use maka_agent_facts::session::CopyPurpose;
-use maka_agent_facts::session::CopyState;
-use maka_agent_facts::session::Lineage;
+use maka_agent_facts::session::{CopyPurpose, CopyState, ForkPosition, Lineage};
 use sqlx::SqliteConnection;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -242,17 +240,18 @@ fn shape(copy: &Copy, fence: u64) -> Result<(), StoreError> {
         return Err(invalid("invalid original copy boundary"));
     }
     match (&r.purpose, &copy.lineage) {
-        (CopyPurpose::Branch { turn_id, .. }, Lineage::Branch { origin })
-            if origin.parent_session_id == r.source_session_id && &origin.turn_id == turn_id =>
+        (CopyPurpose::Branch { position, .. }, Lineage::Branch { origin })
+            if origin.parent_session_id == r.source_session_id && &origin.position == position =>
         {
-            if let Some(id) = turn_id {
-                crate::sessions::validate_id(id)?;
+            if *position == ForkPosition::Start && copy.through != 0 {
+                return Err(invalid("empty branch contains history"));
             }
+            validate_position(position)?;
         }
         (CopyPurpose::EmptySideConversation, Lineage::Branch { origin })
             if copy.through == 0
                 && origin.parent_session_id == r.source_session_id
-                && origin.turn_id.is_none() => {}
+                && origin.position == ForkPosition::Start => {}
         (
             CopyPurpose::Revision { turn_id },
             Lineage::Revision {
@@ -271,12 +270,19 @@ fn shape(copy: &Copy, fence: u64) -> Result<(), StoreError> {
             crate::sessions::validate_id(turn_id)?;
             if let Some(branch) = branch {
                 crate::sessions::validate_id(&branch.parent_session_id)?;
-                if let Some(id) = &branch.turn_id {
-                    crate::sessions::validate_id(id)?;
-                }
+                validate_position(&branch.position)?;
             }
         }
         _ => return Err(invalid("copy provenance differs from its request")),
     }
     Ok(())
+}
+
+fn validate_position(position: &ForkPosition) -> Result<(), StoreError> {
+    match position {
+        ForkPosition::ThroughTurn { turn_id } | ForkPosition::BeforeTurn { turn_id } => {
+            crate::sessions::validate_id(turn_id)
+        }
+        ForkPosition::Start | ForkPosition::End => Ok(()),
+    }
 }

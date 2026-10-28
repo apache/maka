@@ -166,7 +166,7 @@ async fn final_actions_use_original_turn_accounting_and_fork_before_a_later_acti
         let fork_id = fork["id"].as_str().unwrap().to_owned();
         assert_ne!(fork_id, fixture.session);
         assert_eq!(fork["branch"]["sessionId"], fixture.session);
-        assert_eq!(fork["branch"]["turnId"], first_turn);
+        assert_eq!(fork["branch"]["position"]["turnId"], first_turn);
         assert_eq!(fork["labels"], json!(["original-label"]));
         let current = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
         assert_eq!(current["run"]["invocationId"], second["invocationId"]);

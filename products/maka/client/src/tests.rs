@@ -524,7 +524,8 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
         for (method, input, mut expected) in [
             ("metadata", json!({"sessionId":"session-one","expectedRevision":7,"title":"Private title","labels":[]}), json!({"kind":"agent-control","expectedRevision":7})),
             ("changeSession", json!({"sessionId":"session-one","expectedRevision":8,"action":"archive"}), json!({"kind":"agent-control","expectedRevision":8,"action":"archive"})),
-            ("fork", json!({"sessionId":"session-one","expectedRevision":9,"turnId":null,"title":"Private fork title","labels":[]}), json!({"kind":"agent-control","expectedRevision":9,"turnId":null})),
+            ("fork", json!({"sessionId":"session-one","expectedRevision":9,"position":{"kind":"end"},"title":"Private fork title","labels":[]}), json!({"kind":"agent-control","expectedRevision":9,"position":{"kind":"end"}})),
+            ("fork", json!({"sessionId":"session-one","expectedRevision":10,"position":{"kind":"before_turn","turnId":"edited-turn"},"title":"Private edit title","labels":[]}), json!({"kind":"agent-control","expectedRevision":10,"position":{"kind":"before_turn","turnId":"edited-turn"}})),
         ] {
             expected["owner"] = owner.clone();
             let control = client.control(Uuid::new_v4(),method,input).await.unwrap();
@@ -540,6 +541,12 @@ async fn durable_original_receipt_survives_cancelled_observer_disconnect_and_res
             assert_eq!(client.operation_for_control(unrelated.id()).await.unwrap_err(),"original client operation belongs to another control owner");
             assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
             unrelated.close().await.unwrap();
+            let mut foreign_owner = expected.clone();
+            foreign_owner["owner"]["export"] = json!("another-agent");
+            let foreign_id = Uuid::new_v4();
+            assert_eq!(client.mutation(foreign_id,"agent",method,Value::Null,Attachments::new(),Some("session-one".into()),foreign_owner).await.err().unwrap(),"client operation target changed before opening its original call");
+            assert_eq!(client.operation_for_control(foreign_id).await.unwrap_err(),"original client operation belongs to another control owner");
+            assert_eq!(client.pending_controls().await.unwrap().iter().map(|operation| operation.id).collect::<Vec<_>>(),[control.id()]);
             assert!(client.abandon_unprepared(control.id()).await.unwrap().abandoned);
             control.close().await.unwrap();
         }

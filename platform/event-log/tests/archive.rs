@@ -188,7 +188,9 @@ async fn archive_atomic_retry_reopen_scope_and_source_integrity() {
                 target_session_id: "unpruned-copy".into(),
                 expected_source_revision: initial_revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: Some("old".into()),
+                    position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                        turn_id: "old".into()
+                    },
                     side_conversation: false
                 },
             },
@@ -365,7 +367,9 @@ async fn archive_atomic_retry_reopen_scope_and_source_integrity() {
                 target_session_id: "archived-copy".into(),
                 expected_source_revision: final_revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: Some("old".into()),
+                    position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                        turn_id: "old".into()
+                    },
                     side_conversation: false
                 },
             },
@@ -601,7 +605,7 @@ async fn inherited_results_prune_and_compact_without_changing_siblings_or_frozen
                     target_session_id: id.into(),
                     expected_source_revision: revision,
                     purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                        turn_id: None,
+                        position: maka_agent_facts::session::ForkPosition::End,
                         side_conversation: false
                     },
                 },
@@ -723,7 +727,7 @@ async fn inherited_results_prune_and_compact_without_changing_siblings_or_frozen
                 target_session_id: "nested".into(),
                 expected_source_revision: revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false
                 },
             },
@@ -1198,7 +1202,7 @@ async fn tool_result_prefixes_respect_frozen_copy_membership() {
                 target_session_id: "branch".into(),
                 expected_source_revision: revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },

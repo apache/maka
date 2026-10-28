@@ -392,7 +392,12 @@ export function SessionActions(props: {
                     onSubmit={() =>
                       void submit(
                         page() === 'fork'
-                          ? { kind: 'fork', session: session(), title: title(), turnId: null }
+                          ? {
+                              kind: 'fork',
+                              session: session(),
+                              title: title(),
+                              position: { kind: 'end' },
+                            }
                           : { kind: 'rename', session: session(), title: title() },
                       )
                     }
@@ -430,7 +435,12 @@ export function SessionActions(props: {
                     onPress={inputAction(
                       submit,
                       page() === 'fork'
-                        ? { kind: 'fork', session: session(), title: title(), turnId: null }
+                        ? {
+                            kind: 'fork',
+                            session: session(),
+                            title: title(),
+                            position: { kind: 'end' },
+                          }
                         : { kind: 'rename', session: session(), title: title() },
                     )}
                   >

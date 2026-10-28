@@ -151,11 +151,24 @@ fn control_correlation(method: &str, input: &Value, owner: &ServiceOwner) -> Res
             correlation["action"] = action.into();
         }
         if method == "fork" {
-            let turn = input
-                .get("turnId")
-                .filter(|turn| turn.is_null() || turn.as_str().is_some_and(|turn| !turn.is_empty()))
-                .ok_or("agent fork control requires an original turnId")?;
-            correlation["turnId"] = turn.clone();
+            let position = input
+                .get("position")
+                .ok_or("agent fork control requires an original position")?;
+            let valid = match position.get("kind").and_then(Value::as_str) {
+                Some("start" | "end") => position.as_object().is_some_and(|value| value.len() == 1),
+                Some("before_turn" | "through_turn") => {
+                    position.as_object().is_some_and(|value| value.len() == 2)
+                        && position
+                            .get("turnId")
+                            .and_then(Value::as_str)
+                            .is_some_and(|turn| !turn.is_empty())
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err("agent fork control requires a valid position".into());
+            }
+            correlation["position"] = position.clone();
         }
     }
     Ok(correlation)

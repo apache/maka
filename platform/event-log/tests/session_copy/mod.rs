@@ -484,7 +484,9 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
         target_session_id: "branch".into(),
         expected_source_revision: revision,
         purpose: maka_agent_facts::session::CopyPurpose::Branch {
-            turn_id: Some("first".into()),
+            position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                turn_id: "first".into(),
+            },
             side_conversation: false,
         },
     };
@@ -550,7 +552,9 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
             target_session_id: "nested".into(),
             expected_source_revision: first.revision,
             purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                turn_id: Some("first".into()),
+                position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                    turn_id: "first".into(),
+                },
                 side_conversation: false,
             },
         },
@@ -571,7 +575,9 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
         log.copy_session(
             SessionCopy {
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: Some("first".into()),
+                    position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                        turn_id: "first".into()
+                    },
                     side_conversation: true
                 },
                 ..request.clone()
@@ -844,7 +850,7 @@ async fn failed_copy_publishes_neither_destination_nor_partial_resources() {
         target_session_id: "target".into(),
         expected_source_revision: revision,
         purpose: maka_agent_facts::session::CopyPurpose::Branch {
-            turn_id: None,
+            position: maka_agent_facts::session::ForkPosition::End,
             side_conversation: false,
         },
     };
@@ -1045,7 +1051,9 @@ async fn revisions_own_excluded_inputs_and_allocate_one_durable_family() {
         SessionCopy {
             target_session_id: "branch".into(),
             purpose: CopyPurpose::Branch {
-                turn_id: Some("first".into()),
+                position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                    turn_id: "first".into(),
+                },
                 side_conversation: false,
             },
             ..request.clone()
@@ -1071,7 +1079,9 @@ async fn revisions_own_excluded_inputs_and_allocate_one_durable_family() {
             index: 2,
             branch: Some(BranchOrigin {
                 parent_session_id: "source".into(),
-                turn_id: Some("first".into())
+                position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                    turn_id: "first".into()
+                }
             }),
         })
     );
@@ -1410,7 +1420,7 @@ async fn copied_semantic_projection_failure_rolls_back_membership_and_receipt_af
         target_session_id: "target".into(),
         expected_source_revision: revision,
         purpose: maka_agent_facts::session::CopyPurpose::Branch {
-            turn_id: None,
+            position: maka_agent_facts::session::ForkPosition::End,
             side_conversation: false,
         },
     };
@@ -1503,5 +1513,96 @@ async fn copied_semantic_projection_failure_rolls_back_membership_and_receipt_af
         })
         .collect();
     assert_eq!(inherited, ["first", "second"]);
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn exclusive_branches_preserve_complete_prefixes_and_survive_reopen() {
+    use maka_agent_facts::session::{CopyPurpose, ForkPosition};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("exclusive.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    log.create_session("source", "source", &json!({}), 1)
+        .await
+        .unwrap();
+    turn(&log, "source", "first", false).await;
+    turn(&log, "source", "second", false).await;
+    let revision = log
+        .get_session::<Value>("source")
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    let original = log
+        .scoped_prefix(
+            LogScope::Session {
+                id: "source".into(),
+            },
+            100,
+            65536,
+        )
+        .await
+        .unwrap();
+    let requests = [("empty", "first"), ("prefix", "second")].map(|(target, turn)| SessionCopy {
+        source_session_id: "source".into(),
+        target_session_id: target.into(),
+        expected_source_revision: revision,
+        purpose: CopyPurpose::Branch {
+            position: ForkPosition::BeforeTurn {
+                turn_id: turn.into(),
+            },
+            side_conversation: true,
+        },
+    });
+    for request in &requests {
+        copy(&log, request.clone()).await;
+    }
+    assert_eq!(
+        log.scoped_prefix(
+            LogScope::Session {
+                id: "source".into()
+            },
+            100,
+            65536
+        )
+        .await
+        .unwrap()
+        .digest,
+        original.digest
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&path).await.unwrap();
+    for (request, expected) in requests
+        .into_iter()
+        .zip([Vec::<&str>::new(), vec!["first", "first"]])
+    {
+        copy(&log, request.clone()).await;
+        let prefix = log
+            .scoped_prefix(
+                LogScope::Session {
+                    id: request.target_session_id.clone(),
+                },
+                100,
+                65536,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            prefix
+                .events
+                .iter()
+                .map(|event| event.event.invocation.turn_id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            log.session_copy_receipt(&request.target_session_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .request,
+            request
+        );
+    }
     log.close().await.unwrap();
 }

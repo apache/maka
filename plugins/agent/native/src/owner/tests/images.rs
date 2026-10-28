@@ -358,7 +358,7 @@ async fn user_attachment_images_use_uploaded_identity_and_canonical_user_rows() 
             .await.unwrap().unwrap().0.invocation.turn_id;
         let revision = f.owner.session(&session).await.unwrap().revision;
         let fork = f.mutation(2, "fork", json!({"sessionId":session,"expectedRevision":revision,
-            "turnId":turn,"title":"Retained image preview","labels":[]}), Uuid::new_v4()).await.unwrap();
+            "position":{"kind":"through_turn","turnId":turn},"title":"Retained image preview","labels":[]}), Uuid::new_v4()).await.unwrap();
         assert_eq!(fork["kind"], "forked");
         let child = fork["session"]["id"].as_str().unwrap();
         let mut copied = read.clone();

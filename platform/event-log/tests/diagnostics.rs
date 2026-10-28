@@ -184,7 +184,7 @@ async fn diagnostic_pages_preserve_sources_fences_and_operational_copy_scope() {
                 target_session_id: "copy".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false
                 },
             },

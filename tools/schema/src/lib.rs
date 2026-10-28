@@ -242,6 +242,7 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::ProjectChange>(&mut g),
         root::<maka_agent_api::contract::ProjectResult>(&mut g),
         root::<maka_agent_api::contract::Created>(&mut g),
+        root::<maka_agent_api::contract::ForkPosition>(&mut g),
         root::<maka_agent_api::contract::Fork>(&mut g),
         root::<maka_agent_api::contract::ForkResult>(&mut g),
         root::<maka_agent_api::contract::ForkReceipt>(&mut g),

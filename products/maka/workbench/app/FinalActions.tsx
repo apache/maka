@@ -92,7 +92,7 @@ export function FinalActions(props: {
         kind: 'fork',
         session: observed.session,
         title: forkTitle(observed.session.title),
-        turnId: original.turnId,
+        position: { kind: 'through_turn', turnId: original.turnId },
       });
       if (owns(original)) notice.set(uiMessage('Fork created. Open it in Sessions.'));
     } catch (reason) {
