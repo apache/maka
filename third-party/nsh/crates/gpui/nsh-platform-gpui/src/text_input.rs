@@ -902,10 +902,11 @@ pub(crate) fn set_focus_target(surface: &Rc<Surface>, target: Option<FocusTarget
     set_changing(surface, true);
     if old != target {
         let moved_to = target.is_some();
+        let events_before = surface.events_sent();
         move_focus(surface, old, target);
         // The new field's value may still be on its way from the engine,
         // after what the old one reported. Text typed now waits for it.
-        if wants_text(surface) {
+        if wants_text(surface) && surface.events_sent() > events_before {
             arm(surface);
         } else if moved_to && !has_pending(surface) {
             disarm(surface);
@@ -1365,6 +1366,10 @@ pub(crate) mod ime {
             replace_text_now(surface, range, text);
             return;
         }
+        if text.is_empty() && range.is_none() && !super::has_pending(surface) {
+            replace_text_now(surface, range, text);
+            return;
+        }
         if super::queue_if_unsettled(surface, || Held::Replace {
             range: range.clone(),
             text: text.to_owned(),
@@ -1414,6 +1419,10 @@ pub(crate) mod ime {
         text: &str,
         selected: Option<Range<usize>>,
     ) {
+        if text.is_empty() && range.is_none() && !super::has_pending(surface) {
+            mark_text_now(surface, range, text, selected);
+            return;
+        }
         if super::queue_if_unsettled(surface, || Held::Mark {
             range: range.clone(),
             text: text.to_owned(),
@@ -2044,6 +2053,9 @@ pub(crate) fn blur_view(surface: &Rc<Surface>, view: &NshView) {
 /// Blurs whatever view has the focus.
 pub(crate) fn blur_all(surface: &Rc<Surface>) {
     set_focus(surface, None);
+    if !has_pending(surface) {
+        disarm(surface);
+    }
 }
 
 /// Focuses a caller-eligible Tab stop, selecting text only for an input.

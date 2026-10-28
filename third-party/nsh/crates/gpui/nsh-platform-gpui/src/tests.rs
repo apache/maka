@@ -1428,6 +1428,8 @@ fn paused_ahead(cx: &mut TestAppContext, modifiers: crate::input::Modifiers) {
                     crate::text_input::char_input(s, "好");
                 } else {
                     assert!(crate::input::key(s, down(0x42, modifiers)));
+                    crate::text_input::ime::replace_text_in_range(s, None, "");
+                    crate::text_input::ime::replace_and_mark_text_in_range(s, None, "", None);
                 }
                 let result = result.clone();
                 view.pause_input(window, cx, move |done| *result.lock().unwrap() = Some(done));
