@@ -39,12 +39,6 @@ export function windowTitle(title: () => string | null) {
   if (ownTitleBar) effect(() => Window.setTitle(title() ?? 'Maka'));
 }
 
-/** Titles the window (Mission Control, the Dock's and the Window menu's
- * lists) with `title`, else the app's name. */
-export function windowTitle(title: () => string | null) {
-  if (ownTitleBar) effect(() => Window.setTitle(title() ?? 'Maka'));
-}
-
 /** Whether the session browser and the preview are docked at the window's edges. */
 export const docked = { browser: signal(false), preview: signal(false) };
 
