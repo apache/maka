@@ -35,6 +35,17 @@ pub enum ModelPurpose {
     Summary,
 }
 
+pub fn default_compaction_threshold(
+    context_window: Option<u64>,
+    input_limit: Option<u64>,
+) -> Option<u64> {
+    let input = match (context_window, input_limit) {
+        (Some(context), Some(input)) => Some(context.min(input)),
+        (context, input) => context.or(input),
+    };
+    input.map(|limit| ((u128::from(limit) * 85 / 100) as u64).max(1))
+}
+
 /// Frozen facts about this request's selected model, not prompt contents.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -39,6 +39,13 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
   const disabled = () =>
     owner.busy() || owner.loading() || !owner.pendingKnown() || owner.pending().length > 0;
   const supported = () => model().thinkingLevels ?? model().effective?.thinkingLevels ?? [];
+  const inherited = (value: string | number | boolean | null | undefined, empty?: string) => {
+    if (!model().id.trim()) return tr('Enter a model ID to see defaults.');
+    if (owner.modelLoading()) return tr('Loading…');
+    if (!model().defaults) return tr('Defaults unavailable');
+    if (value == null) return empty ?? tr('Provider controlled');
+    return typeof value === 'boolean' ? tr(value ? 'Enabled' : 'Disabled') : String(value);
+  };
   return (
     <Scroll style={{ flex: 1 }}>
       <View style={{ padding: 8, gap: 16 }}>
@@ -53,6 +60,7 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
         <SettingsField
           label={tr('Model display name')}
           value={model().label}
+          placeholder={inherited(model().defaults?.label)}
           disabled={disabled()}
           change={(label) => owner.changeModel({ label })}
           hint={tr('Optional. Empty uses the provider’s name.')}
@@ -65,6 +73,10 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
             <SettingsField
               label={tr(field().label)}
               value={model().limits[field().key]}
+              placeholder={inherited(
+                model().defaults?.[field().key],
+                field().key === 'compactionThreshold' ? tr('No automatic threshold') : undefined,
+              )}
               disabled={disabled()}
               change={(value) =>
                 owner.changeModel({ limits: { ...model().limits, [field().key]: value } })
@@ -144,7 +156,13 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                         checked={model()[tool().key] === item().value}
                         disabled={disabled()}
                       />
-                      <Text style={{ ...captionTextStyle, color: C.text }}>{tr(item().label)}</Text>
+                      <Text style={{ ...captionTextStyle, color: C.text }}>
+                        {item().value === null
+                          ? tr('Model default ({value})', {
+                              value: inherited(model().defaults?.[tool().key]),
+                            })
+                          : tr(item().label)}
+                      </Text>
                     </Button>
                   )}
                 </Each>
@@ -198,17 +216,12 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
         <Text style={{ ...bodyTextStyle, color: C.text, fontWeight: '500' }}>
           {tr('Supported reasoning efforts')}
         </Text>
-        <If when={model().effective}>
-          <Text style={{ ...captionTextStyle, color: C.muted }}>
-            {tr('Current saved reasoning efforts: {levels}. Default: {level}.', {
-              levels: model().effective!.thinkingLevels.join(', ') || tr('None'),
-              level: model().effective!.defaultThinkingLevel ?? tr('Provider controlled'),
-            })}
-          </Text>
-        </If>
         <Button
           disabled={disabled()}
           selected={model().thinkingLevels === null}
+          accessibilityLabel={tr('Use provider defaults ({value})', {
+            value: inherited(model().defaults?.thinkingLevels.join(', ') || tr('None')),
+          })}
           onPress={inputAction(owner.useProviderThinking, owner.modelAction())}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
           hoverStyle={controlHoverStyle}
@@ -220,7 +233,11 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
             checked={model().thinkingLevels === null}
             disabled={disabled()}
           />
-          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Use provider defaults')}</Text>
+          <Text style={{ ...captionTextStyle, color: C.text }}>
+            {tr('Use provider defaults ({value})', {
+              value: inherited(model().defaults?.thinkingLevels.join(', ') || tr('None')),
+            })}
+          </Text>
         </Button>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
           <Each of={thinkingLevels} key={(level) => level}>
@@ -259,6 +276,9 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
         <Button
           disabled={disabled()}
           selected={model().defaultThinkingLevel === null}
+          accessibilityLabel={tr('Provider default ({value})', {
+            value: inherited(model().defaults?.defaultThinkingLevel),
+          })}
           onPress={inputAction(owner.defaultThinking, { ...owner.modelAction(), level: null })}
           style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
           hoverStyle={controlHoverStyle}
@@ -270,7 +290,11 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
             checked={model().defaultThinkingLevel === null}
             disabled={disabled()}
           />
-          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Provider default')}</Text>
+          <Text style={{ ...captionTextStyle, color: C.text }}>
+            {tr('Provider default ({value})', {
+              value: inherited(model().defaults?.defaultThinkingLevel),
+            })}
+          </Text>
         </Button>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
           <Each of={supported()} key={(level) => level}>

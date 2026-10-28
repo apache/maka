@@ -533,6 +533,59 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
             "the native {label:?} draft changed"
         );
     }
+    fn painted_control(view: &AppView, label: &str) -> String {
+        use ratatui::{buffer::CellWidth, layout::Rect};
+        let node = view
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.focused && node.label == label)
+            .unwrap();
+        let metrics = view.surface().metrics();
+        let viewport = view.surface().viewport();
+        let columns = (viewport.width.0 / metrics.width().0).round() as u16;
+        let rows = (viewport.height.0 / metrics.height().0).round() as u16;
+        let project = |point: f32, cell: f32, limit: u16| {
+            (point / cell - 0.5).ceil().clamp(0.0, f32::from(limit)) as u16
+        };
+        let left = project(node.frame.origin.x.0, metrics.width().0, columns);
+        let right = project(
+            node.frame.origin.x.0 + node.frame.size.width.0,
+            metrics.width().0,
+            columns,
+        );
+        let top = project(node.frame.origin.y.0, metrics.height().0, rows);
+        let bottom = project(
+            node.frame.origin.y.0 + node.frame.size.height.0,
+            metrics.height().0,
+            rows,
+        );
+        let area = Rect::new(0, 0, columns, rows);
+        let mut buffer = ratatui::buffer::Buffer::empty(area);
+        view.render(area, &mut buffer);
+        let mut text = String::new();
+        for y in top..bottom {
+            let mut x = left;
+            while x < right {
+                let cell = &buffer[(x, y)];
+                text.push_str(cell.symbol());
+                x += cell.cell_width().max(1);
+            }
+            text.push('\n');
+        }
+        text
+    }
+    async fn assert_default_input(view: &mut AppView, label: &str, default: &str) {
+        assert_input(view, label, "").await;
+        wait_view_state(view, |view, _| {
+            painted_control(view, label).contains(default)
+        })
+        .await;
+        assert_eq!(
+            view.surface().input_context().unwrap().text.as_deref(),
+            Some(""),
+            "the {label:?} placeholder must not become editable content"
+        );
+    }
     async fn assert_document_viewport(
         view: &mut AppView,
         label: &str,
@@ -643,17 +696,54 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         let discovered_choice = &discovered["choices"][0];
         assert_eq!(discovered_choice["thinkingLevels"], json!(["max","high","low","off"]));
         assert_eq!(discovered_choice["defaultThinkingLevel"], "high");
+        let discovered_target = json!({"connectionId":discovered_choice["selection"]["connectionId"],"modelId":"fixture-discovered-model"});
+        let inherited = client.query("settings", "resolveModel", discovered_target.clone()).await.unwrap();
+        assert_eq!(inherited["defaults"], json!({"label":"Discovered UI Model","contextWindow":131072,"inputLimit":null,"maxOutputTokens":null,"compactionThreshold":111411,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":["max","high","low","off"],"defaultThinkingLevel":"high"}));
+        assert_eq!(inherited["choice"]["limits"]["maxOutputTokens"], 4096,
+            "a provider ceiling must not become an implicit requested output budget");
         activate(&mut view, "Edit model fixture-discovered-model").await;
+        for (label, default) in [
+            ("Model display name", "Discovered UI Model"),
+            ("Context window (tokens)", "131072"),
+            ("Input limit (tokens)", "Provider controlled"),
+            ("Maximum output (tokens)", "Provider controlled"),
+            ("Compaction threshold (tokens)", "111411"),
+        ] {
+            assert_default_input(&mut view, label, default).await;
+        }
         tab_to_label(&mut view, "Support effort high").await;
-        wait_view(&mut view, |screen| screen.contains("Current saved reasoning efforts: max, high, low, off. Default: high.") && !screen.contains("Loading settings…")).await;
         let node = support::wait_enabled_button(&mut view, "Support effort high").await;
         assert!(node.state.selected, "provider-discovered efforts must be visible without an override");
         for label in ["Code Mode: Model default", "Apply Patch: Model default", "Code Mode language: JavaScript"] {
             tab_to_label(&mut view, label).await;
             assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "omitted tool overrides must retain model defaults");
+            if label != "Code Mode language: JavaScript" {
+                assert!(painted_control(&view, label).contains("Model default (Disabled)"));
+            }
         }
-        activate(&mut view, "Back from connection settings").await;
-        wait_view(&mut view, |screen| screen.contains("Connection models")).await;
+        for label in ["Use provider defaults (max, high, low, off)", "Provider default (high)"] {
+            tab_to_label(&mut view, label).await;
+            assert!(support::wait_enabled_button(&mut view, label).await.state.selected);
+        }
+        fill(&mut view, "Maximum output (tokens)", "0").await;
+        fill(&mut view, "Context window (tokens)", "6000").await;
+        fill(&mut view, "Input limit (tokens)", "4000").await;
+        fill(&mut view, "Maximum output (tokens)", "").await;
+        assert_default_input(&mut view, "Compaction threshold (tokens)", "3400").await;
+        let preview = client.query("settings", "resolveModel", json!({
+            "connectionId":discovered_target["connectionId"],"modelId":"fixture-discovered-model",
+            "overrides":{"contextWindow":6000,"inputLimit":4000}
+        })).await.unwrap();
+        assert_eq!(preview["defaults"]["contextWindow"], 131072);
+        assert_eq!(preview["defaults"]["inputLimit"], Value::Null);
+        assert_eq!(preview["defaults"]["compactionThreshold"], 3400);
+        assert_eq!(preview["choice"]["limits"]["contextWindow"], 6000);
+        assert_eq!(preview["choice"]["limits"]["inputLimit"], 4000);
+        fill(&mut view, "Context window (tokens)", "").await;
+        fill(&mut view, "Input limit (tokens)", "").await;
+        assert_default_input(&mut view, "Compaction threshold (tokens)", "111411").await;
+        activate(&mut view, "Save model").await;
+        wait_view(&mut view, |screen| screen.contains("Connection models") && screen.contains("Model saved.")).await;
         activate(&mut view, "Add model manually").await;
         wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID")).await;
         fill(&mut view, "Model ID", "manual-ui-agent").await;
@@ -686,7 +776,7 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(catalog["defaultTarget"], target);
         let detail = client.query("settings", "connection", json!({"connectionId":basis["connectionId"],"revision":basis["revision"],"includeEditingFacts":true})).await.unwrap();
         assert_eq!(detail["target"]["configuration"], json!({"baseUrl":fixture.base_url}));
-        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"manual-ui-agent":{"displayName":"Manual UI Agent","codeMode":true,"codeModeLanguage":"python","applyPatch":false,"thinkingLevels":["high"],"defaultThinkingLevel":"high","contextWindow":65536,"inputLimit":32768,"maxOutputTokens":2048,"compactionThreshold":18000}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}));
+        assert_eq!(detail["editing"], json!({"enabledModelIds":["fixture-discovered-model","manual-ui-agent"],"modelOverrides":{"fixture-discovered-model":{},"manual-ui-agent":{"displayName":"Manual UI Agent","codeMode":true,"codeModeLanguage":"python","applyPatch":false,"thinkingLevels":["high"],"defaultThinkingLevel":"high","contextWindow":65536,"inputLimit":32768,"maxOutputTokens":2048,"compactionThreshold":18000}},"requestBodyOverlay":{"provider":{"only":["openrouter","deepseek"]},"temperature":0.22}}), "saving inherited placeholders must not persist them as overrides");
         let models = client.query("settings", "models", json!({"kind":"start","query":"manual-ui-agent"})).await.unwrap();
         assert_eq!(models["choices"].as_array().unwrap().len(), 1);
         assert_eq!(models["choices"][0]["thinkingLevels"], json!(["high"]));
@@ -745,8 +835,8 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         wait_enabled_node(&mut view, "Use this workspace folder").await;
         support::click_button(&mut view, "Use this workspace folder").await;
         wait_view(&mut view, |screen| screen.contains("Search models…") && !screen.contains("Loading…")).await;
-        select_palette(&mut view, "Search models…", "fixture-discovered-model", "fixture-discovered-model").await;
-        wait_view_state(&mut view, |view, screen| screen.contains("fixture-discovered-model · high") && model_menu_closed(view)).await;
+        select_palette(&mut view, "Search models…", "fixture-discovered-model", "Discovered UI Model").await;
+        wait_view_state(&mut view, |view, screen| screen.contains("Discovered UI Model · high") && model_menu_closed(view)).await;
         activate(&mut view, "Choose model and effort").await;
         activate(&mut view, "Choose reasoning effort").await;
         wait_view_state(&mut view, |view, _| model_menu_ready(view, "Use effort high") && model_menu_ready(view, "Back to model settings")).await;
@@ -763,10 +853,15 @@ async fn empty_settings_configure_a_real_connection_and_manual_reasoning_model_b
         assert_eq!(observed["session"]["backend"], json!({"kind":"model","connectionId":basis["connectionId"],"modelId":"manual-ui-agent","thinkingLevel":null}));
         let saved_policy = client.query("settings", "resolveModel", target.clone()).await.unwrap();
         assert_eq!(saved_policy["choice"]["tools"], json!({"codeMode":true,"codeModeLanguage":"python","applyPatch":false}));
+        assert_eq!(saved_policy["defaults"], json!({"label":"manual-ui-agent","contextWindow":null,"inputLimit":null,"maxOutputTokens":null,"compactionThreshold":27852,"codeMode":false,"codeModeLanguage":"javascript","applyPatch":false,"thinkingLevels":[],"defaultThinkingLevel":null}),
+            "saved display, limits, tools, and efforts must not masquerade as inherited defaults");
         activate(&mut view, "Choose model and effort").await;
         activate(&mut view, "Edit current model settings").await;
         wait_view(&mut view, |screen| screen.contains("Model settings") && screen.contains("Model ID") && !screen.contains("Loading settings…")).await;
         assert_input(&mut view, "Model display name", "Manual UI Agent").await;
+        for (label, value) in [("Context window (tokens)", "65536"), ("Input limit (tokens)", "32768"), ("Maximum output (tokens)", "2048"), ("Compaction threshold (tokens)", "18000")] {
+            assert_input(&mut view, label, value).await;
+        }
         for label in ["Code Mode: Enabled", "Apply Patch: Disabled", "Code Mode language: Python"] {
             tab_to_label(&mut view, label).await;
             assert!(support::wait_enabled_button(&mut view, label).await.state.selected, "current model settings must show the saved tool policy");

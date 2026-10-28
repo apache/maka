@@ -60,6 +60,28 @@ import {
 
 export const settingsMessages = {
   'Context & output': ['Context & output', '上下文与输出', '上下文與輸出'],
+  'Enter a model ID to see defaults.': [
+    'Enter a model ID to see defaults.',
+    '输入模型 ID 后显示默认值。',
+    '輸入模型 ID 後顯示預設值。',
+  ],
+  'Defaults unavailable': ['Defaults unavailable', '默认值不可用', '預設值無法使用'],
+  'No automatic threshold': ['No automatic threshold', '无自动压缩阈值', '無自動壓縮閾值'],
+  'Model default ({value})': [
+    'Model default ({value})',
+    '模型默认策略（{value}）',
+    '模型預設策略（{value}）',
+  ],
+  'Use provider defaults ({value})': [
+    'Use provider defaults ({value})',
+    '使用提供商默认设置（{value}）',
+    '使用供應商預設設定（{value}）',
+  ],
+  'Provider default ({value})': [
+    'Provider default ({value})',
+    '提供商默认设置（{value}）',
+    '供應商預設設定（{value}）',
+  ],
   Tools: ['Tools', '工具', '工具'],
   'Context window (tokens)': [
     'Context window (tokens)',
@@ -325,11 +347,6 @@ export const settingsMessages = {
     '連線已儲存；正在儲存 API 金鑰…',
   ],
   'Connection settings': ['Connection settings', '连接设置', '連線設定'],
-  'Current saved reasoning efforts: {levels}. Default: {level}.': [
-    'Current saved reasoning efforts: {levels}. Default: {level}.',
-    '当前已保存的推理强度：{levels}。默认：{level}。',
-    '目前已儲存的推理強度：{levels}。預設：{level}。',
-  ],
   'Copy URL': ['Copy URL', '复制 URL', '複製 URL'],
   'Copy code': msg_copyLoginCode,
   'Copy sign-in URL': ['Copy sign-in URL', '复制登录 URL', '複製登入 URL'],

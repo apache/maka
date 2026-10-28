@@ -67,63 +67,64 @@ fn selectable(
 ) -> bool {
     row.enabled && maka_providers::definition(&row.provider, snapshot).is_ok()
 }
-async fn model_choice(
+fn model_request(
     row: &ConnectionCatalogEntry,
     model: &str,
+    overrides: Option<ModelOverride>,
+) -> maka_agent_ports::provider::Resolve {
+    maka_agent_ports::provider::Resolve {
+        connection: maka_agent_ports::provider::Connection {
+            id: row.connection_id.clone(),
+            revision: row.revision,
+            configuration: row.configuration.clone(),
+        },
+        model: row
+            .models
+            .iter()
+            .find(|info| info.id == model)
+            .cloned()
+            .unwrap_or_else(|| ModelInfo::new(model)),
+        overrides,
+        thinking_level: None,
+    }
+}
+async fn model_metadata(
+    row: &ConnectionCatalogEntry,
+    model: &str,
+    overrides: Option<ModelOverride>,
     snapshot: Arc<maka_providers::catalog::Snapshot>,
-) -> Option<ModelChoice> {
-    let info = row
-        .models
-        .iter()
-        .find(|info| info.id == model)
-        .cloned()
-        .unwrap_or_else(|| ModelInfo::new(model));
-    let metadata = if row.provider.package_id == maka_providers::codex::ID {
-        let overrides = row
-            .model_overrides
-            .as_ref()
-            .and_then(|all| all.get(model))
-            .cloned();
+) -> Result<maka_providers::api::ModelMetadata, String> {
+    let request = model_request(row, model, overrides);
+    if row.provider.package_id == maka_providers::codex::ID {
+        let overrides = &request.overrides;
         let default_thinking_level = overrides.as_ref().and_then(|o| o.default_thinking_level);
-        let resolved = maka_providers::definition(&row.provider, snapshot.clone())
-            .ok()?
-            .prepare(maka_agent_ports::provider::Resolve {
-                connection: maka_agent_ports::provider::Connection {
-                    id: row.connection_id.clone(),
-                    revision: row.revision,
-                    configuration: row.configuration.clone(),
-                },
-                model: info,
-                overrides,
-                thinking_level: None,
-            })
+        let resolved = maka_providers::definition(&row.provider, snapshot.clone())?
+            .prepare(request)
             .await
-            .ok()?;
-        maka_providers::api::ModelMetadata {
+            .map_err(|error| error.to_string())?;
+        Ok(maka_providers::api::ModelMetadata {
             info: resolved.info,
             thinking_levels: resolved.thinking_levels,
             default_thinking_level,
-        }
+        })
     } else {
         maka_providers::api::ApiProviders::model_metadata(
             &row.provider.name,
             snapshot,
-            maka_agent_ports::provider::Connection {
-                id: row.connection_id.clone(),
-                revision: row.revision,
-                configuration: row.configuration.clone(),
-            },
-            info,
-            row.model_overrides
-                .as_ref()
-                .and_then(|all| all.get(model))
-                .cloned(),
+            request.connection,
+            request.model,
+            request.overrides,
         )
-        .ok()?
-    };
+    }
+}
+fn model_choice_from_metadata(
+    row: &ConnectionCatalogEntry,
+    model: &str,
+    overrides: Option<&ModelOverride>,
+    metadata: maka_providers::api::ModelMetadata,
+) -> ModelChoice {
     let info = metadata.info;
-    let overrides = row.model_overrides.as_ref().and_then(|all| all.get(model));
-    Some(ModelChoice {
+    ModelChoice {
         limits: Some(ModelLimitSettings {
             overrides: ModelLimits {
                 context_window: overrides.and_then(|value| value.context_window),
@@ -149,27 +150,131 @@ async fn model_choice(
         label: info.display_name.unwrap_or_else(|| model.into()),
         default_thinking_level: metadata.default_thinking_level,
         thinking_levels: metadata.thinking_levels,
+    }
+}
+async fn model_choice(
+    row: &ConnectionCatalogEntry,
+    model: &str,
+    snapshot: Arc<maka_providers::catalog::Snapshot>,
+) -> Option<ModelChoice> {
+    let overrides = row.model_overrides.as_ref().and_then(|all| all.get(model));
+    let metadata = model_metadata(row, model, overrides.cloned(), snapshot)
+        .await
+        .ok()?;
+    Some(model_choice_from_metadata(row, model, overrides, metadata))
+}
+async fn model_defaults(
+    row: &ConnectionCatalogEntry,
+    model: &str,
+    overrides: Option<&ModelOverride>,
+    supported: &[maka_agent_facts::execution::ThinkingLevel],
+    snapshot: Arc<maka_providers::catalog::Snapshot>,
+) -> Option<ModelDefaults> {
+    let mut inherited = overrides.cloned().unwrap_or_default();
+    inherited.display_name = None;
+    inherited.context_window = None;
+    inherited.input_limit = None;
+    inherited.max_output_tokens = None;
+    inherited.compaction_threshold = None;
+    inherited.code_mode = None;
+    inherited.code_mode_language = None;
+    inherited.apply_patch = None;
+    inherited.thinking_levels = None;
+    inherited.default_thinking_level = None;
+    let metadata = match model_metadata(row, model, Some(inherited), snapshot.clone()).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            tracing::warn!(%error, model_id = model, connection_id = %row.connection_id, "Model defaults unavailable");
+            return None;
+        }
+    };
+    let mut output = overrides.cloned().unwrap_or_default();
+    output.max_output_tokens = None;
+    let definition = match maka_providers::definition(&row.provider, snapshot) {
+        Ok(definition) => definition,
+        Err(error) => {
+            tracing::warn!(%error, model_id = model, connection_id = %row.connection_id, "Model defaults unavailable");
+            return None;
+        }
+    };
+    let resolved = match definition
+        .prepare(model_request(row, model, Some(output)))
+        .await
+    {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tracing::warn!(%error, model_id = model, connection_id = %row.connection_id, "Model defaults unavailable");
+            return None;
+        }
+    };
+    Some(ModelDefaults {
+        label: metadata.info.display_name.unwrap_or_else(|| model.into()),
+        context_window: metadata.info.context_window,
+        input_limit: metadata.info.input_limit,
+        max_output_tokens: resolved.main_output_limit,
+        compaction_threshold: maka_agent_facts::context::default_compaction_threshold(
+            resolved.info.context_window,
+            resolved.info.input_limit,
+        ),
+        code_mode: maka_agent_facts::execution::ToolMode::for_model(
+            model,
+            &resolved.base_url,
+            None,
+        ) == maka_agent_facts::execution::ToolMode::CodeMode,
+        code_mode_language: Default::default(),
+        apply_patch: maka_agent_facts::execution::EditingTools::for_model(
+            model,
+            &resolved.base_url,
+            None,
+        ) == maka_agent_facts::execution::EditingTools::ApplyPatch,
+        thinking_levels: metadata.thinking_levels,
+        default_thinking_level: metadata
+            .default_thinking_level
+            .filter(|level| supported.contains(level)),
     })
 }
 async fn resolved_model(
     catalog: &ConnectionCatalogSnapshot,
     target: &ConnectionTarget,
+    preview: Option<ModelOverride>,
     snapshot: Arc<maka_providers::catalog::Snapshot>,
 ) -> DefaultModel {
     let row = catalog.connections.iter().find(|row| {
         row.connection_id == target.connection_id
             && selectable(row, snapshot.clone())
-            && row.enabled_model_ids.contains(&target.model_id)
+            && (preview.is_some() || row.enabled_model_ids.contains(&target.model_id))
     });
-    let choice = match row {
-        Some(row) => model_choice(row, &target.model_id, snapshot).await,
-        None => None,
-    };
-    match choice {
-        Some(choice) => DefaultModel::Ready { choice },
-        None => DefaultModel::Unavailable {
-            target: target.clone(),
-        },
+    if let Some(row) = row {
+        let overrides = preview.or_else(|| {
+            row.model_overrides
+                .as_ref()
+                .and_then(|all| all.get(&target.model_id))
+                .cloned()
+        });
+        if let Ok(metadata) =
+            model_metadata(row, &target.model_id, overrides.clone(), snapshot.clone()).await
+        {
+            let defaults = model_defaults(
+                row,
+                &target.model_id,
+                overrides.as_ref(),
+                &metadata.thinking_levels,
+                snapshot,
+            )
+            .await;
+            return DefaultModel::Ready {
+                choice: model_choice_from_metadata(
+                    row,
+                    &target.model_id,
+                    overrides.as_ref(),
+                    metadata,
+                ),
+                defaults,
+            };
+        }
+    }
+    DefaultModel::Unavailable {
+        target: target.clone(),
     }
 }
 async fn default_model(
@@ -178,7 +283,26 @@ async fn default_model(
 ) -> DefaultModel {
     match &catalog.default_target {
         None => DefaultModel::None,
-        Some(target) => resolved_model(catalog, target, snapshot).await,
+        Some(target) => {
+            let row = catalog.connections.iter().find(|row| {
+                row.connection_id == target.connection_id
+                    && selectable(row, snapshot.clone())
+                    && row.enabled_model_ids.contains(&target.model_id)
+            });
+            let choice = match row {
+                Some(row) => model_choice(row, &target.model_id, snapshot).await,
+                None => None,
+            };
+            match choice {
+                Some(choice) => DefaultModel::Ready {
+                    choice,
+                    defaults: None,
+                },
+                None => DefaultModel::Unavailable {
+                    target: target.clone(),
+                },
+            }
+        }
     }
 }
 
@@ -434,8 +558,12 @@ impl Handler for Settings {
                     )
                 }
                 "resolveModel" => {
-                    let target: ConnectionTarget =
+                    let request: ResolveModel =
                         serde_json::from_value(input).map_err(|_| "settings_input_invalid")?;
+                    let target = ConnectionTarget {
+                        connection_id: request.connection_id,
+                        model_id: request.model_id,
+                    };
                     let public_guard = public_catalog.snapshot.read().await;
                     let snapshot = public_guard
                         .as_ref()
@@ -446,7 +574,9 @@ impl Handler for Settings {
                         .await
                         .map_err(|_| "settings_store_unavailable")?;
                     drop(public_guard);
-                    super::connections::encode(resolved_model(&catalog, &target, snapshot).await)
+                    super::connections::encode(
+                        resolved_model(&catalog, &target, request.overrides, snapshot).await,
+                    )
                 }
                 "models" => {
                     let input: ModelsRead =

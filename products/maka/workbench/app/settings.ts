@@ -34,6 +34,7 @@ import type {
   SettingsProvidersPage,
   SettingsProviderSummary,
   SettingsModelLimitSettings,
+  SettingsModelDefaults,
   ThinkingLevel,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 
@@ -97,6 +98,7 @@ export type ModelEditor = {
   label: string;
   thinkingLevels: ThinkingLevel[] | null;
   defaultThinkingLevel: ThinkingLevel | null;
+  defaults: SettingsModelDefaults | null;
   effective: {
     thinkingLevels: ThinkingLevel[];
     defaultThinkingLevel: ThinkingLevel | null;
@@ -155,6 +157,7 @@ export function createModelSettings(
   const providerNext = signal<number | null>(null);
   const editor = signal<ConnectionEditor | null>(null);
   const model = signal<ModelEditor | null>(null);
+  const modelLoading = signal(false);
   const credential = signal<CredentialStatus | null>(null);
   const loading = signal(false);
   const discovery = signal<'idle' | 'fetching' | 'ready' | 'failed'>('idle');
@@ -242,6 +245,7 @@ export function createModelSettings(
   const cancelRead = () => {
     read += 1;
     loading.set(false);
+    modelLoading.set(false);
   };
   const loadConnections = async (more = false) => {
     if (!alive || !active() || loading() || (more && next() === null)) return;
@@ -747,33 +751,73 @@ export function createModelSettings(
       applyPatch: raw?.applyPatch ?? null,
       thinkingLevels: raw?.thinkingLevels ? [...raw.thinkingLevels] : null,
       defaultThinkingLevel: raw?.defaultThinkingLevel ?? null,
+      defaults: null,
       effective: null,
     });
     confirmation.set(null);
     page.set('model');
     error.set('');
     notice.set('');
-    if (id !== null) void loadModelMetadata({ ...modelAction() });
+    void loadModelMetadata({ ...modelAction() });
+  };
+  const modelOverride = (
+    current: ModelEditor,
+  ):
+    | { kind: 'valid'; value: ModelOverride }
+    | { kind: 'invalid'; field: (typeof modelLimitFields)[number]['label'] } => {
+    const id = current.id.trim();
+    const value: ModelOverride = {
+      ...(editor()?.baseline?.editing?.modelOverrides?.[id] ?? {}),
+    };
+    if (current.label) value.displayName = current.label;
+    else delete value.displayName;
+    if (current.thinkingLevels === null) delete value.thinkingLevels;
+    else value.thinkingLevels = current.thinkingLevels;
+    if (current.defaultThinkingLevel) value.defaultThinkingLevel = current.defaultThinkingLevel;
+    else delete value.defaultThinkingLevel;
+    if (current.codeMode === null) delete value.codeMode;
+    else value.codeMode = current.codeMode;
+    if (current.codeModeLanguage === null) delete value.codeModeLanguage;
+    else value.codeModeLanguage = current.codeModeLanguage;
+    if (current.applyPatch === null) delete value.applyPatch;
+    else value.applyPatch = current.applyPatch;
+    for (const { key, label } of modelLimitFields) {
+      const text = current.limits[key].trim();
+      if (!text) delete value[key];
+      else {
+        const tokens = Number(text);
+        if (!/^\d+$/.test(text) || !Number.isSafeInteger(tokens) || tokens <= 0)
+          return { kind: 'invalid', field: label };
+        value[key] = tokens;
+      }
+    }
+    return { kind: 'valid', value };
   };
   const loadModelMetadata = async (request: ModelAction) => {
     const connectionId = editor()!.baseline!.target.connectionId;
     const generation = ++read;
-    loading.set(true);
+    const current = model()!;
+    const parsed = modelOverride(current);
+    modelLoading.set(false);
+    if (!request.modelId.trim() || parsed.kind === 'invalid') return;
+    modelLoading.set(true);
     try {
       const result = await host.query('settings', 'resolveModel', {
         connectionId,
-        modelId: request.modelId,
+        modelId: request.modelId.trim(),
+        overrides: parsed.value,
       });
       if (generation !== read || !currentModel(request)) return;
       if (
         result.kind !== 'ready' ||
         result.choice.selection.connectionId !== connectionId ||
-        result.choice.selection.modelId !== request.modelId ||
+        result.choice.selection.modelId !== request.modelId.trim() ||
         result.choice.selection.revision !== request.revision
       )
         return;
       model.set({
         ...model()!,
+        defaults: result.defaults,
         effective: {
           thinkingLevels: [...result.choice.thinkingLevels],
           defaultThinkingLevel: result.choice.defaultThinkingLevel,
@@ -783,12 +827,25 @@ export function createModelSettings(
     } catch (reason) {
       if (generation === read && currentModel(request)) report(reason);
     } finally {
-      if (alive && generation === read) loading.set(false);
+      if (alive && generation === read) modelLoading.set(false);
     }
   };
   const changeModel = (change: Partial<ModelEditor>) => {
     const current = model();
-    if (current && !busy()) model.set({ ...current, ...change });
+    if (current && !busy()) {
+      const refresh =
+        change.id !== undefined ||
+        change.thinkingLevels !== undefined ||
+        change.defaultThinkingLevel !== undefined ||
+        change.limits !== undefined;
+      model.set({
+        ...current,
+        ...change,
+        defaults: refresh ? null : current.defaults,
+        effective: change.id !== undefined && change.id !== current.id ? null : current.effective,
+      });
+      if (refresh) void loadModelMetadata(modelAction());
+    }
   };
   const toggleThinking = (request: ModelAction & { level: ThinkingLevel }) => {
     if (!currentModel(request)) return;
@@ -849,32 +906,12 @@ export function createModelSettings(
       if (current.originalId === null && facts.enabledModelIds.includes(id))
         throw new UiError('That model is already enabled.');
       const overrides = { ...(facts.modelOverrides ?? {}) };
-      const value: ModelOverride = { ...(overrides[id] ?? {}) };
-      if (current.label) value.displayName = current.label;
-      else delete value.displayName;
-      if (current.thinkingLevels === null) delete value.thinkingLevels;
-      else value.thinkingLevels = current.thinkingLevels;
-      if (current.defaultThinkingLevel) value.defaultThinkingLevel = current.defaultThinkingLevel;
-      else delete value.defaultThinkingLevel;
-      if (current.codeMode === null) delete value.codeMode;
-      else value.codeMode = current.codeMode;
-      if (current.codeModeLanguage === null) delete value.codeModeLanguage;
-      else value.codeModeLanguage = current.codeModeLanguage;
-      if (current.applyPatch === null) delete value.applyPatch;
-      else value.applyPatch = current.applyPatch;
-      for (const { key, label } of modelLimitFields) {
-        const text = current.limits[key].trim();
-        if (!text) delete value[key];
-        else {
-          const tokens = Number(text);
-          if (!/^\d+$/.test(text) || !Number.isSafeInteger(tokens) || tokens <= 0)
-            throw new UiError('{field} must be a positive whole number of tokens.', {
-              field: message(label),
-            });
-          value[key] = tokens;
-        }
-      }
-      overrides[id] = value;
+      const parsed = modelOverride(current);
+      if (parsed.kind === 'invalid')
+        throw new UiError('{field} must be a positive whole number of tokens.', {
+          field: message(parsed.field),
+        });
+      overrides[id] = parsed.value;
       const result = await mutate('settings', 'update', {
         expected: basis(form.baseline),
         changes: {
@@ -1019,6 +1056,7 @@ export function createModelSettings(
   const activate = () => {
     if (page() === 'connections') void loadConnections();
     else if (page() === 'providers') void loadProviders();
+    else if (page() === 'model') void loadModelMetadata(modelAction());
   };
   const reset = () => {
     cancelRead();
@@ -1068,6 +1106,7 @@ export function createModelSettings(
     defaultTarget,
     editor,
     model,
+    modelLoading,
     credential,
     loading,
     discovery,

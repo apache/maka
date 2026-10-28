@@ -337,7 +337,12 @@ fn request_context(
             .as_ref()
             .and_then(|models| models.get(&model.id))
             .and_then(|profile| profile.compaction_threshold)
-            .or_else(|| input.map(|limit| ((u128::from(limit) * 85 / 100) as u64).max(1))),
+            .or_else(|| {
+                maka_agent_facts::context::default_compaction_threshold(
+                    model.context_window,
+                    model.input_limit,
+                )
+            }),
     };
     context.validate().map_err(|_| {
         tracing::warn!(stage = "request_context", cause = "request_context_invalid", connection_id = %row.connection_id, "Model preparation failed");
