@@ -2349,6 +2349,129 @@ struct HeadlessReadback {
     padded_bytes_per_row: u32,
 }
 
+/// Wall-clock boundaries of a headless scene's preparation and GPU submission.
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "offscreen"
+    )
+))]
+#[derive(Clone, Copy, Debug)]
+pub struct SubmissionTimings {
+    /// Entry into scene submission, before resource preparation.
+    pub prepare_started: std::time::Instant,
+    /// Start of scene encoding, after resource preparation.
+    pub encode_started: std::time::Instant,
+    /// Completion of command encoding, before handing off for submission.
+    pub encode_finished: std::time::Instant,
+    /// Start of queue submission, after command encoding is finished.
+    pub submit_started: std::time::Instant,
+    /// Return from queue submission.
+    pub submit_finished: std::time::Instant,
+    /// Return from requesting asynchronous buffer mapping.
+    pub map_requested: std::time::Instant,
+}
+
+/// Owned frame commands and readback resources awaiting GPU submission.
+///
+/// Complete [`Self::submit`] before preparing another scene on the same
+/// renderer: queued uploads share its buffers and flush with the next submit.
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "offscreen"
+    )
+))]
+pub struct PreparedReadback {
+    commands: wgpu::CommandBuffer,
+    readback: HeadlessReadback,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    pixel_length: usize,
+    format: wgpu::TextureFormat,
+    errors: Arc<DeviceErrorState>,
+    observed_error_generation: u64,
+    cache: Arc<parking_lot::Mutex<Option<HeadlessReadback>>>,
+    prepare_started: std::time::Instant,
+    encode_started: std::time::Instant,
+    encode_finished: std::time::Instant,
+}
+
+#[cfg(all(
+    not(target_family = "wasm"),
+    any(
+        test,
+        feature = "bench-support",
+        feature = "test-support",
+        feature = "offscreen"
+    )
+))]
+impl PreparedReadback {
+    /// The physical dimensions captured by this preparation.
+    pub fn size(&self) -> Size<DevicePixels> {
+        self.readback.size
+    }
+
+    /// The exact tightly packed RGBA8 length produced by a successful readback.
+    pub fn pixel_len(&self) -> usize {
+        self.pixel_length
+    }
+
+    /// Submits these commands and requests mapping on the calling thread.
+    ///
+    /// This packet owns its resources and may move to a background owner.
+    pub fn submit(mut self) -> anyhow::Result<SubmittedReadback> {
+        anyhow::ensure!(
+            !self.errors.device_lost(),
+            "GPU device was lost before headless submission"
+        );
+        if let Some(error) = self
+            .errors
+            .observe_error(&mut self.observed_error_generation)
+        {
+            anyhow::bail!("GPU error before headless submission: {error}");
+        }
+        let submit_started = std::time::Instant::now();
+        let submission = self.queue.submit(std::iter::once(self.commands));
+        let submit_finished = std::time::Instant::now();
+        let (sender, mapped) = std::sync::mpsc::channel();
+        self.readback
+            .buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                // A callback may run on any device-polling or submitting thread.
+                // It never copies pixels or returns a buffer to the reuse cache.
+                let _ = sender.send(result);
+            });
+        let map_requested = std::time::Instant::now();
+        Ok(SubmittedReadback {
+            timings: SubmissionTimings {
+                prepare_started: self.prepare_started,
+                encode_started: self.encode_started,
+                encode_finished: self.encode_finished,
+                submit_started,
+                submit_finished,
+                map_requested,
+            },
+            readback: self.readback,
+            device: self.device,
+            submission,
+            mapped,
+            pixel_length: self.pixel_length,
+            format: self.format,
+            errors: self.errors,
+            observed_error_generation: self.observed_error_generation,
+            cache: self.cache,
+        })
+    }
+}
+
 /// An owned GPU submission awaiting readback, independent of its renderer.
 ///
 /// Submission never waits for mapping or allocates an RGBA image. Move this
@@ -2364,6 +2487,7 @@ struct HeadlessReadback {
     )
 ))]
 pub struct SubmittedReadback {
+    timings: SubmissionTimings,
     readback: HeadlessReadback,
     device: Arc<wgpu::Device>,
     submission: wgpu::SubmissionIndex,
@@ -2385,6 +2509,11 @@ pub struct SubmittedReadback {
     )
 ))]
 impl SubmittedReadback {
+    /// The wall-clock boundaries captured by this submission.
+    pub fn submission_timings(&self) -> SubmissionTimings {
+        self.timings
+    }
+
     /// The physical dimensions captured by this submission.
     pub fn size(&self) -> Size<DevicePixels> {
         self.readback.size
@@ -2612,16 +2741,16 @@ impl WgpuHeadlessRenderer {
         Ok((padded_bytes_per_row, buffer_size, pixel_length))
     }
 
-    /// Records drawing and readback in one submission without waiting for GPU
-    /// completion, allocating RGBA storage, or copying mapped pixels.
+    /// Prepares drawing and readback commands without submitting them.
     ///
-    /// The owned ticket can complete on a background worker after this renderer
-    /// submits another frame, resizes its target, or is dropped.
-    pub fn submit_scene(
+    /// Submit the owned packet before preparing another scene on this renderer,
+    /// because its queued uploads share buffers with subsequent frames.
+    pub fn prepare_scene(
         &mut self,
         scene: &Scene,
         size: Size<DevicePixels>,
-    ) -> anyhow::Result<SubmittedReadback> {
+    ) -> anyhow::Result<PreparedReadback> {
+        let prepare_started = std::time::Instant::now();
         self.check_gpu_errors()?;
         self.ensure_render_target(size)?;
         let target = self
@@ -2649,6 +2778,7 @@ impl WgpuHeadlessRenderer {
                 padded_bytes_per_row,
             },
         };
+        let encode_started = std::time::Instant::now();
         let mut encoder = self
             .core
             .encode_frame(scene, &view, size, false, wgpu::Color::BLACK)?;
@@ -2673,31 +2803,34 @@ impl WgpuHeadlessRenderer {
                 depth_or_array_layers: 1,
             },
         );
-        let submission = self
-            .core
-            .resources
-            .queue
-            .submit(std::iter::once(encoder.finish()));
-        let (sender, mapped) = std::sync::mpsc::channel();
-        readback
-            .buffer
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                // A callback may run on any device-polling or submitting thread.
-                // It never copies pixels or returns a buffer to the reuse cache.
-                let _ = sender.send(result);
-            });
-        Ok(SubmittedReadback {
+        let commands = encoder.finish();
+        let encode_finished = std::time::Instant::now();
+        Ok(PreparedReadback {
+            commands,
             readback,
             device: self.core.resources.device.clone(),
-            submission,
-            mapped,
+            queue: self.core.resources.queue.clone(),
             pixel_length,
             format: self.core.target_format,
             errors: self.context.errors().clone(),
             observed_error_generation: self.observed_error_generation,
             cache: self.readback.clone(),
+            prepare_started,
+            encode_started,
+            encode_finished,
         })
+    }
+
+    /// Prepares and submits one scene without waiting for GPU completion.
+    ///
+    /// The owned ticket can complete on a background worker after this renderer
+    /// submits another frame, resizes its target, or is dropped.
+    pub fn submit_scene(
+        &mut self,
+        scene: &Scene,
+        size: Size<DevicePixels>,
+    ) -> anyhow::Result<SubmittedReadback> {
+        self.prepare_scene(scene, size)?.submit()
     }
 
     /// Render a scene and wait for its GPU readback as an RGBA image.

@@ -39,7 +39,11 @@ At startup, the shell negotiates image transport and display geometry. On Linux 
 
 In **Settings → General**, **Interface scale** previews a preset or a percentage entered with Enter. **Save** keeps the chosen scale; **Reset to 100%** previews 100%, and **Cancel** or leaving the page restores the saved scale. Ctrl+0 or Ctrl+Alt+0 resets and saves 100% (Cmd+0 or Cmd+Alt+0 on macOS). Pixel layout and text are rasterized again at the new scale. For Unicode rendering, use your terminal’s font size.
 
+Input, CPU layout, painting and GPU command encoding remain on the native UI path. Owned GPU commands move to the existing background executor, where submission and readback run in one task. The next scene waits until that readback completes, keeping GPU resource writes and polling in order. Image encoding and terminal output can still overlap native work and rendering of later frames; capture does not wait for the preceding terminal acknowledgement.
+
 Kitty prepares complete lossless snapshots while GPU rendering continues. The sole writer selects the alternate image slot after the preceding receipt, retains the acknowledged image underneath, and publishes only after both a complete flush and the matching success reply. Waiting snapshots can coalesce; a started transaction finishes intact. These receipts do not prove display vsync. Any negative reply for either session-owned slot ends the graphics session. Resize immediately revokes old pointer geometry.
+
+Adjacent unpressed mouse moves with the same modifiers coalesce to the latest position. Clicks, drags, wheel events, keys and IME events retain their order and separate those move sequences.
 
 Without `--session`, the centered composer offers **Choose workspace** before editing. Add `--session SESSION_ID` to open an existing conversation directly. The default Maka root UI requires `agent`, `settings` and `receipts`; a custom root uses its own declared services and can run without Agent. Exiting closes only the shell's own connection; the Host follows its existing lifecycle and idle policy.
 

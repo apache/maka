@@ -24,7 +24,7 @@ use gpui::{
     px, size,
 };
 use nsh_engine::{App, Bundle, EngineConfig};
-use nsh_gpui_terminal::{SubmittedFrame, TerminalPlatform};
+use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};
 use std::{
     cell::{Cell, RefCell},
@@ -81,7 +81,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             return root;
         });
     "#;
-    let frames = Rc::new(RefCell::new(Vec::<SubmittedFrame>::new()));
+    let frames = Rc::new(RefCell::new(Vec::<CandidateFrame>::new()));
     let received = frames.clone();
     let count = Rc::new(Cell::new(0usize));
     let submitted = count.clone();
@@ -92,7 +92,11 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
         Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
         Box::new(move |frame| {
             submitted.set(submitted.get() + 1);
-            received.borrow_mut().push(frame);
+            let rendered_frame = std::thread::spawn(move || frame.submit()?.complete())
+                .join()
+                .expect("GPU rendering panicked")
+                .unwrap();
+            received.borrow_mut().push(rendered_frame);
         }),
         Arc::new(move || {
             if std::thread::current().id() == owner {
@@ -150,7 +154,6 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
             errors.borrow()
         );
         let ready = frames.borrow_mut().drain(..).any(|frame| {
-            let frame = frame.complete().unwrap();
             // The fixture's actual input fill proves that native mount and its
             // initial paint completed; a blank startup frame is insufficient.
             frame.pixels()[(24 * 320 + 24) * 4..][..4] == [32, 64, 96, 255]
@@ -398,7 +401,7 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
                 .borrow_mut()
                 .drain(..)
                 .next_back()
-                .map(|frame| frame.complete().unwrap().pixels().to_vec());
+                .map(|frame| frame.pixels().to_vec());
             if let Some(pixels) = pixels {
                 initial_count.set(count.get());
                 return pixels;
@@ -544,7 +547,6 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     loop {
         platform.pump();
         let ready = frames.borrow_mut().drain(..).any(|frame| {
-            let frame = frame.complete().unwrap();
             frame.size() == size(gpui::DevicePixels(700), gpui::DevicePixels(350))
                 && frame.pixels()[(120 * 700 + 525) * 4..][..4] == [32, 64, 96, 255]
         });
@@ -621,10 +623,10 @@ fn native_editor_focus_and_text_do_not_wait_for_another_pixel_frame() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         platform.pump();
-        let ready = frames.borrow_mut().drain(..).any(|frame| {
-            let frame = frame.complete().unwrap();
-            frame.pixels()[(160 * 700 + 52) * 4..][..4] == [32, 64, 96, 255]
-        });
+        let ready = frames
+            .borrow_mut()
+            .drain(..)
+            .any(|frame| frame.pixels()[(160 * 700 + 52) * 4..][..4] == [32, 64, 96, 255]);
         if ready {
             break;
         }

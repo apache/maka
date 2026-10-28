@@ -99,6 +99,7 @@ export type AgentSkillCandidatesInput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
   [k: string]: SettingsUpdateInput_ModelOverride | undefined;
 } | null;
@@ -845,7 +846,11 @@ export interface ServiceMethods {
     };
     resolveModel: {
       mode: 'query';
-      input: Runtime.ConnectionTarget;
+      input: {
+        connectionId: string;
+        modelId: string;
+        overrides?: SettingsResolveModelInput_ModelOverride;
+      };
       output: Runtime.SettingsDefaultModel;
     };
     saveCredential: {

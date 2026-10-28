@@ -233,9 +233,6 @@ fn main() {
             document.to_str().unwrap()
         ));
         for (name, path) in files {
-            if path.starts_with(repo) {
-                println!("cargo:rerun-if-changed={}", path.display());
-            }
             source.push_str(&format!(
                 "({name:?}, include_bytes!({:?})),\n",
                 path.to_str().unwrap()

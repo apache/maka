@@ -23,6 +23,8 @@ use termina::{
     escape::csi::{Csi, Cursor},
 };
 
+// Otty can anchor an image at the preceding caret unless the cursor move is
+// acknowledged before the image batch, even with CUP inside that batch.
 pub(super) const ORIGIN: &[u8] = b"\x1b[H\x1b[6n";
 // Use the same terminal-response budget as pixel geometry queries, after flush.
 const TIMEOUT: Duration = Duration::from_secs(1);

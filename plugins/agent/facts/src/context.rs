@@ -35,6 +35,25 @@ pub enum ModelPurpose {
     Summary,
 }
 
+pub fn effective_input_limit(context_window: Option<u64>, input_limit: Option<u64>) -> Option<u64> {
+    match (context_window, input_limit) {
+        (Some(context), Some(input)) => Some(context.min(input)),
+        (context, input) => context.or(input),
+    }
+}
+
+pub fn default_compaction_threshold(
+    context_window: Option<u64>,
+    input_limit: Option<u64>,
+) -> Option<u64> {
+    effective_input_limit(context_window, input_limit)
+        .map(|limit| ((u128::from(limit) * 85 / 100) as u64).max(1))
+}
+
+pub fn effective_output_limit(configured: Option<u64>) -> u64 {
+    configured.unwrap_or(8000)
+}
+
 /// Frozen facts about this request's selected model, not prompt contents.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
