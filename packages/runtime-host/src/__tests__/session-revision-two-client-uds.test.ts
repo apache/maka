@@ -156,6 +156,42 @@ test('two Clients share exact retryable Session branch and revision authority', 
       ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID,
       graphChildSessionId,
     );
+
+    // The rewrite-missing commit arm (#6246 review): a staged attachment whose
+    // source Artifact no longer exists cannot be re-keyed onto the copy. The
+    // commit must leave it off the response — the client keeps its fail-closed
+    // gate — instead of staging a dangling target-owned ref. This pins the
+    // `if (!relativePath) continue` arm in the coordinator's staged-attachment
+    // re-key, which the suites above never exercised: recording the dangling
+    // ref kept every one of them green. The deletion must stay at the very end
+    // of the flow: every copy kind that retains the upload turn (asserted by
+    // verifyDurableBranch) needs the source Artifact intact.
+    host = await startHost(root, capability.rootId);
+    const missingRewriteClient = await connectClient(root);
+    try {
+      await missingRewriteClient.request('artifact.delete', {
+        sessionId: sourceSessionId,
+        artifactId: 'source-artifact',
+      });
+      const sourceBeforeMissing = await querySession(missingRewriteClient, sourceSessionId);
+      const missingRewrite = await missingRewriteClient.request('session.revision.create', {
+        sourceSessionId,
+        targetSessionId: 'missing-rewrite-revision-target',
+        sourceTurnId: 'turn-1',
+        expectedSourceRevision: sourceBeforeMissing.revision,
+      });
+      assert.equal(missingRewrite.kind, 'committed');
+      if (missingRewrite.kind !== 'committed') assert.fail('Missing-rewrite revision must commit');
+      assert.equal(
+        missingRewrite.stagedAttachments,
+        undefined,
+        'a rewrite-missing staged attachment must stay off the response instead of coming back as a dangling target-owned ref',
+      );
+    } finally {
+      await missingRewriteClient.close();
+      await stopHost(host);
+      host = undefined;
+    }
   } finally {
     await terminateHost(host);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {

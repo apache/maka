@@ -459,6 +459,39 @@ describe('revision lifecycle (#5109)', () => {
     );
   });
 
+  it('keeps a carried attachment on its source-owned ref when the copy omits the rewrite (#6246 review)', async () => {
+    // Partial copy response: the Host staged nothing because the attachment's
+    // rewrite is missing (its source Artifact could not be copied), so the
+    // committed response omits `stagedAttachments` entirely. The re-key must
+    // keep the plate item on its source-owned ref — dropping it would lose
+    // the attachment silently, and the Host's session-owned guard fails a
+    // source-ref submit loudly instead of sending a dangling reference.
+    const sourceRef: AttachmentRef = {
+      kind: 'code',
+      name: 'source.txt',
+      mimeType: 'text/plain',
+      bytes: 14,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'a/src' },
+    };
+    const staged = emptyStagedLog();
+    const h = createEnv({
+      messages: [userMessage('turn-1', 'with attachment', { attachments: [sourceRef] })],
+      staged,
+    });
+    const actions = createRevisionActions(h.env);
+
+    actions.beginEditUserMessage('turn-1');
+    assert.equal(await actions.prepareRevisionSend('with attachment'), true);
+
+    const carried = staged.attachments.find((item) => item.displayName === 'source.txt');
+    assert.ok(carried, 'the carried attachment must survive prepare');
+    assert.deepEqual(
+      carried?.source,
+      { type: 'retained', attachment: sourceRef },
+      'a rewrite-missing attachment keeps its source-owned ref instead of being dropped or re-keyed',
+    );
+  });
+
   it('keeps a quote added on the branch child when a prepared edit is cancelled', async () => {
     const staged = emptyStagedLog();
     const h = createEnv({
