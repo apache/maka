@@ -1360,6 +1360,11 @@ pub(crate) mod ime {
         range: Option<Range<usize>>,
         text: &str,
     ) {
+        // Control characters are keys; an empty replacement can end a composition.
+        if !text.is_empty() && text.chars().all(char::is_control) {
+            replace_text_now(surface, range, text);
+            return;
+        }
         if super::queue_if_unsettled(surface, || Held::Replace {
             range: range.clone(),
             text: text.to_owned(),
