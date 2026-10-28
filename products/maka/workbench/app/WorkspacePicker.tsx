@@ -27,7 +27,7 @@ import { Button, Dialog } from 'nsh/base';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
 import { host as shell, platform } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import type {
   AgentDirectory,
   AgentDirectoryPage,
@@ -78,9 +78,10 @@ export function WorkspacePicker(props: {
   create(workspace: AgentWorkspaceSelection): Promise<void>;
   changed(): void;
 }) {
+  const host = useHost();
   const managing = signal(false);
   const picking = signal(false);
-  const operations = createSettingsOperations();
+  const operations = createSettingsOperations(host);
   const awaitingRoots = signal<DirectoryRootSpec[] | null>(null);
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   let refreshSession = false;

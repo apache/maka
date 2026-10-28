@@ -115,7 +115,9 @@ impl Evidence {
         if let Some(reason) = reason {
             return ModelError::Provider(ProviderFailure::new(
                 reason,
-                error.message,
+                error
+                    .message
+                    .unwrap_or_else(|| provider_message(error.status)),
                 !self.unsafe_replay,
                 retry_after,
             ));
@@ -124,10 +126,23 @@ impl Evidence {
             .status
             .filter(|s| (100..600).contains(s) && !(200..300).contains(s))
         {
-            return ModelError::Http { status };
+            return ModelError::Http {
+                status,
+                message: error.message,
+            };
         }
-        ModelError::Adapter(error.message)
+        ModelError::Adapter(
+            error
+                .message
+                .unwrap_or_else(|| provider_message(error.status)),
+        )
     }
+}
+fn provider_message(status: Option<u16>) -> String {
+    status.map_or_else(
+        || "provider request failed".into(),
+        |status| format!("model HTTP request failed (status {status})"),
+    )
 }
 fn prompt_too_long(message: &str) -> bool {
     let Some(body) = message.strip_prefix("prompt is too long: ") else {
@@ -158,8 +173,7 @@ pub(super) fn http_error(status: u16, bytes: &[u8]) -> ProviderError {
         message: record
             .get("message")
             .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("model HTTP request failed (status {status})")),
+            .map(str::to_owned),
         kind: record
             .get("type")
             .and_then(Value::as_str)
@@ -211,17 +225,17 @@ mod tests {
         }
         assert!(matches!(
             classify(413, json!({}), false),
-            ModelError::Http { status: 413 }
+            ModelError::Http { status: 413, .. }
         ));
         let mut body = vec![b' '; 65537];
         body.extend_from_slice(br#"{"error":{"code":"context_length_exceeded"}}"#);
         assert!(matches!(
             Evidence::default().provider(http_error(400, &body), false, None),
-            ModelError::Http { status: 400 }
+            ModelError::Http { status: 400, .. }
         ));
         assert!(matches!(
             Evidence::default().provider(http_error(400, b"not JSON"), false, None),
-            ModelError::Http { status: 400 }
+            ModelError::Http { status: 400, .. }
         ));
     }
 
@@ -257,11 +271,22 @@ mod tests {
     }
 
     #[test]
-    fn http_status_is_private_and_permanent_failures_override_retry_signals() {
+    fn http_diagnostics_preserve_messages_and_permanent_failures_override_retry_signals() {
         for status in [100, 199, 300, 400, 401, 402, 403, 404] {
-            let error = classify(status, json!({"error":{"message":"PRIVATE_BODY"}}), false);
-            assert!(matches!(error, ModelError::Http { status: actual } if actual == status));
-            assert!(!error.to_string().contains("PRIVATE_BODY"));
+            let error = classify(
+                status,
+                json!({"error":{"message":"invalid request field"}}),
+                false,
+            );
+            assert!(matches!(error, ModelError::Http { status: actual, .. } if actual == status));
+            assert_eq!(
+                error.to_string(),
+                format!("model HTTP request failed (status {status}): invalid request field")
+            );
+            assert_eq!(
+                error.failure_cause(),
+                Some(maka_agent_facts::model::error::ModelFailureCause::Http { status })
+            );
         }
         for status in [401, 402, 403, 429] {
             assert!(matches!(

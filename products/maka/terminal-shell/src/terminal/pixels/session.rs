@@ -100,11 +100,11 @@ fn run(
         state.trace.is_some()
     };
     let control = super::super::UiScaleControl(presentation.clone());
-    config.context = config
-        .context
-        .with(maka_workbench::UiScale(Box::new(move |scale| {
-            control.preview(scale)
-        })));
+    let current = super::super::UiScaleControl(presentation.clone());
+    config.context = config.context.with(maka_workbench::UiScale {
+        preview: Box::new(move |scale| control.preview(scale)),
+        current: Box::new(move || current.current()),
+    });
     if ready.send(Ok(())).is_err() {
         return Ok(());
     }

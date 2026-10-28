@@ -29,7 +29,10 @@ use nsh_platform_gpui::{AppOptions, AppView};
 use std::{
     cell::RefCell,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 use termina::{
@@ -38,7 +41,9 @@ use termina::{
 };
 
 #[class]
-struct RailHost {}
+struct RailHost {
+    scale: Arc<AtomicU32>,
+}
 
 #[class]
 impl RailHost {
@@ -47,10 +52,9 @@ impl RailHost {
         "en".into()
     }
     #[getter]
-    pub fn ui_scale_supported(&self) -> bool {
-        true
+    pub fn ui_scale_factor(&self) -> f32 {
+        f32::from_bits(self.scale.load(Ordering::Relaxed))
     }
-    pub fn preview_ui_scale(&self, _scale: f32) {}
 }
 
 #[test]
@@ -125,6 +129,8 @@ fn check_marks(source: &str) {
     let errors = Rc::new(RefCell::new(None));
     let failed = errors.clone();
     let source = source.to_owned();
+    let scale = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    let host_scale = scale.clone();
     let application = Application::with_platform(platform.clone()).run_embedded(move |cx| {
         cx.open_window(
             WindowOptions {
@@ -147,7 +153,11 @@ fn check_marks(source: &str) {
                     );
                     view.on_error(move |message| *failed.borrow_mut() = Some(message.to_owned()));
                     let mut host = Registry::ui_set("maka/host");
-                    host.value("host", move || Instance::new(RailHost {}));
+                    host.value("host", move || {
+                        Instance::new(RailHost {
+                            scale: host_scale.clone(),
+                        })
+                    });
                     view.load_with_config(EngineConfig {
                         ui_sets: vec![nsh_base::registry(), host],
                         ..EngineConfig::new(App::Js(Bundle::source(source)))
@@ -159,8 +169,9 @@ fn check_marks(source: &str) {
         )
         .unwrap();
     });
-    for (stage, scale) in [1.0, 0.8, 0.5, 2.0].into_iter().enumerate() {
-        caps.ui_scale = scale;
+    for (stage, factor) in [1.0f32, 0.8, 0.5, 2.0].into_iter().enumerate() {
+        scale.store(factor.to_bits(), Ordering::Relaxed);
+        caps.ui_scale = factor;
         platform
             .set_viewport(caps.pixel_size().unwrap(), caps.scale_factor())
             .unwrap();

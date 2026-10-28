@@ -552,6 +552,7 @@ impl Handler for RetirementGate {
         let returned = self.returned.clone();
         Box::pin(async move {
             if subscription {
+                context.emit(json!({"state":"watching"})).await?;
                 stop.cancelled().await;
             } else {
                 finished.notified().await;
@@ -589,7 +590,12 @@ async fn retirement_preserves_execution_cleanup(
                         MethodMode::Query
                     },
                     input: json!({}).into(),
-                    output: json!({}).into(),
+                    output: if subscription {
+                        json!({"type":"object"})
+                    } else {
+                        json!({})
+                    }
+                    .into(),
                     resources: BTreeMap::new(),
                 },
             )]),
@@ -718,13 +724,16 @@ async fn retirement_preserves_execution_cleanup(
     } else {
         Some(query.await.unwrap().unwrap())
     };
-    let accepted_observation = if subscription {
+    let mut accepted_observation = if subscription {
         Some(observation.await.unwrap().unwrap())
     } else {
         None
     };
     poll_ready(&mut owner);
     gate.started.notified().await;
+    if let Some(observation) = accepted_observation.as_mut() {
+        assert_eq!(observation.recv().await, Some(json!({"state":"watching"})));
+    }
     owner.drive();
     poll_ready(&mut owner);
     assert!(
@@ -777,12 +786,9 @@ async fn retirement_preserves_execution_cleanup(
     owner.drive();
     poll_ready(&mut owner);
     if subscription {
-        accepted_observation
-            .unwrap()
-            .completion()
-            .await
-            .cleanup
-            .unwrap();
+        let completion = accepted_observation.unwrap().completion().await;
+        assert_eq!(completion.result.unwrap(), Value::Null);
+        completion.cleanup.unwrap();
     } else {
         let completion = accepted_query.unwrap().completion().await;
         assert_eq!(completion.result.unwrap(), Value::Null);

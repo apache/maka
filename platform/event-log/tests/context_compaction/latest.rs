@@ -75,7 +75,6 @@ async fn preturn_keeps_anchor_and_latest_main_never_falls_back_a_broken_newer_tr
         .capture_model_context("session", Some("current"), 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
-    assert!(source.anchor.is_none());
     assert_eq!(source.tail.len(), 1);
     assert!(
         matches!(source.latest_main, LatestMainContext::Selected(ref value) if value.context.is_none())

@@ -53,7 +53,13 @@ import type {
   ServiceMethods,
   RecoveryRef,
   UiContext,
+  UiExports,
+  UiModule,
+  UiRuntime,
+  UiTarget,
+  UiViewImplementation,
 } from '@maka-agent/plugin-sdk';
+import { defineUiViewContract } from '@maka-agent/plugin-sdk';
 
 function forgedReceiptReference(reference: RecoveryRef) {
   // @ts-expect-error A reference cannot select a Root or convey a recovery grant.
@@ -504,3 +510,43 @@ async function sessionCompactionPrompt(
   void [raw, effective, inherited, empty, operationId, unfenced, missingPrompt];
 }
 void [compactionPromptMode, setCompactionPromptMode, sessionCompactionPrompt];
+
+type SessionViewInput = { readonly sessionId: string };
+const sessionViewContract = defineUiViewContract<SessionViewInput>('test.session');
+
+const sessionViewModule: UiModule<string> = {
+  activate(context) {
+    const runtime: UiRuntime<string> = context.runtime;
+    const restored: unknown = context.restored;
+    const sessionView: UiViewImplementation<SessionViewInput, string> = {
+      kind: 'view',
+      contract: sessionViewContract.id,
+      render(props) {
+        const sharedRuntime: UiRuntime<string> = props.runtime;
+        const activationRuntime: UiRuntime<string> = props.context.runtime;
+        void [sharedRuntime, activationRuntime];
+        return props.input.sessionId;
+      },
+    };
+    const exports: UiExports<string> = { session: sessionView };
+    void runtime;
+    return {
+      exports,
+      async prepareReload() {
+        return { restored };
+      },
+    };
+  },
+};
+
+function renderSessionView(runtime: UiRuntime<string>, target: UiTarget) {
+  const rendered: string = runtime.renderView(target, sessionViewContract, {
+    sessionId: 'session',
+  });
+  // @ts-expect-error The contract token supplies the input type to the renderer.
+  runtime.renderView(target, sessionViewContract, { sessionId: 42 });
+  // @ts-expect-error An embedded view cannot omit its contract's required input.
+  runtime.renderView(target, sessionViewContract, {});
+  return rendered;
+}
+void [sessionViewModule, renderSessionView];

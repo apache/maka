@@ -44,7 +44,6 @@ pub struct SemanticSelection {
     /// The authenticated selection's immutable {base,run} descriptor.
     pub lineage: Option<String>,
     pub after: u64,
-    pub anchor_sequence: Option<u64>,
     pub through: u64,
     /// Exclusive visibility boundary for archives owned by this Session.
     pub before: u64,
@@ -214,7 +213,6 @@ pub(crate) async fn rows(
         .bind(point.id.item_index as i64)
         .bind(group.map(|value| value as i64))
         .bind(limit + 1)
-        .bind(selection.anchor_sequence.map(|value| value as i64))
         .bind(
             selection
                 .replay
@@ -251,7 +249,7 @@ fn rows_query(group: bool) -> String {
     };
     // A source window can contain rows ordered before its source cutoff (for
     // example a late tool result). Seek each source range first, then sort only
-    // that window. The anchor branch is disjoint even if it lies in the window.
+    // that window.
     let (window, from) = if group {
         (
             String::new(),
@@ -262,28 +260,29 @@ fn rows_query(group: bool) -> String {
             "WITH window AS MATERIALIZED (
             SELECT * FROM context_semantic_rows WHERE owner_session_id=?1
               AND source_sequence>?2 AND source_sequence<=?3
-            UNION ALL
-            SELECT * FROM context_semantic_rows WHERE owner_session_id=?1
-              AND source_sequence=?13 AND source_sequence<=?2 AND source_sequence<=?3
         ) "
             .to_owned(),
             "window r",
         )
     };
-    format!("{window}SELECT r.row_json FROM {from}
-        WHERE r.owner_session_id=?1 AND (r.source_sequence>?2 OR r.source_sequence=?13) AND r.source_sequence<=?3
-          AND {} AND r.visible=1 AND {} AND (?15=1 OR (r.kind!='unknown_tool' AND r.unknown_only=0))
+    format!(
+        "{window}SELECT r.row_json FROM {from}
+        WHERE r.owner_session_id=?1 AND r.source_sequence>?2 AND r.source_sequence<=?3
+          AND {} AND r.visible=1 AND {} AND (?14=1 OR (r.kind!='unknown_tool' AND r.unknown_only=0))
           AND (r.order_sequence,r.order_index,r.source_sequence,r.source_index)>(?7,?8,?9,?10)
           AND {group_filter}
           AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n
             WHERE n.owner_session_id=r.owner_session_id AND n.source_sequence=r.source_sequence
               AND n.source_index=r.source_index AND n.revision>r.revision AND {})
         ORDER BY r.order_sequence,r.order_index,r.source_sequence,r.source_index LIMIT ?12",
-        eligible("r"),replay_predicate("r","?14"),eligible("n"))
+        eligible("r"),
+        replay_predicate("r", "?13"),
+        eligible("n")
+    )
 }
 
 /// A cold projection starts from the selected source window, not from the
-/// first change ever published by this Session. The anchor is a separate seek.
+/// first change ever published by this Session.
 /// Discovery pages the source primary key, not DISTINCT semantic order. Dirty
 /// insertion owns deduplication; repeating a source window for each order page
 /// would turn cold preparation into quadratic work.
@@ -314,26 +313,11 @@ pub(crate) async fn initial_groups(
     connection: &mut SqliteConnection,
     selection: &SemanticSelection,
     cursor: Option<GroupCursor>,
-    anchor: bool,
     limit: usize,
 ) -> Result<GroupPage, StoreError> {
     available_at(connection, &selection.session, selection.captured_through).await?;
-    let floor = if anchor {
-        let Some(anchor) = selection.anchor_sequence else {
-            return Ok(GroupPage {
-                groups: Vec::new(),
-                next: None,
-            });
-        };
-        anchor
-    } else {
-        selection.after.saturating_add(1)
-    };
-    let lower = if anchor {
-        "r.source_sequence=?2 AND (r.source_index,r.revision)>(?8,?9)"
-    } else {
-        "(r.source_sequence,r.source_index,r.revision)>(?7,?8,?9)"
-    };
+    let floor = selection.after.saturating_add(1);
+    let lower = "(r.source_sequence,r.source_index,r.revision)>(?7,?8,?9)";
     let query = format!(
         "SELECT r.source_sequence,r.source_index,r.revision,r.order_sequence
         FROM context_semantic_rows r WHERE r.owner_session_id=?1 AND {lower}
@@ -374,7 +358,7 @@ pub(crate) async fn changes(
     });
     let query=format!("SELECT r.change_id,r.revision,r.source_sequence,r.source_index,r.order_sequence,r.order_index,r.deleted
         FROM context_semantic_changes r WHERE r.owner_session_id=?1
-        AND (r.source_sequence>?2 OR r.source_sequence=?11) AND r.source_sequence<=?3 AND {}
+        AND r.source_sequence>?2 AND r.source_sequence<=?3 AND {}
         AND r.revision>?7 AND (r.revision,r.change_id)>(?8,?9)
         ORDER BY r.revision,r.change_id LIMIT ?10",eligible("r"));
     let records = sqlx::query(sqlx::AssertSqlSafe(query))
@@ -388,7 +372,6 @@ pub(crate) async fn changes(
         .bind(point.revision as i64)
         .bind(point.change_id as i64)
         .bind(limit + 1)
-        .bind(selection.anchor_sequence.map(|value| value as i64))
         .fetch_all(connection)
         .await?;
     let more = records.len() > limit as usize;
@@ -444,9 +427,9 @@ pub(crate) async fn neighbor(
     const PAGE: usize = 64;
     let (comparison, direction) = if before { ("<", "DESC") } else { (">", "ASC") };
     let predicate = format!(
-        "(r.source_sequence>?2 OR r.source_sequence=?9) AND r.source_sequence<=?3
+        "r.source_sequence>?2 AND r.source_sequence<=?3
         AND {} AND {} AND r.visible=1 AND (?8=1 OR (r.kind!='unknown_tool' AND r.unknown_only=0))
-        AND r.order_sequence {comparison} ?10
+        AND r.order_sequence {comparison} ?9
         AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n WHERE n.owner_session_id=r.owner_session_id
             AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision AND {})",
         eligible("r"), replay_predicate("r", "?7"), eligible("n")
@@ -457,8 +440,8 @@ pub(crate) async fn neighbor(
     );
     let order_query = format!("SELECT {columns} FROM context_semantic_rows r INDEXED BY context_semantic_row_order
         WHERE r.owner_session_id=?1
-        AND (r.order_sequence,r.order_index,r.source_sequence,r.source_index,r.revision) {comparison} (?11,?12,?13,?14,?15)
-        ORDER BY r.order_sequence {direction},r.order_index {direction},r.source_sequence {direction},r.source_index {direction},r.revision {direction} LIMIT ?16");
+        AND (r.order_sequence,r.order_index,r.source_sequence,r.source_index,r.revision) {comparison} (?10,?11,?12,?13,?14)
+        ORDER BY r.order_sequence {direction},r.order_index {direction},r.source_sequence {direction},r.source_index {direction},r.revision {direction} LIMIT ?15");
     let replay = selection
         .replay
         .as_ref()
@@ -469,18 +452,7 @@ pub(crate) async fn neighbor(
     } else {
         (group as i64, i64::MAX, i64::MAX, i64::MAX, i64::MAX)
     };
-    let mut anchor = selection
-        .anchor_sequence
-        .is_some_and(|value| value <= selection.after && value <= selection.through);
-    let mut source = if anchor {
-        (
-            selection.anchor_sequence.expect("anchor selected") as i64,
-            -1,
-            -1,
-        )
-    } else {
-        (selection.after.saturating_add(1) as i64, -1, -1)
-    };
+    let mut source = (selection.after.saturating_add(1) as i64, -1, -1);
     let mut best: Option<NeighborKey> = None;
     let mut order_limit = 1;
     loop {
@@ -493,7 +465,6 @@ pub(crate) async fn neighbor(
             .bind(&selection.lineage)
             .bind(&replay)
             .bind(selection.prior_unknown)
-            .bind(selection.anchor_sequence.map(|value| value as i64))
             .bind(group as i64)
             .bind(ordered.0)
             .bind(ordered.1)
@@ -515,12 +486,8 @@ pub(crate) async fn neighbor(
             return Ok(None);
         }
         order_limit = PAGE;
-        let lower = if anchor {
-            "r.source_sequence=?9 AND r.source_sequence<=?2 AND r.source_sequence<=?3
-             AND (r.source_index,r.revision)>(?12,?13)"
-        } else {
-            "(r.source_sequence,r.source_index,r.revision)>(?11,?12,?13) AND r.source_sequence<=?3"
-        };
+        let lower =
+            "(r.source_sequence,r.source_index,r.revision)>(?10,?11,?12) AND r.source_sequence<=?3";
         let source_query = format!(
             "SELECT {columns} FROM context_semantic_rows r WHERE r.owner_session_id=?1 AND {lower}
             ORDER BY r.source_sequence,r.source_index,r.revision LIMIT {PAGE}"
@@ -534,7 +501,6 @@ pub(crate) async fn neighbor(
             .bind(&selection.lineage)
             .bind(&replay)
             .bind(selection.prior_unknown)
-            .bind(selection.anchor_sequence.map(|value| value as i64))
             .bind(group as i64)
             .bind(source.0)
             .bind(source.1)
@@ -551,17 +517,12 @@ pub(crate) async fn neighbor(
             }
         }
         if records.len() < PAGE {
-            if anchor {
-                anchor = false;
-                source = (selection.after.saturating_add(1) as i64, -1, -1);
-            } else {
-                return match best {
-                    Some(key) => neighbor_row(connection, &selection.session, key)
-                        .await
-                        .map(Some),
-                    None => Ok(None),
-                };
-            }
+            return match best {
+                Some(key) => neighbor_row(connection, &selection.session, key)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            };
         }
     }
 }

@@ -32,11 +32,17 @@ use std::{
 const USAGE: &str = "usage: cargo run -p maka-workbench --example ui_types -- OUTPUT_DIR\n\
 OUTPUT_DIR must not exist; choose a task-private directory outside the checkout";
 const SOURCES: &[&str] = &[
-    "Bootstrap.tsx",
-    "App.tsx",
-    "ComputerAppControls.tsx",
-    "ComputerAppRequest.tsx",
-    "CapabilityRequest.tsx",
+    "products/maka/workbench/app/Bootstrap.tsx",
+    "products/maka/workbench/app/App.tsx",
+    "products/maka/workbench/app/ComputerAppControls.tsx",
+    "products/maka/workbench/app/ComputerAppRequest.tsx",
+    "products/maka/workbench/app/CapabilityRequest.tsx",
+    "plugins/agent/conversations/ui/index.tsx",
+    "plugins/agent/composer/ui/index.tsx",
+    "plugins/settings/settings/ui.tsx",
+    "plugins/workspace/workspace-files/ui/index.tsx",
+    "skills/maka-plugin-authoring/assets/starter/ui.tsx",
+    "skills/maka-plugin-authoring/assets/composer-ui/index.tsx",
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -52,11 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let output = PathBuf::from(output);
-    let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("app");
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let sources = SOURCES
         .iter()
         .map(|name| {
-            let path = app.join(name);
+            let path = repo.join(name);
             path.canonicalize()
                 .map_err(|source| FileError::new("resolve source", &path, source))
         })
@@ -96,6 +102,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         "compilerOptions": {
             "skipLibCheck": false,
             "allowImportingTsExtensions": true,
+            "paths": {
+                "nsh": ["./.nsh/types/nsh/index.d.ts"],
+                "nsh/*": ["./.nsh/types/nsh/*.d.ts"],
+                "*": ["./.nsh/types/*.d.ts"],
+                "@maka-agent/plugin-sdk": [repo.join("packages/plugin-sdk/src/index.ts").canonicalize()?],
+            }
         },
         "include": sources,
     });

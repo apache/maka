@@ -33,7 +33,7 @@ import {
 } from 'nsh';
 import { Button } from 'nsh/base';
 import { windowSize } from 'nsh';
-import { host } from './host';
+import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Subscription } from './history';
 import type { AgentChecklist, AgentTodoItem } from '../../../../packages/plugin-sdk/src/index.js';
 import { C, bodyTextStyle, captionTextStyle, controlStyle } from './ui';
@@ -62,10 +62,12 @@ const springNext = () => {
  */
 export function Checklist(props: {
   sessionId: string;
+  source: ComposerChecklistSource;
   tuck?: number;
   joined?: (shown: boolean) => void;
 }) {
   const sessionId = props.sessionId;
+  const source = props.source;
   // How far the dock sits below its place: it rises from behind the composer
   // when it appears during the conversation, not when the conversation opens.
   const rise = createAnimatedValue(0);
@@ -93,7 +95,7 @@ export function Checklist(props: {
     loading.set(true);
     error.set('');
     try {
-      const next: AgentChecklist = await host.query('agent', 'checklist', { sessionId, offset });
+      const next = await source.read(offset);
       // A replacement invalidates every previously loaded page. Never stitch
       // pages from two checklist revisions; the watch supplies the new head.
       if (!alive || currentGeneration !== generation || next.revision !== page.revision) return;
@@ -115,7 +117,7 @@ export function Checklist(props: {
     if (previous) void previous.close().catch(() => {});
   });
   void (async () => {
-    const opened = await host.subscribe('agent', 'watchChecklist', { sessionId, offset: 0 });
+    const opened = await source.watch(0);
     if (!alive) {
       await opened.close();
       return;

@@ -67,7 +67,6 @@ pub struct ContextBaseline {
 pub struct ContextView {
     pub source_evidence: SourceEvidence,
     pub baseline: Option<ContextBaseline>,
-    pub anchor: Option<StoredEvent>,
     pub effective_source_digest: String,
     pub latest_main: LatestMainContext,
     pub selection: semantic::SemanticSelection,
@@ -82,7 +81,6 @@ pub struct ContextView {
 pub struct ModelContextSource {
     pub source_evidence: SourceEvidence,
     pub baseline: Option<ContextBaseline>,
-    pub anchor: Option<StoredEvent>,
     pub tail: Vec<ContextEvent>,
     pub effective_source_digest: String,
     pub latest_main: LatestMainContext,

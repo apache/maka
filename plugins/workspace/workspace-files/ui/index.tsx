@@ -17,14 +17,21 @@
  * under the License.
  */
 
-import { cleanup, effect, Text, View } from 'nsh';
+import { cleanup, effect, inputAction, keymap, signal, Text, View, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   UiContext,
-  UiExports,
+  UiActivation,
+  UiHost,
+  UiEmbeddedViewProps,
   UiToolProps,
   UiViewProps,
 } from '../../../../packages/plugin-sdk/src/workbench.js';
+import {
+  workspaceViewContract,
+  type WorkspaceViewHandle,
+  type WorkspaceViewInput,
+} from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { currentLocale, tr } from '../../../../products/maka/workbench/app/locale';
 import {
   createCurrentDiff,
@@ -40,6 +47,10 @@ import {
 } from '../../../../products/maka/workbench/app/ui';
 import { WorkspaceChanges } from './WorkspaceChanges';
 import { SearchCapture } from './SearchCapture';
+import { createResources } from './resources';
+import { ResourcePane } from './ResourcePane';
+import { ImageViewer } from '../../../../products/maka/workbench/app/ImageViewer';
+import { createHost, HostProvider, useHost } from '../../../../products/maka/workbench/app/host';
 
 function ChangesPanel(props: UiViewProps) {
   return (
@@ -64,6 +75,7 @@ function ChangesPanel(props: UiViewProps) {
 }
 
 function DiffPanel(props: UiViewProps) {
+  const host = useHost();
   const target = () => props.input as CurrentDiffTarget | undefined;
   effect(() => {
     if (target()?.sessionId !== props.sessionId) props.context.openPanel('changes');
@@ -85,7 +97,7 @@ function DiffPanel(props: UiViewProps) {
           key={(value) => `${value.sessionId}/${value.area}/${value.path.bytesBase64}`}
         >
           {(value) => {
-            const model = createCurrentDiff(value());
+            const model = createCurrentDiff(host, value());
             cleanup(() => model.dispose());
             return <CurrentDiff model={model} />;
           }}
@@ -95,24 +107,111 @@ function DiffPanel(props: UiViewProps) {
   );
 }
 
-export function activate(context: UiContext): UiExports {
+export function activate(context: UiContext<UiHost, JSX.Element>): UiActivation<JSX.Element> {
+  const host = createHost(context.application);
   effect(() => currentLocale.set(context.locale()));
+  const input = signal<WorkspaceViewInput | null>(null);
+  const resources = createResources(host, {
+    selected: () => input()?.selected() ?? null,
+    blocked: () => input()?.blocked() ?? true,
+    report: (reason) => input()?.report(reason),
+  });
+  const handle: WorkspaceViewHandle = {
+    shown: resources.shown,
+    hide: resources.hide,
+    close() {
+      const sessionId = resources.sessionId();
+      if (sessionId) resources.close({ sessionId, instance: resources.instance() });
+    },
+    focused() {
+      const root = resources.root();
+      return root !== undefined && keymap.focusedWithin(root);
+    },
+    modalSuppressed: () => resources.imageViewer() !== null,
+    openFiles: resources.openFiles,
+    openImage: resources.openImage,
+    openLink: resources.openLink,
+    attachOpener: resources.attachOpener,
+  };
   return {
-    changes: { kind: 'panel', render: ChangesPanel },
-    'change-diff': { kind: 'panel', render: DiffPanel },
-    'show-changes': {
-      kind: 'command',
-      run() {
-        context.openPanel('changes');
+    exports: {
+      workspace: {
+        kind: 'view',
+        contract: workspaceViewContract.id,
+        render(props: UiEmbeddedViewProps<WorkspaceViewInput, JSX.Element>) {
+          const next = props.input;
+          input.set(next);
+          next.attach(handle);
+          if (next.surface === 'pane')
+            return (
+              <HostProvider value={host}>
+                <If when={resources.shown() && resources.sessionId() !== null}>
+                  <ResourcePane resources={resources} docked={next.docked} />
+                </If>
+              </HostProvider>
+            );
+          return (
+            <HostProvider value={host}>
+              <Each
+                of={resources.imageViewer() ? [resources.imageViewer()!] : []}
+                key={(viewer) => viewer}
+              >
+                {(viewer) => {
+                  const current = viewer();
+                  return (
+                    <ImageViewer
+                      image={current.image}
+                      close={inputAction(current.close, {
+                        sessionId: current.tab.sessionId,
+                        instance: current.tab.instance,
+                        uri: current.image.uri,
+                      })}
+                    />
+                  );
+                }}
+              </Each>
+            </HostProvider>
+          );
+        },
       },
-    },
-    glob: {
-      kind: 'tool_renderer',
-      render: (props: UiToolProps) => <SearchCapture {...props} matches="files" />,
-    },
-    grep: {
-      kind: 'tool_renderer',
-      render: (props: UiToolProps) => <SearchCapture {...props} matches="matches" />,
+      changes: {
+        kind: 'panel',
+        render: (props) => (
+          <HostProvider value={host}>
+            <ChangesPanel {...props} />
+          </HostProvider>
+        ),
+      },
+      'change-diff': {
+        kind: 'panel',
+        render: (props) => (
+          <HostProvider value={host}>
+            <DiffPanel {...props} />
+          </HostProvider>
+        ),
+      },
+      'show-changes': {
+        kind: 'command',
+        run() {
+          context.openPanel('changes');
+        },
+      },
+      glob: {
+        kind: 'tool_renderer',
+        render: (props: UiToolProps) => (
+          <HostProvider value={host}>
+            <SearchCapture {...props} matches="files" />
+          </HostProvider>
+        ),
+      },
+      grep: {
+        kind: 'tool_renderer',
+        render: (props: UiToolProps) => (
+          <HostProvider value={host}>
+            <SearchCapture {...props} matches="matches" />
+          </HostProvider>
+        ),
+      },
     },
   };
 }

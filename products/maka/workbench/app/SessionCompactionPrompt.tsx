@@ -19,7 +19,7 @@
 
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import { host } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import { SettingsEditor } from './SettingsField';
 import { SessionRevisionConflict } from './sessionLifecycle';
@@ -54,6 +54,7 @@ export function SessionCompactionPrompt(props: {
   close(): void;
   change(action: SessionAction): Promise<void>;
 }) {
+  const host = useHost();
   const target = props.session;
   const state = signal<State>({ kind: 'unloaded' });
   const error = createText();

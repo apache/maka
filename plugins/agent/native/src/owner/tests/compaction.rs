@@ -51,7 +51,7 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         response_with_text(&mut socket, "Original answer retained verbatim").await;
         f.drained().await;
         let prompts = f.query("compactionPrompt",json!({"sessionId":session})).await.unwrap();
-        let forked = f.mutation(2,"fork",json!({"sessionId":session,"expectedRevision":prompts["revision"],"turnId":null,"title":"Inherited compaction prompt","labels":[]}),Uuid::new_v4()).await.unwrap();
+        let forked = f.mutation(2,"fork",json!({"sessionId":session,"expectedRevision":prompts["revision"],"position":{"kind":"end"},"title":"Inherited compaction prompt","labels":[]}),Uuid::new_v4()).await.unwrap();
         assert_eq!(forked["kind"], "forked", "{forked}");
         let child = forked["session"]["id"].as_str().unwrap();
         let inherited = f.query("compactionPrompt",json!({"sessionId":child})).await.unwrap();

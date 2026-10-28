@@ -31,7 +31,7 @@ import type {
   HistoryRowPosition,
   RecallQuery,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import { host } from './host';
+import { useHost } from './host';
 import { tr } from './locale';
 import { createText, errorText, renderText, UiError, type UiText } from './text';
 import { Icon } from './Icon';
@@ -90,6 +90,7 @@ export function RecallSearch(props: {
   open(origin: string | null, target: RecallTarget): Promise<boolean | void>;
   close(): void;
 }) {
+  const host = useHost();
   const origin = props.origin;
   const query = signal('');
   const state = signal<SearchState>({ kind: 'empty' });

@@ -20,9 +20,9 @@
 import { effect } from 'nsh';
 import type { InputRef } from 'nsh';
 import { keymap } from 'nsh';
-import type { ComposerSession } from './Composer';
+import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { Selection } from './composerCompletionSyntax';
-import { UiError } from './text';
+import { UiError } from '../../../../products/maka/workbench/app/text';
 
 type Target = {
   owner: ComposerSession;
@@ -80,10 +80,7 @@ export function createComposerPaste(options: {
     options.dismiss();
     target.owner.attachments.clearNotice();
     try {
-      target.owner.attachments.observeIntake(
-        target.owner.attachments.client.beginClipboardPaste(),
-        (text) => insert(target, text),
-      );
+      target.owner.attachments.pasteClipboard((text) => insert(target, text));
     } catch (reason) {
       target.owner.attachments.reportError(reason);
     }
@@ -109,9 +106,7 @@ export function createComposerPaste(options: {
     if (!target) return;
     options.dismiss();
     try {
-      owner.attachments.observeIntake(owner.attachments.client.beginFileDrop(event.uris), (text) =>
-        insert(target, text),
-      );
+      owner.attachments.dropFiles(event.uris, (text) => insert(target, text));
     } catch (reason) {
       owner.attachments.reportError(reason);
     }

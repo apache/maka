@@ -19,7 +19,7 @@
 
 use super::*;
 use maka_agent_facts::{
-    event::{Fact, ToolOutcome},
+    event::{Fact, InvocationOutcome, ToolOutcome},
     tool_call::{ToolCallIdentity, ToolRejection},
     tools::{ToolCallContext, ToolJournal, ToolPreparer},
 };
@@ -518,4 +518,67 @@ async fn todo_prepared_replacements_conflict_and_cancelled_or_closed_invocations
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_replay() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let check = |sent: &Value| {
+            let messages = sent["messages"].as_array().unwrap();
+            assert!(messages.iter().any(|message| message["role"] == "system" && message["content"].as_str().is_some_and(|text| text.contains("todo_write") && text.contains("may or may not have happened"))), "{messages:?}");
+            assert!(messages.iter().any(|message| message["role"] == "tool" && message.to_string().contains("outcome_unknown")), "{messages:?}");
+            assert!(messages.iter().any(|message| message["role"] == "user" && message["content"] == "What happened to the checklist?"), "{messages:?}");
+        };
+        for queued in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+            let session = f.create("Unknown checklist outcome").await;
+            f.send(&session).await.unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            request(&mut socket).await;
+            if queued {
+                assert_eq!(f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","model":f.selection().await}), Uuid::new_v4()).await.unwrap()["kind"], "queued");
+            }
+            let db = rusqlite::Connection::open(f.session_database(&session)).unwrap();
+            db.execute_batch("CREATE TRIGGER reject_settlement BEFORE INSERT ON event_log WHEN NEW.kind='tool_settled' BEGIN SELECT RAISE(ABORT, 'fixture settlement failure'); END;").unwrap();
+            service_tools::named_tool_response(&mut socket, "todo_write", json!({"todos":[{"content":"durable side effect","status":"pending"}]})).await;
+            if queued {
+                let (mut socket, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                    .await.expect("queued user message must reach the model after physical cleanup").unwrap();
+                check(&request(&mut socket).await);
+                response(&mut socket).await;
+            }
+            f.drained().await;
+            f.app.shutdown().await.unwrap();
+            db.execute_batch("DROP TRIGGER reject_settlement").unwrap();
+            drop(db);
+            // Root recovery runs only after every physical worker has stopped.
+            maka_host_runtime::recovery::recover(&f.store).await.unwrap();
+            assert!(f.session(&session).await.check_manual_message_history(&session).await.unwrap());
+            reopen(&mut f).await;
+            f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
+            let (mut socket, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+                .await.expect("recovered user message must reach the model").unwrap();
+            check(&request(&mut socket).await);
+            response(&mut socket).await;
+            while !f.query("observe", json!({"sessionId":session})).await.unwrap()["run"].is_null() { tokio::task::yield_now().await; }
+            assert!(f.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
+            f.app.shutdown().await.unwrap();
+            maka_host_runtime::recovery::recover(&f.store).await.unwrap();
+            reopen(&mut f).await;
+            f.send(&session).await.unwrap();
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let sent = request(&mut socket).await;
+            assert!(sent["messages"].as_array().unwrap().iter().any(|message| message["role"] == "tool" && message.to_string().contains("outcome_unknown")));
+            response(&mut socket).await;
+            while !f.query("observe", json!({"sessionId":session})).await.unwrap()["run"].is_null() { tokio::task::yield_now().await; }
+            assert_eq!(page(&f, &session, 0).await["items"][0]["content"], "durable side effect");
+            f.app.shutdown().await.unwrap();
+            let history = f.session(&session).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: session.clone() }, 256, 4 * 1024 * 1024).await.unwrap();
+            assert_eq!(history.events.iter().filter(|event| matches!(&event.event.fact, Fact::ToolDispatched { name, .. } if name == "todo_write")).count(), 1);
+            assert!(!history.events.iter().any(|event| matches!(&event.event.fact, Fact::ToolSettled { .. })));
+            assert!(history.events.iter().any(|event| matches!(&event.event.fact, Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class, .. } } if class == "tool_execution")));
+            f.config.shutdown().await.unwrap();
+        }
+    }).await.unwrap();
 }

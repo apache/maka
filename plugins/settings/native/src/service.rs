@@ -282,12 +282,12 @@ async fn resolved_model(
             )
             .await;
             return DefaultModel::Ready {
-                choice: model_choice_from_metadata(
+                choice: Box::new(model_choice_from_metadata(
                     row,
                     &target.model_id,
                     overrides.as_ref(),
                     metadata,
-                ),
+                )),
                 defaults,
             };
         }
@@ -314,7 +314,7 @@ async fn default_model(
             };
             match choice {
                 Some(choice) => DefaultModel::Ready {
-                    choice,
+                    choice: Box::new(choice),
                     defaults: None,
                 },
                 None => DefaultModel::Unavailable {

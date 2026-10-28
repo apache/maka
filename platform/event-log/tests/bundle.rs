@@ -58,7 +58,7 @@ async fn inventory_confirms_only_selected_descendants_across_history_and_host_pa
         target_session_id: "branch".into(),
         expected_source_revision: first.sessions[0].revision,
         purpose: CopyPurpose::Branch {
-            turn_id: None,
+            position: maka_agent_facts::session::ForkPosition::End,
             side_conversation: true,
         },
     };

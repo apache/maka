@@ -103,18 +103,18 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         let active = request(&mut held_b).await;
         assert!(active["messages"].to_string().contains("Turn B: active tail must stay out"));
         let revision = f.owner.session(&source).await.unwrap().revision;
-        let input = json!({"sessionId":source,"expectedRevision":revision,"turnId":turn_a,"title":"Independent branch","labels":["branch"]});
+        let input = json!({"sessionId":source,"expectedRevision":revision,"position":{"kind":"through_turn","turnId":turn_a},"title":"Independent branch","labels":["branch"]});
         let mut stale = input.clone();
         stale["expectedRevision"] = json!(revision - 1);
         assert_eq!(f.mutation(2, "fork", stale, Uuid::new_v4()).await.unwrap(), json!({"kind":"revision_conflict","expected":revision-1,"actual":revision}));
         let mut end = input.clone();
-        end["turnId"] = Value::Null;
+        end["position"] = json!({"kind":"end"});
         assert_eq!(f.mutation(2, "fork", end, Uuid::new_v4()).await.unwrap(), json!({"kind":"rejected","reason":"history_unavailable"}));
         let forked = f.mutation(2, "fork", input, Uuid::new_v4()).await.unwrap();
         assert_eq!(forked["kind"], "forked");
         let target = forked["session"]["id"].as_str().unwrap();
         assert_ne!(target, source);
-        assert_eq!(forked["session"]["branch"], json!({"sessionId":source,"turnId":turn_a}));
+        assert_eq!(forked["session"]["branch"], json!({"sessionId":source,"position":{"kind":"through_turn","turnId":turn_a}}));
         assert_eq!(forked["session"]["title"], "Independent branch");
         assert_eq!(forked["session"]["labels"], json!(["branch"]));
         assert_eq!(forked["session"]["collaborationMode"], "agent");
@@ -193,14 +193,14 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
         ).await.unwrap();
         assert!(matches!(changed, maka_event_log::sessions::SessionMutation::Committed(_)));
         let archived = f.store.set_session_archived::<StoredSessionConfiguration>(&source, true, now()).await.unwrap();
-        let forked = f.mutation(2, "fork", json!({"sessionId":source,"expectedRevision":archived.revision,"turnId":null,"title":"Fresh authority","labels":[]}), Uuid::new_v4()).await.unwrap();
+        let forked = f.mutation(2, "fork", json!({"sessionId":source,"expectedRevision":archived.revision,"position":{"kind":"end"},"title":"Fresh authority","labels":[]}), Uuid::new_v4()).await.unwrap();
         assert_eq!(forked["kind"], "forked");
         assert_eq!(forked["session"]["archived"], false);
         assert_eq!(forked["session"]["permissions"], json!({"access":"read_only","requestPermissions":false}));
         assert_eq!(forked["session"]["tools"], json!(["WorkspaceFile"]));
         assert_eq!(forked["session"]["collaborationMode"], "agent");
         assert_eq!(forked["session"]["boundaryRevision"], 0);
-        assert_eq!(forked["session"]["branch"], json!({"sessionId":source,"turnId":null}));
+        assert_eq!(forked["session"]["branch"], json!({"sessionId":source,"position":{"kind":"end"}}));
         let target = forked["session"]["id"].as_str().unwrap();
         let fresh = f.owner.session(target).await.unwrap().configuration;
         assert!(fresh.title_is_manual);
@@ -217,7 +217,7 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
         let maka_event_log::sessions::SessionMutation::Committed(narrowed) = narrowed else {
             panic!("source tool restriction commit");
         };
-        let no_tools = f.mutation(2, "fork", json!({"sessionId":source,"expectedRevision":narrowed.revision,"turnId":null,"title":"No model tools","labels":[]}), Uuid::new_v4()).await.unwrap();
+        let no_tools = f.mutation(2, "fork", json!({"sessionId":source,"expectedRevision":narrowed.revision,"position":{"kind":"end"},"title":"No model tools","labels":[]}), Uuid::new_v4()).await.unwrap();
         assert_eq!(no_tools["kind"], "forked");
         assert_eq!(no_tools["session"]["tools"], json!([]));
 
@@ -234,10 +234,65 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
             now(),
         ).await.unwrap();
         let revision = f.owner.session(&managed).await.unwrap().revision;
-        assert_eq!(f.mutation(2, "fork", json!({"sessionId":managed,"expectedRevision":revision,"turnId":null,"title":"Refused managed fork","labels":[]}), Uuid::new_v4()).await.unwrap(), json!({"kind":"rejected","reason":"managed_session"}));
+        assert_eq!(f.mutation(2, "fork", json!({"sessionId":managed,"expectedRevision":revision,"position":{"kind":"end"},"title":"Refused managed fork","labels":[]}), Uuid::new_v4()).await.unwrap(), json!({"kind":"rejected","reason":"managed_session"}));
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn fork_before_turn_copies_only_preceding_history_and_keeps_source_unchanged() {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
+        let source = f.create("Editable source").await;
+        let mut turns = Vec::new();
+        for (message, answer) in [("first input", "first answer"), ("second input", "second answer")] {
+            let sent = f.mutation(2, "send", json!({"sessionId":source,"message":message,"model":f.selection().await}), Uuid::new_v4()).await.unwrap();
+            assert_eq!(sent["kind"], "started");
+            let (mut socket, _) = listener.accept().await.unwrap();
+            request(&mut socket).await;
+            response_with_text(&mut socket, answer).await;
+            f.drained().await;
+            turns.push(f.session(&source).await.invocation_boundary(&source, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0.invocation.turn_id);
+        }
+        let original = f.query("history", json!({"sessionId":source,"position":{"kind":"start"}})).await.unwrap();
+        let original_facts = f.session(&source).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: source.clone() }, 100, 65536).await.unwrap().digest;
+        let revision = f.owner.session(&source).await.unwrap().revision;
+        for (turn, expected) in [(&turns[0], Vec::<&str>::new()), (&turns[1], vec!["first input", "first answer"])] {
+            let input = json!({"sessionId":source,"expectedRevision":revision,"position":{"kind":"before_turn","turnId":turn},"title":"Edited branch","labels":[]});
+            let operation = Uuid::new_v4();
+            let forked = f.mutation(2, "fork", input.clone(), operation).await.unwrap();
+            assert_eq!(forked["kind"], "forked");
+            assert_eq!(forked["session"]["branch"], json!({"sessionId":source,"position":{"kind":"before_turn","turnId":turn}}));
+            let target = forked["session"]["id"].as_str().unwrap();
+            let history = f.query("history", json!({"sessionId":target,"position":{"kind":"start"}})).await.unwrap();
+            assert_eq!(history["kind"], "ready");
+            let bodies = history["chunks"].as_array().unwrap().iter().filter(|row| row["role"] == "user" || row["role"] == "assistant").map(|row| row["text"].as_str().unwrap()).collect::<Vec<_>>();
+            assert_eq!(bodies, expected);
+            assert_eq!(f.mutation(2, "fork", input, operation).await.unwrap(), forked, "original operation recovers the same exclusive fork");
+            // The actual next model request must inherit exactly the selected prefix.
+            assert_eq!(f.mutation(2, "send", json!({"sessionId":target,"message":"edited input","model":f.selection().await}), Uuid::new_v4()).await.unwrap()["kind"], "started");
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let prompt = request(&mut socket).await;
+            let messages = prompt["messages"].as_array().unwrap().iter().filter(|row| row["role"] == "user" || row["role"] == "assistant").map(|row| row["content"].as_str().unwrap()).collect::<Vec<_>>();
+            let mut expected_prompt = expected;
+            expected_prompt.push("edited input");
+            assert_eq!(messages, expected_prompt);
+            response_with_text(&mut socket, "edited answer").await;
+            f.drained().await;
+        }
+        let other = f.create("Other conversation").await;
+        let other_revision = f.owner.session(&other).await.unwrap().revision;
+        for (session, revision, turn) in [(&source, revision, "missing-turn"), (&other, other_revision, turns[0].as_str())] {
+            assert_eq!(f.mutation(2, "fork", json!({"sessionId":session,"expectedRevision":revision,"position":{"kind":"before_turn","turnId":turn},"title":"Invalid branch","labels":[]}), Uuid::new_v4()).await.unwrap(), json!({"kind":"rejected","reason":"history_unavailable"}));
+        }
+        assert_eq!(f.owner.session(&source).await.unwrap().revision, revision);
+        assert_eq!(f.query("history", json!({"sessionId":source,"position":{"kind":"start"}})).await.unwrap()["chunks"], original["chunks"]);
+        assert_eq!(f.session(&source).await.scoped_prefix(maka_agent_facts::event::LogScope::Session { id: source.clone() }, 100, 65536).await.unwrap().digest, original_facts);
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
 }

@@ -21,7 +21,7 @@ import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View, List } from 'nsh';
 import { Button } from 'nsh/base';
-import { host } from './host';
+import { useHost } from './host';
 import type { WorkspacePath } from '../../../../packages/plugin-sdk/src/index.js';
 import { Icon } from './Icon';
 import {
@@ -36,6 +36,7 @@ import {
 import type { WorkspaceFilesModel } from './workspaceFileState';
 
 export function WorkspaceFiles(props: { model: WorkspaceFilesModel }) {
+  const host = useHost();
   const model = props.model;
   const viewportHeight = signal(0);
   effect(() => {

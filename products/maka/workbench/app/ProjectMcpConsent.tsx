@@ -21,7 +21,7 @@ import { inputAction, Scroll, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { C, controlStyle } from './ui';
 import { tr } from './locale';
-import type { ProjectMcp as Owner } from './projectMcp';
+import type { ComposerProjectMcp as Owner } from '../../../../packages/plugin-sdk/src/composer-view.js';
 
 export function ProjectMcp(props: { owner: Owner }) {
   const owner = props.owner;

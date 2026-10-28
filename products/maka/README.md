@@ -33,7 +33,7 @@ This directory turns reusable plugins and platform owners into the Maka applicat
 
 Run `just run` from the repository root. Cargo compiles the selected plugins and shared workbench and embeds them in the CLI, in both debug and release builds. Rebuild after editing those sources; a separate product build is unnecessary.
 
-Build the CLI and desktop shell with `just build` (`--release` and `--target` are supported); on macOS the shell is staged in `Maka.app`. Run `target/debug/maka desktop --root HOST_ROOT` to initialize or reopen a business Host and launch the desktop from any working directory. The launcher verifies its endpoint and epoch and retains its own client until the child exits; then it detaches, and the Host finishes the work it accepted.
+Build the CLI and desktop shell with `just build` (`--release` and `--target` are supported); on macOS the shell is staged in `Maka.app`. Run `target/debug/maka desktop` to initialize or reopen the business Host at `~/.maka/application/host` and launch the desktop from any working directory; `--root HOST_ROOT` selects another Root. The launcher verifies its endpoint and epoch and retains its own client until the child exits; then it detaches, and the Host finishes the work it accepted.
 
 In the terminal interface, choose the shared language under **Settings → Appearance → Language**. It saves automatically in the business Root, separately from each terminal interface’s theme and custom colors. Other open terminal interfaces refresh their language when revisiting settings or using an explicit refresh; saving does not broadcast continuous updates. Previous per-interface language choices must be selected once again; appearance data is retained.
 

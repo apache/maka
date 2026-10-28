@@ -18,7 +18,7 @@
  */
 
 import { cleanup, signal } from 'nsh';
-import { host } from './host';
+import type { Host } from './host';
 import { tr } from './locale';
 import { message, UiError } from './text';
 import type {
@@ -38,6 +38,11 @@ type Draft = {
   credential: CredentialAction;
   secret: string;
 };
+export type NetworkSettingsSnapshot = {
+  snapshot: SettingsNetworkSnapshot | null;
+  draft: Draft | null;
+  view: number;
+};
 export type NetworkAction = { view: number; revision: number | null };
 type Choice = NetworkAction &
   (
@@ -46,13 +51,18 @@ type Choice = NetworkAction &
     | { kind: 'credential'; value: CredentialAction }
   );
 
-export function createNetworkSettings(operations: SettingsOperations, active: () => boolean) {
-  const snapshot = signal<SettingsNetworkSnapshot | null>(null);
-  const draft = signal<Draft | null>(null);
+export function createNetworkSettings(
+  host: Host,
+  operations: SettingsOperations,
+  active: () => boolean,
+  restored?: NetworkSettingsSnapshot,
+) {
+  const snapshot = signal<SettingsNetworkSnapshot | null>(restored?.snapshot ?? null);
+  const draft = signal<Draft | null>(restored?.draft ?? null);
   const loading = signal(false);
   let alive = true;
   let read = 0;
-  let view = 0;
+  let view = restored?.view ?? 0;
   cleanup(() => {
     alive = false;
     read += 1;
@@ -202,6 +212,7 @@ export function createNetworkSettings(operations: SettingsOperations, active: ()
     if (active()) void load();
   };
   return {
+    snapshotState: (): NetworkSettingsSnapshot => ({ snapshot: snapshot(), draft: draft(), view }),
     snapshot,
     draft,
     loading,

@@ -20,7 +20,7 @@
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import { sameValue } from '../../../../plugins/shared/value';
 import type { Position, Row } from './history';
 import { MessageCopy } from './MessageCopy';
@@ -52,6 +52,7 @@ export function FinalActions(props: {
   through(): number;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
 }) {
+  const host = useHost();
   const pending = signal(false);
   const notice = createText();
   const usage = signal<Target | null>(null);
@@ -91,7 +92,7 @@ export function FinalActions(props: {
         kind: 'fork',
         session: observed.session,
         title: forkTitle(observed.session.title),
-        turnId: original.turnId,
+        position: { kind: 'through_turn', turnId: original.turnId },
       });
       if (owns(original)) notice.set(uiMessage('Fork created. Open it in Sessions.'));
     } catch (reason) {

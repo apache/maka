@@ -24,8 +24,8 @@ import type {
   AgentSession,
   AgentWorkspacePermissions,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import type { Control } from './Conversation';
-import { host } from './host';
+import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
+import type { Host } from './host';
 import { createText, errorText, message, UiError } from './text';
 
 export type PermissionSelection = {
@@ -34,7 +34,7 @@ export type PermissionSelection = {
 };
 export type SessionPermissions = ReturnType<typeof createSessionPermissions>;
 
-export function createSessionPermissions(sessionId: string, control: Control) {
+export function createSessionPermissions(host: Host, sessionId: string, control: Control) {
   const snapshot = signal<AgentSession | null>(null);
   const pending = signal(false);
   const error = createText();

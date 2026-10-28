@@ -18,7 +18,7 @@
  */
 
 import { cleanup, computed, signal } from 'nsh';
-import { host } from './host';
+import type { Host } from './host';
 import { message, UiError } from './text';
 import type {
   CatalogMutationResult,
@@ -104,6 +104,24 @@ export type ModelEditor = {
   } | null;
 };
 export type SettingsPage = 'connections' | 'providers' | 'connection' | 'models' | 'model';
+export type ModelSettingsSnapshot = {
+  page: SettingsPage;
+  connections: SettingsConnectionSummary[];
+  providers: SettingsProviderSummary[];
+  connectionQuery: string;
+  providerQuery: string;
+  modelQuery: string;
+  revision: number | null;
+  defaultTarget: { connectionId: string; modelId: string } | null;
+  next: number | null;
+  providerNext: number | null;
+  editor: ConnectionEditor | null;
+  model: ModelEditor | null;
+  credential: CredentialStatus | null;
+  discovery: 'idle' | 'ready' | 'failed';
+  confirmation: 'connection' | 'key' | 'model' | null;
+  initialModel: ModelSelection | null;
+};
 export const thinkingLevels: ThinkingLevel[] = [
   'off',
   'minimal',
@@ -134,32 +152,36 @@ function overlay(text: string): Record<string, unknown> | null {
 }
 
 export function createModelSettings(
+  host: Host,
   changed: () => void,
   operations: SettingsOperations,
   active: () => boolean,
   initialModel?: ModelSelection,
+  restored?: ModelSettingsSnapshot,
 ) {
   const { busy, error, notice, pending, pendingKnown, report, mutate, run } = operations;
-  const page = signal<SettingsPage>('connections');
-  const connections = signal<SettingsConnectionSummary[]>([]);
-  const providers = signal<SettingsProviderSummary[]>([]);
-  const connectionQuery = signal('');
-  const providerQuery = signal('');
-  const modelQuery = signal('');
-  const revision = signal<number | null>(null);
+  const page = signal<SettingsPage>(restored?.page ?? 'connections');
+  const connections = signal<SettingsConnectionSummary[]>(restored?.connections ?? []);
+  const providers = signal<SettingsProviderSummary[]>(restored?.providers ?? []);
+  const connectionQuery = signal(restored?.connectionQuery ?? '');
+  const providerQuery = signal(restored?.providerQuery ?? '');
+  const modelQuery = signal(restored?.modelQuery ?? '');
+  const revision = signal<number | null>(restored?.revision ?? null);
   const defaultTarget = signal<{
     connectionId: string;
     modelId: string;
-  } | null>(null);
-  const next = signal<number | null>(null);
-  const providerNext = signal<number | null>(null);
-  const editor = signal<ConnectionEditor | null>(null);
-  const model = signal<ModelEditor | null>(null);
+  } | null>(restored?.defaultTarget ?? null);
+  const next = signal<number | null>(restored?.next ?? null);
+  const providerNext = signal<number | null>(restored?.providerNext ?? null);
+  const editor = signal<ConnectionEditor | null>(restored?.editor ?? null);
+  const model = signal<ModelEditor | null>(restored?.model ?? null);
   const modelLoading = signal(false);
-  const credential = signal<CredentialStatus | null>(null);
+  const credential = signal<CredentialStatus | null>(restored?.credential ?? null);
   const loading = signal(false);
-  const discovery = signal<'idle' | 'fetching' | 'ready' | 'failed'>('idle');
-  const confirmation = signal<'connection' | 'key' | 'model' | null>(null);
+  const discovery = signal<'idle' | 'fetching' | 'ready' | 'failed'>(restored?.discovery ?? 'idle');
+  const confirmation = signal<'connection' | 'key' | 'model' | null>(
+    restored?.confirmation ?? null,
+  );
   const connectionIndex = computed(() =>
     connections().map((item) => ({
       item,
@@ -216,7 +238,8 @@ export function createModelSettings(
   });
   let alive = true;
   let read = 0;
-  let editorInstance = 0;
+  let editorInstance = restored?.editor?.instance ?? 0;
+  let pendingInitialModel = restored?.initialModel ?? (restored ? null : (initialModel ?? null));
   cleanup(() => {
     alive = false;
     read += 1;
@@ -626,7 +649,7 @@ export function createModelSettings(
       if (refreshModels) await discoverSavedConnection(form.instance);
     });
   };
-  const login = createConnectionLogin(operations, {
+  const login = createConnectionLogin(host, operations, {
     accepts(request: LoginAction) {
       const form = editor();
       return !!(
@@ -1052,17 +1075,19 @@ export function createModelSettings(
     if (editor()) editor.set({ ...editor()!, instance: ++editorInstance });
   };
   const activate = () => {
-    if (page() === 'connections') void loadConnections();
+    if (pendingInitialModel && page() === 'connections') void openInitialModel(pendingInitialModel);
+    else if (page() === 'connections') void loadConnections();
     else if (page() === 'providers') void loadProviders();
     else if (page() === 'model') void loadModelMetadata(modelAction());
   };
-  const reset = () => {
+  const reset = (target: ModelSelection | null = null) => {
     cancelRead();
     editor.set(null);
     model.set(null);
     confirmation.set(null);
     page.set('connections');
-    if (active()) void loadConnections();
+    pendingInitialModel = target;
+    if (active()) activate();
   };
   const openInitialModel = async (target: ModelSelection) => {
     const catalogRead = read + 1;
@@ -1083,12 +1108,38 @@ export function createModelSettings(
     )
       return;
     editModel({ ...action(), id: target.modelId });
+    pendingInitialModel = null;
   };
-  if (active()) {
-    if (initialModel) void openInitialModel(initialModel);
-    else activate();
-  }
+  if (active()) activate();
   return {
+    snapshot(): ModelSettingsSnapshot {
+      // A request may have committed before its consumer retires the editable
+      // credential basis. Keep this UI alive until that original is settled.
+      if (busy()) throw new UiError('Wait for the current settings action to finish.');
+      const currentDiscovery = discovery();
+      return {
+        page: page(),
+        connections: connections(),
+        providers: providers(),
+        connectionQuery: connectionQuery(),
+        providerQuery: providerQuery(),
+        modelQuery: modelQuery(),
+        revision: revision(),
+        defaultTarget: defaultTarget(),
+        next: next(),
+        providerNext: providerNext(),
+        editor: editor(),
+        model: model(),
+        credential: credential(),
+        discovery: currentDiscovery === 'fetching' ? 'idle' : currentDiscovery,
+        confirmation: confirmation(),
+        initialModel: pendingInitialModel,
+      };
+    },
+    openModel(target: ModelSelection) {
+      if (!alive || busy()) return;
+      reset(target);
+    },
     page,
     connections,
     providers,

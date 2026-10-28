@@ -35,10 +35,12 @@ This builds the CLI and the shell. On macOS it stages `Maka.app` beside `maka`: 
 Start it with the launcher:
 
 ```sh
+/absolute/path/to/maka desktop
+# Or select another Host Root:
 /absolute/path/to/maka desktop --root /absolute/path/to/business-host
 ```
 
-`--root` is required and names the actual business Host Root. The launcher initializes a missing Root with the standard read-only business Host or reopens its saved deployment, verifies discovery against the connected Host endpoint, source and epoch, and supplies `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH` to the shell, with its own path in `MAKA_LAUNCHER`. The shell admits itself to that Host as the terminal shell does and keeps its client data under the Root.
+`--root` selects the business Host Root and defaults to `~/.maka/application/host`. The launcher initializes a missing Root with the standard read-only business Host or reopens its saved deployment, verifies discovery against the connected Host endpoint, source and epoch, and supplies `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and `MAKA_HOST_EPOCH` to the shell, with its own path in `MAKA_LAUNCHER`. The shell admits itself to that Host as the terminal shell does and keeps its client data under the Root.
 
 Closing the window, the quit menu item and the quit key all close the window; the shell then detaches from the Host and exits. The launcher detaches as well, so the Host finishes the work it accepted and stops once no client is left. Cancelling the launcher stops only its shell.
 

@@ -86,7 +86,9 @@ async fn effective_digest_covers_archives_beyond_the_first_page() {
                 target_session_id: "copy".into(),
                 expected_source_revision: revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: Some("history".into()),
+                    position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                        turn_id: "history".into()
+                    },
                     side_conversation: false,
                 },
             },

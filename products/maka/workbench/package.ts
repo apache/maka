@@ -17,38 +17,34 @@
  * under the License.
  */
 
-import { contracts } from '../../../packages/plugin-sdk/src/index.js';
-import { empty, one } from '../../../plugins/shared/package.js';
+const target = {
+  type: 'object',
+  properties: {
+    path: { type: 'array', items: { type: 'string' }, minItems: 1 },
+    id: { type: 'string', minLength: 1 },
+  },
+  required: ['path', 'id'],
+  additionalProperties: false,
+};
 
 export default {
   schemaVersion: 1,
   id: 'maka.workbench',
   displayName: 'Maka',
-  description: 'Conversations, tools and settings in the Maka workbench.',
+  description: 'Compose the Maka workbench layout from UI contributions.',
   localizations: {
-    'zh-CN': { displayName: 'Maka', description: '在 Maka 工作台中管理对话、工具和设置。' },
+    'zh-CN': { displayName: 'Maka', description: '通过 UI 贡献组合 Maka 工作台布局。' },
   },
   application: {
     ui: {
       module: 'app/App.js',
-      configuration: empty,
-      imports: {
-        agent: one(contracts.agent),
-        management: one(contracts.deploymentManager),
-        settings: one(contracts.settings),
-        authentication: one(contracts.settingsAuthentication),
-        setup: one(contracts.settingsSetup),
-        receipts: one(contracts.receiptReader),
-        skillOutcomes: one(contracts.skillOutcomes),
-        hostLogs: one(contracts.hostLogs),
-        terminal: { contract: contracts.terminal, cardinality: { kind: 'optional' } },
-        coordinator: { contract: contracts.agent, cardinality: { kind: 'optional' } },
-        workhub: { contract: contracts.workhubCoordinator, cardinality: { kind: 'optional' } },
-        coordinatorTerminal: { contract: contracts.terminal, cardinality: { kind: 'optional' } },
-        jev: { contract: contracts.workspaceJev, cardinality: { kind: 'optional' } },
-        web: { contract: contracts.workspaceWeb, cardinality: { kind: 'optional' } },
-        skills: { contract: contracts.skillLibrary, cardinality: { kind: 'optional' } },
+      configuration: {
+        type: 'object',
+        properties: { navigation: target, session: target, preview: target, settings: target },
+        required: ['navigation', 'session', 'preview', 'settings'],
+        additionalProperties: false,
       },
+      imports: {},
       contributions: { root: { kind: 'root' } },
     },
   },

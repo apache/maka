@@ -19,8 +19,8 @@
 
 import { UiError } from './text';
 import { tr } from './locale';
-import type { AgentSession } from '../../../../packages/plugin-sdk/src/index.js';
-import type { Control } from './Conversation';
+import type { AgentSession, AgentForkPosition } from '../../../../packages/plugin-sdk/src/index.js';
+import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
 
 export type SessionActionTarget = Pick<
   AgentSession,
@@ -42,7 +42,7 @@ export function sessionActionTarget(session: AgentSession): SessionActionTarget 
 
 export type SessionAction =
   | { kind: 'rename'; session: SessionActionTarget; title: string }
-  | { kind: 'fork'; session: SessionActionTarget; title: string; turnId: string | null }
+  | { kind: 'fork'; session: SessionActionTarget; title: string; position: AgentForkPosition }
   | { kind: 'compaction_prompt'; session: SessionActionTarget; prompt: string | null }
   | { kind: 'archive' | 'restore' | 'remove'; session: SessionActionTarget };
 export type SessionActionResult =
@@ -72,7 +72,7 @@ export async function performSessionAction(
       : action.kind === 'fork'
         ? await control('fork', {
             ...identity,
-            turnId: action.turnId,
+            position: action.position,
             title: action.title,
             labels: [...session.labels],
           })

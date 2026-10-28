@@ -30,6 +30,7 @@ import type {
   UiContributionRef,
   UiContributionProps,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
+import type { UiTarget } from '../../../../../packages/plugin-sdk/src/generated/runtime.js';
 
 export function PluginInstances(props: { plugins: Plugins }) {
   return (
@@ -39,7 +40,10 @@ export function PluginInstances(props: { plugins: Plugins }) {
           <Each
             of={(() => {
               const state = entry().state();
-              return state.kind === 'loaded' || state.kind === 'active' ? [state.module] : [];
+              return state.kind === 'active' ||
+                (state.kind === 'loaded' && !props.plugins.runtime.reloading())
+                ? [state.module]
+                : [];
             })()}
             key={(module) => module}
           >
@@ -127,7 +131,7 @@ function RuntimeView(props: ViewProps) {
       <Each
         of={(() => {
           const state = entry.state();
-          return state.kind === 'active' ? [state.exports[contribution.id]] : [];
+          return state.kind === 'active' ? [state.activation.exports[contribution.id]] : [];
         })()}
         key={(implementation) => implementation}
       >
@@ -161,11 +165,20 @@ function RuntimeView(props: ViewProps) {
             return implementation.render({
               context,
               runtime: plugins.runtime,
-              restored: plugins.restore(contribution),
+            });
+          }
+          if (implementation.kind === 'view') {
+            return implementation.render({
+              context,
+              runtime: plugins.runtime,
+              get input() {
+                return props.input.input;
+              },
             });
           }
           return implementation.render({
             context,
+            runtime: plugins.runtime,
             get sessionId() {
               return props.input.sessionId;
             },
@@ -184,8 +197,48 @@ export function renderContribution(
   reference: UiContributionRef,
   input: UiContributionProps,
 ) {
-  const contribution = plugins.byKey().get(reference.key);
-  return contribution ? (
-    <RuntimeView plugins={plugins} contribution={contribution} input={input} />
-  ) : null;
+  return (
+    <ContributionView
+      plugins={plugins}
+      contribution={() => plugins.byKey().get(reference.key)}
+      input={input}
+    />
+  );
+}
+
+export function renderEmbeddedView(
+  plugins: Plugins,
+  target: UiTarget,
+  contract: string,
+  input: unknown,
+) {
+  return (
+    <ContributionView
+      plugins={plugins}
+      contribution={() => plugins.resolveView(target, { id: contract })}
+      input={{ sessionId: null, input }}
+    />
+  );
+}
+
+function ContributionView(props: {
+  plugins: Plugins;
+  contribution(): Contribution | undefined;
+  input: UiContributionProps;
+}) {
+  return (
+    <ErrorBoundary fallback={(reason, reset) => <PluginError reason={reason} retry={reset} />}>
+      <Each
+        of={(() => {
+          const contribution = props.contribution();
+          return contribution ? [contribution] : [];
+        })()}
+        key={(contribution) => contribution.key}
+      >
+        {(contribution) => (
+          <RuntimeView plugins={props.plugins} contribution={contribution()} input={props.input} />
+        )}
+      </Each>
+    </ErrorBoundary>
+  );
 }

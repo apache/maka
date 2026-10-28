@@ -33,7 +33,7 @@ Workspace 重定位只修改共享 binding 及其 revision offset，不重写所
 
 Root catalog 和 usage 游标使用固定大小的分区向量。Catalog 合并有界的局部 keyset 页，并在 SQL 分页前排除尚未发布或隐藏的路由。用量活动与分类明细使用 keyset 游标；会话历史复制不会重复计算物理事实。Goal token meter 在结算事务中维护 Session 累计值，常规预算检查只需八次索引查询，不扫描全部历史。Session 通知只登记活跃观察者，合并固定分区中的对应 Session 通知，不为每个事件写 control，也不创建转发任务。
 
-Prepared model view 存在可丢弃的 owner 私有数据库中，使用有界 head 与增量回收；规范事实和紧凑来源承诺仍持久化。旧 prepared generation 仅由实际使用者保留。Wire group 引用不可变的 logical group 和编码后的 body，逻辑消息元数据只保存一份。Session scratch 和已加载工具状态使用磁盘上的 `maka-session-state` 后端，并按活跃快照回收。模型上下文压缩限制选中的工作窗口，同时保留完整规范历史。
+Prepared model view 存在可丢弃的 owner 私有数据库中，使用有界 head 与增量回收；规范事实和紧凑来源承诺仍持久化。旧 prepared generation 仅由实际使用者保留。Wire group 引用不可变的 logical group 和编码后的 body，逻辑消息元数据只保存一份。Session scratch 和已加载工具状态使用磁盘上的 `maka-session-state` 后端，并按活跃快照回收。模型上下文压缩限制选中的工作窗口，同时保留完整规范历史。采纳检查点后，模型上下文由历史检查点摘要和 `covered_through` 之后的事件组成，不再重放已经覆盖的开头消息。开头消息的身份仍用于校验 MidTurn 检查点。摘要保留的附件引用通过复制会话已有的所有权映射解析。
 
 较大的 semantic 与 prepared payload 存在 [SQLite rowid 表](https://www.sqlite.org/withoutrowid.html#when_to_use_without_rowid)中，以显式业务主键定位，让记录拥有更多内联空间。
 

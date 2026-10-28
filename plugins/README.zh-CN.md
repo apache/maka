@@ -38,7 +38,11 @@
 
 包可以声明 `application.host`、`application.ui` 或组合模板。部署中的实例通过 `usePackage: host / ui / composition` 明确选择所用入口，纯 UI 插件不需要伪造 Host 服务。[终端 shell](../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../products/maka/desktop-shell/README.zh-CN.md) 运行同一个 [NSH 工作台](../products/maka/workbench/README.zh-CN.md)，共享动态 UI 模块与公共 Host 能力。包可声明 `root` 贡献来提供整个应用，部署来源通过 `ui: { path, id }` 选择入口。Maka 默认工作台也是普通 UI 包，缺少根入口时不会自动回退到它。安装表示用户信任，UI 插件可直接使用工作台现有能力。
 
-UI 入口可以声明服务导入，并绑定到 Host 导出，包括同一个包的后台服务。`UiContext.services` 以实际 UI 消费者的会话调用这些提供者，`UiContext.operations` 恢复该实例的原始 mutation receipt。可信代码仍可使用完整的 `UiContext.host`。详见 [UI 开发指南](../skills/maka-plugin-authoring/references/ui-plugins.md)。
+UI 入口可以声明服务导入，并绑定到 Host 导出，包括同一个包的后台服务。`UiContext.application` 是绑定到这些导入的原生应用客户端，保留 Client、journal 和原始 receipt。`UiContext.services[importName][index]` 选择具体的提供者，也支持有多个提供者的导入；`UiContext.operations` 恢复该实例的原始 mutation receipt。业务控制器由所属激活实例持有，使用该实例的应用客户端。可信 UI 代码仍可使用完整的 `UiContext.host` 和 `maka/host`，包括根界面与目录集成。详见 [UI 开发指南](../skills/maka-plugin-authoring/references/ui-plugins.md)。
+
+业务 UI 可以声明带命名契约的正式 `view` 贡献。消费方通过配置选择其 `UiTarget`（`{ path, id }`），使用 `UiRuntime.renderView(target, contract, input)` 渲染；运行时检查目标贡献的种类与契约。会话导航、会话界面、输入区、设置和工作区预览使用这些共享契约，其提供者可以独立于根应用选择。命令声明 `title`，以及可选的 `description`、`shortcut`、`order`、`trigger`、`takesArgument` 和 `hint`；实现还可以报告命令当前是否可用。
+
+每个 UI 模块同步执行 `activate(context)`，返回 `{ exports, prepareReload? }`。激活实例持有各项渲染贡献共用的业务状态与资源，通过 `nsh.cleanup` 清理资源。可选的 `prepareReload()` 在替换共享 VM 前保存所拥有的编辑并返回 JSON。同一实例身份和包 ID 可通过 `context.restored` 收到该状态，包括同一包的新修订。根界面接收 `{ context, runtime }`，负责布局和导航；业务视图负责自身状态及重载交接。
 
 在仓库根目录构建单个包：
 

@@ -140,7 +140,9 @@ async fn bundle_archive_closure_preserves_lineage_instead_of_exporting_intermedi
             target_session_id: "branch".into(),
             expected_source_revision: revision,
             purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                turn_id: Some("source".into()),
+                position: maka_agent_facts::session::ForkPosition::ThroughTurn {
+                    turn_id: "source".into(),
+                },
                 side_conversation: false,
             },
         },

@@ -1017,6 +1017,7 @@ mod tests {
                 time: surface.clock(),
                 modifiers: Default::default(),
                 clicks: 1,
+                pressed_button: None,
             },
         );
         // The complete physical burst reaches the ordinary native handlers
@@ -1035,6 +1036,7 @@ mod tests {
                     time: surface.clock(),
                     modifiers: Default::default(),
                     clicks: 1,
+                    pressed_button: None,
                 },
             );
         }
@@ -1065,6 +1067,7 @@ mod tests {
                     time: surface.clock(),
                     modifiers: Default::default(),
                     clicks: 1,
+                    pressed_button: None,
                 },
             );
         }
@@ -1775,6 +1778,7 @@ mod tests {
                     time: 1.0,
                     modifiers: Default::default(),
                     clicks: 0,
+                    pressed_button: None,
                 },
             )
         };
@@ -2115,6 +2119,7 @@ mod tests {
                     time: 1.0,
                     modifiers: Default::default(),
                     clicks: 1,
+                    pressed_button: None,
                 },
             );
         }

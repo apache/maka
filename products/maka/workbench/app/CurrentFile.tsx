@@ -23,7 +23,7 @@ import { tr } from './locale';
 import { cleanup, computed, inputAction, Scroll, signal, Text, View, Image, List } from 'nsh';
 import { Button } from 'nsh/base';
 import { Clipboard } from 'nsh';
-import { host, type FileView } from './host';
+import type { Host, FileView } from './host';
 import type { AgentFileChange } from '../../../../packages/plugin-sdk/src/index.js';
 import type { WorkspaceFileTarget } from './workspaceFileState';
 import { Icon } from './Icon';
@@ -81,7 +81,7 @@ const close = async (resource: { stream: { close(): Promise<void> } | null } | n
   if (stream) await stream.close();
 };
 
-export function createCurrentFile(target: WorkspaceFileTarget): CurrentFileModel {
+export function createCurrentFile(host: Host, target: WorkspaceFileTarget): CurrentFileModel {
   const state = signal<FileState>({ kind: 'idle' });
   const stale = signal(false);
   let alive = true;

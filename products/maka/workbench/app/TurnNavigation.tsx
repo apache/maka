@@ -21,15 +21,20 @@ import { textTooltip } from './ui';
 import { Canvas, computed, effect, inputAction, signal, Text, View, Overlay, List } from 'nsh';
 import type { ListRef } from 'nsh';
 import { Button } from 'nsh/base';
-import { platform, windowSize } from 'nsh';
+import { pixelRatio, platform, windowSize } from 'nsh';
+import { host as nativeHost } from 'maka/host';
 import type { Position } from './history';
 import { C, controlStyle, captionTextStyle } from './ui';
 import { Icon } from './Icon';
 import { tr } from './locale';
-import { uiScale } from './uiScale';
 
 // Cell input rounds by half a 16 / scale row; include the two-point stroke.
-const markPitch = () => (platform.isTerminal ? 16 : Math.max(24, 16 / uiScale.factor() + 2));
+const markPitch = computed(() => {
+  if (platform.isTerminal) return 16;
+  pixelRatio();
+  windowSize();
+  return Math.max(24, 16 / nativeHost.uiScaleFactor + 2);
+});
 const railInset = platform.isTerminal ? 0 : 6;
 const railMargin = 32;
 export const railWidth = () => (platform.isTerminal ? 24 : markPitch());

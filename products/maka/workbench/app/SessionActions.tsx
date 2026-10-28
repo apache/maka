@@ -25,7 +25,7 @@ import { Input } from 'nsh/base';
 import type { ViewRef } from 'nsh';
 import { Button, Dialog, Popover } from 'nsh/base';
 import { windowSize } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import { forkTitle, sessionActionTarget, SessionRevisionConflict } from './sessionLifecycle';
 import type { SessionAction, SessionActionTarget } from './sessionLifecycle';
 import {
@@ -54,6 +54,7 @@ export function SessionActions(props: {
   notice(message: UiText): void;
   change(action: SessionAction): Promise<void>;
 }) {
+  const host = useHost();
   const session = signal(props.session);
   const page = signal<Page>('actions');
   const title = signal('');
@@ -391,7 +392,12 @@ export function SessionActions(props: {
                     onSubmit={() =>
                       void submit(
                         page() === 'fork'
-                          ? { kind: 'fork', session: session(), title: title(), turnId: null }
+                          ? {
+                              kind: 'fork',
+                              session: session(),
+                              title: title(),
+                              position: { kind: 'end' },
+                            }
                           : { kind: 'rename', session: session(), title: title() },
                       )
                     }
@@ -429,7 +435,12 @@ export function SessionActions(props: {
                     onPress={inputAction(
                       submit,
                       page() === 'fork'
-                        ? { kind: 'fork', session: session(), title: title(), turnId: null }
+                        ? {
+                            kind: 'fork',
+                            session: session(),
+                            title: title(),
+                            position: { kind: 'end' },
+                          }
                         : { kind: 'rename', session: session(), title: title() },
                     )}
                   >

@@ -40,7 +40,7 @@ just run
 
 在 WSL 中，`just run` 构建不含本地 `native-desktop` 能力及其 Linux X11 依赖的 CLI，Computer Use 默认选择 Windows 桌面。源码构建需通过 `MAKA_CUA_WINDOWS_EXECUTABLE` 指定匹配的 Windows `maka.exe`，使用 WSL 可见的绝对路径。`MAKA_CUA_BUILD_MODE=auto|native|bridge` 控制开发构建选择，设置方法见 [Computer Use](platform/computer-use/README.zh-CN.md)。`just build` 和发布打包仍构建完整原生产品，包含桌面 shell 及其 Linux GUI 依赖。
 
-通过 `target/release/maka desktop --root HOST_ROOT` 启动桌面，显式选择实际业务 Host Root。启动器初始化或重开 Host，并在 shell 运行期间保留其客户端；关闭窗口只断开连接，Host 会完成已接受的工作。产物布局见 [desktop-shell](products/maka/desktop-shell/README.zh-CN.md)。
+通过 `target/release/maka desktop` 启动桌面，默认使用 `~/.maka/application/host`；`--root HOST_ROOT` 可指定其他业务 Host Root。启动器初始化或重开 Host，并在 shell 运行期间保留其客户端；关闭窗口只断开连接，Host 会完成已接受的工作。产物布局见 [desktop-shell](products/maka/desktop-shell/README.zh-CN.md)。
 
 ## 目录
 

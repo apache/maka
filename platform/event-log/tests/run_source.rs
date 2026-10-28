@@ -438,7 +438,7 @@ async fn ordinal_fences_stay_indexed_as_a_copied_sessions_run_grows() {
                 target_session_id: "branch".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },

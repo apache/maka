@@ -17,29 +17,29 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
-import { ProjectMcp } from './ProjectMcpConsent';
-import type { ProjectMcp as ProjectMcpOwner } from './projectMcp';
-import { tr } from './locale';
+import { textTooltip } from '../../../../products/maka/workbench/app/ui';
+import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
 import { Input } from 'nsh/base';
 import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
-import { DraftAttachments } from './Attachments';
-import type { AttachmentDraft } from './attachmentDraft';
-import type { ImagePreview } from './ImageThumbnail';
-import { Checklist } from './Checklist';
-import { QueueDock, type QueueSession } from './QueueDock';
-import { SessionPermissionsSelect } from './SessionPermissionsSelect';
-import type { SessionPermissions } from './sessionPermissions';
-import type { BackendIdentity, ModelDetails } from './modelSelection';
-import { C, bodyTextStyle, compact, controlStyle } from './ui';
-import { Icon } from './Icon';
+import { DraftAttachments } from '../../../../products/maka/workbench/app/Attachments';
+import { Checklist } from '../../../../products/maka/workbench/app/Checklist';
+import { QueueDock } from '../../../../products/maka/workbench/app/QueueDock';
+import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
+import type { ComposerViewInput } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import {
+  C,
+  bodyTextStyle,
+  compact,
+  controlStyle,
+} from '../../../../products/maka/workbench/app/ui';
+import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ComposerCompletion, createComposerCompletion } from './ComposerCompletion';
-import type { ComposerCommand } from './composerCommands';
-import logo from './assets/maka.png';
+import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 
 // Match the skill invocation grammar; the surrounding whitespace is not part of the chip.
 const skillTokens = () => [
@@ -50,60 +50,7 @@ const skillTokens = () => [
   },
 ];
 
-export type SendAction = {
-  owner: string;
-  text: string;
-  backend: BackendIdentity;
-  attachments: string[];
-};
-
-// These are the immutable session controller's original reads and actions.
-// The resident composer owns no second draft or model selection.
-export type ComposerSession = {
-  sessionId: string;
-  queue: QueueSession;
-  draft(): string;
-  attachments: AttachmentDraft;
-  previewImage(image: ImagePreview): void;
-  editable(): boolean;
-  blockedReason(): string;
-  backend(): BackendIdentity;
-  modelDetails(): ModelDetails;
-  refreshModel(): Promise<void>;
-  permissions: SessionPermissions;
-  projectMcp: ProjectMcpOwner;
-  workspace(): string;
-  empty(): boolean;
-  error(): string;
-  notice(): string;
-  recoverable(): boolean;
-  recovering(): boolean;
-  unconfirmed(): string[];
-  invocation(): string | null;
-  stopping(): boolean;
-  metrics(): string;
-  changeDraft(text: string): void;
-  submit(event: { text: string }): void;
-  sendRendered(action: SendAction): void;
-  recover(): Promise<void>;
-  abandon(id: string): Promise<void>;
-  stop(invocationId: string | null): Promise<void>;
-};
-
-export function Composer(props: {
-  session(): ComposerSession | null;
-  attach(node: InputRef): void;
-  commands(): ComposerCommand[];
-  active(): boolean;
-  blocked?(): boolean;
-  models: JSX.Element;
-  request: JSX.Element;
-  stopAction(): () => void;
-  chooseWorkspace(): void;
-  settings(): void;
-  /** Receives the composer's handler for files dropped beside it. */
-  dropFiles?(drop: (event: { uris: string[] }) => void): void;
-}) {
+export function Composer(props: ComposerViewInput<JSX.Element>) {
   const completion = createComposerCompletion({
     session: props.session,
     commands: props.commands,
@@ -278,6 +225,7 @@ export function Composer(props: {
                 </If>
                 <Checklist
                   sessionId={owner.sessionId}
+                  source={owner.checklist}
                   tuck={platform.isTerminal ? undefined : compact() ? 16 : 24}
                   joined={platform.isTerminal ? undefined : joined.set}
                 />

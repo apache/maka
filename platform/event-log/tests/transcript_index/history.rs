@@ -2913,7 +2913,7 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
             target_session_id: "model-copy".into(),
             expected_source_revision: revision,
             purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                turn_id: None,
+                position: maka_agent_facts::session::ForkPosition::End,
                 side_conversation: false,
             },
         },
@@ -2980,7 +2980,7 @@ async fn response_models_follow_exact_steps_fences_and_retained_copied_history()
             target_session_id: "completed-copy".into(),
             expected_source_revision: revision,
             purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                turn_id: None,
+                position: maka_agent_facts::session::ForkPosition::End,
                 side_conversation: false,
             },
         },

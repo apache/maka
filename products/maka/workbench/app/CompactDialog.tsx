@@ -19,8 +19,8 @@
 
 import { cleanup, inputAction, signal, Text, View } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
-import type { ConversationHandle } from './Conversation';
-import { host } from './host';
+import type { ConversationHandle } from '../../../../plugins/agent/conversations/ui/Conversation';
+import { useHost } from './host';
 import { tr } from './locale';
 import { SettingsEditor } from './SettingsField';
 import { createText, errorText } from './text';
@@ -31,6 +31,7 @@ export function CompactDialog(props: {
   prompt?: string;
   close(): void;
 }) {
+  const host = useHost();
   const draft = signal('');
   const state = signal<'loading' | 'ready' | 'failed' | 'submitting'>('loading');
   const error = createText();

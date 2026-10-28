@@ -18,7 +18,7 @@
  */
 
 import { batch, cleanup, computed, signal } from 'nsh';
-import { host } from './host';
+import type { Host } from './host';
 import { tr } from './locale';
 import { message, UiError } from './text';
 import { sameValue as same } from '../../../../plugins/shared/value';
@@ -34,7 +34,7 @@ import type {
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { SettingsOperations } from './settingsOperations';
 import { createRootUiSettings } from './rootUiSettingsState';
-import { pluginContext } from './plugins/context';
+import type { UiContext, UiRuntime } from '../../../../packages/plugin-sdk/src/workbench.js';
 
 type Path = InstanceSettingsRead['path'];
 type Inventory = { source: DeploymentRef; instances: ManagedInstance[] };
@@ -62,12 +62,27 @@ export const settingCaption = (value: SettingValue | null | undefined) =>
 
 // This is a read projection and an unsaved field, never another deployment
 // manager. The original Host source and Settings journal own every change.
-export function createPluginSettings(operations: SettingsOperations, active: () => boolean) {
-  const inventory = signal<Inventory | null>(null);
-  const selected = signal<ManagedInstance | null>(null);
-  const fields = signal<Fields | null>(null);
-  const editor = signal<Editor | null>(null);
-  const query = signal('');
+export type PluginSettingsSnapshot = {
+  inventory: Inventory | null;
+  selected: ManagedInstance | null;
+  fields: Fields | null;
+  editor: Editor | null;
+  query: string;
+  interfaceQuery: string;
+};
+export function createPluginSettings(
+  host: Host,
+  operations: SettingsOperations,
+  active: () => boolean,
+  runtime: UiRuntime,
+  context: UiContext,
+  restored?: PluginSettingsSnapshot,
+) {
+  const inventory = signal<Inventory | null>(restored?.inventory ?? null);
+  const selected = signal<ManagedInstance | null>(restored?.selected ?? null);
+  const fields = signal<Fields | null>(restored?.fields ?? null);
+  const editor = signal<Editor | null>(restored?.editor ?? null);
+  const query = signal(restored?.query ?? '');
   const loading = signal(false);
   const view = signal(0);
   let alive = true,
@@ -77,8 +92,8 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
   // while the loaded fields and separately owned editor remain usable.
   let paging: 'ready' | 'loading' | 'failed' = 'ready';
   const visible = () => alive && enabled && active();
-  const runtime = pluginContext()!;
-  const rootUi = createRootUiSettings(runtime, runtime.context, visible);
+  const rootUi = createRootUiSettings(runtime, context, visible);
+  rootUi.query.set(restored?.interfaceQuery ?? '');
   const action = (): PluginAction => ({
     view: view(),
     revision: fields()?.source.revision ?? inventory()?.source.revision ?? null,
@@ -223,6 +238,16 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
   });
   return {
     rootUi,
+    snapshot(): PluginSettingsSnapshot {
+      return {
+        inventory: inventory(),
+        selected: selected(),
+        fields: fields(),
+        editor: editor(),
+        query: query(),
+        interfaceQuery: rootUi.query(),
+      };
+    },
     inventory,
     selected,
     fields,
@@ -248,7 +273,9 @@ export function createPluginSettings(operations: SettingsOperations, active: () 
       enabled = true;
       rootUi.activate();
       cancelRead();
-      if (!editor()) void load();
+      if (!inventory()) void load();
+      else if (selected() && !selected()!.structural && !fields() && !editor())
+        void readFields(selected()!, inventory()!.source, []);
     },
     deactivate() {
       enabled = false;

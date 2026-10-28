@@ -18,7 +18,7 @@
  */
 
 //! Client-owned correlation and original receipts, independent of UI nodes.
-use crate::{CONTROL_KIND, CONTROL_METHODS, Result, SETTINGS_KIND, SETTINGS_METHODS};
+use crate::{CONTROL_KIND, CONTROL_METHODS, Result, SETTINGS_KIND, SETTINGS_METHODS, ServiceOwner};
 use maka_plugin_core::{
     composition::InstanceId,
     deployment::DeploymentRef,
@@ -37,7 +37,7 @@ use uuid::Uuid;
 // Keep admission and pending observations on the same immutable Settings owner.
 macro_rules! settings_owner_sql {
     () => {
-        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation')=? AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method')='updateGlobalInstructions') OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential'))"
+        "draft_owner IS NULL AND json_type(context,'$.draft')='null' AND json_type(context,'$.sessionId')='null' AND json_type(context,'$.correlation')='object' AND json_extract(context,'$.correlation') IN (SELECT value FROM json_each(?)) AND ((json_extract(context,'$.endpoint')='settings' AND json_extract(context,'$.method') IN (SELECT value FROM json_each(?))) OR (json_extract(context,'$.endpoint')='agent' AND json_extract(context,'$.method')='updateGlobalInstructions') OR (json_extract(context,'$.endpoint')='setup' AND json_extract(context,'$.method')='discoverModels') OR (json_extract(context,'$.endpoint')='management' AND json_extract(context,'$.method') IN ('setEnabled','configure')) OR (json_extract(context,'$.endpoint')='authentication' AND json_extract(context,'$.method')='loginCredential'))"
     };
 }
 
@@ -215,9 +215,10 @@ impl Journal {
             .map(|_| ())
     }
     pub(crate) async fn reserve_settings(&self, operation: &Operation) -> Result<()> {
-        self.write(write::Command::ReserveSettings(write::Reservation::new(
-            operation,
-        )?))
+        self.write(write::Command::ReserveSettings {
+            reservation: write::Reservation::new(operation)?,
+            correlation: operation.correlation.clone(),
+        })
         .await
         .map(|_| ())
     }
@@ -436,8 +437,12 @@ impl Journal {
         }
         Ok(operations)
     }
-    pub(crate) async fn pending_controls(&self, host: &DeploymentRef) -> Result<Vec<Operation>> {
-        let correlation = serde_json::json!({"kind": CONTROL_KIND}).to_string();
+    pub(crate) async fn pending_controls(
+        &self,
+        host: &DeploymentRef,
+        owner: &ServiceOwner,
+    ) -> Result<Vec<Operation>> {
+        let correlation = serde_json::json!({"kind": CONTROL_KIND, "owner": owner}).to_string();
         let rows = sqlx::query(recovery::CONTROLS)
             .bind(&host.state_domain)
             .bind(host.deployment.to_string())
@@ -458,12 +463,13 @@ impl Journal {
         &self,
         host: &DeploymentRef,
         session: &str,
+        owner: &ServiceOwner,
     ) -> Result<Vec<Operation>> {
         let rows = sqlx::query(recovery::TERMINALS)
             .bind(&host.state_domain)
             .bind(host.deployment.to_string())
             .bind(session)
-            .bind(serde_json::json!({"kind":"terminal"}).to_string())
+            .bind(serde_json::json!({"kind":"terminal", "owner":owner}).to_string())
             .fetch_all(&self.pool)
             .await
             .map_err(error)?;
@@ -481,11 +487,19 @@ impl Journal {
             .fetch_all(&self.pool).await.map_err(error)?;
         rows.into_iter().map(decode_operation).collect()
     }
-    pub(crate) async fn pending_settings(&self, host: &DeploymentRef) -> Result<Vec<Operation>> {
+    pub(crate) async fn pending_settings(
+        &self,
+        host: &DeploymentRef,
+        owners: &[ServiceOwner],
+    ) -> Result<Vec<Operation>> {
+        let correlations: Vec<_> = owners
+            .iter()
+            .map(|owner| serde_json::json!({"kind": SETTINGS_KIND, "owner": owner}))
+            .collect();
         let rows = sqlx::query(recovery::SETTINGS)
             .bind(&host.state_domain)
             .bind(host.deployment.to_string())
-            .bind(serde_json::json!({"kind": SETTINGS_KIND}).to_string())
+            .bind(serde_json::to_string(&correlations).map_err(error)?)
             .bind(serde_json::to_string(&SETTINGS_METHODS).map_err(error)?)
             .fetch_all(&self.pool)
             .await
@@ -618,6 +632,10 @@ mod tests {
             deployment: Uuid::from_u128(1),
             revision: 1,
         };
+        let owner = ServiceOwner {
+            namespace: InstanceId(vec![Uuid::from_u128(2)]),
+            export: "terminal".into(),
+        };
         let mut expected = Vec::new();
         for id in 1..=132 {
             let operation = Operation {
@@ -626,7 +644,7 @@ mod tests {
                 endpoint: "terminal".into(),
                 method: "start".into(),
                 session_id: Some(if id == 130 { "other" } else { "session" }.into()),
-                correlation: serde_json::json!({"kind":"terminal"}),
+                correlation: serde_json::json!({"kind":"terminal","owner":owner}),
                 draft: None,
                 upload: None,
                 abandoned: false,
@@ -658,7 +676,10 @@ mod tests {
         }
         journal.pool.close().await;
         let journal = Journal::open(&path).await.unwrap();
-        let pending = journal.pending_terminals(&host, "session").await.unwrap();
+        let pending = journal
+            .pending_terminals(&host, "session", &owner)
+            .await
+            .unwrap();
         expected.reverse();
         assert_eq!(
             pending

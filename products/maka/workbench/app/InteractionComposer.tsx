@@ -30,7 +30,7 @@ import { tr } from './locale';
 import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
 import { Input } from 'nsh/base';
 import type { ViewRef } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import { keymap } from 'nsh';
 import { windowSize } from 'nsh';
 import { Button } from 'nsh/base';
@@ -209,6 +209,7 @@ export function InteractionComposer({
   focusComposer(): void;
   confirming(): boolean;
 }) {
+  const host = useHost();
   const record = signal<InteractionRecord | null>(null);
   const loading = signal(false),
     busy = signal(false),

@@ -21,15 +21,13 @@ import { mount, signal, View } from 'nsh';
 import { Clipboard } from 'nsh';
 import { keymap } from 'nsh';
 import { TurnNavigation } from '../../../workbench/app/TurnNavigation';
-import { uiScale } from '../../../workbench/app/uiScale';
 
 const colors = ['#161719', '#17181a', '#18191b', '#191a1c'];
 const stage = signal(0);
-[100, 80, 50, 200].forEach((percent, index) => {
+colors.forEach((_, index) => {
   keymap.bind(
     `mod+${index + 1}`,
     () => {
-      uiScale.preview(String(percent));
       stage.set(index);
     },
     { when: 'always' },

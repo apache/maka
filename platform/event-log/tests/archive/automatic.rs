@@ -88,11 +88,9 @@ async fn automatic_modes_apply_archived_sources_without_sealing_the_message() {
                 .len(),
             1
         );
-        let source = log
-            .capture_model_context("session", Some("writer"), 100_000, 64 * 1024 * 1024)
+        log.capture_model_context("session", Some("writer"), 100_000, 64 * 1024 * 1024)
             .await
             .unwrap();
-        assert_eq!(source.anchor.is_some(), mid);
         let Fact::ToolResultArchived { placeholder } = &archived.event().fact else {
             panic!()
         };

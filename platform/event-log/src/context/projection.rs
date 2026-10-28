@@ -77,8 +77,10 @@ async fn obligations(
             .bind(invocation)
             .execute(&mut *db)
             .await?;
-            if matches!(outcome, InvocationOutcome::Failed { class, .. } if class == "outcome_unknown")
-            {
+            if matches!(
+                outcome,
+                InvocationOutcome::Failed { .. } | InvocationOutcome::Cancelled { .. }
+            ) {
                 sqlx::query("UPDATE context_obligations SET sealed_unknown=1 WHERE invocation_id=? AND kind='tool'")
                     .bind(invocation).execute(&mut *db).await?;
             }
@@ -138,7 +140,7 @@ async fn obligations(
     SELECT e.event_session, e.invocation_id, 'tool', e.operation_id, e.sequence,
            EXISTS(SELECT 1 FROM runtime_events terminal
              WHERE terminal.invocation_id=e.invocation_id AND terminal.kind='invocation_ended'
-               AND json_extract(terminal.event_json,'$.fact.outcome.class')='outcome_unknown')
+               AND json_extract(terminal.event_json,'$.fact.outcome.kind') IN ('failed','cancelled'))
     FROM runtime_events e
     WHERE e.sequence=?1 AND e.kind='tool_dispatched'
       AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id=e.invocation_id AND t.operation_id=e.operation_id AND t.kind='tool_settled')"#).bind(sequence).execute(&mut *db).await?;

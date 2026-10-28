@@ -35,9 +35,12 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct Foreground(pub watch::Receiver<bool>);
 
-/// Previews the interface at another scale, where the shell's renderer can
-/// (the terminal's pixel display); the shell puts it in the engine context.
-pub struct UiScale(pub Box<dyn Fn(f32) -> Result<(), String> + Send + Sync>);
+/// Reads and previews interface scale from the shell's pixel renderer.
+/// The shell puts it in the engine context.
+pub struct UiScale {
+    pub preview: Box<dyn Fn(f32) -> Result<(), String> + Send + Sync>,
+    pub current: Box<dyn Fn() -> Result<f32, String> + Send + Sync>,
+}
 
 /// The common loader for trusted UI packages, without a product root or assets.
 pub fn bootstrap_bundle() -> Bundle {

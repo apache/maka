@@ -1147,7 +1147,7 @@ pub(crate) fn summary_for(
         .and_then(|lineage| lineage.branch())
         .map(|origin| SessionBranch {
             session_id: origin.parent_session_id.clone(),
-            turn_id: origin.turn_id.clone(),
+            position: origin.position.clone(),
         });
     Session {
         branch,

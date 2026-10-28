@@ -3402,6 +3402,8 @@ mod tests {
                         time: surface.clock(),
                         modifiers: Modifiers::default(),
                         clicks: 1,
+                        pressed_button: matches!(kind, PointerKind::Move | PointerKind::Leave)
+                            .then_some(0),
                     },
                 )
             };
@@ -3491,6 +3493,8 @@ mod tests {
                         time: surface.clock(),
                         modifiers: Modifiers::default(),
                         clicks: 1,
+                        pressed_button: matches!(kind, PointerKind::Move | PointerKind::Leave)
+                            .then_some(0),
                     },
                 )
             };
@@ -3602,6 +3606,8 @@ mod tests {
                     time: surface.clock(),
                     modifiers: Modifiers::default(),
                     clicks: 1,
+                    pressed_button: matches!(kind, PointerKind::Move | PointerKind::Leave)
+                        .then_some(0),
                 },
             )
         };
@@ -3932,6 +3938,7 @@ mod tests {
                     time,
                     modifiers: Modifiers::default(),
                     clicks: 1,
+                    pressed_button: None,
                 },
             )
         };

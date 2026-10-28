@@ -21,6 +21,8 @@
 
 [简体中文](README.zh-CN.md)
 
+`agent.fork` captures a source revision and an explicit `position`: `end`, `through_turn`, or `before_turn` with a logical Turn ID, or `start` for empty history. `before_turn` excludes the complete target Turn and accepts the first Turn to create an empty conversation. The Host resolves the boundary from canonical history in the copy transaction; clients do not need a preceding Turn or the sampled history landmarks. The returned branch retains that position, and the source conversation is unchanged.
+
 Exposes Agent execution as native application services. `provide` registers factories; `executor` and `workhub` connect the service to the execution and coordination domains. Packages and product compositions choose which factories to activate and how to bind their imports.
 
 The service owns its activation and delegates runs to `maka-agent-engine`. Session history, controls and tool calls use admitted scopes and original operation receipts. Files, processes, skills and other services are explicit dependencies selected by composition.

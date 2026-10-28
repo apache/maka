@@ -22,10 +22,7 @@ use crate::{
     EventLog, StoreError,
     context::{HistoryCut, history, safety},
 };
-use maka_agent_facts::session::BranchOrigin;
-use maka_agent_facts::session::CopyPurpose;
-use maka_agent_facts::session::CopyState;
-use maka_agent_facts::session::Lineage;
+use maka_agent_facts::session::{BranchOrigin, CopyPurpose, CopyState, ForkPosition, Lineage};
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::Connection;
 
@@ -121,11 +118,12 @@ impl EventLog {
             return Err(super::invalid("invalid Session copy identity or revision"));
         }
         let cut = match &request.purpose {
-            CopyPurpose::Branch {
-                turn_id: Some(turn),
-                ..
-            } => HistoryCut::ThroughTurn(turn.clone()),
-            CopyPurpose::Branch { turn_id: None, .. } => HistoryCut::End,
+            CopyPurpose::Branch { position, .. } => match position {
+                ForkPosition::Start => HistoryCut::Empty,
+                ForkPosition::End => HistoryCut::End,
+                ForkPosition::ThroughTurn { turn_id } => HistoryCut::ThroughTurn(turn_id.clone()),
+                ForkPosition::BeforeTurn { turn_id } => HistoryCut::BeforeTurn(turn_id.clone()),
+            },
             CopyPurpose::EmptySideConversation => HistoryCut::Empty,
             CopyPurpose::Revision { turn_id } => HistoryCut::BeforeTurn(turn_id.clone()),
         };
@@ -254,11 +252,11 @@ async fn lineage(
     request: &SessionCopy,
 ) -> Result<Lineage, StoreError> {
     let turn_id = match &request.purpose {
-        CopyPurpose::Branch { turn_id, .. } => {
+        CopyPurpose::Branch { position, .. } => {
             return Ok(Lineage::Branch {
                 origin: BranchOrigin {
                     parent_session_id: request.source_session_id.clone(),
-                    turn_id: turn_id.clone(),
+                    position: position.clone(),
                 },
             });
         }
@@ -266,7 +264,7 @@ async fn lineage(
             return Ok(Lineage::Branch {
                 origin: BranchOrigin {
                     parent_session_id: request.source_session_id.clone(),
-                    turn_id: None,
+                    position: ForkPosition::Start,
                 },
             });
         }

@@ -35,6 +35,8 @@ maka application export-package --package plugin --output plugin.maka-plugin
 
 Export creates a new file. A package check validates declarations and bindings, not handler or UI behavior. Exercise actual service calls and the contribution in the running workbench. For UI, check the selected root or contributed command/view, configuration, update, disable and cleanup behavior. A custom root should occupy the complete application; test its navigation and contribution presentation rather than assuming Maka's workbench remains around it. If it owns mutations, retain and recover the original receipt rather than replaying an unknown operation.
 
+For embedded views, verify the configured target and contract, remount with the same controller, and update the provider while it owns an edit. Check `prepareReload()` and `context.restored` for each active instance, including preparation failure before VM replacement. Commands should retain their availability and argument behavior when their UI provider is loaded lazily.
+
 On macOS/Linux, copy `assets/starter/verify-host.py` beside `create.mjs` and `host.mjs`, then run `python3 verify-host.py --maka /path/to/maka`. The fixture generates an Echo package and an explicit consumer in a temporary Root, starts the real Host, verifies strings and invalid input, then closes and removes it. Its raw IPC code belongs to the launcher fixture, not plugin business code.
 
 The starter's counter demonstrates local NSH state; Echo demonstrates a Host query. They do not need a model connection. Add durable effects through the service that owns the data when the feature needs them.

@@ -8,5 +8,6 @@
     "declaration": false,
     "declarationMap": false
   },
-  "include": ["src", "../../../plugins/**/*.ts", "../workbench/package.ts"]
+  "include": ["src", "../../../plugins/**/*.ts", "../workbench/package.ts"],
+  "exclude": ["../../../plugins/**/ui/**"]
 }

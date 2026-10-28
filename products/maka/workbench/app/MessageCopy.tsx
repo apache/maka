@@ -21,7 +21,7 @@ import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
 import { Clipboard } from 'nsh';
-import { host } from './host';
+import { useHost } from './host';
 import { messageBytes, type Position, type Row } from './history';
 import { C, IconButton } from './ui';
 
@@ -50,6 +50,7 @@ export function MessageCopy(props: {
   sessionId: string;
   through(): number;
 }) {
+  const host = useHost();
   const busy = signal(false);
   const notice = createText();
   const failed = signal(false);

@@ -33,8 +33,8 @@ struct Detail {
 }
 
 /// HTTP status supplies retry policy; a valid vendor envelope supplies the
-/// diagnostic. HTML, truncated JSON and empty bodies retain the HTTP reason.
-pub fn http_failure(status: u16, reason: &str, body: &[u8]) -> ProviderError {
+/// diagnostic. HTML, truncated JSON and empty bodies retain only the status.
+pub fn http_failure(status: u16, body: &[u8]) -> ProviderError {
     let raw = serde_json::from_slice::<Value>(body).ok();
     let parsed = raw
         .as_ref()
@@ -42,9 +42,9 @@ pub fn http_failure(status: u16, reason: &str, body: &[u8]) -> ProviderError {
     let (message, code, data) = match parsed {
         Some(Envelope::Error { error }) => {
             let data = serde_json::json!({"type":"error","error":{"type":error.r#type,"message":error.message}});
-            (error.message, Some(Value::String(error.r#type)), data)
+            (Some(error.message), Some(Value::String(error.r#type)), data)
         }
-        None => (reason.into(), None, Value::Null),
+        None => (None, None, Value::Null),
     };
     ProviderError {
         kind: code.as_ref().and_then(Value::as_str).map(str::to_owned),

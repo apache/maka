@@ -28,13 +28,13 @@ Start from the plugin's declaration and the contract its consumer needs. A packa
 
 In a checkout, authored plugins live under `plugins/<family>/<plugin>/package.ts`. Rust implementation crates sit beside the plugin or in a shared family directory. Product selection and wiring belong to `products/maka/bundle`; compiled Host factories are selected in `products/maka/native`. Keep business behavior in the owning plugin.
 
-For a new package, follow [Quickstart](references/quickstart.md). It covers a single-plugin checkout build and the Echo service and NSH root/counter starter. For an existing plugin, inspect its entry, contracts and captured imports before editing. Preserve instance UUIDs when updating an installation: those identities own saved state.
+For a new package, follow [Quickstart](references/quickstart.md). It covers a single-plugin checkout build, the Echo service and NSH root/counter starter, and a replaceable composer example. For an existing plugin, inspect its entry, contracts and captured imports before editing. Preserve instance UUIDs when updating an installation: those identities own saved state.
 
 Read the guide relevant to the change:
 
 - [Host services and Agent tools](references/tools-and-input.md): handlers, scoped calls and tool selection.
 - [Runtime UI authoring](references/runtime-ui.md): directly manage the connected source and enable UI contributions.
-- [Shared NSH UI plugins](references/ui-plugins.md): root selection, contributions, module activation, assets and cleanup.
+- [Shared NSH UI plugins](references/ui-plugins.md): root selection, typed embedded views, commands, activation state, assets and cleanup.
 - [State and authority](references/state-and-authority.md): data ownership, mutation receipts and cancellation.
 - [Native Rust](references/native-rust.md): definitions, registration and resource lifetime.
 - [Models and execution](references/models-and-execution.md): Agent/provider integration.
@@ -43,6 +43,8 @@ Read the guide relevant to the change:
 - [API sources](references/api-map.md): exact types and schemas for this build.
 
 Use the SDK root exports and the runtime's `maka application schema` output. Rust declarations generate SDK contracts; hand-editing generated files creates drift. Host JavaScript entries use service imports and request-local resources. UI modules are trusted code in the shared NSH client VM, using its existing client capabilities; do not invent a second UI permission or execution model.
+
+Workbench business UI is composed through declared contributions. Select an embedded `view` by its configured `{ path, id }` target and shared input contract. Keep its controllers and reload state in the owning instance's `UiActivation`; views receive presentation inputs from their consumer. Route business calls through the instance's `context.application` or indexed `context.services` imports. Read the existing SDK contract before replacing a composer, conversation, preview or settings view.
 
 When this skill is loaded through Maka, use the reference and catalog revision returned by discovery. Read a resource with `resource: { path: "references/quickstart.md" }` and pass returned `next` objects back unchanged. Use the tool name from current metadata. The packaged `references/sdk/` directory contains this build's SDK sources; in a checkout they live under `packages/plugin-sdk/src/`.
 

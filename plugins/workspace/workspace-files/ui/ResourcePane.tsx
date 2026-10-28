@@ -17,20 +17,23 @@
  * under the License.
  */
 
-import { textTooltip } from './ui';
-import { tr } from './locale';
+import { textTooltip } from '../../../../products/maka/workbench/app/ui';
+import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, Scroll, signal, Text, View, Image } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { keymap } from 'nsh';
-import { Terminal } from './Terminal';
-import { Terminals } from './Terminals';
-import { WorkspaceFiles } from './WorkspaceFiles';
-import { CurrentFile } from './CurrentFile';
+import { Terminal } from '../../../../products/maka/workbench/app/Terminal';
+import { Terminals } from '../../../../products/maka/workbench/app/Terminals';
+import { WorkspaceFiles } from '../../../../products/maka/workbench/app/WorkspaceFiles';
+import { CurrentFile } from '../../../../products/maka/workbench/app/CurrentFile';
 import type { Resources } from './resources';
-import type { ImagePreview } from './ImageThumbnail';
-import { Icon } from './Icon';
-import { ImageViewerButton, type OpenImageViewer } from './ImageViewer';
+import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
+import { Icon } from '../../../../products/maka/workbench/app/Icon';
+import {
+  ImageViewerButton,
+  type OpenImageViewer,
+} from '../../../../products/maka/workbench/app/ImageViewer';
 import {
   C,
   bodyTextStyle,
@@ -38,8 +41,8 @@ import {
   controlStyle,
   controlHoverStyle,
   controlFocusStyle,
-} from './ui';
-import { controlsRight, windowDrag } from './chrome';
+} from '../../../../products/maka/workbench/app/ui';
+import { controlsRight, windowDrag } from '../../../../products/maka/workbench/app/chrome';
 
 export function ResourcePane(props: { resources: Resources; docked: boolean }) {
   const resources = props.resources;

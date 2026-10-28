@@ -73,7 +73,6 @@ async fn replace_head(log: &SessionFixture, policy: &str, current: Option<&str>)
         .unwrap()
         .selection;
     selection.after = selection.through;
-    selection.anchor_sequence = None;
     let build = store
         .prepare_model_view(selection, policy, None)
         .await

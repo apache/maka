@@ -526,13 +526,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -1651,13 +1712,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -2936,13 +3058,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -4608,11 +4791,8 @@ export const contracts = {
                 minimum: 1,
                 maximum: 9007199254740991,
               },
-              turnId: {
-                description:
-                  'Include history through a complete logical Turn, or all current history when null.',
-                type: ['string', 'null'],
-                minLength: 1,
+              position: {
+                $ref: '#/$defs/AgentForkPosition',
               },
               title: {
                 type: 'string',
@@ -4626,7 +4806,71 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['sessionId', 'expectedRevision', 'turnId', 'title', 'labels'],
+            required: ['sessionId', 'expectedRevision', 'position', 'title', 'labels'],
+            $defs: {
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
+              },
+            },
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -4798,13 +5042,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -5307,13 +5612,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -7629,13 +7995,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -8623,13 +9050,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -10191,13 +10679,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -10731,13 +11280,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -11250,13 +11860,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -11706,13 +12377,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -14235,13 +14967,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -18188,13 +18981,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -18935,13 +19789,74 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
                 additionalProperties: false,
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
+              },
+              AgentForkPosition: {
+                description: 'A complete logical Turn boundary within the source session.',
+                oneOf: [
+                  {
+                    description: 'Capture an empty history prefix.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Capture all current history, including later compaction facts.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    description: 'Include the complete target Turn.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                  {
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'turnId'],
+                  },
+                ],
               },
               AgentBackendPreference: {
                 description:
@@ -24145,14 +25060,75 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
                 description:
                   'Frozen conversation ancestry for presentation, not authority over the source.',
+              },
+              AgentForkPosition: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                    description: 'Capture an empty history prefix.',
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                    description: 'Capture all current history, including later compaction facts.',
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    required: ['kind', 'turnId'],
+                    description: 'Include the complete target Turn.',
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    required: ['kind', 'turnId'],
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                  },
+                ],
+                description: 'A complete logical Turn boundary within the source session.',
               },
               AgentBackendPreference: {
                 oneOf: [
@@ -25616,14 +26592,75 @@ export const contracts = {
                     type: 'string',
                     minLength: 1,
                   },
-                  turnId: {
-                    type: ['string', 'null'],
-                    minLength: 1,
+                  position: {
+                    $ref: '#/$defs/AgentForkPosition',
                   },
                 },
-                required: ['sessionId', 'turnId'],
+                required: ['sessionId', 'position'],
                 description:
                   'Frozen conversation ancestry for presentation, not authority over the source.',
+              },
+              AgentForkPosition: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'start',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                    description: 'Capture an empty history prefix.',
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                    description: 'Capture all current history, including later compaction facts.',
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'through_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    required: ['kind', 'turnId'],
+                    description: 'Include the complete target Turn.',
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'before_turn',
+                      },
+                      turnId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    required: ['kind', 'turnId'],
+                    description:
+                      'Exclude the complete target Turn, including its submitted inputs.',
+                  },
+                ],
+                description: 'A complete logical Turn boundary within the source session.',
               },
               AgentBackendPreference: {
                 oneOf: [
@@ -46116,6 +47153,9 @@ export const contracts = {
                   module: {
                     type: 'string',
                   },
+                  definitionBasis: {
+                    type: 'string',
+                  },
                   bindingBasis: {
                     type: 'string',
                   },
@@ -46141,6 +47181,7 @@ export const contracts = {
                   'package',
                   'configuration',
                   'module',
+                  'definitionBasis',
                   'bindingBasis',
                   'imports',
                   'contributions',
@@ -46177,6 +47218,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'view',
+                      },
+                      contract: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'contract'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'panel',
                       },
                       title: {
@@ -46195,6 +47250,40 @@ export const contracts = {
                       },
                       title: {
                         $ref: '#/$defs/UiText',
+                      },
+                      description: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/UiText',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                      shortcut: {
+                        type: ['string', 'null'],
+                      },
+                      order: {
+                        type: ['integer', 'null'],
+                        format: 'int32',
+                      },
+                      trigger: {
+                        type: ['string', 'null'],
+                      },
+                      takesArgument: {
+                        type: 'boolean',
+                        default: false,
+                      },
+                      hint: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/UiText',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
                       },
                     },
                     additionalProperties: false,

@@ -1894,6 +1894,7 @@ mod tests {
                         backend: None,
                         collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
                         tools: None,
+                        compaction_prompt: None,
                         title: "browser authority fixture".into(),
                         title_is_manual: false,
                         labels: vec![],

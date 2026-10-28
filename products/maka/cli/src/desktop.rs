@@ -38,21 +38,21 @@ pub(crate) const SHELL: &str = if cfg!(target_os = "macos") {
 #[derive(clap::Args)]
 #[command(version)]
 pub(super) struct Args {
-    /// Business Host Root to initialize or reopen.
+    /// Business Host Root to initialize or reopen (default: ~/.maka/application/host).
     #[arg(long)]
-    root: PathBuf,
+    root: Option<PathBuf>,
 }
 
 impl Args {
     pub(super) async fn run(self) -> Result<ExitCode, HostError> {
         let stop = CancellationToken::new();
         let _signals = crate::signals::watch(stop.clone())?;
-        let root = self.root.clone();
+        let root = crate::application::root_path(self.root)?;
         let mut client = tokio::select! {
             result = crate::deployment::connect_local(root.clone()) => result?,
             _ = stop.cancelled() => return Ok(ExitCode::SUCCESS),
         };
-        let result = self.launch(&client, &stop).await;
+        let result = Self::launch(&root, &client, &stop).await;
         // Detach, as the terminal does: the Host finishes the work it accepted
         // and then stops once no client is left.
         let mut cleanup = client.close().await;
@@ -76,8 +76,12 @@ impl Args {
         }
     }
 
-    async fn launch(self, client: &Client, stop: &CancellationToken) -> Result<i32, HostError> {
-        let registered = discovery::read(&self.root)?;
+    async fn launch(
+        root: &std::path::Path,
+        client: &Client,
+        stop: &CancellationToken,
+    ) -> Result<i32, HostError> {
+        let registered = discovery::read(root)?;
         if registered.host_epoch != client.epoch() || &registered.source != client.source() {
             return Err("application Host changed during desktop startup admission".into());
         }
@@ -88,7 +92,7 @@ impl Args {
         let launcher = std::env::current_exe()?;
         let executable = launcher.with_file_name(SHELL);
         let mut child = Command::new(&executable)
-            .env("MAKA_HOST_ROOT", std::path::absolute(&self.root)?)
+            .env("MAKA_HOST_ROOT", std::path::absolute(root)?)
             .env("MAKA_HOST_ENDPOINT", &registered.endpoint)
             .env("MAKA_HOST_EPOCH", registered.host_epoch.to_string())
             // The shell starts the Root's next Host through it.

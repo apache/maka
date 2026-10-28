@@ -50,7 +50,7 @@ pub(super) async fn verify_nested_copy(log: &EventLog) {
             target_session_id: "nested".into(),
             expected_source_revision: revision,
             purpose: CopyPurpose::Branch {
-                turn_id: None,
+                position: maka_agent_facts::session::ForkPosition::End,
                 side_conversation: false,
             },
         },

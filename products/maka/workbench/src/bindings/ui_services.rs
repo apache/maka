@@ -17,9 +17,15 @@
  * under the License.
  */
 
-use super::{OriginalMutation, Owner, ScopedSubscription, SubscriptionKind, execute};
+use super::{
+    ApplicationClient, ApplicationHost, OriginalMutation, Owner, ScopedSubscription,
+    SubscriptionKind, execute,
+};
 use maka_app_client::Client;
-use maka_plugin_core::{composition::InstanceId, deployment::DeploymentRef};
+use maka_plugin_core::{
+    composition::InstanceId,
+    deployment::{DeploymentRef, management::UiInstance},
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use serde_json::json;
@@ -37,12 +43,13 @@ use uuid::Uuid;
 /// the original Host remains available separately to trusted UI code.
 #[class]
 pub struct UiScope {
-    services: Arc<Services>,
+    pub(super) services: Arc<Services>,
+    initial_session: Option<String>,
 }
-struct Services {
+pub(super) struct Services {
     owner: Arc<Owner>,
     instance: InstanceId,
-    binding_basis: String,
+    definition_basis: String,
     imports: JsonValue,
     routes: BTreeMap<String, Selection>,
     binding: Mutex<Option<Binding>>,
@@ -56,6 +63,7 @@ struct Selection {
 struct Binding {
     client: Client,
     imports: BTreeMap<String, Vec<String>>,
+    binding_basis: String,
 }
 
 impl UiScope {
@@ -63,7 +71,8 @@ impl UiScope {
         owner: Arc<Owner>,
         source: DeploymentRef,
         instance: InstanceId,
-        binding_basis: String,
+        definition_basis: String,
+        initial_session: Option<String>,
     ) -> Result<Self, String> {
         instance.validate().map_err(|error| error.to_string())?;
         let (current, metadata) = owner
@@ -73,7 +82,7 @@ impl UiScope {
         if source.state_domain != current.state_domain || source.deployment != current.deployment {
             return Err("UI bindings belong to another deployment".into());
         }
-        if metadata.binding_basis != binding_basis {
+        if metadata.definition_basis != definition_basis {
             return Err("UI service scope belongs to a retired binding generation".into());
         }
         let mut routes = BTreeMap::new();
@@ -94,10 +103,11 @@ impl UiScope {
             imports.insert(name.clone(), locators);
         }
         Ok(Self {
+            initial_session,
             services: Arc::new(Services {
                 owner,
                 instance,
-                binding_basis,
+                definition_basis,
                 imports: serde_json::to_value(imports).map_err(|error| error.to_string())?,
                 routes,
                 binding: Mutex::new(None),
@@ -109,6 +119,10 @@ impl UiScope {
 }
 
 impl Services {
+    pub(super) fn asset_uri(&self, uri: &str) -> Result<String, String> {
+        super::assets::scoped_uri(&self.instance, &self.definition_basis, uri)
+    }
+
     fn ensure_open(&self) -> Result<(), String> {
         if self.closed.load(Ordering::Acquire) {
             return Err("UI service scope is closed".into());
@@ -116,17 +130,95 @@ impl Services {
         Ok(())
     }
 
-    fn current_source(&self) -> Result<DeploymentRef, String> {
+    fn current_source(&self) -> Result<(DeploymentRef, Arc<UiInstance>), String> {
         self.ensure_open()?;
         let (source, metadata) = self
             .owner
             .plugins
             .current_ui(&self.instance)
             .ok_or("UI service scope is no longer active")?;
-        if metadata.binding_basis != self.binding_basis {
+        if metadata.definition_basis != self.definition_basis {
             return Err("UI service scope belongs to a retired binding generation".into());
         }
-        Ok(source)
+        Ok((source, metadata))
+    }
+
+    async fn capture(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Binding>>, String> {
+        let mut binding = self.binding.lock().await;
+        loop {
+            let (source, metadata) = self.current_source()?;
+            if binding.as_ref().is_some_and(|bound| {
+                bound.binding_basis == metadata.binding_basis && !bound.client.binding_retired()
+            }) {
+                return Ok(binding);
+            }
+            let captured = self
+                .owner
+                .client
+                .bind_ui(source.clone(), self.instance.clone())
+                .await;
+            match (captured, self.current_source()) {
+                (Ok((client, imports)), Ok((_, latest))) => {
+                    if latest.binding_basis != metadata.binding_basis || client.binding_retired() {
+                        let _ = self.owner.spawn(async move { client.retire().await });
+                        continue;
+                    }
+                    let old = binding.replace(Binding {
+                        client,
+                        imports,
+                        binding_basis: metadata.binding_basis.clone(),
+                    });
+                    if let Some(old) = old {
+                        let _ = self.owner.spawn(async move { old.client.retire().await });
+                    }
+                    return Ok(binding);
+                }
+                (Ok((client, _)), Err(error)) => {
+                    let _ = self.owner.spawn(async move { client.retire().await });
+                    return Err(error);
+                }
+                (Err(_), Ok((latest, _))) if latest != source => continue,
+                (Err(error), Ok(_)) | (_, Err(error)) => return Err(error),
+            }
+        }
+    }
+
+    pub(super) async fn client(&self) -> Result<Client, String> {
+        let binding = self.capture().await?;
+        Ok(binding
+            .as_ref()
+            .expect("UI session captured above")
+            .client
+            .clone())
+    }
+
+    pub(super) async fn local_client(&self) -> Result<Client, String> {
+        let binding = self.binding.lock().await;
+        if let Some(bound) = binding.as_ref() {
+            return Ok(bound.client.clone());
+        }
+        drop(binding);
+        self.client().await
+    }
+
+    pub(super) async fn mutation_context(
+        &self,
+        endpoint: &str,
+    ) -> Result<(Client, String, JsonValue), String> {
+        let binding = self.capture().await?;
+        let bound = binding.as_ref().expect("UI session captured above");
+        for (import, endpoints) in &bound.imports {
+            if let Some((index, target)) = endpoints.iter().enumerate().find(|(_, target)| {
+                target.as_str() == endpoint || (import.as_str() == endpoint && endpoints.len() == 1)
+            }) {
+                return Ok((
+                    bound.client.clone(),
+                    target.clone(),
+                    json!({"kind":"ui", "instance":self.instance, "import":import, "index":index}),
+                ));
+            }
+        }
+        Err("UI application has no such service endpoint".into())
     }
 
     async fn resolve(&self, locator: &str) -> Result<(Client, String), String> {
@@ -134,42 +226,14 @@ impl Services {
             .routes
             .get(locator)
             .ok_or("Unknown UI service locator")?;
-        let mut binding = self.binding.lock().await;
-        loop {
-            let source = self.current_source()?;
-            if binding
-                .as_ref()
-                .is_some_and(|bound| bound.client.binding_retired())
-            {
-                let old = binding.take().expect("retired binding checked above");
-                let _ = self.owner.spawn(async move { old.client.retire().await });
-            }
-            if binding.is_none() {
-                let captured = self
-                    .owner
-                    .client
-                    .bind_ui(source.clone(), self.instance.clone())
-                    .await;
-                match (captured, self.current_source()) {
-                    (Ok((client, imports)), Ok(_)) => {
-                        *binding = Some(Binding { client, imports });
-                    }
-                    (Ok((client, _)), Err(error)) => {
-                        let _ = self.owner.spawn(async move { client.retire().await });
-                        return Err(error);
-                    }
-                    (Err(_), Ok(latest)) if latest != source => continue,
-                    (Err(error), Ok(_)) | (_, Err(error)) => return Err(error),
-                }
-            }
-            let bound = binding.as_ref().expect("UI session captured above");
-            let endpoint = bound
-                .imports
-                .get(&selection.import)
-                .and_then(|endpoints| endpoints.get(selection.index))
-                .ok_or("Host omitted a declared UI service binding")?;
-            return Ok((bound.client.clone(), endpoint.clone()));
-        }
+        let binding = self.capture().await?;
+        let bound = binding.as_ref().expect("UI session captured above");
+        let endpoint = bound
+            .imports
+            .get(&selection.import)
+            .and_then(|endpoints| endpoints.get(selection.index))
+            .ok_or("Host omitted a declared UI service binding")?;
+        Ok((bound.client.clone(), endpoint.clone()))
     }
 
     fn correlation(&self, locator: &str) -> Result<JsonValue, String> {
@@ -182,12 +246,19 @@ impl Services {
         )
     }
 
-    async fn close(&self) -> Result<(), String> {
+    pub(super) async fn close(&self) -> Result<(), String> {
         self.closed.store(true, Ordering::Release);
         self.cleanup
             .get_or_init(|| async {
-                if let Some(binding) = self.binding.lock().await.take() {
-                    binding.client.retire().await?;
+                let client = self
+                    .binding
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|bound| bound.client.clone());
+                if let Some(client) = client {
+                    // Keep the captured journal owner for already admitted local IO.
+                    client.retire().await?;
                 }
                 Ok(())
             })
@@ -209,6 +280,14 @@ impl Drop for UiScope {
 
 #[class]
 impl UiScope {
+    pub fn application(&self) -> Instance<ApplicationHost> {
+        Instance::new(ApplicationHost {
+            owner: self.services.owner.clone(),
+            client: ApplicationClient::Ui(self.services.clone()),
+            initial_session: self.initial_session.clone(),
+        })
+    }
+
     #[getter]
     pub fn imports(&self) -> JsonValue {
         self.services.imports.clone()

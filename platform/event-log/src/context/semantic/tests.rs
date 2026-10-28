@@ -127,7 +127,6 @@ fn selection(through: u64) -> SemanticSelection {
         session: "session".into(),
         lineage: None,
         after: 0,
-        anchor_sequence: None,
         through,
         before: through + 1,
         captured_through: through,
@@ -949,13 +948,12 @@ async fn imported_conversation_counts_as_new_compaction_history_but_the_anchor_d
             &mut db,
             &SemanticSelection {
                 after: 2,
-                anchor_sequence: Some(1),
                 ..selection(3)
             }
         )
         .await
         .unwrap(),
-        "an already covered user anchor and a ledger note do not create new conversation history"
+        "covered user history and a ledger note do not create new conversation history"
     );
 }
 
@@ -1492,7 +1490,6 @@ mod neighbor_window {
 
         let selected = SemanticSelection {
             after: 10,
-            anchor_sequence: Some(1),
             captured_through: 18,
             before: 19,
             ..selection(16)
@@ -1500,11 +1497,11 @@ mod neighbor_window {
         // An eligible newer invisible archive hides its old visible revision.
         // A newer publication outside the capture must leave that old row visible.
         for (captured, before, unknown, replay, expected) in [
-            (16, 19, false, false, vec![1, 11, 12, 15, 16]),
-            (18, 18, false, false, vec![1, 11, 12, 15, 16]),
-            (18, 19, false, false, vec![1, 11, 12, 16]),
-            (18, 19, true, false, vec![1, 11, 12, 13, 16]),
-            (18, 19, true, true, vec![1, 11, 12, 13]),
+            (16, 19, false, false, vec![11, 12, 15, 16]),
+            (18, 18, false, false, vec![11, 12, 15, 16]),
+            (18, 19, false, false, vec![11, 12, 16]),
+            (18, 19, true, false, vec![11, 12, 13, 16]),
+            (18, 19, true, true, vec![11, 12, 13]),
         ] {
             let selected = SemanticSelection {
                 captured_through: captured,
@@ -1527,35 +1524,27 @@ mod neighbor_window {
                 expected,
                 "capture={captured}, unknown={unknown}, replay={replay}"
             );
-            for anchor in [None, Some(1), Some(12), Some(17)] {
-                let selected = SemanticSelection {
-                    anchor_sequence: anchor,
-                    ..selected.clone()
-                };
-                let candidates = rows(&mut db, &selected, None, 64, None).await.unwrap().rows;
-                // Use row selection as the oracle for neighbor filtering
-                // and full semantic ordering, including rows ordered before `after`.
-                for group in [0, 1, 2, 3, 10, 19, 20, 21, 22, 23, 24] {
-                    for before in [true, false] {
-                        let expected = if before {
-                            candidates
-                                .iter()
-                                .rev()
-                                .find(|row| row.order.source_sequence < group)
-                        } else {
-                            candidates
-                                .iter()
-                                .find(|row| row.order.source_sequence > group)
-                        };
-                        assert_eq!(
-                            neighbor(&mut db, &selected, group, before)
-                                .await
-                                .unwrap()
-                                .as_ref(),
-                            expected,
-                            "group={group}, before={before}, anchor={anchor:?}, capture={captured}, unknown={unknown}, replay={replay}"
-                        );
-                    }
+            // Neighbor selection must use the same post-checkpoint source window.
+            for group in [0, 1, 2, 3, 10, 19, 20, 21, 22, 23, 24] {
+                for before in [true, false] {
+                    let expected = if before {
+                        candidates
+                            .iter()
+                            .rev()
+                            .find(|row| row.order.source_sequence < group)
+                    } else {
+                        candidates
+                            .iter()
+                            .find(|row| row.order.source_sequence > group)
+                    };
+                    assert_eq!(
+                        neighbor(&mut db, &selected, group, before)
+                            .await
+                            .unwrap()
+                            .as_ref(),
+                        expected,
+                        "group={group}, before={before}, capture={captured}, unknown={unknown}, replay={replay}"
+                    );
                 }
             }
         }
@@ -1588,33 +1577,19 @@ mod neighbor_window {
                 .execute(&mut db).await.unwrap();
             let selected = SemanticSelection {
                 after: (through - 16) as u64,
-                anchor_sequence: Some(1),
                 ..selection(through as u64)
             };
             let mut costs = Vec::new();
-            // Both directions cross the compacted gap. Also measure no neighbor
-            // and an overlapping anchor so no path can scan all owner history.
-            for (group, before, anchor, expected) in [
-                ((through - 15) as u64, true, Some(1), Some(1)),
-                (1, false, Some(1), Some((through - 15) as u64)),
-                ((through - 15) as u64, true, None, None),
-                (through as u64, false, Some(1), None),
-                (
-                    1,
-                    false,
-                    Some((through - 15) as u64),
-                    Some((through - 15) as u64),
-                ),
+            for (group, before, expected) in [
+                ((through - 15) as u64, true, None),
+                (1, false, Some((through - 15) as u64)),
+                (through as u64, false, None),
             ] {
-                let selected = SemanticSelection {
-                    anchor_sequence: anchor,
-                    ..selected.clone()
-                };
                 let (found, cost) = measured_neighbor(&mut db, &selected, group, before).await;
                 assert_eq!(
                     found.map(|row| row.id.source_sequence),
                     expected,
-                    "history={through}, group={group}, before={before}, anchor={anchor:?}"
+                    "history={through}, group={group}, before={before}"
                 );
                 costs.push(cost);
             }
@@ -1642,7 +1617,6 @@ mod neighbor_window {
             .unwrap();
         let selected = SemanticSelection {
             after: 1000,
-            anchor_sequence: Some(1),
             captured_through: 1064,
             before: 1129,
             ..selection(1001)

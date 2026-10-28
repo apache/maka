@@ -37,7 +37,6 @@ fn selection(through: u64) -> SemanticSelection {
         session: "prepared-test".into(),
         lineage: None,
         after: 0,
-        anchor_sequence: None,
         through,
         before: through + 1,
         captured_through: through,
@@ -1511,7 +1510,7 @@ async fn discovery_source_keysets_do_linear_work_and_skip_old_history() {
             let steps=Arc::new(AtomicU64::new(0));let observed=steps.clone();
             db.lock_handle().await?.set_progress_handler(1,move ||{observed.fetch_add(1,Ordering::Relaxed);true});
             let mut cursor=None;let mut seen=0;
-            loop {let page=semantic::initial_groups(db,&next,cursor,false,64).await?;seen+=page.groups.len();cursor=page.next;if cursor.is_none(){break;}}
+            loop {let page=semantic::initial_groups(db,&next,cursor,64).await?;seen+=page.groups.len();cursor=page.next;if cursor.is_none(){break;}}
             db.lock_handle().await?.remove_progress_handler();
             assert_eq!(seen,(through-after) as usize);
             measured.push(steps.load(Ordering::Relaxed));
@@ -1587,25 +1586,24 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
             sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<?2)
                 INSERT INTO context_semantic_rows SELECT ?1,1,(n-1)%3,(n-1)/3+1,((n-1)/3)%7+1,0,'target','target',CAST(n AS TEXT),'assistant_part',0,0,1,1,'{}' FROM numbers")
                 .bind(&session).bind(n).execute(&mut *db).await?;
-            let mut next=selection(n as u64);next.session=session;next.anchor_sequence=Some(1);
+            let mut next=selection(n as u64);next.session=session;
             next.replay=Some(semantic::SemanticReplay{base:0,current:"target".into(),route:"route".into(),model:"model".into()});next.prior_unknown=true;
             let mut previous=next.clone();previous.replay.as_mut().unwrap().current="absent".into();previous.prior_unknown=false;
-            for kind in 0..4 {
-                if kind==3 { statement_sorts(db,true).await?; }
+            for kind in 0..3 {
+                if kind==2 { statement_sorts(db,true).await?; }
                 let steps=Arc::new(AtomicU64::new(0));let observed=steps.clone();
                 db.lock_handle().await?.set_progress_handler(1,move ||{observed.fetch_add(1,Ordering::Relaxed);true});
                 let cursor=Some((1,1,n/6,4));
                 let page=match kind {
-                    0=>semantic::initial_groups(db,&next,cursor,false,64).await?,
-                    1=>semantic::initial_groups(db,&next,cursor,true,64).await?,
-                    2=>semantic::selection_dirty_groups(db,&previous,&next,2,cursor,64).await?,
+                    0=>semantic::initial_groups(db,&next,cursor,64).await?,
+                    1=>semantic::selection_dirty_groups(db,&previous,&next,2,cursor,64).await?,
                     _=>semantic::selection_dirty_groups(db,&previous,&next,4,cursor,64).await?,
                 };
                 db.lock_handle().await?.remove_progress_handler();assert_eq!(page.groups.len(),64);assert!(page.next.is_some());
-                if kind==3 { assert_eq!(statement_sorts(db,false).await?,0,"the forced unknown keyset must not sort"); }
+                if kind==2 { assert_eq!(statement_sorts(db,false).await?,0,"the forced unknown keyset must not sort"); }
                 measured.push(steps.load(Ordering::Relaxed));
             }
-            // Full anchor/unknown pagination must not drop duplicate semantic
+            // Full source/unknown pagination must not drop duplicate semantic
             // groups when the storage cursor crosses revision/order boundaries.
             for unknown in [false,true] {
                 let mut expected=(1..=n).map(|r|(1,(r-1)%3,(r-1)/3+1,((r-1)/3)%7+1)).collect::<Vec<_>>();
@@ -1614,7 +1612,7 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
                 let mut offset=0;
                 if unknown { statement_sorts(db,true).await?; }
                 loop {
-                    let page=if unknown {semantic::selection_dirty_groups(db,&previous,&next,4,cursor,64).await?}else{semantic::initial_groups(db,&next,cursor,true,64).await?};
+                    let page=if unknown {semantic::selection_dirty_groups(db,&previous,&next,4,cursor,64).await?}else{semantic::initial_groups(db,&next,cursor,64).await?};
                     let end=offset+page.groups.len();
                     assert!(end<=expected.len());
                     assert_eq!(page.groups,expected[offset..end].iter().map(|point|point.3 as u64).collect::<Vec<_>>(),"source/item/revision ties must preserve exact page order");
@@ -1639,14 +1637,14 @@ async fn discovery_seeks_dense_source_tuples_and_sparse_selector_indexes() {
         }
         Ok(measured)
     })).await.unwrap();
-    for index in 0..6 {
+    for index in 0..5 {
         assert!(
-            measured[index + 6] < measured[index] * 2,
+            measured[index + 5] < measured[index] * 2,
             "fixed page scanned earlier revisions/unrelated sources: {measured:?}"
         );
     }
     eprintln!(
-        "discovery bundled dense [normal,anchor,invocation,unknown], sparse [invocation,unknown], 1024 / 8192: {measured:?}"
+        "discovery bundled dense [normal,invocation,unknown], sparse [invocation,unknown], 1024 / 8192: {measured:?}"
     );
     log.close().await.unwrap();
 }
@@ -1796,7 +1794,6 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
             .unwrap();
         let selected = SemanticSelection {
             after,
-            anchor_sequence: (after > 0).then_some(1),
             ..selection(through)
         };
         // Count the complete production discovery, including every resumable
@@ -1828,7 +1825,7 @@ async fn full_logical_discovery_scales_with_cold_and_checkpoint_windows() {
             count += groups.len();
             cursor = groups.last().map(|group| group.id.clone());
         }
-        assert_eq!(count, (width + u64::from(after > 0)) as usize);
+        assert_eq!(count, width as usize);
         let measured = counter.load(Ordering::Relaxed);
         let cleanup = Arc::new(AtomicU64::new(0));
         let observed = cleanup.clone();

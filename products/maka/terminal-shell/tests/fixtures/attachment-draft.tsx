@@ -20,12 +20,19 @@
 import { createAttachmentDraft } from '../../../workbench/app/attachmentDraft';
 import { signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import { host } from 'maka/host';
+import { host as nativeHost } from 'maka/host';
+import { createHost } from '../../../workbench/app/host';
 import type {
   ClientOperation,
   ClientDraftAttachment,
 } from '../../../../../packages/plugin-sdk/src/index.js';
-import type { UiContext, UiExports } from '../../../../../packages/plugin-sdk/src/workbench.js';
+import type {
+  UiContext,
+  UiActivation,
+  UiHost,
+} from '../../../../../packages/plugin-sdk/src/workbench.js';
+
+const host = createHost(nativeHost as UiHost);
 
 type AttachmentDraftFixture = {
   original: ClientOperation;
@@ -33,9 +40,9 @@ type AttachmentDraftFixture = {
   attachment: ClientDraftAttachment;
 };
 
-export function activate(context: UiContext): UiExports {
+export function activate(context: UiContext): UiActivation {
   const fixture = context.configuration as AttachmentDraftFixture;
-  return { root: { kind: 'root', render: () => <AttachmentDraft {...fixture} /> } };
+  return { exports: { root: { kind: 'root', render: () => <AttachmentDraft {...fixture} /> } } };
 }
 
 function AttachmentDraft({ original, reserved, attachment }: AttachmentDraftFixture) {

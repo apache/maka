@@ -834,7 +834,7 @@ async fn inherited_directory_replaces_a_warmed_bare_claimant_on_the_observation_
                 target_session_id: "cache".into(),
                 expected_source_revision: revision,
                 purpose: CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },

@@ -82,6 +82,17 @@ impl Presentation {
 pub(crate) struct UiScaleControl(Presentation);
 
 impl UiScaleControl {
+    pub(crate) fn current(&self) -> Result<f32, String> {
+        self.0
+            .state
+            .lock()
+            .unwrap()
+            .pixels
+            .as_ref()
+            .map(|inbox| inbox.capabilities.ui_scale)
+            .ok_or_else(|| "pixel display is unavailable".into())
+    }
+
     pub(crate) fn preview(&self, scale: f32) -> Result<(), String> {
         let mut state = self.0.state.lock().unwrap();
         let tracing = state.trace.is_some();

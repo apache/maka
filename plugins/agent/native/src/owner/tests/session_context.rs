@@ -164,7 +164,7 @@ async fn fork_compaction_and_child_send_rebind_context_without_changing_parent_e
         let original = composition(&fixture, parent_id).await;
         let boundary = fixture.session(parent_id).await.invocation_boundary(parent_id, sent["invocationId"].as_str().unwrap()).await.unwrap().unwrap().0;
         let observed = fixture.query("observe", json!({"sessionId":parent_id})).await.unwrap();
-        let forked = fixture.mutation(2, "fork", json!({"sessionId":parent_id,"expectedRevision":observed["session"]["revision"],"turnId":boundary.invocation.turn_id,"title":"Child context","labels":[]}), Uuid::new_v4()).await.unwrap();
+        let forked = fixture.mutation(2, "fork", json!({"sessionId":parent_id,"expectedRevision":observed["session"]["revision"],"position":{"kind":"through_turn","turnId":boundary.invocation.turn_id},"title":"Child context","labels":[]}), Uuid::new_v4()).await.unwrap();
         let child = forked["session"].clone();
         let child_id = child["id"].as_str().unwrap();
         let compacted = fixture.mutation(2, "compact", json!({"sessionId":child_id,"model":fixture.selection().await,"prompt":"Summarize the retained parent conversation."}), Uuid::new_v4()).await.unwrap();

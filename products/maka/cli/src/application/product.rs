@@ -35,7 +35,7 @@ pub(crate) use headless::{
 };
 pub(super) use update::Update;
 
-pub(super) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
+pub(crate) fn root_path(root: Option<PathBuf>) -> Result<PathBuf, HostError> {
     match root {
         Some(root) => Ok(std::path::absolute(root)?),
         None => Ok(crate::serve::home_directory()?
@@ -223,6 +223,59 @@ async fn author_with_source(
     .validate()?;
     values.remove("packages");
     Ok((sources, configuration, prepared))
+}
+
+async fn update_default_ui(
+    input: &Input,
+    packages: &BTreeMap<String, Package>,
+) -> Result<Input, HostError> {
+    let source = authoring()?;
+    let vm = Vm::pure(Default::default())?;
+    let result = match vm.load("maka-product-ui-update".into(), source) {
+        Ok(module) => {
+            let result = async {
+                let names: Vec<String> = serde_json::from_value(
+                    module
+                        .call(
+                            vec!["installationNames".into()],
+                            vec![serde_json::json!({})],
+                        )
+                        .await?,
+                )?;
+                let keys: BTreeMap<_, _> = input
+                    .instances
+                    .keys()
+                    .flat_map(|root| {
+                        names
+                            .iter()
+                            .map(move |name| (format!("{root}/{name}"), uuid::Uuid::new_v4()))
+                    })
+                    .collect();
+                let references: BTreeMap<_, _> = packages
+                    .iter()
+                    .map(|(name, package)| (name, package.application_ref()))
+                    .collect();
+                Ok::<Input, HostError>(serde_json::from_value(
+                    module
+                        .call(
+                            vec!["updateDefaultUi".into()],
+                            vec![
+                                serde_json::to_value(input)?,
+                                serde_json::to_value(references)?,
+                                serde_json::to_value(keys)?,
+                            ],
+                        )
+                        .await?,
+                )?)
+            }
+            .await;
+            let closed = module.close().await.map_err(HostError::from);
+            result.and_then(|value| closed.map(|()| value))
+        }
+        Err(error) => Err(error.into()),
+    };
+    vm.shutdown().await;
+    result
 }
 
 fn export(

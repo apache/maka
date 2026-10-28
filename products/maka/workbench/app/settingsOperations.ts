@@ -18,7 +18,7 @@
  */
 
 import { cleanup, signal } from 'nsh';
-import { host } from './host';
+import type { Host } from './host';
 import { createText, errorText, message, UiError } from './text';
 import type {
   AgentGlobalInstructionsUpdate,
@@ -64,8 +64,16 @@ export function settingsRejection(value: any): UiError {
 }
 // One presentation owner for the existing native journal. The Client's
 // atomic reservation remains the write fence across pages and processes.
-export function createSettingsOperations() {
+export function createSettingsOperations(host: Host) {
   const busy = signal(false);
+  const idle = new Set<() => void>();
+  const whenIdle = () =>
+    busy() ? new Promise<void>((resolve) => idle.add(resolve)) : Promise.resolve();
+  const complete = () => {
+    if (alive) busy.set(false);
+    for (const resolve of idle) resolve();
+    idle.clear();
+  };
   const error = createText();
   const notice = createText();
   const pending = signal<ClientOperation[]>([]);
@@ -119,7 +127,7 @@ export function createSettingsOperations() {
       report(reason);
     } finally {
       await refreshPending().catch(report);
-      if (alive) busy.set(false);
+      complete();
     }
   };
   const recover = (
@@ -166,7 +174,7 @@ export function createSettingsOperations() {
         report(reason);
       } finally {
         await refreshPending().catch(report);
-        if (alive) busy.set(false);
+        complete();
       }
     })();
   };
@@ -181,11 +189,23 @@ export function createSettingsOperations() {
         report(reason);
       } finally {
         await refreshPending().catch(report);
-        if (alive) busy.set(false);
+        complete();
       }
     })();
   };
   void refreshPending().catch(report);
-  return { busy, error, notice, pending, pendingKnown, report, mutate, run, recover, abandon };
+  return {
+    busy,
+    whenIdle,
+    error,
+    notice,
+    pending,
+    pendingKnown,
+    report,
+    mutate,
+    run,
+    recover,
+    abandon,
+  };
 }
 export type SettingsOperations = ReturnType<typeof createSettingsOperations>;

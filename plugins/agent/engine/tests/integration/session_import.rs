@@ -264,7 +264,7 @@ async fn import_is_retryable_history_not_an_execution_and_survives_copy_and_rest
                 target_session_id: "copy".into(),
                 expected_source_revision: session.revision,
                 purpose: maka_agent_facts::session::CopyPurpose::Branch {
-                    turn_id: None,
+                    position: maka_agent_facts::session::ForkPosition::End,
                     side_conversation: false,
                 },
             },

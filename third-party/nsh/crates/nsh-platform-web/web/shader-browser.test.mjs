@@ -20,11 +20,10 @@
 // Production shader mounting/deletion on real browser DOM and observers.
 // Shader lifecycle only: no wasm or pixel/GPU output is exercised.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 
 const candidates = [
@@ -49,9 +48,8 @@ test('deleting a shader releases its canvas and observer before an ID is reused'
   try {
     const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
     const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { Player };').toString('base64');
-    await writeFile(join(dir, 'index.html'), `<!doctype html><body><script type="module">
-      import { Player } from '${module}';
-      try {
+    const expression = `(async () => {
+      const { Player } = await import('${module}');
         const check = (value, message) => { if (!value) throw Error(message); };
         const disconnected = new Set();
         const Observer = window.IntersectionObserver;
@@ -99,25 +97,88 @@ test('deleting a shader releases its canvas and observer before an ID is reused'
           check(player.shaderViews.size === 0, 'replacement shader frame client survives deletion');
           root.remove();
         }
-        document.body.dataset.result = 'passed';
-      } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
-    </script>`);
-    const html = execFileSync(chromium, ['--headless', '--disable-dev-shm-usage',
-      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=1000',
-      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
-    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+        return 'passed';
+    })()`;
+    assert.equal(await evaluateInBrowser(dir, expression), 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+// Unlike --dump-dom, CDP awaitPromise waits for the real RAF assertions to finish.
+async function evaluateInBrowser(dir, expression) {
+  const child = spawn(chromium, ['--headless', '--disable-dev-shm-usage',
+    '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+    '--user-data-dir=' + join(dir, 'profile'), '--remote-debugging-pipe', 'about:blank'],
+    { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+  let next = 0, buffer = '', stderr = '';
+  const pending = new Map();
+  const fail = (error) => {
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear();
+  };
+  const closed = new Promise((resolve) => child.once('close', (code, signal) => {
+    fail(new Error(`Chrome exited (${code ?? signal}): ${stderr}`));
+    resolve();
+  }));
+  child.on('error', fail);
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (data) => { stderr = (stderr + data).slice(-16384); });
+  child.stdio[3].on('error', fail);
+  child.stdio[4].on('error', fail);
+  child.stdio[4].on('end', () => fail(new Error('Chrome debugging pipe closed')));
+  child.stdio[4].setEncoding('utf8');
+  child.stdio[4].on('data', (data) => {
+    buffer += data;
+    let end;
+    while ((end = buffer.indexOf('\0')) >= 0) {
+      let message;
+      try { message = JSON.parse(buffer.slice(0, end)); }
+      catch (error) { fail(error); return; }
+      buffer = buffer.slice(end + 1);
+      const request = pending.get(message.id);
+      if (!request) continue;
+      pending.delete(message.id);
+      if (message.error) request.reject(new Error(JSON.stringify(message.error)));
+      else request.resolve(message.result);
+    }
+  });
+  const call = (method, params, sessionId) => new Promise((resolve, reject) => {
+    const id = ++next;
+    pending.set(id, { resolve, reject });
+    child.stdio[3].write(JSON.stringify({ id, method, params, sessionId }) + '\0');
+  });
+  let timer;
+  try {
+    return await Promise.race([
+      (async () => {
+        const { targetId } = await call('Target.createTarget', { url: 'about:blank' });
+        const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true });
+        await call('Target.activateTarget', { targetId });
+        const result = await call('Runtime.evaluate', {
+          expression, awaitPromise: true, returnByValue: true,
+        }, sessionId);
+        if (result.exceptionDetails) {
+          throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
+        }
+        return result.result.value;
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Chrome test did not finish within 20000 ms: ' + stderr)), 20000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    child.kill('SIGKILL');
+    await closed;
+  }
+}
 
 test('stop and reset cancel owned shader frames and release old observers across reloads', { skip: !chromium }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'nsh-shader-stop-'));
   try {
     const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
     const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { Player };').toString('base64');
-    await writeFile(join(dir, 'index.html'), `<!doctype html><body><script type="module">
-      import { Player } from '${module}';
-      try {
+    const expression = `(async () => {
+      const { Player } = await import('${module}');
         const check = (value, message) => { if (!value) throw Error(message); };
         const request = window.requestAnimationFrame.bind(window);
         const cancel = window.cancelAnimationFrame.bind(window);
@@ -177,13 +238,8 @@ test('stop and reset cancel owned shader frames and release old observers across
           previous = el;
         }
         root.remove();
-        document.body.dataset.result = 'passed';
-      } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
-    </script>`);
-    const html = execFileSync(chromium, ['--headless', '--disable-dev-shm-usage',
-      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=1000',
-      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
-    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+        return 'passed';
+    })()`;
+    assert.equal(await evaluateInBrowser(dir, expression), 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

@@ -303,11 +303,12 @@ async fn ui_catalog_tracks_enabled_instances_at_the_original_revision() {
             .await
             .unwrap();
         let instance = catalog["instances"][0]["instance"].clone();
+        let definition = catalog["instances"][0]["definitionBasis"].clone();
         let basis = catalog["instances"][0]["bindingBasis"].clone();
         assert_eq!(
             catalog,
             json!({"source": enabled, "instances": [{
-                "instance": instance, "bindingBasis":basis, "path":["example"], "package":package,
+                "instance": instance, "definitionBasis":definition, "bindingBasis":basis, "path":["example"], "package":package,
                 "configuration":{"greeting":"Hello"}, "module":"panel.js", "imports":{},
                 "contributions":{
                     "panel":{"kind":"panel", "title":{"fallback":"Example panel","translations":{}}},

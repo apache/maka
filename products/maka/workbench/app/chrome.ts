@@ -20,7 +20,7 @@
 // The window around the workbench on a graphical desktop: the headers along
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
-import { effect, signal } from 'nsh';
+import { effect } from 'nsh';
 import { platform } from 'nsh';
 import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
@@ -38,9 +38,6 @@ if (ownTitleBar) Window.setTitleBar({ style: 'hidden', height: TITLE_BAR_HEIGHT 
 export function windowTitle(title: () => string | null) {
   if (ownTitleBar) effect(() => Window.setTitle(title() ?? 'Maka'));
 }
-
-/** Whether the session browser and the preview are docked at the window's edges. */
-export const docked = { browser: signal(false), preview: signal(false) };
 
 /** Room for the window controls at the left end of a header along the top edge. */
 export const controlsLeft = (atLeftEdge: boolean) =>

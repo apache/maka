@@ -22,11 +22,12 @@ use super::{
     Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Operation, accepted_send,
     decode_operation, encode_operation, error, uploaded_attachment, validate_upload,
 };
-use crate::{Result, SETTINGS_KIND, SETTINGS_METHODS};
+use crate::{Result, SETTINGS_METHODS};
 use maka_plugin_core::{
     deployment::DeploymentRef,
     operation::{OperationCleanup, OperationOutcome, Receipt, RecoveryRef},
 };
+use serde_json::Value;
 use sqlx::{Row, SqliteConnection, SqlitePool};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -66,7 +67,10 @@ pub(super) enum Command {
         edit: DraftEdit,
     },
     Reserve(Reservation),
-    ReserveSettings(Reservation),
+    ReserveSettings {
+        reservation: Reservation,
+        correlation: Value,
+    },
     Prepared {
         id: Uuid,
         reference: RecoveryRef,
@@ -108,7 +112,10 @@ impl Command {
             Self::Reserve(reservation) => reserve(connection, reservation)
                 .await
                 .map(|()| Output::Unit),
-            Self::ReserveSettings(reservation) => reserve_settings(connection, reservation)
+            Self::ReserveSettings {
+                reservation,
+                correlation,
+            } => reserve_settings(connection, reservation, correlation)
                 .await
                 .map(|()| Output::Unit),
             Self::Prepared { id, reference } => prepared(connection, id, &reference)
@@ -321,6 +328,7 @@ async fn reserve(connection: &mut SqliteConnection, reservation: Reservation) ->
 async fn reserve_settings(
     connection: &mut SqliteConnection,
     reservation: Reservation,
+    correlation: Value,
 ) -> Result<()> {
     let inserted = sqlx::query(concat!(
             "INSERT OR IGNORE INTO operations (id,domain,deployment,context,draft_owner) SELECT ?,?,?,?,NULL WHERE NOT EXISTS (SELECT 1 FROM operations WHERE domain=? AND deployment=? AND ",
@@ -333,7 +341,7 @@ async fn reserve_settings(
             .bind(reservation.context)
             .bind(&reservation.domain)
             .bind(&reservation.deployment)
-            .bind(serde_json::json!({"kind": SETTINGS_KIND}).to_string())
+            .bind(serde_json::to_string(&[correlation]).map_err(error)?)
             .bind(serde_json::to_string(&SETTINGS_METHODS).map_err(error)?)
             .execute(&mut *connection)
             .await

@@ -558,7 +558,7 @@ async fn independent_public_agent_client_forks_an_empty_session_without_changing
                     json!({
                         "sessionId":fixture.session,
                         "expectedRevision":original["session"]["revision"],
-                        "turnId":null,"title":"Forked conversation","labels":[],
+                        "position":{"kind":"end"},"title":"Forked conversation","labels":[],
                     }),
                     Default::default(),
                 )
@@ -603,7 +603,7 @@ async fn independent_public_agent_client_forks_an_empty_session_without_changing
             let child = support::query(&fixture.native, "agent", "observe", json!({
                 "sessionId":value["session"]["id"],
             })).await;
-            assert_eq!(value["session"]["branch"], json!({"sessionId":fixture.session,"turnId":null}));
+            assert_eq!(value["session"]["branch"], json!({"sessionId":fixture.session,"position":{"kind":"end"}}));
             assert_eq!(support::query(&fixture.native,"agent","forkReceipt",json!({"reference":reference})).await,
                 json!({"session":value["session"]}));
             assert_eq!(support::query(&fixture.native,"receipts","read",json!(reference)).await, *recorded_reply);
@@ -687,7 +687,7 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
         let original = support::query(&fixture.native,"agent","observe",json!({"sessionId":fixture.session})).await;
         let mut call = fixture.native.call("agent","fork".into(),json!({
             "sessionId":fixture.session,"expectedRevision":original["session"]["revision"],
-            "turnId":null,"title":"Published before settlement","labels":[],
+            "position":{"kind":"end"},"title":"Published before settlement","labels":[],
         }),Default::default()).await.unwrap();
         call.start().await.unwrap();
         let Reply::Prepared { reference } = call.receive().await.unwrap() else { panic!("fork not prepared"); };
@@ -725,7 +725,7 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
         let published = support::query(&fixture.native,"agent","forkReceipt",json!({"reference":reference})).await;
         let target = &published["session"];
         assert_eq!(target["title"],"Published before settlement");
-        assert_eq!(target["branch"],json!({"sessionId":fixture.session,"turnId":null}));
+        assert_eq!(target["branch"],json!({"sessionId":fixture.session,"position":{"kind":"end"}}));
         assert_ne!(target["id"],original["session"]["id"]);
         let removed = support::mutate(&fixture.native,"agent","changeSession",json!({
             "sessionId":fixture.session,"expectedRevision":original["session"]["revision"],"action":"remove",
