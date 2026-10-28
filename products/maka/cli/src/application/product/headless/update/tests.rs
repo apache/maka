@@ -33,13 +33,13 @@ fn leaf(marker: &str, label_type: &str) -> Package {
             "maka.extension.json".into(),
             serde_json::to_vec(&json!({
                 "schemaVersion":1,"id":"example.bundled",
-                "application":{"entries":{"host":{
+                "application":{"host":{
                     "implementation":{"kind":"native","implementation":"example.Component"},
                     "configuration":{"type":"object","properties":{"label":{"type":label_type}},
                         "required":["label"],"additionalProperties":false},
                     "imports":{"service":{"contract":service,"cardinality":{"kind":"optional"}}},
                     "exports":{"service":{"contract":service,"availability":"required"}}
-                }}}
+                }}
             }))
             .unwrap(),
         ),
@@ -68,14 +68,14 @@ impl Fixture {
                 "schemaVersion":1,"id":"example.custom-template",
                 "application":{"composition":{"children":{
                     "child":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":previous.application_ref()},
-                        "usePackage":"entry","configuration":{"values":{"label":"Template default"}}}
+                        "usePackage":"host","configuration":{"values":{"label":"Template default"}}}
                 }}}
             })).unwrap(),
         )])).unwrap();
         let input: Input = serde_json::from_value(json!({
-            "environment":{"location":"host"},"instances":{
+            "instances":{
                 "direct":{"key":key,"package":{"source":"pinned","package":previous.application_ref()},
-                    "usePackage":"entry","configuration":{"values":{"label":"Keep this value"}},
+                    "usePackage":"host","configuration":{"values":{"label":"Keep this value"}},
                     "bindings":{"service":[{"kind":"instance","path":["group","child"],"export":"service"}]}},
                 "group":{"key":Uuid::new_v4(),"package":{"source":"pinned","package":template.application_ref()},
                     "usePackage":"composition","overrides":[{"path":["child"],"package":previous.application_ref(),
@@ -218,7 +218,33 @@ async fn startup_preserves_unrelated_components_with_product_process_names() {
 #[tokio::test]
 async fn selected_and_override_pins_upgrade_without_reauthoring_custom_composition() {
     let directory = tempfile::tempdir().unwrap();
-    let f = Fixture::new(directory.path()).await;
+    let mut f = Fixture::new(directory.path()).await;
+    let custom_root = Package::new(BTreeMap::from([
+        (
+            "maka.extension.json".into(),
+            serde_json::to_vec(&json!({
+                "schemaVersion":1,"id":"example.custom-root",
+                "application":{"ui":{
+                    "module":"root.js","configuration":{"type":"object"},
+                    "contributions":{"root":{"kind":"root"}}
+                }}
+            }))
+            .unwrap(),
+        ),
+        (
+            "root.js".into(),
+            b"export function activate(){return {}; }".to_vec(),
+        ),
+    ]))
+    .unwrap();
+    f.input.instances.insert("custom-ui".into(),serde_json::from_value(json!({
+        "key":Uuid::new_v4(),"package":{"source":"pinned","package":custom_root.application_ref()},
+        "usePackage":"ui"
+    })).unwrap());
+    f.input.ui = Some(maka_plugin_core::composition::UiTarget {
+        path: vec!["custom-ui".into()],
+        id: "root".into(),
+    });
     let installed = leaf("Installed but not selected", "string");
     f.store
         .commit_application(
@@ -226,7 +252,12 @@ async fn selected_and_override_pins_upgrade_without_reauthoring_custom_compositi
             1,
             f.input.clone(),
             vec![],
-            vec![f.previous.clone(), f.template.clone(), installed.clone()],
+            vec![
+                f.previous.clone(),
+                f.template.clone(),
+                installed.clone(),
+                custom_root,
+            ],
         )
         .await
         .unwrap();
@@ -403,8 +434,10 @@ async fn incompatible_publication_rejects_package_updates_before_any_write() {
         let mut files = f.current.files().clone();
         let mut manifest: Value = serde_json::from_slice(&files["maka.extension.json"]).unwrap();
         for side in ["imports", "exports"] {
-            let methods = manifest["application"]["entries"]["host"][side]["service"]
-                ["contract"]["interface"]["methods"].as_object_mut().unwrap();
+            let methods = manifest["application"]["host"][side]["service"]["contract"]["interface"]
+                ["methods"]
+                .as_object_mut()
+                .unwrap();
             let read = methods.remove("read").unwrap();
             methods.insert("other".into(), read);
         }

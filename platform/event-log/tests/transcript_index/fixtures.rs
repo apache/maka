@@ -116,7 +116,7 @@ pub(super) async fn end(log: &EventLog, session: &str, outcome: InvocationOutcom
 pub(super) type Row = (RowPosition, Vec<u8>, String, i64);
 pub(super) fn rows(db: &Connection, session: &str) -> Vec<Row> {
     db.prepare(
-        "SELECT source_sequence, item_index, payload, digest, total_bytes FROM transcript_cache.rows
+        "SELECT source_sequence, item_index, payload, digest, total_bytes FROM temp.transcript_rows
         WHERE session_id = ? ORDER BY source_sequence, item_index",
     )
     .unwrap()

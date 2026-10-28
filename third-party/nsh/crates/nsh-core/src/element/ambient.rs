@@ -199,7 +199,7 @@ pub fn keyboard_height() -> Points {
     env(|e| e.keyboard_height)
 }
 
-/// How long the keyboard's show / hide animation takes, in seconds.
+/// How long the keyboard's show / hide animation takes, in milliseconds.
 pub fn keyboard_duration() -> f32 {
     env(|e| e.keyboard_duration)
 }
@@ -254,6 +254,15 @@ pub fn os() -> Os {
     with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
         .with_untracked(|e| e.os)
+}
+
+/// [`os`] where an engine runs (its thread, while it runs Rust code),
+/// else `None`: for code that also runs outside an engine (a unit test of
+/// a component's model).
+pub fn try_os() -> Option<Os> {
+    super::reactive::try_with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
+        .flatten()
+        .map(|env| env.with_untracked(|e| e.os))
 }
 
 /// The OS version: major and minor on iOS, the API level and 0 on Android

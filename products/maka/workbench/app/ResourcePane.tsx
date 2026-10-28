@@ -26,8 +26,6 @@ import { keymap } from 'nsh';
 import { Terminal } from './Terminal';
 import { Terminals } from './Terminals';
 import { WorkspaceFiles } from './WorkspaceFiles';
-import { WorkspaceChanges } from './WorkspaceChanges';
-import { CurrentDiff } from './CurrentDiff';
 import { CurrentFile } from './CurrentFile';
 import type { Resources } from './resources';
 import type { ImagePreview } from './ImageThumbnail';
@@ -113,27 +111,6 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
               </Text>
             </Button>
             <Button
-              accessibilityLabel={tr('Browse current changes')}
-              selected={resources.active() === 'changes'}
-              onPress={inputAction(resources.inventory, {
-                sessionId: resources.sessionId()!,
-                kind: 'changes',
-              })}
-              style={{ ...controlStyle, paddingHorizontal: 8 }}
-              selectedStyle={{ backgroundColor: C.raised }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-            >
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: resources.active() === 'changes' ? C.text : C.muted,
-                }}
-              >
-                {tr('Changes')}
-              </Text>
-            </Button>
-            <Button
               accessibilityLabel={tr('Show conversation terminals')}
               selected={resources.active() === 'terminals'}
               onPress={inputAction(resources.inventory, {
@@ -183,11 +160,9 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
                       name={
                         tab().kind === 'terminal'
                           ? 'terminal'
-                          : tab().kind === 'diff'
-                            ? 'code'
-                            : tab().kind === 'image'
-                              ? 'image'
-                              : 'file'
+                          : tab().kind === 'image'
+                            ? 'image'
+                            : 'file'
                       }
                       color={C.muted}
                     />
@@ -246,9 +221,6 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
       <If when={resources.active() === 'files'}>
         <WorkspaceFiles model={resources.files} />
       </If>
-      <If when={resources.active() === 'changes' && resources.sessionId()}>
-        <WorkspaceChanges sessionId={resources.sessionId()!} openDiff={resources.openDiff} />
-      </If>
       <Each of={resources.activeTab() ? [resources.activeTab()!] : []} key={(tab) => tab.instance}>
         {(tab) => {
           const current = tab();
@@ -259,7 +231,6 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
             );
           if (current.kind === 'file')
             return <CurrentFile model={current.model} openImageViewer={openImageViewer} />;
-          if (current.kind === 'diff') return <CurrentDiff model={current.model} />;
           if (current.kind === 'terminal') return <Terminal model={current.model} />;
           return <OriginalImage image={current.image} openImageViewer={openImageViewer} />;
         }}

@@ -34,7 +34,10 @@ use core_foundation::{
     string::{CFString, CFStringRef},
 };
 use maka_agent_facts::tools::ToolError;
-use platform_macos::ax::{bindings::*, snapshot::RetainedElement};
+use platform_macos::ax::{
+    bindings::{self, *},
+    snapshot::RetainedElement,
+};
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
@@ -480,7 +483,10 @@ fn element_list(element: &RetainedElement, name: &str) -> Result<Vec<RetainedEle
         )
     };
     let value = (!value.is_null()).then(|| NativeValue(value));
-    if matches!(status, kAXErrorAttributeUnsupported | kAXErrorNoValue) {
+    if matches!(
+        status,
+        bindings::kAXErrorAttributeUnsupported | bindings::kAXErrorNoValue
+    ) {
         return Ok(Vec::new());
     }
     if status != kAXErrorSuccess {

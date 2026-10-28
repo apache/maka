@@ -192,6 +192,9 @@ impl Server {
         self.stop.cancel();
         self.tasks.close();
     }
+    pub(crate) fn is_closing(&self) -> bool {
+        *self.admission.lock().unwrap()
+    }
     /// Observe the close request, not physical cleanup.
     pub fn wait_for_close(&self) -> impl Future<Output = ()> + Send + 'static {
         self.stop.clone().cancelled_owned()
@@ -317,6 +320,9 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             }
             | Reply::Aborted {
                 cleanup: current, ..
+            }
+            | Reply::BindingRetired {
+                cleanup: current, ..
             } => *current = current.clone().and(cleanup),
             _ => unreachable!("terminal reply"),
         }
@@ -335,6 +341,21 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 cleanup: Ok(()),
             })
             .await
+        }
+    }
+    async fn reject(
+        &mut self,
+        binding: &crate::application::Binding,
+        reason: String,
+    ) -> Result<()> {
+        if binding.retired() {
+            self.finish(Reply::BindingRetired {
+                reason,
+                cleanup: Ok(()),
+            })
+            .await
+        } else {
+            self.abort(reason).await
         }
     }
     async fn query(&mut self, completion: QueryCompletion) -> Result<()> {
@@ -417,7 +438,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
         match mode {
             MethodMode::Query => {
                 let admission = server.client.start(
-                    endpoint.binding,
+                    endpoint.binding.clone(),
                     open.method,
                     open.input,
                     scope,
@@ -428,12 +449,12 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                         let completion = self.observe(accepted.completion()).await;
                         self.query(completion).await
                     }
-                    Err(e) => self.abort(e).await,
+                    Err(e) => self.reject(&endpoint.binding, e).await,
                 }
             }
             MethodMode::Mutation => {
                 let admission = server.client.prepare_mutation(
-                    endpoint.binding,
+                    endpoint.binding.clone(),
                     open.method,
                     open.input,
                     scope,
@@ -442,7 +463,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 );
                 let prepared = match self.observe(admission).await {
                     Ok(p) => p,
-                    Err(e) => return self.abort(e).await,
+                    Err(e) => return self.reject(&endpoint.binding, e).await,
                 };
                 if self.lost {
                     drop(prepared);
@@ -508,7 +529,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
             }
             MethodMode::Subscription => {
                 let admission = server.client.subscribe(
-                    endpoint.binding,
+                    endpoint.binding.clone(),
                     open.method,
                     open.input,
                     scope,
@@ -516,7 +537,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Session<R, W> {
                 );
                 let mut stream = match self.observe(admission).await {
                     Ok(stream) => stream,
-                    Err(e) => return self.abort(e).await,
+                    Err(e) => return self.reject(&endpoint.binding, e).await,
                 };
                 if self.send(&Reply::Subscribed).await.is_err() {
                     stream.cancel();

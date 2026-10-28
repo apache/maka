@@ -2282,6 +2282,9 @@ pub(crate) fn paste_content(
     view: &NshView,
     mut paste: nsh_core::PasteEvent,
 ) -> bool {
+    if surface.input_paused.get() {
+        return false;
+    }
     if !window_active(surface) || focused(surface).as_ref() != Some(view) {
         return false;
     }

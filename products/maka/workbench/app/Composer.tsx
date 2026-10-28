@@ -95,6 +95,7 @@ export function Composer(props: {
   attach(node: YNode): void;
   commands(): ComposerCommand[];
   active(): boolean;
+  blocked?(): boolean;
   models: JSX.Element;
   request: JSX.Element;
   stopAction(): () => void;
@@ -109,6 +110,7 @@ export function Composer(props: {
   const hero = () => props.session() === null || props.session()!.empty();
   const blocked = () => props.session()?.blockedReason() ?? '';
   const cannotSend = () =>
+    props.blocked?.() ||
     props.session() === null ||
     !props.session()?.editable() ||
     (!completion.isCommand() &&
@@ -152,9 +154,12 @@ export function Composer(props: {
         minHeight: 0,
         justifyContent: 'center',
         width: '100%',
-        maxWidth: 832,
+        // The conversation column's width: the box lines up with the
+        // messages and the turn navigation beside them.
+        maxWidth: 800,
         alignSelf: 'center',
         paddingHorizontal: 16,
+        paddingTop: hero() || platform.isTerminal ? 0 : 12,
         paddingBottom: hero() ? 16 : 8,
       }}
     >

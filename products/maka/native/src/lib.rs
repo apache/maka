@@ -26,7 +26,6 @@ pub fn provide(
     registry: &mut NativeRegistry,
     catalog: Arc<catalog::Catalog>,
 ) -> Result<(), String> {
-    maka_ui_authoring::provide(registry)?;
     maka_agent_native::provide(registry, catalog.clone())?;
     maka_acp_native::provide(registry)?;
     maka_files_native::provide(registry)?;

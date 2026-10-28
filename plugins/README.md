@@ -36,7 +36,9 @@ A plugin is declared by a leaf `package.ts`. It lists executable entries, config
 
 For an existing plugin, start with its declaration and follow its selected implementation. Native entries select an implementation supplied by the executable; JavaScript entries name their bundled local module. Neither a family directory nor a linked crate activates a plugin.
 
-The product selects business Host services. The [terminal shell](../products/maka/terminal-shell/README.md) and [desktop shell](../products/maka/desktop-shell/README.md) run the same [workbench](../products/maka/workbench/README.md), which connects to those public Host capabilities. General SDK scene contracts remain available for independently authored runtimes; the default bundle has no scene presenter packages.
+Packages declare `application.host`, `application.ui`, or a composition template. Each deployment instance selects its entry through `usePackage: host / ui / composition`; a pure UI plugin needs no placeholder Host service. The [terminal shell](../products/maka/terminal-shell/README.md) and [desktop shell](../products/maka/desktop-shell/README.md) run the same [NSH workbench](../products/maka/workbench/README.md), sharing dynamic UI modules and public Host capabilities. A package may declare a `root` contribution to provide the entire application; the deployment source selects it through `ui: { path, id }`. Maka’s default workbench is an ordinary UI package, and a missing root never falls back to it. Installation implies user trust, so UI plugins use the existing workbench capabilities directly.
+
+A UI entry can declare service imports and bind them to Host exports, including its own package's backend. `UiContext.services` calls those providers through the actual UI consumer session; `UiContext.operations` recovers that instance's original mutation receipts. The full `UiContext.host` remains available to trusted code. See the [UI authoring guide](../skills/maka-plugin-authoring/references/ui-plugins.md).
 
 Build a single package from the repository root:
 

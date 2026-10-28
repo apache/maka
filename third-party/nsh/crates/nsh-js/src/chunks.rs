@@ -17,7 +17,7 @@ use std::{cell::RefCell, collections::HashSet, ffi::CString};
 use rquickjs::qjs;
 
 use crate::{
-    modules::ChunkCode,
+    modules::ChunkModule,
     web::js::{self, Args, Ctx, Deferred, R, Raw, UNDEFINED, V, native},
 };
 
@@ -71,7 +71,7 @@ fn table<'a>(cx: Ctx) -> &'a crate::modules::ModuleTable {
 /// Installs the global [`nsh_core::js::IMPORT_CHUNK`].
 pub(crate) fn install(cx: Ctx) -> R<()> {
     let name = CString::new(nsh_core::js::IMPORT_CHUNK).unwrap_or_default();
-    let f = js::function(cx, &name, import_chunk, 2)?;
+    let f = js::function(cx, &name, import_module, 2)?;
     js::define(
         cx,
         js::global(cx).raw(),
@@ -84,7 +84,7 @@ pub(crate) fn install(cx: Ctx) -> R<()> {
 native! {
     /// `__nsh_import(id, needs)`: the namespace of chunk `id` once it and
     /// the chunks `needs` are there.
-    fn import_chunk(cx, _this, args) {
+    fn import_module(cx, _this, args) {
         let id = js::to_string(cx, args.get(0))?;
         let mut needs = vec![id.clone()];
         if !js::is_nullish(args.get(1)) {
@@ -179,7 +179,7 @@ unsafe extern "C" fn load_job(cx: Ctx, argc: std::ffi::c_int, argv: *mut Raw) ->
 }
 
 /// Gives the context chunk `id`, and starts the imports it completes.
-pub(crate) fn add(cx: Ctx, id: &str, code: ChunkCode) {
+pub(crate) fn add(cx: Ctx, id: &str, code: ChunkModule) {
     {
         let mut available = table(cx).chunks.borrow_mut();
         if available.loaded.contains(id) {
@@ -235,12 +235,14 @@ mod tests {
         host.add_chunk_source(
             "shared.js",
             "import { base } from \"./bundle.js\"; export let count = 0; export const next = () => base + ++count;".into(),
+            None,
         );
         host.eval_source(
             r#"
+            import { importModule } from "nsh";
             export const base = 40;
             globalThis.log = [];
-            globalThis.load = (id, needs) => __nsh_import(id, needs).then(
+            globalThis.load = (id, needs) => importModule(id, needs).then(
               (m) => log.push(m.value), (e) => log.push(e.message));
             load("a.js", ["shared.js"]);
             "#,
@@ -255,6 +257,7 @@ mod tests {
         host.add_chunk_source(
             "a.js",
             "import { next } from \"./shared.js\"; export const value = next();".into(),
+            None,
         );
         // Evaluated once: both imports see the same module.
         assert!(log_is(&host, "41|41"));
@@ -263,6 +266,7 @@ mod tests {
         host.add_chunk_source(
             "b.js",
             "import { next } from \"./shared.js\"; export const value = next();".into(),
+            None,
         );
         assert!(log_is(&host, "41|41|42"));
     }
@@ -272,8 +276,9 @@ mod tests {
         let host = Host::new().unwrap();
         host.eval_source(
             r#"
+            import { importModule } from "nsh";
             globalThis.log = [];
-            globalThis.load = () => __nsh_import("a.js", []).then(
+            globalThis.load = () => importModule("a.js").then(
               (m) => log.push(m.value), (e) => log.push(e.message));
             load();
             "#,
@@ -284,7 +289,7 @@ mod tests {
         assert!(log_is(&host, "could not load chunk 'a.js': 404 Not Found"));
         host.eval_script("retry.js", "load()").unwrap();
         assert_eq!(requests(&host), ["a.js"]);
-        host.add_chunk_source("a.js", "export const value = 'ok';".into());
+        host.add_chunk_source("a.js", "export const value = 'ok';".into(), None);
         assert!(log_is(
             &host,
             "could not load chunk 'a.js': 404 Not Found|ok"
@@ -325,7 +330,7 @@ mod tests {
         let compiled = crate::compile_chunk_bytecode(entry, &chunks, true, &[]).unwrap();
         let host = Host::new().unwrap();
         // SAFETY: just compiled with this build.
-        unsafe { host.add_chunk_bytecode("a.js", compiled[0].clone()) };
+        unsafe { host.add_chunk_bytecode("a.js", compiled[0].clone(), None) };
         host.eval_bytecode(&entry_bytecode).unwrap();
         assert!(log_is(&host, "2"));
     }

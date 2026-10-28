@@ -21,7 +21,7 @@ import { textTooltip } from './ui';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View, List } from 'nsh';
 import { Input } from 'nsh/base';
-import type { YNode } from 'nsh';
+import type { ViewStyle, YNode } from 'nsh';
 import { keymap } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { windowSize } from 'nsh';
@@ -47,6 +47,19 @@ export function Palette(props: {
 }) {
   const query = signal('');
   const selected = signal(0);
+  const rowStyle = {
+    height: 48,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    borderRadius: 8,
+    backgroundColor: C.surface,
+  } satisfies ViewStyle;
+  const selectedRowStyle = { backgroundColor: C.raised } satisfies ViewStyle;
   let removeSearchKeys = () => {};
   cleanup(() => removeSearchKeys());
   const matches = computed(() => {
@@ -174,18 +187,8 @@ export function Palette(props: {
                     accessibilityLabel={entry().title}
                     selected={matches()[index()]?.id === entry().id}
                     onPress={entry().run}
-                    style={{
-                      height: 48,
-                      paddingHorizontal: 12,
-                      paddingVertical: 4,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 12,
-                      borderWidth: 1,
-                      borderColor: 'transparent',
-                      borderRadius: 8,
-                      backgroundColor: matches()[index()]?.id === entry().id ? C.raised : C.surface,
-                    }}
+                    style={rowStyle}
+                    selectedStyle={selectedRowStyle}
                     hoverStyle={controlHoverStyle()}
                     focusStyle={controlFocusStyle()}
                     disabledStyle={controlDisabledStyle}

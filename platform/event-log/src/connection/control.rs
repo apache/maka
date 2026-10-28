@@ -75,30 +75,37 @@ pub(crate) struct ReadOnlyControl {
     uri: String,
 }
 
+pub(crate) fn database_uri(path: &Path, mode: &str) -> Result<String, StoreError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| StoreError::InvalidTransition("database path must be UTF-8".into()))?;
+    #[cfg(windows)]
+    let path = path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('\\', "/");
+    // Escape URI delimiters as well as spaces: the filename cannot inject
+    // another mode or immutable flag into SQLite's attachment URI.
+    let mut uri = String::from("file:");
+    for byte in path.as_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-_.~:".contains(byte) {
+            uri.push(char::from(*byte));
+        } else {
+            use std::fmt::Write;
+            write!(&mut uri, "%{byte:02X}").expect("write URI");
+        }
+    }
+    uri.push_str("?mode=");
+    uri.push_str(mode);
+    Ok(uri)
+}
+
 impl ReadOnlyControl {
     pub(crate) fn new(path: &Path) -> Result<Self, StoreError> {
         let path = path.canonicalize()?;
-        let path = path.to_str().ok_or_else(|| {
-            StoreError::InvalidTransition("control database path must be UTF-8".into())
-        })?;
-        #[cfg(windows)]
-        let path = path
-            .strip_prefix(r"\\?\")
-            .unwrap_or(path)
-            .replace('\\', "/");
-        // Escape URI delimiters as well as spaces: the filename cannot inject
-        // another mode or immutable flag into SQLite's attachment URI.
-        let mut uri = String::from("file:");
-        for byte in path.as_bytes() {
-            if byte.is_ascii_alphanumeric() || b"/-_.~:".contains(byte) {
-                uri.push(char::from(*byte));
-            } else {
-                use std::fmt::Write;
-                write!(&mut uri, "%{byte:02X}").expect("write URI");
-            }
-        }
-        uri.push_str("?mode=ro");
-        Ok(Self { uri })
+        Ok(Self {
+            uri: database_uri(&path, "ro")?,
+        })
     }
 
     pub(crate) async fn attach(&self, connection: &mut SqliteConnection) -> Result<(), StoreError> {

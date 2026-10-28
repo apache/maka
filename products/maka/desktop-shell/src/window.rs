@@ -99,7 +99,8 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         .detach();
         let (config, placement, endpoint, epoch, root) = start.take().expect("the app starts once");
         let placement = Rc::new(placement);
-        let window = match open(shell.attach(config), placement.clone(), cx) {
+        let current = ConnectedView::new((endpoint, epoch), shell.attach(config));
+        let window = match open(current.config.clone(), placement.clone(), cx) {
             Ok(window) => window,
             Err(error) => {
                 eprintln!("maka-desktop-shell: cannot open a window: {error}");
@@ -139,10 +140,9 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             quitting.start(cx)
         })
         .detach();
-        let host = (endpoint, epoch);
         follow(
             window,
-            host,
+            current,
             root,
             handle.clone(),
             &detach,
@@ -220,13 +220,34 @@ fn open(
     .map_err(|error| error.to_string())
 }
 
+struct ConnectedView {
+    host: (PathBuf, uuid::Uuid),
+    config: EngineConfig,
+    reloading: tokio::sync::mpsc::UnboundedReceiver<maka_workbench::reload::Request>,
+}
+
+impl ConnectedView {
+    fn new(host: (PathBuf, uuid::Uuid), config: EngineConfig) -> Self {
+        let reloading = config
+            .context
+            .get::<maka_workbench::reload::UiReload>()
+            .expect("the admitted workbench owns its UI reload channel")
+            .take_requests();
+        Self {
+            host,
+            config,
+            reloading,
+        }
+    }
+}
+
 /// Keeps the window's client on a running Host: once the one at `host`
 /// stops, connects to the Root's next Host (retrying with growing pauses)
 /// and loads the workbench again on it. The workbench starts over, as it
 /// does when the desktop opens.
 fn follow(
     window: WindowHandle<AppView>,
-    mut host: (PathBuf, uuid::Uuid),
+    mut current: ConnectedView,
     root: Root,
     runtime: Handle,
     detach: &Detach,
@@ -238,8 +259,30 @@ fn follow(
         let mut pause = FIRST_PAUSE;
         loop {
             let reached = Instant::now();
-            let (endpoint, epoch) = host;
-            let _ = runtime.spawn(host::stopped(endpoint, epoch)).await;
+            let (endpoint, epoch) = current.host.clone();
+            let mut stopped = runtime.spawn(host::stopped(endpoint, epoch));
+            loop {
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    request = current.reloading.recv() => {
+                        let Some(request) = request else { return };
+                        if window.update(cx, |view, window, cx| {
+                            match request {
+                                maka_workbench::reload::Request::Pause(ready) => {
+                                    view.pause_input(window, cx, move |result| { let _ = ready.send(result); });
+                                }
+                                maka_workbench::reload::Request::Resume => view.resume_input(window, cx),
+                                maka_workbench::reload::Request::Reload => {
+                                    view.load_with_config(current.config.clone());
+                                    window.focus(&view.focus_handle(cx), cx);
+                                }
+                            }
+                        }).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
             // The client closes first, as when the desktop is reopened: what
             // it leaves in its journal is settled before the next client
             // opens the journal.
@@ -289,8 +332,15 @@ fn follow(
                 return;
             }
             drop(moving);
-            let _ = window.update(cx, |view, _, _| view.load_with_config(shell.attach(config)));
-            host = (endpoint, epoch);
+            current = ConnectedView::new((endpoint, epoch), shell.attach(config));
+            if window
+                .update(cx, |view, _, _| {
+                    view.load_with_config(current.config.clone());
+                })
+                .is_err()
+            {
+                return;
+            }
         }
     })
     .detach();

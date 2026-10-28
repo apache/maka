@@ -504,3 +504,127 @@ async fn reading_prompt_is_indexed_fenced_and_keeps_original_session_authority()
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn history_fences_follow_committed_partition_progress_with_retained_session_hint() {
+    use maka_agent_facts::event::{EventWrite, Fact, Invocation, RuntimeEvent};
+    use maka_agent_facts::input::InvocationInput;
+
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
+        let mut partitions = std::collections::HashMap::new();
+        let mut pair = None;
+        for index in 0..=maka_event_log::root_store::PARTITION_COUNT {
+            let session = fixture.create(&format!("Fence {index}")).await;
+            let path = fixture.session_database(&session);
+            if let Some(first) = partitions.insert(path, session.clone()) {
+                pair = Some((first, session));
+                break;
+            }
+        }
+        let (first, second) = pair.expect("more sessions than partitions must share a writer");
+        let opening = |session: &str, text: &str| {
+            EventWrite::plain(RuntimeEvent::new(
+                Invocation {
+                    session_id: session.into(),
+                    turn_id: format!("turn-{session}"),
+                    run_id: format!("run-{session}"),
+                    invocation_id: format!("invocation-{session}"),
+                },
+                Fact::InvocationOpened {
+                    configuration: None,
+                    input: InvocationInput::Message {
+                        source_messages: Vec::new(),
+                        content: text.into(),
+                        request_fingerprint: None,
+                    },
+                },
+            ))
+            .unwrap()
+        };
+        let position = fixture
+            .session(&first)
+            .await
+            .append(&opening(&first, "first history"))
+            .await
+            .unwrap();
+        let retained = fixture.session(&first).await.subscribe_commits().unwrap();
+        let hint = *retained.borrow();
+        let committed = fixture
+            .session(&second)
+            .await
+            .append(&opening(&second, "other session"))
+            .await
+            .unwrap();
+        assert!(committed > hint);
+        assert_eq!(
+            *retained.borrow(),
+            hint,
+            "other-session progress does not refresh this hint"
+        );
+        let observed = fixture
+            .query("observe", json!({"sessionId":first}))
+            .await
+            .unwrap();
+        assert_eq!(observed["through"], committed);
+        let history_input =
+            json!({"sessionId":first,"through":committed,"position":{"kind":"start"}});
+        let page = fixture
+            .query("history", history_input.clone())
+            .await
+            .unwrap();
+        assert_eq!(page["through"], committed);
+        assert_eq!(page["chunks"][0]["text"], "first history");
+        let source_input = json!({"sessionId":first,"through":committed,
+            "source":{"kind":"row","position":{"sourceSequence":position,"itemIndex":0}},
+            "field":"body","position":{"kind":"start"}});
+        let source = fixture.query("source", source_input.clone()).await.unwrap();
+        assert_eq!(source["source"]["text"], "first history");
+        for mut input in [history_input, source_input] {
+            input["through"] = json!(committed + 1);
+            let method = if input.get("source").is_some() {
+                "source"
+            } else {
+                "history"
+            };
+            assert!(
+                fixture
+                    .query(method, input)
+                    .await
+                    .unwrap_err()
+                    .contains("agent_cursor_invalid")
+            );
+        }
+        let mut watch = fixture
+            .app
+            .client()
+            .subscribe(
+                fixture.binding(2).await,
+                "watch".into(),
+                json!({"sessionId":first,"after":committed}),
+                scope(&fixture.issuer, true),
+                Attachments::new().into(),
+            )
+            .await
+            .unwrap();
+        loop {
+            let page = watch
+                .recv()
+                .await
+                .expect("valid observed fence must not close watch");
+            if page["kind"] == "events" {
+                assert_eq!(page["through"], committed);
+                assert_eq!(page["nextAfter"], committed);
+                assert_eq!(page["events"], json!([]));
+                break;
+            }
+        }
+        watch.cancel();
+        watch.completion().await.cleanup.unwrap();
+        drop(retained);
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

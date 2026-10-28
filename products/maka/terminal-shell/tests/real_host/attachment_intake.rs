@@ -19,9 +19,8 @@
 
 use super::*;
 use base64::Engine;
-use maka_workbench::bindings::Bindings;
-use nsh_engine::Bundle;
-use nsh_platform_tui::AppOptions;
+use maka_packages::Package;
+use std::collections::BTreeMap;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_file_gestures_keep_original_uploads_when_hidden_or_rebound() {
@@ -37,46 +36,65 @@ async fn native_file_gestures_keep_original_uploads_when_hidden_or_rebound() {
         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
         let path = fixture.directory.path().join("original.png");
         std::fs::write(&path, &bytes).unwrap();
-        let bindings = Bindings::new(client.clone(), tokio::runtime::Handle::current());
-        let sets = vec![nsh_base::registry(), bindings.registry(Some(fixture.session.clone()))];
-        let source = format!(r#"
-import {{ mount, signal, Text, View }} from "nsh";
-import {{ Button }} from "nsh/base";
-import {{ host, AttachmentPicker }} from "maka/host";
-const original = host.session(host.initialSession);
-const other = host.session({other});
-const selected = signal(original);
-const visible = signal(true);
-const report = signal("idle");
-const count = signal(0);
-const watching = original.watchUploads();
-(async () => {{ for (;;) {{
-    const operations = await watching.next();
-    if (operations === null) return;
-    count.set(operations.length);
-}} }})();
-mount(() => <View style={{{{width:"100%",padding:8,gap:8}}}}>
-  <AttachmentPicker client={{selected()}} visible={{visible()}}
+        let source = r#"
+import { cleanup, signal, Text, View } from "nsh";
+import { Button } from "nsh/base";
+import { host, AttachmentPicker } from "maka/host";
+export function activate(context) {
+  return { root: { kind: "root", render() {
+    const original = host.session(host.initialSession);
+    const other = host.session(context.configuration.otherSession);
+    const selected = signal(original);
+    const visible = signal(true);
+    const report = signal("idle");
+    const count = signal(0);
+    const watching = original.watchUploads();
+    cleanup(() => watching.close());
+    (async () => { for (;;) {
+        const operations = await watching.next();
+        if (operations === null) return;
+        count.set(operations.length);
+    } })();
+    return <View style={{width:"100%",padding:8,gap:8}}>
+  <AttachmentPicker client={selected()} visible={visible()}
     pathLabel="Attachment path" pathPlaceholder="Absolute file path…"
     uploadLabel="Upload selected file" uploadingLabel="Uploading…"
-    onStatus={{status => {{
-    report.set(`${{status.kind}}:${{status.operationId}}:${{status.name}}`);
-    if (status.kind === "reading") {{ visible.set(false); selected.set(other); }}
-  }}}} />
-  <Button accessibilityLabel="Show picker" onPress={{() => {{ selected.set(original); visible.set(true); }}}}>
+    onStatus={status => {
+    report.set(`${status.kind}:${status.operationId}:${status.name}`);
+    if (status.kind === "reading") { visible.set(false); selected.set(other); }
+  }} />
+  <Button accessibilityLabel="Show picker" onPress={() => { selected.set(original); visible.set(true); }}>
     <Text>Show picker</Text>
   </Button>
-  <Text>{{report()}}</Text><Text>{{`uploads:${{count()}}`}}</Text>
-</View>);
-"#, other=serde_json::to_string(other).unwrap());
-        let source = nsh_bundler::compile_module("attachment-intake.tsx", &source,
-            &sets.iter().map(Into::into).collect::<Vec<_>>()).unwrap();
-        let mut view = AppView::new(AppOptions {
-            size:(120,36), data_dir:Some(fixture.directory.path().join("picker-nsh")),
-            ui_sets:Some(sets), ..Default::default()
-        });
-        view.load(Bundle::source(source).into()).unwrap();
-        support::tick(&mut view);
+  <Text>{report()}</Text><Text>{`uploads:${count()}`}</Text>
+</View>;
+  } } };
+}
+"#;
+        let source = nsh_bundler::compile_module("attachment-intake.tsx", source,
+            &[nsh_base::registry().into(), maka_workbench::bindings::ui_set_description()]).unwrap();
+        let package = Package::new(BTreeMap::from([
+            ("maka.extension.json".into(), serde_json::to_vec(&json!({
+                "schemaVersion":1,
+                "id":"test.nsh.attachment-intake",
+                "application":{"ui":{
+                    "module":"ui.js",
+                    "configuration":{
+                        "type":"object",
+                        "properties":{"otherSession":{"type":"string"}},
+                        "required":["otherSession"],
+                        "additionalProperties":false
+                    },
+                    "imports":{},
+                    "contributions":{"root":{"kind":"root"}}
+                }}
+            })).unwrap()),
+            ("ui.js".into(), source.into_bytes()),
+        ])).unwrap();
+        fixture.install_ui_root(package, json!({"otherSession":other})).await;
+        let (mut view, bindings) =
+            fixture.view(fixture.client().await, Some(fixture.session.clone()));
+        view.resize(120, 36);
         wait_view(&mut view, |screen| screen.contains("uploads:0")).await;
         assert!(client.pending_uploads(&fixture.session, EDITOR).await.unwrap().is_empty());
 

@@ -27,11 +27,12 @@ import type {
   SettingValue,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import { sameValue } from '../../../../plugins/shared/value';
-import { pluginTitle, settingCaption } from './pluginSettings.ts';
-import type { PluginSettingsOwner, PluginAction } from './pluginSettings.ts';
+import { pluginTitle, settingCaption } from './pluginSettingsState.ts';
+import type { PluginSettingsOwner, PluginAction } from './pluginSettingsState.ts';
 import { SettingsField } from './SettingsField';
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
+import { RootUiSettings } from './RootUiSettings';
 import {
   bodyTextStyle,
   captionTextStyle,
@@ -77,6 +78,7 @@ export function PluginSettings(props: { owner: PluginSettingsOwner }) {
               <View style={{ flex: 1, minHeight: 0 }}>
                 <If when={!owner.selected()}>
                   <View style={{ flex: 1, minHeight: 0, padding: 8, gap: 12 }}>
+                    <RootUiSettings owner={owner.rootUi} />
                     <Text style={{ ...captionTextStyle, color: C.muted }}>
                       {tr(
                         'Manage plugins for this connection. Your conversation and draft stay open.',

@@ -67,7 +67,7 @@ fn generated_product_version_matches_canonical_unicode_and_binary_vectors() {
 
 #[test]
 fn stale_generated_version_cannot_admit_changed_candidates() {
-    let manifest = json!({"schemaVersion":1,"id":"example.notes","application":{"entries":{"host":{"implementation":{"kind":"javascript","module":"entry.js","realm":"shared"},"configuration":{"type":"object"}}}}});
+    let manifest = json!({"schemaVersion":1,"id":"example.notes","application":{"host":{"implementation":{"kind":"javascript","module":"entry.js","realm":"shared"},"configuration":{"type":"object"}}}});
     let package = Package::new(BTreeMap::from([
         (
             "maka.extension.json".into(),

@@ -51,7 +51,7 @@ struct SixelReplies {
 }
 
 impl Pty {
-    pub fn spawn(root: &Path, session: Option<&str>) -> Self {
+    pub fn spawn(binary: impl AsRef<Path>, root: &Path, session: Option<&str>) -> Self {
         let mut master = -1;
         let mut slave = -1;
         let mut size = libc::winsize {
@@ -85,7 +85,7 @@ impl Pty {
             unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut original) },
             0
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_maka"));
+        let mut command = Command::new(binary.as_ref());
         command.args(["--root", root.to_str().unwrap()]);
         if let Some(session) = session {
             command.args(["--session", session]);
@@ -117,13 +117,28 @@ impl Pty {
             sixel: None,
         }
     }
-    /// Answer the initial Sixel measurement; later replies are controlled by the case.
-    /// Its cell-size reply includes Ctrl+P to exercise mixed keyboard input.
+    /// Answer DA1 automatically; the case releases the initial cell-size reply
+    /// once its application has registered the keyboard input mixed into it.
     /// This selects emulator behavior; it does not configure the application.
-    pub fn spawn_sixel(root: &Path, session: Option<&str>) -> Self {
-        let mut terminal = Self::spawn(root, session);
+    pub fn spawn_sixel(binary: impl AsRef<Path>, root: &Path, session: Option<&str>) -> Self {
+        let mut terminal = Self::spawn(binary, root, session);
         terminal.sixel = Some(SixelReplies::default());
         terminal
+    }
+    pub fn reply_initial_sixel_cells(&mut self) {
+        assert!(
+            self.output.windows(5).any(|bytes| bytes == b"\x1b[16t"),
+            "the production terminal must request cell size before its reply"
+        );
+        let sixel = self.sixel.as_mut().expect("Sixel terminal");
+        assert!(sixel.attributes, "DA1 must already have been answered");
+        assert!(
+            !sixel.cells,
+            "the initial cell-size reply is sent only once"
+        );
+        sixel.cells = true;
+        // A real key in the same OS input write must survive reply demux.
+        self.send(b"\x1b[6;17;9t\x10");
     }
     pub fn wire(&self) -> &[u8] {
         &self.output
@@ -271,12 +286,6 @@ impl Pty {
                 // Manual resize measurements must remain unanswered until the
                 // case supplies their original replies, including DA1.
                 reply = reply.replace("\x1b[?6c", "");
-            }
-            if !sixel.cells && self.output.windows(5).any(|bytes| bytes == b"\x1b[16t") {
-                reply.push_str("\x1b[6;17;9t");
-                // A real key in the same OS input write must survive reply demux.
-                reply.push('\x10');
-                sixel.cells = true;
             }
         }
         if !reply.is_empty() {

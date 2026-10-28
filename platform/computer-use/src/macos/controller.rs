@@ -1419,11 +1419,11 @@ impl PumpContext {
         let result = objc2::rc::autoreleasepool(|_| state.handle(envelope.command));
         drop(state);
         let _ = envelope.reply.send(result);
-        if !self.stopping.get() {
-            if let Some(next) = self.next_command()? {
-                self.deferred.borrow_mut().push_front(next);
-                wake(&self.wake_again)?;
-            }
+        if !self.stopping.get()
+            && let Some(next) = self.next_command()?
+        {
+            self.deferred.borrow_mut().push_front(next);
+            wake(&self.wake_again)?;
         }
         Ok(PumpResult::Reenable)
     }

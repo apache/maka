@@ -19,7 +19,10 @@
 
 import { cleanup, inputAction, Scroll, signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
-import type { AgentComputerApps } from '../../../../packages/plugin-sdk/src/generated/runtime';
+import type {
+  AgentComputerApps,
+  GrantScope,
+} from '../../../../packages/plugin-sdk/src/generated/runtime';
 import type { Control } from './Conversation';
 import { computerAppRiskMessage } from './interaction-computer-app';
 import { tr } from './locale';
@@ -34,6 +37,9 @@ import {
   controlHoverStyle,
   controlStyle,
 } from './ui';
+
+const applicationId = (scope: GrantScope) =>
+  scope.kind === 'computer_app' ? scope.applicationId : tr('unavailable');
 
 export function ComputerAppControls(props: {
   sessionId: string;
@@ -86,9 +92,7 @@ export function ComputerAppControls(props: {
                     {entry().activity.display.appPath}
                   </Text>
                   <Text style={[{ ...codeTextStyle, color: C.secondary }, { userSelect: 'text' }]}>
-                    {entry().activity.target.scope.kind === 'computer_app'
-                      ? entry().activity.target.scope.applicationId
-                      : tr('unavailable')}
+                    {applicationId(entry().activity.target.scope)}
                   </Text>
                   <Text style={{ ...captionTextStyle, color: C.secondary }}>
                     {renderText(computerAppRiskMessage(entry().activity.display.risk))}

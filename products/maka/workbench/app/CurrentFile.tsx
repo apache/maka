@@ -121,7 +121,7 @@ export function createCurrentFile(target: WorkspaceFileTarget): CurrentFileModel
     void (async () => {
       await close(previous);
       if (!ownsRead(request, watch)) return;
-      const opened: FileSubscription = await host.subscribe('agent', 'readFile', {
+      const opened: FileSubscription = await host.readFile({
         sessionId: target.sessionId,
         path: target.path,
       });

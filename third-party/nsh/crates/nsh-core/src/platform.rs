@@ -167,7 +167,7 @@ pub struct Environment {
     pub title_bar: Edges<Points>,
     /// Height of the software keyboard over the surface; 0 when hidden.
     pub keyboard_height: Points,
-    /// Duration of the keyboard's show / hide animation in seconds.
+    /// Duration of the keyboard's show / hide animation in milliseconds.
     pub keyboard_duration: f32,
     /// Light or dark appearance.
     pub color_scheme: ColorScheme,
@@ -238,7 +238,7 @@ impl Default for Environment {
             safe_area: Edges::default(),
             title_bar: Edges::default(),
             keyboard_height: Points(0.0),
-            keyboard_duration: 0.25,
+            keyboard_duration: 250.0,
             color_scheme: ColorScheme::Light,
             font_scale: 1.0,
             rtl: false,

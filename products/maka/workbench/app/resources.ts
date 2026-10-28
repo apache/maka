@@ -22,12 +22,6 @@ import { cleanup, effect, signal, untracked } from 'nsh';
 import type { YNode } from 'nsh';
 import { createWorkspaceFiles, type WorkspaceFileTarget } from './workspaceFileState';
 import { createCurrentFile, type CurrentFileModel } from './CurrentFile';
-import {
-  createCurrentDiff,
-  gitAreaLabel,
-  type CurrentDiffTarget,
-  type CurrentDiffModel,
-} from './CurrentDiff';
 import type { ImagePreview } from './ImageThumbnail';
 import type { ViewerImage } from './ImageViewer';
 import { createTerminals, type TerminalModel } from './terminalState';
@@ -40,7 +34,6 @@ export type ResourceTab = {
   title: string;
 } & (
   | { kind: 'file'; model: CurrentFileModel }
-  | { kind: 'diff'; model: CurrentDiffModel }
   | { kind: 'image'; image: ImagePreview }
   | { kind: 'terminal'; model: TerminalModel }
 );
@@ -52,7 +45,7 @@ type ImageViewerState = { tab: ResourceTab; image: ViewerImage; close(): void };
 export function createResources(options: { selected(): string | null; blocked(): boolean }) {
   const shown = signal(false);
   const tabs = signal<ResourceTab[]>([]);
-  const active = signal<number | 'files' | 'changes' | 'terminals'>('files');
+  const active = signal<number | 'files' | 'terminals'>('files');
   const focusRequest = signal(false);
   const instance = signal(0);
   const imageViewer = signal<ImageViewerState | null>(null);
@@ -130,20 +123,6 @@ export function createResources(options: { selected(): string | null; blocked():
       opener = () => restoreFocus() || fallback();
     }
   };
-  const openDiff = (target: CurrentDiffTarget) =>
-    open(target.sessionId, `diff:${target.area}:${target.path.bytesBase64}`, (instance) => ({
-      kind: 'diff',
-      instance,
-      identity: `diff:${target.area}:${target.path.bytesBase64}`,
-      sessionId: target.sessionId,
-      get title() {
-        return tr('{title} · {area}', {
-          title: target.title,
-          area: gitAreaLabel[target.area].toLowerCase(),
-        });
-      },
-      model: createCurrentDiff(target),
-    }));
   const headerOpener = (sessionId: string) => {
     const original = header;
     return () => {
@@ -176,7 +155,7 @@ export function createResources(options: { selected(): string | null; blocked():
     const fallback = headerOpener(sessionId);
     opener = () => image.restoreFocus?.() || fallback();
   };
-  const inventory = (target: { sessionId: string; kind: 'files' | 'changes' | 'terminals' }) => {
+  const inventory = (target: { sessionId: string; kind: 'files' | 'terminals' }) => {
     if (!admits(target.sessionId)) return;
     adopt();
     imageViewer.set(null);
@@ -285,7 +264,6 @@ export function createResources(options: { selected(): string | null; blocked():
     openImage,
     openImageViewer,
     imageViewer,
-    openDiff,
     select,
     closeTab,
     hide,

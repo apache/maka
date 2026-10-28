@@ -876,6 +876,8 @@ async fn native_observation_recovers_after_busy_and_preserves_external_edits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 #[ignore = "requires a built MAKA_CUA_TEST_HOST and macOS desktop; synthetic cursors and background AX"]
 async fn native_cursors_are_visible_independent_and_retire_without_moving_system_pointer() {
+    use maka_computer_use::NativeEpochId;
+
     let executable = std::env::var_os("MAKA_CUA_TEST_HOST")
         .expect("build maka-cli and set MAKA_CUA_TEST_HOST to its executable");
     let mut form = NativeForm::start(true).await;
@@ -920,18 +922,17 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
     let renderer = state["native"]["rendererPid"].as_u64().unwrap();
 
     // Capture the renderer's own transparent window, not the user's desktop.
-    let windows = driver
-        .lock()
-        .await
-        .invoke(
-            "list_windows",
-            json!({}),
-            "cursor-inspection",
-            &CancellationToken::new(),
-            Language::En,
-        )
-        .await
-        .unwrap();
+    let inspection_epoch = NativeEpochId::new();
+    let windows = Driver::invoke(
+        &driver,
+        "list_windows",
+        json!({}),
+        inspection_epoch,
+        &CancellationToken::new(),
+        Language::En,
+    )
+    .await
+    .unwrap();
     let windows = windows.structured_content.unwrap();
     let overlay = windows["windows"]
         .as_array()
@@ -939,21 +940,19 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
         .iter()
         .find(|window| window["pid"] == renderer)
         .expect("native cursor window is in WindowServer inventory");
-    let capture = driver
-        .lock()
-        .await
-        .invoke(
-            "get_window_state",
-            json!({
-                "pid":renderer,"window_id":overlay["window_id"],"include_accessibility_tree":false,
-                "include_screenshot":true,"max_image_dimension":1600
-            }),
-            "cursor-inspection",
-            &CancellationToken::new(),
-            Language::En,
-        )
-        .await
-        .unwrap();
+    let capture = Driver::invoke(
+        &driver,
+        "get_window_state",
+        json!({
+            "pid":renderer,"window_id":overlay["window_id"],"include_accessibility_tree":false,
+            "include_screenshot":true,"max_image_dimension":1600
+        }),
+        inspection_epoch,
+        &CancellationToken::new(),
+        Language::En,
+    )
+    .await
+    .unwrap();
     let value = serde_json::to_value(capture).unwrap();
     let encoded = value["content"]
         .as_array()

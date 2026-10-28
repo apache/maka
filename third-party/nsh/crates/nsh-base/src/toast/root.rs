@@ -9,9 +9,9 @@ use super::ToastTransitionStatus;
 /// How far a pointer moves toward the swipe before the toast follows it
 /// (its buttons' presses stay presses below that).
 const SWIPE_SLOP: f32 = 10.0;
-/// A release this fast toward the swipe (points per millisecond) dismisses
-/// it short of the threshold: a flick.
-const FLICK: f32 = 0.5;
+/// A release this fast toward the swipe (points per second) dismisses it
+/// short of the threshold: a flick.
+const FLICK: f32 = 500.0;
 /// How long a toast takes to follow a release (away, or back).
 const SETTLE_MS: f32 = 200.0;
 /// How long a toast waits for its first display frame before it counts as

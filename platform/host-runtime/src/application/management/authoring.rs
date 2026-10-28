@@ -71,7 +71,7 @@ impl Manager {
             .packages()
             .iter()
             .find(|p| p.application_ref() == request.package)
-            .ok_or("package is not installed in this UI source")?;
+            .ok_or("package is not installed in this source")?;
         let paths = package.files().keys().cloned().collect();
         let (text, next) = if let Some(path) = request.path {
             let text = std::str::from_utf8(package.file(&path).ok_or("package file unavailable")?)

@@ -83,6 +83,14 @@ go elsewhere under these rules rather than into them.
   and the keys held as `modifiers` (`{ control, alt, shift, platform }`, GPUI's `Modifiers`: `platform` is Command on
   Apple platforms, the Windows / Super key elsewhere), as GPUI's `MouseMoveEvent { position, modifiers }` (decided by
   the user, 2026-10-21). The frozen responder events keep React Native's `locationX` / `pageX`.
+- **Units**: one unit per quantity, everywhere, React Native's modules included. A length is points, an image's or a
+  video's own size pixels (`PixelSize`, never `Size`: `onLoad`, `Image.getSize`, the clipboard's and the picker's
+  images), a time milliseconds (`duration`, `delay`, `timeout`, `keyboardFrame().duration`), a velocity points per
+  second (`PanEvent`'s, `PanResponder`'s `vx` / `vy`, an animation's `velocity`), a share a fraction from 0 to 1
+  (`viewPosition`, `volume`, `ViewabilityConfig`'s thresholds; no `Percent` in names). Two exceptions keep the
+  convention everyone knows: media time is seconds, as HTML's `currentTime` (`Video`'s `seek`, `onProgress`,
+  `onLoad`), and a deceleration is the velocity kept per millisecond (`decelerationRate`, `Animated.decay`'s
+  `deceleration`: UIKit's `0.998` / `0.99`) (decided by the user, 2026-10-27).
 - **Intent over geometry**: an event says what the app should do when the act has a name (`onLoadMore`, as
   `gpui-component`'s `ListDelegate::load_more`), not where the user got to (`onEndReached`). Its counterpart at
   the start is the same act at the other end, `onLoadMoreAtStart` / `loadMoreAtStartThreshold` (React Native's
@@ -163,6 +171,7 @@ them yet (`compatibility.md`). The frozen RN-shaped modules keep their names. A 
 | `onMomentumScrollBegin`, `onMomentumScrollEnd` | `onMomentumStart`, `onMomentumEnd` | Begin and end | |
 | List `onEndReached`, `onEndReachedThreshold` | `onLoadMore`, `loadMoreThreshold` | Intent over geometry | `ListDelegate::load_more`, `load_more_threshold`; also in `ListItemsProps` |
 | List `onViewableItemsChanged` | `onViewableItemsChange` | Events | |
+| `ViewabilityConfig` `itemVisiblePercentThreshold`, `viewAreaCoveragePercentThreshold` (0 to 100) | `itemVisibleThreshold`, `viewAreaCoverageThreshold` (0 to 1) | Units | IntersectionObserver's `threshold` |
 | **Every element** | | | |
 | Input `caretHidden` | `caret` (default `true`) | States | Decided by the user: the part's name, as `scrollbar`; replaces the 2026-10-20 row keeping it |
 | `HoverEvent` (`onHoverMove`) `locationX` / `locationY`, `pageX` / `pageY`, `altKey` / `ctrlKey` / `metaKey` / `shiftKey` | `{ position: Point; pagePosition: Point; modifiers: Modifiers }` | Points | GPUI `MouseMoveEvent`; new types `Point`, `Modifiers` in `nsh` |
@@ -175,7 +184,9 @@ them yet (`compatibility.md`). The frozen RN-shaped modules keep their names. A 
 | `Insets` (type) | `Edges` | Geometry | `safeArea()`, `safeAreaInsets()`; `hitSlop` / `contentInset` take `number \| Partial<Edges>` / `Partial<Edges>` |
 | `contentOffset`, `Overlay` `anchor`, `Menu.popup`'s `at` | typed `Partial<Point>` / `Point` | Geometry | Same fields |
 | `nsh/desktop` `WindowFrame` `{ x, y, width, height, animated, anchorTop }` | `{ origin?: Partial<Point>; size?: Partial<Size>; animated; anchorTop }` | Geometry | |
-| `windowSize()`, `ImageSize`, Image `onLoad`, `onContentSizeChange` | typed `Size` | Geometry | Same fields |
+| `windowSize()`, `ImageSize`, Image `onLoad`, `onContentSizeChange` | typed `Size` | Geometry | Same fields; pixel sizes are `PixelSize` (next row) |
+| `ImageSize`, Image and Video `onLoad`'s, `ClipboardImage`'s and `PickedImage`'s `Size` (pixels) | `PixelSize` | Units | Same fields; `Size` is points |
+| `PanResponder` `vx` / `vy` (points per millisecond), `keyboardFrame().duration` (seconds) | points per second, milliseconds | Units | |
 | `ImageAsset` / `ClipboardImage` `{ url, width, height }`, Video `onLoad` `{ duration, width, height }` | `{ url; size: Size }`, `{ duration; size: Size }` | Geometry | |
 | **Image** | | | |
 | `src: string \| ImageAsset \| { uri }` | `src: string \| ImageAsset` | Addresses | |

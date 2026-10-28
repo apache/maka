@@ -561,14 +561,14 @@ impl Session {
                 {
                     target.invalidate_observation();
                     #[cfg(target_os = "macos")]
-                    if let Some(window) = target.macos.as_ref() {
-                        if let Err(cleanup) = window.clear().await {
-                            return result.map_err(|error| {
-                                ToolError::CleanupUnconfirmed(format!(
-                                    "{error}; native observation cleanup: {cleanup}"
-                                ))
-                            });
-                        }
+                    if let Some(window) = target.macos.as_ref()
+                        && let Err(cleanup) = window.clear().await
+                    {
+                        return result.map_err(|error| {
+                            ToolError::CleanupUnconfirmed(format!(
+                                "{error}; native observation cleanup: {cleanup}"
+                            ))
+                        });
                     }
                 }
                 result
@@ -2220,7 +2220,7 @@ mod tests {
         assert!(target.capture.is_none());
         assert!(target.previous.is_none());
         let retained = target.page_frame.unwrap();
-        assert_eq!(retained.bounds().x, -10.0);
+        assert_eq!(retained.screen_point([0.0, 0.0]).unwrap(), [-10.0, 20.0]);
         assert_eq!(retained.requested_image_size(), [200.5, 160.25]);
     }
 

@@ -19,7 +19,6 @@
 
 mod cell_context;
 mod code_mode;
-mod foreground;
 mod plugin_vm;
 mod repl;
 mod result_contract;
