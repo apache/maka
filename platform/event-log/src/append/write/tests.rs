@@ -894,8 +894,7 @@ async fn deltas_skip_directory_work_and_boundaries_reuse_the_writer_statement() 
     let dir = tempfile::tempdir().unwrap();
     let log = open(&dir.path().join("events.sqlite")).await;
     const DIRECTORY: &[u8] = b"SELECT e.invocation_id, CASE WHEN e.kind = 'model_observed'";
-    const INGRESS: &[u8] =
-        b"WITH source(sequence,event_id,invocation_id,kind,operation_id,event_json,retained_json)";
+    const INGRESS: &[u8] = b"INSERT INTO event_log";
     let before = cached_statement(&log, DIRECTORY).await;
     let ingress_before = cached_statement(&log, INGRESS).await;
     for index in 0..128 {
