@@ -39,6 +39,17 @@ Executor `execute` receives immutable files through one optional binary resource
 
 `context` reports the latest Main request prepared by the selected Session, including requests still running or interrupted. It groups the original Host input by message role and tool schemas; token counts are estimates, while provider-reported input usage is separate. Pin `through` to reread the same result after reconnecting. Missing requests or measurements remain null, and copied history does not count as a request executed by the new Session. See the [context declarations](src/contract_context.rs).
 
+UI plugins with a bound `agent` import read `context.services.agent[0].query('compactionPrompt', { sessionId })`: the result contains `revision`, raw nullable `prompt`, complete effective `compactionPrompt` and inherited `defaultCompactionPrompt`. Only null inherits the global setting (or language built-in); empty and whitespace-only overrides are valid. Save with `setCompactionPrompt` using that revision and handle `MetadataResult`, including `revision_conflict`. This affects new work; captured execution/queue prompts stay unchanged. `compact.prompt` remains a one-time override. With `current` holding the validated query result and `ServiceMethods` imported from `@maka-agent/plugin-sdk`, reset inheritance as follows. See the [compaction declarations](src/contract_compaction.rs).
+
+```ts
+const input = {
+  sessionId,
+  expectedRevision: current.revision,
+  prompt: null,
+} satisfies ServiceMethods['agent']['setCompactionPrompt']['input'];
+const operation = await context.services.agent[0].mutation('setCompactionPrompt', input);
+```
+
 `gitStatus` and `gitDiff` read the selected Session's repository through the same Agent service, including WorkHub coordinator sessions. Status separates staged, worktree and untracked changes; a path can appear in both staged and worktree areas. Diff compares HEAD to the index, the index to the working file, or an empty file to an untracked file, respectively. An unborn repository has a null `head`; a workspace without a repository returns null. Paths use exact Git pathname bytes encoded as `bytesBase64`, and renames appear as deletion plus addition.
 
 These are fresh, read-only observations, not repository snapshots. Status returns the complete list of staged, worktree and untracked entries. Per-file diff reads complete inputs and returns text, binary, unchanged or unsupported; text patches are returned in full. Repository metadata, control files, status entries, diff inputs and patches are buffered in memory. Cancellation is cooperative; these queries do not promise bounded memory or a fixed execution time. The workspace must be the repository root. Unsupported repository features fail explicitly, including external filters, sparse checkout and submodules; configured commands are never executed. A changed workspace or comparison base requires a fresh query. [Git declarations](src/contract_git.rs) define the wire types; `snapshotPatch` captures an immutable completed-work patch after workspace writers settle. Capture reads complete source images and buffers the complete patch before publication; `readPatch` returns recoverable pages from that original artifact, including after later executions and Host restarts.

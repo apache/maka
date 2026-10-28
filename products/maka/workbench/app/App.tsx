@@ -260,8 +260,10 @@ function App(
     const pending = originals.find(
       (original) =>
         (original.method === method ||
-          (['metadata', 'changeSession', 'fork'].includes(method) &&
-            ['metadata', 'changeSession', 'fork'].includes(original.method))) &&
+          (['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(method) &&
+            ['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(
+              original.method,
+            ))) &&
         original.sessionId === (input.sessionId ?? null) &&
         (method !== 'stop' || original.correlation.invocationId === input.invocationId) &&
         (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&

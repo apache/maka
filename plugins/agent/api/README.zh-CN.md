@@ -39,6 +39,17 @@ Executor 的 `execute` 通过名为 `attachments` 的单个可选二进制资源
 
 `context` 返回所选 Session 最近一次已准备的 Main 请求，包括运行中或已中断的请求。它按消息角色和工具定义展示原始 Host 输入构成；token 数为估算，提供方报告的实际输入用量单独返回。固定 `through` 可在重连后读取同一结果。不存在的请求或缺失的测量保持 null，复制的历史不算新 Session 自己执行的请求。字段见[上下文声明](src/contract_context.rs)。
 
+UI 插件绑定 `agent` 导入后，通过 `context.services.agent[0].query('compactionPrompt', { sessionId })` 读取：结果包含 `revision`、可为 null 的原始 `prompt`、完整生效正文 `compactionPrompt` 及继承正文 `defaultCompactionPrompt`。只有 null 继承全局设置（或对应语言的内置提示词），空字符串及纯空白均是有效覆盖值。保存时用该版本调用 `setCompactionPrompt`，并处理 `MetadataResult` 的 `revision_conflict` 等结果。设置影响新工作，已捕获的执行及队列提示词保持不变；`compact.prompt` 仍只覆盖当次压缩。以下示例恢复继承，其中 `current` 是已校验的查询结果，`ServiceMethods` 从 `@maka-agent/plugin-sdk` 导入。字段见[压缩声明](src/contract_compaction.rs)。
+
+```ts
+const input = {
+  sessionId,
+  expectedRevision: current.revision,
+  prompt: null,
+} satisfies ServiceMethods['agent']['setCompactionPrompt']['input'];
+const operation = await context.services.agent[0].mutation('setCompactionPrompt', input);
+```
+
 `gitStatus` 和 `gitDiff` 通过同一个 Agent 服务读取所选 Session 的仓库，也适用于 WorkHub 协调者会话。状态区分已暂存、工作区和未跟踪的变化；同一路径可以同时出现在已暂存和工作区部分。diff 分别比较 HEAD 与索引、索引与工作文件，或空文件与未跟踪文件。尚无提交的仓库返回 null `head`；没有仓库的工作区返回 null。路径以 `bytesBase64` 保留 Git 文件名的原始字节，重命名呈现为删除加新增。
 
 这些查询提供当前的只读观察，不是仓库快照。状态完整返回已暂存、工作区和未跟踪的条目列表。单文件 diff 读取完整输入，区分文本、二进制、未变化和不支持的情况；文本补丁完整返回。仓库元数据、control 文件、状态条目、diff 输入和补丁在内存中缓冲。取消采用协作方式；这些查询不承诺有界内存或固定执行时限。所选工作区必须是仓库根目录；外部过滤器、稀疏检出、子模块等不支持的仓库特性会明确失败，不执行配置中的命令。工作区或比较基准变化后应重新查询。协议类型见 [Git 声明](src/contract_git.rs)；`snapshotPatch` 在工作区写者全部结清后捕获已完成工作的不可变补丁。捕获会读取完整源内容，并在发布前将完整补丁缓冲在内存中；`readPatch` 分页读取该原始产物，后续执行和 Host 重启不会改变它。

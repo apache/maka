@@ -1806,6 +1806,10 @@ pub fn contract() -> Contract {
                     method::<SessionRead, CompactionPrompt>(MethodMode::Query),
                 ),
                 (
+                    "setCompactionPrompt".into(),
+                    method::<SetCompactionPrompt, MetadataResult>(MethodMode::Mutation),
+                ),
+                (
                     "compact".into(),
                     method::<Compact, CompactResult>(MethodMode::Mutation),
                 ),

@@ -634,6 +634,7 @@ impl Fixture {
                                 "create",
                                 "selectBackend",
                                 "compact",
+                                "setCompactionPrompt",
                                 "compactionPrompt",
                                 "projectMcp",
                                 "trustProjectMcp",

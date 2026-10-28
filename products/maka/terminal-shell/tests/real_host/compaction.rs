@@ -42,6 +42,15 @@ async fn open_compact(view: &mut AppView) {
     wait_focused_input(view, "One-time compaction prompt").await;
 }
 
+async fn open_session_prompt(view: &mut AppView) {
+    open_session_browser(view).await;
+    wait_enabled_node(view, "Actions for NSH real Agent").await;
+    support::click_label(view, "Actions for NSH real Agent");
+    wait_enabled_node(view, "Edit conversation compaction prompt").await;
+    support::click_label(view, "Edit conversation compaction prompt");
+    wait_focused_input(view, "Conversation compaction prompt").await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn manual_compaction_timer_keeps_its_start_after_reopen() {
     tokio::time::timeout(Duration::from_secs(90), async {
@@ -51,7 +60,62 @@ async fn manual_compaction_timer_keeps_its_start_after_reopen() {
         let (mut view, bindings) =
             fixture.view(fixture.client().await, Some(fixture.session.clone()));
         wait_editable_composer(&mut view).await;
+        let prompt_settings = client
+            .query(
+                "agent",
+                "compactionPrompt",
+                json!({"sessionId": fixture.session}),
+            )
+            .await
+            .unwrap();
+        let inherited = prompt_settings["compactionPrompt"].as_str().unwrap();
+        assert!(!inherited.is_empty());
+        open_session_prompt(&mut view).await;
+        assert_eq!(
+            view.surface().input_context().unwrap().text.as_deref(),
+            Some(inherited)
+        );
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste("Unsubmitted compaction edit".into()));
+        support::click_button(&mut view, "Cancel conversation compaction prompt").await;
+        let cancelled = client
+            .query(
+                "agent",
+                "compactionPrompt",
+                json!({"sessionId": fixture.session}),
+            )
+            .await
+            .unwrap();
+        assert!(cancelled["prompt"].is_null());
+        assert_eq!(cancelled["compactionPrompt"], inherited);
+        open_session_prompt(&mut view).await;
+        assert_eq!(
+            view.surface().input_context().unwrap().text.as_deref(),
+            Some(inherited)
+        );
+        let custom = "Preserve the exact task, unresolved work, and SESSION_COMPACTION_MARKER.";
+        shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste(custom.into()));
+        support::click_button(&mut view, "Save conversation compaction prompt").await;
+        wait_view(&mut view, |screen| {
+            !screen.contains("Conversation compaction prompt")
+        })
+        .await;
+        let saved = client
+            .query(
+                "agent",
+                "compactionPrompt",
+                json!({"sessionId": fixture.session}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved["prompt"], custom);
+        assert_eq!(saved["compactionPrompt"], custom);
         open_compact(&mut view).await;
+        assert_eq!(
+            view.surface().input_context().unwrap().text.as_deref(),
+            Some(custom)
+        );
         support::click_button(&mut view, "Compact now").await;
         let running = wait_view(&mut view, |screen| {
             compacting_seconds(screen).is_some() && !screen.contains("One-time compaction prompt")
@@ -93,6 +157,45 @@ async fn manual_compaction_timer_keeps_its_start_after_reopen() {
         request.finish().await;
         fixture.idle(&client, &fixture.session).await;
         wait_view(&mut view, |screen| !screen.contains("Compacting context…")).await;
+        open_session_prompt(&mut view).await;
+        assert_eq!(
+            view.surface().input_context().unwrap().text.as_deref(),
+            Some(custom)
+        );
+        support::click_button(&mut view, "Use global compaction prompt").await;
+        tab_to_label(&mut view, "Conversation compaction prompt").await;
+        wait_view_state(&mut view, |view, _| {
+            view.surface()
+                .input_context()
+                .is_some_and(|input| input.text.as_deref() == Some(inherited))
+        })
+        .await;
+        assert_eq!(
+            client
+                .query(
+                    "agent",
+                    "compactionPrompt",
+                    json!({"sessionId": fixture.session})
+                )
+                .await
+                .unwrap()["prompt"],
+            custom
+        );
+        support::click_button(&mut view, "Save conversation compaction prompt").await;
+        wait_view(&mut view, |screen| {
+            !screen.contains("Conversation compaction prompt")
+        })
+        .await;
+        let restored = client
+            .query(
+                "agent",
+                "compactionPrompt",
+                json!({"sessionId": fixture.session}),
+            )
+            .await
+            .unwrap();
+        assert!(restored["prompt"].is_null());
+        assert_eq!(restored["compactionPrompt"], inherited);
         drop(view);
         bindings.close().await.unwrap();
         client.close().await.unwrap();

@@ -61,6 +61,37 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  'Edit conversation compaction prompt': [
+    'Edit conversation compaction prompt',
+    '编辑会话压缩提示词',
+    '編輯對話壓縮提示詞',
+  ],
+  'Conversation compaction prompt': [
+    'Conversation compaction prompt',
+    '会话压缩提示词',
+    '對話壓縮提示詞',
+  ],
+  'Save conversation compaction prompt': [
+    'Save conversation compaction prompt',
+    '保存会话压缩提示词',
+    '儲存對話壓縮提示詞',
+  ],
+  'Use global compaction prompt': [
+    'Use global compaction prompt',
+    '使用全局压缩提示词',
+    '使用全域壓縮提示詞',
+  ],
+  'Use global settings': ['Use global settings', '使用全局设置', '使用全域設定'],
+  'Close conversation compaction prompt': [
+    'Close conversation compaction prompt',
+    '关闭会话压缩提示词',
+    '關閉對話壓縮提示詞',
+  ],
+  'Cancel conversation compaction prompt': [
+    'Cancel conversation compaction prompt',
+    '取消编辑会话压缩提示词',
+    '取消編輯對話壓縮提示詞',
+  ],
   Connection: ['Connection', '连接', '連線'],
   'Back to models': ['Back to models', '返回模型', '返回模型'],
   'Load more connections': ['Load more connections', '加载更多连接', '載入更多連線'],

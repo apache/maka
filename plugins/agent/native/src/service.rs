@@ -340,6 +340,10 @@ impl Handler for Agent {
                     context.operation().ok_or("agent_mutation_required")?;
                     encode(owner.metadata(decode(input)?).await?)
                 }
+                "setCompactionPrompt" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    encode(owner.set_compaction_prompt(decode(input)?).await?)
+                }
                 "diagnostics" => diagnostics::query(&owner, decode(input)?, &context).await,
                 "watchDiagnostics" => diagnostics::watch(&owner, decode(input)?, &context).await,
                 "observe" => {

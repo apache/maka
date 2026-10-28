@@ -52,6 +52,7 @@ import type {
   RequestContext,
   ServiceMethods,
   RecoveryRef,
+  UiContext,
 } from '@maka-agent/plugin-sdk';
 
 function forgedReceiptReference(reference: RecoveryRef) {
@@ -465,3 +466,41 @@ const historySubscription: ServiceMethods['agent']['history']['mode'] = 'subscri
 // @ts-expect-error Session continuations require their explicit position.
 const unfencedListInput: ServiceMethods['agent']['list']['input'] = { filter: 'all' };
 void [historyMode, historySubscription, unfencedListInput];
+
+const compactionPromptMode: ServiceMethods['agent']['compactionPrompt']['mode'] = 'query';
+const setCompactionPromptMode: ServiceMethods['agent']['setCompactionPrompt']['mode'] = 'mutation';
+async function sessionCompactionPrompt(
+  context: UiContext,
+  sessionId: string,
+  current: ServiceMethods['agent']['compactionPrompt']['output'],
+) {
+  const agent = context.services.agent[0];
+  const read = { sessionId } satisfies ServiceMethods['agent']['compactionPrompt']['input'];
+  const raw: string | null = current.prompt;
+  const effective: string = current.compactionPrompt;
+  const inherited: string = current.defaultCompactionPrompt;
+  await agent.query('compactionPrompt', read);
+  const reset = {
+    sessionId,
+    expectedRevision: current.revision,
+    prompt: null,
+  } satisfies ServiceMethods['agent']['setCompactionPrompt']['input'];
+  const empty = {
+    ...reset,
+    prompt: '',
+  } satisfies ServiceMethods['agent']['setCompactionPrompt']['input'];
+  const operation = await agent.mutation('setCompactionPrompt', reset);
+  const operationId: string = operation.operationId;
+  // @ts-expect-error Saving requires the revision observed by the editor.
+  const unfenced: ServiceMethods['agent']['setCompactionPrompt']['input'] = {
+    sessionId,
+    prompt: raw,
+  };
+  // @ts-expect-error Inheritance is an explicit null, not an omitted prompt.
+  const missingPrompt: ServiceMethods['agent']['setCompactionPrompt']['input'] = {
+    sessionId,
+    expectedRevision: current.revision,
+  };
+  void [raw, effective, inherited, empty, operationId, unfenced, missingPrompt];
+}
+void [compactionPromptMode, setCompactionPromptMode, sessionCompactionPrompt];

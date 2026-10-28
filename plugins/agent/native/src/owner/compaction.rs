@@ -24,20 +24,18 @@ use maka_agent_facts::input::InvocationInput;
 impl Owner {
     pub(super) fn effective_compaction_prompt(
         &self,
+        prompt: Option<&str>,
         snapshot: &RuntimePolicySnapshot,
         language: Language,
     ) -> String {
-        snapshot
-            .policy
-            .compaction_prompt
-            .clone()
-            .unwrap_or_else(|| {
-                maka_agent_facts::context::default_compaction_prompt(language).into()
-            })
+        prompt
+            .or(snapshot.policy.compaction_prompt.as_deref())
+            .unwrap_or_else(|| maka_agent_facts::context::default_compaction_prompt(language))
+            .into()
     }
 
     pub async fn compaction_prompt(&self, input: SessionRead) -> Result<CompactionPrompt, String> {
-        self.session(&input.session_id).await?;
+        let session = self.session(&input.session_id).await?;
         let snapshot = self
             .configuration
             .runtime_policy()
@@ -45,12 +43,59 @@ impl Owner {
             .map_err(|_| "agent_configuration_unavailable")?;
         let language = self.resolve_language(&snapshot);
         Ok(CompactionPrompt {
-            compaction_prompt: self.effective_compaction_prompt(&snapshot, language),
-            default_compaction_prompt: maka_agent_facts::context::default_compaction_prompt(
+            revision: session.revision,
+            prompt: session.configuration.compaction_prompt.clone(),
+            compaction_prompt: self.effective_compaction_prompt(
+                session.configuration.compaction_prompt.as_deref(),
+                &snapshot,
                 language,
-            )
-            .into(),
+            ),
+            default_compaction_prompt: self.effective_compaction_prompt(None, &snapshot, language),
         })
+    }
+
+    pub async fn set_compaction_prompt(
+        &self,
+        input: SetCompactionPrompt,
+    ) -> Result<MetadataResult, String> {
+        let runs = self.runs.lock().await;
+        if runs.closing {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::Closed,
+            });
+        }
+        if !self.owns(&input.session_id) {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::SessionUnavailable,
+            });
+        }
+        let session = self.session(&input.session_id).await?;
+        if session.archived {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::SessionUnavailable,
+            });
+        }
+        use maka_event_log::sessions::SessionMutation;
+        match self
+            .store
+            .update_session_metadata(
+                &input.session_id,
+                input.expected_revision,
+                move |configuration: &mut StoredSessionConfiguration| {
+                    configuration.compaction_prompt = input.prompt;
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(|error| format!("agent_compaction_prompt_commit_unknown: {error}"))?
+        {
+            SessionMutation::Committed(session) => Ok(MetadataResult::Committed {
+                session: Box::new(crate::service::summary(self, resolve_session(*session)?)),
+            }),
+            SessionMutation::RevisionConflict { expected, actual } => {
+                Ok(MetadataResult::RevisionConflict { expected, actual })
+            }
+        }
     }
 
     pub async fn compact(
@@ -141,7 +186,11 @@ impl Owner {
         let language = self.resolve_language(&snapshot);
         let prompt = match input.prompt {
             Some(prompt) => prompt,
-            None => self.effective_compaction_prompt(&snapshot, language),
+            None => self.effective_compaction_prompt(
+                session.configuration.compaction_prompt.as_deref(),
+                &snapshot,
+                language,
+            ),
         };
         let permissions = &session.configuration.permissions;
         let configuration = InvocationConfiguration {
