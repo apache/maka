@@ -44,6 +44,7 @@ const glyphs = {
   wrap: '↵',
   nowrap: '→',
   code: '⌘',
+  markdown: 'M',
   check: '✓',
   more: '⋯',
   latest: '↓',
@@ -256,7 +257,15 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.lineTo(9.5, 11.5);
             break;
           case 'copy':
-            cx.roundRect(2, 1.5, 9, 10, 1.5);
+            // The sheet behind shows only where the front one leaves it.
+            cx.moveTo(5, 11.5);
+            cx.lineTo(3.5, 11.5);
+            cx.arc(3.5, 10, 1.5, Math.PI / 2, Math.PI);
+            cx.lineTo(2, 3);
+            cx.arc(3.5, 3, 1.5, Math.PI, Math.PI * 1.5);
+            cx.lineTo(9.5, 1.5);
+            cx.arc(9.5, 3, 1.5, Math.PI * 1.5, Math.PI * 2);
+            cx.lineTo(11, 4.5);
             cx.roundRect(5, 4.5, 9, 10, 1.5);
             break;
           case 'wrap':
@@ -290,6 +299,19 @@ export function Icon(props: { name: keyof typeof glyphs; color: string }) {
             cx.moveTo(10, 4);
             cx.lineTo(14, 8);
             cx.lineTo(10, 12);
+            break;
+          case 'markdown':
+            // The Markdown mark: an M and a down arrow.
+            cx.moveTo(1.5, 12);
+            cx.lineTo(1.5, 4);
+            cx.lineTo(4.5, 8);
+            cx.lineTo(7.5, 4);
+            cx.lineTo(7.5, 12);
+            cx.moveTo(12, 4);
+            cx.lineTo(12, 12);
+            cx.moveTo(10, 10);
+            cx.lineTo(12, 12);
+            cx.lineTo(14, 10);
             break;
           case 'check':
             cx.moveTo(3, 8);

@@ -203,7 +203,7 @@ export function MessageRow({
                           hoverStyle={{ backgroundColor: C.surface }}
                           focusStyle={{ backgroundColor: C.raised }}
                         >
-                          <Icon name={sourceMode() ? 'file' : 'code'} color={C.muted} />
+                          <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
                         </Button>
                       </View>
                     </View>
@@ -271,7 +271,7 @@ export function MessageRow({
                               hoverStyle={{ backgroundColor: C.raised }}
                               focusStyle={{ backgroundColor: C.line }}
                             >
-                              <Icon name={sourceMode() ? 'file' : 'code'} color={C.muted} />
+                              <Icon name={sourceMode() ? 'file' : 'markdown'} color={C.muted} />
                             </Button>
                           </If>
                         </View>
