@@ -79,6 +79,7 @@ type ModelMenuHandle = { instance: number; back(): void; dismiss(): void };
 type ModelTarget = { sessionId: string; instance: number | null };
 const modelRowHeight = platform.isTerminal ? 48 : 40;
 // Notes under the model list start where the rows' text does.
+const listFill = () => (platform.isTerminal ? C.surface : C.background);
 const listTextInset = {
   paddingHorizontal: platform.isTerminal ? 0 : controlStyle.paddingHorizontal,
 };
@@ -779,6 +780,9 @@ function ModelMenu(props: {
             height: choices().length * modelRowHeight,
             minHeight: modelRowHeight,
             flexShrink: 1,
+            // On the desktop the list is a field like the search above it, so
+            // a row cut off at its edge does not run into the count below.
+            ...(platform.isTerminal ? {} : { borderRadius: 8, backgroundColor: C.background }),
           }}
         >
           {(id) => (
@@ -807,7 +811,7 @@ function ModelMenu(props: {
                       backgroundColor:
                         choices()[index()] && routeId(choices()[index()]) === key()
                           ? C.line
-                          : C.surface,
+                          : listFill(),
                     }}
                     hoverStyle={{ backgroundColor: C.raised }}
                     focusStyle={{ backgroundColor: C.raised }}
