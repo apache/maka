@@ -43,6 +43,7 @@ import type {
   UiViewContract,
 } from '../../../../../packages/plugin-sdk/src/workbench.js';
 import { UiError } from '../text';
+import { uiHost } from '../host';
 import { currentLocale } from '../locale';
 import { sameValue } from '../../../../../plugins/shared/value';
 import { renderContribution, renderEmbeddedView } from './RuntimeView';
