@@ -18,10 +18,10 @@
  */
 
 import { createText, UiError, errorText, message as uiMessage } from './text';
-import { applyLanguagePreference, tr } from './locale';
+import { applyLanguagePreference, currentLocale, tr } from './locale';
 import { initializeUiScale, uiScale } from './uiScale';
-import { cleanup, effect, inputAction, mount, signal, Scroll, Text, View } from 'nsh';
-import type { YNode } from 'nsh';
+import { cleanup, effect, inputAction, signal, Scroll, Text, View } from 'nsh';
+import type { YNode, JSX } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import { host } from './host';
 import { keymap } from 'nsh';
@@ -44,7 +44,7 @@ import type { CommandEntry, ComposerCommand } from './composerCommands';
 import { WorkspacePicker } from './WorkspacePicker';
 import { ModelSelect } from './ModelSelect';
 import { CompactDialog } from './CompactDialog';
-import { ModelSettings } from './ModelSettings';
+import { ModelSettings, type SettingsRoute } from './ModelSettings';
 import type { ModelBackend } from './modelSelection';
 import { InteractionComposer, interactionOutcomeSummary } from './InteractionComposer';
 import { ComputerAppControls } from './ComputerAppControls';
@@ -62,6 +62,12 @@ import { applicationMenu } from './chrome';
 import { watchNotifications } from './notifications';
 import { performSessionAction, type SessionAction } from './sessionLifecycle';
 import { createTerminalInterrupt, TerminalInterrupt } from './TerminalInterrupt';
+import { createWorkbenchPlugins, pluginContext, type PanelRoute } from './plugins/context';
+import type {
+  UiContext,
+  UiExports,
+  UiRootProps,
+} from '../../../../packages/plugin-sdk/src/workbench.js';
 
 type OverlayTarget = {
   sessionId: string | null;
@@ -73,13 +79,58 @@ type OverlayTarget = {
 );
 type Overlay = OverlayTarget & { instance: number };
 type ActionContext = { instance: number | null; sessionId: string | null };
-function App() {
+type RestoredUi = {
+  sessionId: string | null;
+  settings: SettingsRoute | null;
+  panel: PanelRoute | null;
+};
+function App(
+  props: UiRootProps<JSX.Element> & { bindReload(prepare: () => Promise<unknown>): () => void },
+) {
   initializeUiScale();
   const browsing = createBrowsing();
   const foreground = createForeground();
-  const selected = signal<string | null>(host.initialSession);
-  const overlay = signal<Overlay | null>(null);
-  const resources = createResources({ selected, blocked: () => overlay() !== null });
+  const restored = props.restored as RestoredUi | null;
+  let settingsRoute = restored?.settings ?? null;
+  const selected = signal<string | null>(
+    restored === null ? host.initialSession : restored.sessionId,
+  );
+  const overlay = signal<Overlay | null>(
+    restored?.settings ? { kind: 'settings', sessionId: selected(), instance: 1 } : null,
+  );
+  const reloading = props.runtime.reloading;
+  effect(() => props.runtime.setLocale(currentLocale()));
+  const resources = createResources({ selected, blocked: () => overlay() !== null || reloading() });
+  const plugins = createWorkbenchPlugins(props.runtime, props.context, {
+    sessionId: selected,
+    showPanel() {
+      resources.hide();
+      overlay.set(null);
+    },
+    report: (reason) => report(reason),
+    restorePanel: restored?.panel,
+  });
+  cleanup(
+    props.bindReload(async () => {
+      const owner = handle();
+      if (owner && !(await owner.flushDraft()))
+        throw new UiError(
+          'Draft could not be saved or restored. Its existing contents are preserved.',
+        );
+      if (!alive || handle() !== owner) throw new UiError('Conversation navigation was cancelled.');
+      return {
+        sessionId: selected(),
+        settings: overlay()?.kind === 'settings' ? settingsRoute : null,
+        panel: plugins.panelRoute(),
+      };
+    }),
+  );
+  effect(() => {
+    if (resources.shown()) {
+      const panel = plugins.panel();
+      if (panel) plugins.closePanel(panel.instance);
+    }
+  });
   const sidebarExpanded = signal(true);
   const browserFocus = signal(false);
   const error = createText();
@@ -96,7 +147,7 @@ function App() {
   let browserRoot: YNode | undefined;
   let alive = true;
   let controlRead = 0;
-  let overlayInstance = 0;
+  let overlayInstance = restored?.settings ? 1 : 0;
   let pendingReveal: {
     sessionId: string;
     anchor: ConversationAnchor;
@@ -153,7 +204,7 @@ function App() {
   ): Promise<boolean> => {
     const current = () =>
       alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
-    if (!current() || switching()) return false;
+    if (!current() || switching() || reloading()) return false;
     const owner = handle();
     if (selected() === id) {
       if (owner?.sessionId !== id) return false;
@@ -272,6 +323,7 @@ function App() {
       request.kind === 'models' && sessionId === null
         ? { kind: 'settings' as const, sessionId }
         : request;
+    if (target.kind === 'settings') settingsRoute = null;
     status.set('');
     browserFocus.set(target.kind === 'sessions');
     overlay.set({ ...target, instance: ++overlayInstance });
@@ -603,6 +655,12 @@ function App() {
         invocationId: handle()?.sessionId === context.sessionId ? handle()!.invocation() : null,
       }),
     },
+    ...plugins.commands(context.sessionId).map((command) => ({
+      ...command,
+      run(argument?: string) {
+        if (closeCommand(context)) return command.run(argument);
+      },
+    })),
   ];
   if (uiScale.supported) {
     keymap.bind('mod+0', () => void uiScale.resetAndSave(), { when: 'always' });
@@ -718,7 +776,8 @@ function App() {
     handle()?.focus();
   };
   const sidebarShown = () =>
-    overlay()?.kind === 'sessions' || (sidebarExpanded() && canDockBrowser(resources.shown()));
+    overlay()?.kind === 'sessions' ||
+    (sidebarExpanded() && canDockBrowser(resources.shown() || plugins.panel() !== null));
   const toggleSidebar = (request: { sessionId: string | null; expanded: boolean }) => {
     if (!alive || selected() !== request.sessionId || sidebarShown() !== request.expanded) return;
     const current = overlay();
@@ -803,59 +862,194 @@ function App() {
     .catch(report);
   void refreshControls().catch(report);
   return (
-    <View style={{ flex: 1, backgroundColor: C.background }}>
-      <Workbench
-        expanded={() => sidebarExpanded() && overlay()?.kind !== 'sessions'}
-        browser={browserProps}
-        resources={resources}
-      >
-        <If when={selected() === null}>
-          <View>
-            <Header
-              title=""
-              commands={inputAction(open, { kind: 'commands', sessionId: null })}
-              browser={browserHeader(null)}
-            />
+    <pluginContext.Provider value={plugins}>
+      <View style={{ flex: 1, backgroundColor: C.background }}>
+        <If when={plugins.updateError()}>
+          <View
+            style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16, alignItems: 'center' }}
+          >
+            <Text style={{ ...bodyTextStyle, color: C.warning }}>
+              {plugins.updateError() || tr('The interface update could not be completed.')}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Retry')}
+              onPress={plugins.retryUpdates}
+              style={controlStyle}
+            >
+              <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+            </Button>
           </View>
         </If>
-        <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
-          {(id) => (
-            <Conversation
-              client={host.session(id())}
-              visible={() => selected() === id() && overlay() === null}
-              foreground={foreground}
-              control={control}
-              fork={(action) => changeBrowsedSession(action, id())}
-              commands={inputAction(open, { kind: 'commands', sessionId: id() })}
-              browser={() => browserHeader(id())}
-              files={inputAction(resources.openFiles, { sessionId: id() })}
-              filesOpener={(node) => resources.attachOpener(id(), node)}
-              previewImage={previewImage}
-              openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
-              focusComposer={focusComposer}
-              stopAction={stopAction}
-              attach={(next) => {
-                handle.set(next);
-                const request = pendingReveal;
-                if (request?.sessionId === next.sessionId) {
-                  pendingReveal = null;
-                  void next
-                    .reveal(request.anchor, request.current)
-                    .then(request.resolve, request.reject);
-                }
-              }}
-              detach={(previous) => {
-                if (handle() === previous) handle.set(null);
-              }}
-            />
-          )}
-        </Each>
-        <Composer
-          active={() => overlay() === null}
-          session={handle}
-          stopAction={stopAction}
-          request={
-            <View style={{ minHeight: 0, flexShrink: 1 }}>
+        <Workbench
+          expanded={() => sidebarExpanded() && overlay()?.kind !== 'sessions'}
+          browser={browserProps}
+          resources={resources}
+        >
+          <If when={selected() === null}>
+            <View>
+              <Header
+                title=""
+                commands={inputAction(open, { kind: 'commands', sessionId: null })}
+                browser={browserHeader(null)}
+              />
+            </View>
+          </If>
+          <Each of={selected() ? [selected()!] : []} key={(id: string) => id}>
+            {(id) => (
+              <Conversation
+                client={host.session(id())}
+                visible={() => selected() === id() && overlay() === null}
+                foreground={foreground}
+                control={control}
+                fork={(action) => changeBrowsedSession(action, id())}
+                commands={inputAction(open, { kind: 'commands', sessionId: id() })}
+                browser={() => browserHeader(id())}
+                files={inputAction(resources.openFiles, { sessionId: id() })}
+                filesOpener={(node) => resources.attachOpener(id(), node)}
+                previewImage={previewImage}
+                openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
+                focusComposer={focusComposer}
+                stopAction={stopAction}
+                attach={(next) => {
+                  handle.set(next);
+                  const request = pendingReveal;
+                  if (request?.sessionId === next.sessionId) {
+                    pendingReveal = null;
+                    void next
+                      .reveal(request.anchor, request.current)
+                      .then(request.resolve, request.reject);
+                  }
+                }}
+                detach={(previous) => {
+                  if (handle() === previous) handle.set(null);
+                }}
+              />
+            )}
+          </Each>
+          <Composer
+            blocked={reloading}
+            active={() => overlay() === null && !reloading()}
+            session={handle}
+            stopAction={stopAction}
+            request={
+              <View style={{ minHeight: 0, flexShrink: 1 }}>
+                <Each<ConversationHandle>
+                  of={handle() ? [handle()!] : []}
+                  key={(owner: ConversationHandle) => owner.sessionId}
+                >
+                  {(item) => {
+                    const owner = item();
+                    return (
+                      <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
+                        <ComputerAppControls
+                          sessionId={owner.sessionId}
+                          apps={owner.computerApps}
+                          control={control}
+                        />
+                        <Each
+                          of={owner.interactions().entries.slice(0, 1)}
+                          key={(entry) => entry.requestId}
+                        >
+                          {(entry) => (
+                            <InteractionComposer
+                              sessionId={owner.sessionId}
+                              requestId={entry().requestId}
+                              control={control}
+                              focusComposer={focusComposer}
+                              confirming={() => busy() || !controlsKnown()}
+                            />
+                          )}
+                        </Each>
+                      </View>
+                    );
+                  }}
+                </Each>
+                <If
+                  when={
+                    error() ||
+                    status() ||
+                    switching() ||
+                    busy() ||
+                    !controlsKnown() ||
+                    controls().length
+                  }
+                >
+                  <Scroll
+                    accessibilityLabel={tr('Action feedback')}
+                    style={{
+                      minHeight: bodyTextStyle.lineHeight + 16,
+                      flexShrink: 1,
+                      backgroundColor: C.surface,
+                    }}
+                    contentStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}
+                  >
+                    <If when={error()}>
+                      <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
+                        {error()}
+                      </Text>
+                    </If>
+                    <If when={switching() || busy()}>
+                      <Text style={{ ...bodyTextStyle, color: C.muted }}>
+                        {switching()
+                          ? tr('Saving draft before switching…')
+                          : tr('Confirming action…')}
+                      </Text>
+                    </If>
+                    <If when={status()}>
+                      <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'text' }]}>
+                        {status()}
+                      </Text>
+                    </If>
+                    <If when={!controlsKnown() || controls().length > 0}>
+                      <Button
+                        disabled={recovering()}
+                        onPress={inputAction(recoverControls, null)}
+                        style={controlStyle}
+                        hoverStyle={controlHoverStyle}
+                        focusStyle={controlFocusStyle}
+                      >
+                        <Text style={{ ...bodyTextStyle, color: C.warning }}>
+                          {recovering()
+                            ? tr('Reading original action receipts…')
+                            : controlsKnown()
+                              ? tr('Recover original actions ({count})', {
+                                  count: controls().length,
+                                })
+                              : tr('Recheck original actions')}
+                        </Text>
+                      </Button>
+                      <Each
+                        of={controls().filter((original) => !original.reference)}
+                        key={(original) => original.id}
+                      >
+                        {(original) => (
+                          <Button
+                            onPress={inputAction(abandonControl, original().id)}
+                            style={controlStyle}
+                            hoverStyle={controlHoverStyle}
+                            focusStyle={controlFocusStyle}
+                          >
+                            <Text style={{ ...bodyTextStyle, color: C.warning }}>
+                              {tr('Abandon unconfirmed {method}', { method: original().method })} ·{' '}
+                              {original().id.slice(0, 8)}
+                            </Text>
+                          </Button>
+                        )}
+                      </Each>
+                    </If>
+                  </Scroll>
+                </If>
+              </View>
+            }
+            attach={(node) => {
+              editor = node;
+            }}
+            commands={() =>
+              commands({ instance: null, sessionId: selected() }).filter(
+                (command): command is ComposerCommand => command.trigger !== undefined,
+              )
+            }
+            models={
               <Each<ConversationHandle>
                 of={handle() ? [handle()!] : []}
                 key={(owner: ConversationHandle) => owner.sessionId}
@@ -863,259 +1057,175 @@ function App() {
                 {(item) => {
                   const owner = item();
                   return (
-                    <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
-                      <ComputerAppControls
-                        sessionId={owner.sessionId}
-                        apps={owner.computerApps}
-                        control={control}
-                      />
-                      <Each
-                        of={owner.interactions().entries.slice(0, 1)}
-                        key={(entry) => entry.requestId}
-                      >
-                        {(entry) => (
-                          <InteractionComposer
-                            sessionId={owner.sessionId}
-                            requestId={entry().requestId}
-                            control={control}
-                            focusComposer={focusComposer}
-                            confirming={() => busy() || !controlsKnown()}
-                          />
-                        )}
-                      </Each>
-                    </View>
+                    <ModelSelect
+                      owner={owner}
+                      instance={() => {
+                        const current = overlay();
+                        return current?.kind === 'models' && current.sessionId === owner.sessionId
+                          ? current.instance
+                          : null;
+                      }}
+                      current={() => selected() === owner.sessionId && handle() === owner}
+                      toggle={toggleModels}
+                      close={(instance) => closeModels(owner, instance)}
+                      manage={manageModels}
+                      select={(instance, backend) => chooseModel(owner, instance, backend)}
+                    />
                   );
                 }}
               </Each>
-              <If
-                when={
-                  error() ||
-                  status() ||
-                  switching() ||
-                  busy() ||
-                  !controlsKnown() ||
-                  controls().length
-                }
-              >
-                <Scroll
-                  accessibilityLabel={tr('Action feedback')}
-                  style={{
-                    minHeight: bodyTextStyle.lineHeight + 16,
-                    flexShrink: 1,
-                    backgroundColor: C.surface,
-                  }}
-                  contentStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}
-                >
-                  <If when={error()}>
-                    <Text style={[{ ...bodyTextStyle, color: C.danger }, { userSelect: 'text' }]}>
-                      {error()}
-                    </Text>
-                  </If>
-                  <If when={switching() || busy()}>
-                    <Text style={{ ...bodyTextStyle, color: C.muted }}>
-                      {switching()
-                        ? tr('Saving draft before switching…')
-                        : tr('Confirming action…')}
-                    </Text>
-                  </If>
-                  <If when={status()}>
-                    <Text style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'text' }]}>
-                      {status()}
-                    </Text>
-                  </If>
-                  <If when={!controlsKnown() || controls().length > 0}>
-                    <Button
-                      disabled={recovering()}
-                      onPress={inputAction(recoverControls, null)}
-                      style={controlStyle}
-                      hoverStyle={controlHoverStyle}
-                      focusStyle={controlFocusStyle}
-                    >
-                      <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                        {recovering()
-                          ? tr('Reading original action receipts…')
-                          : controlsKnown()
-                            ? tr('Recover original actions ({count})', { count: controls().length })
-                            : tr('Recheck original actions')}
-                      </Text>
-                    </Button>
-                    <Each
-                      of={controls().filter((original) => !original.reference)}
-                      key={(original) => original.id}
-                    >
-                      {(original) => (
-                        <Button
-                          onPress={inputAction(abandonControl, original().id)}
-                          style={controlStyle}
-                          hoverStyle={controlHoverStyle}
-                          focusStyle={controlFocusStyle}
-                        >
-                          <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                            {tr('Abandon unconfirmed {method}', { method: original().method })} ·{' '}
-                            {original().id.slice(0, 8)}
-                          </Text>
-                        </Button>
-                      )}
-                    </Each>
-                  </If>
-                </Scroll>
-              </If>
-            </View>
-          }
-          attach={(node) => {
-            editor = node;
-          }}
-          commands={() =>
-            commands({ instance: null, sessionId: selected() }).filter(
-              (command): command is ComposerCommand => command.trigger !== undefined,
-            )
-          }
-          models={
-            <Each<ConversationHandle>
-              of={handle() ? [handle()!] : []}
-              key={(owner: ConversationHandle) => owner.sessionId}
-            >
-              {(item) => {
-                const owner = item();
-                return (
-                  <ModelSelect
-                    owner={owner}
-                    instance={() => {
-                      const current = overlay();
-                      return current?.kind === 'models' && current.sessionId === owner.sessionId
-                        ? current.instance
-                        : null;
-                    }}
-                    current={() => selected() === owner.sessionId && handle() === owner}
-                    toggle={toggleModels}
-                    close={(instance) => closeModels(owner, instance)}
-                    manage={manageModels}
-                    select={(instance, backend) => chooseModel(owner, instance, backend)}
-                  />
-                );
-              }}
-            </Each>
-          }
-          chooseWorkspace={inputAction(open, { kind: 'workspaces', sessionId: selected() })}
-          settings={inputAction(open, { kind: 'settings', sessionId: selected() })}
-        />
-      </Workbench>
-      <If when={recoveredFork()}>
-        <Button
-          onPress={inputAction(openRecoveredFork, { id: recoveredFork()!.id, origin: selected() })}
-          style={{ ...controlStyle, alignSelf: 'flex-start' }}
-          hoverStyle={controlHoverStyle}
-          focusStyle={controlFocusStyle}
+            }
+            chooseWorkspace={inputAction(open, { kind: 'workspaces', sessionId: selected() })}
+            settings={inputAction(open, { kind: 'settings', sessionId: selected() })}
+          />
+        </Workbench>
+        <If when={recoveredFork()}>
+          <Button
+            onPress={inputAction(openRecoveredFork, {
+              id: recoveredFork()!.id,
+              origin: selected(),
+            })}
+            style={{ ...controlStyle, alignSelf: 'flex-start' }}
+            hoverStyle={controlHoverStyle}
+            focusStyle={controlFocusStyle}
+          >
+            <Text style={{ color: C.accent }}>
+              {tr('Open recovered fork')} · {recoveredFork()!.title}
+            </Text>
+          </Button>
+        </If>
+        <Each
+          of={overlay() && overlay()!.kind !== 'models' ? [overlay()!] : []}
+          key={(value: Overlay) => value.instance}
         >
-          <Text style={{ color: C.accent }}>
-            {tr('Open recovered fork')} · {recoveredFork()!.title}
-          </Text>
-        </Button>
-      </If>
-      <Each
-        of={overlay() && overlay()!.kind !== 'models' ? [overlay()!] : []}
-        key={(value: Overlay) => value.instance}
-      >
-        {(value) => {
-          const current = value();
-          const close = inputAction(closeOverlay, current.instance);
-          if (current.kind === 'compact')
-            return (
-              <CompactDialog
-                owner={current.owner}
-                prompt={current.prompt}
-                close={() => closeOverlay(current.instance)}
-              />
-            );
-          if (current.kind === 'search')
-            return (
-              <RecallSearch
-                origin={current.sessionId}
-                open={(origin, target) => openRecalled(current.instance, origin, target)}
-                close={() => closeOverlay(current.instance)}
-              />
-            );
-          if (current.kind === 'sessions')
-            return (
-              <Dialog
-                animation="none"
-                onOpenChange={() => closeOverlay(current.instance)}
-                style={{
-                  flex: 1,
-                  backgroundColor: '#00000099',
-                }}
-              >
-                <View style={{ backgroundColor: C.background }}>
-                  <Header
-                    title={current.sessionId === null ? '' : tr('Sessions')}
-                    commands={inputAction(open, { kind: 'commands', sessionId: current.sessionId })}
-                    browser={browserHeader(current.sessionId, true)}
-                  />
-                </View>
-                <View
+          {(value) => {
+            const current = value();
+            const close = inputAction(closeOverlay, current.instance);
+            if (current.kind === 'compact')
+              return (
+                <CompactDialog
+                  owner={current.owner}
+                  prompt={current.prompt}
+                  close={() => closeOverlay(current.instance)}
+                />
+              );
+            if (current.kind === 'search')
+              return (
+                <RecallSearch
+                  origin={current.sessionId}
+                  open={(origin, target) => openRecalled(current.instance, origin, target)}
+                  close={() => closeOverlay(current.instance)}
+                />
+              );
+            if (current.kind === 'sessions')
+              return (
+                <Dialog
+                  animation="none"
+                  onOpenChange={() => closeOverlay(current.instance)}
                   style={{
-                    width: '100%',
-                    maxWidth: 640,
                     flex: 1,
-                    minHeight: 0,
-                    backgroundColor: C.surface,
+                    backgroundColor: '#00000099',
                   }}
                 >
-                  <WorkspaceBrowser
-                    {...browserProps}
-                    close={() => closeOverlay(current.instance)}
-                  />
-                </View>
-              </Dialog>
-            );
-          if (current.kind === 'settings')
+                  <View style={{ backgroundColor: C.background }}>
+                    <Header
+                      title={current.sessionId === null ? '' : tr('Sessions')}
+                      commands={inputAction(open, {
+                        kind: 'commands',
+                        sessionId: current.sessionId,
+                      })}
+                      browser={browserHeader(current.sessionId, true)}
+                    />
+                  </View>
+                  <View
+                    style={{
+                      width: '100%',
+                      maxWidth: 640,
+                      flex: 1,
+                      minHeight: 0,
+                      backgroundColor: C.surface,
+                    }}
+                  >
+                    <WorkspaceBrowser
+                      {...browserProps}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  </View>
+                </Dialog>
+              );
+            if (current.kind === 'settings')
+              return (
+                <ModelSettings
+                  initial={settingsRoute}
+                  routeChanged={(route) => {
+                    settingsRoute = route;
+                  }}
+                  model={current.model}
+                  close={() => closeOverlay(current.instance)}
+                  changed={() => {
+                    const owner = handle();
+                    if (
+                      alive &&
+                      selected() === current.sessionId &&
+                      owner?.sessionId === current.sessionId
+                    )
+                      void owner.refreshModel().catch(report);
+                  }}
+                />
+              );
+            if (current.kind === 'workspaces')
+              return (
+                <WorkspacePicker
+                  instance={current.instance}
+                  current={() =>
+                    overlay()?.instance === current.instance && selected() === current.sessionId
+                  }
+                  close={closeOverlay}
+                  changed={() => {
+                    const owner = handle();
+                    if (
+                      alive &&
+                      selected() === current.sessionId &&
+                      owner?.sessionId === current.sessionId
+                    )
+                      void owner.refresh().catch(report);
+                    if (alive) void browsing.refresh().catch(report);
+                  }}
+                  create={(workspace) => create(workspace, current.sessionId)}
+                />
+              );
             return (
-              <ModelSettings
-                model={current.model}
-                close={() => closeOverlay(current.instance)}
-                changed={() => {
-                  const owner = handle();
-                  if (
-                    alive &&
-                    selected() === current.sessionId &&
-                    owner?.sessionId === current.sessionId
-                  )
-                    void owner.refreshModel().catch(report);
-                }}
-              />
-            );
-          if (current.kind === 'workspaces')
-            return (
-              <WorkspacePicker
+              <Palette
                 instance={current.instance}
-                current={() =>
-                  overlay()?.instance === current.instance && selected() === current.sessionId
-                }
+                commands={commands({ instance: current.instance, sessionId: current.sessionId })}
                 close={closeOverlay}
-                changed={() => {
-                  const owner = handle();
-                  if (
-                    alive &&
-                    selected() === current.sessionId &&
-                    owner?.sessionId === current.sessionId
-                  )
-                    void owner.refresh().catch(report);
-                  if (alive) void browsing.refresh().catch(report);
-                }}
-                create={(workspace) => create(workspace, current.sessionId)}
               />
             );
-          return (
-            <Palette
-              instance={current.instance}
-              commands={commands({ instance: current.instance, sessionId: current.sessionId })}
-              close={closeOverlay}
-            />
-          );
-        }}
-      </Each>
-      <TerminalInterrupt state={interrupt} />
-    </View>
+          }}
+        </Each>
+        <TerminalInterrupt state={interrupt} />
+      </View>
+    </pluginContext.Provider>
   );
 }
-mount(App);
+export function activate(_context: UiContext): UiExports<JSX.Element> {
+  const empty = async () => null;
+  let prepareReload: () => Promise<unknown> = empty;
+  return {
+    root: {
+      kind: 'root',
+      render: (props) => (
+        <App
+          {...props}
+          bindReload={(prepare) => {
+            prepareReload = prepare;
+            return () => {
+              if (prepareReload === prepare) prepareReload = empty;
+            };
+          }}
+        />
+      ),
+      prepareReload: () => prepareReload(),
+    },
+  };
+}

@@ -123,7 +123,7 @@ impl EventLog {
         let max_chunks = max_chunks.unwrap_or(max_json_bytes).min(max_json_bytes);
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| {
                     Box::pin(async move {
                         super::directory::check_read(tx, &session, fence).await?;
@@ -418,7 +418,7 @@ async fn read_page(
                 && row.role == "user"
             {
                 let encoded: Option<String> = sqlx::query_scalar(
-                "SELECT json_extract(payload, '$.attachments') FROM transcript_cache.rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+                "SELECT json_extract(payload, '$.attachments') FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
             ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
                 encoded
                     .map(|value| serde_json::from_str(&value))
@@ -452,7 +452,7 @@ async fn read_page(
                     super::timing::read_on_worker(tx, session, &row.turn, through_sql).await?;
                 let compaction = if role == Role::Compaction {
                     let duration: i64 = sqlx::query_scalar(
-                "SELECT json_extract(payload, '$.durationMs') FROM transcript_cache.rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+                "SELECT json_extract(payload, '$.durationMs') FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
             ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_one(&mut *tx).await?;
                     Some(maka_agent_ports::session::history::Compaction {
                         duration_ms: sequence_number(duration)?,
@@ -639,7 +639,7 @@ async fn header(
             CASE WHEN source.role = 'turn_state' AND source.state_status IS NOT 'failed' AND ?4 = 'body'
                 THEN 0 ELSE length(cached.body) END,
             CASE WHEN source.role = 'user' THEN source.user_origin END
-            FROM transcript_directory source LEFT JOIN transcript_cache.text cached
+            FROM transcript_directory source LEFT JOIN temp.transcript_text cached
                 ON cached.session_id = source.session_id AND cached.source_sequence = source.source_sequence
                 AND cached.item_index = source.item_index AND cached.field = ?4
             WHERE source.session_id = ?1 AND source.source_sequence = ?2 AND source.item_index = ?3
@@ -660,7 +660,7 @@ async fn header(
     };
     if view == HistoryView::Conversation && field == HistoryField::Body && header.role == "user" {
         let query = format!(
-            "SELECT length(CAST({CONVERSATION_USER} AS BLOB)) FROM transcript_cache.rows
+            "SELECT length(CAST({CONVERSATION_USER} AS BLOB)) FROM temp.transcript_rows
             WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
         );
         header.total = sequence_number(
@@ -684,11 +684,11 @@ async fn fragment(
 ) -> Result<Vec<u8>, StoreError> {
     let query = if conversation_user {
         format!(
-            "SELECT substr(CAST({CONVERSATION_USER} AS BLOB), ?4, ?5) FROM transcript_cache.rows
+            "SELECT substr(CAST({CONVERSATION_USER} AS BLOB), ?4, ?5) FROM temp.transcript_rows
             WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
         )
     } else {
-        "SELECT substr(body, ?4, ?5) FROM transcript_cache.text
+        "SELECT substr(body, ?4, ?5) FROM temp.transcript_text
             WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3 AND field = ?6"
             .into()
     };
@@ -815,8 +815,8 @@ async fn materialize(
     }
     super::bodycache::ensure_on_worker(tx, session, locator).await?;
     let source: Option<(i64, bool)> = sqlx::query_as(
-        "SELECT total_bytes, EXISTS(SELECT 1 FROM transcript_cache.text cached WHERE cached.session_id = source.session_id AND cached.source_sequence = source.source_sequence AND cached.item_index = source.item_index AND cached.field = 'body')
-            FROM transcript_cache.rows source WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
+        "SELECT total_bytes, EXISTS(SELECT 1 FROM temp.transcript_text cached WHERE cached.session_id = source.session_id AND cached.source_sequence = source.source_sequence AND cached.item_index = source.item_index AND cached.field = 'body')
+            FROM temp.transcript_rows source WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3"
     ).bind(session).bind(sql_position(locator)?.0).bind(sql_position(locator)?.1).fetch_optional(&mut *tx).await?;
     let Some((bytes, cached)) = source else {
         return Err(invalid("history row was not found"));
@@ -825,14 +825,14 @@ async fn materialize(
         return Ok(0);
     }
     let query = format!(
-        "INSERT INTO transcript_cache.text
+        "INSERT INTO temp.transcript_text
             SELECT session_id, source_sequence, item_index, 'body', json_extract(payload, '$.ts'), json_extract(payload, '$.type'),
                 CAST({BODY} AS BLOB)
-            FROM transcript_cache.rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+            FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
             UNION ALL
             SELECT session_id, source_sequence, item_index, 'thinking', json_extract(payload, '$.ts'), 'assistant',
                 CAST(json_extract(payload, '$.thinking.text') AS BLOB)
-            FROM transcript_cache.rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+            FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
                 AND json_extract(payload, '$.type') = 'assistant' AND json_type(payload, '$.thinking.text') = 'text'"
     );
     sqlx::query(sqlx::AssertSqlSafe(query.as_str()))

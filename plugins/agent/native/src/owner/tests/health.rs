@@ -23,18 +23,13 @@ pub(super) fn install(input: &mut Input, packages: &mut Vec<Package>) {
     let package = packages.last_mut().unwrap();
     let mut manifest = package.manifest().clone();
     let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    manifest_application
-        .entries
-        .get_mut(&EntryTarget::Host)
-        .unwrap()
-        .imports
-        .insert(
-            "web".into(),
-            Import {
-                contract: maka_web_api::contract(),
-                cardinality: Cardinality::One,
-            },
-        );
+    manifest_application.host.as_mut().unwrap().imports.insert(
+        "web".into(),
+        Import {
+            contract: maka_web_api::contract(),
+            cardinality: Cardinality::One,
+        },
+    );
     let mut files = package.files().clone();
     files.insert(MANIFEST_FILE.into(), {
         manifest.application =
@@ -52,18 +47,18 @@ pub(super) fn install(input: &mut Input, packages: &mut Vec<Package>) {
         }],
     );
     let web = Package::new(BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({
-        "schemaVersion":1,"id":"fixture.health-web","application":{"entries":{"host":{
+        "schemaVersion":1,"id":"fixture.health-web","application":{"host":{
             "implementation":{"kind":"native","implementation":maka_web_api::IMPLEMENTATION},
             "configuration":maka_web_api::configuration_schema(),"imports":{},
             "exports":{(maka_web_api::EXPORT):{"contract":maka_web_api::contract(),"availability":"required"}}
-        }}}
+        }}
     })).unwrap())])).unwrap();
     input.instances.insert(
         "health-web".into(),
         Node {
             key: Uuid::from_u128(22),
             package: web.application_ref().into(),
-            use_package: PackageUse::Entry,
+            use_package: PackageUse::Host,
             configuration: NodeConfiguration {
                 values: serde_json::from_value(json!({"network":"allowed"})).unwrap(),
                 parameters: Default::default(),

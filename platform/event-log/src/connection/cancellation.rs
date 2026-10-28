@@ -29,7 +29,7 @@ async fn manual_preflight_waits_for_read_capacity_without_blocking_writes() {
         .await
         .unwrap();
     let through = *log.subscribe_commits().borrow();
-    let readers = log.connection.readers.acquire_many(2).await.unwrap();
+    let readers = log.connection.readers.acquire().await.unwrap();
     let mut check = Box::pin(log.check_manual_message_history("session"));
     assert!(futures_util::poll!(&mut check).is_pending());
     tokio::time::timeout(
@@ -79,7 +79,7 @@ async fn cancelled_reads_reclaim_both_slots_and_rollback_before_reuse() {
         let mut callers = Vec::new();
         let mut completions = Vec::new();
         let mut udf_releases = Vec::new();
-        for _ in 0..2 {
+        for role in [ReaderRole::Read, ReaderRole::Observation] {
             let reader = owner.clone();
             let entered = entered.clone();
             let release = release.clone();
@@ -89,7 +89,7 @@ async fn cancelled_reads_reclaim_both_slots_and_rollback_before_reuse() {
             completions.push(completed);
             callers.push(tokio::spawn(async move {
                 reader
-                    .read_interruptible(move |connection| {
+                    .read_job(role, move |connection| {
                         Box::pin(async move {
                             sqlx::query("PRAGMA cache_size=-1234")
                                 .execute(&mut *connection)
@@ -143,7 +143,7 @@ async fn cancelled_reads_reclaim_both_slots_and_rollback_before_reuse() {
                             tx.commit().await?;
                             Ok(())
                         })
-                    })
+                    }, true)
                     .await
             }));
         }
@@ -181,27 +181,31 @@ async fn cancelled_reads_reclaim_both_slots_and_rollback_before_reuse() {
         let occupied = Arc::new(Semaphore::new(0));
         let release = Arc::new(Semaphore::new(0));
         let mut readers = Vec::new();
-        for _ in 0..2 {
+        for role in [ReaderRole::Read, ReaderRole::Observation] {
             let owner = owner.clone();
             let occupied = occupied.clone();
             let release = release.clone();
             readers.push(tokio::spawn(async move {
                 owner
-                    .read_interruptible(move |connection| {
-                        Box::pin(async move {
-                            let marker: i64 = sqlx::query_scalar("PRAGMA cache_size")
-                                .fetch_one(&mut *connection)
-                                .await?;
-                            let mut tx = connection.begin().await?;
-                            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM facts")
-                                .fetch_one(&mut *tx)
-                                .await?;
-                            occupied.add_permits(1);
-                            release.acquire().await.unwrap().forget();
-                            tx.commit().await?;
-                            Ok((marker, count))
-                        })
-                    })
+                    .read_job(
+                        role,
+                        move |connection| {
+                            Box::pin(async move {
+                                let marker: i64 = sqlx::query_scalar("PRAGMA cache_size")
+                                    .fetch_one(&mut *connection)
+                                    .await?;
+                                let mut tx = connection.begin().await?;
+                                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM facts")
+                                    .fetch_one(&mut *tx)
+                                    .await?;
+                                occupied.add_permits(1);
+                                release.acquire().await.unwrap().forget();
+                                tx.commit().await?;
+                                Ok((marker, count))
+                            })
+                        },
+                        true,
+                    )
                     .await
             }));
         }

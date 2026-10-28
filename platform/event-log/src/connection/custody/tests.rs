@@ -20,7 +20,7 @@
 use super::*;
 use crate::{
     EventLog, StoreError,
-    connection::{ReadEnvelope, ReadJob},
+    connection::{ReadEnvelope, ReadJob, ReaderRole},
 };
 use sqlx::Connection;
 use std::{
@@ -345,24 +345,28 @@ async fn noninterruptible_reader_with_open_transaction_closes_before_releasing_p
     let entered = Arc::new(Semaphore::new(0));
     let release = Arc::new(Semaphore::new(0));
     let mut reads = Vec::new();
-    for _ in 0..2 {
+    for role in [ReaderRole::Read, ReaderRole::Observation] {
         let entered = entered.clone();
         let release = release.clone();
         let log = log.scoped(Arc::new(()));
         reads.push(tokio::spawn(async move {
             log.connection
-                .read(move |db| {
-                    Box::pin(async move {
-                        assert!(super::super::is_autocommit(db).await);
-                        let marker: i64 = sqlx::query_scalar("PRAGMA cache_size")
-                            .fetch_one(db)
-                            .await?;
-                        assert_ne!(marker, -123456);
-                        entered.add_permits(1);
-                        release.acquire().await.unwrap().forget();
-                        Ok(())
-                    })
-                })
+                .read_job(
+                    role,
+                    move |db| {
+                        Box::pin(async move {
+                            assert!(super::super::is_autocommit(db).await);
+                            let marker: i64 = sqlx::query_scalar("PRAGMA cache_size")
+                                .fetch_one(db)
+                                .await?;
+                            assert_ne!(marker, -123456);
+                            entered.add_permits(1);
+                            release.acquire().await.unwrap().forget();
+                            Ok(())
+                        })
+                    },
+                    false,
+                )
                 .await
         }));
     }

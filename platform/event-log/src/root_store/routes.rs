@@ -171,10 +171,6 @@ impl RootStore {
         }
         let configuration = serde_json::to_value(configuration)?;
         creation::validate_configuration(&configuration)?;
-        let _creation = self.creation_gates[partition_for(b"session", id)]
-            .lock()
-            .await;
-        self.require_open()?;
         let command = Creation::Session {
             configuration,
             created_at: now,
@@ -233,6 +229,12 @@ impl RootStore {
         partition: usize,
         command: Creation,
     ) -> Result<(), StoreError> {
+        // A rejected command must publish before a retry can reevaluate mutable inputs.
+        let _creation = self
+            .gates
+            .write([gates::Key::Creation(id.to_owned())])
+            .await?;
+        self.require_open()?;
         let query_id = id.to_owned();
         let (ready, failure): (i64, Option<String>) = self
             .control

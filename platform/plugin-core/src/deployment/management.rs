@@ -192,6 +192,43 @@ pub struct ManagedDeployment {
     pub packages: Vec<PackageRef>,
 }
 
+/// UI contributions derived from one committed deployment source.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiRead {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<DeploymentRef>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiWatch {
+    pub source: DeploymentRef,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiInstance {
+    pub instance: InstanceId,
+    pub path: Vec<String>,
+    pub package: PackageRef,
+    pub configuration: serde_json::Value,
+    pub module: String,
+    #[serde(rename = "bindingBasis")]
+    pub binding_basis: String,
+    pub imports: BTreeMap<String, usize>,
+    pub contributions: BTreeMap<String, crate::package::UiContribution>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiCatalog {
+    pub source: DeploymentRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<crate::plan::UiRoot>,
+    pub instances: Vec<UiInstance>,
+}
+
 /// A deterministic refusal is a recorded business result. Uncertain SQL/worker
 /// failures remain in the original operation journal's Unknown outcome.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -219,7 +256,6 @@ pub enum ManagementRejection {
     InvalidDocument,
     InvalidSource,
     PackageUnavailable,
-    ExecutionEnvironment,
     InstanceUnavailable,
     ParentDisabled,
 }
@@ -263,6 +299,14 @@ pub fn deployment_manager_contract() -> Contract {
                 (
                     "read".into(),
                     method::<DeploymentRead, ManagedDeployment>(MethodMode::Query),
+                ),
+                (
+                    "readUi".into(),
+                    method::<UiRead, UiCatalog>(MethodMode::Query),
+                ),
+                (
+                    "watch".into(),
+                    method::<UiWatch, DeploymentRef>(MethodMode::Subscription),
                 ),
                 ("install".into(), install),
                 (

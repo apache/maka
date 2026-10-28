@@ -1,4 +1,5 @@
 {
+  "workbench": "products/maka/workbench",
   "host-logs": "plugins/application/host-logs",
   "recovery-gateway": "plugins/agent/recovery-gateway",
   "host-deployment-manager": "plugins/application/host-deployment-manager",
@@ -20,7 +21,5 @@
   "questions": "plugins/interactions/questions",
   "skill-outcomes": "plugins/skills/skill-outcomes",
   "receipts": "plugins/application/receipts",
-  "gateway": "plugins/application/gateway",
-  "ui-authoring": "plugins/application/authoring",
-  "ui-authoring-gateway": "plugins/application/authoring-gateway"
+  "gateway": "plugins/application/gateway"
 }

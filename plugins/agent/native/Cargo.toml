@@ -86,7 +86,7 @@ sqlx.workspace = true
 maka-host-js.workspace = true
 rusqlite = { workspace = true, features = ["functions"] }
 maka-settings-native.workspace = true
-maka-ui-runtime.workspace = true
+maka-ui-support.workspace = true
 maka-transport.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }

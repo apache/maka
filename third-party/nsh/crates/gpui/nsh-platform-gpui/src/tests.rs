@@ -429,7 +429,10 @@ mount(() => <View>
     let (view, cx) =
         cx.add_window_view(|window, cx| AppView::new(AppOptions::default(), window, cx));
     view.update(cx, |view, _| view.load(App::Js(Bundle::source(code))));
-    cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+    cx.update(|window, cx| {
+        window.focus(&view.focus_handle(cx), cx);
+        window.activate_window();
+    });
     wait_for(&view, cx, "  A\t中\r\nB\rC\n\n");
     let pasted = "\tP\r\nQ\rR\n \n";
     ime(&view, cx, |surface| {
@@ -678,7 +681,7 @@ keymap.bind("f7", () => { shown.set(false); record("removed"); }, { when: "alway
 mount(() => <View>
   <Input testID="report" autoFocus readonly value={events()} style={{height: 30}} />
   <Scroll ref={(node) => reader = node} testID="reader" style={{width: 90, height: 200}} onScrollIntent={({intent}) => record(`intent:${intent}`)} onScrollDragStart={() => record("drag-start")} onScrollDragEnd={() => record("drag-end")}>
-    <Text testID="sentence" selectable style={{fontSize: 20}}>
+    <Text testID="sentence" style={{fontSize: 20, userSelect: "text"}}>
       <If when={shown()}><Text ref={(node) => first = node} testID="first-link" role="link" accessibilityLabel="First document" focusable onPress={() => record("first")}>
         打开<Text style={{fontWeight: "bold"}}>跨行中文</Text>文档
       </Text></If>
@@ -1647,13 +1650,15 @@ impl gpui::Render for Framed {
 /// running `code`, with the keyboard in the view.
 fn owned_view(
     cx: &mut TestAppContext,
+    options: AppOptions,
     code: String,
     setup: impl FnOnce(&AppView),
 ) -> (Entity<AppView>, &mut VisualTestContext) {
     use gpui::AppContext as _;
     let (framed, cx) = cx.add_window_view(|window, cx| {
+        window.set_window_title(&options.title);
         let view = cx.new(|cx| {
-            let view = AppView::new(AppOptions::default(), window, cx);
+            let view = AppView::new(options, window, cx);
             view.own_window(window, cx);
             view
         });
@@ -1732,16 +1737,149 @@ fn app_height(view: &Entity<AppView>, cx: &mut VisualTestContext) -> f32 {
 }
 
 fn an_embedded_view_that_owns_its_window_sets_its_title_and_menu(cx: &mut TestAppContext) {
-    let code = nsh_bundler::compile_module("App.tsx", OWNED_WINDOW, &[]).unwrap();
-    let (view, cx) = owned_view(cx, code, |_| {});
+    use nsh_core::platform::{Appearance, ColorScheme};
+
+    let source = format!(
+        r#"{OWNED_WINDOW}
+import {{ keymap, setColorScheme }} from "nsh";
+keymap.bind("mod+t", () => {{
+  Window.setTitleBar("hidden", 48);
+  Window.setMenuBar("autoHide");
+  setColorScheme("dark");
+  void Menu.popup([{{ label: "Retired popup", onSelect: () => {{}} }}]);
+}}, {{ when: "always" }});
+"#
+    );
+    let code = nsh_bundler::compile_module("App.tsx", &source, &[]).unwrap();
+    let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = asked.clone();
+    let (view, cx) = owned_view(
+        cx,
+        AppOptions {
+            title: "Embedding host".to_owned(),
+            appearance: Appearance::Light,
+            ..Default::default()
+        },
+        code,
+        move |view| view.on_close_request(move |request, _, _| log.borrow_mut().push(request)),
+    );
     wait_until_window(cx, "the app's title on the window", |cx| {
         cx.window_title().as_deref() == Some("Owned")
+    });
+    #[cfg(target_os = "macos")]
+    let retired_action = cx.update(|_, cx| {
+        let mut menu = cx.get_menus().unwrap().remove(0);
+        let gpui::OwnedMenuItem::Action { action, .. } = menu.items.remove(0) else {
+            panic!("the old app's first menu item is not an action");
+        };
+        action
     });
     if cfg!(target_os = "linux") {
         // The menu bar is drawn above the app, 28 points tall.
         let window = height_below_title_bar(cx);
         wait_until(&view, cx, |t| t == format!("h {}", window - 28.0));
     }
+    view.update(cx, |view, cx| view.set_appearance(Appearance::Dark, cx));
+    let primary = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.simulate_keystrokes(&format!("{primary}-t"));
+    wait_until_window(cx, "the old app's open popup and dark appearance", |cx| {
+        view.read_with(cx, |view, _| {
+            crate::chrome::menu_open(view.surface())
+                && view.surface().appearance.get() == Appearance::Dark
+        })
+    });
+    let replacement = r#"
+import { mount, signal, View, keymap } from "nsh";
+import { Input } from "nsh/base";
+import { Menu } from "nsh/desktop";
+function App() {
+  const chosen = signal(0);
+  const acknowledged = signal(0);
+  keymap.bind("mod+k", () => {
+    void Menu.popup([{ label: "Current action", onSelect: () => chosen.set(chosen() + 1) }]);
+  }, { when: "always" });
+  keymap.bind("mod+j", () => acknowledged.set(acknowledged() + 1), { when: "always" });
+  keymap.bind("f8", () => Menu.setApplicationMenu([
+    { label: "Current", submenu: [
+      { label: "Current action", onSelect: () => chosen.set(chosen() + 1) },
+    ] },
+  ]), { when: "always" });
+  return <View style={{ flex: 1 }}>
+    <Input autoFocus value={`replacement ${chosen()} ${acknowledged()}`} style={{ height: 30 }} />
+  </View>;
+}
+mount(App);
+"#;
+    let code = nsh_bundler::compile_module("App.tsx", replacement, &[]).unwrap();
+    view.update(cx, |view, _| {
+        view.stop();
+        view.load(App::Js(Bundle::source(code)));
+    });
+    wait_for(&view, cx, "replacement 0 0");
+    wait_until_window(cx, "the embedding window's restored title", |cx| {
+        cx.window_title().as_deref() == Some("Embedding host")
+    });
+    view.read_with(cx, |view, _| {
+        let surface = view.surface();
+        assert!(!crate::chrome::menu_open(surface));
+        assert_eq!(surface.environment.get().title_bar, Default::default());
+        assert_eq!(surface.appearance.get(), Appearance::Light);
+        assert_eq!(surface.host_dark.get(), Some(true));
+        assert_eq!(surface.environment.get().color_scheme, ColorScheme::Light);
+    });
+    // The replacement's first popup reuses the old application menu's id 1.
+    cx.simulate_keystrokes(&format!("{primary}-k"));
+    wait_until_window(cx, "the replacement's first popup", |cx| {
+        view.read_with(cx, |view, _| crate::chrome::menu_open(view.surface()))
+    });
+    cx.simulate_keystrokes("escape");
+    wait_until_window(cx, "the replacement's popup closed", |cx| {
+        view.read_with(cx, |view, _| !crate::chrome::menu_open(view.surface()))
+    });
+    cx.simulate_keystrokes(&format!("shift-{primary}-n"));
+    cx.simulate_keystrokes(&format!("{primary}-j"));
+    wait_for(&view, cx, "replacement 0 1");
+    cx.simulate_keystrokes(&format!("{primary}-k"));
+    wait_until_window(cx, "the replacement's popup reopened", |cx| {
+        view.read_with(cx, |view, _| crate::chrome::menu_open(view.surface()))
+    });
+    cx.simulate_keystrokes("down");
+    cx.simulate_keystrokes("enter");
+    wait_for(&view, cx, "replacement 1 1");
+    #[cfg(target_os = "macos")]
+    {
+        cx.simulate_keystrokes("f8");
+        wait_until_window(cx, "the replacement's native menu", |cx| {
+            cx.update(|_, cx| {
+                cx.get_menus()
+                    .is_some_and(|menus| menus.first().is_some_and(|menu| menu.name == "Current"))
+            })
+        });
+        cx.update(|_, cx| {
+            let mut menu = cx.get_menus().unwrap().remove(0);
+            let gpui::OwnedMenuItem::Action { action, .. } = menu.items.remove(0) else {
+                panic!("the replacement's first menu item is not an action");
+            };
+            cx.dispatch_action(retired_action.as_ref());
+            cx.dispatch_action(action.as_ref());
+        });
+        wait_for(&view, cx, "replacement 2 1");
+    }
+    assert!(
+        !cx.simulate_close(),
+        "reload lost the embedding close handler"
+    );
+    wait_until_window(cx, "the embedding app's close request after reload", |_| {
+        *asked.borrow() == [crate::CloseRequest::Close]
+    });
+    cx.simulate_keystrokes(&format!("{primary}-q"));
+    wait_until_window(cx, "the owned window's quit request after reload", |_| {
+        *asked.borrow() == [crate::CloseRequest::Close, crate::CloseRequest::Quit]
+    });
 }
 
 fn quit_and_close_requests_go_to_the_handler_instead_of_acting(cx: &mut TestAppContext) {
@@ -1749,7 +1887,7 @@ fn quit_and_close_requests_go_to_the_handler_instead_of_acting(cx: &mut TestAppC
     let code = nsh_bundler::compile_module("App.tsx", OWNED_WINDOW, &[]).unwrap();
     let asked = Rc::new(std::cell::RefCell::new(Vec::new()));
     let log = asked.clone();
-    let (view, cx) = owned_view(cx, code, move |view| {
+    let (view, cx) = owned_view(cx, AppOptions::default(), code, move |view| {
         view.on_close_request(move |request, _, _| log.borrow_mut().push(request))
     });
     app_height(&view, cx);
@@ -1814,7 +1952,7 @@ fn an_auto_hidden_menu_bar_shows_on_alt_alone_and_while_a_menu_is_open(cx: &mut 
         return;
     }
     let code = nsh_bundler::compile_module("App.tsx", AUTO_HIDDEN_BAR, &[]).unwrap();
-    let (view, cx) = owned_view(cx, code, |_| {});
+    let (view, cx) = owned_view(cx, AppOptions::default(), code, |_| {});
     let full = height_below_title_bar(cx);
     let (hidden, shown) = (format!("h {full}"), format!("h {}", full - 28.0));
     wait_for(&view, cx, &hidden);
@@ -1922,7 +2060,7 @@ fn releasing_shift_before_alt_keeps_the_auto_hidden_menu_bar_hidden(cx: &mut Tes
         return;
     }
     let code = nsh_bundler::compile_module("App.tsx", AUTO_HIDDEN_BAR, &[]).unwrap();
-    let (view, cx) = owned_view(cx, code, |_| {});
+    let (view, cx) = owned_view(cx, AppOptions::default(), code, |_| {});
     let full = height_below_title_bar(cx);
     wait_for(&view, cx, &format!("h {full}"));
     for shift_first in [false, true] {
@@ -2044,9 +2182,8 @@ fn wait_until_blurred(view: &Entity<AppView>, cx: &mut VisualTestContext) {
     }
 }
 
-/// A pressable strip over a focused field that shows what each press
-/// carried: the field reads the modifier keys and click count of the last
-/// press.
+/// A pressable strip whose report field shows the modifier keys and click
+/// count of the last press.
 const PRESS_MODIFIERS: &str = r#"
 import { mount, signal, View } from "nsh";
 import { Input } from "nsh/base";
@@ -2066,7 +2203,7 @@ function App() {
         }
         style={{ height: 40 }}
       />
-      <Input autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
+      <Input testID="report" autoFocus value={text()} onChange={(t) => text.set(t)} style={{ height: 30 }} />
     </View>
   );
 }
@@ -2082,7 +2219,7 @@ fn presses_carry_the_modifier_keys_and_click_count(cx: &mut TestAppContext) {
     wait_for(&view, cx, "none");
     let strip = gpui::point(gpui::px(20.0), gpui::px(20.0));
     cx.simulate_click(strip, gpui::Modifiers::control());
-    wait_for(
+    wait_for_report(
         &view,
         cx,
         "ctrl true shift false alt false meta false clicks 1",
@@ -2090,7 +2227,7 @@ fn presses_carry_the_modifier_keys_and_click_count(cx: &mut TestAppContext) {
     // A double click is two presses, the second counted as such.
     click(cx, strip, 1);
     click(cx, strip, 2);
-    wait_for(
+    wait_for_report(
         &view,
         cx,
         "ctrl false shift false alt false meta false clicks 2",

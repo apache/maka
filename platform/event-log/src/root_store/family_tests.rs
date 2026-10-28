@@ -410,7 +410,7 @@ async fn lost_bundle_completion_recovers_without_stage_file() {
     ]);
     let command = Creation::Bundle {
         stage,
-        digest,
+        digest: digest.clone(),
         binding: binding.clone(),
         configurations: configurations.clone(),
         members: members.clone(),
@@ -430,6 +430,13 @@ async fn lost_bundle_completion_recovers_without_stage_file() {
         .await
         .unwrap();
     std::fs::remove_file(&path).unwrap();
+    let (first, second) = tokio::join!(
+        store.bundle_import_receipt(&digest, &binding),
+        store.bundle_import_receipt(&digest, &binding),
+    );
+    let first = first.unwrap().unwrap();
+    assert_eq!(second.unwrap().unwrap(), first);
+    assert_eq!(first.session_ids.len(), 2);
     store.close().await.unwrap();
     let store = RootStore::open(owner).await.unwrap();
     assert_eq!(store.route_partition("bundle-child").await.unwrap(), 3);
@@ -494,14 +501,20 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         )
         .await
         .unwrap();
+    let creation = store
+        .gates
+        .write([gates::Key::Creation("rejected".into())])
+        .await
+        .unwrap();
+    let rejection = commit(&store, &store.partitions[partition], command)
+        .await
+        .unwrap();
     assert!(matches!(
-        store
-            .finish_creation("rejected", "copy", partition, command)
-            .await,
-        Err(StoreError::SessionCreationRejected(
-            CreationRejection::SourceRevisionConflict { actual: 1, .. }
-        ))
+        rejection,
+        Some(CreationRejection::SourceRevisionConflict { actual: 1, .. })
     ));
+    let mut probe = Box::pin(store.session_copy_receipt("rejected"));
+    assert!(futures_util::poll!(&mut probe).is_pending());
     // The immutable request would succeed now, but its original rejection wins.
     store.partitions[partition]
         .connection
@@ -515,6 +528,25 @@ async fn terminal_rejection_cannot_be_reexecuted_by_a_waiting_probe() {
         })
         .await
         .unwrap();
+    store
+        .control
+        .connection
+        .write(
+            creation::WritePublication {
+                id: "rejected".into(),
+                rejection,
+            },
+            store.control.commits.notice(),
+        )
+        .await
+        .unwrap();
+    drop(creation);
+    assert!(matches!(
+        probe.await,
+        Err(StoreError::SessionCreationRejected(
+            CreationRejection::SourceRevisionConflict { actual: 1, .. }
+        ))
+    ));
     let command = Creation::Copy {
         request,
         origin: None,

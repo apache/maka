@@ -974,7 +974,7 @@ NSH's additions fit the same pieces: gpui-base expands the stack for hover and f
 a finger down on the stack (observed `onTouch`) expands it as the pointer does, so a toast being read or swiped is
 paused. A `Toast` takes a swipe (the core's responder, claimed once the pointer moved 10 points toward
 `swipeDirection` along its axis, so its buttons stay presses; released past `swipeThreshold`, measured from where the
-pointer went down, or flicked at 0.5 points per millisecond, it moves out and emits `DismissRequest`). The stack hears
+pointer went down, or flicked at 500 points per second, it moves out and emits `DismissRequest`). The stack hears
 Escape and back while it has children (an overlay of no size, `onCancel`), so nothing else loses them to an empty
 stack. A `Toast`'s `accessibilityLabel` is announced once as it mounts (`announce_for_accessibility`, every platform's
 announcement). The state classes are the app's look for the status: `startingClass` in the first frame while

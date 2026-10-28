@@ -47,7 +47,7 @@ function ResponderDot() {
       state.set("dragging");
     },
     onPanResponderMove: (_, g) => pos.set({ x: start.x + g.dx, y: start.y + g.dy }),
-    onPanResponderRelease: (_, g) => state.set(`released, vx ${g.vx.toFixed(2)} pt/ms`),
+    onPanResponderRelease: (_, g) => state.set(`released, vx ${g.vx.toFixed(0)} pt/s`),
     onPanResponderTerminate: () => state.set("taken over"),
   });
   return (

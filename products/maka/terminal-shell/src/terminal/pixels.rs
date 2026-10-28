@@ -398,31 +398,39 @@ fn publish(
     tracing: bool,
 ) -> Result<(Phase, (cursor::Cursor, Option<std::num::NonZeroU64>)), String> {
     let mut state = presentation.state.lock().unwrap();
+    let slots = state.pixel_probe.slots;
     let inbox = state.pixels.as_mut().unwrap();
     let offer = input::Offer {
         token: encoded.frame.token(),
         geometry: encoded.geometry,
     };
-    let sample = tracing.then(|| (offer.clone(), Instant::now()));
-    let (bytes, image) = match encoded.frame {
-        input::WireFrame::Kitty(frame) => {
-            let image = frame.image_id();
-            inbox.kitty.begin(kitty::Reply::Image(image));
-            (frame.into_wire(), Some(image))
-        }
-        input::WireFrame::Inline(frame) => {
-            // Sixel and OSC File have no per-image ACK. Only the
-            // original writer's full flush publishes this draw.
-            (frame.into_bytes(), None)
-        }
+    let previous = inbox.last_fully_written_image;
+    let image = if matches!(&encoded.frame, input::WireFrame::Kitty(_)) {
+        let image = if previous == Some(slots.first) {
+            slots.second
+        } else {
+            slots.first
+        };
+        inbox.kitty.begin(kitty::Reply::Image(image));
+        Some(image)
+    } else {
+        None
     };
     let cursor = inbox.cursor;
     let nonce = inbox.text_input.ready_nonce();
     drop(state);
+    let bytes = match encoded.frame {
+        input::WireFrame::Kitty(frame) => frame
+            .into_wire(image.expect("Kitty image slot"), previous)
+            .map_err(|error| error.to_string())?,
+        // Inline protocols have no image ACK; their whole flush publishes the draw.
+        input::WireFrame::Inline(frame) => frame.into_bytes(),
+    };
     let parts = cursor.frame_parts(bytes, nonce);
     let wire_bytes = parts.iter().map(Vec::len).sum();
+    let submitted = tracing.then(Instant::now);
     output.submit(parts)?;
-    if let Some((offer, at)) = sample {
+    if let Some(at) = submitted {
         let mut state = presentation.state.lock().unwrap();
         if let Some(trace) = &mut state.trace {
             let sample = trace.record(&offer.token, offer.geometry, "upload_submit_begin", at, at);
@@ -439,7 +447,10 @@ pub(super) fn cleanup(presentation: &Presentation, failed: bool) -> Vec<u8> {
         return Vec::new();
     }
     if state.trace.is_some()
-        && state.pixels.as_ref().unwrap().capabilities.protocol == Some(probe::Protocol::Sixel)
+        && matches!(
+            state.pixels.as_ref().unwrap().capabilities.protocol,
+            Some(probe::Protocol::Sixel | probe::Protocol::Kitty)
+        )
     {
         let inbox = state.pixels.as_ref().unwrap();
         let geometry = inbox.geometry;

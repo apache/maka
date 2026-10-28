@@ -105,9 +105,6 @@ impl Catalogue {
         Ok((catalogue, reader.inner))
     }
     pub fn validate(&self) -> Result<()> {
-        if self.endpoints.is_empty() {
-            return Err("invalid Host endpoint catalogue".into());
-        }
         for (name, description) in &self.endpoints {
             if name.is_empty()
                 || description

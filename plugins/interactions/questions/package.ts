@@ -28,8 +28,6 @@ export default {
     'zh-CN': { displayName: '助手提问', description: '在任务运行过程中向用户提问。' },
   },
   application: {
-    entries: {
-      host: native(sdk.nativeImplementations.questions),
-    },
+    host: native(sdk.nativeImplementations.questions),
   },
 };

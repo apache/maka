@@ -11,10 +11,9 @@
 /// nsh's own native ES modules, which bundles compiled with nsh's JSX
 /// compiler import (served by `nsh-js`, left as imports by the bundler):
 /// `nsh`, the API apps write against; `nsh:rt`, the renderer compiled JSX
-/// calls; `nsh/device` and `nsh/accessibility`, the environment; the
-/// platforms' and host elements' modules. Registries add theirs
-/// (`Registry::specifier`: `nsh/base`, an app's set) or
-/// the functions of nsh's own (`nsh/image`, `nsh/android`).
+/// calls; and the platform APIs `nsh/desktop` and `nsh/mobile`.
+/// Registries add UI sets (`Registry::specifier`: `nsh/base`, an app's set)
+/// or exports to those modules, such as `nsh`'s Image and device services.
 pub const NATIVE_MODULES: &[&str] = &["nsh", "nsh:rt", "nsh/desktop", "nsh/mobile"];
 
 /// The exact gpui-shell standard catalog, using canonical bare specifiers.
@@ -138,14 +137,14 @@ mod tests {
                 "IOSInputHostProps",
                 "  keyboardAppearance?: KeyboardAppearance;",
             ),
-            ("ImageHostProps", "  onLoad?: (e: Size) => void;"),
+            ("ImageHostProps", "  onLoad?: (e: PixelSize) => void;"),
             (
                 "TextHostProps",
                 "  textSource?: { id: string; offset: number; segments?: never } | { id: string; offset?: never; segments: { start: number; end: number; sourceStart: number; sourceEnd: number; kind: \"literal\" | \"replacement\" }[] };",
             ),
             (
                 "VideoHostProps",
-                "  onLoad?: (e: { duration: number; size: Size }) => void;",
+                "  onLoad?: (e: { duration: number; size: PixelSize }) => void;",
             ),
             ("VideoHostProps", "  audioSession?: AudioSession;"),
             (

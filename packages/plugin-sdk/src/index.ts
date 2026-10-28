@@ -22,54 +22,14 @@ export type * from './generated/runtime.js';
 export type { ServiceMethods } from './generated/methods.js';
 export { contracts } from './contracts.js';
 export { configurations } from './configurations.js';
-export { ui } from './ui.js';
-export type {
-  TerminalNode,
-  TerminalKind,
-  ComponentDeclaration,
-  ReadingDeclaration,
-  TerminalProps,
-} from './ui.js';
+export type * from './workbench.js';
 
-import type {
-  ComponentInput,
-  ComponentOutput,
-  CapturePlan,
-  ValueBindings,
-} from './generated/runtime.js';
 import type {
   HostRequest,
   HostObservation,
   OperationReply,
   ResourceMetadata,
 } from './generated/runtime.js';
-
-/** State is private to this component; external props and events still need their contract. */
-export type Output<State = unknown, View = unknown> = Omit<ComponentOutput, 'frame'> & {
-  frame: Omit<ComponentOutput['frame'], 'state' | 'view'> & { state: State; view: View };
-};
-
-/** Detached snapshots of this activation's captured immutable value imports. */
-export type ComponentValues = { readonly [K in keyof ValueBindings]: Readonly<ValueBindings[K]> };
-
-/** Synchronous declarative callbacks; no promises or native ownership in a frame. */
-export interface Component<State = unknown, Props = unknown, View = unknown> {
-  mount(props: Props, values: ComponentValues): Output<State, View>;
-  update(state: State, props: Props, values: ComponentValues): Output<State, View>;
-  event(
-    state: State,
-    input: ComponentInput,
-    props: Props,
-    values: ComponentValues,
-  ): Output<State, View>;
-  capture?(
-    state: State,
-    props: Props,
-    method: string,
-    input: unknown,
-    values: ComponentValues,
-  ): CapturePlan;
-}
 
 /** Provided by the actual invocation. Retaining it does not retain request resources. */
 export interface RequestContext {

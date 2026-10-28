@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! RuntimeEvent ingress and both derived projections share the caller's
+//! RuntimeEvent ingress and its derived projections share the caller's
 //! transaction. No effect receipt can escape before that transaction commits.
 use crate::{StoreError, sequence_number};
 use maka_agent_facts::event::{RuntimeEvent, StoredEvent};
@@ -45,17 +45,23 @@ pub(crate) async fn insert(
                 "canonical ingress requires an existing transaction".into(),
             ));
         }
-        // Reuse SQLx's persistent statement cache. In particular, do not prepare
-        // the canonical INSERT and remaining obligation trigger once per event.
         let inserted = match position {
-            Position::Admitted => sqlx::query(
-                "INSERT INTO event_log (event_id, invocation_id, kind, operation_id, event_json)
-                 SELECT ?1, ?2, ?3, ?4, ?5 WHERE NOT EXISTS (
-                     SELECT 1 FROM session_message_sources WHERE owner_session_id = ?6 AND message_id = ?1
-                     UNION ALL SELECT 1 FROM message_admissions WHERE session_id = ?6 AND message_id = ?1)",
-            ).bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
-                .bind(event.fact.operation_id()).bind(&json).bind(&event.invocation.session_id)
-                .execute(&mut *worker).await?,
+            Position::Admitted => {
+                let claimed: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM session_message_sources WHERE owner_session_id=?1 AND message_id=?2
+                         UNION ALL SELECT 1 FROM message_admissions WHERE session_id=?1 AND message_id=?2)",
+                ).bind(&event.invocation.session_id).bind(&event.id)
+                    .fetch_one(&mut *worker).await?;
+                if claimed {
+                    return Err(StoreError::EventConflict);
+                }
+                sqlx::query(
+                    "INSERT INTO event_log (event_id, invocation_id, kind, operation_id, event_json) VALUES(?,?,?,?,?)",
+                ).bind(&event.id).bind(&event.invocation.invocation_id).bind(event.fact.kind())
+                    .bind(event.fact.operation_id()).bind(&json)
+                    .execute(&mut *worker).await?
+            },
             Position::Imported(sequence) => sqlx::query(
                 "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
             ).bind(sequence.map(i64::try_from).transpose().map_err(|_| StoreError::PrefixTooLarge)?)
@@ -66,9 +72,10 @@ pub(crate) async fn insert(
         if inserted.rows_affected() != 1 {
             return Err(StoreError::EventConflict);
         }
-        // Capture before either projection issues INSERTs on this same handle.
+        // Capture before the projections issue INSERTs on this same handle.
         let sequence = sequence_number(inserted.last_insert_rowid())?;
         let stored = StoredEvent { sequence, event };
+        crate::context::projection::record(worker, &stored, &json).await?;
         crate::context::evidence::record(worker, &stored, &json).await?;
         crate::context::semantic::record(worker, &stored).await?;
         Ok(sequence)

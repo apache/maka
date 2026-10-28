@@ -33,6 +33,7 @@ import {
 } from '../../../../packages/plugin-sdk/src/index.js';
 export { installation } from './installation.js';
 export const packageNames = [
+  'workbench',
   'workhub',
   'host-logs',
   'recovery-gateway',
@@ -45,8 +46,6 @@ export const packageNames = [
   'receipts',
   'gateway',
   'agent',
-  'ui-authoring',
-  'ui-authoring-gateway',
   'forms',
   'questions',
   'workspace-files',
@@ -64,6 +63,8 @@ export const instanceNames = [
   'host-deployment-gateway',
   'coordinator-workspace-processes',
   'coordinator-protocol-processes',
+  'workbench-ui',
+  'workspace-files-ui',
 ] as const;
 export type InstanceName = (typeof instanceNames)[number];
 type ExecutorInstanceName = `acp-${string}` | `coordinator-acp-${string}`;
@@ -136,13 +137,17 @@ function settingsComposition(configuration: CompositionConfiguration) {
   ): CompositionNode => ({
     key: keys[identity],
     package: { source: 'pinned', package: packages[name] },
-    usePackage: 'entry',
+    usePackage: 'host',
     configuration: { values },
     bindings,
   });
   const host: CompositionInput = {
-    environment: { location: 'host' },
+    ui: { path: ['workbench-ui'], id: 'root' },
     instances: {
+      'workbench-ui': {
+        ...node('workbench', {}, {}, 'workbench-ui'),
+        usePackage: 'ui',
+      },
       'host-deployment-manager': node('host-deployment-manager'),
       'host-logs': node('host-logs'),
       'host-deployment-gateway': node(
@@ -197,6 +202,8 @@ function settingsComposition(configuration: CompositionConfiguration) {
       'management',
       [
         'read',
+        'readUi',
+        'watch',
         'instances',
         'setEnabled',
         'readSettings',
@@ -235,9 +242,16 @@ function settingsComposition(configuration: CompositionConfiguration) {
 }
 /** Keys and deployment belong to the installation, not to a build or shell. */
 export function composition(configuration: CompositionConfiguration): ApplicationSources {
-  return configuration.coordinator
+  const source = configuration.coordinator
     ? workhubComposition(configuration)
     : agentComposition(configuration);
+  source.host.instances['workbench-ui']!.bindings = {
+    ...source.host.instances.gateway!.bindings,
+    management: [{ kind: 'instance', path: ['host-deployment-manager'], export: 'Management' }],
+    receipts: [{ kind: 'instance', path: ['receipts'], export: 'Receipts' }],
+    skillOutcomes: [{ kind: 'instance', path: ['skill-outcomes'], export: 'Outcomes' }],
+  };
+  return source;
 }
 
 function agentComposition(configuration: CompositionConfiguration): ApplicationSources {
@@ -278,6 +292,11 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
     throw new Error('Web tools require an explicit network installation ceiling');
   if (webMethods.some((method) => method !== 'fetch' && method !== 'search'))
     throw new Error('Model Web tools select only fetch and search');
+  const uiMethods = [
+    ...new Set(
+      configuration.agent.tools.filter((tool) => tool.import === 'ui').map((tool) => tool.method),
+    ),
+  ];
   const asksForms = configuration.agent.tools.some((tool) => tool.import === 'forms');
   const asksQuestions = configuration.agent.tools.some((tool) => tool.import === 'questions');
   const fileMethods = [
@@ -378,22 +397,17 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       ...(computerMethods.length ? { computer: [local('workspace-computer', 'computer')] } : {}),
       ...(webMethods.length ? { web: [local('workspace-web', 'web')] } : {}),
       ...(skillCalls.length ? { skills: [local('skills', 'skills')] } : {}),
-      ui: [local('ui-authoring', 'Authoring')],
+      ...(uiMethods.length ? { ui: [local('host-deployment-manager', 'Management')] } : {}),
       ...(asksForms ? { forms: [local('forms', 'forms')] } : {}),
       ...(asksQuestions ? { questions: [local('questions', 'questions')] } : {}),
       ...(fileMethods.length ? { files: [local('workspace-files', 'files')] } : {}),
       ...(processMethods.length ? { processes: [local('workspace-processes', 'processes')] } : {}),
     },
   );
-  host.instances['ui-authoring'] = node('ui-authoring');
-  host.instances['ui-authoring-gateway'] = node(
-    'ui-authoring-gateway',
-    {},
-    { requests: [local('ui-authoring', 'Authoring')] },
-  );
-  Object.assign(endpoints, {
-    uiAuthoring: expose('ui-authoring-gateway', 'requests', ['watch', 'claim', 'complete'], true),
-  });
+  host.instances['workspace-files-ui'] = {
+    ...node('workspace-files', {}, {}, 'workspace-files-ui'),
+    usePackage: 'ui',
+  };
   if (asksForms || executors.length) host.instances.forms = node('forms');
   if (asksQuestions) host.instances.questions = node('questions');
   if (fileMethods.length || executors.length)
@@ -483,7 +497,7 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
   }
   let native: NativeGrant[] = [];
   if (
-    configuration.agent.tools.some((tool) => tool.import === 'ui') ||
+    uiMethods.length ||
     asksForms ||
     asksQuestions ||
     fileMethods.length ||
@@ -492,14 +506,14 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
     executors.length
   )
     native = [
-      ...(configuration.agent.tools.some((tool) => tool.import === 'ui')
+      ...(uiMethods.length
         ? [
             {
               origin: [keys.agent],
               consumer: [keys.agent],
-              provider: [keys['ui-authoring']],
-              export: 'Authoring',
-              methods: ['submit', 'result'],
+              provider: [keys['host-deployment-manager']],
+              export: 'Management',
+              methods: uiMethods,
               recovery: true,
             },
           ]

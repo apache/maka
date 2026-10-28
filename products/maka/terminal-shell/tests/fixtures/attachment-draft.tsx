@@ -18,21 +18,27 @@
  */
 
 import { createAttachmentDraft } from '../../../workbench/app/attachmentDraft';
-import { mount, signal, Text, View } from 'nsh';
+import { signal, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import { host } from 'maka/host';
 import type {
   ClientOperation,
   ClientDraftAttachment,
 } from '../../../../../packages/plugin-sdk/src/index.js';
+import type { UiContext, UiExports } from '../../../../../packages/plugin-sdk/src/workbench.js';
 
-declare const attachmentDraftFixture: {
+type AttachmentDraftFixture = {
   original: ClientOperation;
   reserved: ClientOperation;
   attachment: ClientDraftAttachment;
 };
-const { original, reserved, attachment } = attachmentDraftFixture;
-mount(() => {
+
+export function activate(context: UiContext): UiExports {
+  const fixture = context.configuration as AttachmentDraftFixture;
+  return { root: { kind: 'root', render: () => <AttachmentDraft {...fixture} /> } };
+}
+
+function AttachmentDraft({ original, reserved, attachment }: AttachmentDraftFixture) {
   const client = host.session(host.initialSession);
   let revision = 0;
   let release;
@@ -103,4 +109,4 @@ mount(() => {
       <Text>{delivered() ? 'Delayed read delivered' : 'Delayed read held'}</Text>
     </View>
   );
-});
+}

@@ -42,6 +42,7 @@ fn config(app: App) -> EngineConfig {
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment: Environment::default(),
         header_heights: (Points(44.0), Points(96.0)),
         limits: nsh_engine::Limits::default(),

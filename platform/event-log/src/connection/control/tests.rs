@@ -18,6 +18,7 @@
  */
 
 use super::*;
+use crate::connection::ReaderRole;
 use crate::connection::{ConnectionAuthority, OwnedConnection};
 use sqlx::{Connection, Row, sqlite::SqliteConnectOptions};
 use std::{sync::Arc, time::Duration};
@@ -129,20 +130,24 @@ async fn writer_and_both_readers_resolve_live_readonly_control_and_indexes() {
     let entered = Arc::new(Semaphore::new(0));
     let release = Arc::new(Semaphore::new(0));
     let mut readers = Vec::new();
-    for _ in 0..2 {
+    for role in [ReaderRole::Read, ReaderRole::Observation] {
         let owner = owner.clone();
         let entered = entered.clone();
         let release = release.clone();
         readers.push(tokio::spawn(async move {
             owner
-                .read(move |connection| {
-                    Box::pin(async move {
-                        verify(connection).await?;
-                        entered.add_permits(1);
-                        release.acquire().await.unwrap().forget();
-                        Ok(())
-                    })
-                })
+                .read_job(
+                    role,
+                    move |connection| {
+                        Box::pin(async move {
+                            verify(connection).await?;
+                            entered.add_permits(1);
+                            release.acquire().await.unwrap().forget();
+                            Ok(())
+                        })
+                    },
+                    false,
+                )
                 .await
         }));
     }

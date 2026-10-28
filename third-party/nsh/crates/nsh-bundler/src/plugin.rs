@@ -17,6 +17,7 @@ use rolldown::{
         HookUsage, Plugin, PluginContext, SharedLoadPluginContext, SharedTransformPluginContext,
     },
 };
+use sha2::{Digest, Sha256};
 
 use crate::compile::{NativeModules, compile_native};
 
@@ -29,8 +30,8 @@ pub(crate) struct NshPlugin {
     /// The first compile error, already formatted. Rolldown wraps plugin
     /// errors in its own report; the bundler shows this one instead.
     pub(crate) error: Arc<Mutex<Option<String>>>,
-    /// Asset files imported by the app (absolute paths).
-    pub(crate) assets: Arc<Mutex<Vec<PathBuf>>>,
+    /// Imported resources with their compiled logical paths and actual files.
+    pub(crate) assets: Arc<Mutex<Vec<crate::Asset>>>,
     /// Development bundle with hot module replacement: components and
     /// contexts of app modules are registered with the hot runtime.
     pub(crate) hot: bool,
@@ -259,7 +260,7 @@ fn variant_mismatch(
 /// it has variants (their `scales`, above 1), the scales it ships in, 1
 /// first. Without variants it is `{ url, size: { width, height } }`.
 fn image_module(
-    url: &str,
+    path: &str,
     (w, h): (impl std::fmt::Display, impl std::fmt::Display),
     scales: &[f32],
 ) -> String {
@@ -272,10 +273,48 @@ fn image_module(
             .collect();
         format!(", scales: [{}]", list.join(", "))
     };
-    format!("export default {{ url: {url:?}, size: {{ width: {w}, height: {h} }}{scales} }};")
+    format!(
+        "import {{ assetUrl }} from \"nsh:rt\";\nexport default {{ url: assetUrl({path:?}, import.meta.assetBase), size: {{ width: {w}, height: {h} }}{scales} }};"
+    )
 }
 
 impl NshPlugin {
+    fn asset_family(
+        &self,
+        base: &Path,
+        variants: &[(f32, PathBuf)],
+    ) -> Result<String, anyhow::Error> {
+        let mut files: Vec<_> = std::iter::once(base)
+            .chain(variants.iter().map(|(_, path)| path.as_path()))
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| (name.to_owned(), path.to_owned()))
+                    .ok_or_else(|| self.fail(path, "asset file name is not UTF-8"))
+            })
+            .collect::<Result<_, _>>()?;
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut digest = Sha256::new();
+        for (name, path) in &files {
+            let data = std::fs::read(path).map_err(|e| self.fail(path, &e.to_string()))?;
+            digest.update((name.len() as u64).to_le_bytes());
+            digest.update(name.as_bytes());
+            digest.update((data.len() as u64).to_le_bytes());
+            digest.update(&data);
+        }
+        let directory = format!("imports/{:x}", digest.finalize());
+        let mut assets = self.assets.lock().expect("assets lock");
+        let mut imported = None;
+        for (name, source) in files {
+            let path = format!("{directory}/{name}");
+            if source == base {
+                imported = Some(path.clone());
+            }
+            assets.push(crate::Asset { path, source });
+        }
+        Ok(imported.expect("asset family includes its base"))
+    }
+
     /// The entry's first statement, giving the renderer the app's themes,
     /// appearance and status bar.
     fn prologue(&self) -> Option<String> {
@@ -424,13 +463,9 @@ impl Plugin for NshPlugin {
             let data = std::fs::read(path).map_err(|e| self.fail(path, &e.to_string()))?;
             let family = font_family(&data)
                 .map_err(|e| self.fail(path, &format!("cannot read font: {e}")))?;
-            self.assets
-                .lock()
-                .expect("assets lock")
-                .push(path.to_path_buf());
+            let imported = self.asset_family(path, &[])?;
             let code = format!(
-                "import {{ font }} from \"nsh:rt\";\nexport default font({uri:?}, {family:?});",
-                uri = format!("asset:/{rel}"),
+                "import {{ font, assetUrl }} from \"nsh:rt\";\nexport default font(assetUrl({imported:?}, import.meta.assetBase), {family:?});",
             );
             return Ok(Some(HookLoadOutput {
                 code: code.into(),
@@ -474,13 +509,9 @@ impl Plugin for NshPlugin {
             }
             ((w.to_string(), h.to_string()), variants)
         };
-        {
-            let mut assets = self.assets.lock().expect("assets lock");
-            assets.push(path.to_path_buf());
-            assets.extend(variants.iter().map(|(_, p)| p.clone()));
-        }
+        let imported = self.asset_family(path, &variants)?;
         let scales: Vec<f32> = variants.iter().map(|(s, _)| *s).collect();
-        let code = image_module(&format!("asset:/{rel}"), (w, h), &scales);
+        let code = image_module(&imported, (w, h), &scales);
         Ok(Some(HookLoadOutput {
             code: code.into(),
             module_type: Some(ModuleType::Js),
@@ -575,7 +606,7 @@ mod tests {
         std::fs::write(
             dir.join("App.tsx"),
             format!(
-                "import {{ Image, mount }} from \"nsh\";\nimport icon from \"./img/{import}\";\nmount(() => <Image src={{icon}} />);\n"
+                "import {{ Image, mount }} from \"nsh\";\nimport icon from \"./img/{import}\";\nglobalThis.importedAsset = icon;\nmount(() => <Image src={{icon}} />);\n"
             ),
         )
         .unwrap();
@@ -596,34 +627,25 @@ mod tests {
     }
 
     fn assets(bundle: &crate::Bundle) -> Vec<String> {
-        bundle
+        let mut assets = bundle
             .assets
             .iter()
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .collect()
+            .map(|asset| {
+                asset
+                    .source
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assets.sort();
+        assets
     }
 
     fn svg(body: &str) -> Vec<u8> {
         format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{body}</svg>"#)
             .into_bytes()
-    }
-
-    #[test]
-    fn variant_probe_lists_the_scales_in_the_image_module() {
-        let module = |scales: &[f32]| image_module("asset:/img/flag.png", (40.0, 30.0), scales);
-        assert_eq!(
-            module(&[2.0, 3.0]),
-            "export default { url: \"asset:/img/flag.png\", size: { width: 40, height: 30 }, scales: [1, 2, 3] };"
-        );
-        assert_eq!(
-            module(&[1.5, 4.0]),
-            "export default { url: \"asset:/img/flag.png\", size: { width: 40, height: 30 }, scales: [1, 1.5, 4] };"
-        );
-        // Without variants: `{ url, size }`.
-        assert_eq!(
-            module(&[]),
-            "export default { url: \"asset:/img/flag.png\", size: { width: 40, height: 30 } };"
-        );
     }
 
     #[test]
@@ -639,11 +661,61 @@ mod tests {
             ],
         );
         let bundle = bundled(&dir);
-        assert!(bundle.code.contains("scales"), "{}", bundle.code);
-        assert_eq!(
-            assets(&bundle),
-            ["img/flag.png", "img/flag@2x.png", "img/flag@3x.png"]
+        assert_eq!(assets(&bundle), ["flag.png", "flag@2x.png", "flag@3x.png"]);
+        let original = dunce::canonicalize(dir.join("img/flag.png")).unwrap();
+        let base = bundle
+            .assets
+            .iter()
+            .find(|asset| asset.source == original)
+            .unwrap();
+        let expected = serde_json::json!([format!("asset:/{}", base.path), 40, 30, [1, 2, 3]]);
+        let host = nsh_js::Host::new().unwrap();
+        host.eval_source(&bundle.code).unwrap();
+        assert!(host.eval_script("image", &format!(
+            "JSON.stringify([globalThis.importedAsset.url, globalThis.importedAsset.size.width, globalThis.importedAsset.size.height, globalThis.importedAsset.scales]) === JSON.stringify({expected})"
+        )).unwrap());
+        let directory = Path::new(&base.path).parent().unwrap();
+        for asset in &bundle.assets {
+            assert_eq!(Path::new(&asset.path).parent().unwrap(), directory);
+            assert!(bundle.watch_files.contains(&asset.source));
+        }
+
+        let relocated = app(
+            "ships-relocated",
+            "flag.png",
+            &[
+                ("flag.png", (40, 30)),
+                ("flag@2x.png", (80, 60)),
+                ("flag@3x.png", (120, 90)),
+            ],
         );
+        let copied = bundled(&relocated);
+        assert_eq!(
+            copied
+                .assets
+                .iter()
+                .map(|asset| &asset.path)
+                .collect::<Vec<_>>(),
+            bundle
+                .assets
+                .iter()
+                .map(|asset| &asset.path)
+                .collect::<Vec<_>>(),
+        );
+
+        // Changing a density sibling gives the whole family a new identity.
+        let mut variant = png(80, 60);
+        variant.push(1);
+        std::fs::write(dir.join("img/flag@2x.png"), variant).unwrap();
+        let updated = bundled(&dir);
+        assert_eq!(assets(&updated), ["flag.png", "flag@2x.png", "flag@3x.png"]);
+        let updated_directory = Path::new(&updated.assets[0].path).parent().unwrap();
+        assert_ne!(updated_directory, directory);
+        for asset in &updated.assets {
+            assert_eq!(Path::new(&asset.path).parent().unwrap(), updated_directory);
+        }
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(relocated);
     }
 
     #[test]
@@ -664,10 +736,7 @@ mod tests {
         assert_eq!(variants, [1.5, 4.0]);
         let bundle = bundled(&dir);
         assert!(bundle.code.contains("1.5"), "{}", bundle.code);
-        assert_eq!(
-            assets(&bundle),
-            ["img/a.webp", "img/a@1.5x.webp", "img/a@4x.webp"]
-        );
+        assert_eq!(assets(&bundle), ["a.webp", "a@1.5x.webp", "a@4x.webp"]);
     }
 
     #[test]
@@ -685,24 +754,18 @@ mod tests {
         assert!(variants(&dir.join("img/flag@1x.png")).is_empty());
         let bundle = bundled(&dir);
         assert!(!bundle.code.contains("scales"), "{}", bundle.code);
-        assert!(bundle.code.contains("asset:/img/flag@3x.png"));
-        assert_eq!(assets(&bundle), ["img/flag@3x.png"]);
+        assert!(bundle.code.contains("flag@3x.png"));
+        assert_eq!(assets(&bundle), ["flag@3x.png"]);
     }
 
-    /// An app without variants ships its image alone, in a module without
-    /// `scales` (`variant_probe_lists_the_scales_in_the_image_module` holds
-    /// the module's text).
+    /// An app without variants ships its image alone.
     #[test]
     fn variant_probe_changes_nothing_without_variants() {
         let dir = app("none", "flag.png", &[("flag.png", (40, 30))]);
         let bundle = bundled(&dir);
-        assert!(
-            bundle.code.contains("asset:/img/flag.png"),
-            "{}",
-            bundle.code
-        );
+        assert!(bundle.code.contains("flag.png"), "{}", bundle.code);
         assert!(!bundle.code.contains("scales"), "{}", bundle.code);
-        assert_eq!(assets(&bundle), ["img/flag.png"]);
+        assert_eq!(assets(&bundle), ["flag.png"]);
     }
 
     #[test]
@@ -726,7 +789,7 @@ mod tests {
             "a.png",
             &[("a.png", (40, 30)), ("a@2x.png", (120, 90))],
         );
-        assert_eq!(assets(&bundled(&dir)), ["img/a.png", "img/a@2x.png"]);
+        assert_eq!(assets(&bundled(&dir)), ["a.png", "a@2x.png"]);
     }
 
     /// A variant that is no image fails the build, as the imported file
@@ -810,6 +873,6 @@ mod tests {
         }
         let bundle = bundled(&dir);
         assert!(!bundle.code.contains("scales"), "{}", bundle.code);
-        assert_eq!(assets(&bundle), ["img/mark.svg"]);
+        assert_eq!(assets(&bundle), ["mark.svg"]);
     }
 }

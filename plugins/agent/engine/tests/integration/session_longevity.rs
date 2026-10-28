@@ -520,6 +520,7 @@ async fn fixed_window_history() {
                             .prepare_model_view(
                                 view.selection,
                                 &identity(store.id(), "held-build", i),
+                                None,
                             )
                             .await
                             .unwrap(),

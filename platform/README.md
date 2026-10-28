@@ -27,8 +27,9 @@ The platform loads packages, checks compositions, owns execution resources and p
 | --- | --- |
 | Declarations and package bytes | [plugin-core](plugin-core/README.md), [packages](packages/README.md) |
 | Resource authority and persistence | [capabilities](capabilities/README.md), [event-log](event-log/README.md) |
-| Service and component owners | [host-runtime](host-runtime/README.md), [ui-runtime](ui-runtime/README.md) |
-| JavaScript execution | [js-runtime](js-runtime/README.md), [host-js](host-js/README.md), [ui-js](ui-js/README.md) |
+| Host service ownership | [host-runtime](host-runtime/README.md) |
+| Native client resources | [ui-support](ui-support/README.md) |
+| JavaScript execution | [js-runtime](js-runtime/README.md), [host-js](host-js/README.md) |
 | Native presentation | [presentation](presentation/README.md) |
 | I/O and isolation | [network](network/README.md), [process](process/README.md), [sandbox](sandbox/README.md), [computer-use](computer-use/README.md) |
 | Connections and health | [transport](transport/README.md), [background-health](background-health/README.md) |
