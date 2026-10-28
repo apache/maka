@@ -444,13 +444,14 @@ export async function planHistoryCompaction(
           retreated = true;
           continue;
         }
-        // No boundary to retreat to: a migrated or copied session whose
-        // history never carried this route's reply would strand the whole
-        // fold, even though the portable text summarizer - which never
-        // carries the reasoning blobs the native request does - may still
-        // fit (#6415). When the caller supplies one, make a single text
-        // attempt for this exact corner; its own refusal still fails open
-        // (#4559). A proven boundary keeps the native retreat first.
+        // No untried proven boundary is left: either the history never
+        // carried this route's reply (a migrated or copied session, #6415),
+        // or the retreat to the proven span was itself refused above - native
+        // is exhausted either way, and the portable text summarizer, which
+        // never carries the reasoning blobs the native request does, may
+        // still fit. When the caller supplies one, make a single text
+        // attempt; its own refusal still fails open (#4559). A proven
+        // boundary keeps the native retreat first.
         if (!input.summarizeTextFallback) {
           return {
             decision: 'fail_open',
