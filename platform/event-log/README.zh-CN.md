@@ -66,6 +66,8 @@ Control 中的调用意图、项目登记、workspace attachment、Session 路�
 
 完整的 Session 可见行元数据目录与规范事实在原 SQLite 写连接上以 FULL 耐久性共同提交。历史窗口按目录定位，仅重建选中来源的正文；正文或文本缓存缺失不要求重放整个 Session 前缀。原发射序号和行 ordinal 保持不变。投影失败或全局消息身份冲突会被明确记录，不额外拒绝原本已接受的执行事实；请求边界以内存在失败时，通过索引返回该 Session 历史不可用。存储错误仍使规范事务回滚。
 
+Recall 在 [FTS5](https://sqlite.org/fts5.html#the_detail_option) 中记录每个文档出现过的 gram，每个 gram 由 1/2/3 个 Unicode scalar 组成，重复出现只记录一次。NFC 规范化并转小写后，字面 OR 命中按“非重叠命中的 scalar 总数 ÷ 正文 scalar 数”排序；不同词之间的重叠分别计分，工具结果的权重为一半。结果保留每个 Turn 中最相关的一条消息、稳定的时间与身份排序，以及请求指定的数量限制。
+
 对于逐项接受输出的 main 模型请求，完整文本段、来源、工具调用和 provider 工具结果在对应 observation 被接受的序号进入历史。读取更晚的边界或重新打开存储，不得改变较早边界的历史。首次目录安装在公开 Ready 前按来源顺序阻塞重建保留的规范事实与冻结成员，保留原始规范字节并明确记录历史坏来源。之后正常打开直接使用已安装目录，不重放历史；目录元数据丢失需要显式维护，不等同于普通选中正文缓存缺失。
 
 既有分区 Root 需要安装派生目录时，使用既有获准长驻角色先维护启动，不依赖普通 launcher 的 30 秒启动观察窗口。未安装的 Root，或使用精确获准 executable 的 Supervised 部署，可运行 `host serve --root …`；它启动真实服务及正常恢复，不是只处理元数据的命令。OnDemand 部署必须使用匹配的获准 executable，以既有直接 `host candidate --root … --expected-root-id … --startup-attempt-id …` 角色启动，不使用 launcher 所有的 stdin。通过正常生命周期协调释放旧服务，保留部署模式、executable 准入和 Root 租约；观察持久化初始化完成及正常继续服务或真实关闭后，再使用普通 launcher。初始化完成前不发布 Ready，中断依靠事务恢复；不增加 timeout/progress 绕过机制或前台全前缀 fallback。
