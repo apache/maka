@@ -154,18 +154,26 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_after_reopen() {
+async fn midturn_compaction_keeps_image_references_without_replaying_messages() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("events.sqlite");
     let log = Arc::new(SessionFixture::open(&path).await.unwrap());
 
     image_projection::artifact(&log, "anchor-image", 8, true).await;
+    let mut image: maka_agent_facts::attachment::AttachmentRef =
+        serde_json::from_value(image_projection::attachment("anchor-image")).unwrap();
+    image.bytes = 8;
+    let image_reference = image.storage_ref.resource_ref().unwrap();
+    let summary_text = format!("{}\nRequired image: {image_reference}", fixture::SUMMARY);
+    let retained_summary = summary_text.clone();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let observed = log.clone();
     let server = tokio::spawn(async move {
         let (mut first, _) = listener.accept().await.unwrap();
-        fixture::read_request(&mut first).await;
+        let original = fixture::read_request(&mut first).await;
+        assert!(original["messages"].to_string().contains("question-first"));
+        assert!(original["messages"].to_string().contains("image_url"));
         code_mode::respond(&mut first, true).await;
         let (mut summary, _) = listener.accept().await.unwrap();
         let summary_request = fixture::read_request(&mut summary).await;
@@ -184,19 +192,19 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
                 .iter()
                 .any(|event| matches!(event.event.fact, Fact::InvocationEnded { .. }))
         );
-        fixture::respond(&mut summary, fixture::SUMMARY, "stop").await;
+        fixture::respond(&mut summary, &retained_summary, "stop").await;
         let (mut next, _) = listener.accept().await.unwrap();
         let after = fixture::read_request(&mut next).await;
         code_mode::respond(&mut next, true).await;
         // An accepted tool step renews compaction within this same turn.
         let (mut summary, _) = listener.accept().await.unwrap();
         let second_summary = fixture::read_request(&mut summary).await;
-        assert!(
-            second_summary["messages"]
-                .to_string()
-                .contains("tool_call_id")
-        );
-        fixture::respond(&mut summary, fixture::SUMMARY, "stop").await;
+        let messages = second_summary["messages"].to_string();
+        assert!(messages.contains("tool_call_id"));
+        assert!(messages.contains("Required image:"));
+        assert!(!messages.contains("question-first"));
+        assert!(!messages.contains("image_url"));
+        fixture::respond(&mut summary, &retained_summary, "stop").await;
         let (mut final_step, _) = listener.accept().await.unwrap();
         fixture::read_request(&mut final_step).await;
         fixture::respond(&mut final_step, "done", "stop").await;
@@ -221,7 +229,8 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
     input.supports_vision = true;
     input.configuration.model = fixture::input(&base, "unused", false).configuration.model;
     if let RunWork::Message { message, .. } = &mut input.work {
-        *message=serde_json::from_value(json!({"text":"question-first","attachments":[image_projection::attachment("anchor-image")]})).unwrap();
+        message.text = "question-first".into();
+        message.attachments = Some(vec![image]);
     }
     let worker = fixture::engine();
     worker
@@ -236,12 +245,14 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
             .contains("tool_call_id")
     );
     assert!(after["messages"].to_string().contains("summary-marker"));
-    assert!(after["messages"].to_string().contains("image_url"));
+    assert!(after["messages"].to_string().contains(&image_reference));
+    assert!(!after["messages"].to_string().contains("question-first"));
+    assert!(!after["messages"].to_string().contains("image_url"));
     let source = log.read_model_view("session", None).await.unwrap();
-    let anchor = source.anchor.as_ref().unwrap().event.id.clone();
-    assert!(
-        matches!(&source.baseline.as_ref().unwrap().checkpoint.mode,CheckpointMode::MidTurn {anchor_event_id} if anchor_event_id==&anchor)
-    );
+    let checkpoint = &source.baseline.as_ref().unwrap().checkpoint;
+    assert!(matches!(checkpoint.mode, CheckpointMode::MidTurn { .. }));
+    assert_eq!(checkpoint.summary.text, summary_text);
+    let checkpoint_id = source.baseline.unwrap().event_id;
     assert_eq!(count.load(Ordering::SeqCst), 4);
     let prefix = log.prefix(100, 256 * 1024).await.unwrap();
     assert_eq!(
@@ -279,11 +290,80 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
         log.read_model_view("session", None)
             .await
             .unwrap()
-            .anchor
+            .baseline
             .unwrap()
-            .event
-            .id,
-        anchor
+            .event_id,
+        checkpoint_id
+    );
+    let address = maka_agent_facts::read::ResourceAddress::parse(&image_reference)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        log.resolve_read_resource("session", address.clone())
+            .await
+            .unwrap(),
+        Some(address)
+    );
+    let image = log
+        .read_artifact_chunk("session", "anchor-image", 0, 8)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(image.bytes, b"\x89PNG\r\n\x1a\n");
+    let source = log
+        .get_session::<serde_json::Value>("session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        log.root()
+            .copy_session(
+                maka_event_log::sessions::SessionCopy {
+                    source_session_id: "session".into(),
+                    target_session_id: "branch".into(),
+                    expected_source_revision: source.revision,
+                    purpose: maka_agent_facts::session::CopyPurpose::Branch {
+                        turn_id: None,
+                        side_conversation: false,
+                    },
+                },
+                &source.configuration,
+                100,
+            )
+            .await
+            .unwrap(),
+        maka_event_log::sessions::SessionCopyResult::Committed(_)
+    ));
+    let branch = log.select("branch").await.unwrap();
+    assert_eq!(
+        branch
+            .read_model_view("branch", None)
+            .await
+            .unwrap()
+            .baseline
+            .unwrap()
+            .checkpoint
+            .summary
+            .text,
+        summary_text
+    );
+    let address = maka_agent_facts::read::ResourceAddress::parse(&image_reference)
+        .unwrap()
+        .unwrap();
+    let copied = branch
+        .resolve_read_resource("branch", address)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(copied.id(), "anchor-image");
+    assert_eq!(
+        branch
+            .read_artifact_chunk("branch", copied.id(), 0, 8)
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        image.bytes
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -302,6 +382,9 @@ async fn midturn_waits_for_all_code_mode_results_and_replays_exact_image_anchor_
         .unwrap();
     worker.drain().await;
     let next = server.await.unwrap();
-    assert!(next["messages"].to_string().contains("question-first"));
-    assert!(next["messages"].to_string().contains("image_url"));
+    let messages = next["messages"].to_string();
+    assert!(messages.contains("question-reopen"));
+    assert!(messages.contains(&image_reference));
+    assert!(!messages.contains("question-first"));
+    assert!(!messages.contains("image_url"));
 }

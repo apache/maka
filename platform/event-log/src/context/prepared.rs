@@ -153,7 +153,7 @@ impl EventLog {
         let registry = self.prepared.clone();
         let build = self.prepared_store()?.run(move |connection, in_flight| Box::pin(async move {
             let mut tx = connection.begin().await?;
-            let key = hash(encoded(&(&selection.session, &selection.lineage, selection.after, selection.anchor_sequence, &policy))?.as_bytes());
+            let key = hash(encoded(&(&selection.session, &selection.lineage, selection.after, &policy))?.as_bytes());
             let identity = hash(encoded(&(&key, &selection))?.as_bytes());
             let exists: Option<(String,i64,Option<String>)> = sqlx::query_as("SELECT id,previous_revision,parent_id FROM context_prepared_builds WHERE identity=? AND retiring=0")
                 .bind(&identity).fetch_optional(&mut *tx).await?;

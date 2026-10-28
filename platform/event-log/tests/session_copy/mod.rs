@@ -31,6 +31,7 @@ use maka_agent_facts::event::InvocationInput;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::RuntimeEvent;
+use maka_agent_facts::read::ResourceAddress;
 use maka_event_log::{
     EventLog, StoreError,
     artifacts::ArtifactDeletion,
@@ -655,6 +656,12 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
             2
         );
         let files = log.list_artifacts(session, 0, 32).await.unwrap().records;
+        assert_eq!(
+            log.resolve_read_resource(session, ResourceAddress::Attachment("upload".into()))
+                .await
+                .unwrap(),
+            Some(ResourceAddress::Attachment(files[0].id.clone()))
+        );
         let editable = log
             .editable_message(session, "first", "message-first")
             .await
@@ -787,6 +794,34 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
         4,
         "only real source work was appended"
     );
+    assert_eq!(
+        log.resolve_read_resource("unrelated", ResourceAddress::Attachment("upload".into()))
+            .await
+            .unwrap(),
+        None
+    );
+    log.commit_artifact(
+        Artifact {
+            id: "upload".into(),
+            session_id: "branch".into(),
+            turn_id: "new-upload".into(),
+            created_at: 30,
+            name: "another.txt".into(),
+            kind: ArtifactKind::File,
+            size_bytes: 5,
+            mime_type: Some("text/plain".into()),
+            source: ArtifactSource::UserUpload,
+            summary: Some(content_digest(b"other")),
+        },
+        b"other",
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        log.resolve_read_resource("branch", ResourceAddress::Attachment("upload".into()))
+            .await,
+        Err(StoreError::AmbiguousReadResource)
+    ));
 }
 
 #[tokio::test]

@@ -69,7 +69,6 @@ async fn page(
     db: &mut SqliteConnection,
     after: i64,
     through: i64,
-    anchor: Option<i64>,
     lineage: Option<String>,
 ) -> (Vec<String>, u64) {
     let steps = count_steps(db).await;
@@ -86,7 +85,6 @@ async fn page(
         .bind(0_i64)
         .bind(None::<i64>)
         .bind(65_i64)
-        .bind(anchor)
         .bind(None::<String>)
         .bind(true)
         .fetch_all(&mut *db)
@@ -100,12 +98,10 @@ async fn page(
 async fn fixed_source_window_does_not_scan_compacted_history() {
     let mut db = database().await;
     append_rows(&mut db, 1, 128).await;
-    let (small, small_steps) = page(&mut db, 112, 128, Some(1), None).await;
+    let (small, small_steps) = page(&mut db, 112, 128, None).await;
     assert_eq!(
         small,
-        std::iter::once("1".to_owned())
-            .chain((113..=128).map(|n| n.to_string()))
-            .collect::<Vec<_>>()
+        (113..=128).map(|n| n.to_string()).collect::<Vec<_>>()
     );
     append_rows(&mut db, 129, 16_384).await;
     // A late source can sort before the cutoff. Never equate source and order.
@@ -113,11 +109,11 @@ async fn fixed_source_window_does_not_scan_compacted_history() {
         .execute(&mut db)
         .await
         .unwrap();
-    let (large, large_steps) = page(&mut db, 16_368, 16_384, Some(1), None).await;
+    let (large, large_steps) = page(&mut db, 16_368, 16_384, None).await;
     assert_eq!(
         large,
         [
-            vec!["1".into(), "16384".into()],
+            vec!["16384".into()],
             (16_369..16_384).map(|n| n.to_string()).collect()
         ]
         .concat()
@@ -126,12 +122,6 @@ async fn fixed_source_window_does_not_scan_compacted_history() {
     assert!(
         large_steps <= small_steps * 2,
         "fixed window scanned history: {small_steps} -> {large_steps}"
-    );
-    let (overlap, _) = page(&mut db, 16_368, 16_384, Some(16_369), None).await;
-    assert_eq!(
-        overlap.len(),
-        16,
-        "anchor inside window must not duplicate a row"
     );
 }
 
@@ -147,9 +137,9 @@ async fn lineage_membership_grows_logarithmically_and_excludes_sibling_branches(
     append_lineage(&mut db, 0, 63).await;
     append_rows(&mut db, 1, 16).await;
     let descriptor = |depth| Some(format!(r#"{{"base":0,"run":"lineage-{depth}"}}"#));
-    let (small, small_steps) = page(&mut db, 0, 16, None, descriptor(63)).await;
+    let (small, small_steps) = page(&mut db, 0, 16, descriptor(63)).await;
     append_lineage(&mut db, 64, 4095).await;
-    let (large, large_steps) = page(&mut db, 0, 16, None, descriptor(4095)).await;
+    let (large, large_steps) = page(&mut db, 0, 16, descriptor(4095)).await;
     assert_eq!(small, (1..=16).map(|n| n.to_string()).collect::<Vec<_>>());
     assert_eq!(large, small);
     eprintln!("lineage VM steps: D=63 {small_steps}, D=4095 {large_steps}");

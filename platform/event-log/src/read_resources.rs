@@ -74,7 +74,21 @@ impl EventLog {
                             (false, true) => format!("{column} >= ?2 AND {column} < ?3"),
                             (false, false) => format!("{column} >= ?2"),
                         };
-                        let sql = format!("{query} AND {predicate} ORDER BY {column} LIMIT 2");
+                        let sql = if exact && matches!(&address, ResourceAddress::Attachment(_)) {
+                            // Checkpoint text retains original locators when history is copied.
+                            format!(
+                                "SELECT DISTINCT id FROM (
+                                    {query} AND {predicate}
+                                    UNION ALL
+                                    SELECT a.id FROM session_history_artifacts h
+                                    JOIN artifacts a ON a.session_id=h.session_id AND a.id=h.artifact_id
+                                    WHERE h.session_id=?1 AND h.source_artifact_id=?2
+                                      AND json_extract(a.record_json,'$.source')='user_upload'
+                                ) LIMIT 2"
+                            )
+                        } else {
+                            format!("{query} AND {predicate} ORDER BY {column} LIMIT 2")
+                        };
                         let mut read =
                             sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql.as_str()))
                                 .bind(&session)

@@ -27,7 +27,6 @@ pub(super) struct Logical {
     phase: u8,
     changes: Option<semantic::SemanticChangeCursor>,
     source_cursor: Option<semantic::GroupCursor>,
-    anchor: bool,
     branch: u8,
     expansion: Option<Expansion>,
 }
@@ -43,7 +42,6 @@ impl Logical {
             phase: 0,
             changes: None,
             source_cursor: None,
-            anchor: false,
             branch: 0,
             expansion: None,
         }
@@ -109,24 +107,15 @@ pub(super) async fn logical_batch(
                         state.phase = 1;
                     }
                 } else {
-                    let page = semantic::initial_groups(
-                        db,
-                        &build.selection,
-                        state.source_cursor,
-                        state.anchor,
-                        64,
-                    )
-                    .await?;
+                    let page =
+                        semantic::initial_groups(db, &build.selection, state.source_cursor, 64)
+                            .await?;
                     for sequence in page.groups {
                         mark_dirty(db, &build.id, sequence).await?;
                     }
                     state.source_cursor = page.next;
                     if state.source_cursor.is_none() {
-                        if state.anchor {
-                            state.phase = 2;
-                        } else {
-                            state.anchor = true;
-                        }
+                        state.phase = 2;
                     }
                 }
             }

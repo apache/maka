@@ -223,8 +223,9 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
             checkpoint.event().id
         );
         assert_eq!(
-            after.anchor.as_ref().map(|e| &e.event),
-            mid_turn.then_some(&child)
+            after.tail.iter().any(|event| matches!(event, maka_event_log::context::ContextEvent::Canonical(event) if event.event.id == child.id)),
+            !mid_turn,
+            "only a pre-turn checkpoint leaves the current opening outside its coverage"
         );
         log.append(&lineage_request(
             "after-summary",

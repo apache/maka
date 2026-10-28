@@ -212,7 +212,6 @@ async fn opening_only_then_same_invocation_progress_and_cold_reads_keep_exact_hi
         .await
         .unwrap();
     assert!(first.baseline.is_none());
-    assert!(first.anchor.is_none());
     assert_eq!(first.tail.len(), 1);
     let context::ContextEvent::Canonical(actual) = &first.tail[0] else {
         panic!("original opening")

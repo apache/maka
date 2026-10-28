@@ -52,7 +52,6 @@ async fn prepared_head_replacement_and_removal_coalesce_pending_retirement_witho
         session: session.id().to_owned(),
         lineage: None,
         after: 0,
-        anchor_sequence: None,
         through: 0,
         before: 1,
         captured_through: 0,

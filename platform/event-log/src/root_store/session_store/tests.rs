@@ -370,7 +370,6 @@ async fn prepared_handles_and_wire_views_are_session_bound() {
                 session: b.id().into(),
                 lineage: None,
                 after: 0,
-                anchor_sequence: None,
                 through: 0,
                 before: 1,
                 captured_through: 0,

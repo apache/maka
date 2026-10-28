@@ -107,13 +107,13 @@ pub(super) async fn prompt<W>(
     if let Some(baseline) = &source.baseline {
         let label = match input.configuration.language {
             Language::En => {
-                "Earlier-history checkpoint. Following history may repeat the active turn's opening; reconcile later corrections and results with this snapshot before continuing:\n"
+                "Historical checkpoint, not a new user request. Reconcile the following messages with this snapshot, then continue the remaining work:\n"
             }
             Language::ZhCn => {
-                "较早历史的检查点。后续历史可能重现当前轮次的开头消息；继续前请结合后来的纠正和结果更新此快照中的状态：\n"
+                "历史检查点，不是新的用户请求。请结合后续消息更新此快照中的状态，然后继续尚未完成的工作：\n"
             }
             Language::ZhTw => {
-                "較早歷史的檢查點。後續歷史可能重現目前回合的開頭訊息；繼續前請結合後來的修正和結果更新此快照中的狀態：\n"
+                "歷史檢查點，不是新的使用者請求。請結合後續訊息更新此快照中的狀態，然後繼續尚未完成的工作：\n"
             }
         };
         let text = format!("{label}\n{}", baseline.checkpoint.summary.text);
