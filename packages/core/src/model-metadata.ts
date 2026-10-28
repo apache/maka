@@ -35,6 +35,14 @@ export interface ModelMetadata {
   knowledgeCutoff?: string;
   structuredOutput?: boolean;
   lastUpdated?: string;
+  /**
+   * Upstream models.dev model family (e.g. `kimi-k3`) when the catalog
+   * declares one. Provider-owned wire fact: builders read it to pick request
+   * shapes a model id alone does not identify (Kimi K3 takes adaptive
+   * thinking, K2 needs enabled thinking plus the compatibility budget).
+   * Omitted when upstream declares none — never inferred from the model id.
+   */
+  family?: string;
   capabilities?: ModelInfo['capabilities'];
   modalities?: ModelInfo['modalities'];
   /**

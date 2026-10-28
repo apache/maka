@@ -359,28 +359,104 @@ describe('buildProviderOptions: thinking level', () => {
     }
   });
 
-  test('refreshed kimi-coding-plan ids outside the whitelist send the chosen effort through adaptive thinking', () => {
+  test('refreshed kimi-coding-plan K3-family ids send the chosen effort through adaptive thinking', () => {
+    // The live models.dev records list the K3.1 ids outside the hardcoded
+    // branch with family `kimi-k3`; a future K3 alias must keep the family's
+    // adaptive wire even when its id is unknown.
     installRefreshedModelMetadata({
       'kimi-coding-plan': {
-        'k3.5': { thinkingOptions: { efforts: ['none', 'low', 'high'] } },
+        'k3.1-pro': { family: 'kimi-k3', thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+        'k3.1-pro-highspeed': {
+          family: 'kimi-k3',
+          thinkingOptions: { efforts: ['low', 'high', 'max'] },
+        },
+        // A K3 alias beyond the documented ids rides the family alone.
+        'k3.2-pro': { family: 'kimi-k3', thinkingOptions: { efforts: ['low', 'high'] } },
       },
     });
     try {
       assert.deepEqual(
-        [...thinkingVariantsForModel('kimi-coding-plan', 'k3.5')],
-        ['off', 'low', 'high'],
+        [...thinkingVariantsForModel('kimi-coding-plan', 'k3.1-pro')],
+        ['low', 'high', 'max'],
       );
       const kimi = conn('kimi-coding-plan');
-      assert.deepEqual(buildProviderOptions(kimi, 'k3.5', 'high'), {
+      assert.deepEqual(buildProviderOptions(kimi, 'k3.1-pro', 'high'), {
         anthropic: { thinking: { type: 'adaptive' }, effort: 'high' },
       });
-      assert.deepEqual(buildProviderOptions(kimi, 'k3.5', 'low'), {
+      assert.deepEqual(buildProviderOptions(kimi, 'k3.1-pro-highspeed', 'low'), {
         anthropic: { thinking: { type: 'adaptive' }, effort: 'low' },
       });
-      // The generic off branch already covers refreshed catalogs declaring
-      // `none`; it must keep covering them alongside the effort tiers.
-      assert.deepEqual(buildProviderOptions(kimi, 'k3.5', 'off'), {
+      assert.deepEqual(buildProviderOptions(kimi, 'k3.2-pro', 'high'), {
+        anthropic: { thinking: { type: 'adaptive' }, effort: 'high' },
+      });
+    } finally {
+      installRefreshedModelMetadata(undefined);
+    }
+  });
+
+  test('refreshed kimi-coding-plan K2-family ids need enabled thinking plus the compatibility budget', () => {
+    // kimi-for-coding's family is `kimi-k2`: a renamed or additional K2 id
+    // with declared efforts must not take the K3 adaptive wire — Kimi's
+    // managed coding route requires enabled thinking plus the budget.
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        'kimi-for-coding-pro': {
+          family: 'kimi-k2',
+          thinkingOptions: { efforts: ['none', 'low', 'high', 'max'] },
+        },
+      },
+    });
+    try {
+      assert.deepEqual(
+        [...thinkingVariantsForModel('kimi-coding-plan', 'kimi-for-coding-pro')],
+        ['off', 'low', 'high', 'max'],
+      );
+      const kimi = conn('kimi-coding-plan');
+      assert.deepEqual(buildProviderOptions(kimi, 'kimi-for-coding-pro', 'high'), {
+        anthropic: { thinking: { type: 'enabled', budgetTokens: 1_024 }, effort: 'high' },
+      });
+      // The generic off branch keeps covering K2-family ids declaring `none`.
+      assert.deepEqual(buildProviderOptions(kimi, 'kimi-for-coding-pro', 'off'), {
         anthropic: { thinking: { type: 'disabled' } },
+      });
+    } finally {
+      installRefreshedModelMetadata(undefined);
+    }
+  });
+
+  test('refreshed kimi-coding-plan ids with efforts but no family fact send no thinking wire', () => {
+    // Declared efforts identify a knob, not the thinking wire: without the
+    // provider-owned family, an unknown id must not be guessed onto the K3
+    // adaptive mode — a K2-family id would lose its compatibility budget
+    // there.
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        'kimi-future-model': { thinkingOptions: { efforts: ['low', 'high'] } },
+      },
+    });
+    try {
+      const kimi = conn('kimi-coding-plan');
+      assert.deepEqual(buildProviderOptions(kimi, 'kimi-future-model', 'high'), {
+        anthropic: {},
+      });
+    } finally {
+      installRefreshedModelMetadata(undefined);
+    }
+  });
+
+  test('documented k3.1 ids keep the adaptive wire when a refresh lacks the family fact', () => {
+    // Belt for the narrow fallback: Kimi documents k3.1-pro and
+    // k3.1-pro-highspeed as effort-capable on the Anthropic-compatible
+    // endpoint, so they keep the K3 wire even if a projection lacks family.
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        'k3.1-pro': { thinkingOptions: { efforts: ['low', 'high', 'max'] } },
+      },
+    });
+    try {
+      const kimi = conn('kimi-coding-plan');
+      assert.deepEqual(buildProviderOptions(kimi, 'k3.1-pro', 'high'), {
+        anthropic: { thinking: { type: 'adaptive' }, effort: 'high' },
       });
     } finally {
       installRefreshedModelMetadata(undefined);
