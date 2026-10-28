@@ -64,6 +64,8 @@ import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import { CapabilityRequest, computerCapability } from './CapabilityRequest';
 import { FormRequest } from './FormRequest';
+import { ComputerAppRequest } from './ComputerAppRequest';
+import { computerAppOptions } from './interaction-computer-app';
 import {
   formSubmission,
   initialForm,
@@ -179,6 +181,18 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
     return outcome.decision === 'allow'
       ? uiMessage('Capability allowed')
       : uiMessage('Capability denied');
+  if (outcome.kind === 'computer_app_decision')
+    return outcome.decision === 'deny'
+      ? uiMessage('Application access denied')
+      : uiMessage('Application access allowed · {scope}', {
+          scope: uiMessage(
+            outcome.decision === 'once'
+              ? 'This call'
+              : outcome.decision === 'session'
+                ? 'This session'
+                : 'Always',
+          ),
+        });
   return uiMessage('Request closed · {reason}', { reason: outcome.reason.replaceAll('_', ' ') });
 }
 
@@ -235,6 +249,10 @@ export function InteractionComposer({
     const current = request();
     return current?.kind === 'client_capability' ? current : null;
   };
+  const computerAppRequest = () => {
+    const current = request();
+    return current?.kind === 'computer_app' ? current : null;
+  };
   const sameRecord = (value: InteractionRecord | null | undefined) =>
     value?.sessionId === sessionId && value?.requestId === requestId;
   const ownsAction = (owner: InteractionOwner) =>
@@ -244,7 +262,7 @@ export function InteractionComposer({
     return current ? JSON.stringify(current.questions) : null;
   };
   const responseIdentity = () =>
-    formRequest() || capabilityRequest() ? JSON.stringify(request()) : null;
+    formRequest() || capabilityRequest() || computerAppRequest() ? JSON.stringify(request()) : null;
   const form = () => formSubmission(formRequest()?.fields ?? [], formDrafts());
   const changeForm = (
     choice: InteractionOwner & {
@@ -456,7 +474,12 @@ export function InteractionComposer({
     if (ownsAction(owner)) void refresh();
   };
   const respond = async (answer: InteractionAnswer) => {
-    if (blocked() || answer.kind !== request()?.kind) return;
+    if (
+      blocked() ||
+      (answer.kind !== request()?.kind &&
+        !(answer.kind === 'computer_app_cancel' && computerAppRequest()))
+    )
+      return;
     busy.set(true);
     error.set('');
     try {
@@ -523,6 +546,8 @@ export function InteractionComposer({
       return form().answer;
     } else if (current.kind === 'client_capability' && computerCapability(current)) {
       return { kind: 'client_capability', decision: 'allow' };
+    } else if (current.kind === 'computer_app') {
+      return { kind: 'computer_app', decision: 'once' };
     }
     return null;
   };
@@ -546,6 +571,7 @@ export function InteractionComposer({
     if (kind === 'form') return { kind, action: 'decline' };
     if (kind === 'client_capability' && computerCapability(capabilityRequest()!))
       return { kind, decision: 'deny' };
+    if (kind === 'computer_app') return { kind, decision: 'deny' };
     return null;
   };
   const deny = () => {
@@ -562,12 +588,24 @@ export function InteractionComposer({
   ) => {
     if (!ownsAction(rendered) || blocked()) return;
     const answer = JSON.parse(rendered.answerJSON) as InteractionAnswer | null;
-    if (!answer || answer.kind !== request()?.kind) return;
+    if (
+      !answer ||
+      (answer.kind !== request()?.kind &&
+        !(answer.kind === 'computer_app_cancel' && computerAppRequest()))
+    )
+      return;
     if (answer.kind === 'question' && rendered.questionsJSON !== questionIdentity()) return;
     if (answer.kind === 'service_approval' && rendered.sourceJSON !== sourceIdentity()) return;
     if (
-      ['form', 'client_capability'].includes(answer.kind) &&
+      ['form', 'client_capability', 'computer_app', 'computer_app_cancel'].includes(answer.kind) &&
       rendered.requestJSON !== responseIdentity()
+    )
+      return;
+    if (
+      answer.kind === 'computer_app' &&
+      !computerAppOptions(computerAppRequest()!).some(
+        (option) => JSON.stringify(option.answer) === rendered.answerJSON,
+      )
     )
       return;
     if (
@@ -625,6 +663,7 @@ export function InteractionComposer({
           question: 'A question for you',
           form: tr('Form request'),
           client_capability: tr('Capability request'),
+          computer_app: tr('Application access request'),
         }[current.kind]
       : tr('Review request');
   };
@@ -937,6 +976,9 @@ export function InteractionComposer({
                 <If when={request()?.kind === 'client_capability'}>
                   <CapabilityRequest request={capabilityRequest()!} sessionId={sessionId} />
                 </If>
+                <If when={computerAppRequest()}>
+                  <ComputerAppRequest request={computerAppRequest()!} />
+                </If>
               </View>
             }
           >
@@ -1015,6 +1057,23 @@ export function InteractionComposer({
               gap: 8,
             }}
           >
+            <If when={computerAppRequest() && !record()?.outcome}>
+              <InteractionAction
+                label={tr('Cancel request')}
+                disabled={blocked()}
+                onPress={answerBinding({ kind: 'computer_app_cancel' })}
+              />
+              <Each of={computerAppOptions(computerAppRequest()!)}>
+                {(option) => (
+                  <InteractionAction
+                    label={renderText(option().label)}
+                    primary={option().answer.decision === 'once'}
+                    disabled={blocked()}
+                    onPress={answerBinding(option().answer)}
+                  />
+                )}
+              </Each>
+            </If>
             <If when={request()?.kind === 'form' && !record()?.outcome}>
               <InteractionAction
                 label={tr('Cancel request')}

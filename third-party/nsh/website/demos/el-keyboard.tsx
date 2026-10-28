@@ -54,7 +54,7 @@ function App() {
           </Switch>
         </View>
         <Text style={{ color: ui().accent, fontSize: 13 }}>
-          keyboardFrame(): height {Math.round(keyboardFrame().height)} · duration {keyboardFrame().duration.toFixed(2)} s
+          keyboardFrame(): height {Math.round(keyboardFrame().height)} · duration {Math.round(keyboardFrame().duration)} ms
         </Text>
       </View>
 

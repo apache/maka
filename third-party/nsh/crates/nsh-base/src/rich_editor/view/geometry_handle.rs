@@ -80,7 +80,7 @@ pub(super) fn register_geometry(
     state: Rc<RefCell<EditorState>>,
 ) -> (Arc<dyn ViewGeometry>, GeometryLease) {
     let id = NEXT_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .expect("RichEditor geometry IDs exhausted");
     // Own cleanup before publishing either the payload or the proxy.
     let lease = GeometryLease {

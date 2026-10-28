@@ -29,12 +29,13 @@ export type RuntimeProtocol =
   | ClientOperation
   | HostLogRequest
   | HostLogPage
-  | UiAuthoringCommand
-  | UiAuthoringClaim
-  | UiAuthoringState
   | CompositionInput
   | Deployment
   | DeploymentRead
+  | UiRead
+  | UiWatch
+  | UiInstance
+  | UiCatalog
   | PackageInstall
   | PackageInstalled
   | DeploymentReplace
@@ -60,47 +61,7 @@ export type RuntimeProtocol =
   | Contract
   | Import
   | Export
-  | UiExport
-  | ValueBindings
-  | ComponentInput
-  | ComponentOutput
-  | ComponentSlot
-  | TerminalScene
-  | CapturePlan
-  | ActionOutcome
-  | CallerHistoryPage
   | CallerIntent
-  | LabelProps
-  | TextareaProps
-  | FilePasteObservation
-  | MarkdownProps
-  | DiffProps
-  | MarkdownLink
-  | FilePickerProps
-  | FileObservation
-  | FileCapture
-  | SourceTextProps
-  | TerminalViewProps
-  | TerminalViewObservation
-  | TerminalInputBatch
-  | TerminalInputAcknowledgement
-  | SelectionMenuProps
-  | ReadingProps
-  | ReadingObservation
-  | RowsProps
-  | ValueCheckpointProps
-  | TextFileProps
-  | TextFileObservation
-  | MorphMarkProps
-  | MorphMarkConfiguration
-  | ValueCheckpointObservation
-  | RowActivated
-  | InputProps
-  | EditorObservation
-  | EditorCheckpointObservation
-  | EditorCapture
-  | ReadText
-  | TextChunk
   | AgentConfiguration
   | WorkspaceJevConfiguration
   | JevSet
@@ -382,9 +343,7 @@ export type RuntimeProtocol =
   | HostObservation
   | OperationObservation
   | OperationReply
-  | ResourceMetadata
-  | MarkdownTextInput
-  | MarkdownTextResult;
+  | ResourceMetadata;
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
@@ -456,71 +415,6 @@ export type HostLogPage =
       hasMore: boolean;
     };
 export type HostLogReset = 'replaced' | 'truncated';
-export type UiAuthoringCommand =
-  | {
-      method: 'instances';
-      input: DeploymentInstances;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'readDocument';
-      input: DeploymentDocumentRead;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'readPackage';
-      input: PackageSourceRead;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'installSource';
-      input: PackageSourceInstall;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'installUrl';
-      input: PackageUrlInstall;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'replaceSource';
-      input: DeploymentSourceReplace;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'editComposition';
-      input: CompositionEdit;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'configure';
-      input: InstanceConfigure;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'bindingCandidates';
-      input: BindingCandidatesRead;
-      [k: string]: unknown | undefined;
-    }
-  | {
-      method: 'packageSettings';
-      input: PackageSettingsRead;
-      [k: string]: unknown | undefined;
-    };
-/**
- * A fixed committed source for continuation; no runtime or permission claim.
- */
-export type DeploymentInstances =
-  | {
-      kind: 'start';
-    }
-  | {
-      kind: 'continue';
-      source: DeploymentRef;
-      after?: InstanceId | null;
-    };
-export type ExecutionLocation = 'host' | 'ui';
-export type PresentationTarget = 'tui';
 /**
  * Templates can select an entry in their own immutable package without a
  * self-referential content hash. Deployment roots must select a pinned revision.
@@ -533,7 +427,7 @@ export type PackageSelection =
   | {
       source: 'current';
     };
-export type PackageUse = 'entry' | 'composition';
+export type PackageUse = 'host' | 'ui' | 'composition';
 export type Target =
   | {
       kind: 'instance';
@@ -558,16 +452,6 @@ export type Interface =
       };
     }
   | {
-      kind: 'component';
-      props: unknown;
-      events: {
-        [k: string]: unknown | undefined;
-      };
-      captures: {
-        [k: string]: Capture | undefined;
-      };
-    }
-  | {
       kind: 'value';
       schema: unknown;
     }
@@ -577,46 +461,47 @@ export type Interface =
       schema: unknown;
     };
 export type MethodMode = 'query' | 'mutation' | 'subscription';
-/**
- * Resource captures enter checked service slots; continuations remain in the
- * original presentation owner and only decide admission of query feedback.
- */
-export type CaptureOutput =
-  | {
-      kind: 'resource';
-      resource: ResourceType;
-    }
-  | {
-      kind: 'continuation';
-    };
 export type Availability = 'required' | 'optional';
-/**
- * One atomic patch to the original source, not a saved plan or draft registry.
- */
-export type CompositionChange =
+export type UiContribution =
   | {
-      kind: 'insert';
-      name: string;
-      package: PackageRef;
-      settings: SettingChange[];
-      bindings: {
-        [k: string]: Target[] | undefined;
-      };
+      kind: 'root';
     }
   | {
-      kind: 'update';
-      name: string;
-      configuration: {
-        [k: string]: unknown | undefined;
-      };
-      bindings: {
-        [k: string]: Target[] | undefined;
-      };
+      kind: 'panel';
+      title: UiText;
     }
   | {
-      kind: 'remove';
-      name: string;
+      kind: 'command';
+      title: UiText;
+    }
+  | {
+      kind: 'tool_renderer';
+      presentation: string;
+    }
+  | {
+      kind: 'settings';
+      title: UiText;
     };
+/**
+ * A fixed committed source for continuation; no runtime or permission claim.
+ */
+export type DeploymentInstances =
+  | {
+      kind: 'start';
+    }
+  | {
+      kind: 'continue';
+      source: DeploymentRef;
+      after?: InstanceId | null;
+    };
+export type SettingKind =
+  | 'text'
+  | 'number'
+  | 'boolean'
+  | 'object'
+  | 'array'
+  | 'null'
+  | 'unsupported';
 export type SettingValue =
   | {
       kind: 'text';
@@ -642,28 +527,6 @@ export type BindingConsumer =
       kind: 'package';
       package: PackageRef;
     };
-export type UiAuthoringState =
-  | {
-      status: 'queued';
-      [k: string]: unknown | undefined;
-    }
-  | {
-      status: 'claimed';
-      [k: string]: unknown | undefined;
-    }
-  | {
-      status: 'completed';
-      outcome: unknown;
-      [k: string]: unknown | undefined;
-    };
-export type SettingKind =
-  | 'text'
-  | 'number'
-  | 'boolean'
-  | 'object'
-  | 'array'
-  | 'null'
-  | 'unsupported';
 export type BindingCandidate =
   | {
       kind: 'bound';
@@ -693,6 +556,34 @@ export type Cardinality =
       max: number;
     };
 /**
+ * One atomic patch to the original source, not a saved plan or draft registry.
+ */
+export type CompositionChange =
+  | {
+      kind: 'insert';
+      name: string;
+      package: PackageRef;
+      usePackage: PackageUse;
+      settings: SettingChange[];
+      bindings: {
+        [k: string]: Target[] | undefined;
+      };
+    }
+  | {
+      kind: 'update';
+      name: string;
+      configuration: {
+        [k: string]: unknown | undefined;
+      };
+      bindings: {
+        [k: string]: Target[] | undefined;
+      };
+    }
+  | {
+      kind: 'remove';
+      name: string;
+    };
+/**
  * A deterministic refusal is a recorded business result. Uncertain SQL/worker
  * failures remain in the original operation journal's Unknown outcome.
  */
@@ -716,7 +607,6 @@ export type ManagementRejection =
   | 'invalid_document'
   | 'invalid_source'
   | 'package_unavailable'
-  | 'execution_environment'
   | 'instance_unavailable'
   | 'parent_disabled';
 /**
@@ -748,590 +638,6 @@ export type Implementation =
       implementation: string;
     };
 export type Realm = 'shared' | 'dedicated';
-/**
- * Actual exports from a local JavaScript entry. Values are immutable for this
- * activation; component paths are captured before publication.
- */
-export type UiExport =
-  | {
-      kind: 'component';
-      contract: Contract;
-      component: string[];
-    }
-  | {
-      kind: 'value';
-      contract: Contract;
-      value: unknown;
-    };
-/**
- * Input origin is assigned by the application, never by plugin event payloads.
- */
-export type ComponentInput =
-  | {
-      kind: 'raw';
-      key: string;
-      event: unknown;
-    }
-  | {
-      kind: 'action';
-      key: string;
-      event: unknown;
-    }
-  | {
-      kind: 'component';
-      key: string;
-      child: string;
-      name: string;
-      event: unknown;
-    };
-export type Surface = {
-  kind: 'terminal';
-  binding: string;
-};
-export type TerminalScene =
-  | {
-      kind: 'rule';
-      key: string;
-      direction: TerminalDirection;
-      color: TerminalColor;
-      ascii: boolean;
-    }
-  | {
-      kind: 'choice';
-      key: string;
-      label: string;
-      options: TerminalChoiceOption[];
-      current?: string | null;
-      disabled?: boolean;
-      ascii?: boolean;
-      foreground: TerminalColor;
-      background: TerminalColor;
-      border: TerminalColor;
-      selected: TerminalColor;
-      accent: TerminalColor;
-    }
-  | {
-      kind: 'item';
-      key: string;
-      content: TerminalScene;
-      disabled?: boolean;
-      current?: boolean;
-      /**
-       * Current-row fill; absent uses the terminal's reverse-video selection.
-       */
-      selected_color?: TerminalColor | null;
-      selected_foreground?: TerminalColor | null;
-      follow_focus?: boolean;
-      submit?: boolean;
-      /**
-       * Emit submit for physical Space; focus and pointer activation stay separate.
-       */
-      submit_space?: boolean;
-    }
-  | {
-      kind: 'context_menu';
-      key: string;
-      /**
-       * Native Copy selection entry; absent omits selection capture.
-       */
-      copy_selection_label?: string | null;
-      background: TerminalScene;
-      content: TerminalScene;
-      /**
-       * Place a controlled dialog next to its background, preferring above it.
-       * The viewport bounds remain authoritative on small terminals.
-       */
-      anchor_to_background?: boolean;
-      ascii?: boolean;
-      label: string;
-      /**
-       * Maximum foreground body dimensions, in terminal cells.
-       */
-      width: number;
-      height: number;
-      background_color: TerminalColor;
-      border_color: TerminalColor;
-      title_color?: TerminalColor | null;
-      padding?: number;
-    }
-  | {
-      kind: 'dialog';
-      key: string;
-      background: TerminalScene;
-      content: TerminalScene;
-      open: boolean;
-      /**
-       * Place a controlled dialog next to its background, preferring above it.
-       * The viewport bounds remain authoritative on small terminals.
-       */
-      anchor_to_background?: boolean;
-      ascii?: boolean;
-      label: string;
-      /**
-       * Maximum foreground body dimensions, in terminal cells.
-       */
-      width: number;
-      height: number;
-      background_color: TerminalColor;
-      border_color: TerminalColor;
-      title_color?: TerminalColor | null;
-      padding?: number;
-    }
-  | {
-      kind: 'adaptive_pane';
-      key: string;
-      background: TerminalScene;
-      content: TerminalScene;
-      pane_width: number;
-      inline_min_width: number;
-      auto_inline_min_width: number;
-      overlay: TerminalDialogAppearance;
-      motion: boolean;
-      command?: TerminalPaneCommand | null;
-    }
-  | {
-      kind: 'stack';
-      key: string;
-      direction: TerminalDirection;
-      wide?: TerminalResponsiveStack | null;
-      gap: number;
-      padding: number;
-      /**
-       * Layout-only stacks inherit their parent; an explicit color fills the area.
-       */
-      background?: TerminalColor | null;
-      children: TerminalScene[];
-      /**
-       * One cell outside padding; absent means no border or border inset.
-       */
-      border?: TerminalBorder | null;
-      /**
-       * Establish the allocated inner size as the descendants' layout viewport.
-       * Children do not contribute intrinsic size; use grow/basis or an
-       * externally allocated root area to supply this container's size.
-       */
-      viewport?: boolean;
-      /**
-       * One Tab stop; arrows navigate its items in declaration order.
-       */
-      focus_group?: boolean;
-      /**
-       * On structural reveal, focus the first visible enabled tab stop;
-       * a scrollable container without tab stops receives focus itself.
-       */
-      auto_focus?: boolean;
-      wheel?: TerminalWheelCommands | null;
-      shortcuts?: Shortcut[];
-      focus_shortcuts?: FocusShortcut[];
-      layout?: TerminalLayout;
-      scroll?: TerminalScrollPolicy & string;
-      visible?: boolean;
-    }
-  | {
-      kind: 'text';
-      key: string;
-      text: string;
-      /**
-       * Passive hover description; never participates in focus or activation.
-       */
-      hint?: string;
-      color: TerminalColor;
-      /**
-       * Render a single line, eliding overflow at a complete grapheme.
-       */
-      truncate?: boolean;
-      animation?: TerminalAnimationFrame[];
-      align?: TerminalAlign & string;
-      bold?: boolean;
-    }
-  | {
-      kind: 'button';
-      key: string;
-      label: string;
-      /**
-       * Label alignment within the button hit area; absent centers it.
-       */
-      align?: TerminalAlign | null;
-      hint?: string;
-      /**
-       * Enter a declared child's native focus target instead of emitting a click.
-       */
-      focus_child?: string | null;
-      /**
-       * Copy this committed text as the physical button's default action.
-       * No clipboard access occurs from a synthetic component dispatch.
-       */
-      copy_text?: string | null;
-      disabled?: boolean;
-      /**
-       * Absent foreground uses the terminal's default text color.
-       */
-      color?: TerminalColor | null;
-      /**
-       * Fill the whole button hit area at rest; absent inherits its parent.
-       */
-      background?: TerminalColor | null;
-      /**
-       * Hover lifts the fill without selecting or focusing the button.
-       */
-      hover_background?: TerminalColor | null;
-      /**
-       * Emphasize the label and hit area independently of keyboard focus.
-       */
-      bold?: boolean;
-    }
-  | {
-      kind: 'component';
-      key: string;
-      binding: string;
-      member: number;
-      props: unknown;
-      on: {
-        [k: string]: string | undefined;
-      };
-    };
-export type TerminalDirection = 'row' | 'column';
-/**
- * Terminal colors retain the user's ANSI palette and default background.
- * Numeric values are RGB; named values are emitted as terminal attributes.
- */
-export type TerminalColor = number | TerminalNamedColor;
-export type TerminalNamedColor =
-  | 'reset'
-  | 'black'
-  | 'red'
-  | 'green'
-  | 'yellow'
-  | 'blue'
-  | 'magenta'
-  | 'cyan'
-  | 'gray'
-  | 'dark_gray'
-  | 'light_red'
-  | 'light_green'
-  | 'light_yellow'
-  | 'light_blue'
-  | 'light_magenta'
-  | 'light_cyan'
-  | 'white';
-export type TerminalPaneOperation = 'toggle' | 'dismiss_transient';
-/**
- * Native scroll policy; offsets and accepted viewport geometry remain native.
- */
-export type TerminalScrollPolicy = 'none' | 'manual' | 'anchor' | 'follow_end';
-export type TerminalBorderStyle = 'rounded' | 'square' | 'ascii';
-export type Modifier = 'control' | 'primary' | 'alt' | 'shift' | 'super';
-export type TerminalAlign = 'start' | 'center' | 'end';
-export type CapturePlan =
-  | {
-      kind: 'forward';
-      source: CaptureSource;
-    }
-  | {
-      kind: 'native';
-    };
-export type ActionOutcome =
-  | {
-      status: 'not_accepted';
-      reason: string;
-    }
-  | {
-      status: 'succeeded';
-      value: unknown;
-    }
-  | {
-      status: 'updated';
-      value: unknown;
-    }
-  | {
-      status: 'failed';
-      reason: string;
-    }
-  | {
-      status: 'stale';
-    }
-  | {
-      status: 'operation';
-      reply: OperationReply;
-      /**
-       * Position of the original confirmed caller commit, independent of the
-       * business outcome. A missing commit never authorizes advancing recovery.
-       */
-      caller: CallerConfirmation | null;
-    };
-export type FontFamily = string;
-/**
- * Packed RGBA, including explicit alpha zero.
- */
-export type Color = number;
-export type ScrollbarMode = 'scrolling' | 'hover' | 'always';
-export type ScrollbarEntrance = 'fade' | 'slide_and_fade';
-/**
- * Product-selected native submit gesture. PrimaryEnter uses the platform
- * Control+Enter gesture in a terminal.
- */
-export type SubmitKey = 'enter' | 'primary_enter' | 'control_enter';
-export type EditorEdit =
-  | {
-      kind: 'replace_range';
-      range: TextRange;
-      text: string;
-    }
-  | {
-      kind: 'replace';
-      text: string;
-    }
-  | {
-      kind: 'reset';
-      text: string;
-    }
-  | {
-      kind: 'append';
-      text: string;
-    };
-export type FilePasteAction = 'next' | 'retry' | 'cancel';
-export type FilePhase = 'empty' | 'choosing' | 'ready' | 'failed';
-export type FileError =
-  | 'invalid_file'
-  | 'read_failed'
-  | 'limit_exceeded'
-  | 'budget_exhausted'
-  | 'worker_failed'
-  | 'clipboard_unavailable'
-  | 'paste_rejected';
-/**
- * Complete comparisons and structured patches reuse native parsers.
- */
-export type DiffContent =
-  | {
-      kind: 'annotated';
-      source: string;
-      rows: DiffRow[];
-    }
-  | {
-      kind: 'comparison';
-      before: string;
-      after: string;
-      language?: string | null;
-    }
-  | {
-      kind: 'patch';
-      source: string;
-      operation: DiffPatch;
-      language?: string | null;
-    };
-export type DiffKind = 'removed' | 'added' | 'context' | 'content';
-export type DiffPatch = 'create' | 'update';
-export type ShellOutput =
-  | {
-      mode: 'pipes';
-      stdout: string;
-      stderr: string;
-      latestStream?: PipeStream;
-      stdoutTruncated: boolean;
-      stderrTruncated: boolean;
-      redacted: boolean;
-    }
-  | {
-      mode: 'pty';
-      screen: string;
-      scrollback: string;
-      lastAlternateScreen?: string;
-      cols: number;
-      rows: number;
-      cursor: TerminalCursor;
-      alternateScreen: boolean;
-      truncated: boolean;
-      redacted: boolean;
-    };
-export type PipeStream = 'stdout' | 'stderr';
-export type RawAction =
-  | {
-      type: 'text';
-      text: string;
-    }
-  | {
-      type: 'paste';
-      text: string;
-    }
-  | {
-      type: 'key';
-      key: string;
-      modifiers?: TerminalModifiers;
-    }
-  | {
-      type: 'mouse';
-      event: RawEvent;
-      x: number;
-      y: number;
-      button?: MouseButton;
-      direction?: ScrollDirection;
-      modifiers?: TerminalModifiers;
-    };
-/**
- * @maxItems 3
- */
-export type TerminalModifiers =
-  | []
-  | [Modifier2]
-  | [Modifier2, Modifier2]
-  | [Modifier2, Modifier2, Modifier2];
-export type Modifier2 = 'ctrl' | 'alt' | 'shift';
-export type RawEvent = 'click' | 'press' | 'release' | 'move' | 'scroll';
-export type MouseButton = 'left' | 'middle' | 'right';
-export type ScrollDirection = 'up' | 'down';
-export type TerminalViewError = 'input_full' | 'input_failed' | 'budget_exhausted';
-export type ReadingTarget =
-  | {
-      kind: 'start';
-    }
-  | {
-      kind: 'end';
-    }
-  | {
-      kind: 'find';
-      query: string;
-      step: FindStep;
-    }
-  | {
-      kind: 'clear_find';
-    }
-  | {
-      kind: 'scroll_rows';
-      rows: number;
-    }
-  | {
-      kind: 'reveal_source';
-      /**
-       * @minItems 1
-       */
-      path: [string, ...string[]];
-      offset: number;
-      /**
-       * If supplied, reveal only while this accepted find retains its original physical intent.
-       */
-      find_sequence?: number | null;
-    }
-  | {
-      kind: 'focus_item';
-      key: string;
-    }
-  | {
-      kind: 'reveal_child';
-      key: string;
-    };
-export type FindStep = 'first' | 'next' | 'previous';
-export type ReadingScrollDirection = 'up' | 'down';
-export type ReadingStatus = 'applied' | 'cancelled' | 'rejected';
-export type ValueCheckpointCommand =
-  | {
-      kind: 'read';
-      sequence: number;
-    }
-  | {
-      kind: 'write';
-      sequence: number;
-      expectedRevision?: number | null;
-      value: unknown;
-    };
-export type TextFileOperation =
-  | {
-      kind: 'read';
-    }
-  | {
-      kind: 'write';
-      expectedDigest?: string | null;
-      text: string;
-    };
-export type TextFileState =
-  | {
-      kind: 'unavailable';
-    }
-  | {
-      kind: 'idle';
-    }
-  | {
-      kind: 'loading';
-    }
-  | {
-      kind: 'saving';
-    }
-  | {
-      kind: 'ready';
-      digest?: string | null;
-      text?: string | null;
-    }
-  | {
-      kind: 'failed';
-      error: TextFileError;
-    };
-export type TextFileError =
-  | 'read_failed'
-  | 'write_failed'
-  | 'invalid_file'
-  | 'invalid_utf8'
-  | 'conflict'
-  | 'worker_failed';
-export type ValueCheckpointState =
-  | {
-      kind: 'loading';
-    }
-  | {
-      kind: 'saving';
-    }
-  | {
-      kind: 'ready';
-      revision?: number | null;
-      value?: unknown;
-    }
-  | {
-      kind: 'failed';
-      diagnostic: string;
-    };
-export type TerminalPaste = 'reject_controls' | 'spaces';
-export type EditorOutcome =
-  | {
-      status: 'applied';
-    }
-  | {
-      status: 'conflict';
-      reason: EditorConflict;
-    };
-export type EditorConflict =
-  | 'persistence'
-  | 'owner'
-  | 'representation'
-  | 'revision'
-  | 'composition'
-  | 'sequence';
-export type EditorCheckpointState =
-  | {
-      kind: 'loading';
-    }
-  | {
-      kind: 'restore';
-      version: number;
-      snapshot: EditorSnapshot;
-      metadata: unknown;
-    }
-  | {
-      kind: 'ready';
-      saved: boolean;
-      initialized: boolean;
-    }
-  | {
-      kind: 'failed';
-      diagnostic: string;
-    };
-export type EditorCapture =
-  | {
-      kind: 'current';
-    }
-  | {
-      kind: 'at_revision';
-      owner: string;
-      revision: number;
-    };
 export type McpTransport =
   | {
       type: 'stdio';
@@ -2028,23 +1334,19 @@ export type ToolOrigin =
   | {
       kind: 'provider';
       step_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_mode';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_cell';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'standalone';
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'host_sdk';
@@ -2052,8 +1354,12 @@ export type ToolOrigin =
       entry_id: string;
       activation: string;
       parent_operation_id?: string | null;
-      [k: string]: unknown | undefined;
+      parent_relationship?: HostSdkRelationship | null;
     };
+export type HostSdkRelationship = {
+  kind: 'evaluation_observer';
+  epoch: string;
+};
 export type UsageToolResult =
   | {
       kind: 'rejected';
@@ -3934,7 +3240,8 @@ export type AgentInteractionKind =
   | 'question'
   | 'permissions'
   | 'form'
-  | 'client_capability';
+  | 'client_capability'
+  | 'computer_app';
 export type InteractionAnswer =
   | {
       kind: 'service_approval';
@@ -3971,6 +3278,13 @@ export type InteractionAnswer =
   | {
       kind: 'client_capability';
       decision: Decision;
+    }
+  | {
+      kind: 'computer_app';
+      decision: ComputerAppDecision;
+    }
+  | {
+      kind: 'computer_app_cancel';
     };
 export type Decision = 'allow' | 'deny';
 export type Decision2 =
@@ -3984,6 +3298,7 @@ export type Decision2 =
     };
 export type Scope2 = 'once' | 'turn' | 'session';
 export type FormValue = string | number | boolean | string[];
+export type ComputerAppDecision = 'once' | 'session' | 'always' | 'deny';
 export type AgentInteractionResult =
   | {
       kind: 'recorded';
@@ -4030,6 +3345,16 @@ export type InteractionRequest =
        * Unbound capabilities are explicit; Agent-owned capabilities capture a full binding stamp.
        */
       basis?: PermissionBasis | null;
+    }
+  | {
+      kind: 'computer_app';
+      toolUseId: string;
+      nativeOperationId: string;
+      target: GrantTarget;
+      basis: PermissionBasis;
+      display: ComputerAppDisplay;
+      allowAlways: boolean;
+      authorityRevision: number;
     };
 export type FormField = {
   name: string;
@@ -4081,7 +3406,7 @@ export type FormField1 =
       [k: string]: unknown | undefined;
     };
 export type FormFormat = 'email' | 'uri' | 'date' | 'date-time';
-export type GrantCapability = 'browser' | 'computer_use' | 'desktop_mcp' | 'mcp';
+export type GrantCapability = 'browser' | 'computer_use' | 'computer_audio' | 'desktop_mcp' | 'mcp';
 export type GrantScope =
   | {
       kind: 'browser_origin';
@@ -4094,7 +3419,14 @@ export type GrantScope =
       kind: 'mcp_tool';
       serverId: string;
       toolName: string;
+    }
+  | {
+      kind: 'computer_app';
+      platform: ComputerAppPlatform;
+      applicationId: string;
     };
+export type ComputerAppPlatform = 'macos';
+export type ComputerAppRisk = 'low' | 'high';
 export type InteractionOutcome =
   | {
       kind: 'service_approval_decision';
@@ -4135,6 +3467,11 @@ export type InteractionOutcome =
   | {
       kind: 'client_capability_decision';
       decision: Decision;
+      committedAt: number;
+    }
+  | {
+      kind: 'computer_app_decision';
+      decision: ComputerAppDecision;
       committedAt: number;
     }
   | {
@@ -4255,6 +3592,41 @@ export type TerminalOutcome_TerminalOutputEvent =
       kind: 'failed';
       message: string;
     };
+export type RawAction =
+  | {
+      type: 'text';
+      text: string;
+    }
+  | {
+      type: 'paste';
+      text: string;
+    }
+  | {
+      type: 'key';
+      key: string;
+      modifiers?: TerminalModifiers;
+    }
+  | {
+      type: 'mouse';
+      event: RawEvent;
+      x: number;
+      y: number;
+      button?: MouseButton;
+      direction?: ScrollDirection;
+      modifiers?: TerminalModifiers;
+    };
+/**
+ * @maxItems 3
+ */
+export type TerminalModifiers =
+  | []
+  | [Modifier]
+  | [Modifier, Modifier]
+  | [Modifier, Modifier, Modifier];
+export type Modifier = 'ctrl' | 'alt' | 'shift';
+export type RawEvent = 'click' | 'press' | 'release' | 'move' | 'scroll';
+export type MouseButton = 'left' | 'middle' | 'right';
+export type ScrollDirection = 'up' | 'down';
 export type Ownership =
   | {
       kind: 'local';
@@ -4278,6 +3650,29 @@ export type ShellStatus =
   | 'timed_out'
   | 'cancelled'
   | 'orphaned';
+export type ShellOutput =
+  | {
+      mode: 'pipes';
+      stdout: string;
+      stderr: string;
+      latestStream?: PipeStream;
+      stdoutTruncated: boolean;
+      stderrTruncated: boolean;
+      redacted: boolean;
+    }
+  | {
+      mode: 'pty';
+      screen: string;
+      scrollback: string;
+      lastAlternateScreen?: string;
+      cols: number;
+      rows: number;
+      cursor: TerminalCursor;
+      alternateScreen: boolean;
+      truncated: boolean;
+      redacted: boolean;
+    };
+export type PipeStream = 'stdout' | 'stderr';
 export type TerminalOutcome_TerminalPage =
   | {
       kind: 'completed';
@@ -4617,6 +4012,10 @@ export type AgentDeliveryPage =
   | {
       kind: 'interactions';
       pending: AgentPendingInteractions;
+    }
+  | {
+      kind: 'computer_apps';
+      apps: AgentComputerApps;
     };
 /**
  * Trusted producer attribution, preserved independently of editable content.
@@ -5027,10 +4426,6 @@ export type Identity2 =
  * an unrevoked Host record and the issuing principal's current authorization.
  */
 export type Id = string;
-export type MarkdownTextResult = {
-  kind: 'ready';
-  text: string;
-};
 
 export interface ClientDraft {
   revision: number;
@@ -5128,66 +4523,14 @@ export interface RecoveryContract {
 export interface HostLogRequest {
   position: HostLogPosition;
 }
-export interface DeploymentDocumentRead {
-  source: DeploymentRef;
-  offset: number;
-}
-export interface PackageSourceRead {
-  source: DeploymentRef;
-  package: PackageRef;
-  path?: string | null;
-  offset: number;
-}
-export interface PackageRef {
-  id: string;
-  revision: string;
-}
-export interface PackageSourceInstall {
-  expectedRevision: number;
-  /**
-   * UTF-8 package files, including maka.extension.json. Bytes determine identity.
-   */
-  files: {
-    [k: string]: string | undefined;
-  };
-}
-export interface PackageUrlInstall {
-  expectedRevision: number;
-  url: string;
-  /**
-   * Optional SHA-256 of the downloaded bundle bytes, from a trusted publisher.
-   */
-  sha256?: string | null;
-}
-export interface DeploymentSourceReplace {
-  expectedRevision: number;
-  document: DeploymentDocument;
-}
-/**
- * Source document edited by one native buffer, never a second desired plan.
- */
-export interface DeploymentDocument {
-  input: CompositionInput;
-  remoteExports: RemoteObservation[];
-  packages: PackageRef[];
-}
 /**
  * Durable deployment input. Plans are derived and never persisted as overrides.
  */
 export interface CompositionInput {
-  environment: Environment;
   instances: {
     [k: string]: CompositionNode | undefined;
   };
-  launch?: Target | null;
-  /**
-   * Explicit ordinary fallback. Selection grants no extra capabilities.
-   */
-  recovery?: Target | null;
-}
-export interface Environment {
-  location: ExecutionLocation;
-  presentation?: PresentationTarget | null;
+  ui?: UiTarget | null;
 }
 export interface CompositionNode {
   key: string;
@@ -5200,6 +4543,10 @@ export interface CompositionNode {
   };
   disabled?: boolean;
   overrides?: Override[];
+}
+export interface PackageRef {
+  id: string;
+  revision: string;
 }
 export interface Configuration {
   values?: {
@@ -5230,6 +4577,15 @@ export interface Override {
     [k: string]: Target[] | undefined;
   };
   disabled?: boolean | null;
+}
+export interface UiTarget {
+  path: string[];
+  id: string;
+}
+export interface Deployment {
+  reference: DeploymentRef;
+  input: CompositionInput;
+  remoteExports: RemoteObservation[];
 }
 /**
  * A static compatibility observation, never a remote registration or grant.
@@ -5285,59 +4641,45 @@ export interface ResourceType {
   name: string;
   version: number;
 }
-export interface Capture {
-  input: unknown;
-  output: CaptureOutput;
-}
-export interface CompositionEdit {
-  expectedRevision: number;
-  edits: CompositionChange[];
-}
-export interface SettingChange {
-  /**
-   * @minItems 1
-   */
-  path: [string, ...string[]];
-  /**
-   * None removes the field; all other fields retain their original source.
-   */
-  value?: SettingValue | null;
-}
-export interface InstanceConfigure {
-  expectedRevision: number;
-  instance: InstanceId;
-  /**
-   * @minItems 1
-   */
-  changes: [SettingChange, ...SettingChange[]];
-}
-export interface BindingCandidatesRead {
-  source?: DeploymentRef | null;
-  consumer: BindingConsumer;
-  import: string;
-  includePackages: boolean;
-  after?: string | null;
-}
-export interface PackageSettingsRead {
-  source: DeploymentRef;
-  package: PackageRef;
-  path: string[];
-  after?: string | null;
-  changes: SettingChange[];
-}
-export interface UiAuthoringClaim {
-  request?: UiAuthoringRequest | null;
-}
-export interface UiAuthoringRequest {
-  id: string;
-  command: UiAuthoringCommand;
-}
-export interface Deployment {
-  reference: DeploymentRef;
-  input: CompositionInput;
-  remoteExports: RemoteObservation[];
-}
 export interface DeploymentRead {}
+/**
+ * UI contributions derived from one committed deployment source.
+ */
+export interface UiRead {
+  source?: DeploymentRef | null;
+}
+export interface UiWatch {
+  source: DeploymentRef;
+}
+export interface UiInstance {
+  instance: InstanceId;
+  path: string[];
+  package: PackageRef;
+  configuration: unknown;
+  module: string;
+  bindingBasis: string;
+  imports: {
+    [k: string]: number | undefined;
+  };
+  contributions: {
+    [k: string]: UiContribution | undefined;
+  };
+}
+export interface UiText {
+  fallback: string;
+  translations?: {
+    [k: string]: string | undefined;
+  };
+}
+export interface UiCatalog {
+  source: DeploymentRef;
+  ui?: UiRoot | null;
+  instances: UiInstance[];
+}
+export interface UiRoot {
+  instance: InstanceId;
+  id: string;
+}
 export interface PackageInstall {
   expectedRevision: number;
 }
@@ -5424,6 +4766,18 @@ export interface InstanceSetEnabled {
   instance: InstanceId;
   enabled: boolean;
 }
+/**
+ * Source document edited by one native buffer, never a second desired plan.
+ */
+export interface DeploymentDocument {
+  input: CompositionInput;
+  remoteExports: RemoteObservation[];
+  packages: PackageRef[];
+}
+export interface DeploymentDocumentRead {
+  source: DeploymentRef;
+  offset: number;
+}
 export interface InstanceSettingsRead {
   source: DeploymentRef;
   instance: InstanceId;
@@ -5478,6 +4832,31 @@ export interface SettingField {
   value?: SettingValue | null;
   options: SettingValue[];
 }
+export interface InstanceConfigure {
+  expectedRevision: number;
+  instance: InstanceId;
+  /**
+   * @minItems 1
+   */
+  changes: [SettingChange, ...SettingChange[]];
+}
+export interface SettingChange {
+  /**
+   * @minItems 1
+   */
+  path: [string, ...string[]];
+  /**
+   * None removes the field; all other fields retain their original source.
+   */
+  value?: SettingValue | null;
+}
+export interface BindingCandidatesRead {
+  source?: DeploymentRef | null;
+  consumer: BindingConsumer;
+  import: string;
+  includePackages: boolean;
+  after?: string | null;
+}
 export interface BindingCandidatesPage {
   source: DeploymentRef;
   configuration: {
@@ -5486,6 +4865,14 @@ export interface BindingCandidatesPage {
   current: Target[];
   candidates: BindingCandidate[];
   next?: string | null;
+}
+export interface PackageSettingsRead {
+  source: DeploymentRef;
+  package: PackageRef;
+  usePackage: PackageUse;
+  path: string[];
+  after?: string | null;
+  changes: SettingChange[];
 }
 export interface PackageSettingsPage {
   source: DeploymentRef;
@@ -5500,6 +4887,10 @@ export interface ManagedImport {
   contract: string;
   cardinality: Cardinality;
 }
+export interface CompositionEdit {
+  expectedRevision: number;
+  edits: CompositionChange[];
+}
 export interface DeploymentDocumentChunk {
   source: DeploymentRef;
   offset: number;
@@ -5508,19 +4899,12 @@ export interface DeploymentDocumentChunk {
   next?: number | null;
 }
 export interface PackageDeclaration {
-  entries?: {
-    host?: EntryDeclaration;
-    tui?: EntryDeclaration;
-  };
+  host?: EntryDeclaration | null;
+  ui?: UiEntry | null;
   composition?: Template | null;
 }
 export interface EntryDeclaration {
   implementation: Implementation;
-  /**
-   * Nominal ABI of this JavaScript entry's component scenes. Native recipes
-   * are checked through their compiled implementation availability instead.
-   */
-  scene?: SceneLanguage | null;
   configuration: unknown;
   imports?: {
     [k: string]: Import | undefined;
@@ -5529,16 +4913,19 @@ export interface EntryDeclaration {
     [k: string]: Export | undefined;
   };
 }
-/**
- * Presenter-owned language identity. The kernel does not interpret its syntax.
- */
-export interface SceneLanguage {
-  name: string;
-  version: number;
-}
 export interface Import {
   contract: Contract;
   cardinality: Cardinality;
+}
+export interface UiEntry {
+  module: string;
+  configuration: unknown;
+  imports?: {
+    [k: string]: Import | undefined;
+  };
+  contributions: {
+    [k: string]: UiContribution | undefined;
+  };
 }
 export interface Template {
   parameters?: {
@@ -5558,900 +4945,12 @@ export interface Parameter {
   schema: unknown;
   default?: unknown;
 }
-/**
- * Read-only data copied from this activation's captured value imports.
- * The keys and member order come from its checked plan, never guest routing.
- */
-export interface ValueBindings {
-  [k: string]: unknown[] | undefined;
-}
-/**
- * One callback's result. Events are finite transaction intents, never retained
- * in a committed Frame or replayed during rendering.
- */
-export interface ComponentOutput {
-  frame: Frame;
-  events: Emission[];
-  actions: Action[];
-  /**
-   * Request cancellation of this component's original mutation keys.
-   * This does not acknowledge business completion or physical cleanup.
-   */
-  cancel?: string[];
-  /**
-   * Complete current subscription demand. Empty removes previous demand.
-   */
-  subscriptions?: Action[];
-}
-export interface Frame {
-  revision: number;
-  state: unknown;
-  surface?: Surface | null;
-  view: unknown;
-}
-export interface Emission {
-  name: string;
-  value: unknown;
-}
-/**
- * An inert intent. Resource slots name capture requests, never bearer handles.
- */
-export interface Action {
-  key: string;
-  binding: string;
-  member: number;
-  method: string;
-  input: unknown;
-  resources: {
-    [k: string]: CaptureSource | undefined;
-  };
-  recovery?: unknown;
-  continuations?: CaptureSource[];
-}
-export interface CaptureSource {
-  child: string;
-  method: string;
-  input: unknown;
-}
-/**
- * One child of a committed component, owned by a committed native presentation.
- * Binding resolution belongs to the parent activation and the common mount kernel.
- */
-export interface ComponentSlot {
-  key: string;
-  binding: string;
-  member: number;
-  props: unknown;
-  on: {
-    [k: string]: string | undefined;
-  };
-}
-export interface TerminalChoiceOption {
-  key: string;
-  label: string;
-}
-/**
- * Appearance shared by controlled dialogs and transient adaptive panes.
- */
-export interface TerminalDialogAppearance {
-  /**
-   * Place a controlled dialog next to its background, preferring above it.
-   * The viewport bounds remain authoritative on small terminals.
-   */
-  anchor_to_background?: boolean;
-  ascii?: boolean;
-  label: string;
-  /**
-   * Maximum foreground body dimensions, in terminal cells.
-   */
-  width: number;
-  height: number;
-  background_color: TerminalColor;
-  border_color: TerminalColor;
-  title_color?: TerminalColor | null;
-  padding?: number;
-}
-/**
- * A one-shot mechanical command. Repeated or older sequences are ignored.
- * Toggle uses the last successfully placed viewport; before first placement it
- * is consumed without changing state. Dismiss never changes inline preference.
- */
-export interface TerminalPaneCommand {
-  sequence: number;
-  op: TerminalPaneOperation;
-}
-/**
- * Rearrange the same direct children at an allocated inner-width breakpoint.
- * Child overrides affect allocation in this stack, not a child's own wrapping.
- */
-export interface TerminalResponsiveStack {
-  min_width: number;
-  direction: TerminalDirection;
-  /**
-   * Scrolling can follow the same allocated-width breakpoint as the layout.
-   */
-  scroll?: TerminalScrollPolicy | null;
-  children?: {
-    [k: string]: TerminalLayout | undefined;
-  };
-}
-/**
- * Native terminal cell constraints on a child in its parent's main axis.
- * `grow` distributes remaining cells after fixed/intrinsic siblings; `basis`
- * supplies an explicit base instead of intrinsic length. `shrink` allows that
- * base to shrink proportionally when siblings exceed the available cells.
- * Row wrap preserves
- * source order and measures its rows before allocating the parent viewport.
- */
-export interface TerminalLayout {
-  grow?: number;
-  basis?: number | null;
-  basis_fraction?: TerminalFractionalBasis | null;
-  shrink?: boolean;
-  wrap?: boolean;
-}
-/**
- * Fraction of the allocated main axis, rounded down and clamped before growth
- * or shrinking. An unbounded axis uses the intrinsic length with the same bounds.
- */
-export interface TerminalFractionalBasis {
-  numerator: number;
-  denominator: number;
-  min?: number;
-  max?: number | null;
-}
-/**
- * A one-cell frame. Colors follow the same RGB convention as terminal text.
- * Focus color follows any focused native target inside this stack.
- */
-export interface TerminalBorder {
-  breathing?: boolean;
-  color: TerminalColor;
-  focused_color: TerminalColor;
-  style: TerminalBorderStyle;
-}
-/**
- * Explicit wheel actions in an original scrolling viewport. Offsets remain native.
- */
-export interface TerminalWheelCommands {
-  up: string;
-  down: string;
-}
-export interface Shortcut {
-  key: string;
-  /**
-   * @maxItems 4
-   */
-  modifiers:
-    | []
-    | [Modifier]
-    | [Modifier, Modifier]
-    | [Modifier, Modifier, Modifier]
-    | [Modifier, Modifier, Modifier, Modifier];
-  input: string;
-  enabled: boolean;
-}
-/**
- * Route navigation yielded by a native editor to a declared child component.
- * Ordinary unhandled button keys do not activate this binding.
- */
-export interface FocusShortcut {
-  key: string;
-  modifiers: Modifier[];
-  child: string;
-  enabled: boolean;
-}
-export interface TerminalAnimationFrame {
-  text: string;
-  millis: number;
-}
-export interface OperationReply {
-  reference: RecoveryRef;
-  receipt: Receipt;
-}
-/**
- * Peer attestation excludes caller-local recovery data. The receiving Host
- * still requires its private admission evidence; this is not a commit token.
- */
-export interface CallerConfirmation {
-  cursor: number;
-  caller: DeploymentRef;
-  consumer: InstanceId;
-  reference: RecoveryRef;
-}
-export interface CallerHistoryPage {
-  after: number;
-  limit: number;
-}
 export interface CallerIntent {
   cursor: number;
   caller: DeploymentRef;
   consumer: InstanceId;
   reference: RecoveryRef;
   recovery?: unknown;
-}
-export interface LabelProps {
-  text: string;
-  appearance: TextAppearance;
-  terminalForeground?: TerminalColor | null;
-  elapsed?: Elapsed | null;
-}
-export interface TextAppearance {
-  font: FontAppearance;
-  foreground: Color;
-}
-export interface FontAppearance {
-  family: FontFamily;
-  fallbacks: FontFamily[];
-  size: number;
-  /**
-   * Line height relative to this font size.
-   */
-  lineHeight: number;
-  weight: number;
-}
-export interface Elapsed {
-  from: number;
-  to: number | null;
-}
-export interface TextareaProps {
-  appearance: TextareaAppearance;
-  /**
-   * Exact whitespace-delimited literals rendered and edited as atomic inline tokens.
-   */
-  inlineTokens?: string[];
-  menu?: TextareaMenu | null;
-  accessibilityLabel: string;
-  readOnly: boolean;
-  disabled: boolean;
-  softWrap: boolean;
-  /**
-   * Preferred terminal text rows, excluding native padding. A constrained
-   * viewport may shrink further.
-   */
-  terminalRows?: TerminalTextareaRows;
-  /**
-   * None preserves native multiline editing without a submit shortcut.
-   */
-  submit?: SubmitKey | null;
-  /**
-   * Yield suggestion navigation only for the original observed editor state.
-   */
-  navigation?: EditorNavigation | null;
-  tabIndex: number;
-  /**
-   * Offer native focus once when this original input becomes visible and
-   * enabled. Stable updates and viewport scrolling do not repeat the offer.
-   */
-  autoFocus?: boolean;
-  initialText?: string;
-  placeholder?: string;
-  /**
-   * None issues no new command; an accepted command remains pending until
-   * its matching receipt commits. Clearing props is not cancellation.
-   */
-  command?: EditorCommand | null;
-  /**
-   * Opt-in local file-path paste. The context is returned unchanged; it is
-   * correlation, never a filesystem path or an authorization grant.
-   */
-  filePaste?: FilePastePolicy | null;
-  fileCommand?: FilePasteCommand | null;
-  persistence?: EditorPersistence | null;
-}
-export interface TextareaAppearance {
-  ascii?: boolean;
-  terminal?: TerminalPalette | null;
-  text: TextAppearance;
-  mutedForeground: Color;
-  background: Color;
-  selection: Color;
-  caret: Color;
-  border: Color;
-  focusedBorder: Color;
-  /**
-   * In TUI inputs, a positive width draws a one-cell border; zero has no inset.
-   */
-  borderWidth: number;
-  radius: number;
-  padding: Insets;
-  scrollbar: ScrollbarAppearance;
-}
-/**
- * Semantic terminal colors for rich text and editors, supplied by the product.
- */
-export interface TerminalPalette {
-  background: TerminalColor;
-  foreground: TerminalColor;
-  surface: TerminalColor;
-  accent: TerminalColor;
-  thinking: TerminalColor;
-  success: TerminalColor;
-  warning: TerminalColor;
-  error: TerminalColor;
-  muted: TerminalColor;
-  subtle: TerminalColor;
-  border: TerminalColor;
-  scrollbar: TerminalColor;
-  selection: TerminalColor;
-  selectionText: TerminalColor;
-  search: TerminalColor;
-  searchActive: TerminalColor;
-  searchText: TerminalColor;
-  /**
-   * @minItems 7
-   * @maxItems 7
-   */
-  syntax: [
-    TerminalColor,
-    TerminalColor,
-    TerminalColor,
-    TerminalColor,
-    TerminalColor,
-    TerminalColor,
-    TerminalColor,
-  ];
-  terminal: boolean;
-}
-export interface Insets {
-  top: number;
-  right: number;
-  bottom: number;
-  left: number;
-}
-export interface ScrollbarAppearance {
-  mode: ScrollbarMode;
-  entrance: ScrollbarEntrance;
-  idleMillis: number;
-  enterMillis: number;
-  exitMillis: number;
-  expandMillis: number;
-  trackWidth: number;
-  track: Color;
-  trackHover: Color;
-  trackActive: Color;
-  thumb: ScrollbarThumb;
-  thumbHover: ScrollbarThumb;
-  thumbActive: ScrollbarThumb;
-}
-export interface ScrollbarThumb {
-  color: Color;
-  width: number;
-  inset: number;
-  radius: number;
-  minLength: number;
-}
-/**
- * Local presentation for user-initiated native editing actions. This is not
- * a command interface: clipboard access still requires native activation.
- */
-export interface TextareaMenu {
-  appearance: MenuAppearance;
-  labels: TextareaMenuLabels;
-}
-export interface MenuAppearance {
-  text: TextAppearance;
-  background: Color;
-  border: Color;
-  activeBackground: Color;
-  activeForeground: Color;
-  disabledForeground: Color;
-  borderWidth: number;
-  radius: number;
-  padding: Insets;
-  rowPadding: Insets;
-  width: number;
-  windowMargin: number;
-}
-export interface TextareaMenuLabels {
-  title: string;
-  undo: string;
-  redo: string;
-  cut: string;
-  copy: string;
-  paste: string;
-  selectAll: string;
-}
-export interface TerminalTextareaRows {
-  min: number;
-  max: number;
-  /**
-   * Allow dragging the lower-right grip to override preferred rows, up to
-   * the containing viewport height. The minimum still applies.
-   */
-  resizable?: boolean;
-  /**
-   * Optional cap relative to the nearest declared layout viewport's height,
-   * or the surface when none is declared. The minimum still applies.
-   */
-  maxViewportFraction?: number | null;
-}
-export interface EditorNavigation {
-  owner: string;
-  basedOn: number;
-}
-export interface EditorCommand {
-  /**
-   * Correlation with the original native editor, never a resource grant.
-   */
-  owner: string;
-  sequence: number;
-  basedOn: number;
-  edit: EditorEdit;
-}
-/**
- * Ordered UTF-16 code-unit offsets, shared by selections and range edits.
- */
-export interface TextRange {
-  start: number;
-  end: number;
-}
-export interface FilePastePolicy {
-  context: string;
-  /**
-   * Clipboard text remains available when file attachments are disabled.
-   */
-  allowFiles: boolean;
-}
-export interface FilePasteCommand {
-  selection: FileCapture;
-  action: FilePasteAction;
-}
-export interface FileCapture {
-  owner: string;
-  revision: number;
-}
-export interface EditorPersistence {
-  key: string;
-  format: string;
-  dataSource: unknown;
-  metadata: unknown;
-  restore?: EditorRestoration | null;
-  retry?: number;
-}
-export interface EditorRestoration {
-  owner: string;
-  version: number;
-  clearText: boolean;
-}
-export interface FilePasteObservation {
-  context: string;
-  selection: FileObservation;
-  /**
-   * Includes the currently reading, ready or failed item.
-   */
-  remaining: number;
-  /**
-   * A failed original path can be reread. Clipboard reads require a new gesture.
-   */
-  retryable: boolean;
-}
-export interface FileObservation {
-  owner: string;
-  revision: number;
-  phase: FilePhase;
-  file?: FileDescriptor | null;
-  error?: FileError | null;
-}
-export interface FileDescriptor {
-  name: string;
-  bytes: number;
-  digest: string;
-}
-export interface MarkdownProps {
-  ascii?: boolean;
-  animate?: boolean;
-  source: string;
-  appearance: MarkdownAppearance;
-  selectable: boolean;
-  disabled: boolean;
-  /**
-   * Whether pointer selection also moves keyboard focus to this document.
-   */
-  focusOnPointer?: boolean;
-  /**
-   * The committed document decides native URL opening before guest work.
-   */
-  openWebLinks?: boolean;
-  bubbleLinks?: boolean;
-}
-export interface MarkdownAppearance {
-  terminal?: TerminalPalette | null;
-  body: TextAppearance;
-  code: TextAppearance;
-  /**
-   * Typography for heading levels 1 through 6, in source order.
-   *
-   * @minItems 6
-   * @maxItems 6
-   */
-  headings: [
-    TextAppearance,
-    TextAppearance,
-    TextAppearance,
-    TextAppearance,
-    TextAppearance,
-    TextAppearance,
-  ];
-  muted: Color;
-  link: Color;
-  selection: Color;
-  codeBackground: Color;
-  tableBackground: Color;
-  border: Color;
-  dark: boolean;
-  /**
-   * Paragraph spacing in logical pixels.
-   */
-  paragraphGap: number;
-}
-export interface DiffProps {
-  content: DiffContent;
-  appearance: DiffAppearance;
-  ascii: boolean;
-  disabled: boolean;
-  focusOnPointer: boolean;
-}
-export interface DiffRow {
-  /**
-   * Half-open UTF-8 byte range in source. Rows are ordered and disjoint.
-   */
-  start: number;
-  end: number;
-  kind: DiffKind;
-  language?: string | null;
-}
-export interface DiffAppearance {
-  terminal?: TerminalPalette | null;
-  text: TextAppearance;
-  background: Color;
-  added: Color;
-  removed: Color;
-  selection: Color;
-  dark: boolean;
-}
-export interface MarkdownLink {
-  url: string;
-}
-export interface FilePickerProps {
-  appearance: InputAppearance;
-  label: string;
-  pathLabel: string;
-  browseLabel: string;
-  parentLabel: string;
-  emptyLabel: string;
-  truncatedLabel: string;
-  placeholder: string;
-  disabled: boolean;
-  tabIndex: number;
-}
-export interface InputAppearance {
-  ascii?: boolean;
-  terminal?: TerminalPalette | null;
-  text: TextAppearance;
-  mutedForeground: Color;
-  background: Color;
-  selection: Color;
-  caret: Color;
-  border: Color;
-  focusedBorder: Color;
-  /**
-   * In TUI inputs, a positive width draws a one-cell border; zero has no inset.
-   */
-  borderWidth: number;
-  radius: number;
-  padding: Insets;
-}
-export interface SourceTextProps {
-  animate?: boolean;
-  terminal?: TerminalPalette | null;
-  source: string;
-  appearance: TextAppearance;
-  selection: Color;
-  disabled: boolean;
-  /**
-   * Whether pointer selection also moves keyboard focus to this source.
-   */
-  focusOnPointer?: boolean;
-}
-export interface TerminalViewProps {
-  /**
-   * Changed when the selected canonical resource changes, including read-only views.
-   */
-  source: string;
-  accessibilityLabel: string;
-  output?: ShellOutput | null;
-  controller?: string | null;
-  acknowledgement?: TerminalInputAcknowledgement | null;
-  appearance: TextAppearance;
-  background: Color;
-  caret: Color;
-  rows: number;
-  tabIndex: number;
-}
-export interface TerminalCursor {
-  x: number;
-  y: number;
-  visible: boolean;
-}
-export interface TerminalInputAcknowledgement {
-  owner: string;
-  controller: string;
-  sequence: number;
-  /**
-   * True only after the exact original mutation has a successful result.
-   */
-  accepted: boolean;
-}
-export interface TerminalViewObservation {
-  owner: string;
-  revision: number;
-  source: string;
-  controller?: string | null;
-  captured: boolean;
-  batch?: TerminalInputBatch | null;
-  error?: TerminalViewError | null;
-}
-export interface TerminalInputBatch {
-  controller: string;
-  sequence: number;
-  /**
-   * @maxItems 64
-   */
-  actions: RawAction[];
-  size?: TerminalSize | null;
-}
-/**
- * Shared by native PTY allocation, input validation and screen rendering.
- */
-export interface TerminalSize {
-  cols: number;
-  rows: number;
-}
-export interface SelectionMenuProps {
-  appearance: MenuAppearance;
-  labels: SelectionMenuLabels;
-  disabled: boolean;
-}
-export interface SelectionMenuLabels {
-  title: string;
-  copy: string;
-  selectAll: string;
-}
-export interface ReadingProps {
-  /**
-   * The presenter's scene language; each requires a scrolling column Stack.
-   * Its scroll policy and layout are the only presentation authority.
-   */
-  content: {
-    [k: string]: unknown | undefined;
-  };
-  /**
-   * Omission retains an accepted command; numbers increase per original mount.
-   */
-  command?: ReadingCommand | null;
-}
-export interface ReadingCommand {
-  sequence: number;
-  target: ReadingTarget;
-}
-export interface ReadingObservation {
-  /**
-   * Immediate native intent; can be newer than the painted viewport.
-   */
-  readingRevision: number;
-  viewport?: ReadingViewport | null;
-  scroll?: ReadingScroll | null;
-  /**
-   * Direct content child containing the native selection focus. Renderers
-   * without this observation return null. This key conveys no read authority.
-   */
-  selectedChildKey?: string | null;
-  pendingCommand?: number | null;
-  /**
-   * Only the most recently settled command is retained, without a ledger.
-   */
-  receipt?: ReadingReceipt | null;
-  find?: ReadingFind | null;
-}
-export interface ReadingViewport {
-  /**
-   * Explicit reading intent used by the actually painted children.
-   */
-  readingRevision: number;
-  atStart?: boolean;
-  atEnd: boolean;
-  visibleChildKeys: string[];
-}
-/**
- * Most recent physical scroll. Layout changes and programmatic landings do not
- * create a new request, so a product can load adjacent content without loops.
- */
-export interface ReadingScroll {
-  readingRevision: number;
-  direction: ReadingScrollDirection;
-}
-export interface ReadingReceipt {
-  sequence: number;
-  status: ReadingStatus;
-}
-export interface ReadingFind {
-  sequence: number;
-  count: number;
-  limited: boolean;
-  /**
-   * One-based current match, or null when no match remains.
-   */
-  index?: number | null;
-  active?: ReadingMatch | null;
-}
-export interface ReadingMatch {
-  /**
-   * @minItems 1
-   */
-  path: [string, ...string[]];
-  offset: number;
-}
-export interface RowsProps {
-  terminal?: TerminalPalette | null;
-  revision: number;
-  /**
-   * Select this row on keyboard entry. None retains the current selection,
-   * or selects the first row when there is no current selection.
-   */
-  entry?: string | null;
-  rows: Row[];
-  shortcuts: Shortcut[];
-  maxRows: number;
-  /**
-   * Optional smaller row cap below the nearest declared layout viewport's
-   * height, in cells; defaults to the surface when no viewport is declared.
-   */
-  compactBelow?: CompactRows | null;
-  tabIndex: number;
-  foreground: Color;
-  muted: Color;
-  selected: Color;
-  hovered: Color;
-  scrollbar: RowScrollbar;
-}
-export interface Row {
-  key: string;
-  text: string;
-  actions: RowAction[];
-}
-export interface RowAction {
-  key: string;
-  label: string;
-  enabled: boolean;
-}
-export interface CompactRows {
-  height: number;
-  maxRows: number;
-}
-export interface RowScrollbar {
-  thumb: string;
-  track: string;
-  thumbColor: Color;
-  trackColor: Color;
-}
-export interface ValueCheckpointProps {
-  key: string;
-  format: string;
-  command?: ValueCheckpointCommand | null;
-}
-export interface TextFileProps {
-  command?: TextFileCommand | null;
-}
-export interface TextFileCommand {
-  owner: string;
-  sequence: number;
-  operation: TextFileOperation;
-}
-export interface TextFileObservation {
-  owner: string;
-  path?: string | null;
-  sequence: number;
-  state: TextFileState;
-}
-export interface MorphMarkProps {
-  background: TerminalColor;
-  foreground: TerminalColor;
-  motion: boolean;
-  ascii: boolean;
-}
-export interface MorphMarkConfiguration {
-  /**
-   * @minItems 2
-   * @maxItems 2
-   */
-  shapes: [MorphShape, MorphShape];
-  color: TerminalColor;
-  period: number;
-}
-export interface MorphShape {
-  /**
-   * @minItems 1
-   */
-  paths: [[number, number][], ...[number, number][][]];
-  radius: number;
-  miters: number[];
-  columns: number;
-}
-export interface ValueCheckpointObservation {
-  sequence: number;
-  state: ValueCheckpointState;
-}
-export interface RowActivated {
-  revision: number;
-  row: string;
-  action: string;
-}
-export interface InputProps {
-  appearance: InputAppearance;
-  menu?: TextareaMenu | null;
-  accessibilityLabel: string;
-  readOnly: boolean;
-  disabled: boolean;
-  tabIndex: number;
-  /**
-   * Offer native focus once when this original input becomes visible and
-   * enabled. Stable updates and viewport scrolling do not repeat the offer.
-   */
-  autoFocus?: boolean;
-  /**
-   * UTF-8 byte capacity, fixed for this original native editor mount.
-   */
-  maxBytes?: number;
-  /**
-   * Terminal bracketed-paste policy. Other native insertion remains literal.
-   */
-  terminalPaste?: TerminalPaste & string;
-  placeholder?: string;
-  command?: EditorCommand | null;
-  /**
-   * Clipboard default for physical Enter at this original editor revision.
-   * Programmatic submitted events never execute this native default.
-   */
-  submitCopy?: SubmitCopy | null;
-}
-export interface SubmitCopy {
-  basis: EditorTextRef;
-  text: string;
-}
-export interface EditorTextRef {
-  owner: string;
-  revision: number;
-  bytes: number;
-}
-export interface EditorObservation {
-  revision: number;
-  snapshot: EditorSnapshot;
-  receipt: EditorReceipt | null;
-}
-export interface EditorSnapshot {
-  text: EditorTextRef;
-  selection: TextRange;
-  reversed: boolean;
-  marked: TextRange | null;
-}
-export interface EditorReceipt {
-  owner: string;
-  sequence: number;
-  revision: number;
-  outcome: EditorOutcome;
-}
-export interface EditorCheckpointObservation {
-  owner: string;
-  state: EditorCheckpointState;
-}
-export interface ReadText {
-  start: number;
-  end: number;
-}
-export interface TextChunk {
-  text: string;
-  metadata: unknown;
 }
 export interface AgentConfiguration {
   /**
@@ -6803,6 +5302,10 @@ export interface ExecutorAuthenticationMethod {
 export interface ComputerConfiguration {
   desktop?: Desktop & string;
   browsers?: BrowserConnection[];
+  /**
+   * Explicit opt-in to recording computer output audio.
+   */
+  audio?: boolean;
 }
 /**
  * An explicitly configured browser provider. The REPL cannot supply endpoints,
@@ -6815,7 +5318,8 @@ export interface BrowserConnection {
 export interface ComputerEvaluate {
   code: string;
   /**
-   * Wall-clock limit including asynchronous waits. Interrupted REPLs require reset.
+   * Execution budget. Trusted consent and macOS/Windows native waits pause it.
+   * Ordinary asynchronous waits remain charged. Interrupted REPLs require reset.
    */
   timeout_ms?: number;
   /**
@@ -8292,6 +6796,10 @@ export interface SkillLibraryOutcome {
   original: OperationReply;
   published?: SkillLibraryChangeResult | null;
 }
+export interface OperationReply {
+  reference: RecoveryRef;
+  receipt: Receipt;
+}
 export interface SkillLibrarySetPreference {
   reference: string;
   revision: number;
@@ -9208,6 +7716,12 @@ export interface GrantTarget {
   scope: GrantScope;
   [k: string]: unknown | undefined;
 }
+export interface ComputerAppDisplay {
+  name: string;
+  appPath: string;
+  risk?: ComputerAppRisk | null;
+  warning?: string | null;
+}
 export interface QuestionAsk {
   /**
    * @minItems 1
@@ -9418,6 +7932,13 @@ export interface TerminalOutputRequest {
   target: TerminalTarget;
   after?: number;
 }
+/**
+ * Shared by native PTY allocation, input validation and screen rendering.
+ */
+export interface TerminalSize {
+  cols: number;
+  rows: number;
+}
 export interface TerminalStart {
   sessionId: string;
   /**
@@ -9465,6 +7986,11 @@ export interface ShellSnapshot {
   revision: number;
   output?: ShellOutput;
 }
+export interface TerminalCursor {
+  x: number;
+  y: number;
+  visible: boolean;
+}
 export interface TerminalLeaseUpdate {
   controllerId: string;
   nextSequence?: number | null;
@@ -9508,7 +8034,7 @@ export interface AgentDelivery {
 }
 export interface AgentObservation {
   session: AgentSession;
-  compacting?: boolean;
+  compacting: AgentCompactionProgress | null;
   rememberedBackend?: AgentBackendPreference | null;
   metrics?: AgentSessionMetrics | null;
   through: number;
@@ -9518,6 +8044,13 @@ export interface AgentObservation {
    * Replay starts for active tool display, read at the same fence as the run.
    */
   toolSeeds: AgentToolSeed[];
+}
+export interface AgentCompactionProgress {
+  id: string;
+  /**
+   * Original compaction start in milliseconds since the Unix epoch.
+   */
+  startedAt: number;
 }
 /**
  * Display-only readings from the latest completed main-model request.
@@ -9635,6 +8168,19 @@ export interface AgentQueueEntry {
   messageId: string;
   kind: AgentQueueKind;
   preview: string;
+}
+export interface AgentComputerApps {
+  entries: AgentComputerAppActivityState[];
+}
+export interface AgentComputerAppActivityState {
+  activity: ComputerAppActivity;
+  stopped: boolean;
+}
+export interface ComputerAppActivity {
+  invocation: Invocation;
+  operationId: string;
+  target: GrantTarget;
+  display: ComputerAppDisplay;
 }
 export interface AgentQueueMessage {
   sessionId: string;
@@ -9864,10 +8410,4 @@ export interface ResourceMetadata {
   type: ResourceType;
   bytes: number;
   metadata: unknown;
-}
-/**
- * Complete source-to-readable-text conversion using the presenter's Markdown semantics.
- */
-export interface MarkdownTextInput {
-  source: string;
 }

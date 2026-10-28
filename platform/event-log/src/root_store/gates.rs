@@ -29,10 +29,13 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum Key {
+    Creation(String),
     // Session gates precede binding gates for operations that need both.
     Session(String),
     Work(String),
     Binding(uuid::Uuid),
+    // A profile revoke must linearize before or after a native dispatch T1.
+    ComputerApp(String),
 }
 
 pub(super) struct Gates {

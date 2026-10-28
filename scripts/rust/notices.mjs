@@ -26,6 +26,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { nativeCliTargets } from './pack-cli.mjs';
 import { rustTarget } from './build-cli.mjs';
 import { licenseFiles, licenseName } from './license-files.mjs';
+import { uiCompiler } from './product.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const documentPath = 'products/maka/cli/THIRD_PARTY_NOTICES.txt';
@@ -44,6 +45,8 @@ async function inputs(root) {
     'products/maka/bundle/package.json',
     'products/maka/cli/build.rs',
     'products/maka/cli/build/product.rs',
+    'products/maka/cli/build/ui.rs',
+    'scripts/rust/product.mjs',
     'scripts/rust/notices-sources.json',
     'platform/computer-use/THIRD_PARTY_NOTICES',
     'scripts/rust/v8-source.json',
@@ -106,8 +109,8 @@ export async function verifyNotices(root = repository) {
   return join(root, documentPath);
 }
 
-function run(command, args, cwd) {
-  return execFileSync(command, args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+function run(command, args, cwd, env = process.env) {
+  return execFileSync(command, args, { cwd, env, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
 }
 
 export async function generateNotices(root = repository) {
@@ -144,6 +147,22 @@ export async function generateNotices(root = repository) {
         })(),
       );
     return downloaded.get(url);
+  }
+  // The native browser host embeds only Playwright's published injected script,
+  // outside Cargo and the JavaScript bundle dependency graphs.
+  const playwrightDirectory = join(root, 'third-party/playwright');
+  const playwright = JSON.parse(await readFile(join(playwrightDirectory, 'upstream.json'), 'utf8'));
+  const playwrightComponent = `${playwright.registry_package}@${playwright.registry_version} (${playwright.license}; vendored injected script)`;
+  for (const file of ['injected.js', 'LICENSE', 'NOTICE', 'ThirdPartyNotices.txt']) {
+    const content = await readFile(join(playwrightDirectory, file));
+    if (hash(content) !== playwright.files[file])
+      throw new Error(`Vendored Playwright ${file} does not match upstream.json`);
+    if (file !== 'injected.js')
+      add(
+        playwrightComponent,
+        `${playwright.archive.url} (SHA-256 ${playwright.archive.sha256}) :: package/${file}`,
+        content.toString('utf8'),
+      );
   }
   const upstream = new Map();
   async function upstreamFiles(pkg, directory, provenance) {
@@ -296,7 +315,11 @@ export async function generateNotices(root = repository) {
   const stage = await mkdtemp(join(tmpdir(), 'maka-notices-'));
   try {
     const product = join(stage, 'product');
-    run(process.execPath, ['products/maka/bundle/scripts/build.mjs', '--output', product], root);
+    const compiler = await uiCompiler(root);
+    run(process.execPath, ['products/maka/bundle/scripts/build.mjs', '--output', product], root, {
+      ...process.env,
+      MAKA_UI_BUNDLER: compiler,
+    });
     const bundled = new Set();
     const inputs = [
       // Standalone validators contain Ajv-generated code without importing its
@@ -351,7 +374,7 @@ export async function generateNotices(root = repository) {
     join(root, manifestPath),
     JSON.stringify({ inputs: await inputs(root), sha256: hash(content) }, null, 2) + '\n',
   );
-  return { components: packages.size, texts: groups.size, bytes: Buffer.byteLength(content) };
+  return { components: packages.size + 1, texts: groups.size, bytes: Buffer.byteLength(content) };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

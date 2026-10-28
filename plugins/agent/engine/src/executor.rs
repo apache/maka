@@ -77,7 +77,7 @@ impl Engine {
             Arc::default(),
             None,
             cancellation,
-            move |cancellation, admitted| async move {
+            move |cancellation, admitted, effects| async move {
                 if cancellation.is_cancelled() {
                     return Err(RunError::Cancelled);
                 }
@@ -118,7 +118,17 @@ impl Engine {
                 if matches!(&settlement.result, Err(Error::CleanupUnconfirmed)) {
                     crate::cleanup::unconfirmed();
                 }
-                let outcome = outcome(&settlement.result, &cancellation);
+                let outcome = match effects.settle().await {
+                    Ok(()) => outcome(&settlement.result, &cancellation),
+                    Err(error) => {
+                        crate::cleanup::unconfirmed();
+                        InvocationOutcome::Failed {
+                            class: "outcome_unknown".into(),
+                            model_failure: None,
+                            message: Some(error.to_string().chars().take(2048).collect()),
+                        }
+                    }
+                };
                 let committed = output.finish(&settlement.result, &outcome).await;
                 drop(settlement); // the terminal fact owns the lease through its commit
                 committed?;

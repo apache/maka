@@ -193,9 +193,29 @@ impl Pending {
     pub async fn adopt(
         self,
         inner: &RunContext,
+        invocation: &maka_agent_facts::event::Invocation,
         cancellation: &CancellationToken,
     ) -> Result<bool, RunError> {
+        let waiting: Result<(), RunError> = async {
+            if !self.is_finished() && !cancellation.is_cancelled() {
+                inner
+                    .log
+                    .append(&EventWrite::plain(
+                        maka_agent_facts::event::RuntimeEvent::new(
+                            invocation.clone(),
+                            maka_agent_facts::event::Fact::ContextCompactionWaiting,
+                        ),
+                    )?)
+                    .await?;
+            }
+            Ok(())
+        }
+        .await;
+        if waiting.is_err() {
+            self.cancellation.cancel();
+        }
         let checkpoint = self.join().await?;
+        waiting?;
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
         }

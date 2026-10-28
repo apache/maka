@@ -17,23 +17,38 @@
  * under the License.
  */
 
-import { Text, View } from 'nsh';
+import { cleanup, signal, Text, View } from 'nsh';
 import { tr } from './locale';
 import { C, captionTextStyle } from './ui';
 
-export function CompactionDivider(props: { durationMs?: () => number }) {
+type CompactionDividerProps =
+  | { state: 'running'; startedAt: () => number }
+  | { state: 'completed'; durationMs: () => number };
+
+export function CompactionDivider(props: CompactionDividerProps) {
+  let durationMs: () => number;
+  if (props.state === 'running') {
+    const startedAt = props.startedAt;
+    const clock = signal(Date.now());
+    const timer = setInterval(() => clock.set(Date.now()), 1000);
+    cleanup(() => clearInterval(timer));
+    durationMs = () => Math.max(0, clock() - startedAt());
+  } else {
+    durationMs = props.durationMs;
+  }
   const duration = (milliseconds: number) => {
     const seconds = milliseconds / 1000;
     return seconds < 60
       ? `${seconds.toFixed(1)}s`
       : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
   };
-  const label = () => {
-    const milliseconds = props.durationMs?.();
-    return milliseconds === undefined
-      ? tr('Compacting context…')
-      : tr('Context compacted ({duration})', { duration: duration(milliseconds) });
-  };
+  const label = () =>
+    tr(
+      props.state === 'running'
+        ? 'Compacting context… ({duration})'
+        : 'Context compacted ({duration})',
+      { duration: duration(durationMs()) },
+    );
   return (
     <View
       style={{
@@ -42,6 +57,7 @@ export function CompactionDivider(props: { durationMs?: () => number }) {
         gap: 12,
         paddingVertical: 12,
         width: '100%',
+        flexShrink: 0,
       }}
     >
       <View style={{ flex: 1, borderTopWidth: 1, borderTopColor: C.line }} />

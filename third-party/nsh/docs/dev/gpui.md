@@ -229,7 +229,7 @@ their existing FIFO order. Terminal input follows this same route as window inpu
 completion or presentation receipts.
 
 For Kitty output, the host confirms the terminal cursor is at the origin before uploading a frame. The
-`nsh-gpui-terminal::kitty::KittyFrame::wire` transaction uploads the new image at `z=1` with `q=0` and
+`nsh-gpui-terminal::kitty::KittyFrame::into_wire` transaction uploads the new image at `z=1` with `q=0` and
 retains the previous placement underneath at `z=0`, enclosed in a synchronized update. The host waits
 for both the complete writer flush and the matching image success reply before recording completion
 with `mark_presented` and reusing the older slot. This bounds storage to two images without exposing

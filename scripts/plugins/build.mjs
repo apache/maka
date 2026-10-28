@@ -17,11 +17,21 @@
  * under the License.
  */
 
-import { mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
+import {
+  mkdir,
+  writeFile,
+  readFile,
+  rm,
+  access,
+  realpath,
+  mkdtemp,
+  copyFile,
+} from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, resolve, relative } from 'node:path';
+import { dirname, resolve, relative, posix, win32 } from 'node:path';
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
+import { spawn } from 'node:child_process';
 import { writeProductVersion } from './product-version.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -41,11 +51,7 @@ const header = (await readFile(resolve(repo, 'packages/plugin-sdk/src/index.ts')
   .split('\n\n', 1)[0]
   .trim();
 
-// Product selections are paths to authored packages, not a second declaration catalog.
-export async function bundle({ packages, output, composition }) {
-  const destination = resolve(output);
-  await rm(destination, { recursive: true, force: true });
-  await mkdir(destination, { recursive: true });
+function authoringOptions(packages, output, composition) {
   const entries = Object.fromEntries(
     Object.entries(packages).map(([name, path]) => [
       `packages/${name}`,
@@ -54,10 +60,10 @@ export async function bundle({ packages, output, composition }) {
   );
   entries.sdk = resolve(repo, 'packages/plugin-sdk/src/index.ts');
   if (composition) entries.composition = resolve(repo, composition);
-  const authoring = await build({
+  return {
     absWorkingDir: repo,
     entryPoints: entries,
-    outdir: resolve(destination, 'authoring'),
+    outdir: output,
     bundle: true,
     nodePaths: [resolve(dependencyRoot, 'node_modules')],
     platform: 'node',
@@ -65,16 +71,100 @@ export async function bundle({ packages, output, composition }) {
     outExtension: { '.js': '.mjs' },
     logLevel: 'silent',
     metafile: true,
+  };
+}
+
+async function manifestAt(authoring, name, path) {
+  const { default: manifest } = await import(
+    pathToFileURL(resolve(authoring, `packages/${name}.mjs`))
+  );
+  if (manifest.schemaVersion !== 1 || typeof manifest.id !== 'string' || !manifest.application)
+    throw new Error(`Invalid package declaration: ${path}`);
+  return manifest;
+}
+
+function packagePath(path) {
+  if (
+    typeof path !== 'string' ||
+    !path ||
+    path.includes('\\') ||
+    posix.isAbsolute(path) ||
+    win32.isAbsolute(path) ||
+    path.split('/').some((part) => !part || part === '.' || part === '..')
+  )
+    throw new Error(`Invalid package file path: ${path}`);
+  return path;
+}
+
+async function authoredSource(directory, module, extensions) {
+  packagePath(module);
+  const stem = module.replace(/\.(?:m?js)$/, '');
+  for (const file of [...extensions.map((extension) => stem + extension), module]) {
+    const source = resolve(directory, file);
+    if (await exists(source)) return realpath(source);
+  }
+  throw new Error(`No source for ${resolve(directory, module)}`);
+}
+
+const uiSource = (directory, module) => authoredSource(directory, module, ['.tsx', '.ts', '.mts']);
+
+export async function uiEntries({ packages, output }) {
+  const target = resolve(output);
+  await mkdir(dirname(target), { recursive: true });
+  const temporary = await mkdtemp(resolve(dirname(target), 'maka-ui-entries-'));
+  try {
+    await build(authoringOptions(packages, temporary));
+    const entries = new Set();
+    for (const [name, path] of Object.entries(packages)) {
+      const manifest = await manifestAt(temporary, name, path);
+      if (manifest.application.ui)
+        entries.add(await uiSource(resolve(repo, path), manifest.application.ui.module));
+    }
+    await writeFile(target, JSON.stringify([...entries].sort()) + '\n');
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
+async function compileUi(source, output, cache) {
+  if (cache?.[source]) return cache[source];
+  if (cache) throw new Error(`Missing precompiled UI entry: ${source}`);
+  const executable = process.env.MAKA_UI_BUNDLER ?? 'maka';
+  await new Promise((resolve, reject) => {
+    const child = spawn(
+      executable,
+      ['application', 'build-ui', '--entry', source, '--output', output],
+      {
+        cwd: repo,
+        stdio: ['ignore', 'inherit', 'inherit'],
+      },
+    );
+    child.once('error', reject);
+    child.once('exit', (code, signal) =>
+      code === 0
+        ? resolve()
+        : reject(new Error(`UI bundler failed (${signal ?? code}): ${source}`)),
+    );
   });
+  return JSON.parse(await readFile(resolve(output, 'manifest.json'), 'utf8'));
+}
+
+// Product selections are paths to authored packages, not a second declaration catalog.
+export async function bundle({ packages, output, composition }) {
+  const destination = resolve(output);
+  await rm(destination, { recursive: true, force: true });
+  await mkdir(destination, { recursive: true });
+  const authoring = await build(
+    authoringOptions(packages, resolve(destination, 'authoring'), composition),
+  );
+  const uiCache = process.env.MAKA_UI_BUNDLE_DIR
+    ? JSON.parse(await readFile(resolve(process.env.MAKA_UI_BUNDLE_DIR, 'index.json'), 'utf8'))
+    : null;
   const inputs = new Set(Object.keys(authoring.metafile.inputs).map((path) => resolve(repo, path)));
   const names = [];
   for (const [name, path] of Object.entries(packages)) {
     const source = resolve(repo, path);
-    const { default: manifest } = await import(
-      pathToFileURL(resolve(destination, `authoring/packages/${name}.mjs`))
-    );
-    if (manifest.schemaVersion !== 1 || typeof manifest.id !== 'string' || !manifest.application)
-      throw new Error(`Invalid package declaration: ${path}`);
+    const manifest = await manifestAt(resolve(destination, 'authoring'), name, path);
     const directory = resolve(destination, 'packages', name);
     await mkdir(directory, { recursive: true });
     const hook = resolve(source, 'build.mjs');
@@ -82,13 +172,13 @@ export async function bundle({ packages, output, composition }) {
       ? await (await import(pathToFileURL(hook))).default({ require })
       : {};
     if (await exists(hook)) inputs.add(hook);
-    for (const entry of Object.values(manifest.application.entries ?? {})) {
+    for (const entry of manifest.application.host ? [manifest.application.host] : []) {
       if (entry.implementation.kind !== 'javascript') continue;
       const module = entry.implementation.module;
-      if (!/^[a-z][a-z0-9-]*\.js$/.test(module)) throw new Error(`Invalid local module: ${module}`);
+      packagePath(module);
       const bundled = await build({
         absWorkingDir: repo,
-        entryPoints: [resolve(source, module.replace(/\.js$/, '.ts'))],
+        entryPoints: [await authoredSource(source, module, ['.ts', '.mts'])],
         outfile: resolve(directory, module),
         bundle: true,
         nodePaths: [resolve(dependencyRoot, 'node_modules')],
@@ -117,6 +207,30 @@ export async function bundle({ packages, output, composition }) {
       });
       for (const input of Object.keys(bundled.metafile.inputs))
         if (!input.startsWith('generated:')) inputs.add(resolve(repo, input));
+    }
+    if (manifest.application.ui) {
+      const module = packagePath(manifest.application.ui.module);
+      const entry = await uiSource(source, module);
+      const temporary = await mkdtemp(resolve(destination, 'ui-build-'));
+      try {
+        const compiled = await compileUi(entry, temporary, uiCache);
+        await mkdir(dirname(resolve(directory, module)), { recursive: true });
+        await copyFile(compiled.module, resolve(directory, module));
+        for (const asset of compiled.assets) {
+          const target = resolve(
+            directory,
+            packagePath(posix.join(posix.dirname(module), asset.path)),
+          );
+          if (target === resolve(directory, module))
+            throw new Error(`UI asset overwrites its module: ${asset.path}`);
+          await mkdir(dirname(target), { recursive: true });
+          await copyFile(asset.file, target);
+        }
+        for (const input of compiled.inputs) inputs.add(input);
+        inputs.add(entry);
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
     }
     await writeFile(resolve(directory, 'maka.extension.json'), JSON.stringify(manifest) + '\n');
     names.push(name);

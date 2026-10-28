@@ -277,9 +277,9 @@ pub(super) async fn upload(
 ) -> Result<Value, String> {
     let file = f._dir.path().join(name);
     std::fs::write(&file, bytes).unwrap();
-    let snapshot = maka_ui_runtime::file::read_selected(
+    let snapshot = maka_ui_support::file::read_selected(
         &file,
-        &maka_ui_runtime::budget::NativeBudget::default(),
+        &maka_ui_support::budget::NativeBudget::default(),
     )
     .unwrap();
     f.mutation_with(
@@ -303,8 +303,8 @@ async fn large_selected_upload_keeps_complete_bytes_and_session_authority() {
     let file = f._dir.path().join("large.txt");
     std::fs::write(&file, &bytes).unwrap();
     let completed = async {
-        let snapshot = maka_ui_runtime::file::read_selected(
-            &file, &maka_ui_runtime::budget::NativeBudget::default(),
+        let snapshot = maka_ui_support::file::read_selected(
+            &file, &maka_ui_support::budget::NativeBudget::default(),
         ).map_err(|error| error.to_string())?;
         let uploaded = f.mutation_with(
             2, "uploadAttachment",
@@ -441,7 +441,7 @@ async fn attachment_payload_validation_and_image_read_use_actual_bytes() {
         let bytes = images::gif(6 * 1024 * 1024);
         let file = f._dir.path().join("actual.gif");
         std::fs::write(&file, &bytes).unwrap();
-        let snapshot = maka_ui_runtime::file::read_selected(&file, &maka_ui_runtime::budget::NativeBudget::default()).unwrap();
+        let snapshot = maka_ui_support::file::read_selected(&file, &maka_ui_support::budget::NativeBudget::default()).unwrap();
         for (name, length, digest) in [
             ("actual.gif", bytes.len(), content_digest(b"other payload")),
             ("actual.gif", bytes.len() + 1, content_digest(&bytes)),
@@ -462,15 +462,15 @@ async fn attachment_payload_validation_and_image_read_use_actual_bytes() {
         use std::io::Write;
         let png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQNE5uAAACKAEoAfdvjgAAAABJRU5ErkJggg==";
         let png = STANDARD.decode(png_base64).unwrap();
-        let budget = maka_ui_runtime::budget::NativeBudget::default();
-        let mut writer = maka_ui_runtime::file::FileSnapshotWriter::new("clipboard.png", budget.clone()).unwrap();
+        let budget = maka_ui_support::budget::NativeBudget::default();
+        let mut writer = maka_ui_support::file::FileSnapshotWriter::new("clipboard.png", budget.clone()).unwrap();
         writer.write_all(&png).unwrap();
         let snapshot = writer.finish().unwrap();
         let descriptor = snapshot.metadata();
         let clipboard = f.mutation_with(2, "uploadAttachment", json!({"sessionId":session,"name":descriptor["name"],"bytes":descriptor["bytes"],"digest":descriptor["digest"]}), Uuid::new_v4(),
             BTreeMap::from([("file".into(), snapshot as Arc<dyn ReadResource>)])).await.unwrap();
         assert_eq!(clipboard["attachment"]["mimeType"], "image/png");
-        assert_eq!(budget.usage(), (0, 0, 0));
+        assert_eq!(budget.usage(), (0, 0));
         assert!(!f._dir.path().join("clipboard.png").exists());
         f.mutation(2, "send", json!({"sessionId":session,"message":"","attachments":[attachment["id"],clipboard["attachment"]["id"]],"model":f.selection().await}), Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();

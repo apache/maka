@@ -33,6 +33,72 @@ pub fn entity_id(value: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+impl ComputerAppIdentity {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        computer_app_identity(&self.application_id)
+    }
+}
+
+fn computer_app_identity(application_id: &str) -> Result<(), &'static str> {
+    if application_id.trim().is_empty()
+        || application_id.trim() != application_id
+        || application_id.contains('\0')
+    {
+        return Err("Invalid computer application identity");
+    }
+    Ok(())
+}
+
+impl ComputerAppDisplay {
+    pub fn validate(&self, platform: ComputerAppPlatform) -> Result<(), &'static str> {
+        if self.name.trim().is_empty() || self.name.contains('\0') {
+            return Err("Invalid computer application display name");
+        }
+        let absolute = match platform {
+            ComputerAppPlatform::Macos => self.app_path.starts_with('/'),
+        };
+        if !absolute || self.app_path.contains('\0') {
+            return Err("Computer application display path must be absolute");
+        }
+        if self
+            .warning
+            .as_ref()
+            .is_some_and(|warning| warning.trim().is_empty() || warning.contains('\0'))
+        {
+            return Err("Invalid computer application warning");
+        }
+        Ok(())
+    }
+}
+
+impl ComputerAppDecision {
+    pub fn validate_for(&self, allow_always: bool) -> Result<(), &'static str> {
+        if *self == Self::Always && !allow_always {
+            return Err("Persistent computer application approval was not offered");
+        }
+        Ok(())
+    }
+}
+
+impl ComputerAppActivity {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        for id in [
+            &self.invocation.session_id,
+            &self.invocation.turn_id,
+            &self.invocation.run_id,
+            &self.invocation.invocation_id,
+            &self.operation_id,
+        ] {
+            entity_id(id)?;
+        }
+        self.target.validate()?;
+        let GrantScope::ComputerApp { platform, .. } = &self.target.scope else {
+            return Err("Computer application activity requires an application scope");
+        };
+        self.display.validate(*platform)
+    }
+}
+
 impl GrantTarget {
     pub fn validate(&self) -> Result<(), &'static str> {
         for id in [
@@ -52,7 +118,13 @@ impl GrantTarget {
                     return Err("Browser scope must be a canonical HTTP origin");
                 }
             }
-            (GrantCapability::ComputerUse, GrantScope::Capability {}) => {}
+            (
+                GrantCapability::ComputerUse | GrantCapability::ComputerAudio,
+                GrantScope::Capability {},
+            ) => {}
+            (GrantCapability::ComputerUse, GrantScope::ComputerApp { application_id, .. }) => {
+                computer_app_identity(application_id)?
+            }
             (
                 GrantCapability::DesktopMcp | GrantCapability::Mcp,
                 GrantScope::McpTool {
@@ -134,6 +206,30 @@ impl InteractionRequest {
                     return Err("Invalid interaction tool use identity");
                 }
                 target.validate()?;
+                if matches!(target.scope, GrantScope::ComputerApp { .. }) {
+                    return Err("Computer application consent requires a typed request");
+                }
+            }
+            Self::ComputerApp {
+                tool_use_id,
+                native_operation_id,
+                target,
+                basis,
+                display,
+                authority_revision,
+                ..
+            } => {
+                entity_id(tool_use_id)?;
+                entity_id(native_operation_id)?;
+                basis.validate()?;
+                target.validate()?;
+                let GrantScope::ComputerApp { platform, .. } = &target.scope else {
+                    return Err("Computer application consent requires an application scope");
+                };
+                display.validate(*platform)?;
+                if *authority_revision > MAX_SAFE_INTEGER {
+                    return Err("Invalid computer application authority revision");
+                }
             }
         }
         Ok(())
@@ -171,7 +267,8 @@ impl InteractionOutcome {
                 InteractionRequest::Form { .. }
                 | InteractionRequest::ServiceApproval { .. }
                 | InteractionRequest::Question { .. }
-                | InteractionRequest::Permissions { .. },
+                | InteractionRequest::Permissions { .. }
+                | InteractionRequest::ComputerApp { .. },
                 Self::Closure {
                     reason: ClosureReason::TimedOut,
                     ..
@@ -209,6 +306,10 @@ impl InteractionOutcome {
             (InteractionRequest::Form { fields, .. }, Self::FormAnswer { result, .. }) => {
                 result.validate_for_fields(fields)
             }
+            (
+                InteractionRequest::ComputerApp { allow_always, .. },
+                Self::ComputerAppDecision { decision, .. },
+            ) => decision.validate_for(*allow_always),
             _ => Err("Interaction outcome does not match request"),
         }
     }
@@ -264,6 +365,11 @@ impl InteractionAnswer {
             (Self::Form { result }, InteractionRequest::Form { fields, .. }) => {
                 result.validate_for_fields(fields)
             }
+            (
+                Self::ComputerApp { decision },
+                InteractionRequest::ComputerApp { allow_always, .. },
+            ) => decision.validate_for(*allow_always),
+            (Self::ComputerAppCancel {}, InteractionRequest::ComputerApp { .. }) => Ok(()),
             _ => Err("Interaction answer does not match request"),
         }
     }

@@ -1,10 +1,9 @@
-//! The native ES modules apps import: nsh's own (`nsh`,
-//! `nsh:rt`, `nsh/device`, `nsh/accessibility`, `nsh/keymap`, ...;
-//! [`nsh_core::js::NATIVE_MODULES`])
-//! and those of registries (`Registry::specifier`): the UI sets a host
-//! serves (`nsh/base`, an app's own) and the runtime's (`nsh/android`, ...), whose
-//! components, modules and re-exports become exports (`components.rs`).
-//! A module of both kinds (`nsh/accessibility`) has the exports of both.
+//! The native ES modules apps import: nsh's own (`nsh`, `nsh:rt`,
+//! `nsh/desktop`, `nsh/mobile`; [`nsh_core::js::NATIVE_MODULES`]) and those
+//! of registries (`Registry::specifier`): the UI sets a host serves
+//! (`nsh/base`, an app's own) and runtime services, whose components,
+//! modules and re-exports become exports (`components.rs`). A module
+//! served by both kinds (`nsh`) has the exports of both.
 //!
 //! The exports are made when a bundle first imports the module. QuickJS-NG
 //! resolves imports when it compiles a module, so the bytecode compiler
@@ -192,6 +191,16 @@ const NSH: &[Item] = &[
         Ts::function(
             "A context with a default value.",
             &["<T>(defaultValue: T): Context<T>"],
+        ),
+    ),
+    (
+        "importModule",
+        Export::Function(crate::chunks::import_module, 2),
+        Ts::function(
+            "Imports a module supplied by the host into this app's VM. The id and optional\ndependencies are chunk file names, such as `plugin.js`. Imports of the same id\nshare one evaluation; use a new id when its code changes.",
+            &[
+                "<T = Record<string, unknown>>(id: string, dependencies?: readonly string[]): Promise<T>",
+            ],
         ),
     ),
     (
@@ -562,12 +571,17 @@ pub(crate) enum ChunkCode {
     Bytecode(Vec<u8>),
 }
 
+pub(crate) struct ChunkModule {
+    pub(crate) code: ChunkCode,
+    pub(crate) asset_base: Option<String>,
+}
+
 /// The chunks of a split bundle a VM knows of, by id (module name).
 #[derive(Default)]
 pub(crate) struct ChunkCodes {
     /// Given, not imported yet: the loader compiles them (and drops the
     /// code).
-    pub(crate) code: HashMap<String, ChunkCode>,
+    pub(crate) code: HashMap<String, ChunkModule>,
     /// Compiled (QuickJS has the modules).
     pub(crate) loaded: HashSet<String>,
 }
@@ -1076,8 +1090,9 @@ unsafe extern "C" fn load(
 unsafe fn compile_chunk(
     cx: *mut JsContext,
     name: *const c_char,
-    code: ChunkCode,
+    chunk: ChunkModule,
 ) -> *mut qjs::JSModuleDef {
+    let ChunkModule { code, asset_base } = chunk;
     // SAFETY: per the contract; QuickJS reads source up to the NUL it
     // requires after it.
     let module = unsafe {
@@ -1112,6 +1127,20 @@ unsafe fn compile_chunk(
             return std::ptr::null_mut();
         }
         let m = qjs::JS_VALUE_GET_PTR(module) as *mut qjs::JSModuleDef;
+        if let Some(base) = asset_base {
+            let meta = qjs::JS_GetImportMeta(cx, m);
+            if qjs::JS_IsException(meta) {
+                qjs::JS_FreeValue(cx, module);
+                return std::ptr::null_mut();
+            }
+            let result = crate::web::js::string(cx, &base)
+                .and_then(|base| crate::web::js::define(cx, meta, "assetBase", base, true));
+            qjs::JS_FreeValue(cx, meta);
+            if result.is_err() {
+                qjs::JS_FreeValue(cx, module);
+                return std::ptr::null_mut();
+            }
+        }
         // The context keeps the module: the value is one more reference.
         qjs::JS_FreeValue(cx, module);
         m

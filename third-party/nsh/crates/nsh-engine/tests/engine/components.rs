@@ -73,6 +73,7 @@ pub(crate) fn start_with(
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment,
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),
@@ -99,6 +100,89 @@ fn text_ids(batch: &MountBatch, wanted: &str) -> Option<u32> {
         MountItem::Text { id, text, .. } if text.text == wanted => Some(*id),
         _ => None,
     })
+}
+
+// Reduced caller layouts, not the full Maka application. Keep these assertions
+// about allocated frames: overflowing children can still produce visible text.
+#[test]
+fn caller_layout_composer_reserves_its_toolbar_height() {
+    let (_engine, rx) = start(
+        r#"import { mount, View, Text } from "nsh";
+mount(() => <View style={{ width: 390, height: 300 }}>
+  <View style={{ flex: 1, minHeight: 0 }} />
+  <View style={{ flex: 'initial', flexShrink: 1, minHeight: 0 }}>
+    <View style={{ height: 128, flexShrink: 0 }}><Text>Composer toolbar</Text></View>
+  </View>
+</View>);
+"#,
+    );
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let parent_of = |id| {
+        first.items.iter().find_map(|item| match item {
+            MountItem::Insert { parent, child, .. } if *child == id => Some(*parent),
+            _ => None,
+        })
+    };
+    let frame = |id| {
+        first.items.iter().find_map(|item| match item {
+            MountItem::Frame { id: actual, frame } if *actual == id => Some(*frame),
+            _ => None,
+        })
+    };
+    let toolbar = parent_of(text_ids(&first, "Composer toolbar").unwrap()).unwrap();
+    let composer = parent_of(toolbar).unwrap();
+    let composer = frame(composer).unwrap();
+    let toolbar = frame(toolbar).unwrap();
+    assert!(
+        composer.size.height >= toolbar.size.height,
+        "composer {composer:?}, toolbar {toolbar:?}"
+    );
+    assert!(
+        composer.origin.y.0 + composer.size.height.0 <= 300.0,
+        "{composer:?}"
+    );
+}
+
+#[test]
+fn caller_layout_explicit_flex_stacks_history_and_footer() {
+    let (_engine, rx) = start(
+        r#"import { mount, View, Text } from "nsh";
+mount(() => <View style={{ display: 'flex', flexDirection: 'column', width: 390, height: 300 }}>
+  <View style={{ width: 100, height: 100, flexShrink: 0 }}><Text>History body</Text></View>
+  <View style={{ width: 100, height: 32, flexShrink: 0 }}><Text>History footer</Text></View>
+</View>);
+"#,
+    );
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let parent_frame = |label| {
+        let id = text_ids(&first, label).unwrap();
+        let parent = first
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Insert { parent, child, .. } if *child == id => Some(*parent),
+                _ => None,
+            })
+            .unwrap();
+        first
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Frame { id, frame } if *id == parent => Some(*frame),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let body = parent_frame("History body");
+    let footer = parent_frame("History footer");
+    assert!(
+        footer.origin.y.0 >= body.origin.y.0 + body.size.height.0,
+        "body {body:?}, footer {footer:?}"
+    );
 }
 
 const INSET: &str = r#"import { mount, signal, Text } from "nsh";
@@ -1318,6 +1402,94 @@ fn inputs_and_selectable_text_carry_their_traits() {
         text.selection_color,
         Some(nsh_core::Color::rgba(255, 0, 0, 255))
     );
+}
+
+#[test]
+fn compiled_primitive_styles_reach_the_platform_and_follow_signals() {
+    let (engine, rx) = start(
+        r#"import { mount, signal, View, Text, Image } from "nsh";
+const changed = signal(false);
+mount(() => <View testID="styled-view" onPress={() => changed.set(!changed())}
+  style={[{ width: 160 }, { pointerEvents: changed() ? "auto" : "box-none" }]}>
+  <Text style={[{ fontSize: 14 }, {
+    numberOfLines: changed() ? 2 : 1,
+    textOverflow: changed() ? "clip" : "ellipsis",
+    userSelect: changed() ? "none" : "text"
+  }]}>Styled text</Text>
+  <Image src="asset:/styled.png"
+    style={[{ width: 32, height: 32 }, { objectFit: changed() ? "fill" : "contain" }]} />
+</View>);
+"#,
+    );
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    let view = first
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MountItem::ViewProps { id, props }
+                if props.test_id.as_deref() == Some("styled-view") =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .expect("the styled view");
+    let check = |batch: &MountBatch, changed| {
+        let pointer = batch.items.iter().find_map(|item| match item {
+            MountItem::ViewProps { id, props } if *id == view => Some(props.pointer_events),
+            _ => None,
+        });
+        assert_eq!(
+            pointer,
+            Some(if changed {
+                nsh_core::PointerEvents::Auto
+            } else {
+                nsh_core::PointerEvents::BoxNone
+            })
+        );
+        let text = batch
+            .items
+            .iter()
+            .find_map(|item| match item {
+                MountItem::Text { text, .. } if text.text == "Styled text" => Some(text),
+                _ => None,
+            })
+            .expect("the styled text");
+        assert_eq!(text.max_lines, if changed { 2 } else { 1 });
+        assert_eq!(
+            text.ellipsize,
+            if changed {
+                nsh_core::EllipsizeMode::Clip
+            } else {
+                nsh_core::EllipsizeMode::Tail
+            }
+        );
+        assert_eq!(text.is_selectable(), !changed);
+        let fit = batch.items.iter().find_map(|item| match item {
+            MountItem::Image { resize_mode, .. } => Some(*resize_mode),
+            _ => None,
+        });
+        assert_eq!(
+            fit,
+            Some(if changed {
+                nsh_core::ResizeMode::Stretch
+            } else {
+                nsh_core::ResizeMode::Contain
+            })
+        );
+    };
+    check(&first, false);
+    for changed in [true, false] {
+        engine
+            .control()
+            .dispatch_event(view, EventKind::Press, EventPayload::None);
+        let next = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the updated primitive styles");
+        check(&next, changed);
+    }
 }
 
 const ROWS: &str = r#"import { mount, Text } from "nsh";

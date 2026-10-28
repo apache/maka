@@ -44,11 +44,14 @@ impl InvocationView {
             if !matches!(self.state, State::Vacant) {
                 return Err(ProjectionError::Invalid("duplicate invocation opening"));
             }
-            self.state = State::Compact(event.invocation.clone());
+            self.state = State::Compact {
+                invocation: event.invocation.clone(),
+                started_at: ts,
+            };
             return Ok(Some(Vec::new()));
         }
         let invocation = match &self.state {
-            State::Active { invocation, .. } | State::Compact(invocation) => invocation,
+            State::Active { invocation, .. } | State::Compact { invocation, .. } => invocation,
             _ => return Ok(None),
         };
         if *invocation != event.invocation {
@@ -72,7 +75,10 @@ impl InvocationView {
                     self.summary_start = Some(SummaryStart {
                         source_high_water: *source_high_water,
                         source_digest: source_digest.clone(),
-                        at: ts,
+                        at: match &self.state {
+                            State::Compact { started_at, .. } => *started_at,
+                            _ => ts,
+                        },
                     });
                 }
                 self.summary_step = Some(step_id.clone());
@@ -116,7 +122,7 @@ impl InvocationView {
                 _ => {}
             }
         }
-        if !matches!(self.state, State::Compact(_)) {
+        if !matches!(self.state, State::Compact { .. }) {
             return Ok(None);
         }
         match event.fact {
@@ -131,6 +137,7 @@ impl InvocationView {
             Fact::ModelObserved { .. }
             | Fact::ModelCompleted { .. }
             | Fact::ModelInterrupted { .. }
+            | Fact::ContextCompactionWaiting
             | Fact::ToolResultArchived { .. } => {}
             Fact::InvocationEnded { .. } => self.state = State::Ended,
             _ => return Err(ProjectionError::Invalid("unexpected compaction fact")),
@@ -255,7 +262,7 @@ mod tests {
                         serde_json::to_value(&rows[0].message).unwrap(),
                         json!({
                             "id":"event-6", "turnId":"turn", "ts":5500,
-                            "type":"context_compacted", "durationMs":4500
+                            "type":"context_compacted", "durationMs":if standalone {5500} else {4500}
                         })
                     );
                 } else {

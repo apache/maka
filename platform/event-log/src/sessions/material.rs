@@ -67,7 +67,8 @@ impl EventLog {
     ) -> Result<MaterialCollection, StoreError> {
         self.validate_root()?;
         let after = after.map(str::to_owned);
-        let prepared = self.prepared.clone();
+        let prepared = self.prepared_store()?.cleanup();
+        let observations = self.connection.observations();
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
             let session: Option<String> = sqlx::query_scalar(
@@ -104,16 +105,16 @@ impl EventLog {
             // No live owner remains. Retained facts/membership, not UI metadata,
             // remain the material-collection authority; descendants were checked above.
             // Also covers imported owners that never had a local retirement.
-            crate::context::prepared::gc::retire_owner(&mut tx,&session).await?;
+            prepared.retire_owner(session.clone()).await?;
             crate::context::semantic::gc::retire_owner(&mut tx,&session).await?;
-            for table in ["transcript_directory", "transcript_failures", "transcript_cache.rows", "transcript_cache.text"] {
+            for table in ["transcript_directory", "transcript_failures"] {
                 let sql = format!("DELETE FROM {table} WHERE session_id=?");
                 sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(&session).execute(&mut *tx).await?;
             }
             let rows: Vec<(i64, String, String)> = sqlx::query_as(
                 "SELECT sequence,event_id,event_json FROM event_log WHERE event_session=?
                  AND event_json IS NOT NULL ORDER BY sequence LIMIT 8"
-            ).bind(session).fetch_all(&mut *tx).await?;
+            ).bind(&session).fetch_all(&mut *tx).await?;
             for (sequence,id,body) in rows {
                 let event: RuntimeEvent = serde_json::from_str(&body)?;
                 let proof = retained(&event);
@@ -133,7 +134,7 @@ impl EventLog {
                     .bind(&id).execute(&mut *tx).await?;
             }
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
-            prepared.wake();
+            observations.purge_session(session).await?;
             Ok(MaterialCollection::Collected)
         })).await
     }
@@ -225,6 +226,7 @@ fn retained(event: &RuntimeEvent) -> Value {
         | Fact::ExecutorCompleted { .. }
         | Fact::MessageSteered { .. }
         | Fact::ContextCheckpointRecorded { .. }
+        | Fact::ContextCompactionWaiting
         | Fact::ToolResultArchived { .. }
         | Fact::ModelObserved { .. }
         | Fact::ToolOperationObserved { .. }

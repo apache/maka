@@ -30,6 +30,10 @@ pub enum ConnectionAuthority {
         lease: Arc<FileLease>,
         root: Option<Arc<RootOwner>>,
     },
+    Projection {
+        source: Arc<FileLease>,
+        root: Option<Arc<RootOwner>>,
+    },
     Root(Arc<RootOwner>),
 }
 
@@ -38,6 +42,10 @@ impl ConnectionAuthority {
         let root = match self {
             Self::Writer { root, lease } => {
                 lease.validate()?;
+                root.as_ref()
+            }
+            Self::Projection { source, root } => {
+                source.validate()?;
                 root.as_ref()
             }
             Self::Root(root) => Some(root),

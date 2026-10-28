@@ -75,17 +75,12 @@ fn build(entry: &Path, out: &Path, release: bool) -> Result<(), String> {
             capabilities.to_json().to_string().as_bytes(),
         )?;
     }
-    // Assets keep their paths: `asset:/img/a.png` -> `assets/img/a.png`;
-    // the UI sets' under `@<package>/`.
-    let root = entry.parent().unwrap();
-    let imported = bundle.assets.iter().map(|rel| {
-        let path = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        (path, root.join(rel))
-    });
+    // Copy logical asset paths, independently of their source locations;
+    // the UI sets' are under `@<package>/`.
+    let imported = bundle
+        .assets
+        .iter()
+        .map(|asset| (asset.path.clone(), asset.source.clone()));
     let shipped = ui_sets
         .iter()
         .flat_map(|set| &set.assets)

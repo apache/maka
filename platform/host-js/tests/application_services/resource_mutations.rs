@@ -51,7 +51,7 @@ async fn application_contract(
             .unwrap()
             .declaration()
             .clone();
-        let entry = declaration.entries.get_mut(&EntryTarget::Host).unwrap();
+        let entry = declaration.host.as_mut().unwrap();
         for value in entry.exports.values_mut() {
             value.contract = declared.clone();
         }

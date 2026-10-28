@@ -284,22 +284,30 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
             .await
             .unwrap();
             let id = "compacting";
-            log.append(&event(
-                id,
-                Fact::InvocationOpened {
-                    configuration: None,
-                    input: if standalone {
-                        InvocationInput::ContextCompact {
-                            request_fingerprint: "compact".into(),
-                        }
-                    } else {
-                        InvocationInput::Message {
-                            source_messages: Vec::new(),
-                            content: "continue".into(),
-                            request_fingerprint: None,
-                        }
+            let timed = |write: EventWrite, at| {
+                let mut value = write.event().clone();
+                value.recorded_at = UNIX_EPOCH + Duration::from_millis(at);
+                EventWrite::plain(value).unwrap()
+            };
+            log.append(&timed(
+                event(
+                    id,
+                    Fact::InvocationOpened {
+                        configuration: None,
+                        input: if standalone {
+                            InvocationInput::ContextCompact {
+                                request_fingerprint: "compact".into(),
+                            }
+                        } else {
+                            InvocationInput::Message {
+                                source_messages: Vec::new(),
+                                content: "continue".into(),
+                                request_fingerprint: None,
+                            }
+                        },
                     },
-                },
+                ),
+                0,
             ))
             .await
             .unwrap();
@@ -312,11 +320,6 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                 .capture_compaction_context("session", Some(id), &mode, 100_000, 64 * 1024 * 1024)
                 .await
                 .unwrap();
-            let timed = |write: EventWrite, at| {
-                let mut value = write.event().clone();
-                value.recorded_at = UNIX_EPOCH + Duration::from_millis(at);
-                EventWrite::plain(value).unwrap()
-            };
             log.append(&timed(request(id, &source), 1000))
                 .await
                 .unwrap();
@@ -467,7 +470,10 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
                     assert_eq!(markers.len(), 1);
                     assert_eq!(markers[0].message_id, checkpoint.event().id);
                     assert_eq!(markers[0].timestamp, 5500);
-                    assert_eq!(markers[0].compaction.as_ref().unwrap().duration_ms, 4500);
+                    assert_eq!(
+                        markers[0].compaction.as_ref().unwrap().duration_ms,
+                        if standalone { 5500 } else { 4500 }
+                    );
                     assert_eq!(markers[0].text, "");
                 } else {
                     assert!(markers.is_empty());
@@ -498,7 +504,10 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
             assert_eq!(markers.len(), usize::from(adopt));
             if adopt {
                 assert_eq!(markers[0].message_id, checkpoint.event().id);
-                assert_eq!(markers[0].compaction.as_ref().unwrap().duration_ms, 4500);
+                assert_eq!(
+                    markers[0].compaction.as_ref().unwrap().duration_ms,
+                    if standalone { 5500 } else { 4500 }
+                );
             }
             log.close().await.unwrap();
         }

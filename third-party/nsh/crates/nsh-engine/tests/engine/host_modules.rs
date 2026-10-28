@@ -130,6 +130,7 @@ fn start(
         websocket: None,
         filesystem: None,
         assets: None,
+        chunk_loader: None,
         environment: Environment::default(),
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),

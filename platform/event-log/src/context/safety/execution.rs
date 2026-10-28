@@ -22,9 +22,12 @@
 use super::*;
 
 // Parameters 1/2/4 are invocation, upper cut, and whether independent work is allowed.
-const INDEPENDENT_CELLS: &str = "WITH RECURSIVE independent(operation_id) AS (
+const INDEPENDENT_TOOLS: &str = "WITH RECURSIVE independent(operation_id) AS (
   SELECT operation_id FROM runtime_events WHERE ?4 AND invocation_id=?1 AND sequence<=?2
-    AND kind='tool_dispatched' AND json_extract(event_json,'$.fact.call.origin.kind')='code_cell'
+    AND kind='tool_dispatched' AND (
+      json_extract(event_json,'$.fact.call.origin.kind')='code_cell'
+      OR (json_extract(event_json,'$.fact.call.origin.kind')='host_sdk'
+        AND json_extract(event_json,'$.fact.call.origin.parent_relationship.kind')='evaluation_observer'))
   UNION ALL
   SELECT child.operation_id FROM runtime_events child JOIN independent parent
     ON json_extract(child.event_json,'$.fact.call.origin.parent_operation_id')=parent.operation_id
@@ -51,7 +54,7 @@ async fn canonical_execution_boundary(
 ) -> Result<(), StoreError> {
     let accepted_calls = crate::model_items::accepted_calls!();
     let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{INDEPENDENT_CELLS}, {PRIVATE_SUMMARIES}, {accepted_calls}
+        "{INDEPENDENT_TOOLS}, {PRIVATE_SUMMARIES}, {accepted_calls}
         SELECT EXISTS(SELECT 1 FROM runtime_events e WHERE e.invocation_id = ?1 AND e.sequence <= ?2 AND (
           (e.kind = 'tool_dispatched' AND NOT EXISTS(SELECT 1 FROM runtime_events t
              WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind = 'tool_settled' AND t.sequence <= ?2)
@@ -137,6 +140,96 @@ async fn checked(db: &mut SqliteConnection, kind: &str, op: Option<&str>, fact: 
     let at = append(db, kind, op, fact).await;
     compare_cuts(db).await;
     at
+}
+
+#[tokio::test]
+async fn earlier_terminals_keep_late_openings_closed_without_rewriting_old_cuts() {
+    for (terminal, terminal_fact, opening, opening_fact, operation) in [
+        (
+            "invocation_ended",
+            json!({"outcome":{"class":"outcome_unknown"}}),
+            "invocation_opened",
+            json!({}),
+            None,
+        ),
+        (
+            "tool_settled",
+            json!({}),
+            "tool_dispatched",
+            json!({}),
+            Some("same"),
+        ),
+        (
+            "model_completed",
+            json!({"step_id":"same","output":{"parts":[]}}),
+            "model_requested",
+            json!({"step_id":"same"}),
+            Some("same"),
+        ),
+        (
+            "model_interrupted",
+            json!({"step_id":"same","status":"cancelled"}),
+            "model_requested",
+            json!({"step_id":"same"}),
+            Some("same"),
+        ),
+    ] {
+        let mut db = database().await;
+        checked(&mut db, terminal, operation, terminal_fact).await;
+        checked(&mut db, opening, operation, opening_fact).await;
+        let live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_obligations")
+            .fetch_one(&mut db)
+            .await
+            .unwrap();
+        assert_eq!(live, 0, "{terminal} must suppress a later {opening}");
+    }
+    let mut db = database().await;
+    let terminal = ended(&mut db, "outcome_unknown").await;
+    checked(&mut db, "tool_dispatched", Some("late"), json!({})).await;
+    assert!(
+        require_manual_message_safe(&mut db, "session", None)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        require_safe(&mut db, "session", None).await,
+        Err(StoreError::HistoryUnsettled)
+    ));
+    require_safe_through(&mut db, "session", None, terminal)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn settlement_closes_only_its_obligation_kind_when_operations_share_an_id() {
+    let mut db = database().await;
+    append(
+        &mut db,
+        "model_requested",
+        Some("shared"),
+        json!({"step_id":"shared"}),
+    )
+    .await;
+    append(&mut db, "tool_dispatched", Some("shared"), json!({})).await;
+    append(&mut db, "tool_settled", Some("shared"), json!({})).await;
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM context_obligations ORDER BY kind")
+            .fetch_all(&mut db)
+            .await
+            .unwrap();
+    assert_eq!(kinds, ["model"]);
+    append(
+        &mut db,
+        "model_completed",
+        Some("shared"),
+        json!({"step_id":"shared","output":{"parts":[]}}),
+    )
+    .await;
+    let live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM context_obligations")
+        .fetch_one(&mut db)
+        .await
+        .unwrap();
+    assert_eq!(live, 0);
 }
 
 async fn request(db: &mut SqliteConnection, purpose: &str, acceptance: bool) {
@@ -243,6 +336,104 @@ async fn intervals_preserve_tool_call_and_independent_descendant_cuts() {
         .await
         .unwrap();
     assert!(model_boundary(&mut db, "invocation", before).await.is_err());
+}
+
+#[tokio::test]
+async fn intervals_keep_observer_effects_pending_after_outer_settlement() {
+    let mut db = database().await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("outer"),
+        json!({"call":{"origin":{"kind":"standalone"}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("observer"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"outer","parent_relationship":{"kind":"evaluation_observer","epoch":"00000000-0000-0000-0000-000000000017"}}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_rejected",
+        Some("rejected"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"observer"}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("effect"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"observer"}}}),
+    )
+    .await;
+    let outer_settled = checked(&mut db, "tool_settled", Some("outer"), json!({})).await;
+    model_boundary(&mut db, "invocation", outer_settled)
+        .await
+        .unwrap();
+    assert!(
+        settled_boundary(&mut db, "invocation", outer_settled)
+            .await
+            .is_err()
+    );
+    checked(&mut db, "tool_settled", Some("effect"), json!({})).await;
+    assert!(
+        settled_boundary(&mut db, "invocation", i64::MAX as u64)
+            .await
+            .is_err()
+    );
+    checked(&mut db, "tool_settled", Some("observer"), json!({})).await;
+    settled_boundary(&mut db, "invocation", i64::MAX as u64)
+        .await
+        .unwrap();
+    assert!(
+        settled_boundary(&mut db, "invocation", outer_settled)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn intervals_keep_nested_effects_blocking_model_progress() {
+    let mut db = database().await;
+    checked(
+        &mut db,
+        "tool_dispatched",
+        Some("outer"),
+        json!({"call":{"origin":{"kind":"standalone"}}}),
+    )
+    .await;
+    let effect_opened = checked(
+        &mut db,
+        "tool_dispatched",
+        Some("effect"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"outer"}}}),
+    )
+    .await;
+    checked(
+        &mut db,
+        "tool_rejected",
+        Some("rejected"),
+        json!({"call":{"origin":{"kind":"host_sdk","parent_operation_id":"effect","parent_relationship":{"kind":"evaluation_observer","epoch":"00000000-0000-0000-0000-000000000018"}}}}),
+    )
+    .await;
+    let outer_settled = checked(&mut db, "tool_settled", Some("outer"), json!({})).await;
+    assert!(
+        model_boundary(&mut db, "invocation", outer_settled)
+            .await
+            .is_err()
+    );
+    checked(&mut db, "tool_settled", Some("effect"), json!({})).await;
+    model_boundary(&mut db, "invocation", i64::MAX as u64)
+        .await
+        .unwrap();
+    assert!(
+        model_boundary(&mut db, "invocation", effect_opened)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -430,103 +621,115 @@ async fn execution_rollback_and_reopen_preserve_historical_answers() {
     assert_eq!(live, 1);
 }
 
-#[test]
-fn fixed_work_does_not_scan_completed_steps_or_failed_private_summaries() {
-    use rusqlite::{Connection, StatementStatus, params};
-    let mut db = Connection::open_in_memory().unwrap();
-    db.execute_batch(LEDGER).unwrap();
-    db.execute_batch(&obligation_schema()).unwrap();
-    db.execute_batch(&execution_schema()).unwrap();
+#[tokio::test]
+async fn fixed_work_does_not_scan_completed_steps_or_failed_private_summaries() {
+    use rusqlite::{StatementStatus, params};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut db = database().await;
     let mut samples = Vec::new();
-    let mut sequence = 0_i64;
     let mut completed = 0;
     for age in [100, 1_000, 10_000] {
-        let tx = db.transaction().unwrap();
-        let mut append = tx
-            .prepare(
-                "INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)
-            VALUES(?1,'invocation',?2,?3,?4)",
-            )
-            .unwrap();
-        let mut append_cost = Vec::new();
-        for step in completed..age {
-            let main = format!("main-{step}");
-            let summary = format!("summary-{step}");
-            let tool = format!("tool-{step}");
-            for (kind, op, fact) in [
-                (
-                    "model_requested",
-                    Some(main.as_str()),
-                    json!({"step_id":main,"purpose":"main"}),
-                ),
-                (
-                    "model_completed",
-                    Some(main.as_str()),
-                    json!({"step_id":main,"output":{"parts":[]}}),
-                ),
-                (
-                    "tool_dispatched",
-                    Some(tool.as_str()),
-                    json!({"call":{"tool_call_id":tool,"origin":{"kind":"standalone"}}}),
-                ),
-                ("tool_settled", Some(tool.as_str()), json!({})),
-                (
-                    "model_requested",
-                    Some(summary.as_str()),
-                    json!({"step_id":summary,"purpose":"summary"}),
-                ),
-                (
-                    "model_observed",
-                    None,
-                    json!({"step_id":summary,"event":{"kind":"part_delta","data":{}}}),
-                ),
-                (
-                    "model_interrupted",
-                    Some(summary.as_str()),
-                    json!({"step_id":summary,"status":"cancelled"}),
-                ),
-            ] {
-                sequence += 1;
-                append.reset_status(StatementStatus::VmStep);
-                append
-                    .execute(params![
-                        format!("e{sequence}"),
-                        kind,
-                        op,
-                        json!({"invocation":{"session_id":"session"},"fact":fact}).to_string()
-                    ])
-                    .unwrap();
-                if step == age - 1 {
-                    append_cost.push(append.get_status(StatementStatus::VmStep));
+        let steps = Arc::new(AtomicUsize::new(0));
+        let observed = steps.clone();
+        db.lock_handle()
+            .await
+            .unwrap()
+            .set_progress_handler(1, move || {
+                observed.fetch_add(1, Ordering::Relaxed);
+                true
+            });
+        let mut tx = db.begin().await.unwrap();
+        let seeded = crate::connection::worker_query(&mut tx, move |worker| {
+            Box::pin(async move {
+                let mut append_cost = Vec::new();
+                let mut sequence = 0;
+                for step in completed..age {
+                    let main = format!("main-{step}");
+                    let summary = format!("summary-{step}");
+                    let tool = format!("tool-{step}");
+                    for (kind, op, fact) in [
+                        (
+                            "model_requested",
+                            Some(main.as_str()),
+                            json!({"step_id":main,"purpose":"main"}),
+                        ),
+                        (
+                            "model_completed",
+                            Some(main.as_str()),
+                            json!({"step_id":main,"output":{"parts":[]}}),
+                        ),
+                        (
+                            "tool_dispatched",
+                            Some(tool.as_str()),
+                            json!({"call":{"tool_call_id":tool,"origin":{"kind":"standalone"}}}),
+                        ),
+                        ("tool_settled", Some(tool.as_str()), json!({})),
+                        (
+                            "model_requested",
+                            Some(summary.as_str()),
+                            json!({"step_id":summary,"purpose":"summary"}),
+                        ),
+                        (
+                            "model_observed",
+                            None,
+                            json!({"step_id":summary,"event":{"kind":"part_delta","data":{}}}),
+                        ),
+                        (
+                            "model_interrupted",
+                            Some(summary.as_str()),
+                            json!({"step_id":summary,"status":"cancelled"}),
+                        ),
+                    ] {
+                        let fact = fixture_fact(kind, op, fact);
+                        steps.store(0, Ordering::Relaxed);
+                        sequence = append_worker(worker, fact).await?;
+                        if step == age - 1 {
+                            append_cost.push(i32::try_from(steps.load(Ordering::Relaxed)).unwrap());
+                        }
+                    }
                 }
-            }
-        }
-        drop(append);
-        tx.commit().unwrap();
+                Ok((sequence, append_cost))
+            })
+        })
+        .await;
+        tx.lock_handle().await.unwrap().remove_progress_handler();
+        let (sequence, append_cost) = seeded.unwrap();
+        tx.commit().await.unwrap();
         completed = age;
-        let mut costs = Vec::new();
-        for cut in [sequence, sequence - 1, i64::MAX] {
-            for model in [false, true] {
-                let mut query = db.prepare(EXECUTION_BOUNDARY).unwrap();
-                let pending: bool = query
-                    .query_row(params!["invocation", cut, model], |row| row.get(0))
-                    .unwrap();
-                assert_eq!(pending, cut == sequence - 1 && !model);
-                costs.push(query.get_status(StatementStatus::VmStep));
-            }
-        }
-        let live: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM context_execution_work WHERE closed_at IS NULL",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            live, 0,
-            "private failed summaries must not accumulate live blockers"
-        );
-        samples.push((age, costs, append_cost));
+        let read = crate::connection::worker_query(&mut db, move |worker| {
+            Box::pin(async move {
+                // SAFETY: the callback exclusively borrows this worker. All raw queries
+                // and the non-owning wrapper are dropped before returning to SQLx.
+                let db =
+                    unsafe { rusqlite::Connection::from_handle(worker.as_raw_handle().as_ptr()) }?;
+                let mut costs = Vec::new();
+                for cut in [sequence as i64, sequence as i64 - 1, i64::MAX] {
+                    for model in [false, true] {
+                        let mut query = db.prepare(EXECUTION_BOUNDARY)?;
+                        let pending: bool =
+                            query.query_row(params!["invocation", cut, model], |row| row.get(0))?;
+                        assert_eq!(pending, cut == sequence as i64 - 1 && !model);
+                        costs.push(query.get_status(StatementStatus::VmStep));
+                    }
+                }
+                let live: i64 = db.query_row(
+                    "SELECT COUNT(*) FROM context_execution_work WHERE closed_at IS NULL",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(
+                    live, 0,
+                    "private failed summaries must not accumulate live blockers"
+                );
+                Ok(costs)
+            })
+        })
+        .await
+        .unwrap();
+        samples.push((age, read, append_cost));
     }
     eprintln!(
         "SQLite {} execution/append VM steps: {samples:?}",
@@ -651,74 +854,83 @@ async fn scoped_request(
     high: u64,
     scope: &maka_agent_facts::event::LogScope,
 ) {
-    // Preserve the typed scope's serialized representation, as canonical append does.
-    sqlx::query(
-        "INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)
-        VALUES(?,'invocation','model_requested',?,json_set(?,'$.fact.source_scope',json(?)))",
+    append(
+        db,
+        "model_requested",
+        Some(step),
+        json!({
+            "step_id":step,"purpose":purpose,"source_high_water":high,"source_scope":scope
+        }),
     )
-    .bind(format!("request-{step}"))
-    .bind(step)
-    .bind(
-        json!({"invocation":{"session_id":"session"},"fact":{
-            "step_id":step,"purpose":purpose,"source_high_water":high}})
-        .to_string(),
-    )
-    .bind(serde_json::to_string(scope).unwrap())
-    .execute(db)
-    .await
-    .unwrap();
+    .await;
 }
 
-#[test]
-fn sparse_summary_repair_does_not_walk_intervening_main_requests() {
+#[tokio::test]
+async fn sparse_summary_repair_does_not_walk_intervening_main_requests() {
     use crate::context::boundary::SUMMARY_ADMISSION;
-    use rusqlite::{Connection, StatementStatus, params};
-    let mut db = Connection::open_in_memory().unwrap();
-    db.execute_batch(LEDGER).unwrap();
-    // Competing production index previously won over the summary-only index.
-    db.execute_batch("CREATE INDEX catalog_model_boundaries ON event_log(invocation_id,kind,sequence)
-        WHERE kind='model_requested' OR kind='model_completed' OR kind='model_interrupted' OR kind='executor_started' OR kind='executor_completed';").unwrap();
-    db.execute_batch(&obligation_schema()).unwrap();
-    db.execute_batch(&execution_schema()).unwrap();
-    db.execute("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)
-        VALUES('summary','invocation','model_requested','summary',?)",[json!({"invocation":{"session_id":"session"},"fact":{"step_id":"summary","purpose":"summary","source_high_water":0}}).to_string()]).unwrap();
-    db.execute("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json)
-        VALUES('summary-done','invocation','model_completed','summary',?)",[json!({"invocation":{"session_id":"session"},"fact":{"step_id":"summary","output":{"parts":[]}}}).to_string()]).unwrap();
+    use rusqlite::{StatementStatus, params};
+    let mut db = database().await;
+    sqlx::raw_sql("CREATE INDEX catalog_model_boundaries ON event_log(invocation_id,kind,sequence)
+        WHERE kind='model_requested' OR kind='model_completed' OR kind='model_interrupted' OR kind='executor_started' OR kind='executor_completed';").execute(&mut db).await.unwrap();
+    append(
+        &mut db,
+        "model_requested",
+        Some("summary"),
+        json!({"step_id":"summary","purpose":"summary","source_high_water":0}),
+    )
+    .await;
+    append(
+        &mut db,
+        "model_completed",
+        Some("summary"),
+        json!({"step_id":"summary","output":{"parts":[]}}),
+    )
+    .await;
     let mut count = 0;
     let mut samples = Vec::new();
     for age in [100, 1_000, 10_000] {
-        let tx = db.transaction().unwrap();
-        let mut insert=tx.prepare("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,'invocation',?,?,?)").unwrap();
-        for i in count..age {
-            let step = format!("main-{i}");
-            for (kind, fact) in [
-                ("model_requested", json!({"step_id":step,"purpose":"main"})),
-                (
-                    "model_completed",
-                    json!({"step_id":step,"output":{"parts":[]}}),
-                ),
-            ] {
-                insert
-                    .execute(params![
-                        format!("{step}-{kind}"),
-                        kind,
-                        step,
-                        json!({"invocation":{"session_id":"session"},"fact":fact}).to_string()
-                    ])
-                    .unwrap();
-            }
-        }
-        drop(insert);
-        tx.commit().unwrap();
-        count = age;
-        let mut stmt = db.prepare(SUMMARY_ADMISSION).unwrap();
-        let result: (bool, i64, bool) = stmt
-            .query_row(params!["invocation", 1, 2], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        let mut tx = db.begin().await.unwrap();
+        crate::connection::worker_query(&mut tx, move |worker| {
+            Box::pin(async move {
+                for i in count..age {
+                    let step = format!("main-{i}");
+                    for (kind, fact) in [
+                        ("model_requested", json!({"step_id":step,"purpose":"main"})),
+                        (
+                            "model_completed",
+                            json!({"step_id":step,"output":{"parts":[]}}),
+                        ),
+                    ] {
+                        append_worker(worker, fixture_fact(kind, Some(&step), fact)).await?;
+                    }
+                }
+                Ok(())
             })
-            .unwrap();
-        assert_eq!(result, (false, 1, false));
-        samples.push(stmt.get_status(StatementStatus::VmStep));
+        })
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        count = age;
+        samples.push(
+            crate::connection::worker_query(&mut db, move |worker| {
+                Box::pin(async move {
+                    // SAFETY: all queries and this non-owning wrapper stay inside the
+                    // exclusive worker callback; SQLx retains the underlying connection.
+                    let db = unsafe {
+                        rusqlite::Connection::from_handle(worker.as_raw_handle().as_ptr())
+                    }?;
+                    let mut stmt = db.prepare(SUMMARY_ADMISSION)?;
+                    let result: (bool, i64, bool) = stmt
+                        .query_row(params!["invocation", 1, 2], |r| {
+                            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                        })?;
+                    assert_eq!(result, (false, 1, false));
+                    Ok(stmt.get_status(StatementStatus::VmStep))
+                })
+            })
+            .await
+            .unwrap(),
+        );
     }
     eprintln!(
         "SQLite {} sparse summary VM: {samples:?}",

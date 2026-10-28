@@ -58,12 +58,13 @@ additional per-frame byte quota.
 Only a successful, unmapped staging buffer returns to the renderer's single
 reuse cache. Dropping a pending ticket cancels mapping and discards its buffer.
 
-`KittyFrame::encode` compresses the complete GPU frame into PNG and chunks its
-base64 payload at the protocol's 4096-byte boundary. `KittyFrame::wire` contains
-the complete `q=1` upload into the alternate owned image slot followed by
-retirement of the previously fully written slot. The sole writer writes and
-flushes that complete wire before `mark_presented`; successful frame replies
-do not gate publication.
+`KittyFrame::encode` prepares a complete lossless PNG/base64 snapshot without
+choosing an image slot. After confirming the cursor origin, the sole writer
+binds the alternate owned slot with `KittyFrame::into_wire`, which chunks the
+payload at the protocol's 4096-byte boundary and retains the last acknowledged
+image underneath. The complete `q=0` upload must flush and receive its matching
+success reply before the native owner calls `mark_presented`. Preparation and
+GPU rendering can overlap without reusing a slot whose receipt is pending.
 The sole reader ends the graphics session on any negative reply for either
 owned slot, including a late error. The independent capability query still
 requires a positive reply, and its nonce must differ from both image slots.
@@ -72,8 +73,8 @@ Restoration deletes only those owned slots.
 Resize immediately revokes the old viewport's output receipt. Discard its
 pending candidate, finish any already-started output indivisibly, and recreate
 the next frame at the new dimensions. A GPU completion is a candidate, not a
-terminal publication. The writer's completed flush receipt is the only caller
-of `mark_presented`; that receipt does not prove display vsync.
+terminal publication. The native owner consumes the writer's completed receipt
+before calling `mark_presented`; that receipt does not prove display vsync.
 
 Incoming events stay in physical order and use `dispatch_input` through GPUI's
 ordinary native handlers. Output receipts, pending draws and frame tokens do

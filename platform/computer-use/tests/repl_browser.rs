@@ -32,6 +32,366 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[cfg(target_os = "linux")]
+#[path = "fixtures/linux_wheel.rs"]
+mod linux_wheel;
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+#[ignore = "requires HARNESS_GTK3_EXE and a disposable X11/AT-SPI desktop; launches only the task-owned GTK3 fixture"]
+async fn linux_screenshot_only_keeps_exact_observed_elements_until_replacement() {
+    struct OwnedFixture(std::process::Child);
+    impl Drop for OwnedFixture {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn element(state: &str, name: &str) -> u64 {
+        state
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("missing {name}: {state}"))
+            .trim_start_matches(|ch: char| !ch.is_ascii_digit())
+            .split(|ch: char| !ch.is_ascii_digit())
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+    let path = std::path::PathBuf::from(
+        std::env::var_os("HARNESS_GTK3_EXE").expect("task-owned GTK3 fixture"),
+    );
+    assert!(path.is_file(), "missing fixture {path:?}");
+    let mut command = if path.extension().is_some_and(|extension| extension == "py") {
+        let mut command = std::process::Command::new("/usr/bin/python3");
+        command.arg(&path);
+        command
+    } else {
+        std::process::Command::new(&path)
+    };
+    let _fixture = OwnedFixture(
+        command
+            .env_remove("CUA_GTK3_TASK_STATE")
+            .env("GTK_MODULES", "gail:atk-bridge")
+            .env("NO_AT_BRIDGE", "0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let driver = Arc::new(Mutex::new(Driver::default()));
+    let mut session = Session::new(driver.clone());
+    session
+        .configure(
+            maka_capabilities::computer::Desktop::Local,
+            vec![],
+            Language::En,
+        )
+        .unwrap();
+    let bridge = Arc::new(Bridge(
+        Arc::new(Mutex::new(session)),
+        "linux-gtk-snapshot",
+        Language::En,
+    ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let window = loop {
+        let windows = bridge
+            .0
+            .lock()
+            .await
+            .invoke(
+                serde_json::from_value(json!({"method":"listWindows","options":{}})).unwrap(),
+                &maka_computer_use::InvocationContext::new("linux-gtk-snapshot", "fixture-turn"),
+                &CancellationToken::new(),
+                Language::En,
+            )
+            .await
+            .unwrap();
+        let matches: Vec<_> = windows
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|window| {
+                window["title"] == "CuaTestHarness GTK3" && window["isOnScreen"] == true
+            })
+            .collect();
+        if let [window] = matches.as_slice() {
+            break window["id"].as_u64().unwrap();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "fixture not uniquely visible: {windows}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let repl = Repl::new(facade(), CellLimits::default()).unwrap();
+    let (ok, output) = evaluate(
+        &repl,
+        bridge.clone(),
+        format!("const app=await cua.getApp({{windowId:{window}}});"),
+    )
+    .await;
+    assert!(ok, "{}", texts(&output));
+    let first = texts(&output);
+    assert!(!first.contains("Observation incomplete"), "{first}");
+    let increment = element(&first, "btn-increment");
+    let (ok, output) = evaluate(&repl, bridge.clone(), format!("await app.getScreenshot({{emit:false}}); await app.click({increment}); await app.getAXState({{disableDiffing:true}});")).await;
+    let state = texts(&output);
+    assert!(
+        ok && state.contains("counter=1") && !state.contains("Observation incomplete"),
+        "{state}"
+    );
+    let original = element(&state, "sld-value");
+    let replace = element(&state, "btn-replace-slider");
+    // Up increases this horizontal GTK scale from its zero lower bound.
+    let (ok, output) = evaluate(&repl, bridge.clone(), format!("await app.getScreenshot({{emit:false}}); await app.click({replace}); await app.getScreenshot({{emit:false}}); try {{ await app.scroll({original},'up',{{pixels:150}}); throw Error('replaced element accepted'); }} catch(error) {{ if (!String(error).includes('stale_element_token')) throw error; }} await app.getAXState({{disableDiffing:true}});")).await;
+    let state = texts(&output);
+    assert!(ok && !state.contains("Observation incomplete"), "{state}");
+    assert!(
+        state.contains("slider_replaced=True") && state.contains("slider_value=0"),
+        "{state}"
+    );
+    let fresh = element(&state, "sld-value");
+    assert_eq!(
+        fresh, original,
+        "replacement must occupy the same ordinal to detect retargeting"
+    );
+    let (ok, output) = evaluate(&repl, bridge.clone(), format!("await app.getScreenshot({{emit:false}}); await app.scroll({fresh},'up',{{pixels:150}}); await app.getAXState({{disableDiffing:true}});")).await;
+    let state = texts(&output);
+    assert!(ok && !state.contains("Observation incomplete"), "{state}");
+    let value: f64 = state
+        .split("slider_value=")
+        .nth(1)
+        .unwrap()
+        .split(|ch: char| !ch.is_ascii_digit() && ch != '.')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        value > 0.0,
+        "fresh observed replacement must receive actual wheel input: {state}"
+    );
+    repl.close().await.unwrap();
+    bridge.0.lock().await.close().await.unwrap();
+    driver.lock().await.close().await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+#[ignore = "requires a disposable X11 desktop and D-Bus; creates only its own raw event-observer windows"]
+async fn linux_public_scroll_preserves_native_pixels_coordinates_and_target_freshness() {
+    async fn wait_for_window(bridge: &Bridge, id: u32) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let windows = bridge
+                .0
+                .lock()
+                .await
+                .invoke(
+                    serde_json::from_value(json!({"method":"listWindows","options":{}})).unwrap(),
+                    &maka_computer_use::InvocationContext::new(
+                        "linux-wheel-fixture",
+                        "fixture-turn",
+                    ),
+                    &CancellationToken::new(),
+                    Language::En,
+                )
+                .await
+                .unwrap();
+            if windows
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|window| window["id"] == id && window["isOnScreen"] == true)
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "fixture window {id} was never visible; listWindows={windows}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    let mut fixture = linux_wheel::Window::new().await;
+    let driver = Arc::new(Mutex::new(Driver::default()));
+    let mut session = Session::new(driver.clone());
+    session
+        .configure(
+            maka_capabilities::computer::Desktop::Local,
+            vec![],
+            Language::En,
+        )
+        .unwrap();
+    let bridge = Arc::new(Bridge(
+        Arc::new(Mutex::new(session)),
+        "linux-wheel-fixture",
+        Language::En,
+    ));
+    wait_for_window(&bridge, fixture.id).await;
+    let repl = Repl::new(
+        facade(),
+        CellLimits {
+            heap_bytes: 128 * 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (ok, output) = evaluate(
+        &repl,
+        bridge.clone(),
+        format!("const app=await cua.getApp({{windowId:{}}});", fixture.id,),
+    )
+    .await;
+    assert!(ok, "{}", texts(&output));
+    fixture.events().await;
+
+    // These calls precede the first screenshot and use native window pixels.
+    for (button, expected) in [("l", 1), ("r", 3), ("m", 2)] {
+        let (ok, output) = evaluate(&repl, bridge.clone(), format!(
+            "await app.click([37,41],{{mouseButton:{button:?}}}); await app.click([37,41],{{mouseButton:{button:?}}});",
+        )).await;
+        assert!(ok, "{}", texts(&output));
+        let events = fixture.events().await;
+        assert_eq!(events.len(), 4, "two no-screenshot clicks: {events:?}");
+        for pair in events.as_chunks::<2>().0 {
+            assert!(pair[0].press && !pair[1].press);
+            assert!(pair.iter().all(|event| event.event == fixture.id
+                && event.detail == expected
+                && (event.event_x, event.event_y) == (37, 41)));
+        }
+    }
+
+    for (pixels, direction, button, detents) in [
+        (Some(1), "down", 5, 1),
+        (Some(49), "down", 5, 1),
+        (Some(149), "down", 5, 1),
+        (Some(150), "down", 5, 2),
+        (Some(250), "down", 5, 3),
+        (None, "down", 5, 8),
+        (Some(5100), "down", 5, 51),
+        (Some(100), "up", 4, 1),
+        (Some(100), "left", 6, 1),
+        (Some(100), "right", 7, 1),
+    ] {
+        let distance = pixels
+            .map(|pixels| format!(",{{pixels:{pixels}}}"))
+            .unwrap_or_default();
+        let (ok, output) = evaluate(&repl, bridge.clone(), format!(
+            "await app.getScreenshot({{emit:false}}); await app.scroll([37,41],{direction:?}{distance});",
+        )).await;
+        assert!(ok, "{}", texts(&output));
+        let events = fixture.events().await;
+        eprintln!(
+            "MAKA_PUBLIC_WHEEL {}",
+            json!({"pixels":pixels,"direction":direction,"expected_detents":detents,"events":events})
+        );
+        assert_eq!(
+            events.len(),
+            detents * 2,
+            "pixels={pixels:?} direction={direction}"
+        );
+        for pair in events.as_chunks::<2>().0 {
+            assert!(pair[0].press && !pair[1].press);
+            for event in pair {
+                assert_eq!(event.event, fixture.id);
+                assert_eq!(event.detail, button);
+                assert_eq!((event.event_x, event.event_y), (37, 41));
+                assert_ne!(event.response_type & 0x80, 0);
+            }
+            assert!(pair[1].time.wrapping_sub(pair[0].time) >= 36);
+        }
+        if detents >= 8 {
+            let pairs = events.as_chunks::<2>().0;
+            let mut gaps: Vec<_> = pairs
+                .windows(2)
+                .map(|pair| pair[1][0].time.wrapping_sub(pair[0][1].time))
+                .collect();
+            gaps.sort_unstable();
+            assert!(gaps[gaps.len() / 2] < 36, "inter-detent gaps: {gaps:?}");
+        }
+    }
+
+    let (ok, output) = evaluate(&repl, bridge.clone(),
+        "await app.scroll([37,41],'d',{pixels:100}); await app.scroll([37,41],'u',{pixels:100}); await app.scroll([37,41],'l',{pixels:100}); await app.scroll([37,41],'r',{pixels:100});".into(),
+    ).await;
+    assert!(ok, "{}", texts(&output));
+    let repeated = fixture.events().await;
+    assert_eq!(
+        repeated.len(),
+        8,
+        "the current screenshot survives multiple actions: {repeated:?}"
+    );
+    for (pair, button) in repeated.as_chunks::<2>().0.iter().zip([5, 4, 6, 7]) {
+        assert!(pair[0].press && !pair[1].press);
+        assert!(pair.iter().all(|event| event.event == fixture.id
+            && event.detail == button
+            && (event.event_x, event.event_y) == (37, 41)));
+    }
+    let (ok, output) = evaluate(
+        &repl,
+        bridge.clone(),
+        "await app.click([37,41]); await app.click([37,41]);".into(),
+    )
+    .await;
+    assert!(ok, "{}", texts(&output));
+    let repeated = fixture.events().await;
+    assert_eq!(
+        repeated.len(),
+        4,
+        "clicks must not consume the current screenshot: {repeated:?}"
+    );
+    assert!(repeated.iter().all(|event| event.event == fixture.id
+        && event.detail == 1
+        && (event.event_x, event.event_y) == (37, 41)));
+    let (ok, output) = evaluate(
+        &repl,
+        bridge.clone(),
+        "await app.getAXState({emit:false}); await app.click([37,41]); await app.click([37,41]);"
+            .into(),
+    )
+    .await;
+    assert!(ok, "{}", texts(&output));
+    let after_ax = fixture.events().await;
+    assert_eq!(
+        after_ax.len(),
+        4,
+        "AX-only replaces the image frame with native window pixels: {after_ax:?}"
+    );
+    assert!(after_ax.iter().all(|event| event.event == fixture.id
+        && event.detail == 1
+        && (event.event_x, event.event_y) == (37, 41)));
+    for pixels in [0.0, -1.0, 0.1, 49.5, 149.5, 150.1, 65536.0] {
+        let (ok, output) = evaluate(&repl, bridge.clone(), format!(
+            "await app.getScreenshot({{emit:false}}); try {{ await app.scroll([37,41],'down',{{pixels:{pixels}}}); throw Error('invalid pixels accepted'); }} catch(error) {{ if(!String(error).includes('integer between 1 and 65535')) throw error; }}",
+        )).await;
+        assert!(ok, "{}", texts(&output));
+        assert!(
+            fixture.events().await.is_empty(),
+            "invalid pixels={pixels} dispatched input"
+        );
+    }
+    let sibling = fixture.sibling().await;
+    wait_for_window(&bridge, sibling).await;
+    fixture.close().await;
+    let (ok, output) = evaluate(&repl, bridge.clone(),
+        "try { await app.scroll([37,41],'down',{pixels:100}); throw Error('closed target accepted'); } catch(error) { if(!String(error).includes('stale_target')) throw error; }".into(),
+    ).await;
+    assert!(ok, "{}", texts(&output));
+    assert!(fixture.events_for(sibling).await.is_empty());
+    repl.close().await.unwrap();
+    bridge.0.lock().await.close().await.unwrap();
+    driver.lock().await.close().await.unwrap();
+    fixture.finish().await;
+}
+
+#[path = "fixtures/browser_authorization.rs"]
+mod browser_authorization;
+
 struct Bridge(Arc<Mutex<Session>>, &'static str, Language);
 impl ToolExecutor for Bridge {
     fn names(&self) -> Vec<String> {
@@ -47,7 +407,7 @@ impl ToolExecutor for Bridge {
                 .await
                 .invoke(
                     serde_json::from_value(input).unwrap(),
-                    id,
+                    &browser_authorization::context(id, "fixture-turn"),
                     &cancellation,
                     language,
                 )
@@ -55,6 +415,44 @@ impl ToolExecutor for Bridge {
         })
     }
 }
+
+// Synthetic cursor rendering is an internal Session contract. The public App
+// and Tab wrappers do not expose a moveCursor method.
+async fn cursor_binding(bridge: &Bridge, input: Value) -> Value {
+    let bound = bridge
+        .invoke("cua".into(), input, CancellationToken::new())
+        .await
+        .unwrap();
+    let handle = bound["handle"].clone();
+    observe_cursor_target(bridge, &handle).await;
+    handle
+}
+
+async fn observe_cursor_target(bridge: &Bridge, handle: &Value) {
+    bridge
+        .invoke(
+            "cua".into(),
+            json!({"method":"observe","handle":handle,"kind":"screenshot","options":{"emit":false}}),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+}
+
+async fn move_fixture_cursor(
+    bridge: &Bridge,
+    handle: &Value,
+    point: [i32; 2],
+) -> Result<Value, maka_agent_facts::tools::ToolError> {
+    bridge
+        .invoke(
+            "cua".into(),
+            json!({"method":"action","handle":handle,"action":{"kind":"moveCursor","target":point}}),
+            CancellationToken::new(),
+        )
+        .await
+}
+
 async fn evaluate(repl: &Repl, bridge: Arc<Bridge>, source: String) -> (bool, Vec<CellOutput>) {
     let context = CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap();
     let result = repl
@@ -106,7 +504,7 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let windows = native
         .invoke(
             serde_json::from_value(json!({"method":"listWindows","options":{}})).unwrap(),
-            "browser-fixture",
+            &maka_computer_use::InvocationContext::new("browser-fixture", "fixture-turn"),
             &CancellationToken::new(),
             maka_agent_facts::language::Language::En,
         )
@@ -257,24 +655,13 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
         scroll["scroll"].as_f64().unwrap() < 0.0,
         "wheel input must reach the observed view: {scroll}"
     );
-    for (direction, axis, sign) in [
-        ("down", "pointY", -1_i64),
-        ("up", "pointY", 1),
-        ("left", "pointX", 1),
-        ("right", "pointX", -1),
-    ] {
+    for direction in ["down", "up", "left", "right"] {
         for amount in [1_i64, 37, 500] {
             let (ok, output) = evaluate(
                 &repl, bridge.clone(),
-                format!("await app.getScreenshot(); await app.scroll([{x},{y}], '{direction}', {{pixels:{amount}}});"),
+                format!("try {{ await app.scroll([{x},{y}], '{direction}', {{pixels:{amount}}}); throw Error('unsupported pixels accepted'); }} catch(error) {{ if (!String(error).includes('macOS scroll accepts pages, not pixels.')) throw error; }}"),
             ).await;
             assert!(ok, "{}", texts(&output));
-            let event: Value = serde_json::from_str(&form.line().await).unwrap();
-            assert_eq!(
-                event[axis].as_i64(),
-                Some(sign * amount),
-                "pixel-unit delta must reach the exact observed canvas: {event}"
-            );
         }
     }
     let (ok, output) = evaluate(
@@ -288,15 +675,14 @@ async fn native_form_retains_exact_ax_elements_and_verifies_submission() {
     let (ok, output) = evaluate(
         &repl,
         bridge.clone(),
-        format!("await app.scroll({canvas_index}, 'down', {{pixels:37}});"),
+        format!("try {{ await app.scroll({canvas_index}, 'down', {{pixels:37}}); throw Error('unsupported indexed pixels accepted'); }} catch(error) {{ if (!String(error).includes('macOS scroll accepts pages, not pixels.')) throw error; }}"),
     )
     .await;
     assert!(ok, "{}", texts(&output));
-    let event: Value = serde_json::from_str(&form.line().await).unwrap();
-    assert_eq!(
-        event["pointY"].as_i64(),
-        Some(-37),
-        "indexed scroll must reach the observed canvas: {event}"
+    let event: Value = serde_json::from_str(&form.command("probe").await).unwrap();
+    assert!(
+        event.get("active").is_some() && event.get("mouse").is_some(),
+        "refused pixels must not leave an input event before the fixture probe: {event}"
     );
     let (ok, output) = evaluate(
         &repl,
@@ -490,6 +876,8 @@ async fn native_observation_recovers_after_busy_and_preserves_external_edits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 #[ignore = "requires a built MAKA_CUA_TEST_HOST and macOS desktop; synthetic cursors and background AX"]
 async fn native_cursors_are_visible_independent_and_retire_without_moving_system_pointer() {
+    use maka_computer_use::NativeEpochId;
+
     let executable = std::env::var_os("MAKA_CUA_TEST_HOST")
         .expect("build maka-cli and set MAKA_CUA_TEST_HOST to its executable");
     let mut form = NativeForm::start(true).await;
@@ -509,19 +897,24 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
     ));
     let first = Repl::new(facade(), CellLimits::default()).unwrap();
     let second = Repl::new(facade(), CellLimits::default()).unwrap();
+    let mut cursor_handles = Vec::new();
     for (repl, bridge, label, color, point) in [
-        (&first, a.clone(), "Maka A", "blue", "[100,90]"),
-        (&second, b.clone(), "Maka B", "mint", "[280,160]"),
+        (&first, a.clone(), "Maka A", "blue", [100, 90]),
+        (&second, b.clone(), "Maka B", "mint", [280, 160]),
     ] {
-        let (ok,output)=evaluate(repl,bridge,format!(
-            "await cua.cursor.configure({{label:{label:?},color:{color:?},reducedMotion:true}}); const app=await cua.getApp({{windowId:{}}}); await app.getScreenshot(); nodeRepl.write(await app.moveCursor({point}));",
+        let (ok,output)=evaluate(repl,bridge.clone(),format!(
+            "await cua.cursor.configure({{label:{label:?},color:{color:?},reducedMotion:true}}); const app=await cua.getApp({{windowId:{}}}); await app.getScreenshot();",
             form.window_id
         )).await;
-        assert!(
-            ok && texts(&output).contains("\"visible\":true"),
-            "{}",
-            texts(&output)
-        );
+        assert!(ok, "{}", texts(&output));
+        let handle = cursor_binding(
+            &bridge,
+            json!({"method":"getApp","target":{"windowId":form.window_id}}),
+        )
+        .await;
+        let moved = move_fixture_cursor(&bridge, &handle, point).await.unwrap();
+        assert_eq!(moved["visible"], true, "{moved}");
+        cursor_handles.push(handle);
     }
     let (ok, output) = evaluate(&first, a.clone(), "await cua.cursor.getState();".into()).await;
     assert!(ok);
@@ -529,18 +922,17 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
     let renderer = state["native"]["rendererPid"].as_u64().unwrap();
 
     // Capture the renderer's own transparent window, not the user's desktop.
-    let windows = driver
-        .lock()
-        .await
-        .invoke(
-            "list_windows",
-            json!({}),
-            "cursor-inspection",
-            &CancellationToken::new(),
-            Language::En,
-        )
-        .await
-        .unwrap();
+    let inspection_epoch = NativeEpochId::new();
+    let windows = Driver::invoke(
+        &driver,
+        "list_windows",
+        json!({}),
+        inspection_epoch,
+        &CancellationToken::new(),
+        Language::En,
+    )
+    .await
+    .unwrap();
     let windows = windows.structured_content.unwrap();
     let overlay = windows["windows"]
         .as_array()
@@ -548,21 +940,19 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
         .iter()
         .find(|window| window["pid"] == renderer)
         .expect("native cursor window is in WindowServer inventory");
-    let capture = driver
-        .lock()
-        .await
-        .invoke(
-            "get_window_state",
-            json!({
-                "pid":renderer,"window_id":overlay["window_id"],"include_accessibility_tree":false,
-                "include_screenshot":true,"max_image_dimension":1600
-            }),
-            "cursor-inspection",
-            &CancellationToken::new(),
-            Language::En,
-        )
-        .await
-        .unwrap();
+    let capture = Driver::invoke(
+        &driver,
+        "get_window_state",
+        json!({
+            "pid":renderer,"window_id":overlay["window_id"],"include_accessibility_tree":false,
+            "include_screenshot":true,"max_image_dimension":1600
+        }),
+        inspection_epoch,
+        &CancellationToken::new(),
+        Language::En,
+    )
+    .await
+    .unwrap();
     let value = serde_json::to_value(capture).unwrap();
     let encoded = value["content"]
         .as_array()
@@ -616,13 +1006,10 @@ async fn native_cursors_are_visible_independent_and_retire_without_moving_system
     );
     let submitted: Value = serde_json::from_str(&form.line().await).unwrap();
     assert_eq!(submitted["submitted"], "hello hello / cursor probe");
-    let (ok, _) = evaluate(
-        &second,
-        b.clone(),
-        "await app.moveCursor([280,160]);".into(),
-    )
-    .await;
-    assert!(ok);
+    let moved = move_fixture_cursor(&b, &cursor_handles[1], [280, 160])
+        .await
+        .unwrap();
+    assert_eq!(moved["visible"], true, "{moved}");
     first.close().await.unwrap();
     a.0.lock().await.close().await.unwrap();
     let (ok, output) = evaluate(&second, b.clone(), "await cua.cursor.getState();".into()).await;
@@ -766,7 +1153,12 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
                 let mut request = [0; 4096];
                 let length = stream.read(&mut request).await.unwrap();
                 let request = String::from_utf8_lossy(&request[..length]);
-                let body = if request.starts_with("GET /iframe-child ") {
+                let body = if request.starts_with("GET /scroll-fixture ") {
+                    r#"<!doctype html><title>Scroll fixture</title>
+<div role="region" aria-label="Scroll fixture target" tabindex="0" style="width:180px;height:60px;overflow:auto"><div style="width:1000px;height:1000px">Nested content</div></div>
+<output id="wheel">Wheel pending</output>
+<script>let moved=false;addEventListener('mousemove',()=>moved=true);addEventListener('wheel',event=>{document.getElementById('wheel').textContent='Wheel x='+event.deltaX+' y='+event.deltaY+' ratioX='+event.deltaX/innerWidth+' ratioY='+event.deltaY/innerHeight+' moved='+moved;moved=false;event.preventDefault();},{passive:false});</script>"#
+                } else if request.starts_with("GET /iframe-child ") {
                     r#"<!doctype html><meta charset="utf-8"><title>Cross site child</title><input aria-label="Child name" id="child-name"><button onclick="parent.postMessage('Child submitted '+document.getElementById('child-name').value,'*')">Child submit</button>"#
                 } else if request.starts_with("GET /iframe-shadow ") {
                     r#"<!doctype html><title>Shadow child</title><button onclick="parent.postMessage('Unexpected shadow input','*')">Shadow child submit</button>"#
@@ -842,11 +1234,59 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
     .unwrap();
     let logging =
         tokio::spawn(async move { while lines.next_line().await.ok().flatten().is_some() {} });
+    // The debugging socket can precede the fixture's first document load.
+    // Observe the task-owned page independently before testing public AX reads.
+    {
+        let observer = cua_driver_core::browser::cdp_ws::CdpConnection::connect_bounded(
+            &websocket,
+            usize::MAX,
+        )
+        .await
+        .unwrap();
+        let mut events = observer.subscribe();
+        let mut last = Value::Null;
+        let ready = tokio::time::timeout(Duration::from_secs(10), async {
+            observer.call(None, "Target.setDiscoverTargets", json!({"discover":true})).await.unwrap();
+            let target = loop {
+                let targets = observer.call(None, "Target.getTargets", json!({})).await.unwrap();
+                if let Some(target) = targets["targetInfos"].as_array().unwrap().iter()
+                    .find(|target| target["type"] == "page" && target["url"] == page)
+                {
+                    break target["targetId"].as_str().unwrap().to_owned();
+                }
+                events.recv().await.expect("fixture browser closed before target discovery");
+            };
+            let attached = observer.call(None, "Target.attachToTarget", json!({"targetId":target,"flatten":true})).await.unwrap();
+            let session = attached["sessionId"].as_str().unwrap();
+            observer.call(Some(session), "Page.enable", json!({})).await.unwrap();
+            observer.call(Some(session), "Runtime.enable", json!({})).await.unwrap();
+            let expression = format!("(() => ({{url:location.href,title:document.title,readyState:document.readyState,ready:location.href==={} && document.readyState==='complete' && document.title==='Maka Cua fixture' && document.querySelector('#name')?.value==='hello hello' && document.querySelector('#message')!==null && document.querySelector('#color')?.options.length===2 && Boolean(document.querySelector('#shadow-host')?.shadowRoot?.querySelector('#slot-wrapper'))}}))()", json!(page));
+            loop {
+                match observer.call(Some(session), "Runtime.evaluate", json!({"expression":expression,"returnByValue":true})).await {
+                    Ok(value) => {
+                        last = value["result"]["value"].clone();
+                        if last["ready"] == true { break; }
+                    }
+                    Err(error) => last = json!({"cdp_error":error.to_string()}),
+                }
+                loop {
+                    let event = events.recv().await.expect("fixture browser closed before DOM readiness");
+                    if event.session_id.as_deref() == Some(session)
+                        && matches!(event.method.as_str(), "Runtime.executionContextCreated" | "Runtime.executionContextsCleared" | "Page.loadEventFired" | "Page.domContentEventFired" | "Page.frameNavigated" | "Page.frameStoppedLoading")
+                    { break; }
+                }
+            }
+            observer.call(None, "Target.detachFromTarget", json!({"sessionId":session})).await.unwrap();
+        }).await;
+        assert!(ready.is_ok(), "fixture DOM never became ready: {last}");
+        eprintln!("MAKA_BROWSER_FIXTURE_READY {last}");
+    }
     let url = reqwest::Url::parse(&websocket).unwrap();
     let driver = Arc::new(Mutex::new(Driver::default()));
     let mut native = Session::new(driver.clone());
     native
-        .configure_browsers(
+        .configure(
+            maka_capabilities::computer::Desktop::Local,
             vec![BrowserConnection {
                 id: "fixture".into(),
                 endpoint: format!("http://127.0.0.1:{}", url.port().unwrap()),
@@ -1097,7 +1537,7 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
     let message = index(&state, "textbox", "Message");
     let color = index(&state, "combobox", "Color");
     let button = index(&state, "button", "Submit fixture");
-    let (ok,output)=evaluate(&repl,bridge.clone(),format!("await cua.cursor.configure({{reducedMotion:false}}); await tab.selectText({name}, 'hello', {{prefix:'hello '}}); await tab.moveCursor({name}); await tab.typeText(null, 'world'); await tab.setValue({message}, '你好'); await tab.setValue({color}, 'blue-id'); await tab.click({button}); await tab.getAXState({{disableDiffing:true}});")).await;
+    let (ok,output)=evaluate(&repl,bridge.clone(),format!("await cua.cursor.configure({{reducedMotion:false}}); await tab.selectText({name}, 'hello', {{prefix:'hello '}}); await tab.typeText(null, 'world'); await tab.setValue({message}, '你好'); await tab.setValue({color}, 'blue-id'); await tab.click({button}); await tab.getAXState({{disableDiffing:true}});")).await;
     assert!(ok, "{}", texts(&output));
     assert!(
         texts(&output).contains("hello world / 你好")
@@ -1170,6 +1610,42 @@ async fn browser_form_uses_independent_repl_and_rejects_stale_document_and_tab()
         "{}",
         texts(&output)
     );
+    let (ok, output) = evaluate(&repl,bridge.clone(),format!("await cua.cursor.configure({{enabled:false}}); await tab.goto({}); await tab.getAXState({{disableDiffing:true}});",json!(format!("{page}scroll-fixture")))).await;
+    assert!(ok, "{}", texts(&output));
+    let mut scroll_state = texts(&output);
+    for (direction, distance, expected) in [
+        ("down", json!(0.5), "Wheel x=0 y=50 "),
+        ("right", json!(1), "Wheel x=180 y=0 "),
+        ("up", json!(-0.5), "Wheel x=0 y=50 "),
+        ("down", json!({"pixels":0.25}), "Wheel x=0 y=0.25 "),
+        ("down", json!({"pixels":50001}), "Wheel x=0 y=50001 "),
+    ] {
+        let target = index(&scroll_state, "region", "Scroll fixture target");
+        let (ok, output) = evaluate(
+            &repl,
+            bridge.clone(),
+            format!(
+                "await tab.scroll({target},{},{}); await tab.getAXState({{disableDiffing:true}});",
+                json!(direction),
+                distance
+            ),
+        )
+        .await;
+        scroll_state = texts(&output);
+        assert!(
+            ok && scroll_state.contains(expected) && scroll_state.contains("moved=true"),
+            "{scroll_state}"
+        );
+    }
+    let target = index(&scroll_state, "region", "Scroll fixture target");
+    let (ok,output)=evaluate(&repl,bridge.clone(),format!("await tab.scroll({target},'down',0); await tab.getAXState(); await tab.getScreenshot({{emit:false}}); await tab.scroll([10,10],'down',0.5); await tab.getAXState({{disableDiffing:true}});")).await;
+    assert!(
+        ok && texts(&output).contains("ratioY=0.5"),
+        "{}",
+        texts(&output)
+    );
+    let (ok,output)=evaluate(&repl,bridge.clone(),"await tab.getAXState(); try { await tab.scroll([10,10],'down',{pixels:0}); throw Error('invalid pixel distance accepted'); } catch(error) { if(!String(error).includes('scroll pixels must be positive and finite')) throw error; }".into()).await;
+    assert!(ok, "{}", texts(&output));
     let (ok, _) = evaluate(
         &repl,
         bridge.clone(),
@@ -1211,7 +1687,8 @@ async fn browser_cursor_scenario(
 ) -> String {
     let mut native = Session::new(driver);
     native
-        .configure_browsers(
+        .configure(
+            maka_capabilities::computer::Desktop::Local,
             vec![BrowserConnection {
                 id: "fixture".into(),
                 endpoint,
@@ -1225,21 +1702,29 @@ async fn browser_cursor_scenario(
         Language::En,
     ));
     let second = Repl::new(facade(), CellLimits::default()).unwrap();
-    let (ok,output)=evaluate(first,a.clone(),"await cua.cursor.configure({label:'Maka A',color:'blue',reducedMotion:true}); await tab.getScreenshot(); nodeRepl.write(await tab.moveCursor([90,100]));".into()).await;
-    assert!(
-        ok && texts(&output).contains("\"visible\":true"),
-        "{}",
-        texts(&output)
-    );
+    let (ok,output)=evaluate(first,a.clone(),"await cua.cursor.configure({label:'Maka A',color:'blue',reducedMotion:true}); await tab.getScreenshot();".into()).await;
+    assert!(ok, "{}", texts(&output));
     // The screenshot precedes A's first movement. Linux font antialiasing can
     // already contain blue pixels, so compare against this unchanged fixture.
     let background = cursor_colors(&image_bytes(&output));
-    let (ok,output)=evaluate(&second,b.clone(),format!("await cua.cursor.configure({{label:'Maka B',color:'mint',reducedMotion:true}}); const tab=await cua.getTab({{url:{}}}); await tab.getScreenshot(); nodeRepl.write(await tab.moveCursor([210,160]));",json!(page))).await;
-    assert!(
-        ok && texts(&output).contains("\"visible\":true"),
-        "{}",
-        texts(&output)
-    );
+    let a_cursor = cursor_binding(
+        &a,
+        json!({"method":"getTab","reference":{"url":page},"options":{}}),
+    )
+    .await;
+    let moved = move_fixture_cursor(&a, &a_cursor, [90, 100]).await.unwrap();
+    assert_eq!(moved["visible"], true, "{moved}");
+    let (ok,output)=evaluate(&second,b.clone(),format!("await cua.cursor.configure({{label:'Maka B',color:'mint',reducedMotion:true}}); const tab=await cua.getTab({{url:{}}}); await tab.getScreenshot();",json!(page))).await;
+    assert!(ok, "{}", texts(&output));
+    let b_cursor = cursor_binding(
+        &b,
+        json!({"method":"getTab","reference":{"url":page},"options":{}}),
+    )
+    .await;
+    let moved = move_fixture_cursor(&b, &b_cursor, [210, 160])
+        .await
+        .unwrap();
+    assert_eq!(moved["visible"], true, "{moved}");
     // Both Sessions remain visible after the old per-action expiry deadline.
     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
     let (ok, output) = evaluate(first, a.clone(), "await tab.getScreenshot();".into()).await;
@@ -1268,10 +1753,12 @@ async fn browser_cursor_scenario(
     let (ok, _) = evaluate(
         first,
         a.clone(),
-        "await cua.cursor.configure({enabled:true}); await tab.moveCursor([90,100]);".into(),
+        "await cua.cursor.configure({enabled:true});".into(),
     )
     .await;
     assert!(ok);
+    let moved = move_fixture_cursor(&a, &a_cursor, [90, 100]).await.unwrap();
+    assert_eq!(moved["visible"], true, "{moved}");
     second.close().await.unwrap();
     b.0.lock().await.close().await.unwrap();
     let (ok, output) = evaluate(first, a.clone(), "await tab.getScreenshot();".into()).await;
@@ -1281,24 +1768,35 @@ async fn browser_cursor_scenario(
         blue > background.0 + 15 && mint == background.1,
         "closing B must remove only B's cursor: blue={blue}, mint={mint}"
     );
-    let (ok, _) = evaluate(
-        first,
-        a.clone(),
-        "await tab.reload(); await tab.getAXState();".into(),
+    a.invoke(
+        "cua".into(),
+        json!({"method":"action","handle":a_cursor,"action":{"kind":"reload"}}),
+        CancellationToken::new(),
     )
-    .await;
-    assert!(ok);
-    let (ok, _) = evaluate(first, a.clone(), "await tab.moveCursor([90,100]);".into()).await;
+    .await
+    .unwrap();
+    a.invoke(
+        "cua".into(),
+        json!({"method":"observe","handle":a_cursor,"kind":"ax","options":{"emit":false}}),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let moved = move_fixture_cursor(&a, &a_cursor, [90, 100]).await;
     assert!(
-        !ok,
+        moved.is_err(),
         "cursor movement must not bypass screenshot invalidation after navigation"
     );
-    let (ok,output)=evaluate(first,a,"await tab.getScreenshot(); nodeRepl.write(await tab.moveCursor([90,100])); await tab.getAXState({disableDiffing:true});".into()).await;
-    assert!(
-        ok && texts(&output).contains("\"visible\":true"),
-        "{}",
-        texts(&output)
-    );
+    observe_cursor_target(&a, &a_cursor).await;
+    let moved = move_fixture_cursor(&a, &a_cursor, [90, 100]).await.unwrap();
+    assert_eq!(moved["visible"], true, "{moved}");
+    let (ok, output) = evaluate(
+        first,
+        a,
+        "await tab.getScreenshot(); await tab.getAXState({disableDiffing:true});".into(),
+    )
+    .await;
+    assert!(ok, "{}", texts(&output));
     let state = texts(&output);
     assert!(
         !state.contains("Maka A"),

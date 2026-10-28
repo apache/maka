@@ -25,6 +25,8 @@
 mod activity;
 #[cfg(feature = "native-desktop")]
 mod browser;
+#[path = "browser/clipboard.rs"]
+mod browser_clipboard;
 pub mod cursor;
 pub mod desktop;
 #[cfg(feature = "native-desktop")]
@@ -34,24 +36,42 @@ mod driver;
 mod driver;
 #[cfg(feature = "native-desktop")]
 mod identity;
+mod invocation;
 pub mod language;
+#[cfg(all(
+    feature = "native-desktop",
+    target_os = "linux",
+    not(target_env = "musl")
+))]
+mod linux_ax;
+#[cfg(all(feature = "native-desktop", target_os = "linux"))]
+mod linux_image;
+#[cfg(all(feature = "native-desktop", target_os = "linux"))]
+mod linux_input;
 #[cfg(all(feature = "native-desktop", target_os = "macos"))]
 mod macos;
 #[cfg(feature = "native-desktop")]
 mod observation;
+mod permission_subject;
 pub mod protocol;
 #[cfg(feature = "native-desktop")]
 mod session;
 
-pub use desktop::Session;
+pub use desktop::{NativeEpochId, Session, SessionOwner};
 pub use driver::Driver;
+pub use invocation::{
+    AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,
+    BrowserAuthorization, BrowserDocument, BrowserHostEffects, HostEffectFuture, InvocationContext,
+    OperationSettlement, SettlementFuture,
+};
+pub use permission_subject::{ComputerAppBinding, ComputerAppTarget};
 pub fn facade() -> String {
-    facade_for(desktop::local_platform())
+    facade_for(desktop::local_platform(), false)
 }
 
-pub fn facade_for(platform: &str) -> String {
+pub fn facade_for(platform: &str, audio_enabled: bool) -> String {
     format!(
-        "const nativePlatform = {platform:?};\n{}",
+        "const nativePlatform = {platform:?};\nconst audioEnabled = {audio_enabled};\n{}",
         include_str!("facade.js")
     )
 }

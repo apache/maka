@@ -26,8 +26,8 @@ const contract = {
     methods: {
       echo: {
         mode: 'query',
-        input: { type: 'string', maxLength: 4096 },
-        output: { type: 'string', maxLength: 4096 },
+        input: { type: 'string' },
+        output: { type: 'string' },
         resources: {},
       },
     },
@@ -38,7 +38,6 @@ export function activate() {
 }
 export const echo = {
   echo(input) {
-    if (typeof input !== 'string' || [...input].length > 4096) throw Error('Invalid echo input');
     return input;
   },
 };

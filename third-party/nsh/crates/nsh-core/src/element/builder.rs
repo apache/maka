@@ -13,7 +13,8 @@ use crate::{
     AccessibilityProp, AccessibilityRole, AccessibilityState, AccessibilityValue, Bounds,
     ContextMenuEvent, EdgeInsets, EventKind, EventPayload, HoverEvent, Hsla, ImageSource,
     ListContentStyle, NativeProp, NodeId, PointerEvents, Points, Prop, Size, Tag, TouchEvent,
-    geometry::Radians, style::Color,
+    geometry::{DevicePixels, Radians},
+    style::Color,
 };
 
 /// A handler of `E` on an element: a closure (`move |e: &E| ..`) that
@@ -1921,10 +1922,10 @@ impl Image {
     }
 
     /// It loaded: its size in pixels.
-    pub fn on_load<M>(self, listener: impl IntoListener<Size<Points>, M>) -> Self {
+    pub fn on_load<M>(self, listener: impl IntoListener<Size<DevicePixels>, M>) -> Self {
         self.on(
             EventKind::Load,
-            events::typed(listener.into_listener(), events::size),
+            events::typed(listener.into_listener(), events::pixel_size),
         )
     }
 

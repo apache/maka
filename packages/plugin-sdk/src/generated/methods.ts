@@ -127,7 +127,6 @@ export type SettingsUpdateWorkspaceLocationsOutput_ManagementRejection =
   | 'invalid_document'
   | 'invalid_source'
   | 'package_unavailable'
-  | 'execution_environment'
   | 'instance_unavailable'
   | 'parent_disabled';
 /**
@@ -191,23 +190,19 @@ export type SettingsUsageOutput_ToolOrigin =
   | {
       kind: 'provider';
       step_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_mode';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'code_cell';
       parent_operation_id: string;
       parent_tool_call_id: string;
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'standalone';
-      [k: string]: unknown | undefined;
     }
   | {
       kind: 'host_sdk';
@@ -215,8 +210,12 @@ export type SettingsUsageOutput_ToolOrigin =
       entry_id: string;
       activation: string;
       parent_operation_id: string | null;
-      [k: string]: unknown | undefined;
+      parent_relationship?: SettingsUsageOutput_HostSdkRelationship | null;
     };
+export type SettingsUsageOutput_HostSdkRelationship = {
+  kind: 'evaluation_observer';
+  epoch: string;
+};
 export type SettingsUsageOutput_UsageToolResult =
   | {
       kind: 'rejected';
@@ -244,41 +243,6 @@ export type SettingsUsageOutput_UsageToolStatus = 'success' | 'error' | 'unknown
  * Breakdown selected for a bounded summary page.
  */
 export type SettingsUsageSummaryOutput_UsageGroup = 'byProvider' | 'byModel' | 'byTool';
-export type TerminalControlInput_RawAction =
-  | {
-      type: 'text';
-      text: string;
-    }
-  | {
-      type: 'paste';
-      text: string;
-    }
-  | {
-      type: 'key';
-      key: string;
-      modifiers?: TerminalControlInput_TerminalModifiers;
-    }
-  | {
-      type: 'mouse';
-      event: TerminalControlInput_RawEvent;
-      x: number;
-      y: number;
-      button?: TerminalControlInput_MouseButton;
-      direction?: TerminalControlInput_ScrollDirection;
-      modifiers?: TerminalControlInput_TerminalModifiers;
-    };
-/**
- * @maxItems 3
- */
-export type TerminalControlInput_TerminalModifiers =
-  | []
-  | [TerminalControlInput_Modifier]
-  | [TerminalControlInput_Modifier, TerminalControlInput_Modifier]
-  | [TerminalControlInput_Modifier, TerminalControlInput_Modifier, TerminalControlInput_Modifier];
-export type TerminalControlInput_Modifier = 'ctrl' | 'alt' | 'shift';
-export type TerminalControlInput_RawEvent = 'click' | 'press' | 'release' | 'move' | 'scroll';
-export type TerminalControlInput_MouseButton = 'left' | 'middle' | 'right';
-export type TerminalControlInput_ScrollDirection = 'up' | 'down';
 /**
  * A finite transfer of one captured durable display. End installs it; these
  * parts never claim an original-output cursor or a parser continuation point.
@@ -386,6 +350,11 @@ export interface ServiceMethods {
         compactionPrompt: string;
         defaultCompactionPrompt: string;
       };
+    };
+    computerApps: {
+      mode: 'query';
+      input: Runtime.AgentSessionRead;
+      output: Runtime.AgentComputerApps;
     };
     context: {
       mode: 'query';
@@ -704,6 +673,14 @@ export interface ServiceMethods {
     stop: {
       mode: 'mutation';
       input: Runtime.AgentStop;
+      output: Runtime.AgentStopped;
+    };
+    stopComputerApp: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        operationId: string;
+      };
       output: Runtime.AgentStopped;
     };
     toolImage: {
@@ -1040,12 +1017,27 @@ export interface ServiceMethods {
     };
     installSource: {
       mode: 'mutation';
-      input: Runtime.PackageSourceInstall;
+      input: {
+        expectedRevision: number;
+        /**
+         * UTF-8 package files, including maka.extension.json. Bytes determine identity.
+         */
+        files: {
+          [k: string]: string | undefined;
+        };
+      };
       output: Runtime.ManagementResultForPackageInstalled;
     };
     installUrl: {
       mode: 'mutation';
-      input: Runtime.PackageUrlInstall;
+      input: {
+        expectedRevision: number;
+        url: string;
+        /**
+         * Optional SHA-256 of the downloaded bundle bytes, from a trusted publisher.
+         */
+        sha256?: string | null;
+      };
       output: Runtime.ManagementResultForPackageInstalled;
     };
     instances: {
@@ -1070,7 +1062,12 @@ export interface ServiceMethods {
     };
     readPackage: {
       mode: 'query';
-      input: Runtime.PackageSourceRead;
+      input: {
+        source: Runtime.DeploymentRef;
+        package: Runtime.PackageRef;
+        path?: string | null;
+        offset: number;
+      };
       output: {
         paths: string[];
         text?: string | null;
@@ -1082,6 +1079,11 @@ export interface ServiceMethods {
       input: Runtime.InstanceSettingsRead;
       output: Runtime.InstanceSettingsPage;
     };
+    readUi: {
+      mode: 'query';
+      input: Runtime.UiRead;
+      output: Runtime.UiCatalog;
+    };
     replace: {
       mode: 'mutation';
       input: Runtime.DeploymentReplace;
@@ -1089,13 +1091,21 @@ export interface ServiceMethods {
     };
     replaceSource: {
       mode: 'mutation';
-      input: Runtime.DeploymentSourceReplace;
+      input: {
+        expectedRevision: number;
+        document: Runtime.DeploymentDocument;
+      };
       output: Runtime.ManagementResultForDeploymentRef;
     };
     setEnabled: {
       mode: 'mutation';
       input: Runtime.InstanceSetEnabled;
       output: Runtime.ManagementResultForDeploymentRef;
+    };
+    watch: {
+      mode: 'subscription';
+      input: Runtime.UiWatch;
+      output: Runtime.DeploymentRef;
     };
   };
   terminal: {
@@ -1106,12 +1116,7 @@ export interface ServiceMethods {
     };
     control: {
       mode: 'mutation';
-      input: {
-        controller: TerminalControlInput_TerminalController;
-        sequence: number;
-        actions?: TerminalControlInput_RawAction[];
-        size?: TerminalControlInput_TerminalSize | null;
-      };
+      input: Runtime.TerminalControl;
       output: Runtime.TerminalOutcome_TerminalControlReceipt;
     };
     list: {
@@ -1550,21 +1555,6 @@ export interface SettingsAuthenticationProviderOutput_Method {
     [k: string]: unknown | undefined;
   };
   interactive: boolean;
-}
-export interface TerminalControlInput_TerminalController {
-  target: TerminalControlInput_TerminalTarget;
-  controllerId: string;
-}
-export interface TerminalControlInput_TerminalTarget {
-  sessionId: string;
-  ref: string;
-}
-/**
- * Shared by native PTY allocation, input validation and screen rendering.
- */
-export interface TerminalControlInput_TerminalSize {
-  cols: number;
-  rows: number;
 }
 export interface TerminalReadDisplayOutput_Metadata {
   size: TerminalReadDisplayOutput_TerminalSize;

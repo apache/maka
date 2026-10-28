@@ -23,6 +23,8 @@ import { windowSize } from 'nsh';
 import { keymap } from 'nsh';
 import { Dialog, ResizablePanel, ResizablePanelGroup } from 'nsh/base';
 import { C } from './ui';
+import { pluginContext } from './plugins/context';
+import { PluginPanel } from './plugins/PluginPanel';
 import { dialogTop, docked } from './chrome';
 import { WorkspaceBrowser, type WorkspaceBrowserProps } from './WorkspaceBrowser';
 import { ResourcePane } from './ResourcePane';
@@ -50,10 +52,13 @@ export function Workbench(props: {
   resources: Resources;
   children: JSX.Element;
 }) {
+  const plugins = pluginContext()!;
+  let pluginRoot: import('nsh').YNode | undefined;
+  const previewShown = () => props.resources.shown() || plugins.panel() !== null;
   const preferredWidth = signal(32 * CELL);
   const preferredPreviewWidth = signal(48 * CELL);
-  const preview = () => props.resources.shown() && canDockPreview();
-  const browser = () => props.expanded() && canDockBrowser(props.resources.shown());
+  const preview = () => previewShown() && canDockPreview();
+  const browser = () => props.expanded() && canDockBrowser(previewShown());
   effect(() => {
     docked.browser.set(browser());
     docked.preview.set(preview());
@@ -62,10 +67,10 @@ export function Workbench(props: {
   let wasPreviewDocked = canDockPreview();
   effect(() => {
     const docked = canDockPreview();
-    const root = props.resources.root();
-    if (!props.resources.shown() || docked || props.resources.imageViewer())
-      previewDialog.set(false);
-    else if (!wasPreviewDocked || (root && keymap.focusedWithin(root))) previewDialog.set(true);
+    const root = plugins.panel() ? pluginRoot : props.resources.root();
+    if (!previewShown() || docked || props.resources.imageViewer()) previewDialog.set(false);
+    else if (plugins.panel() || !wasPreviewDocked || (root && keymap.focusedWithin(root)))
+      previewDialog.set(true);
     else {
       props.resources.hide();
       previewDialog.set(false);
@@ -103,20 +108,44 @@ export function Workbench(props: {
           style={{ minHeight: 0 }}
         >
           <If when={preview()}>
-            <ResourcePane resources={props.resources} docked />
+            <If
+              when={plugins.panel() !== null}
+              else={<ResourcePane resources={props.resources} docked />}
+            >
+              <PluginPanel
+                docked
+                attach={(node) => {
+                  pluginRoot = node;
+                }}
+              />
+            </If>
           </If>
         </ResizablePanel>
       </ResizablePanelGroup>
       <If when={previewDialog()}>
         <Dialog
           animation="none"
-          onOpenChange={inputAction(props.resources.close, {
-            sessionId: props.resources.sessionId()!,
-            instance: props.resources.instance(),
-          })}
+          onOpenChange={
+            plugins.panel()
+              ? inputAction(plugins.closePanel, plugins.panel()!.instance)
+              : inputAction(props.resources.close, {
+                  sessionId: props.resources.sessionId()!,
+                  instance: props.resources.instance(),
+                })
+          }
           style={{ flex: 1, padding: 8, paddingTop: dialogTop(8), backgroundColor: '#000000cc' }}
         >
-          <ResourcePane resources={props.resources} docked={false} />
+          <If
+            when={plugins.panel() !== null}
+            else={<ResourcePane resources={props.resources} docked={false} />}
+          >
+            <PluginPanel
+              docked={false}
+              attach={(node) => {
+                pluginRoot = node;
+              }}
+            />
+          </If>
         </Dialog>
       </If>
       <Each

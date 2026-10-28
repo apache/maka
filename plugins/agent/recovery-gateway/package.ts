@@ -28,13 +28,11 @@ export default {
     'zh-CN': { displayName: '修复功能连接', description: '将应用修复页面连接到主机。' },
   },
   application: {
-    entries: {
-      host: {
-        ...native(sdk.nativeImplementations.gateway),
-        imports: {
-          skillOutcomes: one(sdk.contracts.skillOutcomes),
-          receipts: one(sdk.contracts.receiptReader),
-        },
+    host: {
+      ...native(sdk.nativeImplementations.gateway),
+      imports: {
+        skillOutcomes: one(sdk.contracts.skillOutcomes),
+        receipts: one(sdk.contracts.receiptReader),
       },
     },
   },

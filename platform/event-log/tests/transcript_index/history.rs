@@ -291,19 +291,19 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         .await
         .unwrap();
     let cache = rusqlite::Connection::open(&path).unwrap();
-    crate::test_store::inspect(&log, move |cache| { cache
+    crate::test_store::inspect_cache(&log, move |cache| { cache
         .execute(
-            "INSERT INTO transcript_cache.rows (source_sequence, item_index, session_id, turn_id, message_id, payload, digest, total_bytes)
+            "INSERT INTO temp.transcript_rows (source_sequence, item_index, session_id, turn_id, message_id, payload, digest, total_bytes)
          SELECT source_sequence, item_index, 'b', turn_id, message_id, payload, digest, total_bytes
-         FROM transcript_cache.rows WHERE session_id = 'a'",
+         FROM temp.transcript_rows WHERE session_id = 'a'",
             [],
         )
         .unwrap() }).await;
-    crate::test_store::inspect(&log, move |cache| { cache
+    crate::test_store::inspect_cache(&log, move |cache| { cache
         .execute(
-            "INSERT INTO transcript_cache.text
+            "INSERT INTO temp.transcript_text
          SELECT 'b', source_sequence, item_index, field, timestamp, role, CASE WHEN role IN ('user', 'assistant', 'tool_call', 'tool_result') THEN CAST('destination cache' AS BLOB) ELSE body END
-         FROM transcript_cache.text WHERE session_id = 'a'",
+         FROM temp.transcript_text WHERE session_id = 'a'",
             [],
         )
         .unwrap() }).await;
@@ -346,10 +346,10 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         serde_json::to_value(source).unwrap(),
         serde_json::to_value(chunks).unwrap()
     );
-    crate::test_store::inspect(&log, move |cache| {
+    crate::test_store::inspect_cache(&log, move |cache| {
         cache
             .execute(
-                "DELETE FROM transcript_cache.text WHERE session_id = 'b'",
+                "DELETE FROM temp.transcript_text WHERE session_id = 'b'",
                 [],
             )
             .unwrap()
@@ -700,9 +700,9 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
         .await
         .unwrap();
     let db = Connection::open(&path).unwrap();
-    let canonical = crate::test_store::inspect(&log, |db| rows(db, "numeric")).await;
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    let canonical = crate::test_store::inspect_cache(&log, |db| rows(db, "numeric")).await;
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -715,8 +715,8 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
     );
     let db = Connection::open(&path).unwrap();
     assert_eq!(
-        crate::test_store::inspect(&log, move |db| {
-            db.query_row("SELECT count(*) FROM transcript_cache.rows", [], |row| {
+        crate::test_store::inspect_cache(&log, move |db| {
+            db.query_row("SELECT count(*) FROM temp.transcript_rows", [], |row| {
                 row.get::<_, i64>(0)
             })
             .unwrap()
@@ -732,7 +732,7 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
         .await
         .unwrap();
     assert_eq!(
-        crate::test_store::inspect(&log, |db| rows(db, "numeric")).await,
+        crate::test_store::inspect_cache(&log, |db| rows(db, "numeric")).await,
         canonical
     );
     drop(db);
@@ -1073,8 +1073,8 @@ async fn bounded_history_windows_cover_sparse_rows_both_directions_and_validate_
     for budget in [4, 5, 7, 13, 128 * 1024] {
         for reverse in [false, true] {
             let db = Connection::open(&path).unwrap();
-            crate::test_store::inspect(&log, move |db| {
-                db.execute("DELETE FROM transcript_cache.text", []).unwrap()
+            crate::test_store::inspect_cache(&log, move |db| {
+                db.execute("DELETE FROM temp.transcript_text", []).unwrap()
             })
             .await;
             drop(db);
@@ -1791,23 +1791,23 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
         .iter()
         .map(|(session, ..)| session.to_string())
         .collect();
-    let canonical = crate::test_store::inspect(&log, move |db| {
+    let canonical = crate::test_store::inspect_cache(&log, move |db| {
         sessions
             .iter()
             .map(|session| rows(db, session))
             .collect::<Vec<_>>()
     })
     .await;
-    crate::test_store::inspect(&log, move |db| {
+    crate::test_store::inspect_cache(&log, move |db| {
         db.execute(
-            "UPDATE transcript_cache.text SET body = CAST('old derived text' AS BLOB)",
+            "UPDATE temp.transcript_text SET body = CAST('old derived text' AS BLOB)",
             [],
         )
         .unwrap()
     })
     .await;
-    crate::test_store::inspect(&log, move |db| {
-        db.execute("DELETE FROM transcript_cache.text", []).unwrap()
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute("DELETE FROM temp.transcript_text", []).unwrap()
     })
     .await;
     drop(db);
@@ -1815,8 +1815,8 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
     let log = EventLog::open(&path).await.unwrap();
     let db = Connection::open(&path).unwrap();
     assert_eq!(
-        crate::test_store::inspect(&log, move |db| {
-            db.query_row("SELECT count(*) FROM transcript_cache.text", [], |row| {
+        crate::test_store::inspect_cache(&log, move |db| {
+            db.query_row("SELECT count(*) FROM temp.transcript_text", [], |row| {
                 row.get::<_, i64>(0)
             })
             .unwrap()
@@ -1826,7 +1826,7 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
     );
     for ((session, through, ..), expected_rows) in sources.iter().zip(&canonical) {
         assert!(
-            crate::test_store::inspect(&log, {
+            crate::test_store::inspect_cache(&log, {
                 let session = session.to_string();
                 move |db| rows(db, &session)
             })
@@ -1837,7 +1837,7 @@ async fn message_material_labels_and_time_survive_exact_paging_and_text_cache_lo
             .await
             .unwrap();
         assert_eq!(
-            crate::test_store::inspect(&log, {
+            crate::test_store::inspect_cache(&log, {
                 let session = session.to_string();
                 move |db| rows(db, &session)
             })
@@ -1996,8 +1996,8 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
         for reverse in [false, true] {
             for budget in [4, 13, 8192] {
                 let db = Connection::open(&path).unwrap();
-                crate::test_store::inspect(&log, move |db| {
-                    db.execute("DELETE FROM transcript_cache.text", []).unwrap()
+                crate::test_store::inspect_cache(&log, move |db| {
+                    db.execute("DELETE FROM temp.transcript_text", []).unwrap()
                 })
                 .await;
                 drop(db);
@@ -2205,8 +2205,8 @@ async fn thinking_windows_preserve_field_order_bytes_and_explicit_body_only_read
     // Reopen with optional bodies/text missing; preserve canonical identities,
     // fences and both fields without rewriting directory metadata.
     let db = Connection::open(&path).unwrap();
-    crate::test_store::inspect(&log, move |db| {
-        db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
             .unwrap()
     })
     .await;
@@ -2376,13 +2376,13 @@ async fn failed_turn_and_retry_diagnostics_are_visible_with_exact_sources_and_fe
     }
     // Discard diagnostic text only; reconstruct the requested failure body.
     let db = Connection::open(&path).unwrap();
-    crate::test_store::inspect(&log, move |db| { db.execute(
-        "UPDATE transcript_cache.text SET body = x'' WHERE role IN ('turn_state', 'model_interruption')",
+    crate::test_store::inspect_cache(&log, move |db| { db.execute(
+        "UPDATE temp.transcript_text SET body = x'' WHERE role IN ('turn_state', 'model_interruption')",
         [],
     )
     .unwrap() }).await;
-    crate::test_store::inspect(&log, move |db| {
-        db.execute("DELETE FROM transcript_cache.text", []).unwrap()
+    crate::test_store::inspect_cache(&log, move |db| {
+        db.execute("DELETE FROM temp.transcript_text", []).unwrap()
     })
     .await;
     drop(db);

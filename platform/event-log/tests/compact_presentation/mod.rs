@@ -87,10 +87,10 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             .await
             .unwrap();
         let db = Connection::open(&path).unwrap();
-        let old_rows = crate::test_store::inspect(&log, transcript).await;
+        let old_rows = crate::test_store::inspect_cache(&log, transcript).await;
         let compact = identity(mode);
         let mut view = InvocationView::new();
-        hidden(
+        let opening = hidden(
             &log,
             &mut view,
             &compact,
@@ -102,6 +102,23 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             },
         )
         .await;
+        let preparing = log
+            .observe_session::<Value>("session")
+            .await
+            .unwrap()
+            .unwrap()
+            .compacting
+            .unwrap();
+        assert_eq!(preparing.id, opening.event.id);
+        assert_eq!(
+            preparing.started_at,
+            opening
+                .event
+                .recorded_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        );
         let source = log
             .capture_compaction_context(
                 "session",
@@ -161,7 +178,7 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             .await
             .unwrap()
             .unwrap();
-        assert!(running.compacting);
+        assert_eq!(running.compacting, Some(preparing));
         let root = running.root_turn.unwrap();
         assert_eq!(root.invocation, compact);
         assert!(matches!(root.input, InvocationInput::ContextCompact { .. }));
@@ -189,7 +206,10 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         crate::transcript_cache::materialize_all_rows(&log, "session", delta.sequence)
             .await
             .unwrap();
-        assert_eq!(crate::test_store::inspect(&log, transcript).await, old_rows);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, transcript).await,
+            old_rows
+        );
         let outcome = match mode {
             "accepted" | "rejected" => {
                 hidden(
@@ -258,7 +278,7 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
             .unwrap()
             .unwrap();
         assert!(ended.active_streams.is_empty());
-        assert!(!ended.compacting);
+        assert!(ended.compacting.is_none());
         assert!(
             matches!(ended.root_turn.unwrap().state, InvocationState::Ended {
             event_id, outcome: actual
@@ -292,7 +312,10 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         crate::transcript_cache::materialize_all_rows(&log, "session", terminal.sequence)
             .await
             .unwrap();
-        assert_eq!(crate::test_store::inspect(&log, transcript).await, old_rows);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, transcript).await,
+            old_rows
+        );
         let acknowledged = log
             .set_session_read_marker::<Value>("session", &opened.event.id)
             .await
@@ -301,12 +324,12 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         let canonical = log.prefix(100, 1024 * 1024).await.unwrap().digest;
         // Reopening rebuilds the discarded projection, preserving canonical bytes.
         db.execute("DELETE FROM catalog_messages", []).unwrap();
-        crate::test_store::inspect(&log, move |db| {
-            db.execute("DELETE FROM transcript_cache.rows", []).unwrap()
+        crate::test_store::inspect_cache(&log, move |db| {
+            db.execute("DELETE FROM temp.transcript_rows", []).unwrap()
         })
         .await;
-        crate::test_store::inspect(&log, move |db| {
-            db.execute_batch("DELETE FROM transcript_cache.text; DELETE FROM transcript_cache.rows")
+        crate::test_store::inspect_cache(&log, move |db| {
+            db.execute_batch("DELETE FROM temp.transcript_text; DELETE FROM temp.transcript_rows")
                 .unwrap()
         })
         .await;
@@ -318,7 +341,10 @@ async fn compact_attempts_preserve_visible_history_read_markers_and_rebuild() {
         crate::transcript_cache::materialize_all_rows(&log, "session", terminal.sequence)
             .await
             .unwrap();
-        assert_eq!(crate::test_store::inspect(&log, transcript).await, old_rows);
+        assert_eq!(
+            crate::test_store::inspect_cache(&log, transcript).await,
+            old_rows
+        );
         assert_eq!(
             log.prefix(100, 1024 * 1024).await.unwrap().digest,
             canonical

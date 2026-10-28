@@ -40,7 +40,7 @@ impl EventLog {
         sessions::validate_id(session)?;
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .read(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let exists: bool = sqlx::query_scalar(
@@ -80,7 +80,7 @@ impl EventLog {
         }
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::check_read(tx, &session, through).await?;
                     let rows = sqlx::query(queries::ROWS)
@@ -134,7 +134,7 @@ impl EventLog {
                         }
                         if row.try_get::<String,_>(3)? == "turn_state" {
                             super::bodycache::ensure(tx,&session,position).await?;
-                            let bytes: Vec<u8> = sqlx::query_scalar("SELECT payload FROM transcript_cache.rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+                            let bytes: Vec<u8> = sqlx::query_scalar("SELECT payload FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
                                 .bind(&session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).fetch_one(&mut *tx).await?;
                             let mut message: TurnStateMessage = serde_json::from_slice(&bytes)?;
                             if message.turn_id != contribution.turn_id {
@@ -191,7 +191,7 @@ impl EventLog {
         }
         let session = session.to_owned();
         self.connection
-            .run(move |connection| {
+            .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::check_read(tx, &session, through).await?;
                     if let Some(turn) = turn {
@@ -254,7 +254,7 @@ async fn preview(
     budget: i64,
 ) -> Result<Option<String>, StoreError> {
     super::bodycache::ensure(db, session, position).await?;
-    sqlx::query_scalar("SELECT navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text')),?4) FROM transcript_cache.rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
+    sqlx::query_scalar("SELECT navigation_preview(COALESCE(json_extract(payload,'$.displayText'),json_extract(payload,'$.text')),?4) FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
         .bind(session).bind(sql_position(position)?.0).bind(sql_position(position)?.1).bind(budget).fetch_one(db).await.map_err(Into::into)
 }
 

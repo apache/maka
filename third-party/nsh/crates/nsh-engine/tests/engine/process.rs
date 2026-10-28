@@ -80,6 +80,7 @@ mount(() => <Text>{{shown()}}</Text>);
             websocket: None,
             filesystem: None,
             assets: None,
+            chunk_loader: None,
             environment: Environment {
                 os: Os::Linux,
                 ..Default::default()

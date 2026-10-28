@@ -1,11 +1,10 @@
-//! The runtime's modules written in Rust: `nsh/android`'s `BackHandler`,
-//! `nsh/accessibility`'s commands, `nsh/device`'s `openUrl`, `nsh`'s
-//! `Image` functions, all of `nsh/clipboard`, `nsh/picker` and `nsh/storage`,
-//! `nsh/desktop`'s `Window`, the surface-independent `os` metadata,
-//! `net`'s sockets, `websocket`'s connections, `fs/promises`' files and
-//! `nsh/host`'s calls. Their JS face is made
-//! from their specs like a UI set's (`nsh-js` `components.rs`), and so are
-//! their declarations ([`crate::element::declarations`]); `nsh-js` adds what has
+//! The runtime's modules written in Rust: `nsh`'s Keyboard, Image,
+//! Device, Accessibility, Clipboard, Picker, Storage and Host services;
+//! `nsh/mobile`'s BackHandler; `nsh/desktop`'s Window; the
+//! surface-independent `os` metadata; `net`'s sockets, `websocket`'s
+//! connections and `fs/promises`' files. Their JS face is made from their
+//! specs like a UI set's (`nsh-js` `components.rs`), and so are their
+//! declarations ([`crate::element::declarations`]); `nsh-js` adds what has
 //! to run in JS (the app's listeners, reactive accessors).
 
 use std::sync::OnceLock;
@@ -35,7 +34,7 @@ pub const WEBSOCKETS: &str = "websocket.connections";
 pub const MAX_WEBSOCKETS: usize = 32;
 
 /// The runtime's Rust modules, one registry per JS module (its
-/// [`Registry::namespace`]: `nsh/android`).
+/// [`Registry::namespace`]: `nsh/mobile`).
 pub fn registries() -> &'static [Registry] {
     static REGISTRIES: OnceLock<Vec<Registry>> = OnceLock::new();
     REGISTRIES.get_or_init(|| {

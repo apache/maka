@@ -62,7 +62,10 @@ pub struct Row {
 
 enum State {
     Vacant,
-    Compact(Invocation),
+    Compact {
+        invocation: Invocation,
+        started_at: u64,
+    },
     Active {
         invocation: Invocation,
         step: Option<Box<step::Step>>,
@@ -402,6 +405,7 @@ impl InvocationView {
                     }
                     Fact::InvocationOpened { .. } | Fact::MessageImported { .. } => unreachable!(),
                     Fact::ContextCheckpointRecorded { .. }
+                    | Fact::ContextCompactionWaiting
                     | Fact::ToolResultArchived { .. }
                     | Fact::ToolOperationObserved { .. }
                     | Fact::ToolNotified { .. } => {}

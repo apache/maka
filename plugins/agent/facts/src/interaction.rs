@@ -22,6 +22,8 @@ use maka_sandbox::grant;
 use serde::{Deserialize, Serialize};
 mod decode;
 mod question;
+#[cfg(test)]
+mod tests;
 mod validation;
 use crate::capability::{FormField, FormRequester, FormResult};
 pub use question::{InteractionQuestion, QuestionOption};
@@ -32,8 +34,56 @@ pub use validation::{MAX_SAFE_INTEGER, entity_id};
 pub enum GrantCapability {
     Browser,
     ComputerUse,
+    ComputerAudio,
     DesktopMcp,
     Mcp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerAppPlatform {
+    Macos,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputerAppIdentity {
+    pub platform: ComputerAppPlatform,
+    pub application_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerAppRisk {
+    Low,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputerAppDisplay {
+    pub name: String,
+    pub app_path: String,
+    pub risk: Option<ComputerAppRisk>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ComputerAppActivity {
+    pub invocation: crate::event::Invocation,
+    pub operation_id: String,
+    pub target: GrantTarget,
+    pub display: ComputerAppDisplay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerAppDecision {
+    Once,
+    Session,
+    Always,
+    Deny,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -51,6 +101,10 @@ pub enum GrantScope {
     McpTool {
         server_id: String,
         tool_name: String,
+    },
+    ComputerApp {
+        platform: ComputerAppPlatform,
+        application_id: String,
     },
 }
 
@@ -124,6 +178,15 @@ pub enum InteractionRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         basis: Option<crate::workspace::PermissionBasis>,
     },
+    ComputerApp {
+        tool_use_id: String,
+        native_operation_id: String,
+        target: GrantTarget,
+        basis: crate::workspace::PermissionBasis,
+        display: ComputerAppDisplay,
+        allow_always: bool,
+        authority_revision: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
@@ -145,6 +208,10 @@ pub enum InteractionAnswer {
     ClientCapability {
         decision: Decision,
     },
+    ComputerApp {
+        decision: ComputerAppDecision,
+    },
+    ComputerAppCancel {},
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
@@ -176,6 +243,10 @@ pub enum InteractionOutcome {
         decision: Decision,
         committed_at: u64,
     },
+    ComputerAppDecision {
+        decision: ComputerAppDecision,
+        committed_at: u64,
+    },
     Closure {
         reason: ClosureReason,
         committed_at: u64,
@@ -190,6 +261,7 @@ impl InteractionOutcome {
             | Self::PermissionsDecision { committed_at, .. }
             | Self::FormAnswer { committed_at, .. }
             | Self::ClientCapabilityDecision { committed_at, .. }
+            | Self::ComputerAppDecision { committed_at, .. }
             | Self::Closure { committed_at, .. } => *committed_at,
         }
     }
@@ -212,6 +284,14 @@ impl InteractionAnswer {
             },
             Self::ClientCapability { decision } => InteractionOutcome::ClientCapabilityDecision {
                 decision,
+                committed_at,
+            },
+            Self::ComputerApp { decision } => InteractionOutcome::ComputerAppDecision {
+                decision,
+                committed_at,
+            },
+            Self::ComputerAppCancel {} => InteractionOutcome::Closure {
+                reason: ClosureReason::ProducerCancelled,
                 committed_at,
             },
             Self::Form { result } => InteractionOutcome::FormAnswer {
@@ -245,6 +325,19 @@ impl InteractionAnswer {
                     decision: right, ..
                 },
             ) => left == right,
+            (
+                Self::ComputerApp { decision: left },
+                InteractionOutcome::ComputerAppDecision {
+                    decision: right, ..
+                },
+            ) => left == right,
+            (
+                Self::ComputerAppCancel {},
+                InteractionOutcome::Closure {
+                    reason: ClosureReason::ProducerCancelled,
+                    ..
+                },
+            ) => true,
             (Self::Form { result: left }, InteractionOutcome::FormAnswer { result: right, .. }) => {
                 left == right
             }

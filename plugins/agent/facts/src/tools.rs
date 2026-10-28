@@ -34,8 +34,8 @@ mod provider;
 use crate::tool_call::ToolCallIdentity;
 pub use journal::ToolJournal;
 pub use preparation::{
-    ExecutionCustody, PreparationFuture, PreparedEffect, ToolCallContext, ToolHandler, ToolNesting,
-    ToolPreparer, ToolRegistration, ToolSemantics,
+    EffectAdmission, ExecutionCustody, PreparationFuture, PreparedEffect, ToolCallContext,
+    ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,
 };
 pub use provider::{ModelToolContext, ProviderTool, ProviderToolProtocol};
 

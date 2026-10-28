@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{MAX_MESSAGE, RenderState, RenderStatus, Request, Spec};
+use super::{MAX_MESSAGE, RenderState, RenderStatus, Request, Response, Spec};
 use cursor_overlay::{CursorConfig, OverlayCommand, ReducedMotion};
 use std::{
     collections::HashMap,
@@ -102,7 +102,10 @@ pub(super) fn run() -> Result<(), String> {
             let _ = writeln!(
                 std::io::stdout(),
                 "{}",
-                serde_json::to_string(&RenderState::unavailable(error)).unwrap()
+                serde_json::to_string(&Response::Render {
+                    state: RenderState::unavailable(error),
+                })
+                .unwrap()
             );
             let _ = writeln!(std::io::stderr(), "Maka cursor: {error}");
         }
@@ -149,7 +152,20 @@ fn serve() -> Result<(), String> {
         }
         let request: Request = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         let response = match request {
-            Request::State { id } => status(&id, &entries),
+            #[cfg(target_os = "macos")]
+            Request::Geometry {
+                expected_pid,
+                window_id,
+            } => Response::Geometry {
+                result: window_geometry(expected_pid, window_id),
+            },
+            #[cfg(target_os = "macos")]
+            Request::MacMetadata { query } => Response::MacMetadata {
+                result: mac_metadata(query),
+            },
+            Request::State { id } => Response::Render {
+                state: status(&id, &entries),
+            },
             Request::Remove { id } => {
                 platform::remove_cursor(id.clone());
                 entries.remove(&id);
@@ -157,7 +173,9 @@ fn serve() -> Result<(), String> {
                 while platform::is_visible_for_session(&id) && std::time::Instant::now() < end {
                     std::thread::sleep(Duration::from_millis(8));
                 }
-                status(&id, &entries)
+                Response::Render {
+                    state: status(&id, &entries),
+                }
             }
             Request::Update {
                 cursor,
@@ -166,26 +184,34 @@ fn serve() -> Result<(), String> {
                 window,
             } => {
                 validate(&cursor, point)?;
-                if entries.len() >= 64 && !entries.contains_key(&cursor.id) {
-                    return Err("cursor capacity reached".into());
-                }
                 let id = &cursor.id;
-                let fresh = !entries.contains_key(id);
+                let previous_entry = entries.get(id);
+                let fresh = previous_entry.is_none();
+                let theme_changed = previous_entry.is_none_or(|entry| {
+                    entry.spec.color.name() != cursor.color.name()
+                        || entry.spec.reduced_motion != cursor.reduced_motion
+                });
+                let label_changed =
+                    previous_entry.is_none_or(|entry| entry.spec.label != cursor.label);
                 if fresh {
                     platform::revive_cursor(id.clone());
                 }
-                send(
-                    id,
-                    OverlayCommand::SetTheme {
-                        theme_id: cursor.theme_id(),
-                        reduced_motion: if cursor.reduced_motion {
-                            ReducedMotion::On
-                        } else {
-                            ReducedMotion::Auto
+                if theme_changed {
+                    send(
+                        id,
+                        OverlayCommand::SetTheme {
+                            theme_id: cursor.theme_id(),
+                            reduced_motion: if cursor.reduced_motion {
+                                ReducedMotion::On
+                            } else {
+                                ReducedMotion::Auto
+                            },
                         },
-                    },
-                );
-                send(id, OverlayCommand::SetSessionLabel(cursor.label.clone()));
+                    );
+                }
+                if label_changed {
+                    send(id, OverlayCommand::SetSessionLabel(cursor.label.clone()));
+                }
                 if let Some(window) = window {
                     send(id, OverlayCommand::PinAbove(window));
                 }
@@ -253,7 +279,9 @@ fn serve() -> Result<(), String> {
                         target: None,
                     },
                 );
-                status(&id, &entries)
+                Response::Render {
+                    state: status(&id, &entries),
+                }
             }
         };
         serde_json::to_writer(&mut writer, &response).map_err(|e| e.to_string())?;
@@ -262,4 +290,115 @@ fn serve() -> Result<(), String> {
             .and_then(|_| writer.flush())
             .map_err(|e| e.to_string())?;
     }
+}
+
+#[cfg(target_os = "macos")]
+fn window_geometry(
+    expected_pid: i32,
+    window_id: u32,
+) -> Result<platform_macos::geometry::NativeWindowGeometry, String> {
+    use std::{ffi::c_void, sync::mpsc};
+
+    struct Query {
+        expected_pid: i32,
+        window_id: u32,
+        reply: mpsc::SyncSender<Result<platform_macos::geometry::NativeWindowGeometry, String>>,
+    }
+
+    extern "C" fn read(context: *mut c_void) {
+        // SAFETY: dispatch_async_f invokes this callback once with the Box
+        // transferred below; it is reclaimed here on the AppKit main queue.
+        let query = unsafe { Box::from_raw(context.cast::<Query>()) };
+        let result = std::panic::catch_unwind(|| {
+            let main_thread =
+                platform_macos::geometry::MainThreadMarker::new().ok_or_else(|| {
+                    "geometry_unavailable: AppKit main queue is not hosted".to_owned()
+                })?;
+            platform_macos::geometry::window_geometry_on_main_thread(
+                main_thread,
+                query.expected_pid,
+                query.window_id,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .unwrap_or_else(|_| Err("geometry_unavailable: main-queue metadata query panicked".into()));
+        let _ = query.reply.send(result);
+    }
+
+    #[link(name = "System")]
+    unsafe extern "C" {
+        static _dispatch_main_q: u8;
+        fn dispatch_async_f(
+            queue: *const c_void,
+            context: *mut c_void,
+            work: extern "C" fn(*mut c_void),
+        );
+    }
+
+    let (reply, receive) = mpsc::sync_channel(1);
+    let query = Box::new(Query {
+        expected_pid,
+        window_id,
+        reply,
+    });
+    // SAFETY: libdispatch owns the transferred Box until the callback runs.
+    // The helper's original AppKit run loop services this same main queue.
+    unsafe {
+        dispatch_async_f(
+            (&raw const _dispatch_main_q).cast(),
+            Box::into_raw(query).cast(),
+            read,
+        );
+    }
+    receive
+        .recv()
+        .map_err(|_| "geometry_unavailable: AppKit metadata dispatcher stopped".to_owned())?
+}
+
+#[cfg(target_os = "macos")]
+fn mac_metadata(
+    request: crate::macos::page_scroll::metadata::Query,
+) -> Result<crate::macos::page_scroll::metadata::Observation, String> {
+    use crate::macos::page_scroll::metadata::{Observation, Query};
+    use std::{ffi::c_void, sync::mpsc};
+
+    struct Pending {
+        request: Query,
+        reply: mpsc::SyncSender<Result<Observation, String>>,
+    }
+    extern "C" fn read(context: *mut c_void) {
+        // SAFETY: the original AppKit queue receives this Box once.
+        let pending = unsafe { Box::from_raw(context.cast::<Pending>()) };
+        let Pending { request, reply } = *pending;
+        let result = std::panic::catch_unwind(|| {
+            let main = platform_macos::geometry::MainThreadMarker::new().ok_or_else(|| {
+                "event_target_unavailable: AppKit main queue is not hosted".to_owned()
+            })?;
+            crate::macos::page_scroll::metadata::read(main, request)
+        })
+        .unwrap_or_else(|_| Err("event_target_unavailable: metadata query panicked".into()));
+        let _ = reply.send(result);
+    }
+    #[link(name = "System")]
+    unsafe extern "C" {
+        static _dispatch_main_q: u8;
+        fn dispatch_async_f(
+            queue: *const c_void,
+            context: *mut c_void,
+            work: extern "C" fn(*mut c_void),
+        );
+    }
+    let (reply, receive) = mpsc::sync_channel(1);
+    let pending = Box::new(Pending { request, reply });
+    // SAFETY: ownership transfers to the same existing helper main queue.
+    unsafe {
+        dispatch_async_f(
+            (&raw const _dispatch_main_q).cast(),
+            Box::into_raw(pending).cast(),
+            read,
+        );
+    }
+    receive
+        .recv()
+        .map_err(|_| "event_target_unavailable: AppKit metadata dispatcher stopped".to_owned())?
 }

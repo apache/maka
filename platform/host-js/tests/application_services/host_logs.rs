@@ -36,7 +36,6 @@ fn sources() -> (Input, Vec<Package>) {
     let logs = package(
         "test.host.logs",
         EntryDeclaration {
-            scene: None,
             implementation: Implementation::Native {
                 implementation: "maka.host.logs".into(),
             },
@@ -55,7 +54,6 @@ fn sources() -> (Input, Vec<Package>) {
     let consumer = package(
         "test.host.logs.client",
         EntryDeclaration {
-            scene: None,
             implementation: Implementation::JavaScript {
                 module: "host.mjs".into(),
                 realm: Realm::Dedicated,
@@ -75,7 +73,6 @@ fn sources() -> (Input, Vec<Package>) {
     let broken = package(
         "test.host.logs.unrelated",
         EntryDeclaration {
-            scene: None,
             implementation: Implementation::JavaScript {
                 module: "host.mjs".into(),
                 realm: Realm::Dedicated,
@@ -99,17 +96,12 @@ fn sources() -> (Input, Vec<Package>) {
     )]);
     (
         Input {
-            environment: Environment {
-                location: ExecutionLocation::Host,
-                presentation: None,
-            },
+            ui: None,
             instances: BTreeMap::from([
                 ("logs".into(), node(&logs, 1, true)),
                 ("client".into(), client),
                 ("unrelated".into(), node(&broken, 3, true)),
             ]),
-            recovery: None,
-            launch: None,
         },
         vec![logs, consumer, broken],
     )

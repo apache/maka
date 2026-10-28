@@ -92,6 +92,8 @@ import type {
   OperationReply,
   AgentPendingInteractions,
   AgentQueue,
+  AgentComputerApps,
+  AgentCompactionProgress,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import {
   createAttachmentDraft,
@@ -110,6 +112,7 @@ export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = ComposerSession & {
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
+  computerApps(): AgentComputerApps;
   activeTurn(): string | null;
   activityTurn(): string | null;
   flushDraft(): Promise<boolean>;
@@ -193,7 +196,7 @@ export function Conversation(props: ConversationProps) {
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
-  const compacting = signal(false);
+  const compacting = signal<AgentCompactionProgress | null>(null);
   const stoppingRun = signal<string | null>(null);
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
@@ -202,6 +205,8 @@ export function Conversation(props: ConversationProps) {
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
   const interactions = signal<AgentPendingInteractions>({ revision: -1, entries: [] });
+  const computerApps = signal<AgentComputerApps>({ entries: [] });
+  let interactionsFromStream = false;
   const error = createText();
   const ready = signal(false);
   const transcriptStatus = signal<'loading' | 'live' | 'closing' | 'failed'>('loading');
@@ -354,18 +359,15 @@ export function Conversation(props: ConversationProps) {
     return false;
   };
   type DisplayEntry =
-    | { kind: 'compacting'; key: string }
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
-    let compacted = false;
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
       const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
-      if (row?.role === 'compaction' && row.turnId === runTurn()) compacted = true;
       const turn = turnId ? projection().turns.get(turnId) : undefined;
       if (
         turn &&
@@ -396,8 +398,6 @@ export function Conversation(props: ConversationProps) {
         result.push({ kind: 'row', key: entry.key, rowId: entry.rowId });
       }
     }
-    if (compacting() && invocation() && !compacted && atHistoryTail() && reading() === 'chat')
-      result.push({ kind: 'compacting', key: `compacting/${invocation()}` });
     return result;
   });
   let previouslyVisible = new Set<string>();
@@ -721,7 +721,7 @@ export function Conversation(props: ConversationProps) {
     if (observed.through >= runThrough) {
       metrics.set(observed.metrics ?? null);
       run.set(observed.run?.state ?? 'idle');
-      compacting.set(observed.compacting ?? false);
+      compacting.set(observed.compacting);
       invocation.set(observed.run?.invocationId ?? null);
       runTurn.set(observed.run?.turnId ?? null);
       if (!observed.run) stoppingRun.set(null);
@@ -849,7 +849,12 @@ export function Conversation(props: ConversationProps) {
       return;
     }
     if (page.kind === 'interactions') {
+      interactionsFromStream = true;
       if (page.pending.revision >= interactions().revision) interactions.set(page.pending);
+      return;
+    }
+    if (page.kind === 'computer_apps') {
+      computerApps.set(page.apps);
       return;
     }
     if (page.kind !== 'events') return;
@@ -952,7 +957,7 @@ export function Conversation(props: ConversationProps) {
           if (event.sequence > runThrough) {
             run.set(fact.failed ? 'failed' : 'idle');
             invocation.set(null);
-            compacting.set(false);
+            compacting.set(null);
             runTurn.set(null);
             stoppingRun.set(null);
             void observe().catch(report);
@@ -967,7 +972,10 @@ export function Conversation(props: ConversationProps) {
         case 'provider_tool_result':
         case 'executor_tool_start':
         case 'executor_tool_result':
+          changed = true;
+          break;
         case 'transcript_changed':
+          void observe().catch(report);
           changed = true;
           break;
       }
@@ -1700,6 +1708,7 @@ export function Conversation(props: ConversationProps) {
     sessionId,
     queue: queueSession,
     interactions,
+    computerApps,
     draft,
     attachments,
     previewImage: props.previewImage,
@@ -2002,7 +2011,8 @@ export function Conversation(props: ConversationProps) {
       void host
         .query('agent', 'pendingInteractions', { sessionId })
         .then((pending) => {
-          if (alive && pending.revision >= interactions().revision) interactions.set(pending);
+          if (alive && !interactionsFromStream && pending.revision >= interactions().revision)
+            interactions.set(pending);
         })
         .catch(report);
       startTranscript();
@@ -2135,6 +2145,7 @@ export function Conversation(props: ConversationProps) {
         style={{
           display: ownHandle.empty() ? 'none' : 'flex',
           flex: 1,
+          flexDirection: 'column',
           minHeight: 0,
           width: '100%',
           maxWidth: 800,
@@ -2166,10 +2177,7 @@ export function Conversation(props: ConversationProps) {
             }}
             estimatedItemSize={96}
             maintainVisibleContentPosition={
-              atHistoryTail() &&
-              !awayFromLatest() &&
-              innerReader() === null &&
-              navigation() === null
+              atHistoryTail() && innerReader() === null && navigation() === null
                 ? { autoscrollToBottomThreshold: 32 }
                 : {}
             }
@@ -2217,7 +2225,6 @@ export function Conversation(props: ConversationProps) {
                       viewPosition: 0,
                       animated: false,
                     });
-                  if (initial.kind === 'compacting') return <CompactionDivider />;
                   if (initial.kind === 'summary') {
                     const first = projection().turns.get(initial.turnId);
                     if (!first) return <View />;
@@ -2331,6 +2338,11 @@ export function Conversation(props: ConversationProps) {
             activate={inputAction(ownHandle.jumpLatest, null)}
           />
         </View>
+        <Each of={compacting() === null ? [] : [compacting()!]} key={(progress) => progress.id}>
+          {(progress) => (
+            <CompactionDivider state="running" startedAt={() => progress().startedAt} />
+          )}
+        </Each>
       </View>
     </View>
   );

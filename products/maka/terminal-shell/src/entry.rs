@@ -90,8 +90,10 @@ impl Args {
         let runtime = tokio::runtime::Handle::current();
         let bindings = Bindings::new(client, runtime.clone());
         let mut config = configuration(bindings.registry(self.session), runtime);
+        config.context = config.context.with(bindings.reload());
         config.data_dir = Some(client_directory);
         config.assets = Some(bindings.assets());
+        config.chunk_loader = Some(bindings.chunk_loader());
         let (result, gpu_worker) = if stop.load(Ordering::Acquire) {
             (Ok(()), None)
         } else {

@@ -740,8 +740,8 @@ async fn copies_own_history_and_files_without_replaying_execution_across_retries
             }
         );
         let cache_session = session.to_owned();
-        crate::test_store::inspect(&log, move |inspect| {
-            for table in ["transcript_cache.text", "transcript_cache.rows"] {
+        crate::test_store::inspect_cache(&log, move |inspect| {
+            for table in ["temp.transcript_text", "temp.transcript_rows"] {
                 inspect
                     .execute(
                         &format!("DELETE FROM {table} WHERE session_id = ?"),

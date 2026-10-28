@@ -20,7 +20,11 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const composerMessages = {
-  'Compacting context…': ['Compacting context…', '正在压缩', '正在壓縮'],
+  'Compacting context… ({duration})': [
+    'Compacting context… ({duration})',
+    '正在压缩（{duration}）',
+    '正在壓縮（{duration}）',
+  ],
   'Context compacted ({duration})': [
     'Context compacted ({duration})',
     '上下文已压缩（{duration}）',

@@ -28,8 +28,8 @@ use mxc_sdk::mxc_common::{
     },
     logger::{Logger, Mode},
     models::{
-        BaseProcessUiConfig, ContainerPolicy, FallbackPolicy, NetworkAction, NetworkCidr,
-        NetworkEgressPolicy, NetworkIngressPolicy, NetworkPeer, NetworkRule, UiPolicy,
+        BaseProcessUiConfig, ContainerPolicy, NetworkAction, NetworkCidr, NetworkEgressPolicy,
+        NetworkIngressPolicy, NetworkPeer, NetworkRule, UiPolicy,
     },
 };
 use std::{
@@ -192,9 +192,6 @@ fn with_network(mut policy: ContainerPolicy, network: &Network) -> ContainerPoli
         });
     }
     policy.capabilities = vec!["registryRead".into()];
-    policy.fallback = FallbackPolicy {
-        allow_dacl_mutation: false,
-    };
     policy.network_egress = Some(egress);
     policy.network_ingress = Some(NetworkIngressPolicy {
         default,
@@ -323,4 +320,61 @@ fn strings(paths: Vec<PathBuf>) -> Result<Vec<String>, Error> {
                 .map_err(|_| Error::Invalid("MXC requires Unicode filesystem paths".into()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn native_policy_keeps_permissions_without_retired_dacl_fallback() {
+        for (network, egress, ingress) in [
+            (
+                Network::Denied,
+                json!({"default":"deny","allow":[],"deny":[]}),
+                json!({"default":"deny","host_loopback":"deny"}),
+            ),
+            (
+                Network::Allowed,
+                json!({"default":"allow","allow":[],"deny":[]}),
+                json!({"default":"allow","host_loopback":"allow"}),
+            ),
+            (
+                Network::destination(crate::Destination::new("example.test", 443).unwrap()),
+                json!({"default":"deny","allow":[{"to":[
+                    {"cidr":{"address":"127.0.0.0","prefix_length":8},"except":[]},
+                    {"cidr":{"address":"::1","prefix_length":128},"except":[]}
+                ],"ports":[]}],"deny":[]}),
+                json!({"default":"deny","host_loopback":"allow"}),
+            ),
+        ] {
+            let policy = with_network(
+                ContainerPolicy {
+                    readonly_paths: vec![r"C:\readonly".into()],
+                    readwrite_paths: vec![r"C:\writable".into()],
+                    denied_paths: vec![r"C:\denied".into()],
+                    ..Default::default()
+                },
+                &network,
+            );
+            assert!(policy.network_specified && policy.network_mode_specified);
+            let wire = serde_json::to_value(policy).unwrap();
+            assert_eq!(wire["network_egress"], egress);
+            assert_eq!(wire["network_ingress"], ingress);
+            assert_eq!(wire["readonly_paths"], json!([r"C:\readonly"]));
+            assert_eq!(wire["readwrite_paths"], json!([r"C:\writable"]));
+            assert_eq!(wire["denied_paths"], json!([r"C:\denied"]));
+            assert_eq!(wire["capabilities"], json!(["registryRead"]));
+            assert_eq!(
+                wire["ui"],
+                json!({"disable":false,"clipboard":"none","injection":false})
+            );
+            assert_eq!(
+                wire["base_process_ui"],
+                json!({"isolation":"desktop","desktopSystemControl":false,"systemSettings":"none","ime":false})
+            );
+            assert!(wire.get("fallback").is_none());
+        }
+    }
 }

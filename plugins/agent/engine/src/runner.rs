@@ -45,6 +45,7 @@ pub async fn run(
     admitted: tokio::sync::oneshot::Sender<()>,
     handoff: Option<crate::HandoffGate>,
     prepared_claim: Option<crate::continuation::PreparedClaim>,
+    effects: Arc<maka_event_log::root_store::InvocationEffects>,
 ) -> Result<Invocation, RunError> {
     let cancellation = cancellation_owner.clone();
     if cancellation.is_cancelled() {
@@ -203,6 +204,7 @@ pub async fn run(
                 handoff.as_ref().expect("model Runs own a handoff gate"),
                 prior_unknown,
                 inspected_through,
+                &effects,
             )
             .await
             .map(|outcome| (outcome, None))
@@ -226,6 +228,10 @@ pub async fn run(
         }
     }
     .await;
+    let result = match effects.settle().await {
+        Ok(()) => result,
+        Err(error) => Err(RunError::from(error)),
+    };
     let result = if matches!(&result, Err(RunError::Commit(CommitError::Retired)))
         || (matches!(&result, Ok((outcome, _)) if !matches!(outcome, InvocationOutcome::HandoffPaused { .. }))
             && cancellation.is_cancelled())

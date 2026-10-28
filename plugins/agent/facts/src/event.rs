@@ -153,6 +153,7 @@ pub enum Fact {
     ContextCheckpointRecorded {
         checkpoint: crate::context::ContextCheckpoint,
     },
+    ContextCompactionWaiting,
     ToolResultArchived {
         placeholder: crate::archive::ArchivedPlaceholder,
     },
@@ -247,6 +248,7 @@ impl Fact {
             Self::MessageSteered { .. } => "message_steered",
             Self::ModelRequested { .. } => "model_requested",
             Self::ContextCheckpointRecorded { .. } => "context_checkpoint_recorded",
+            Self::ContextCompactionWaiting => "context_compaction_waiting",
             Self::ToolResultArchived { .. } => "tool_result_archived",
             Self::ModelObserved { .. } => "model_observed",
             Self::ModelInterrupted { .. } => "model_interrupted",
@@ -384,6 +386,7 @@ impl LogPrefix {
                 | Fact::InvocationOpened { .. }
                 | Fact::MessageSteered { .. }
                 | Fact::ContextCheckpointRecorded { .. }
+                | Fact::ContextCompactionWaiting
                 | Fact::ToolResultArchived { .. }
                 | Fact::ExecutorObserved { .. }
                 | Fact::ModelObserved { .. }

@@ -734,7 +734,7 @@ mod tests {
             if broken {
                 let mut manifest: serde_json::Value =
                     serde_json::from_slice(&files["maka.extension.json"]).unwrap();
-                manifest["application"]["entries"]["host"]["implementation"]["implementation"] =
+                manifest["application"]["host"]["implementation"]["implementation"] =
                     serde_json::json!("example.FailingSettings");
                 files.insert(
                     "maka.extension.json".into(),

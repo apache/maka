@@ -243,6 +243,12 @@ pub(crate) fn serve(entry: &Path, options: &HostOptions) -> Result<DevServer, St
         return Ok(server);
     };
     let capabilities = built.capabilities_json();
+    server.serve_files(
+        built
+            .assets
+            .iter()
+            .map(|asset| (asset.path.clone(), asset.source.clone())),
+    );
     server.publish(
         built.bytecode,
         built.code,

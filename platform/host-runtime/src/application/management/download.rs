@@ -169,7 +169,7 @@ mod tests {
     #[tokio::test]
     async fn bounded_url_download_checks_status_digest_and_bundle_bytes() {
         let package = Package::new(BTreeMap::from([
-            ("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"example.download","application":{"entries":{"host":{"implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},"configuration":{"type":"object"},"imports":{},"exports":{}}}}}"#.to_vec()),
+            ("maka.extension.json".into(), br#"{"schemaVersion":1,"id":"example.download","application":{"host":{"implementation":{"kind":"javascript","module":"host.mjs","realm":"shared"},"configuration":{"type":"object"},"imports":{},"exports":{}}}}"#.to_vec()),
             ("host.mjs".into(), b"export function activate() { return {}; }".to_vec()),
         ])).unwrap();
         let bytes = package.to_bundle();

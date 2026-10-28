@@ -23,7 +23,7 @@
 
 构建 `maka` 可执行文件，负责终端产品启动、Host 服务、ACP，以及应用检查、组合和安装命令。产品启动将原生工厂和 JavaScript 执行适配器接入平台所有者。
 
-在仓库根目录执行 `just run` 或 `just run --help`。开发构建读取 `../bundle/dist`，`just run` 会先重建该 bundle 再启动 Cargo。发布构建将其嵌入程序。桌面端使用独立的同目录可执行文件。
+在仓库根目录执行 `just run` 或 `just run --help`。Cargo 构建当前选中的插件和工作台，并将其嵌入 debug 与 release 二进制。桌面端使用独立的同目录可执行文件。
 
 [源码](src/main.rs) · [Cargo 配置](Cargo.toml)
 

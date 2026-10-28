@@ -19,26 +19,41 @@
 
 async function drawCursor(input) {
   const registry = (globalThis.__makaCursorRegistry ??= new Map());
-  const { cursor, point, action, operation, svg } = input;
+  const { cursor, ownerEpoch, point, action, operation, svg } = input;
   let entry = registry.get(cursor.id);
-  if (operation === 'remove') {
+  const state = () => ({
+    status: 'ready',
+    visible:
+      !!entry?.host.isConnected &&
+      entry.host.matches(':popover-open') &&
+      entry.host.style.display !== 'none',
+    requestedPosition: entry?.point ?? null,
+  });
+  if (operation === 'finalize') {
     if (entry) {
       entry.host.remove();
       registry.delete(cursor.id);
+      entry = undefined;
     }
-    return { status: 'ready', visible: false };
+    return state();
   }
-  if (operation === 'state')
-    return {
-      status: 'ready',
-      visible:
-        !!entry?.host.isConnected &&
-        entry.host.matches(':popover-open') &&
-        entry.host.style.display !== 'none',
-      requestedPosition: entry?.point ?? null,
-    };
+  if (operation === 'remove' || operation === 'hide') {
+    if (entry?.ownerEpoch === ownerEpoch) {
+      entry.host.remove();
+      entry.point = null;
+      // Keep the epoch watermark until the logical owner finalizes its cursor.
+      if (operation === 'remove') entry.retired = true;
+    }
+    return state();
+  }
+  if (operation === 'state') return state();
+  if (
+    entry &&
+    (BigInt(entry.ownerEpoch) > BigInt(ownerEpoch) ||
+      (entry.ownerEpoch === ownerEpoch && entry.retired))
+  )
+    return state();
   if (!entry) {
-    if (registry.size >= 64) throw Error('cursor capacity reached');
     const host = document.createElement('div');
     host.setAttribute('aria-hidden', 'true');
     host.popover = 'manual';
@@ -54,7 +69,7 @@ async function drawCursor(input) {
     pulse.style.cssText =
       'position:absolute;left:9.69px;top:9.69px;width:16px;height:16px;margin:-8px;border:2px solid white;border-radius:50%;box-sizing:border-box;opacity:0;pointer-events:none;';
     root.append(picture, pulse, badge);
-    entry = { host, picture, badge, pulse, point: null };
+    entry = { host, picture, badge, pulse, ownerEpoch, point: null };
     registry.set(cursor.id, entry);
   }
   if (!entry.host.isConnected) document.documentElement.append(entry.host);
@@ -84,6 +99,8 @@ async function drawCursor(input) {
       'important',
     );
   }
+  entry.ownerEpoch = ownerEpoch;
+  entry.retired = false;
   const shown = cursor.enabled && entry.point;
   entry.host.style.setProperty('display', shown ? 'block' : 'none', 'important');
   if (shown && !entry.host.matches(':popover-open')) entry.host.showPopover();
@@ -98,6 +115,7 @@ async function drawCursor(input) {
     await new Promise(requestAnimationFrame);
     await new Promise(requestAnimationFrame);
   }
+  if (entry.ownerEpoch !== ownerEpoch || entry.retired) return state();
   if (cursor.enabled && entry.point) {
     if ((action === 'click' || action === 'key') && !reduced) {
       entry.pulse.getAnimations().forEach((animation) => animation.cancel());

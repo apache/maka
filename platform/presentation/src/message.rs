@@ -63,15 +63,14 @@ impl ToolMetadata {
                 parent_tool_call_id: tool_message_id(invocation, parent_operation_id),
                 parent_operation_id: parent_operation_id.clone(),
             }),
-            ToolOrigin::HostSdk {
-                parent_operation_id,
-                ..
-            } => Ok(Self::HostSdk {
+            ToolOrigin::HostSdk { parent, .. } => Ok(Self::HostSdk {
                 model_visibility: Hidden::Hidden,
-                parent_tool_call_id: parent_operation_id
+                parent_tool_call_id: parent
                     .as_ref()
-                    .map(|id| tool_message_id(invocation, id)),
-                parent_operation_id: parent_operation_id.clone(),
+                    .map(|parent| tool_message_id(invocation, parent.operation_id())),
+                parent_operation_id: parent
+                    .as_ref()
+                    .map(|parent| parent.operation_id().to_owned()),
             }),
             ToolOrigin::Standalone => Err(crate::ProjectionError::Unsupported(
                 "standalone tool presentation",

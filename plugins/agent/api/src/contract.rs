@@ -78,6 +78,9 @@ pub use compaction::*;
 #[path = "contract_interactions.rs"]
 mod interaction;
 pub use interaction::*;
+#[path = "contract_computer_apps.rs"]
+mod computer_apps;
+pub use computer_apps::*;
 #[path = "contract_permissions.rs"]
 mod permissions;
 pub use maka_agent_facts::configuration::ModelSelection;
@@ -970,8 +973,8 @@ pub struct DiagnosticChange {
 #[schemars(rename = "AgentObservation")]
 pub struct Observation {
     pub session: Session,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub compacting: bool,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<CompactionProgress>")]
+    pub compacting: Option<CompactionProgress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remembered_backend: Option<BackendPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -981,6 +984,14 @@ pub struct Observation {
     pub parts: Vec<Part>,
     /// Replay starts for active tool display, read at the same fence as the run.
     pub tool_seeds: Vec<ToolSeed>,
+}
+#[derive(Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCompactionProgress")]
+pub struct CompactionProgress {
+    pub id: String,
+    /// Original compaction start in milliseconds since the Unix epoch.
+    pub started_at: u64,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1050,6 +1061,9 @@ pub enum DeliveryPage {
     },
     Interactions {
         pending: PendingInteractions,
+    },
+    ComputerApps {
+        apps: ComputerApps,
     },
 }
 
@@ -1800,6 +1814,14 @@ pub fn contract() -> Contract {
                     method::<Resume, ResumeResult>(MethodMode::Mutation),
                 ),
                 ("stop".into(), method::<Stop, Stopped>(MethodMode::Mutation)),
+                (
+                    "computerApps".into(),
+                    method::<SessionRead, ComputerApps>(MethodMode::Query),
+                ),
+                (
+                    "stopComputerApp".into(),
+                    method::<StopComputerApp, Stopped>(MethodMode::Mutation),
+                ),
                 (
                     "markRead".into(),
                     method::<MarkRead, MarkReadResult>(MethodMode::Mutation),

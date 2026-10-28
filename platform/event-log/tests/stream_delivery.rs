@@ -158,7 +158,7 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
         },
     })
     .await;
-    append(request("first")).await;
+    let first_request = append(request("first")).await;
     let giant = "x".repeat(2 * 1024 * 1024);
     let completed = append(Fact::ModelCompleted {
         step_id: "first".into(),
@@ -198,7 +198,7 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
         }
     })
     .await;
-    append(request("second")).await;
+    let second_request = append(request("second")).await;
     append(observed(
         "second",
         ModelEvent::ProviderToolResult {
@@ -265,8 +265,10 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
         page.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
         [
             opened,
+            first_request,
             completed,
             steered,
+            second_request,
             started,
             delta_sequence,
             finished,
@@ -274,10 +276,10 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
             terminal
         ]
     );
-    assert_eq!(page.events[3].id, start.id);
-    assert_eq!(page.events[3].invocation, start.invocation);
+    assert_eq!(page.events[5].id, start.id);
+    assert_eq!(page.events[5].invocation, start.invocation);
     assert_eq!(
-        page.events[4].fact,
+        page.events[6].fact,
         StreamFact::PartDelta {
             step_id: "second".into(),
             part_id: "part".into(),
@@ -285,37 +287,39 @@ async fn giant_bodies_and_metadata_do_not_block_stream_delivery() {
         }
     );
     assert!(matches!(page.events[0].fact, StreamFact::InvocationOpened));
-    assert!(matches!(page.events[1].fact, StreamFact::StepEnded { .. }));
-    assert!(matches!(
-        page.events[5].fact,
-        StreamFact::PartFinished { .. }
-    ));
-    assert!(matches!(page.events[2].fact, StreamFact::MessageSteered));
+    assert!(matches!(page.events[1].fact, StreamFact::ContextChanged));
+    assert!(matches!(page.events[4].fact, StreamFact::ContextChanged));
+    assert!(matches!(page.events[2].fact, StreamFact::StepEnded { .. }));
     assert!(matches!(
         page.events[7].fact,
+        StreamFact::PartFinished { .. }
+    ));
+    assert!(matches!(page.events[3].fact, StreamFact::MessageSteered));
+    assert!(matches!(
+        page.events[9].fact,
         StreamFact::InvocationEnded { .. }
     ));
     assert_eq!(page.through_sequence, terminal);
     assert_eq!(page.next_after, None);
-    assert!(matches!(&page.events[6].fact,
+    assert!(matches!(&page.events[8].fact,
         StreamFact::StepEnded { failed: true, interrupted, .. }
         if interrupted == std::slice::from_ref(&start.id)));
-    assert!(matches!(&page.events[7].fact,
+    assert!(matches!(&page.events[9].fact,
         StreamFact::InvocationEnded { failed: true, interrupted }
         if interrupted.is_empty()));
     // The derived interruption identities belong to the delivery byte budget.
-    let bytes = serde_json::to_vec(&page.events[6]).unwrap().len();
+    let bytes = serde_json::to_vec(&page.events[8]).unwrap().len();
     let soft = log
         .session_stream_events("session", finished, interrupted, 1, bytes - 1)
         .await
         .unwrap();
-    assert_eq!(soft.events, page.events[6..7]);
+    assert_eq!(soft.events, page.events[8..9]);
     assert_eq!(soft.next_after, None);
     let exact = log
         .session_stream_events("session", finished, interrupted, 1, bytes)
         .await
         .unwrap();
-    assert_eq!(exact.events, page.events[6..7]);
+    assert_eq!(exact.events, page.events[8..9]);
     assert_eq!(exact.next_after, None);
 }
 
@@ -345,7 +349,8 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
         )
         .await
         .unwrap();
-    log.append(&EventWrite::plain((event("session", request("second"))).clone()).unwrap())
+    let requested = log
+        .append(&EventWrite::plain((event("session", request("second"))).clone()).unwrap())
         .await
         .unwrap();
     let first = log
@@ -385,14 +390,15 @@ async fn pages_obey_global_fences_and_never_skip_oversized_deltas() {
         .await
         .unwrap();
     assert_eq!(old.events.len(), 1);
-    assert_eq!(old.events[0].sequence, first);
-    assert_eq!(old.next_after, None);
+    assert_eq!(old.events[0].sequence, requested);
+    assert!(matches!(old.events[0].fact, StreamFact::ContextChanged));
+    assert_eq!(old.next_after, Some(requested));
     assert_eq!(old.through_sequence, gap);
     let limited = log
         .session_stream_events("session", opened, last, 512, 1024)
         .await
         .unwrap();
-    assert_eq!(limited.events.len(), 1);
+    assert_eq!(limited.events.len(), 2);
     assert_eq!(limited.next_after, Some(first));
     let soft = log
         .session_stream_events("session", first, last, 512, 1024)

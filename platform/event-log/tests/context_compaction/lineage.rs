@@ -35,6 +35,9 @@ mod continuation;
 #[path = "lineage/cells.rs"]
 mod cells;
 
+#[path = "lineage/observers.rs"]
+mod observers;
+
 fn lineage_request(step: &str, purpose: ModelPurpose, source: &ModelContextSource) -> EventWrite {
     let mut write = request("child", step, purpose, source).event().clone();
     if let Fact::ModelRequested {

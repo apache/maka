@@ -19,7 +19,12 @@
 
 //! Session-owned Computer Use through the ordinary Host mutation lifecycle.
 mod access;
+mod admission;
+mod app_access;
+mod browser_access;
 mod evaluate;
+#[cfg(all(test, target_os = "linux"))]
+mod live_tests;
 mod sessions;
 
 use futures_util::{FutureExt, future::BoxFuture};
@@ -81,22 +86,24 @@ impl Computer {
             return Err("computer_configuration_invalid".into());
         }
         let configuration: Configuration = serde_json::from_value(input).map_err(message)?;
+        let tasks = tokio_util::task::TaskTracker::new();
+        let sessions = sessions::Sessions::with_audio(configuration.audio, tasks.clone());
         let persistence = context
             .persistence()
             .ok_or("computer_requires_persistence")?;
         let owner = Arc::new(Self {
             store: persistence.store().clone(),
             configuration,
-            sessions: Default::default(),
+            sessions,
             resources: Arc::new(Resources::default()),
             stopping: CancellationToken::new(),
-            tasks: Default::default(),
+            tasks,
             origin: ToolOrigin::HostSdk {
                 package_id: context.package().id.clone(),
                 entry_id: serde_json::to_string(context.activation().instance())
                     .map_err(message)?,
                 activation: context.activation().epoch().to_string(),
-                parent_operation_id: None,
+                parent: None,
             },
         });
         sessions::watch(&owner);
@@ -235,9 +242,9 @@ impl NativeOwner for Service {
         owner.stopping.cancel();
         owner.tasks.close();
         Box::pin(async move {
-            let work = owner.resources.finish().await.map_err(message);
-            owner.tasks.wait().await;
             let native = owner.sessions.close().await.map_err(message);
+            let work = owner.resources.settle().await.map_err(message);
+            owner.tasks.wait().await;
             work.and(native)
         })
     }

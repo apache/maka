@@ -19,126 +19,6 @@
 
 // Generated from Rust runtime schemas. Run npm run schema:generate -w @maka-agent/plugin-sdk.
 export const configurations = {
-  textFile: {
-    $schema: 'https://json-schema.org/draft/2020-12/schema',
-    title: 'TextFileConfiguration',
-    type: 'object',
-    properties: {
-      path: {
-        type: ['string', 'null'],
-        minLength: 1,
-      },
-    },
-    additionalProperties: false,
-  },
-  morphMark: {
-    $schema: 'https://json-schema.org/draft/2020-12/schema',
-    title: 'MorphMarkConfiguration',
-    type: 'object',
-    properties: {
-      shapes: {
-        type: 'array',
-        items: {
-          $ref: '#/$defs/MorphShape',
-        },
-        minItems: 2,
-        maxItems: 2,
-      },
-      color: {
-        $ref: '#/$defs/TerminalColor',
-      },
-      period: {
-        type: 'integer',
-        format: 'uint32',
-        minimum: 1000,
-        maximum: 60000,
-      },
-    },
-    additionalProperties: false,
-    required: ['shapes', 'color', 'period'],
-    $defs: {
-      MorphShape: {
-        type: 'object',
-        properties: {
-          paths: {
-            type: 'array',
-            items: {
-              type: 'array',
-              items: {
-                type: 'array',
-                items: {
-                  type: 'number',
-                  format: 'float',
-                },
-                minItems: 2,
-                maxItems: 2,
-              },
-            },
-            minItems: 1,
-          },
-          radius: {
-            type: 'number',
-            format: 'float',
-            minimum: 0.01,
-            maximum: 0.2,
-          },
-          miters: {
-            type: 'array',
-            items: {
-              type: 'integer',
-              format: 'uint',
-              minimum: 0,
-            },
-          },
-          columns: {
-            type: 'integer',
-            format: 'uint',
-            minimum: 32,
-            maximum: 256,
-          },
-        },
-        additionalProperties: false,
-        required: ['paths', 'radius', 'miters', 'columns'],
-      },
-      TerminalColor: {
-        description:
-          "Terminal colors retain the user's ANSI palette and default background.\nNumeric values are RGB; named values are emitted as terminal attributes.",
-        anyOf: [
-          {
-            type: 'integer',
-            format: 'uint32',
-            minimum: 0,
-            maximum: 16777215,
-          },
-          {
-            $ref: '#/$defs/TerminalNamedColor',
-          },
-        ],
-      },
-      TerminalNamedColor: {
-        type: 'string',
-        enum: [
-          'reset',
-          'black',
-          'red',
-          'green',
-          'yellow',
-          'blue',
-          'magenta',
-          'cyan',
-          'gray',
-          'dark_gray',
-          'light_red',
-          'light_green',
-          'light_yellow',
-          'light_blue',
-          'light_magenta',
-          'light_cyan',
-          'white',
-        ],
-      },
-    },
-  },
   agent: {
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     title: 'AgentConfiguration',
@@ -1650,6 +1530,11 @@ export const configurations = {
           $ref: '#/$defs/BrowserConnection',
         },
         default: [],
+      },
+      audio: {
+        type: 'boolean',
+        description: 'Explicit opt-in to recording computer output audio.',
+        default: false,
       },
     },
     title: 'ComputerConfiguration',

@@ -26,7 +26,7 @@ use maka_plugin_core::{
         DeploymentRef,
         management::{ManagementRejection, ManagementResult},
     },
-    package::{EntryTarget, Implementation, PackageSelection},
+    package::{Implementation, PackageSelection},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -87,8 +87,8 @@ pub fn configuration_values<'a>(
         .iter()
         .find(|bytes| bytes.application_ref() == *package)
         .and_then(|bytes| bytes.manifest().application.as_ref())
-        .and_then(|declaration| declaration.entries.get(&EntryTarget::Host));
-    if node.use_package != PackageUse::Entry
+        .and_then(|declaration| declaration.host.as_ref());
+    if node.use_package != PackageUse::Host
         || !node.configuration.parameters.is_empty()
         || !matches!(native, Some(entry) if matches!(&entry.implementation,
             Implementation::Native { implementation } if implementation == expected))

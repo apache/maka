@@ -186,16 +186,59 @@ fn external_wake_is_not_called_for_what_a_pump_wakes() {
     let mut engine = LocalEngine::start(config, ApproxTextEngine, ChannelSink(tx)).unwrap();
     let wakes = Arc::new(AtomicUsize::new(0));
     let counted = wakes.clone();
+    assert!(engine.needs_pump(), "startup left task work queued");
     engine.set_wake(Arc::new(move || {
         counted.fetch_add(1, Ordering::SeqCst);
     }));
+    assert_eq!(
+        wakes.load(Ordering::SeqCst),
+        1,
+        "installing the callback announces already queued work once"
+    );
     // The first pump polls the tasks: one wakes the other and spawns a
     // third, and the same pump runs both.
     engine.pump();
     assert_eq!(texts(&rx).last().map(String::as_str), Some("relayed!"));
     assert_eq!(
         wakes.load(Ordering::SeqCst),
-        0,
-        "a pump asks for no pump for what it runs itself"
+        1,
+        "the pump adds no wake to the one announced at installation"
     );
+}
+
+#[test]
+fn installing_external_wake_announces_a_task_woken_before_installation() {
+    let (send, message) = oneshot::channel();
+    MESSAGE.with(|m| *m.borrow_mut() = Some(message));
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let config = EngineConfig::new(App::Rust(Root::of::<Echo>()));
+    let mut engine = LocalEngine::start(config, ApproxTextEngine, ChannelSink(tx)).unwrap();
+    // Register the task's real waker by polling the receiver to Pending.
+    engine.pump();
+    assert_eq!(texts(&rx).last().map(String::as_str), Some("waiting"));
+    assert!(!engine.needs_pump(), "the receiver is waiting without work");
+
+    // oneshot::send synchronously wakes that task. The startup notify queues
+    // Message::Wake even though no host callback has been installed yet.
+    send.send("queued before installation".into()).unwrap();
+    assert!(engine.needs_pump(), "the task wake is already queued");
+    assert!(texts(&rx).is_empty(), "sending does not run the task");
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counted = wakes.clone();
+    engine.set_wake(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+    }));
+    assert_eq!(wakes.load(Ordering::SeqCst), 1, "one installation wake");
+    assert!(texts(&rx).is_empty(), "installing does not run the task");
+    engine.pump();
+    assert_eq!(
+        texts(&rx).last().map(String::as_str),
+        Some("queued before installation")
+    );
+    assert_eq!(
+        wakes.load(Ordering::SeqCst),
+        1,
+        "running the queued task adds no redundant wake"
+    );
+    assert!(!engine.needs_pump(), "the queued work is drained");
 }
