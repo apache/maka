@@ -359,6 +359,52 @@ describe('buildProviderOptions: thinking level', () => {
     }
   });
 
+  test('refreshed kimi-coding-plan ids outside the whitelist send the chosen effort through adaptive thinking', () => {
+    installRefreshedModelMetadata({
+      'kimi-coding-plan': {
+        'k3.5': { thinkingOptions: { efforts: ['none', 'low', 'high'] } },
+      },
+    });
+    try {
+      assert.deepEqual(
+        [...thinkingVariantsForModel('kimi-coding-plan', 'k3.5')],
+        ['off', 'low', 'high'],
+      );
+      const kimi = conn('kimi-coding-plan');
+      assert.deepEqual(buildProviderOptions(kimi, 'k3.5', 'high'), {
+        anthropic: { thinking: { type: 'adaptive' }, effort: 'high' },
+      });
+      assert.deepEqual(buildProviderOptions(kimi, 'k3.5', 'low'), {
+        anthropic: { thinking: { type: 'adaptive' }, effort: 'low' },
+      });
+      // The generic off branch already covers refreshed catalogs declaring
+      // `none`; it must keep covering them alongside the effort tiers.
+      assert.deepEqual(buildProviderOptions(kimi, 'k3.5', 'off'), {
+        anthropic: { thinking: { type: 'disabled' } },
+      });
+    } finally {
+      installRefreshedModelMetadata(undefined);
+    }
+  });
+
+  test('kimi-coding-plan ids without declared efforts never invent an anthropic effort wire', () => {
+    // kimi-for-coding-highspeed ships no thinkingOptions: the exemption rides
+    // on the missing metadata, not on a hardcoded id list. With no declared
+    // knob the level is dropped before the wire builder, and even a
+    // hand-declared override must not conjure an effort the catalog never
+    // promised.
+    const highspeed = conn('kimi-coding-plan');
+    assert.deepEqual(buildProviderOptions(highspeed, 'kimi-for-coding-highspeed'), {});
+    assert.deepEqual(buildProviderOptions(highspeed, 'kimi-for-coding-highspeed', 'high'), {});
+    const overridden: LlmConnection = {
+      ...highspeed,
+      modelOverrides: { 'kimi-for-coding-highspeed': { thinkingLevels: ['high'] } },
+    };
+    assert.deepEqual(buildProviderOptions(overridden, 'kimi-for-coding-highspeed', 'high'), {
+      anthropic: {},
+    });
+  });
+
   test('openai gpt-5.5 sends reasoningEffort (none for off, max for max); gpt-4o drops level', () => {
     assert.deepEqual(buildProviderOptions(conn('openai'), 'gpt-4o', 'high'), {
       openai: { store: false, parallelToolCalls: true },
