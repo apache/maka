@@ -236,6 +236,12 @@ async function buildHostAiSdkBackend(
           textHistorySummarizer,
         )
       : textHistorySummarizer;
+  // Only the native bundle hides the text summarizer behind the capacity
+  // gate; the planner spends it where a retreat has no boundary (#6415).
+  const summarizeHistoryCompactTextFallback =
+    target.connection.providerType === 'openai-codex' && input.context.header.llmConnectionId
+      ? textHistorySummarizer
+      : undefined;
   const historyCompactRoute =
     target.connection.providerType === 'openai-codex' && input.context.header.llmConnectionId
       ? 'provider_native'
@@ -473,6 +479,7 @@ async function buildHostAiSdkBackend(
           : {}),
         loadHistoryCompactCheckpoint: input.context.loadHistoryCompactCheckpoint,
         summarizeHistoryCompact,
+        summarizeHistoryCompactTextFallback,
         historyCompactRoute,
         recordHistoryCompactCheckpoint: input.context.recordHistoryCompactCheckpoint,
         loadModelProjectionTransitions: input.context.loadModelProjectionTransitions,

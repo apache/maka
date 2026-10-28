@@ -431,6 +431,67 @@ describe('plan context compaction', () => {
     assert.equal(result.decision, 'fail_open');
   });
 
+  test('a capacity error with no proven boundary retries once through the text fallback', async () => {
+    // A migrated or copied session has no same-route accepted reply, so the
+    // native retreat has no boundary to shrink to. The portable text
+    // summarizer never carries the reasoning blobs the native request does,
+    // so it may fit where the native request did not (#6415).
+    const events = [user('old-user', 'old-turn'), model('old-model', 'old-turn', 'old result')];
+    let nativeCalls = 0;
+    let textCalls = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        reserveTailEvents: 0,
+        summarize: () => {
+          nativeCalls += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+        summarizeTextFallback: () => {
+          textCalls += 1;
+          return structuredSummary('A portable text summary.');
+        },
+      }),
+    );
+
+    assert.equal(nativeCalls, 1);
+    assert.equal(textCalls, 1);
+    assert.equal(result.decision, 'compacted');
+    if (result.decision !== 'compacted') return;
+    assert.ok('summary' in result.checkpoint);
+    if (!('summary' in result.checkpoint)) return;
+    assert.equal(result.checkpoint.summary, structuredSummary('A portable text summary.'));
+    assert.deepEqual(
+      result.coveredRuntimeEvents.map((event) => event.id),
+      ['old-user', 'old-model'],
+    );
+  });
+
+  test('a refusing text fallback still fails open', async () => {
+    const events = [user('old-user', 'old-turn'), model('old-model', 'old-turn', 'old result')];
+    let textCalls = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        reserveTailEvents: 0,
+        summarize: () => {
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+        summarizeTextFallback: () => {
+          textCalls += 1;
+          throw new HistoryCompactSummarizerError('provider_error');
+        },
+      }),
+    );
+
+    assert.equal(textCalls, 1);
+    assert.equal(result.decision, 'fail_open');
+    if (result.decision !== 'fail_open') return;
+    assert.equal(result.diagnosticReason, 'provider_error');
+  });
+
   test('fails open without retrying when no accepted reply proves a boundary', async () => {
     // No model reply anywhere, so no request has ever been accepted on this
     // ledger; inventing a boundary would be the guess this change removes.
