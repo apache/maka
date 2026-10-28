@@ -79,6 +79,7 @@ type ModelMenuHandle = { instance: number; back(): void; dismiss(): void };
 type ModelTarget = { sessionId: string; instance: number | null };
 const modelRowHeight = platform.isTerminal ? 48 : 40;
 // Notes under the model list start where the rows' text does.
+const listFill = () => (platform.isTerminal ? C.surface : C.background);
 const listTextInset = {
   paddingHorizontal: platform.isTerminal ? 0 : controlStyle.paddingHorizontal,
 };
@@ -779,6 +780,10 @@ function ModelMenu(props: {
             height: choices().length * modelRowHeight,
             minHeight: modelRowHeight,
             flexShrink: 1,
+            // On the desktop the list is a field like the search above it, so
+            // a row cut off at its edge does not run into the count below.
+            borderRadius: 8,
+            backgroundColor: listFill(),
           }}
         >
           {(id) => (
@@ -807,7 +812,7 @@ function ModelMenu(props: {
                       backgroundColor:
                         choices()[index()] && routeId(choices()[index()]) === key()
                           ? C.line
-                          : C.surface,
+                          : listFill(),
                     }}
                     hoverStyle={{ backgroundColor: C.raised }}
                     focusStyle={{ backgroundColor: C.raised }}
@@ -842,23 +847,13 @@ function ModelMenu(props: {
             {tr('No models match this search and connection.')}
           </Text>
         </If>
-        {/* On the desktop a line ends the list, so a row cut off by its edge
-            does not read as part of the count. */}
-        <View
-          style={{
-            borderTopWidth: platform.isTerminal ? 0 : 1,
-            borderTopColor: C.line,
-            paddingTop: platform.isTerminal ? 0 : 8,
-          }}
-        >
-          <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
-            {loading()
-              ? tr('Loading…')
-              : choices().length === 1
-                ? tr('{count} model', { count: choices().length })
-                : tr('{count} models', { count: choices().length })}
-          </Text>
-        </View>
+        <Text style={{ ...captionTextStyle, color: C.muted, ...listTextInset }}>
+          {loading()
+            ? tr('Loading…')
+            : choices().length === 1
+              ? tr('{count} model', { count: choices().length })
+              : tr('{count} models', { count: choices().length })}
+        </Text>
       </If>
       <If when={pane() === 'effort'}>
         <Scroll style={{ minHeight: 0, flexShrink: 1 }}>
