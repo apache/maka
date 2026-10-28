@@ -68,6 +68,7 @@ function setup(t: any) {
   return {
     store,
     m,
+    db,
     posts,
     invoke,
     install,
@@ -143,4 +144,35 @@ test('saved question survives unavailable Bot and registration restart; scope an
     () => f.invoke('MatterReply', { requestId: a.requestId, answer: 'changed' }, 'owner'),
     /different answer/,
   );
+});
+test('oversized answer is rejected with a precise envelope-budget error and nothing persists', (t) => {
+  const f = setup(t);
+  const a = f.invoke('MatterAskBot', question);
+  assert.throws(
+    () => f.invoke('MatterReply', { requestId: a.requestId, answer: 'A'.repeat(8000) }, 'owner'),
+    /Clarification envelope exceeds the 8000-char event budget \(question \d+ \+ answer 8000 \+ fixed overhead\); shorten the answer\./,
+  );
+  assert.equal(
+    f.db.prepare('SELECT answer FROM matter_questions WHERE id=?').get(a.requestId).answer,
+    null,
+  );
+  const snapshot = f.store.get(f.m.id);
+  assert.equal(snapshot.events.filter((e) => e.source === 'bot_clarification').length, 0);
+});
+test('short answer still answers, persists and reaches the task inbox', (t) => {
+  const f = setup(t);
+  const a = f.invoke('MatterAskBot', question);
+  const result = f.invoke(
+    'MatterReply',
+    { requestId: a.requestId, answer: 'No extra Bot record is required by the original request.' },
+    'owner',
+  );
+  assert.equal(result.status, 'answered');
+  assert.equal(
+    f.db.prepare('SELECT answer FROM matter_questions WHERE id=?').get(a.requestId).answer,
+    'No extra Bot record is required by the original request.',
+  );
+  const replies = f.store.get(f.m.id).events.filter((e) => e.source === 'bot_clarification');
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].text, /not new user authorization/);
 });

@@ -98,10 +98,20 @@ export function registerClarification(
     },
   });
   const reply = z.object({ requestId: z.string(), answer: z.string().trim().min(1).max(8000) });
+  const clarificationNotice =
+    'Coordinator clarification, not new user authorization. Reassess against the original request; normal completion review still applies.';
+  // The store bounds the whole composed envelope (8000 chars), not the answer field alone.
+  const envelopeText = (row: { id: string; question: string }, answer: string) =>
+    JSON.stringify({
+      requestId: row.id,
+      question: row.question,
+      answer,
+      notice: clarificationNotice,
+    });
   ctx.tools.register({
     name: 'MatterReply',
     description:
-      'Answer a task clarification received by this Bot. Use the original user request and existing evidence; if a user decision is missing, ask through SendUser first. Explain the basis of your answer. The reply is persisted and included in the task’s next model request. It is coordinator context, not new user authorization, and cannot approve completion or bypass review. Forward actual new user requirements with MatterTaskMessage.',
+      'Answer a task clarification received by this Bot. Use the original user request and existing evidence; if a user decision is missing, ask through SendUser first. Explain the basis of your answer. The reply is persisted and included in the task’s next model request. It is coordinator context, not new user authorization, and cannot approve completion or bypass review. Forward actual new user requirements with MatterTaskMessage. Keep question and answer within the 8000-char clarification event budget; shorten long answers.',
     parameters: reply,
     discovery: 'direct',
     categoryHint: 'file_write',
@@ -119,16 +129,15 @@ export function registerClarification(
       }
       const m = store.get(String(row.matter)).matter;
       if (['completed', 'cancelled'].includes(m.status)) throw Error('Task has ended');
+      const text = envelopeText(row, input.answer);
+      if (text.length > 8000)
+        throw Error(
+          `Clarification envelope exceeds the 8000-char event budget (question ${row.question.length} + answer ${input.answer.length} + fixed overhead); shorten the answer.`,
+        );
       store.ingest(m.id, {
         key: `bot-clarification:${row.id}`,
         source: 'bot_clarification',
-        text: JSON.stringify({
-          requestId: row.id,
-          question: row.question,
-          answer: input.answer,
-          notice:
-            'Coordinator clarification, not new user authorization. Reassess against the original request; normal completion review still applies.',
-        }),
+        text,
       });
       db.prepare('UPDATE matter_questions SET answer=? WHERE id=?').run(input.answer, row.id);
       void controller.tick();
