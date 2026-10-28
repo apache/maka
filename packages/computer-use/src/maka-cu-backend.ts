@@ -691,12 +691,60 @@ const DOMAIN_REFUSAL_SENTENCE: Record<MakaCuMappedErrorCode, string> = {
  * closed reads differently from a screen that went away — and neither reads as
  * the executor's raw message.
  */
+const READ_RESULT_OFF_SCREEN =
+  'Observe the window and read the result off the screen rather than repeating the action.';
+
+/**
+ * Guidance appended after "reached the screen", for a delivered action whose
+ * post-action frame could not be read, keyed by the mapped §7.1 code of the
+ * read failure.
+ *
+ * `DOMAIN_REFUSAL_SENTENCE` cannot be reused here. Every entry in that table is
+ * written from the refusal premise — the action never landed, "so nothing was
+ * done" — while this branch only runs after the executor answered
+ * `outcome: "ok"`, so the action was delivered. Appending a refusal sentence
+ * after a clause that says "reached the screen" hands the model two opposite
+ * facts in one sentence, and the clause a model acts on is "nothing was done":
+ * the exact lie that re-sends a mutating call. Each entry names the cause where
+ * the cause changes the next move, and never asserts what became of the action
+ * — clause one already reports that part honestly: delivered, fate unknown.
+ *
+ * Total by construction, same as the refusal table: `MakaCuMappedErrorCode` is
+ * the set §7.1 can produce, so a new row without guidance here does not build.
+ */
+const POST_OBSERVATION_GUIDANCE: Record<MakaCuMappedErrorCode, string> = {
+  stale_frame: READ_RESULT_OFF_SCREEN,
+  duplicate_action: READ_RESULT_OFF_SCREEN,
+  stale_epoch: READ_RESULT_OFF_SCREEN,
+  target_missing: READ_RESULT_OFF_SCREEN,
+  target_changed: READ_RESULT_OFF_SCREEN,
+  target_occluded: READ_RESULT_OFF_SCREEN,
+  unsupported_action: READ_RESULT_OFF_SCREEN,
+  invalid_coordinate: READ_RESULT_OFF_SCREEN,
+  outcome_unknown: READ_RESULT_OFF_SCREEN,
+  aborted: READ_RESULT_OFF_SCREEN,
+  dispatch_refused: READ_RESULT_OFF_SCREEN,
+  timeout: `Reading the result timed out. ${READ_RESULT_OFF_SCREEN}`,
+  capture_failed:
+    'The screen could not be read afterwards. Observe the window again; if it keeps failing, ' +
+    'continue without a picture of the screen.',
+  screen_locked:
+    'The screen locked before the result could be read. Ask the user to unlock it, then ' +
+    'observe the window rather than repeating the action.',
+  permission_missing:
+    'The permission to read the screen was lost, so the result cannot be read until it is ' +
+    'granted again in System Settings.',
+  user_intervened:
+    'The user started using the machine before the result could be read. Wait for them to ' +
+    'stop, then observe the window rather than repeating the action.',
+};
+
 function postObservationSentence(method: string, code?: MakaCuDomainErrorCode): string {
   if (code === undefined) {
     return `${method} reached the screen, but the window could not be read afterwards, so what it did is not known. Observe the window and read the result rather than repeating the action.`;
   }
   return `${method} reached the screen, but the window could not be read afterwards. ${
-    DOMAIN_REFUSAL_SENTENCE[mapMakaCuDomainError(code) ?? 'outcome_unknown']
+    POST_OBSERVATION_GUIDANCE[mapMakaCuDomainError(code) ?? 'outcome_unknown']
   }`;
 }
 
