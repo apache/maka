@@ -521,11 +521,20 @@ function buildThinkingProviderOptions(
                   thinking: { type: 'enabled' as const, budgetTokens: 1_024 },
                   effort: level,
                 }
-              : {
-                  // kimi-for-coding-highspeed has no declared effort and no
-                  // known thinking requirements; send nothing rather than
-                  // inventing a wire (mirrors main's prior behavior).
-                },
+              : thinkingOptions?.efforts?.length
+                ? {
+                    // Refreshed catalogs may add ids with declared efforts;
+                    // honor the chosen tier the same way the k3 branch does.
+                    // Ids without declared efforts (kimi-for-coding-highspeed)
+                    // keep sending nothing — the exemption rides on the
+                    // missing metadata, not on a hardcoded id list.
+                    thinking: { type: 'adaptive' as const },
+                    effort: level,
+                  }
+                : {
+                    // No declared effort knob: send nothing rather than
+                    // inventing a wire (mirrors main's prior behavior).
+                  },
       };
     }
     // Anthropic-protocol: effort enum models send `effort`; toggle/budget
