@@ -357,9 +357,12 @@ flags remain 16-bit through retained backends. Regression fixtures deliver real
 component layout callbacks and observe ProjectRoot attachment and transformed
 thumb geometry, rather than substituting an unrelated mount item.
 
-Same-row Plot domain updates move anchors through the domain tween alone; pointer springs remain for selected-row changes. The existing PageOffset alias is reused for the migrated geometry API. These mandatory local adaptations preserve behavior while integrating the new API; raw import hashes remain upstream bytes. Validation is tied to the actual tested source and environment, not a publication claim.
-
-Native Shader retirement clears pending readback targets; the actual GPU regression checks stale pixels cannot return after removal.
-Native static/paused Shader size updates occur before tick admission; native platform runtime limitations remain explicit.
-Web Shader delete/reset/stop cleans canvases, observers and its owned animation frame; browser-host shutdown and the stop reentrancy guard remain intact. Existing CI runs the real browser regression.
-The inherited terminal shadow guard is simplified without changing interpolation.
+Independent local quality changes clear retired Shader readbacks, invalidate
+static/paused native shader sizes before tick admission, and retire Web shader
+canvases, observers and owned animation frames on delete, reset and stop. The
+Web stop reentrancy guard and browser-host shutdown remain intact. Same-row Plot
+domain updates move anchors through the domain tween alone; pointer springs
+remain for selected-row changes. A terminal shadow guard is simplified without
+changing interpolation. These are local adaptations, not raw import bytes.
+Source preparation does not establish fresh runtime, browser/native-device or
+publication success; validation is tied to its actual source and environment.
