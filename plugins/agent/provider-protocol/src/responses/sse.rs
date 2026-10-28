@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::{Error, Result};
+use super::{Error, Result};
 use serde_json::Value;
 
 /// Incremental SSE framing independent of TCP chunk boundaries.

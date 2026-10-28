@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use crate::body::NativeBody;
+use super::body::RequestBody;
 use futures_util::FutureExt;
 use maka_agent_ports::model::Socket;
 use maka_agent_ports::model::Transport;
@@ -30,7 +30,7 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
-type Result<T> = std::result::Result<T, crate::Error>;
+type Result<T> = std::result::Result<T, super::Error>;
 mod cache;
 mod connect;
 mod frame;
@@ -109,16 +109,12 @@ impl Exchange {
         }
     }
 
-    pub fn cancel(&self) {
-        self.cancellation.cancel();
-    }
-
     pub(crate) async fn start(
         &self,
         url: String,
         headers: BTreeMap<String, String>,
-        body: NativeBody,
-    ) -> Result<Option<NativeBody>> {
+        body: RequestBody,
+    ) -> Result<Option<RequestBody>> {
         // Cancellation drops the in-flight connect/send future and its socket.
         tokio::select! {
             biased;
@@ -131,8 +127,8 @@ impl Exchange {
         &self,
         url: String,
         headers: BTreeMap<String, String>,
-        body: NativeBody,
-    ) -> Result<Option<NativeBody>> {
+        body: RequestBody,
+    ) -> Result<Option<RequestBody>> {
         let route = self
             .transport
             .route(&url, &headers, self.network.identity());
@@ -212,10 +208,10 @@ impl Exchange {
                 {
                     // The engine owns recovery from canonical history. This
                     // transport never resends an uncertain response.create.
-                    crate::Error::Interrupted(failure.message().into())
+                    super::Error::Interrupted(failure.message().into())
                 }
                 cause => {
-                    crate::Error::Transport(format!("Responses WebSocket send failed: {cause}"))
+                    super::Error::Transport(format!("Responses WebSocket send failed: {cause}"))
                 }
             }
         })?;
@@ -288,6 +284,6 @@ impl Drop for Exchange {
     }
 }
 
-fn error(message: &'static str) -> crate::Error {
-    crate::Error::Transport(message.into())
+fn error(message: &'static str) -> super::Error {
+    super::Error::Transport(message.into())
 }

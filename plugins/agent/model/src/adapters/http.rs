@@ -17,21 +17,14 @@
  * under the License.
  */
 
-//! Native provider sessions own wire state and use only Host-scoped transport.
-mod anthropic_body;
-mod body;
-mod chat_completions;
-mod error;
-mod events;
-mod media;
-mod prompt;
-mod request;
-pub(crate) mod wire;
+use super::{anthropic, body, error, events, request};
 use crate::{ModelError, ProviderFailureReason};
 use maka_agent_facts::model::budget;
 use maka_agent_ports::model::{Context, Emission, Lifetime, ProviderAdapter, Request, Session};
 use maka_capabilities::http;
-use maka_provider_protocol::{anthropic, chat_completions as chat, output::Event};
+use maka_provider_protocol::{
+    anthropic as protocol_anthropic, chat_completions as chat, output::Event,
+};
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex},
@@ -57,8 +50,8 @@ impl Default for Shared {
     }
 }
 #[derive(Default)]
-pub(super) struct Adapter(Arc<Shared>);
-impl ProviderAdapter for Adapter {
+pub(super) struct HttpAdapter(Arc<Shared>);
+impl ProviderAdapter for HttpAdapter {
     fn enforces_idle_timeout(&self) -> bool {
         true
     }
@@ -68,11 +61,11 @@ impl ProviderAdapter for Adapter {
         _: CancellationToken,
     ) -> futures_util::future::BoxFuture<'_, Result<Arc<dyn Session>, ModelError>> {
         let shared = self.0.clone();
-        Box::pin(async move { Ok(Arc::new(Native(shared)) as Arc<dyn Session>) })
+        Box::pin(async move { Ok(Arc::new(HttpSession(shared)) as Arc<dyn Session>) })
     }
 }
-struct Native(Arc<Shared>);
-impl Session for Native {
+struct HttpSession(Arc<Shared>);
+impl Session for HttpSession {
     fn stream(
         &self,
         request: Request,
@@ -82,8 +75,8 @@ impl Session for Native {
         Box::pin(async move { run(request, &context, shared).await })
     }
 }
-enum Decoder {
-    Anthropic(Box<anthropic::stream::Stream>),
+pub(super) enum Decoder {
+    Anthropic(Box<protocol_anthropic::stream::Stream>),
     Chat(Box<chat::Stream>),
 }
 impl Decoder {
@@ -109,7 +102,7 @@ impl Decoder {
         }
     }
 }
-fn failure(error: maka_provider_protocol::Error) -> ModelError {
+pub(super) fn failure(error: maka_provider_protocol::Error) -> ModelError {
     ModelError::Adapter(error.to_string())
 }
 
@@ -173,7 +166,7 @@ async fn run_inner(
                     let wire = wire.clone();
                     let context = context.clone();
                     http::RequestBody::replayable(move || {
-                        anthropic_body::body(fields.clone(), wire.clone(), context.clone())
+                        anthropic::body(fields.clone(), wire.clone(), context.clone())
                             .unwrap_or_else(|error| {
                                 http::RequestBody::stream(futures_util::stream::once(async move {
                                     Err(upload_error(error))
@@ -286,7 +279,7 @@ async fn run_inner(
         }
     }
 }
-fn upload_error(error: ModelError) -> http::Error {
+pub(super) fn upload_error(error: ModelError) -> http::Error {
     match error {
         ModelError::CleanupUnconfirmed => http::Error::CleanupUnconfirmed,
         ModelError::Cancelled => http::Error::Denied,

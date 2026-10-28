@@ -17,7 +17,7 @@
  * under the License.
  */
 
-pub(crate) fn bytes(value: &impl serde::Serialize, maximum: u32) -> crate::Result<u32> {
+pub(crate) fn bytes(value: &impl serde::Serialize, maximum: u32) -> super::Result<u32> {
     maka_agent_facts::model::budget::bytes(value, maximum)
-        .map_err(|error| crate::Error::Invalid(error.to_string()))
+        .map_err(|error| super::Error::Invalid(error.to_string()))
 }

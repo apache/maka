@@ -17,22 +17,35 @@
  * under the License.
  */
 
-use crate::{ProviderKind, native};
+mod anthropic;
+mod body;
+mod chat_completions;
+mod codex;
+mod error;
+mod events;
+mod http;
+mod media;
+mod prompt;
+mod request;
+mod responses;
+pub(crate) mod wire;
+
+use crate::ProviderKind;
+use http::HttpAdapter;
 use maka_agent_facts::composition::SourceKind;
 use maka_agent_facts::composition::SourceRevision;
-use maka_agent_ports::model::Binding;
-use maka_agent_ports::model::ProviderAdapter;
+use maka_agent_ports::model::{Binding, ProviderAdapter};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub(crate) fn builtin(owner: SourceRevision) -> BTreeMap<String, Binding> {
-    let native = Arc::new(native::Adapter::default());
+    let http = Arc::new(HttpAdapter::default());
     let providers: [(&str, Arc<dyn ProviderAdapter>); 4] = [
-        ("responses", Arc::new(maka_responses::Adapter::default())),
-        ("chat-completions", native.clone()),
-        ("anthropic-messages", native),
+        ("responses", Arc::new(responses::Adapter::default())),
+        ("chat-completions", http.clone()),
+        ("anthropic-messages", http),
         (
             maka_providers::codex::ADAPTER,
-            Arc::new(maka_providers::codex::Codex::default()),
+            Arc::new(codex::Adapter::default()),
         ),
     ];
     providers

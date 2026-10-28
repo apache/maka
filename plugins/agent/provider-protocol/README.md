@@ -21,14 +21,14 @@
 
 [简体中文](README.zh-CN.md)
 
-Encodes Chat Completions compatible and Anthropic Messages requests and decodes complete or streaming responses. Native input and output types separate protocol state from the Host's canonical history. Provider extensions remain explicit JSON values at the wire boundary.
+Encodes Responses, Chat Completions compatible and Anthropic Messages requests and decodes complete or streaming responses. Protocol-owned input and output types separate wire state from the Host's canonical history. Provider extensions remain explicit JSON values at the wire boundary.
 
 The crate owns incremental SSE framing, tool identities, reasoning, citations, usage and hosted-tool replay. [maka-model](../model/README.md) supplies authorized transport, credentials, cancellation, timeouts and byte reservations. This crate performs no network or runtime work.
 
-The Chat Completions codec covers compatible providers. OpenAI-specific model policies belong to the native Responses route. The Messages codec excludes Files, Batch, Decisions and Skills administration endpoints.
+The Chat Completions codec covers compatible providers. Responses preserves accepted-item metadata, text-part boundaries, encrypted reasoning and replay formats. Model and subscription policies belong to the execution adapters. The Messages codec excludes Files, Batch, Decisions and Skills administration endpoints.
 
-Behavior was verified against unchanged selected upstream tests at the revision recorded in the [source audit](../../../docs/code-origin-audit.md). Temporary upstream tests and validation bindings are kept outside the product. First-party regressions are maintained alongside each protocol implementation.
+Chat Completions and Anthropic behavior was verified against unchanged selected upstream tests at the revision recorded in the [source audit](../../../docs/code-origin-audit.md). Temporary upstream tests and validation bindings are kept outside the product. First-party regressions are maintained alongside each protocol implementation.
 
-The SSE decoder limits one unfinished record to 64 MiB to bound malformed or unterminated provider input, with room for atomic records larger than 32 MiB. Completed records transfer their buffers instead of retaining peak capacity. The complete response can contain any number of records.
+The Chat Completions and Anthropic SSE decoder limits one unfinished record to 64 MiB to bound malformed or unterminated provider input, with room for atomic records larger than 32 MiB. Completed records transfer their buffers instead of retaining peak capacity. The complete response can contain any number of records.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

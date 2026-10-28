@@ -97,14 +97,14 @@ impl WireEncoding {
                 (chat_codec(language, &options), WireOptions::Chat(options))
             }
             ProviderKind::OpenaiResponses => (
-                maka_responses::request::wire_codec(language, None, &options),
+                super::responses::request::wire_codec(language, None, &options),
                 WireOptions::Responses {
                     plaintext: None,
                     options,
                 },
             ),
             ProviderKind::OpenResponses(contract) => (
-                maka_responses::request::wire_codec(language, Some(*contract), &options),
+                super::responses::request::wire_codec(language, Some(*contract), &options),
                 WireOptions::Responses {
                     plaintext: Some(*contract),
                     options,
@@ -294,10 +294,10 @@ impl Group {
                 let values = match &self.encoder {
                     Encoder::Chat { options, .. } => {
                         chat::messages(&prompt::messages(vec![message])?, options)
-                            .map_err(super::failure)?
+                            .map_err(super::http::failure)?
                     }
                     Encoder::Responses { plaintext, options } => {
-                        maka_responses::request::encode_message(
+                        super::responses::request::encode_message(
                             &message,
                             self.language,
                             *plaintext,
@@ -407,12 +407,12 @@ pub(super) fn anthropic_options(
     use maka_provider_protocol::anthropic::{self, HostedTool};
     let options =
         anthropic::request::options::ProviderOptions::parse(options.get("anthropic"), None)
-            .map_err(super::failure)?;
+            .map_err(super::http::failure)?;
     let mut tool_names = std::collections::BTreeMap::new();
     for tool in tools {
         if let Some(provider) = &tool.provider {
             let hosted = HostedTool::from_definition(&provider.id, &provider.args)
-                .map_err(super::failure)?;
+                .map_err(super::http::failure)?;
             match hosted {
                 Some(
                     hosted @ (HostedTool::CodeExecution(_)
@@ -507,7 +507,10 @@ impl AnthropicGroup {
             }
             if let Some((index, message, part, count)) = &mut self.active {
                 if *part < *count {
-                    let prepared = self.encoder.part(message, *part).map_err(super::failure)?;
+                    let prepared = self
+                        .encoder
+                        .part(message, *part)
+                        .map_err(super::http::failure)?;
                     *part += 1;
                     self.current = Some(AnthropicCurrent {
                         chunks: prepared.chunks.peekable(),
@@ -523,7 +526,7 @@ impl AnthropicGroup {
                 self.active = None;
             }
             if let Some((index, message)) = self.pending.pop_front() {
-                let count = self.encoder.begin(&message).map_err(super::failure)?;
+                let count = self.encoder.begin(&message).map_err(super::http::failure)?;
                 self.active = Some((index, message, 0, count));
                 continue;
             }

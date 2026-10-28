@@ -19,7 +19,7 @@
 
 //! A wire envelope over one immutable prompt. Full and delta requests share the
 //! same source; neither transport retains a JSON copy of conversation history.
-use crate::{Error, Result};
+use super::{Error, Result};
 use futures_util::{Stream, StreamExt};
 use maka_agent_facts::model::{
     PlaintextResponses,
@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(crate) struct NativeBody {
+pub(crate) struct RequestBody {
     pub properties: Value,
     prompt: Prompt,
     pub skip: usize,
@@ -43,14 +43,14 @@ struct Config {
     options: Value,
     plaintext: Option<PlaintextResponses>,
 }
-impl NativeBody {
+impl RequestBody {
     pub fn new(
         request: &ModelRequest,
         plaintext: Option<PlaintextResponses>,
         skip: usize,
     ) -> Result<Self> {
         let codec =
-            crate::request::wire_codec(request.language, plaintext, &request.provider_options);
+            super::request::wire_codec(request.language, plaintext, &request.provider_options);
         match request.prompt.wire(WireFormat::Responses) {
             Some(wire) if wire.codec.as_ref() != codec => {
                 return Err(Error::Invalid(
@@ -64,7 +64,7 @@ impl NativeBody {
             }
             _ => {}
         }
-        let mut properties = crate::request::Request {
+        let mut properties = super::request::Request {
             language: request.language,
             model: &request.provider.model,
             prompt: &[],
@@ -251,7 +251,7 @@ impl NativeBody {
                 // Explicit small inputs use the same static codec that storage
                 // applies once to each dirty group. Persisted history never
                 // materializes a Message on this transport path.
-                state.items = crate::request::encode_message(
+                state.items = super::request::encode_message(
                     &message,
                     state.config.language,
                     state.config.plaintext,
@@ -297,8 +297,8 @@ mod tests {
     use maka_agent_facts::model::prompt_source::{Next, PromptSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn body(prompt: Prompt) -> NativeBody {
-        NativeBody {
+    fn body(prompt: Prompt) -> RequestBody {
+        RequestBody {
             properties: json!({"model":"test", "stream":true}),
             prompt,
             skip: 0,
@@ -309,7 +309,7 @@ mod tests {
             }),
         }
     }
-    async fn wire(body: NativeBody) -> Value {
+    async fn wire(body: RequestBody) -> Value {
         let mut stream = Box::pin(body.chunks());
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.next().await {

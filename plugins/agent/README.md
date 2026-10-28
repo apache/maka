@@ -25,7 +25,7 @@ This family owns Agent business behavior. Leaf `package.ts` files declare indepe
 
 - [facts](facts/README.md), [api](api/README.md) and [ports](ports/README.md) separate persisted data, wire contracts and business interfaces.
 - [authority](authority/README.md) checks the original invocation; [native](native/README.md) exposes Host services; [engine](engine/README.md) runs Agent work.
-- [model](model/README.md), [providers](providers/README.md) and [responses](responses/README.md) and the pure Rust [provider-protocol](provider-protocol/README.md) core implement model requests and protocols.
+- [provider-protocol](provider-protocol/README.md) owns the three wire codecs; [model](model/README.md) owns their execution adapters; [providers](providers/README.md) owns provider definitions, authentication and discovery.
 - [tool-catalog](tool-catalog/README.md) selects tools; [tools](tools/README.md) dispatches them and provides Code Mode.
 - [assistant](assistant/README.md), [goal](goal/README.md), [graph](graph/README.md), [scheduler](scheduler/engine/README.md), [insights](insights/README.md), [session-import](session-import/README.md), [session-recap](session-recap/README.md) and [session-title](session-title/README.md) own their respective features.
 - [acp-executor](acp-executor/native/README.md) connects external ACP agents through explicit process and callback services.
