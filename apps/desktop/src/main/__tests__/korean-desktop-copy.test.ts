@@ -70,14 +70,7 @@ test('Korean command palette uses its own commands and settings sections, not th
     assert.notEqual(command.label, en.commands[id as keyof typeof en.commands].label, id);
     assert.match(command.label, HANGUL_SYLLABLE, id);
   }
-  // Sections added or reworded upstream after slice 1 fall back to English
-  // until they are translated; remove an entry here when it gets its ko text.
-  const untranslated = new Set(['external-agents', 'import-tasks']);
   for (const [section, label] of Object.entries(ko.settingsSections)) {
-    if (untranslated.has(section)) {
-      assert.equal(label, en.settingsSections[section as keyof typeof en.settingsSections], section);
-      continue;
-    }
     assert.notEqual(label, en.settingsSections[section as keyof typeof en.settingsSections], section);
     assert.match(label, HANGUL_SYLLABLE, section);
   }
@@ -131,6 +124,7 @@ test('no Korean particle attaches directly to a user-supplied value', () => {
     deletedDescription: shell.skillActions.deletedDescription(value),
     planModeExitPendingDescription: shell.app.planModeExitPendingDescription(value),
     useSkillPrompt: shell.app.useSkillPrompt(value),
+    taskDirectoryMovedDescription: shell.app.taskDirectoryMovedDescription(value),
     summaryFilterAria: getPermissionCenterCopy('ko').summaryFilterAria(value, 2, true),
   };
   for (const [key, text] of Object.entries(rendered)) {

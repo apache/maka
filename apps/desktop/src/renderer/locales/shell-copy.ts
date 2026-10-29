@@ -860,6 +860,8 @@ const KO_SETTINGS_SECTIONS: Partial<Record<SettingsSection, string>> = {
   memory: '메모리',
   'daily-review': '데일리 리뷰',
   'bot-chat': '원격 접속',
+  'external-agents': '외부 에이전트',
+  'import-tasks': '작업 가져오기/내보내기',
   search: '웹 검색',
   data: '데이터',
   permissions: '권한과 기능 상태',
@@ -2605,6 +2607,10 @@ const shellCopyByLocaleKo: UiMessageCatalog<ShellCopy>['ko'] = {
         'open-failed': '시스템에서 폴더를 열지 못했습니다.',
         unknown: '폴더를 열지 못했습니다.',
       },
+      archivedProjectTitle: '보관된 프로젝트',
+      archivedProjectDescription: '이 프로젝트는 보관되었습니다. 복원할까요?',
+      archivedProjectRestore: '복원',
+      archivedProjectCancel: '취소',
     },
     commandActions: {
       connectionVerified: (name: string) => `연결 확인됨 · ${name}`,
@@ -2682,6 +2688,16 @@ const shellCopyByLocaleKo: UiMessageCatalog<ShellCopy>['ko'] = {
       bulkArchivedTitle: (count: number) => `${count}개 작업을 보관했습니다`,
       bulkArchiveFailedTitle: '일부 작업을 보관하지 못했습니다',
       bulkFailedBody: (count: number) => `그중 ${count}개는 처리되지 않았습니다.`,
+      moveFailedTitle: '작업 이동 실패',
+      moveFailures: {
+        session_busy: '실행 중인 작업이 있습니다. 그 작업이 끝난 뒤에 이 작업을 옮기세요.',
+        operation_conflict: '지금은 그 프로젝트를 사용할 수 없어 작업을 옮길 수 없습니다.',
+        operation_unavailable: '지금은 이 작업을 옮길 수 없습니다.',
+        not_found: '프로젝트나 작업을 찾을 수 없습니다.',
+      },
+      archiveRefusedDelegation: 'WorkHub가 아직 이 작업에 일을 위임하고 있습니다. 위임을 중지하거나 다른 작업으로 바꾼 뒤 보관하세요.',
+      archiveRefusedResult: 'WorkHub가 아직 이 작업의 결과를 받지 못했습니다. WorkHub를 열어 결과를 받게 하거나 위임을 중지하세요.',
+      archiveRefusedSubtasks: '아직 진행 중인 하위 작업이 있습니다. 하위 작업이 끝나기를 기다리거나 중지한 뒤 이 작업을 보관하세요.',
     },
     skillActions: {
       refreshSkillsFailedTitle: 'Skills 새로고침 실패',
@@ -2769,6 +2785,19 @@ const shellCopyByLocaleKo: UiMessageCatalog<ShellCopy>['ko'] = {
         state_error: '이 작업 공간의 Skill 상태 파일이 올바르지 않아 먼저 고쳐야 합니다.',
         write_failed: '현재 프로젝트의 Skill 상태를 쓰지 못했습니다. 파일 권한을 확인해 주세요.',
       },
+      refreshLocationsFailedTitle: 'Skill 위치 새로고침 실패',
+      refreshLocationsFallback: 'Skill 위치를 새로고침하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+      openLocationFailedTitle: 'Skill 위치 열기 실패',
+      openLocationFallback: 'Skill 위치를 열지 못했습니다. 잠시 후 다시 시도해 주세요.',
+      openLocationFailures: {
+        unknown_location: '올바르지 않은 Skill 위치입니다.',
+        stale_context: 'Skill 위치가 바뀌었습니다. 다시 시도해 주세요.',
+        missing: '폴더가 없습니다.',
+        blocked_path: 'Skill 위치가 허용된 경로 밖에 있어 열기가 차단되었습니다.',
+        read_failed: 'Skill 폴더를 읽지 못했습니다. 파일 권한을 확인해 주세요.',
+        create_failed: 'Skill 폴더를 만들지 못했습니다. 파일 권한을 확인해 주세요.',
+        open_failed: '시스템에서 폴더를 열지 못했습니다.',
+      },
     },
     sessionSettingsActions: {
       bypassConfirmTitle: '전체 접근으로 전환할까요?',
@@ -2785,11 +2814,18 @@ const shellCopyByLocaleKo: UiMessageCatalog<ShellCopy>['ko'] = {
         duplicate_source: '첨부 파일 원본이 중복되었습니다. 같은 파일을 두 번 추가하지 마세요.',
         total_size_exceeded: '첨부 파일 전체 크기가 제한을 넘습니다.',
         source_expired: '첨부 파일 원본이 만료되었거나 올바르지 않습니다. 파일을 다시 선택해 다시 보내 주세요.',
+        item_unreadable: '첨부 파일 하나를 읽지 못했습니다. 폴더이거나 위치가 바뀌었을 수 있습니다. 제거한 뒤 다시 추가하세요.',
       },
       modelFailedTitle: '모델 변경 실패',
       modelFallback: '모델을 변경하지 못했습니다. 잠시 후 다시 시도해 주세요.',
       thinkingFailedTitle: '사고 수준 변경 실패',
       thinkingFallback: '사고 수준을 변경하지 못했습니다. 잠시 후 다시 시도해 주세요.',
+      updateFailures: {
+        session_busy: '작업이 실행 중이거나 사용자의 응답을 기다리고 있습니다. 작업이 멈춘 뒤에 이 설정을 바꾸세요.',
+        operation_conflict: '요청하는 사이에 작업이 바뀌었습니다. 새로고침한 뒤 다시 시도해 주세요.',
+        operation_unavailable: '이 Runtime Host는 해당 설정을 지원하지 않습니다.',
+        not_found: '작업이 더 이상 없습니다.',
+      },
     },
     goalDialog: {
       title: '목표 설정',
@@ -2911,7 +2947,8 @@ const shellCopyByLocaleKo: UiMessageCatalog<ShellCopy>['ko'] = {
         {
           heading: '입력창',
           rows: [
-            { keys: ['Enter'], description: '메시지 보내기' },
+            { keys: ['Enter'], description: '메시지 보내기(실행 중이면 다음 턴으로 대기)' },
+            { keys: ['⌘', 'Enter'], description: '실행 중인 턴의 방향 조정' },
             { keys: ['Shift', 'Enter'], description: '줄 바꿈 넣기' },
             {
               keys: ['Alt', 'Enter'],
@@ -3010,6 +3047,11 @@ const shellCopyByLocaleKo: UiMessageCatalog<ShellCopy>['ko'] = {
       sideChatUnavailableTitle: '사이드 채팅을 아직 사용할 수 없음',
       sideChatUnavailableDescription:
         '/side를 사용하기 전에 메인 작업에서 메시지를 보내세요.',
+      taskDirectorySuspiciousTitle: '이 작업의 작업 디렉터리에 관련 없는 파일이 있을 수 있음',
+      taskDirectorySuspiciousDescription: '작업 결과물이 관련 없는 파일과 섞일 수 있습니다. 작업 전용 디렉터리로 옮길 수 있으며, 기존 파일은 그대로 남습니다.',
+      taskDirectoryMoveLabel: '작업 전용 디렉터리로 옮기기',
+      taskDirectoryMovedTitle: '작업 디렉터리 이동됨',
+      taskDirectoryMovedDescription: (directory: string) => `이제 이 작업은 전용 디렉터리를 사용합니다: ${directory}`,
       sideChatContextPendingTitle: '대기 중인 컨텍스트를 먼저 처리하세요',
       sideChatContextPendingDescription:
         '입력창에 아직 첨부 파일, 인용, 파일 멘션이 있습니다. /side를 사용하기 전에 보내거나 제거하세요.',

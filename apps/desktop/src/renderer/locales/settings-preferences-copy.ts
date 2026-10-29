@@ -547,7 +547,7 @@ const settingsPreferencesCopyByLocaleKo: UiMessageCatalog<SettingsPreferencesCop
     sections: {
       identity: '프로필', identityHelp: 'Maka가 사용자를 부르는 방식과 인터페이스 언어, 응답 어조를 정합니다.',
       privacy: '개인정보 보호 및 알림', privacyHelp: 'Maka가 로컬에서 읽고 쓸 수 있는 범위와 알림을 보내는 시점을 정합니다.',
-      chatDefaults: '작업 기본값',
+      chatDefaults: '작업 기본값', chatDefaultsHelp: '새 작업이 시작할 때 쓰는 모델과 권한 모드입니다. 사고 수준 기본값은 모델 설정에서 모델별로 정하세요.',
       shell: '명령 실행 환경', shellHelp: 'Runtime Host가 Bash 도구와 터미널 명령에 사용할 셸을 선택하세요.',
       network: '네트워크', networkHelp: 'AI 모델 요청이 거치는 네트워크 경로입니다.',
       theme: '테마', themeHelp: '시스템 화면 모드를 따르거나 라이트 또는 다크로 고정합니다.',
@@ -558,6 +558,7 @@ const settingsPreferencesCopyByLocaleKo: UiMessageCatalog<SettingsPreferencesCop
     },
     appearance: {
       saveFailed: '모양 설정 저장 실패', theme: '테마', palette: '색상 팔레트', themeOptions: { light: { label: '라이트', help: '항상 라이트 인터페이스를 사용합니다.' }, dark: { label: '다크', help: '항상 다크 인터페이스를 사용합니다.' }, auto: { label: '시스템 설정 따름', help: '현재 시스템 화면 모드에 맞춥니다.' } }, paletteLabels: { default: '기본', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: '코랄', azure: '애저', forest: '포레스트', dusk: '더스크', sand: '샌드', mono: '모노크롬' }, paletteHelp: { default: 'Maka 브랜드 블루 강조 색상', onedark: '클래식 다크 에디터 테마', 'catppuccin-mocha': '부드러운 보라색 다크 테마', 'tokyo-night': '짙은 파란색 에디터 테마', nord: '차가운 북유럽 색감', coral: '따뜻한 분홍·코랄 강조 색상', azure: '깔끔하고 차분한 파란색 강조 색상', forest: '짙은 이끼색과 따뜻한 꿀색', dusk: '차가운 캔버스 위의 짙은 보라색', sand: '앰버 샌드와 따뜻한 아이보리', mono: '색이 없는 순수 회색조' }, paletteGroups: { editor: '에디터 테마', product: '제품 색상' }, appIconLabels: { default: '클래식', mono: '모노크롬', 'sky': '스카이', 'cyan': '시안', 'ice': '아이스', 'pale-inverted': '인버티드', 'ink': '잉크', 'paper': '페이퍼', 'graphite': '그래파이트', 'pencil-kraft': '펜슬, 크래프트', 'pencil-sky': '펜슬, 스카이', 'pencil-navy': '펜슬, 네이비', 'alpine': '알파인', 'dusk': '더스크', 'night': '나이트', 'midnight': '미드나이트', 'carbon': '카본', 'slate': '슬레이트', 'obsidian': '옵시디언', 'neon-cyan': '네온 시안', 'matrix': '포스퍼', 'magenta': '마젠타', 'amber-crt': '앰버 CRT', 'clay': '클레이', 'sage': '세이지', 'dust': '더스트', 'fog': '포그', 'sunset': '선셋', 'amber': '앰버', 'terracotta': '테라코타', 'ocean': '오션', 'moss': '모스', 'desert': '데저트', 'glacier': '글레이셔', 'gold': '골드', 'chrome': '크롬', 'mono-black': '모노 블랙', 'mono-white': '모노 화이트', 'hazard': '해저드', 'forest': '포레스트' }, appIconHelp: { default: '기본 Maka 마크', mono: '회색조, 더 차분한 Dock용', 'sky': '브랜드 블루의 기하학적 M 마크', 'cyan': '시안에 가까운 파란색', 'ice': '옅은 파란색에서 짙은 파란색으로 이어지는 그라데이션', 'pale-inverted': '옅은 바탕에 짙은 파란색 마크', 'ink': '검은 바탕에 흰색, 가장 높은 대비', 'paper': '흰 바탕에 검은색', 'graphite': '흰 바탕에 검은색, 끝은 회색', 'pencil-kraft': '펜슬 모티프, 크래프트 바탕', 'pencil-sky': '펜슬 모티프, 스카이 블루 바탕', 'pencil-navy': '펜슬 모티프, 짙은 네이비 바탕', 'alpine': '맑은 하늘 아래 눈 덮인 봉우리', 'dusk': '황혼의 눈 덮인 봉우리', 'night': '밤의 눈 덮인 봉우리', 'midnight': '짙은 네이비 바탕의 밝은 마크. 어두운 Dock에서도 윤곽이 살아 있음', 'carbon': '완전한 검정이라 OLED 화면에는 마크만 보임', 'slate': '차가운 슬레이트 바탕에 옅은 회색', 'obsidian': '보랏빛 검정 그라데이션 바탕에 라일락색', 'neon-cyan': '검정에 가까운 바탕에 선명한 시안', 'matrix': '포스퍼 터미널의 녹색', 'magenta': '짙은 보라색 바탕에 핫핑크', 'amber-crt': '초기 터미널의 앰버색', 'clay': '차분한 테라코타', 'sage': '차분한 회녹색', 'dust': '차분한 더스티 로즈', 'fog': '차분한 청회색', 'sunset': '주황에서 분홍으로 이어지는 대각선', 'amber': '앰버 바탕에 어두운 마크', 'terracotta': '벽돌색 그라데이션', 'ocean': '짙은 청록 그라데이션', 'moss': '짙은 모스 그라데이션', 'desert': '데저트 샌드 바탕에 어두운 마크', 'glacier': '옅은 빙하색 파랑', 'gold': '마크 자체에 골드 그라데이션', 'chrome': '마크 자체에 은색 그라데이션', 'mono-black': '순백 바탕에 검은색. 한 가지 색으로 인쇄 가능', 'mono-white': '완전한 검정 바탕에 흰색', 'hazard': '검은 바탕에 노란색, 이 묶음에서 대비가 가장 높음', 'forest': '녹색 바탕의 눈 덮인 봉우리' }, appIconGroups: { mascot: '마스코트', blue: '파란색 계열', contrast: '흑백', pencil: '펜슬', mountain: '산', dark: '다크', neon: '네온', muted: '차분한 색', warm: '따뜻한 색', nature: '자연', metal: '금속', highContrast: '고대비', custom: '가져온 항목' }, appIconSplitLabel: '다크 모드에서 다른 아이콘 사용', appIconSplitHelp: '끄면 두 화면 모드 모두 같은 아이콘을 사용합니다.', appIconTargets: { light: '라이트', dark: '다크' }, appIconCustom: '가져온 아이콘', appIconCustomHelp: '직접 가져온 이미지', appIconImport: '아이콘 가져오기…', appIconImporting: '가져오는 중…', appIconImportHelp: '정사각형 PNG가 가장 좋습니다. Dock에서 다른 앱과 같은 크기로 보이도록 가장자리에 약 10%의 투명 여백을 두세요.', appIconRemove: '제거', appIconImportError: '아이콘 가져오기 실패', appIconRemoveFailed: '아이콘 제거 실패', appIconSelectFailed: '아이콘 전환 실패', appIconImportFailed: { too_large: '파일이 너무 큽니다. 더 작은 이미지를 선택하세요', too_many_pixels: '이미지가 너무 큽니다. 최대 4096×4096입니다', unsupported_format: 'PNG와 JPEG만 지원됩니다', unreadable: '이 파일에서 이미지를 읽지 못했습니다', too_small: '이미지가 너무 작습니다. 최소 128×128입니다', write_failed: '가져온 아이콘 저장 실패' }, appIconUnavailable: '앱 아이콘 불러오기 실패', fontSize: { uiLabel: 'UI 글꼴 크기', uiHelp: '인터페이스 전체에 쓰이는 기본 글꼴 크기', terminalLabel: '터미널 글꼴 크기', terminalHelp: '터미널 출력과 코드에 쓰이는 글꼴 크기' },
+      workbar: { title: '작업 워크바', titlebarToggle: '제목 표시줄에 작업 워크바 토글 표시', help: '끄면 대화 영역 가장자리의 컨트롤로 작업 워크바를 펼치거나 접을 수 있습니다.' },
     },
     pets: {
       import: 'PetPack 가져오기', importing: '가져오는 중…', loading: '사용자 지정 펫 불러오는 중…',
@@ -573,6 +574,9 @@ const settingsPreferencesCopyByLocaleKo: UiMessageCatalog<SettingsPreferencesCop
     general: {
       incognito: '시크릿 모드', incognitoHelp: '로컬 메모리, 웹 검색, 정기 작업 실행을 일시 중지합니다.', enableIncognito: '시크릿 모드 켜기', incognitoFailed: '시크릿 모드 변경 실패', notificationsFailed: '알림 설정 변경 실패', workspaceInstructions: '프로젝트 지침 따르기', workspaceInstructionsHelp: '각 프로젝트에 있는 AGENTS.md, CLAUDE.md, GEMINI.md 파일을 자동으로 읽습니다. 파일은 각 프로젝트에서 관리하세요.', workspaceInstructionsFailed: '프로젝트 지침 설정 변경 실패', workHub: 'WorkHub 켜기', workHubHelp: 'WorkHub는 아직 사용할 수 없습니다. 이 토글은 개발 테스트용이며, 켜도 사용할 수 있는 기능이 생기지 않습니다.', workHubFailed: 'WorkHub 설정 변경 실패', updateFailed: '설정이 적용되지 않았습니다. 잠시 후 다시 시도해 주세요.', defaultModel: '기본 모델', defaultModelHelp: '새 작업에 사용할 모델입니다.', notSet: '설정 안 됨', saveDefaultModelFailed: '기본 모델 저장 실패', defaultPermission: '기본 권한 모드', defaultPermissionHelp: '새 작업의 초기 권한 모드입니다. 언제든지 바꿀 수 있습니다.', saveDefaultPermissionFailed: '기본 권한 모드 저장 실패', proxy: '프록시 서버', proxyHelp: 'AI 모델 요청에 사용할 네트워크 프록시를 설정하세요', enableProxy: '프록시 서버 켜기', saveNetworkFailed: '네트워크 설정 저장 실패', proxyProtocol: '프록시 프로토콜', serverAddress: '서버 주소', port: '포트', proxyAuth: '프록시 인증', proxyAuthHelp: '사용자 이름과 비밀번호가 필요할 때 켜세요.', enableProxyAuth: '프록시 인증 켜기', username: '사용자 이름', password: '비밀번호', bypassList: '프록시 우회 목록', bypassHelp: (count) => `이 도메인은 프록시를 거치지 않고 직접 연결됩니다. 여러 도메인은 쉼표로 구분하세요. 도메인 ${count}개가 자동으로 추가되었습니다. 프록시는 AI 모델 요청에만 적용됩니다.`, testing: '테스트하는 중…', testCurrent: '현재 구성 테스트', proxyReachable: '프록시에 연결할 수 있음', proxyTestFailed: '프록시 테스트 실패', proxyTestError: '프록시를 테스트하지 못함',
       shellPreference: 'Bash 도구 셸', shellPreferenceHelp: '자동은 PowerShell을 우선하는 Windows 기본 동작을 유지합니다. Git Bash는 현재 Runtime Host에만 적용되는 명시적 재정의입니다.', shellAuto: '자동(권장)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 실행 파일', shellExecutableHelp: 'Runtime Host를 실행하는 Windows 컴퓨터에서 bash.exe의 절대 경로를 입력하세요. 기존 System32 WSL Bash 심(shim)도 인식합니다. Maka는 저장하기 전에 GNU Bash인지 확인합니다.', saveShell: '셸 설정 저장', savingShell: '저장하는 중…', saveShellFailed: '셸 설정 저장 실패', shellExecutableRejected: '현재 Runtime Host에서 이 경로를 GNU Bash로 실행하지 못했습니다. Host가 Windows에서 실행 중인지, 경로가 있는지, 파일 이름이 bash.exe인지 확인하세요.',
+      codeModeHelp: '새 작업은 코드로 도구를 조합하고 호출합니다. WorkHub는 다음 턴부터 변경 사항을 적용하고, 다른 기존 작업은 현재 모드를 유지합니다.',
+      notifications: '시스템 알림 보내기', notificationsHelp: '창이 백그라운드에 있을 때 응답이 끝나거나, 실패하거나, 사용자의 답이 필요하면 알립니다.',
+      shellSaved: '셸 설정 저장됨',
       passwordSavedPlaceholder: '비밀번호가 저장되어 있습니다. 바꾸려면 새 비밀번호를 입력하세요',
     },
     about: {
@@ -586,7 +590,15 @@ const settingsPreferencesCopyByLocaleKo: UiMessageCatalog<SettingsPreferencesCop
       copyDiagnostics: '진단 정보 복사', copyAction: '복사', copyHelp: '버전, 플랫폼, 홈 경로를 가린 작업 공간 경로, 민감 정보를 가린 최근 로그를 복사합니다. 보고서는 클립보드에만 기록되며 자동으로 업로드되지 않습니다.',
       reportIssueLabel: '이슈 보고', reportIssueHelp: '진단 정보를 첨부해 GitHub 이슈를 여세요 — 더 빨리 답변을 받을 수 있습니다.', reportIssueOpen: '열기',
       keyboardShortcuts: '키보드 단축키', keyboardShortcutsHelp: 'Maka가 지원하는 모든 단축키입니다.', keyboardShortcutsOpen: '보기',
+      updateTitle: '업데이트',
       checkForUpdates: '업데이트 확인',
+      updateAvailable: '업데이트 있음',
+      updateDownloaded: '업데이트 다운로드됨',
+      installUpdate: '다시 시작해 설치',
+      updateScheduleHint: 'Maka가 백그라운드에서 주기적으로 확인합니다.',
+      updateFetchingHint: (version) => `v${version}. 완료되면 여기서 다시 시작하세요.`,
+      updateDownloadedHint: (version) => `v${version}. Maka를 다시 시작하면 설치가 끝납니다.`,
+      updateInstallingHint: (version) => `v${version}. 잠시만 기다려 주세요.`,
       checkingForUpdates: '업데이트 확인하는 중…',
       updateIdle: '아직 업데이트를 확인하지 않음',
       updateNotAvailable: '최신 버전을 사용 중입니다',
