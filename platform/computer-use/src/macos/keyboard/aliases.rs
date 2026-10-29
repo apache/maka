@@ -56,6 +56,7 @@ pub(in crate::macos) enum SynthesizedEventError {
     InvalidParameter,
     FailedToCreateSource,
     FailedToTranslateKeyCodes,
+    CannotClickOffscreenElement,
 }
 
 impl SynthesizedEventError {
@@ -64,13 +65,9 @@ impl SynthesizedEventError {
             Self::InvalidParameter => "invalidParameter",
             Self::FailedToCreateSource => "failedToCreateSource",
             Self::FailedToTranslateKeyCodes => "failedToTranslateKeyCodes",
+            Self::CannotClickOffscreenElement => "cannotClickOffscreenElement",
         };
-        ToolError::Native(Box::new(maka_agent_facts::tools::NativeToolError {
-            name: "SkyComputerUseError".into(),
-            code: -10005,
-            error_name: "unknownError".into(),
-            message: format!("Computer Use server error -10005: {case}"),
-        }))
+        crate::macos::server_error(case)
     }
 }
 

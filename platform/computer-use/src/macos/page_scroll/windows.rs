@@ -24,6 +24,7 @@
 use super::target::{
     actual_pid, ax_window_id, element_attribute, ensure_actual_pid_available, string_attribute,
 };
+use crate::desktop::NativeEpochId;
 use core_foundation::{
     array::{CFArray, CFArrayRef},
     base::{CFEqual, CFGetTypeID, CFRelease, CFTypeRef, TCFType},
@@ -74,6 +75,10 @@ pub(crate) enum WindowVariant {
 }
 
 impl WindowVariant {
+    pub(crate) fn retained_window(element: RetainedElement) -> Self {
+        Self::Window(LocalElement::new(element))
+    }
+
     pub(crate) fn element(&self) -> &RetainedElement {
         match self {
             Self::Window(owner) | Self::Sheet(owner) | Self::Menu(owner) => &owner.element,
@@ -130,11 +135,19 @@ struct Registration {
     name: CFString,
 }
 
+struct MenuProjection {
+    epoch: NativeEpochId,
+    slot: u64,
+    focused_item: RetainedElement,
+    _opened_menu: RetainedElement,
+}
+
 /// All fields, including observer callbacks and retained snapshots, remain on
 /// the controller thread. The controller owns RunLoop pumping and thread join.
 pub(crate) struct Windows {
     application: RetainedElement,
     entries: HashMap<u32, WindowVariant>,
+    menu_projection: Option<MenuProjection>,
     observer: Option<Observer>,
     source: Option<CFRunLoopSource>,
     run_loop: CFRunLoop,
@@ -151,6 +164,7 @@ impl Windows {
         let mut windows = Self {
             application,
             entries: HashMap::new(),
+            menu_projection: None,
             observer: None,
             source: None,
             run_loop: CFRunLoop::get_current(),
@@ -225,6 +239,7 @@ impl Windows {
                         self.insert(menu);
                     }
                     EventKind::MenuClosed => {
+                        self.menu_projection = None;
                         self.entries
                             .retain(|_, window| !same_element(window.element(), &event.element));
                     }
@@ -232,14 +247,63 @@ impl Windows {
                         self.remove_destroyed_registration(&event.element);
                     }
                     EventKind::WindowMoved | EventKind::WindowResized => {
-                        // The original refreshes WindowOrderingObserver here.
-                        // Its window map stays intact; callers query current
-                        // WindowServer order through the AppKit metadata lane.
+                        // Keep the stored window map intact; current WindowServer
+                        // order is queried through the AppKit metadata lane.
                     }
                 }
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn select_menu(
+        &mut self,
+        epoch: NativeEpochId,
+        slot: u64,
+        focused_item: RetainedElement,
+        opened_menu: RetainedElement,
+    ) -> Result<(), ToolError> {
+        self.require_open()?;
+        self.menu_projection = Some(MenuProjection {
+            epoch,
+            slot,
+            focused_item,
+            _opened_menu: opened_menu,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn projected_menu_root(
+        &mut self,
+        epoch: NativeEpochId,
+        slot: u64,
+    ) -> Result<Option<RetainedElement>, ToolError> {
+        self.apply_pending_notifications()?;
+        Ok(self
+            .menu_projection
+            .as_ref()
+            .filter(|projection| projection.epoch == epoch && projection.slot == slot)
+            .map(|projection| projection.focused_item.clone()))
+    }
+
+    pub(crate) fn clear_menu_for_slot(&mut self, slot: u64) {
+        if self
+            .menu_projection
+            .as_ref()
+            .is_some_and(|projection| projection.slot == slot)
+        {
+            self.menu_projection = None;
+        }
+    }
+
+    pub(crate) fn clear_menu_for_epoch(&mut self, epoch: NativeEpochId) {
+        if self
+            .menu_projection
+            .as_ref()
+            .is_some_and(|projection| projection.epoch == epoch)
+        {
+            self.menu_projection = None;
+        }
     }
 
     pub(crate) fn entries(&mut self) -> Result<&HashMap<u32, WindowVariant>, ToolError> {
@@ -252,6 +316,7 @@ impl Windows {
     }
 
     pub(crate) fn close(&mut self) -> Result<(), ToolError> {
+        self.menu_projection = None;
         if let Some(source) = self.source.take() {
             // SAFETY: this is the mode on which new attached the source.
             self.run_loop

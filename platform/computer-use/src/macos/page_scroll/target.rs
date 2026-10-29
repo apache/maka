@@ -150,6 +150,45 @@ impl TargetResolver {
         let actual_app_pid = required_pid(&application)?;
         let selected_pid = actual_pid(selected_window.element())?;
         let element = hit_test(&application, point)?;
+        Self::from_selection(
+            actual_app_pid,
+            selected_pid,
+            app_bundle_id,
+            selected_window,
+            element,
+            point,
+        )
+    }
+
+    pub(crate) fn from_known(
+        app_pid: i32,
+        app_bundle_id: Option<&str>,
+        selected_window: WindowVariant,
+        element: RetainedElement,
+        point: [f64; 2],
+    ) -> Result<Self, ToolError> {
+        let application = copied_element(unsafe { AXUIElementCreateApplication(app_pid) })
+            .ok_or_else(|| failed("AX application unavailable"))?;
+        let actual_app_pid = required_pid(&application)?;
+        let selected_pid = actual_pid(selected_window.element())?;
+        Self::from_selection(
+            actual_app_pid,
+            selected_pid,
+            app_bundle_id,
+            selected_window,
+            Some(element),
+            point,
+        )
+    }
+
+    fn from_selection(
+        actual_app_pid: i32,
+        selected_pid: i32,
+        app_bundle_id: Option<&str>,
+        selected_window: WindowVariant,
+        element: Option<RetainedElement>,
+        point: [f64; 2],
+    ) -> Result<Self, ToolError> {
         let out_of_process = if selected_pid != actual_app_pid {
             Some(ProcessWindow {
                 pid: selected_pid,
@@ -474,7 +513,7 @@ fn optional_actual_pid(element: &RetainedElement) -> Result<Option<i32>, ToolErr
     Ok((status == kAXErrorSuccess).then_some(pid))
 }
 
-fn hit_test(
+pub(super) fn hit_test(
     application: &RetainedElement,
     point: [f64; 2],
 ) -> Result<Option<RetainedElement>, ToolError> {
@@ -543,6 +582,27 @@ pub(super) fn element_attribute(
     }
     // SAFETY: checked native AX type; transfer ownership through one retain.
     Ok(Some(unsafe { RetainedElement::retain(value.0 as usize) }))
+}
+
+pub(super) fn children(element: &RetainedElement) -> Result<Vec<RetainedElement>, ToolError> {
+    let Some(value) = attribute(element, "AXChildren")? else {
+        return Ok(Vec::new());
+    };
+    if unsafe { CFGetTypeID(value.0) } != CFArray::<CFTypeRef>::type_id() {
+        return Err(type_failure("AXChildren"));
+    }
+    // SAFETY: the checked copied array remains retained during each item check.
+    let array = unsafe { CFArray::<CFTypeRef>::wrap_under_get_rule(value.0 as _) };
+    array
+        .iter()
+        .map(|item| {
+            if unsafe { CFGetTypeID(*item) } != unsafe { AXUIElementGetTypeID() } {
+                return Err(type_failure("AXChildren item"));
+            }
+            // SAFETY: retain the checked AX object before the array is released.
+            Ok(unsafe { RetainedElement::retain(*item as usize) })
+        })
+        .collect()
 }
 
 pub(super) fn action_names(element: &RetainedElement) -> Result<Vec<String>, ToolError> {
