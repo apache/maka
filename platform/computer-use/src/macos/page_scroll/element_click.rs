@@ -426,6 +426,7 @@ impl PendingClick {
                     window_id: target.window_id,
                     bounds: target.bounds.clone(),
                     flipped: target.flipped,
+                    is_menu: target.is_menu(),
                 }),
             }),
             _ => Err(failed("native element preparation is not ready")),

@@ -176,6 +176,7 @@ pub(crate) struct TargetData {
     pub(crate) window_id: u32,
     pub(crate) bounds: WindowBounds,
     pub(crate) flipped: bool,
+    pub(crate) is_menu: bool,
 }
 
 #[derive(Debug)]
@@ -237,7 +238,7 @@ enum Command {
     CoordinateClick {
         slot: u64,
         token: ResolveId,
-        input: super::mouse::Input,
+        input: super::mouse::CoordinateInput,
         cancellation: CancellationToken,
         focus: Arc<super::focus::Resource>,
     },
@@ -1103,7 +1104,7 @@ impl Application {
     pub(crate) async fn coordinate_click(
         &self,
         token: ResolveId,
-        input: super::mouse::Input,
+        input: super::mouse::CoordinateInput,
         cancellation: CancellationToken,
         focus: Arc<super::focus::Resource>,
     ) -> Result<(), ToolError> {
@@ -1821,7 +1822,7 @@ impl WorkerState {
                     }
                     _ => return Err(failed("native click target has retired")),
                 };
-                super::mouse::send(
+                super::mouse::send_coordinate(
                     self.pid,
                     &self.generation,
                     target,
@@ -2420,6 +2421,7 @@ impl WorkerState {
                     window_id: target.window_id,
                     bounds: target.bounds.clone(),
                     flipped: target.flipped,
+                    is_menu: target.is_menu(),
                 };
                 self.resolving.insert(
                     token,

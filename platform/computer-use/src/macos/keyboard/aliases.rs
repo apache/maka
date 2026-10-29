@@ -20,11 +20,6 @@
 //! Mac key aliases. Parsing performs no input or layout lookup.
 
 use maka_agent_facts::tools::ToolError;
-use objc2::{
-    msg_send,
-    rc::Retained,
-    runtime::{AnyClass, AnyObject},
-};
 use objc2_foundation::NSString;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -45,9 +40,9 @@ enum Alias {
 #[derive(Debug)]
 enum ParseError<'a> {
     UnknownAlias { token: &'a str },
-    UnsupportedKey { _group: &'a str },
-    OrdinaryBeforeFinal { _group: &'a str },
-    MissingOrdinary { _group: &'a str },
+    UnsupportedKey { group: &'a str },
+    OrdinaryBeforeFinal { group: &'a str },
+    MissingOrdinary { group: &'a str },
 }
 
 /// Native event-construction failures without associated values.
@@ -73,18 +68,20 @@ impl SynthesizedEventError {
 
 impl ParseError<'_> {
     fn into_tool_error(self) -> ToolError {
-        let (domain, code) = match self {
+        let (case, group) = match self {
             Self::UnknownAlias { token } => {
                 return crate::macos::server_error(format_args!(
                     "keyNotFound({})",
                     quoted_alias(token)
                 ));
             }
-            Self::UnsupportedKey { .. } => ("ComputerUse.XKeysymString.Error", 0),
-            Self::OrdinaryBeforeFinal { .. } => ("ComputerUse.XKeysymString.Error", 1),
-            Self::MissingOrdinary { .. } => ("ComputerUse.XKeysymString.Error", 2),
+            Self::UnsupportedKey { group } => ("keyPressNotSupportedByMacOS", group),
+            Self::OrdinaryBeforeFinal { group } => {
+                ("keyPressIncludedMultipleNonModifierKeys", group)
+            }
+            Self::MissingOrdinary { group } => ("keyPressIncludedNoNonModifierKeys", group),
         };
-        default_swift_error(domain, code)
+        key_press_error(case, group)
     }
 }
 
@@ -167,25 +164,35 @@ fn quoted_alias(token: &str) -> String {
     quoted
 }
 
-// Swift.Error domains use the qualified type name and enum tag. Foundation
-// supplies the localized presentation.
-pub(in crate::macos) fn default_swift_error(domain: &str, code: isize) -> ToolError {
-    let Some(error_class) = AnyClass::get(c"NSError") else {
-        return ToolError::Failed(format!("NSError class unavailable for {domain} ({code})"));
-    };
-    let domain = NSString::from_str(domain);
-    // SAFETY: Foundation's NSError factory accepts an NSString domain,
-    // NSInteger code, and a nullable NSDictionary. No userInfo is supplied,
-    // matching these native error types' default Swift.Error conformance.
-    // msg_send! retains the returned object, including an autoreleased result.
-    let error: Retained<AnyObject> = unsafe {
-        msg_send![error_class, errorWithDomain: &*domain, code: code,
-                  userInfo: std::ptr::null::<AnyObject>()]
-    };
-    // SAFETY: The factory returned an NSError; localizedDescription returns a
-    // nonnull NSString retained by msg_send! while its bytes are copied.
-    let description: Retained<NSString> = unsafe { msg_send![&*error, localizedDescription] };
-    ToolError::Failed(description.to_string())
+fn key_press_error(case: &str, group: &str) -> ToolError {
+    let mut description = format!("{case}(ComputerUse.XKeysymString.KeyPress(keys: [");
+    for (index, token) in split(group, "+").into_iter().enumerate() {
+        if index != 0 {
+            description.push_str(", ");
+        }
+        let normalized = (!token.is_ascii()).then(|| {
+            NSString::from_str(token)
+                .precomposedStringWithCanonicalMapping()
+                .to_string()
+        });
+        let name = match normalized.as_deref().unwrap_or(token) {
+            "0" => "zero",
+            "1" => "one",
+            "2" => "two",
+            "3" => "three",
+            "4" => "four",
+            "5" => "five",
+            "6" => "six",
+            "7" => "seven",
+            "8" => "eight",
+            "9" => "nine",
+            name => name,
+        };
+        description.push_str("ComputerUse.XKeysym.");
+        description.push_str(name);
+    }
+    description.push_str("]))");
+    crate::macos::server_error(description)
 }
 
 pub(super) fn parse_keys(input: &str) -> Result<Vec<ParsedKeyPress>, ToolError> {
@@ -225,7 +232,7 @@ fn parse(input: &str) -> Result<Vec<ParsedKeyPress>, ParseError<'_>> {
                 // Test unsupported keys before previous-key
                 // ordering, and combine repeated modifiers with bitwise OR.
                 let is_modifier = match alias {
-                    Alias::Unsupported => return Err(ParseError::UnsupportedKey { _group: group }),
+                    Alias::Unsupported => return Err(ParseError::UnsupportedKey { group }),
                     Alias::Modifier(flags) => {
                         modifiers |= flags;
                         true
@@ -237,12 +244,12 @@ fn parse(input: &str) -> Result<Vec<ParsedKeyPress>, ParseError<'_>> {
                     }
                 };
                 if !previous_was_modifier {
-                    return Err(ParseError::OrdinaryBeforeFinal { _group: group });
+                    return Err(ParseError::OrdinaryBeforeFinal { group });
                 }
                 previous_was_modifier = is_modifier;
             }
             let Some(key) = last_key.filter(|_| !previous_was_modifier) else {
-                return Err(ParseError::MissingOrdinary { _group: group });
+                return Err(ParseError::MissingOrdinary { group });
             };
             Ok(ParsedKeyPress {
                 key_code: key.key_code,
