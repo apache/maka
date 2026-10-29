@@ -177,6 +177,7 @@ pub(crate) struct WireNativeSource {
     pub generation: String,
     pub operation_id: String,
 }
+#[cfg(feature = "native-desktop")]
 impl WireNativeSource {
     pub(crate) fn binding(source: &NativeBindingSource) -> Self {
         Self {

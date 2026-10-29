@@ -353,6 +353,7 @@ pub struct BrowserEvaluateOptions {
     pub timeout_ms: Option<serde_json::Value>,
 }
 impl BrowserEvaluateOptions {
+    #[cfg(feature = "native-desktop")]
     pub(crate) fn budget(&self) -> std::time::Duration {
         let milliseconds = self
             .timeout_ms

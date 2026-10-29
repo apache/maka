@@ -1427,6 +1427,7 @@ impl WorkerCallbacks {
         })
     }
 
+    #[cfg(feature = "native-desktop")]
     async fn observe_native(
         &self,
         invocation_id: u64,
@@ -1522,6 +1523,7 @@ impl WorkerCallbacks {
             .prepare_binding(invocation_id, key, cancellation)
             .await?;
         Ok(BrowserServices {
+            #[cfg(feature = "native-desktop")]
             files: grant.files.then(|| {
                 Arc::new(files::RemoteFiles {
                     scope: scope.clone(),
@@ -2522,13 +2524,13 @@ impl Drop for RetentionCustody {
     }
 }
 
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct RemoteNativeObserver {
     worker: WorkerCallbacks,
     identity: ScopeIdentity,
     invocation_id: u64,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl crate::NativeInterruptionObserver for RemoteNativeObserver {
     fn bound(&self, source: crate::NativeBindingSource) -> crate::InterruptionFuture {
         let worker = self.worker.clone();

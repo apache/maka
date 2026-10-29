@@ -175,6 +175,7 @@ pub trait BrowserHostEffects: Send + Sync {
 #[cfg(any(feature = "native-desktop", test))]
 #[derive(Clone)]
 pub(crate) struct BrowserServices {
+    #[cfg(feature = "native-desktop")]
     pub files: Option<Arc<dyn crate::BrowserAssetFiles>>,
     pub attachment: Option<Arc<dyn BrowserAttachmentAuthorization>>,
     pub effects: Option<Arc<dyn BrowserHostEffects>>,

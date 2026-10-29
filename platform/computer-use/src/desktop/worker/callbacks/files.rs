@@ -19,10 +19,10 @@
 
 //! File service messages inherit the existing callback scope and joined checks.
 use super::*;
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 use crate::FilesFuture;
 use crate::{BrowserAssetDirectory, BrowserAssetFiles};
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 use maka_capabilities::call::ReadResource;
 
 /// Framing follows immutable resource ingress; no whole asset enters a frame.
@@ -290,7 +290,7 @@ impl ParentCallbacks {
     }
 }
 
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl RemoteScope {
     async fn file_call(
         self: Arc<Self>,
@@ -326,13 +326,13 @@ impl RemoteScope {
             .map_err(|_| uncertain("File callback completion disappeared"))?
     }
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 struct RemoteDirectory {
     scope: Arc<RemoteScope>,
     id: u64,
     path: String,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl BrowserAssetDirectory for RemoteDirectory {
     fn path(&self) -> &str {
         &self.path
@@ -424,11 +424,11 @@ impl BrowserAssetDirectory for RemoteDirectory {
     }
 }
 /// Keep RemoteScope alive through the last real directory handle.
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 pub(super) struct RemoteFiles {
     pub scope: Arc<RemoteScope>,
 }
-#[cfg(any(feature = "native-desktop", test))]
+#[cfg(feature = "native-desktop")]
 impl BrowserAssetFiles for RemoteFiles {
     fn snapshot(&self, name: String, bytes: Vec<u8>) -> Result<Arc<dyn ReadResource>, ToolError> {
         Ok(maka_capabilities::call::immutable_bytes(name, bytes))
