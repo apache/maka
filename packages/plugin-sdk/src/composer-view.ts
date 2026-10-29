@@ -229,5 +229,7 @@ export interface ComposerViewInput<Element = unknown> {
   stopAction(): () => void;
   chooseWorkspace(): void;
   settings(): void;
+  /** The Host has no model connection: a desktop start pane asks for one first. */
+  needsConnection?(): boolean;
   dropFiles?(drop: (event: { uris: string[] }) => void): void;
 }
