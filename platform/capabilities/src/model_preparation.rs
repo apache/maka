@@ -111,17 +111,33 @@ impl ModelPreparationResources {
 
     /// Admit an entire read/transform/upload envelope before its first allocation.
     pub async fn acquire_work(&self) -> io::Result<WorkLease> {
+        self.acquire_work_with_extra(0).await
+    }
+
+    /// Admit codec work and a caller's retained sink buffer in one reservation.
+    pub async fn acquire_work_with_extra(&self, extra: usize) -> io::Result<WorkLease> {
+        let capacity = self
+            .policy
+            .work_bytes
+            .checked_add(extra)
+            .filter(|capacity| *capacity <= self.policy.progress_bytes)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "work and sink buffer exceed progress allowance",
+                )
+            })?;
         let permit = self
             .progress
             .clone()
-            .acquire_many_owned(self.policy.work_bytes as u32)
+            .acquire_many_owned(capacity as u32)
             .await
             .map_err(closed)?;
         Ok(WorkLease {
             inner: Arc::new(Work {
                 _permit: permit,
-                allocations: Arc::new(Semaphore::new(self.policy.work_bytes)),
-                capacity: self.policy.work_bytes,
+                allocations: Arc::new(Semaphore::new(capacity)),
+                capacity,
             }),
         })
     }
@@ -391,6 +407,30 @@ mod tests {
             work_bytes: 16,
         })
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn extra_work_admits_sink_and_codec_without_a_second_global_wait() {
+        let resources = ModelPreparationResources::new(PreparationPolicy {
+            progress_bytes: 32,
+            work_bytes: 16,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(resources.acquire_work_with_extra(17).await.is_err());
+        assert!(resources.acquire_work_with_extra(usize::MAX).await.is_err());
+        let work = resources.acquire_work_with_extra(16).await.unwrap();
+        let budget = work.budget();
+        let sink = budget.allocate(16).await.unwrap();
+        let codec = budget.allocate(16).await.unwrap();
+        drop(work);
+        drop(budget);
+        let pending = resources.acquire_work();
+        tokio::pin!(pending);
+        assert!(matches!(poll!(&mut pending), Poll::Pending));
+        drop(sink);
+        drop(codec);
+        assert!(pending.await.is_ok());
     }
 
     #[tokio::test]

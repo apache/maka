@@ -32,6 +32,8 @@ use maka_provider_protocol::anthropic::{
 use std::{io, io::Write, ops::Range, sync::Arc};
 
 const RECORD_BYTES: u64 = 256;
+// Match the existing arena copy and backed upload quantum.
+const BODY_BUFFER_BYTES: usize = 32 * 1024;
 type Record = [u64; 32];
 type Part = ap::PartMetadata<IdentifiedText, ap::FrozenCacheCandidate>;
 
@@ -92,11 +94,14 @@ struct OpenItem {
     body_start: u64,
     metadata_tag: u64,
     metadata: u64,
+    buffer: Option<ChargedBuffer>,
+    filled: usize,
 }
 struct Builder {
     arena: CaptureArena,
     custody: Arc<Custody>,
     append: ArenaAppend,
+    body_buffer_bytes: usize,
     tables: Tables,
     item: Option<OpenItem>,
     item_count: usize,
@@ -158,10 +163,13 @@ pub(super) async fn build(
         })
         .await
         .map_err(error)?;
+    let policy = resources.policy();
+    let body_buffer_bytes = BODY_BUFFER_BYTES.min(policy.progress_bytes - policy.work_bytes);
     let mut builder = Builder {
         arena: arena.clone(),
         custody: custody.clone(),
         append,
+        body_buffer_bytes,
         tables,
         item: None,
         item_count: 0,
@@ -209,6 +217,48 @@ pub(super) async fn build(
 }
 
 impl Builder {
+    async fn flush_body(&mut self) -> Result<(), ModelError> {
+        let item = self.item.as_mut().expect("body flush has an open item");
+        if item.filled == 0 {
+            return Ok(());
+        }
+        let buffer = item.buffer.take().expect("open body owns its buffer");
+        let count = item.filled;
+        let buffer = self
+            .write(move |builder| {
+                builder.write_all(&buffer.as_ref()[..count])?;
+                Ok(buffer)
+            })
+            .await
+            .map_err(error)?;
+        let item = self.item.as_mut().expect("body flush retains its item");
+        item.buffer = Some(buffer);
+        item.filled = 0;
+        Ok(())
+    }
+
+    async fn body(&mut self, bytes: Bytes) -> Result<(), ModelError> {
+        if self.body_buffer_bytes == 0 {
+            return self
+                .write(move |builder| builder.write_all(&bytes))
+                .await
+                .map_err(error);
+        }
+        let mut remaining = bytes.as_ref();
+        while !remaining.is_empty() {
+            let item = self.item.as_mut().expect("body write has an open item");
+            let buffer = item.buffer.as_mut().expect("open body owns its buffer");
+            let count = remaining.len().min(buffer.as_ref().len() - item.filled);
+            buffer.as_mut()[item.filled..item.filled + count].copy_from_slice(&remaining[..count]);
+            item.filled += count;
+            remaining = &remaining[count..];
+            if item.filled == buffer.as_ref().len() {
+                self.flush_body().await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn write<T: Send + 'static>(
         &self,
         write: impl FnOnce(&mut crate::history::request_backing::RequestBackingBuilder) -> io::Result<T>
@@ -488,6 +538,10 @@ impl Builder {
 }
 
 impl WireSink for Builder {
+    fn extra_work_bytes(&self) -> usize {
+        self.body_buffer_bytes
+    }
+
     fn chunk(&mut self, chunk: wire::WireChunk, budget: Arc<dyn SourceBudget>) -> WireWrite<'_> {
         Box::pin(async move {
             if chunk.item_start {
@@ -498,7 +552,7 @@ impl WireSink for Builder {
                     None => (0, 0),
                     Some(wire::WireItemMetadata::Message(_)) => (1, chunk.message_index as u64),
                     Some(wire::WireItemMetadata::Anthropic(metadata)) => {
-                        let offset = self.metadata(metadata, budget).await?;
+                        let offset = self.metadata(metadata, budget.clone()).await?;
                         if metadata.document.is_some() {
                             if self.document_count >= self.expected_documents {
                                 return Err(invalid("backed document count grew"));
@@ -534,6 +588,18 @@ impl WireSink for Builder {
                     body_start: self.position().await?,
                     metadata_tag,
                     metadata,
+                    buffer: if self.body_buffer_bytes == 0 {
+                        None
+                    } else {
+                        Some(
+                            budget
+                                .allocate(self.body_buffer_bytes)
+                                .await
+                                .map_err(error)?
+                                .retain_owner(self.custody.clone()),
+                        )
+                    },
+                    filled: 0,
                 });
             }
             if self
@@ -543,11 +609,11 @@ impl WireSink for Builder {
             {
                 return Err(invalid("backed wire chunk has no matching item"));
             }
-            self.write(move |builder| builder.write_all(&chunk.bytes))
-                .await
-                .map_err(error)?;
+            self.body(chunk.bytes).await?;
             if chunk.item_end {
+                self.flush_body().await?;
                 let item = self.item.take().expect("open item checked");
+                drop(item.buffer);
                 let mut record = [0; 32];
                 record[0] = item.message as u64;
                 record[1] = item.body_start;
@@ -1291,13 +1357,18 @@ mod tests {
     #[tokio::test]
     async fn backed_wire_matches_provider_bytes_prefixes_and_direct_item_seek() {
         tokio::time::timeout(Duration::from_secs(20), async {
-            for kind in [
+            let mut buffered_jobs = None;
+            for (kind, coalescing) in [
                 maka_model::ProviderKind::OpenaiChatCompletions,
                 maka_model::ProviderKind::OpenaiResponses,
                 maka_model::ProviderKind::Anthropic,
-            ] {
+            ]
+            .into_iter()
+            .flat_map(|kind| [(kind.clone(), true), (kind, false)])
+            {
                 let directory = tempfile::tempdir().unwrap();
                 let (root, arena, execution) = arena(directory.path()).await;
+                let body = "quote\" slash\\ line\n中🦀".repeat(4096);
                 let logical: Arc<dyn MessageSource> =
                     Arc::new(generated::GeneratedMessages::new(&[
                         Message::System {
@@ -1307,7 +1378,7 @@ mod tests {
                         Message::user("first 🦀"),
                         Message::Assistant {
                             content: vec![AssistantPart::Text {
-                                text: "answer".into(),
+                                text: body,
                                 provider_options: None,
                             }],
                             provider_options: None,
@@ -1324,7 +1395,17 @@ mod tests {
                     .prepare_source(logical.clone(), generous)
                     .await
                     .unwrap();
-                let resources = resources(resident_bytes());
+                let resources = if coalescing {
+                    resources(resident_bytes())
+                } else {
+                    ModelPreparationResources::new(PreparationPolicy {
+                        resident_bytes: resident_bytes(),
+                        progress_bytes: 256 * 1024,
+                        work_bytes: 256 * 1024,
+                        ..Default::default()
+                    })
+                    .unwrap()
+                };
                 let active = resources
                     .reserve_staging(0)
                     .await
@@ -1332,15 +1413,31 @@ mod tests {
                     .promote(resident_bytes())
                     .await
                     .unwrap();
+                let before = arena.write_jobs();
                 let backed = build(
                     &plan,
                     logical,
                     arena.clone(),
                     active.directory(resident_bytes()).unwrap(),
-                    resources,
+                    resources.clone(),
                 )
                 .await
                 .unwrap();
+                let jobs = arena.write_jobs() - before;
+                if coalescing {
+                    buffered_jobs = Some(jobs);
+                } else {
+                    let buffered = buffered_jobs.take().unwrap();
+                    assert!(
+                        buffered < jobs,
+                        "buffered build jobs {buffered} must be below unbuffered jobs {jobs}"
+                    );
+                    eprintln!(
+                        "wire coalescing {} buffered_jobs={buffered} unbuffered_jobs={jobs}",
+                        encoding.codec()
+                    );
+                }
+                drop(resources.acquire_work().await.unwrap());
                 assert_eq!(backed.identity, resident.identity);
                 assert_eq!(
                     items(backed.source.open(0)).await,

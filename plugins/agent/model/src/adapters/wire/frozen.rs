@@ -38,6 +38,11 @@ pub type WireWrite<'a> = Pin<Box<dyn Future<Output = Result<(), ModelError>> + S
 
 /// Receives provider items directly into the request-owned backing arena.
 pub trait WireSink: Send {
+    /// Extra progress retained by this sink while the codec continues producing.
+    fn extra_work_bytes(&self) -> usize {
+        0
+    }
+
     fn chunk(&mut self, chunk: wire::WireChunk, budget: Arc<dyn SourceBudget>) -> WireWrite<'_>;
     fn message_end(
         &mut self,
@@ -477,7 +482,10 @@ impl WirePlan {
         output: &mut dyn WireSink,
         resources: ModelPreparationResources,
     ) -> Result<EncodedWire, ModelError> {
-        let work = resources.acquire_work().await.map_err(error)?;
+        let work = resources
+            .acquire_work_with_extra(output.extra_work_bytes())
+            .await
+            .map_err(error)?;
         let sink = Sink::Backed(BackedBuilder {
             output,
             hash: initial_hash(&self.encoding),
