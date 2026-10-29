@@ -257,7 +257,15 @@ async fn real_session_lifecycle_keeps_original_revisions_history_and_separate_dr
         assert_eq!(client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap()["session"]["id"], fixture.session, "opening confirmation must not delete the source");
         activate(&mut view, "Confirm delete conversation").await;
         wait_view(&mut view, |screen| screen.contains("Make something remarkable.") && !screen.contains("Delete conversation?")).await;
-        let remaining = client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"","position":{"kind":"start"}})).await.unwrap();
+        let remaining = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                match client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"","position":{"kind":"start"}})).await {
+                    Ok(page) => break page,
+                    Err(error) if error == "agent_catalog_changed" => tokio::task::yield_now().await,
+                    Err(error) => panic!("catalog read after deletion failed: {error}"),
+                }
+            }
+        }).await.expect("catalog did not settle after deletion");
         assert_eq!(remaining["sessions"].as_array().unwrap().len(), 1);
         assert_eq!(remaining["sessions"][0]["id"], fork_id);
         // The removed source no longer grants a workspace-scoped read. The
