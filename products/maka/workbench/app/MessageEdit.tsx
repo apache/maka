@@ -119,22 +119,25 @@ export function MessageEdit(props: {
       if (alive) pending.set(false);
     }
   };
+  // Render nothing when hidden, so the row of actions keeps its spacing.
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
-      <If when={notice()}>
-        <Text style={[{ color: C.danger, fontSize: 12, lineHeight: 16 }, { userSelect: 'text' }]}>
-          {notice()}
-        </Text>
-      </If>
-      <If when={target() !== null}>
-        <IconButton
-          label={props.regenerate ? tr('Regenerate in a fork') : tr('Edit and resend')}
-          tooltip={pending() ? tr('Creating fork…') : undefined}
-          icon={props.regenerate ? 'refresh' : 'edit'}
-          disabled={pending()}
-          onPress={inputAction(edit, target())}
-        />
-      </If>
-    </View>
+    <If when={Boolean(notice()) || target() !== null}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <If when={notice()}>
+          <Text style={[{ color: C.danger, fontSize: 12, lineHeight: 16 }, { userSelect: 'text' }]}>
+            {notice()}
+          </Text>
+        </If>
+        <If when={target() !== null}>
+          <IconButton
+            label={props.regenerate ? tr('Regenerate in a fork') : tr('Edit and resend')}
+            tooltip={pending() ? tr('Creating fork…') : undefined}
+            icon={props.regenerate ? 'refresh' : 'edit'}
+            disabled={pending()}
+            onPress={inputAction(edit, target())}
+          />
+        </If>
+      </View>
+    </If>
   );
 }
