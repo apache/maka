@@ -371,9 +371,10 @@ impl Setup {
         self.granted = false;
         self
     }
-    pub(super) fn computer() -> Self {
+    pub(super) fn computer(handler: Arc<dyn Handler>) -> Self {
         Self {
             computer: true,
+            capture: Some(handler),
             ..Self::javascript()
         }
     }
@@ -821,8 +822,6 @@ impl Setup {
                     }),
                 )
                 .unwrap();
-        } else if self.computer {
-            maka_computer_native::provide(registry).unwrap();
         }
         if self.jev {
             maka_jev_native::provide(registry).unwrap();

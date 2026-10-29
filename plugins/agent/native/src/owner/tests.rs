@@ -35,8 +35,6 @@ mod title_tests;
 #[path = "tests/todo.rs"]
 mod todo_tests;
 
-#[path = "tests/computer.rs"]
-mod computer;
 #[path = "tests/computer_controls.rs"]
 mod computer_controls;
 

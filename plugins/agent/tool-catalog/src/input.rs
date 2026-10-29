@@ -17,22 +17,29 @@
  * under the License.
  */
 
-use super::ToolRequest;
 use maka_agent_facts::tool_call::ToolRejection;
 use schemars::{
     Schema,
     transform::{Transform, transform_subschemas},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 
+/// Preserve a typed request inside an object-rooted model tool input.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRequest<T> {
+    pub request: T,
+}
+
 #[derive(Clone, Copy)]
-pub(crate) enum Projection {
+pub enum Projection {
     Direct,
     RequestEnvelope,
 }
 
 impl Projection {
-    pub(crate) fn project(schema: Value) -> (Self, Value) {
+    pub fn project(schema: Value) -> (Self, Value) {
         if schema["type"] == "object"
             && ["oneOf", "anyOf", "allOf", "$ref"]
                 .iter()
@@ -54,7 +61,7 @@ impl Projection {
         (Self::RequestEnvelope, envelope)
     }
 
-    pub(crate) fn decode(self, input: Value) -> Result<Value, ToolRejection> {
+    pub fn decode(self, input: Value) -> Result<Value, ToolRejection> {
         match self {
             Self::Direct => Ok(input),
             Self::RequestEnvelope => serde_json::from_value::<ToolRequest<Value>>(input)

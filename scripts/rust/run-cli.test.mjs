@@ -20,20 +20,38 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { runCli } from './run-cli.mjs';
 
 const launcher = fileURLToPath(new URL('./run-cli.mjs', import.meta.url));
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
-test('development builds select the native capability before forwarding CLI arguments', async (t) => {
-  let invocation;
+test('development builds select capabilities once for the CLI and worker, then run the Cargo artifact', async (t) => {
+  const invocations = [];
+  const executable = join(tmpdir(), 'maka artifacts', 'maka');
   t.mock.method(childProcess, 'spawn', (command, args, options) => {
-    invocation = { command, args, options };
+    invocations.push({ command, args, options });
     const child = new EventEmitter();
-    queueMicrotask(() => child.emit('exit', 0, null));
+    if (command === 'cargo') child.stdout = new PassThrough();
+    queueMicrotask(() => {
+      if (child.stdout) {
+        child.stdout.end(
+          JSON.stringify({
+            reason: 'compiler-artifact',
+            target: { name: 'maka', kind: ['bin'] },
+            executable,
+          }) + '\n',
+        );
+      }
+      child.emit('exit', 0, null);
+    });
     return child;
   });
   syncBuiltinESMExports();
@@ -41,27 +59,16 @@ test('development builds select the native capability before forwarding CLI argu
     t.mock.restoreAll();
     syncBuiltinESMExports();
   });
-  const native = ['run', '--locked', '-p', 'maka-cli', '--', 'code', '--log', 'a b.sqlite'];
-  const bridge = [
-    'run',
-    '--locked',
-    '-p',
-    'maka-cli',
-    '--no-default-features',
-    '--',
-    'code',
-    '--log',
-    'a b.sqlite',
-  ];
-  for (const [mode, platform, osRelease, expected] of [
-    [undefined, 'linux', '6.8.0-generic', native],
-    [undefined, 'linux', '6.6.87.2-microsoft-standard-WSL2', bridge],
-    ['auto', 'linux', '4.4.0-Microsoft', bridge],
-    ['auto', 'darwin', 'Microsoft', native],
-    ['auto', 'win32', 'Microsoft', native],
-    ['native', 'linux', '6.6.87.2-microsoft-standard-WSL2', native],
-    ['bridge', 'linux', '6.8.0-generic', bridge],
+  for (const [mode, platform, osRelease, bridge] of [
+    [undefined, 'linux', '6.8.0-generic', false],
+    [undefined, 'linux', '6.6.87.2-microsoft-standard-WSL2', true],
+    ['auto', 'linux', '4.4.0-Microsoft', true],
+    ['auto', 'darwin', 'Microsoft', false],
+    ['auto', 'win32', 'Microsoft', false],
+    ['native', 'linux', '6.6.87.2-microsoft-standard-WSL2', false],
+    ['bridge', 'linux', '6.8.0-generic', true],
   ]) {
+    invocations.length = 0;
     const env = mode === undefined ? {} : { MAKA_CUA_BUILD_MODE: mode };
     assert.deepEqual(
       await runCli(['code', '--log', 'a b.sqlite'], {
@@ -72,17 +79,88 @@ test('development builds select the native capability before forwarding CLI argu
       }),
       { code: 0, signal: null },
     );
-    assert.deepEqual(invocation, {
-      command: 'cargo',
-      args: expected,
-      options: {
-        cwd: '/source checkout',
-        env,
-        stdio: 'inherit',
-        windowsHide: true,
+    assert.deepEqual(invocations, [
+      {
+        command: 'cargo',
+        args: [
+          'build',
+          '--locked',
+          '-p',
+          'maka-cli',
+          '-p',
+          'maka-python-runtime',
+          ...(bridge ? ['--no-default-features'] : []),
+          '--message-format=json',
+        ],
+        options: {
+          cwd: '/source checkout',
+          env,
+          stdio: ['inherit', 'pipe', 'inherit'],
+          windowsHide: true,
+        },
       },
-    });
+      {
+        command: executable,
+        args: ['code', '--log', 'a b.sqlite'],
+        options: { cwd: '/source checkout', env, stdio: 'inherit', windowsHide: true },
+      },
+    ]);
   }
+});
+
+test('desktop development stages the current macOS shell before starting Maka', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-run-desktop-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, 'assets'));
+  await copyFile(
+    new URL('../../assets/logo.png', import.meta.url),
+    join(directory, 'assets/logo.png'),
+  );
+  await writeFile(join(directory, 'Cargo.toml'), '[workspace.package]\nversion = "0.2.0"\n');
+  const output = join(directory, 'custom-target/debug');
+  const app = join(output, 'Maka.app/Contents/MacOS');
+  await mkdir(app, { recursive: true });
+  await writeFile(join(app, 'maka-desktop-shell'), 'previous desktop');
+  await writeFile(join(output, 'maka-desktop-shell'), 'current desktop');
+  const executable = join(output, 'maka');
+  const launched = [];
+  t.mock.method(childProcess, 'spawn', (command, args) => {
+    const child = new EventEmitter();
+    if (command === 'cargo') {
+      assert.ok(args.includes('maka-desktop-shell'));
+      child.stdout = new PassThrough();
+      queueMicrotask(() => {
+        child.stdout.end(
+          JSON.stringify({
+            reason: 'compiler-artifact',
+            target: { name: 'maka', kind: ['bin'] },
+            executable,
+          }) + '\n',
+        );
+        child.emit('exit', 0, null);
+      });
+    } else {
+      assert.equal(readFileSync(join(app, 'maka-desktop-shell'), 'utf8'), 'current desktop');
+      launched.push([command, args]);
+      queueMicrotask(() => child.emit('exit', 0, null));
+    }
+    return child;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.deepEqual(
+    await runCli(['--timeout-ms', '5000', 'desktop'], {
+      repositoryRoot: directory,
+      env: {},
+      platform: 'darwin',
+      osRelease: 'Darwin',
+    }),
+    { code: 0, signal: null },
+  );
+  assert.deepEqual(launched, [[executable, ['--timeout-ms', '5000', 'desktop']]]);
 });
 
 // Run the public Node entrypoint while replacing only its external Cargo process.
@@ -90,11 +168,14 @@ function invokeLauncher(event, env = {}) {
   const preload = `
     import childProcess from 'node:child_process';
     import { EventEmitter } from 'node:events';
+    import { PassThrough } from 'node:stream';
     import { syncBuiltinESMExports } from 'node:module';
     childProcess.spawn = (command, args, options) => {
       process.stdout.write(JSON.stringify({ command, args, cwd: options.cwd }) + '\\n');
       const child = new EventEmitter();
-      queueMicrotask(() => ${event});
+      child.stdout = new PassThrough();
+      child.kill = () => {};
+      queueMicrotask(() => { child.stdout.end(); ${event}; });
       return child;
     };
     syncBuiltinESMExports();
@@ -117,7 +198,16 @@ test('the launcher preserves Cargo failures and invokes Cargo from the repositor
   assert.equal(result.stderr, '');
   assert.deepEqual(JSON.parse(result.stdout), {
     command: 'cargo',
-    args: ['build', '--locked', '-p', 'maka-python-runtime', '--bin', 'maka-python-worker'],
+    args: [
+      'build',
+      '--locked',
+      '-p',
+      'maka-cli',
+      '-p',
+      'maka-python-runtime',
+      '--no-default-features',
+      '--message-format=json',
+    ],
     cwd: root,
   });
 });

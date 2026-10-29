@@ -7359,8 +7359,6 @@ dependencies = [
  "maka-assistant",
  "maka-capabilities",
  "maka-code-runtime",
- "maka-computer-native",
- "maka-computer-use",
  "maka-config",
  "maka-event-log",
  "maka-external-agent",
@@ -7391,6 +7389,7 @@ dependencies = [
  "maka-skills",
  "maka-skills-api",
  "maka-skills-native",
+ "maka-tool-catalog",
  "maka-tools",
  "maka-transport",
  "maka-ui-support",
@@ -7567,6 +7566,7 @@ dependencies = [
  "maka-skills-api",
  "maka-terminal-shell",
  "maka-transport",
+ "maka-ui-build",
  "maka-ui-support",
  "maka-workbench",
  "maka-workspace-api",
@@ -8597,6 +8597,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-ui-build"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "hex",
+ "nsh-base",
+ "nsh-bundler",
+ "nsh-core",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+]
+
+[[package]]
 name = "maka-ui-support"
 version = "0.2.0"
 dependencies = [
@@ -8674,6 +8689,7 @@ dependencies = [
  "maka-plugin-core",
  "maka-process",
  "maka-settings-native",
+ "maka-ui-build",
  "maka-ui-support",
  "maka-workspace-api",
  "nsh-base",

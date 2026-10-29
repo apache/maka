@@ -24,7 +24,6 @@ pub(crate) mod graph;
 mod notifications;
 mod preparation;
 use super::*;
-use crate::tools::ToolRequest;
 use contract::{Task, TaskStatus};
 use futures_util::FutureExt;
 use maka_agent_facts::event::Invocation;
@@ -47,6 +46,7 @@ use maka_plugin_core::{
     deployment::DeploymentRef,
     operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt, RecoveryRef},
 };
+use maka_tool_catalog::input::ToolRequest;
 use preparation::{Target, Transfer};
 use schemars::JsonSchema;
 use sha2::{Digest, Sha256};

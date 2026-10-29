@@ -35,7 +35,6 @@ pub(crate) fn global(
     Ok(files::merge(configurations, &[&files::global(home)?]))
 }
 
-use crate::tools::input::Projection;
 use maka_agent_api::{contract::WorkspaceAccess, session::ResolvedConfiguration};
 use maka_agent_facts::{
     configuration::mcp::ServerConfiguration,
@@ -47,6 +46,7 @@ use maka_agent_facts::{
 };
 use maka_event_log::RootStore;
 use maka_mcp::Connection;
+use maka_tool_catalog::input::Projection;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},

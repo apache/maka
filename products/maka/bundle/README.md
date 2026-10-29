@@ -42,13 +42,13 @@ The terminal and desktop shells load the same selected NSH root UI. One deployme
 
 UI instances can bind declared service imports to Host providers in this source. Their `UiContext.services` and `operations` use the UI consumer's captured session and original receipts, while the full trusted `UiContext.host` remains available. A package can ship its backend and UI together without publishing a separate client endpoint for each private service.
 
-Every CLI build embeds the current TypeScript bundle, including debug builds. Rebuild the CLI after changing plugin sources. `just product` first builds the checkout’s CLI compiler, then exports a separate bundle for inspection. Editing that exported bundle does not change the embedded resources. The build generates `product-version.txt` from exact authoring and named package bytes. Installation and updates validate real package bytes against this identifier. Treat the bundle output as a generated artifact: rebuild after source changes instead of editing output files. Missing, malformed or mismatched identifiers require a rebuild. Use a separate output directory when building an artifact alongside a running development build:
+Every CLI build embeds the current TypeScript bundle, including debug builds. Rebuild the CLI after changing plugin sources. `just product` builds the lightweight `maka-ui-build` tool and exports a separate bundle for inspection, without building the product CLI. Editing that exported bundle does not change the embedded resources. The build generates `product-version.txt` from exact authoring and named package bytes. Installation and updates validate real package bytes against this identifier. Treat the bundle output as a generated artifact: rebuild after source changes instead of editing output files. Missing, malformed or mismatched identifiers require a rebuild. Use a separate output directory when building an artifact alongside a running development build:
 
 ```sh
 just product --output ~/.cache/maka/product-export
 ```
 
-UI entries are compiled with the NSH compiler into self-contained ES modules, with their assets in the same immutable package. Cargo discovers the declared UI sources and invokes the compiler directly; it does not start a nested Cargo build. `just product` and the workspace npm build/test commands pass the exact compiler executable reported by Cargo. The standalone Node plugin package builder uses `maka` from PATH, or the Maka executable selected by `MAKA_UI_BUNDLER`.
+UI entries are compiled with the NSH compiler into self-contained ES modules, with their assets in the same immutable package. Cargo discovers the declared UI sources and invokes the compiler directly; it does not start a nested Cargo build. `just product` and the workspace npm build/test commands pass the exact compiler executable reported by Cargo. The standalone Node plugin package builder also builds this lightweight tool when UI compilation is needed. `MAKA_UI_BUNDLER` can select an already-built `maka-ui-build` executable.
 
 To compile one NSH UI module directly:
 
@@ -87,4 +87,4 @@ npm --workspace @maka-agent/product run typecheck
 npm --workspace @maka-agent/product test
 ```
 
-Tests build once, then use that exact CLI to check complete Host/UI packages, business composition and tool presentation declarations. Native rendering, focus and input changes belong to their shell tests.
+The npm tests check complete Host/UI packages and tool presentation declarations using the lightweight compiler. `cargo test --locked -p maka-cli --test product_composition` checks business composition through the actual CLI, without Node at runtime. Native rendering, focus and input changes belong to their shell tests.

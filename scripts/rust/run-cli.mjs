@@ -18,61 +18,35 @@
  */
 
 import { spawn } from 'node:child_process';
-import { release } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { compileCli } from './build-cli.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
 /** Select development build capabilities before Cargo resolves native dependencies. */
 export async function runCli(
   argv,
-  {
-    env = process.env,
-    platform = process.platform,
-    osRelease = release(),
-    repositoryRoot = root,
-  } = {},
+  { env = process.env, platform = process.platform, osRelease, repositoryRoot = root } = {},
 ) {
-  const mode = env.MAKA_CUA_BUILD_MODE ?? 'auto';
-  if (!['auto', 'native', 'bridge'].includes(mode)) {
-    throw new Error('MAKA_CUA_BUILD_MODE must be auto, native, or bridge');
-  }
-  const bridge =
-    mode === 'bridge' ||
-    (mode === 'auto' && platform === 'linux' && osRelease.toLowerCase().includes('microsoft'));
-  const args = [
-    'run',
-    '--locked',
-    '-p',
-    'maka-cli',
-    ...(bridge ? ['--no-default-features'] : []),
-    '--',
-    ...argv,
-  ];
-  const build = await cargo([
-    'build',
-    '--locked',
-    '-p',
-    'maka-python-runtime',
-    '--bin',
-    'maka-python-worker',
-  ]);
-  if (build.code !== 0 || build.signal) return build;
-  return await cargo(args);
-
-  function cargo(args) {
-    return new Promise((resolveRun, reject) => {
-      const child = spawn('cargo', args, {
-        cwd: repositoryRoot,
-        env,
-        stdio: 'inherit',
-        windowsHide: true,
-      });
-      child.once('error', reject);
-      child.once('exit', (code, signal) => resolveRun({ code, signal }));
+  const build = await compileCli({
+    env,
+    platform,
+    osRelease,
+    repositoryRoot,
+    desktop: argv.includes('desktop'),
+  });
+  if (build.code !== 0 || build.signal) return { code: build.code, signal: build.signal };
+  return await new Promise((resolveRun, reject) => {
+    const child = spawn(build.binary, argv, {
+      cwd: repositoryRoot,
+      env,
+      stdio: 'inherit',
+      windowsHide: true,
     });
-  }
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolveRun({ code, signal }));
+  });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
+import { release as osRelease } from 'node:os';
 import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -33,6 +33,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
+import { cargoBuild } from './cargo.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -45,64 +46,74 @@ export function rustTarget(platform = process.platform, arch = process.arch) {
   return `${cpu}-${os}`;
 }
 
-export async function buildCli({
+function developmentFeatures(env, platform, release) {
+  const mode = env.MAKA_CUA_BUILD_MODE ?? 'auto';
+  if (!['auto', 'native', 'bridge'].includes(mode))
+    throw new Error('MAKA_CUA_BUILD_MODE must be auto, native, or bridge');
+  const bridge =
+    mode === 'bridge' ||
+    (mode === 'auto' && platform === 'linux' && release.toLowerCase().includes('microsoft'));
+  return bridge ? ['--no-default-features'] : [];
+}
+
+export async function compileCli({
   release = false,
   target,
+  timings = false,
+  desktop = true,
   repositoryRoot = root,
   env = process.env,
+  platform = process.platform,
+  osRelease: releaseName = osRelease(),
 } = {}) {
-  const triple = target ?? rustTarget();
-  const linuxRelease = release && triple.includes('-linux-');
+  const host = rustTarget(platform);
+  const triple = target ?? host;
+  const linuxRelease = release && target !== undefined && triple.includes('-linux-');
   if (linuxRelease && !/^(x86_64|aarch64)-unknown-linux-gnu$/u.test(triple)) {
     throw new Error('Linux releases require an x86_64 or aarch64 GNU target');
   }
-  // Zig is only used with an explicit target, including native Linux builds.
+  // Explicit Linux release targets use the distribution's glibc floor.
   // Cargo writes the output under the Rust triple, without the glibc suffix.
   const outputTarget = linuxRelease ? triple : target;
-  // Development builds use the repository target/debug path.
-  const targetDirectory = resolve(repositoryRoot, (release && env.CARGO_TARGET_DIR) || 'target');
   const args = [
     linuxRelease ? 'zigbuild' : 'build',
     '--locked',
     '-p',
     'maka-cli',
-    '-p',
-    'maka-desktop-shell',
+    ...(desktop ? ['-p', 'maka-desktop-shell'] : []),
     '-p',
     'maka-python-runtime',
-    '--target-dir',
-    targetDirectory,
   ];
+  if (!release && triple === host) args.push(...developmentFeatures(env, platform, releaseName));
   if (release) args.push('--release');
+  if (timings) args.push('--timings');
   if (outputTarget) args.push('--target', linuxRelease ? `${triple}.2.28` : outputTarget);
-  await new Promise((resolveBuild, reject) => {
-    const child = spawn('cargo', args, {
-      cwd: repositoryRoot,
-      env,
-      stdio: 'inherit',
-      windowsHide: true,
-    });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      if (code === 0) resolveBuild();
-      else reject(new Error(`Maka build failed: ${signal ?? code}`));
-    });
-  });
-  const windows = triple.includes('-windows-');
-  const binary = join(
-    targetDirectory,
-    ...(outputTarget ? [outputTarget] : []),
-    release ? 'release' : 'debug',
-    windows ? 'maka.exe' : 'maka',
-  );
-  const directory = dirname(binary);
-  if (triple.includes('-apple-darwin')) {
+  // cargo-config2 in zigbuild misreads Cargo's empty wrapper configuration as a program.
+  const buildEnv = linuxRelease
+    ? {
+        ...env,
+        RUSTC_WRAPPER: env.RUSTC_WRAPPER ?? '',
+        RUSTC_WORKSPACE_WRAPPER: env.RUSTC_WORKSPACE_WRAPPER ?? '',
+      }
+    : env;
+  const result = await cargoBuild(args, { cwd: repositoryRoot, env: buildEnv });
+  const binary = result.executables.get('maka');
+  if (result.code === 0 && !result.signal && !binary)
+    throw new Error('Cargo did not report the Maka executable');
+  if (result.code === 0 && !result.signal && desktop && triple.includes('-apple-darwin')) {
+    const directory = dirname(binary);
     await stageDesktopBundle(
       repositoryRoot,
       join(directory, 'maka-desktop-shell'),
       join(directory, 'Maka.app'),
     );
   }
+  return { code: result.code, signal: result.signal, binary };
+}
+
+export async function buildCli(options = {}) {
+  const { code, signal, binary } = await compileCli(options);
+  if (code !== 0 || signal) throw new Error(`Maka build failed: ${signal ?? code}`);
   return binary;
 }
 
@@ -215,7 +226,11 @@ function icns(png) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const { values } = parseArgs({
-    options: { release: { type: 'boolean' }, target: { type: 'string' } },
+    options: {
+      release: { type: 'boolean' },
+      target: { type: 'string' },
+      timings: { type: 'boolean' },
+    },
   });
   console.log(await buildCli(values));
 }

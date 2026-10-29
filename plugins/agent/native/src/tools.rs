@@ -21,7 +21,6 @@
 pub(crate) mod approval;
 mod computer;
 pub(crate) mod image;
-pub(crate) mod input;
 mod shell;
 mod title;
 mod web;
@@ -50,6 +49,7 @@ use maka_plugin_core::{
     contract::{Interface, MethodMode},
     operation::{OperationCleanup, OperationOutcome, OperationReply, Receipt},
 };
+use maka_tool_catalog::input::Projection;
 use maka_tools::ToolCatalog;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -57,13 +57,6 @@ use sha2::{Digest, Sha256};
 use std::{panic::AssertUnwindSafe, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-/// Keep model tool schemas object-rooted while preserving each typed request.
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ToolRequest<T> {
-    pub(crate) request: T,
-}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -249,9 +242,9 @@ pub(crate) fn catalog(
                 }
             };
             let (input_projection, input_schema) = if selection.input == ToolInput::Json {
-                input::Projection::project(input_schema)
+                Projection::project(input_schema)
             } else {
-                (input::Projection::Direct, input_schema)
+                (Projection::Direct, input_schema)
             };
             basis.push(SelectedTool {
                 selection: selection.clone(),
@@ -394,7 +387,7 @@ struct Service {
     binding: String,
     target: String,
     selection: ServiceTool,
-    input_projection: input::Projection,
+    input_projection: Projection,
     title_kind: Option<title::Kind>,
     mode: MethodMode,
 }
@@ -441,7 +434,7 @@ impl ToolPreparer for Service {
             }
             // Confirmation fences compare the original model arguments with durable dispatch.
             let confirmation_input = (selection.confirmation == ToolConfirmation::Required
-                && matches!(input_projection, input::Projection::RequestEnvelope))
+                && matches!(input_projection, Projection::RequestEnvelope))
             .then(|| input.clone());
             let input = input_projection.decode(input)?;
             // No request or effect is admitted until the existing ToolJournal T1.

@@ -19,11 +19,11 @@
 
 //! Model decisions commit through the graph repository and original WorkHub tasks.
 use super::*;
-use crate::tools::ToolRequest;
 use maka_graph::{
     decision::Decision,
     schedule::{HistoricalInput, Source, Stop, Target as GraphTarget},
 };
+use maka_tool_catalog::input::ToolRequest;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(

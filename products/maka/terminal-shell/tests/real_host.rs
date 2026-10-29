@@ -27,6 +27,9 @@ mod attachments;
 mod compaction;
 #[path = "real_host/composer_completion.rs"]
 mod composer_completion;
+#[cfg(feature = "native-desktop")]
+#[path = "real_host/computer.rs"]
+mod computer;
 #[path = "real_host/final_actions.rs"]
 mod final_actions;
 #[path = "real_host/interactions.rs"]

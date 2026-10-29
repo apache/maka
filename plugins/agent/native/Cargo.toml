@@ -31,6 +31,7 @@ maka-goal.workspace = true
 maka-session-recap.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
+maka-tool-catalog.workspace = true
 maka-capabilities.workspace = true
 maka-files-native.workspace = true
 maka-workspace-api.workspace = true
@@ -78,8 +79,6 @@ uuid.workspace = true
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
-maka-computer-native.workspace = true
-maka-computer-use = { workspace = true, features = ["native-desktop"] }
 maka-external-agent.workspace = true
 maka-packages.workspace = true
 sqlx.workspace = true
