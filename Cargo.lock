@@ -7712,6 +7712,7 @@ dependencies = [
 name = "maka-desktop-shell"
 version = "0.2.0"
 dependencies = [
+ "embed-resource",
  "gpui-fast-platform",
  "maka-event-log",
  "maka-host-runtime",

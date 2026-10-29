@@ -41,6 +41,34 @@ const ENDPOINT: &str = "MAKA_HOST_ENDPOINT";
 const EPOCH: &str = "MAKA_HOST_EPOCH";
 const LAUNCHER: &str = "MAKA_LAUNCHER";
 
+#[cfg(all(test, windows))]
+mod windows_icon_test {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+        fn FindResourceW(module: *mut c_void, name: *const u16, kind: *const u16) -> *mut c_void;
+    }
+
+    #[test]
+    fn executable_contains_application_icon() {
+        // SAFETY: null selects the current module; MAKEINTRESOURCE values 1
+        // and 14 select the application icon group without dereferencing them.
+        let icon = unsafe {
+            FindResourceW(
+                GetModuleHandleW(std::ptr::null()),
+                1usize as _,
+                14usize as _,
+            )
+        };
+        assert!(
+            !icon.is_null(),
+            "desktop executable has no application icon"
+        );
+    }
+}
+
 /// The Host `maka desktop` admitted: its Root, its endpoint and the epoch the
 /// connection must find there, and the launcher that starts the Root's Host.
 #[derive(Debug, PartialEq)]

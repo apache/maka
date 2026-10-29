@@ -32,6 +32,8 @@ just build
 
 This builds the CLI and the shell. On macOS it stages `Maka.app` beside `maka`: the shell in `Contents/MacOS`, with an `Info.plist` and icon (from `assets/logo.png`), so the system shows the window as Maka with its icon. `maka desktop` starts the shell in that bundle, so after rebuilding the shell with Cargo alone, run `just build` again to refresh it. `--target TRIPLE` selects another Rust target. Native packages carry `bin/maka` and `bin/maka-desktop-shell` (plus Windows executable suffixes and its service helper); the macOS package carries `bin/maka` and `bin/Maka.app/`.
 
+On Windows the shell embeds `maka.ico`, derived from `assets/logo.png`, as its application icon in both debug and release builds.
+
 Start it with the launcher:
 
 ```sh
