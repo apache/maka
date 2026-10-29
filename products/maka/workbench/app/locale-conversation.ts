@@ -642,6 +642,7 @@ export const conversationMessages = {
     '網路：無額外存取權限',
   ],
   'New terminal': msg_terminalNew,
+  'Next conversation': ['Next conversation', '下一个对话', '下一個對話'],
   'No active item': ['No active item', '没有进行中的项目', '沒有進行中的項目'],
   'No matches.': ['No matches.', '没有匹配结果。', '沒有符合結果。'],
   'No model usage is recorded for this turn in this conversation. Copied and imported history does not add model charges.':
@@ -711,6 +712,7 @@ export const conversationMessages = {
     '此原始结果未包含原内容。',
     '此原始結果未包含原內容。',
   ],
+  'Previous conversation': ['Previous conversation', '上一个对话', '上一個對話'],
   Process: ['Process', '进程', '處理程序'],
   'Process group': ['Process group', '进程组', '處理程序群組'],
   'Process reference': msg_toolProcessRef,

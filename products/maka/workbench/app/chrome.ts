@@ -59,6 +59,8 @@ export interface MenuActions {
   commands(): void;
   models(): void;
   latest(): void;
+  nextSession(): void;
+  previousSession(): void;
   settings(): void;
   sidebarShown(): boolean;
   toggleSidebar(): void;
@@ -151,7 +153,21 @@ export function applicationMenu(actions: MenuActions) {
       },
       {
         label: tr('Window'),
-        submenu: [{ role: 'minimize' }, { role: 'zoom' }],
+        submenu: [
+          { role: 'minimize' },
+          { role: 'zoom' },
+          { type: 'separator' },
+          {
+            label: tr('Previous conversation'),
+            shortcut: 'mod+shift+[',
+            onSelect: actions.previousSession,
+          },
+          {
+            label: tr('Next conversation'),
+            shortcut: 'mod+shift+]',
+            onSelect: actions.nextSession,
+          },
+        ],
       },
     ]);
   });

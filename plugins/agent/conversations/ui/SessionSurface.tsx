@@ -667,6 +667,10 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   keymap.bind('mod+g', () => invokeOwn('models'), { when: 'always' });
   keymap.bind('mod+n', () => invokeOwn('new'), { when: 'always' });
   keymap.bind('mod+l', () => invokeOwn('latest'), { when: 'always' });
+  if (ownTitleBar) {
+    keymap.bind('mod+shift+]', () => stepSession(1), { when: 'always' });
+    keymap.bind('mod+shift+[', () => stepSession(-1), { when: 'always' });
+  }
   keymap.bind('alt+up', () => invokeOwn('history-focus'), { when: 'always' });
   keymap.bind('alt+down', () => invokeOwn('activity-focus'), {
     when: 'always',
@@ -802,11 +806,22 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     commands: () => invokeOwn('commands'),
     models: () => invokeOwn('models'),
     latest: () => invokeOwn('latest'),
+    nextSession: () => stepSession(1),
+    previousSession: () => stepSession(-1),
     settings: () => invokeOwn('settings'),
     sidebarShown,
     toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
     textSize: changeTextSize,
   });
+  // The conversation below (1) or above (-1) the open one in the session browser.
+  const stepSession = (step: 1 | -1) => {
+    const current = overlay();
+    if (switching() || busy() || (current && current.kind !== 'sessions')) return;
+    const rows = browsing.sessions();
+    const index = rows.findIndex((session) => session.id === selected());
+    const next = rows[index === -1 ? 0 : index + step];
+    if (next && next.id !== selected()) void selectBrowsed(next.id, selected());
+  };
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
