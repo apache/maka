@@ -209,7 +209,7 @@ impl Owner {
         for member in &fence.0 {
             if !self.owns(&member.session_id)
                 || member.orphaned_shells
-                || runs.controls.contains_key(&member.session_id)
+                || runs.busy(&member.session_id)
                 || self
                     .store
                     .session(&member.session_id)

@@ -22,7 +22,7 @@ use std::{
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -45,7 +45,6 @@ use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
 use crate::StoreError;
-use crate::context::prepared::{lifetime::PreparedCache, runtime::InFlight, store::PreparedStore};
 use tokio_util::sync::CancellationToken;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -73,14 +72,6 @@ pub(crate) async fn worker_query<T: Send + 'static>(
 
 type Job = Box<
     dyn for<'c> FnOnce(&'c mut SqliteConnection, Result<(), StoreError>) -> BoxFuture<'c, ()>
-        + Send,
->;
-type PreparedJob = Box<
-    dyn for<'c> FnOnce(
-            &'c mut SqliteConnection,
-            Option<&'c mut InFlight>,
-            Result<(), StoreError>,
-        ) -> BoxFuture<'c, bool>
         + Send,
 >;
 // Returns whether the connection remains reusable after this accepted job.
@@ -112,9 +103,7 @@ struct ReadEnvelope {
 enum Command {
     Pinned(Box<Command>, Custody),
     Run(Job),
-    Prepared(PreparedJob),
     Write(crate::writeback::Request),
-    CollectPrepared,
     Shutdown,
 }
 
@@ -156,7 +145,6 @@ pub struct OwnedConnection {
     observations: Arc<Semaphore>,
     changes: watch::Receiver<()>,
     custody: Option<Custody>,
-    companion: Arc<OnceLock<PreparedStore>>,
 }
 
 /// Short writer observations can be sent from a reader without retaining a
@@ -270,54 +258,6 @@ impl WriterIngress {
             .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
     }
-    pub(crate) async fn run_prepared<T: Send + 'static>(
-        &self,
-        operation: impl for<'c> FnOnce(
-            &'c mut SqliteConnection,
-            &'c mut InFlight,
-        ) -> BoxFuture<'c, Result<T, StoreError>>
-        + Send
-        + 'static,
-        admit: impl FnOnce() -> Result<Option<Custody>, StoreError> + Send,
-    ) -> Result<T, StoreError> {
-        let (reply, result) = oneshot::channel();
-        let failures = self.failures.clone();
-        let command = Command::Prepared(Box::new(move |connection, state, valid| {
-            Box::pin(async move {
-                let result = match (valid, state) {
-                    (Err(error), _) => Err(error),
-                    (Ok(()), Some(state)) => operation(connection, state).await,
-                    (Ok(()), None) => Err(StoreError::InvalidTransition(
-                        "prepared job requires the projection owner".into(),
-                    )),
-                };
-                let reusable = !matches!(
-                    &result,
-                    Err(StoreError::CommitUnknown(_) | StoreError::PreparedRollbackFailed { .. })
-                );
-                if result.is_err() {
-                    failures.fetch_add(1, Ordering::AcqRel);
-                }
-                let _ = reply.send(result);
-                reusable
-            })
-        }));
-        let permit = self
-            .jobs
-            .reserve()
-            .await
-            .map_err(|_| StoreError::ConnectionClosed)?;
-        let custody = match admit()? {
-            Some(additional) => Some(custody::combine(&self.custody, additional)),
-            None => self.custody.clone(),
-        };
-        let command = match custody {
-            Some(custody) => Command::Pinned(Box::new(command), custody),
-            None => command,
-        };
-        permit.send(command);
-        result.await.map_err(|_| StoreError::OperationUnknown)?
-    }
 }
 
 impl OwnedConnection {
@@ -339,7 +279,6 @@ impl OwnedConnection {
             observations: self.observations.clone(),
             changes: self.changes.clone(),
             custody: self.custody.clone(),
-            companion: self.companion.clone(),
         }
     }
 
@@ -347,16 +286,6 @@ impl OwnedConnection {
         let mut connection = self.cloned();
         connection.custody = Some(custody::combine(&self.custody, custody));
         connection
-    }
-
-    pub(crate) fn scope_custody(&self) -> Option<Custody> {
-        self.custody.clone()
-    }
-
-    pub(crate) fn install_prepared(&self, prepared: PreparedStore) -> Result<(), StoreError> {
-        self.companion
-            .set(prepared)
-            .map_err(|_| StoreError::InvalidTransition("projection owner already installed".into()))
     }
 
     pub(crate) fn observations(&self) -> ObservationIngress {
@@ -401,10 +330,10 @@ impl OwnedConnection {
         authority: ConnectionAuthority,
         initialize: for<'c> fn(&'c mut SqliteConnection) -> BoxFuture<'c, Result<(), StoreError>>,
     ) -> Result<Self, StoreError> {
-        Self::open_with_cache(options, authority, initialize, None, None).await
+        Self::open_with_control(options, authority, initialize, None).await
     }
 
-    pub(crate) async fn open_with_cache(
+    pub(crate) async fn open_with_control(
         options: SqliteConnectOptions,
         authority: ConnectionAuthority,
         initialize: impl for<'c> FnOnce(
@@ -412,10 +341,9 @@ impl OwnedConnection {
         ) -> BoxFuture<'c, Result<(), StoreError>>
         + Send
         + 'static,
-        prepared: Option<PreparedCache>,
         control: Option<ReadOnlyControl>,
     ) -> Result<Self, StoreError> {
-        Self::open_registered(options, authority, initialize, prepared, control, None).await
+        Self::open_registered(options, authority, initialize, control, None).await
     }
 
     pub(crate) async fn open_tracked(
@@ -428,15 +356,7 @@ impl OwnedConnection {
         + 'static,
         registration: crate::root_store::StageRegistration,
     ) -> Result<Self, StoreError> {
-        Self::open_registered(
-            options,
-            authority,
-            initialize,
-            None,
-            None,
-            Some(registration),
-        )
-        .await
+        Self::open_registered(options, authority, initialize, None, Some(registration)).await
     }
 
     async fn open_registered(
@@ -447,7 +367,6 @@ impl OwnedConnection {
         ) -> BoxFuture<'c, Result<(), StoreError>>
         + Send
         + 'static,
-        prepared: Option<PreparedCache>,
         control: Option<ReadOnlyControl>,
         mut registration: Option<crate::root_store::StageRegistration>,
     ) -> Result<Self, StoreError> {
@@ -458,18 +377,17 @@ impl OwnedConnection {
         let writer_stop = CancellationToken::new();
         let owner_stop = writer_stop.clone();
         let authority = Arc::new(authority);
-        let companion = Arc::new(OnceLock::<PreparedStore>::new());
-        let owner_companion = companion.clone();
         let (ready, startup) = oneshot::channel();
         let (completion, closed) = oneshot::channel();
         let (changed, changes) = watch::channel(());
         std::thread::Builder::new()
             .name("runtime-store-owner".into())
             .spawn(move || {
-                if let Some(registration) = &mut registration { registration.started(); }
+                if let Some(registration) = &mut registration {
+                    registration.started();
+                }
                 let retained = Arc::new(Retained::default());
                 let mut queued_drop_panicked = false;
-                let mut in_flight = prepared.as_ref().map(|_| InFlight::default());
                 let mut result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -484,7 +402,6 @@ impl OwnedConnection {
                         reader_stop.clone(),
                         ReaderOptions {
                             connection: read_options,
-                            prepared: prepared.clone(),
                             control: control.clone(),
                         },
                         authority.clone(),
@@ -495,9 +412,6 @@ impl OwnedConnection {
                     let initialized = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         runtime.block_on(async {
                             initialize(&mut connection).await?;
-                            if let Some(cache) = &prepared {
-                                cache.attach(&mut connection, true).await?;
-                            }
                             // Later initialization must not discard the TEMP view and
                             // silently expose the standalone main bindings table.
                             if let Some(control) = &control {
@@ -514,52 +428,30 @@ impl OwnedConnection {
                     // If open's waiter disappeared, close without accepting work.
                     let mut pending = None;
                     let mut closing = false;
-                    let mut companion_failure = None;
                     if ready.send(initialized).is_ok() && success {
-                        while let Some(command) =
-                            pending.take().or_else(|| {
-                                runtime.block_on(async {
-                                    if closing {
-                                        return receiver.recv().await;
-                                    }
-                                    // Stop admission without needing queue capacity or the
-                                    // caller's runtime. Accepted work still drains below.
-                                    tokio::select! {
-                                        biased;
-                                        () = owner_stop.cancelled() => Some(Command::Shutdown),
-                                        closed = async {
-                                            match owner_companion.get() {
-                                                Some(companion) => companion.close_receipt().await,
-                                                None => std::future::pending().await,
-                                            }
-                                        } => {
-                                            companion_failure = closed.err();
-                                            Some(Command::Shutdown)
-                                        },
-                                        command = async {
-                                            if let Some(cache) = &prepared {
-                                                let registry = cache.registry();
-                                                tokio::select! {
-                                                    command = receiver.recv() => command,
-                                                    () = registry.notified() => Some(Command::CollectPrepared),
-                                                }
-                                            } else { receiver.recv().await }
-                                        } => command,
-                                    }
+                        while let Some(command) = pending.take().or_else(|| {
+                            runtime.block_on(async {
+                                if closing {
+                                    return receiver.recv().await;
+                                }
+                                // Stop admission without needing queue capacity or the
+                                // caller's runtime. Accepted work still drains below.
+                                tokio::select! {
+                                    biased;
+                                    () = owner_stop.cancelled() => Some(Command::Shutdown),
+                                    command = receiver.recv() => command,
+                                }
                             })
-                            })
-                        {
+                        }) {
                             let command = command.retain(&retained);
-                            let maintenance = matches!(command, Command::CollectPrepared);
                             let executed =
                                 std::panic::catch_unwind(AssertUnwindSafe(|| match command {
-                                    Command::Pinned(..) => unreachable!("custody moved into actor slot"),
+                                    Command::Pinned(..) => {
+                                        unreachable!("custody moved into actor slot")
+                                    }
                                     Command::Run(job) => {
                                         runtime.block_on(job(&mut connection, validate()));
                                         true
-                                    }
-                                    Command::Prepared(job) => {
-                                        runtime.block_on(job(&mut connection, in_flight.as_mut(), validate()))
                                     }
                                     Command::Write(first) => {
                                         // Only the already queued adjacent prefix shares a commit.
@@ -568,9 +460,13 @@ impl OwnedConnection {
                                         while group.len() < 32 {
                                             match receiver.try_recv() {
                                                 Ok(command) if command.is_write() => {
-                                                    let Command::Write(request) = command.retain(&retained) else { unreachable!() };
+                                                    let Command::Write(request) =
+                                                        command.retain(&retained)
+                                                    else {
+                                                        unreachable!()
+                                                    };
                                                     group.push(request);
-                                                },
+                                                }
                                                 Ok(boundary) => {
                                                     pending = Some(boundary);
                                                     break;
@@ -584,29 +480,7 @@ impl OwnedConnection {
                                             &validate,
                                         ))
                                     }
-                                    Command::CollectPrepared => {
-                                        if let Some(cache) = &prepared {
-                                            match runtime.block_on(
-                                                crate::context::prepared::gc::maintain(
-                                                    &mut connection,
-                                                    &cache.registry(),
-                                                    in_flight.as_mut().expect("projection owner has frontier"),
-                                                ),
-                                            ) {
-                                                Ok(_) => true,
-                                                Err(error) => {
-                                                    eprintln!(
-                                                        "prepared cache maintenance failed: {error}"
-                                                    );
-                                                    false
-                                                }
-                                            }
-                                        } else {
-                                            true
-                                        }
-                                    }
                                     Command::Shutdown => {
-                                        if let Some(companion) = owner_companion.get() { companion.request_quiesce(); }
                                         closing = true;
                                         // Reject new sends, then drain every accepted job.
                                         receiver.close();
@@ -624,9 +498,7 @@ impl OwnedConnection {
                                 Ok(total) if total == last_changes => {}
                                 Ok(total) => {
                                     last_changes = total;
-                                    if !maintenance {
-                                        changed.send_replace(());
-                                    }
+                                    changed.send_replace(());
                                 }
                                 // Preserve the job's result and real close path. A
                                 // subscriber's canonical read will report any failure.
@@ -642,9 +514,6 @@ impl OwnedConnection {
                             retained.clear(0);
                         }
                     }
-                    if let Some(cache) = &prepared {
-                        cache.registry().close();
-                    }
                     // Readers can await writer replies. Close admission, then reject
                     // queued work, including sends holding an earlier capacity permit,
                     // before joining readers. None also accounts for those permits.
@@ -656,11 +525,6 @@ impl OwnedConnection {
                             std::panic::catch_unwind(AssertUnwindSafe(|| drop(command))).is_err();
                     }
                     let mut close_failures = Vec::new();
-                    if let Some(companion) = owner_companion.get()
-                        && let Err(error) = runtime.block_on(companion.quiesce())
-                    {
-                        close_failures.push(error.to_string());
-                    }
                     // Close read ingress independently, then drain every accepted read
                     // before releasing the writer's original authority.
                     reader_stop.cancel();
@@ -669,20 +533,17 @@ impl OwnedConnection {
                         .map_err(|error| error.to_string())
                         .and_then(|closed| closed.map_err(|error| error.to_string()))
                         .err();
-                    // A last read-only client cannot checkpoint WAL. Close the
-                    // projection's main readers before the canonical writer.
-                    if let Some(companion) = owner_companion.get()
-                        && let Err(error) = runtime.block_on(companion.shutdown())
-                    {
-                        close_failures.push(error.to_string());
-                    }
                     // Await real close before releasing authority, even after failure.
                     match runtime.block_on(connection.close()) {
                         Ok(()) => retained.clear(0),
                         Err(error) => close_failures.push(error.to_string()),
                     }
-                    close_failures.extend([reader_failure, companion_failure].into_iter().flatten());
-                    if close_failures.is_empty() { Ok(()) } else { Err(StoreError::CloseFailed(close_failures.join("; "))) }
+                    close_failures.extend(reader_failure);
+                    if close_failures.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(StoreError::CloseFailed(close_failures.join("; ")))
+                    }
                 }))
                 .unwrap_or_else(|_| {
                     Err(StoreError::StartupCleanupFailed {
@@ -707,7 +568,6 @@ impl OwnedConnection {
                     registration.complete(result.is_ok());
                 }
                 if !cleanup_failed {
-                    drop(prepared);
                     drop(authority);
                     drop(retained);
                 }
@@ -742,7 +602,6 @@ impl OwnedConnection {
                 observations: Arc::new(Semaphore::new(1)),
                 changes,
                 custody: None,
-                companion,
             }),
             Ok(Err(error)) => {
                 drop(jobs);
@@ -790,27 +649,9 @@ impl OwnedConnection {
         self.writer().run(operation).await
     }
 
-    pub(crate) async fn run_prepared_pinned<T: Send + 'static>(
-        &self,
-        operation: impl for<'c> FnOnce(
-            &'c mut SqliteConnection,
-            &'c mut InFlight,
-        ) -> BoxFuture<'c, Result<T, StoreError>>
-        + Send
-        + 'static,
-        admit: impl FnOnce() -> Result<Custody, StoreError> + Send,
-    ) -> Result<T, StoreError> {
-        self.writer()
-            .run_prepared(operation, move || admit().map(Some))
-            .await
-    }
-
     /// Close public admission before awaiting any close receipt. Accepted writer
     /// cleanup retains observation ingress until the writer has drained.
     pub(crate) fn request_shutdown(&self) {
-        if let Some(companion) = self.companion.get() {
-            companion.request_quiesce();
-        }
         self.readers.close();
         self.observations.close();
         self.writer_stop.cancel();
@@ -843,34 +684,17 @@ impl OwnedConnection {
         self.read_job(ReaderRole::Read, operation, true).await
     }
 
-    pub(crate) async fn read_interruptible_pinned<T: Send + 'static>(
-        &self,
-        operation: impl for<'c> FnOnce(&'c mut SqliteConnection) -> BoxFuture<'c, Result<T, StoreError>>
-        + Send
-        + 'static,
-        admit: impl FnOnce() -> Result<Custody, StoreError> + Send,
-    ) -> Result<T, StoreError> {
-        let permit = self
-            .readers
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| StoreError::ConnectionClosed)?;
-        self.read_job_with_permit(&self.read_jobs, operation, true, permit, move || {
-            admit().map(Some)
-        })
-        .await
-    }
-
     /// Private observation state belongs to one physical reader. Its admission
     /// is independent of pure reads, so cache work cannot consume their capacity.
+    /// Disposable cache work may stop after caller loss; its rollback still drains
+    /// before this physical reader or its retained source custody can be reused.
     pub(crate) async fn observe<T: Send + 'static>(
         &self,
         operation: impl for<'c> FnOnce(&'c mut SqliteConnection) -> BoxFuture<'c, Result<T, StoreError>>
         + Send
         + 'static,
     ) -> Result<T, StoreError> {
-        self.read_job(ReaderRole::Observation, operation, false)
+        self.read_job(ReaderRole::Observation, operation, true)
             .await
     }
 
@@ -993,7 +817,6 @@ impl OwnedConnection {
 #[derive(Clone)]
 struct ReaderOptions {
     connection: SqliteConnectOptions,
-    prepared: Option<PreparedCache>,
     control: Option<ReadOnlyControl>,
 }
 
@@ -1067,16 +890,13 @@ async fn reader_worker(
         if let Some(custody) = custody {
             retained.hold(slot, custody);
         }
-        let mut valid = authority.validate();
+        let mut valid = if connection.is_none() {
+            authority.validate()
+        } else {
+            Ok(())
+        };
         if valid.is_ok() && connection.is_none() && matches!(&job, ReadJob::Execute(_)) {
-            match connect_reader(
-                &options.connection,
-                options.prepared.as_ref(),
-                options.control.as_ref(),
-                role,
-            )
-            .await
-            {
+            match connect_reader(&options.connection, options.control.as_ref(), role).await {
                 Ok(opened) => connection = Some(opened),
                 Err(error) => {
                     if matches!(error, StoreError::StartupCleanupFailed { .. }) {
@@ -1144,7 +964,6 @@ async fn close_reader(connection: SqliteConnection) -> Result<(), StoreError> {
 
 async fn connect_reader(
     options: &SqliteConnectOptions,
-    prepared: Option<&PreparedCache>,
     control: Option<&ReadOnlyControl>,
     role: ReaderRole,
 ) -> Result<SqliteConnection, StoreError> {
@@ -1154,11 +973,6 @@ async fn connect_reader(
     }
     if matches!(role, ReaderRole::Observation)
         && let Err(error) = crate::transcript::initialize_cache(&mut connection).await
-    {
-        return Err(close_startup(connection, error).await);
-    }
-    if let Some(cache) = prepared
-        && let Err(error) = cache.attach(&mut connection, false).await
     {
         return Err(close_startup(connection, error).await);
     }

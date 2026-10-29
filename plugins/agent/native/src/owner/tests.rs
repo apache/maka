@@ -17,137 +17,88 @@
  * under the License.
  */
 
-#[path = "tests/http.rs"]
 mod http_fixture;
 
-#[path = "tests/plan.rs"]
 mod plan_tests;
 
-#[path = "tests/goal.rs"]
 mod goal_tests;
 
-#[path = "tests/recap.rs"]
 mod recap_tests;
 
-#[path = "tests/title.rs"]
 mod title_tests;
 
-#[path = "tests/todo.rs"]
 mod todo_tests;
 
-#[path = "tests/bot.rs"]
 mod bot_tests;
 
-#[path = "tests/computer_controls.rs"]
 mod computer_controls;
 
-#[path = "tests/request_capture.rs"]
 mod request_capture;
-#[path = "tests/service_tools.rs"]
 mod service_tools;
-#[path = "tests/skill_preparation.rs"]
 mod skill_preparation;
-#[path = "tests/skills.rs"]
 mod skills;
 
-#[path = "tests/attachments.rs"]
 mod attachments;
 
-#[path = "tests/fork.rs"]
 mod fork;
 
-#[path = "tests/files.rs"]
 mod files;
 
-#[path = "tests/file_browsing.rs"]
 mod file_browsing;
-#[path = "tests/file_reconciliation.rs"]
 mod file_reconciliation;
 
-#[path = "tests/health.rs"]
 mod health;
-#[path = "tests/processes.rs"]
 mod processes;
 
-#[path = "tests/protocol_processes.rs"]
 mod protocol_processes;
 
-#[path = "tests/terminal.rs"]
 mod terminal;
 
-#[path = "tests/interactions.rs"]
 mod interactions;
 
-#[path = "tests/catalog.rs"]
 mod catalog;
 
-#[path = "tests/session_availability.rs"]
 mod session_availability;
 
-#[path = "tests/history_search.rs"]
 mod history_search;
 
-#[path = "tests/compaction.rs"]
 mod compaction;
 
-#[path = "tests/metrics.rs"]
 mod metrics;
 
-#[path = "tests/execution.rs"]
 mod execution;
-#[path = "tests/executor.rs"]
 mod executor;
 
-#[path = "tests/prompt_language.rs"]
 mod prompt_language;
-#[path = "tests/session_context.rs"]
 mod session_context;
-#[path = "tests/tool_schemas.rs"]
 mod tool_schemas;
-#[path = "tests/workhub.rs"]
 mod workhub;
 
-#[path = "tests/scale.rs"]
 #[cfg(unix)]
 mod scale;
 
-#[path = "tests/queue.rs"]
 mod queue;
 
-#[path = "tests/large_messages.rs"]
 mod large_messages;
 
-#[path = "tests/mcp.rs"]
 mod mcp;
-#[path = "tests/selection.rs"]
 mod selection;
 
-#[path = "tests/git.rs"]
 mod git;
-#[path = "tests/jev.rs"]
 mod jev_tests;
-#[path = "tests/web.rs"]
 mod web_tests;
 
-#[path = "tests/worktrees.rs"]
 mod worktrees;
 
-#[path = "tests/settings.rs"]
 mod settings;
 
-#[path = "tests/images.rs"]
 mod images;
 
-#[path = "tests/imports.rs"]
 mod imports;
-#[path = "tests/projects.rs"]
 mod projects;
-#[path = "tests/recall.rs"]
 mod recall_tests;
-#[path = "tests/scheduler.rs"]
 mod scheduler_tests;
 
-#[path = "tests/workspaces.rs"]
 mod workspaces;
 
 use super::*;
@@ -176,6 +127,37 @@ use std::sync::Mutex as StdMutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
+
+#[derive(Default)]
+struct CanonicalModelParts(BTreeMap<(String, u64), Arc<maka_agent_facts::model::ModelPart>>);
+impl CanonicalModelParts {
+    fn observe(&mut self, stored: &maka_agent_facts::event::StoredEvent) {
+        if let maka_agent_facts::event::Fact::ModelObserved {
+            event: maka_agent_facts::model::recorded::ModelObservation::Part(record),
+            ..
+        } = &stored.event.fact
+        {
+            self.0.insert(
+                (stored.event.id.clone(), record.ordinal),
+                record.part.clone(),
+            );
+        }
+    }
+
+    fn parts<'a>(
+        &'a self,
+        output: &'a maka_agent_facts::model::recorded::ModelCompletion,
+    ) -> impl Iterator<Item = &'a maka_agent_facts::model::ModelPart> {
+        output.parts.iter().map(move |part| match part {
+            maka_agent_facts::model::recorded::CompletionPart::Own(record) => record.part.as_ref(),
+            maka_agent_facts::model::recorded::CompletionPart::Ref(reference) => self
+                .0
+                .get(&(reference.event_id.clone(), reference.ordinal))
+                .expect("completion references an actual observed canonical part")
+                .as_ref(),
+        })
+    }
+}
 
 struct CallerGrant(maka_host_runtime::application::Caller);
 struct Grant(Issuer, Option<Arc<maka_transport::transport::PeerPolicy>>);
@@ -1226,7 +1208,12 @@ async fn actual_http_runs_overlap_and_observer_loss_does_not_cancel_execution() 
         assert!(completed["through"].as_u64().unwrap() >= active["through"].as_u64().unwrap());
         let observation = fixture.session(&first).await.session_projection::<Value>(&first).await.unwrap().unwrap();
         let events = fixture.session(&first).await.session_stream_events(&first,0,observation.through_sequence,32,64*1024).await.unwrap();
-        assert!(events.events.iter().any(|event| matches!(&event.fact,maka_event_log::observation::StreamFact::PartDelta{text,..} if text=="Elegant response")));
+        assert!(events.events.iter().any(|event| matches!(&event.fact,maka_event_log::observation::StreamFact::StepEnded { completed: true, .. })));
+        let history = fixture.query("history", json!({"sessionId":first,"through":observation.through_sequence,"position":{"kind":"start"}})).await.unwrap();
+        let response: String = history["chunks"].as_array().unwrap().iter()
+            .filter(|chunk| chunk["role"] == "assistant")
+            .map(|chunk| chunk["text"].as_str().unwrap()).collect();
+        assert_eq!(response, "Elegant response");
         let prefix = fixture.prefix(&first, 128, 1024*1024).await;
         let model_request = prefix.events.iter().find(|row| row.event.invocation.session_id == first && matches!(row.event.fact, maka_agent_facts::event::Fact::ModelRequested { .. })).unwrap();
         let composition = fixture.session(&first).await.request_composition(&first, &model_request.event.id).await.unwrap().unwrap();

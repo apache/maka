@@ -26,10 +26,13 @@ import {
 } from '../../products/maka/workbench/app/toolActivity.ts';
 
 import {
+  canRegenerateFromText,
   mergeChunks,
   replayStartCursor,
   updateHistoryMetadata,
 } from '../../products/maka/workbench/app/history.ts';
+import { orderProcessRows } from '../../products/maka/workbench/app/processGroups.ts';
+import { Preview } from '../../products/maka/workbench/app/preview.ts';
 import { thinkingSummary } from '../../products/maka/workbench/app/thinkingSummary.ts';
 
 test('tool summaries use UI-rendered labels while retaining the tool source details', () => {
@@ -79,9 +82,25 @@ test('unchanged history pages retain rows while fragments and fenced metadata st
   };
   const initial = mergeChunks([], [first], false, 20);
   assert.equal(initial[0].text, '界');
+  assert.equal(canRegenerateFromText(initial[0]), true);
   assert.strictEqual(mergeChunks(initial, [], false, 99), initial);
   assert.strictEqual(mergeChunks(initial, [structuredClone(first)], false, 20), initial);
-  assert.strictEqual(mergeChunks(initial, [{ ...first, text: 'old' }], true, 19), initial);
+  const older = mergeChunks(initial, [{ ...first, text: 'old' }], true, 19);
+  assert.strictEqual(older, initial);
+  assert.equal(older[0].hasReferences, false);
+  assert.equal(canRegenerateFromText(older[0]), true);
+
+  const referenced = mergeChunks([], [{ ...first, hasReferences: true }], false, 20);
+  assert.equal(canRegenerateFromText(referenced[0]), false);
+  const olderReferenced = mergeChunks(
+    referenced,
+    [{ ...first, hasReferences: true, text: 'old' }],
+    true,
+    19,
+  );
+  assert.strictEqual(olderReferenced, referenced);
+  assert.equal(olderReferenced[0].hasReferences, true);
+  assert.equal(canRegenerateFromText(olderReferenced[0]), false);
 
   const extended = mergeChunks(initial, [{ ...first, offset: 3, text: '🙂' }], false, 21);
   assert.equal(extended[0].text, '界🙂');
@@ -213,4 +232,134 @@ test('replay cursor preserves the earliest complete part and tool seed without a
   assert.equal(replayStartCursor(900000, parts, tools), 2);
   tools[tools.length - 1] = { startSequence: 1 };
   assert.equal(replayStartCursor(900000, parts, tools), 0);
+});
+
+test('immutable preview seed, suffix and same ID canonical handoff use byte offsets', () => {
+  const preview = new Preview();
+  const page = (revision, offset, text, totalBytes = 8) => ({
+    kind: 'cut',
+    hostEpoch: 'epoch',
+    invocationId: 'invocation',
+    turnId: 'turn',
+    stepId: 'step',
+    revision,
+    dependsOn: 17,
+    first: offset === 0,
+    last: offset + Buffer.byteLength(text) === totalBytes,
+    parts: [
+      {
+        ordinal: 0,
+        messageId: 'message',
+        providerPartId: 'part',
+        startedAt: 0,
+        field: { kind: 'text', textKind: 'text' },
+        offset,
+        totalBytes,
+        text,
+      },
+    ],
+  });
+  const canonical = new Map();
+  let current = preview.page(page(1, 0, '🦀'), [], [], canonical);
+  current = preview.page(page(1, 4, '中!'), current.rows, current.tools, canonical);
+  current = preview.page(page(2, 8, '?', 9), current.rows, current.tools, canonical);
+  assert.equal(current.rows[0].text, '🦀中!?');
+  assert.equal(current.rows[0].sequence, undefined);
+  assert.equal(current.rows[0].startSequence, undefined);
+  current = preview.page(page(2, 0, '🦀中!?', 9), current.rows, current.tools, canonical);
+  assert.equal(current.rows[0].text, '🦀中!?');
+  preview.commit('invocation', 'step', 'message');
+  assert.strictEqual(
+    preview.page(page(3, 9, 'old', 12), current.rows, [], canonical).rows,
+    current.rows,
+  );
+});
+
+test('tool input preview reconnect replaces its display and canonical admission takes over', () => {
+  const preview = new Preview();
+  const page = (offset, text) => ({
+    kind: 'cut',
+    hostEpoch: 'epoch',
+    invocationId: 'invocation',
+    turnId: 'turn',
+    stepId: 'step',
+    revision: 1,
+    dependsOn: 17,
+    first: offset === 0,
+    last: false,
+    parts: [
+      {
+        ordinal: null,
+        messageId: 'input',
+        providerPartId: null,
+        startedAt: 0,
+        field: { kind: 'tool_input', toolUseId: 'tool', name: 'search', providerExecuted: false },
+        offset,
+        totalBytes: 6,
+        text,
+      },
+    ],
+  });
+  let current = preview.page(page(0, '中'), [], [], new Map());
+  current = preview.page(page(3, '文'), [], current.tools, new Map());
+  assert.equal(current.tools[0].detail, '中文');
+  current = preview.page(page(0, '中文'), [], current.tools, new Map());
+  assert.equal(current.tools[0].detail, '中文');
+  const admitted = updateToolActivity(current.tools, {
+    sequence: 21,
+    invocationId: 'invocation',
+    turnId: 'turn',
+    fact: { kind: 'tool_dispatched', toolUseId: 'tool', name: 'search' },
+  });
+  assert.equal(admitted[0].phase, 'running');
+  assert.equal(admitted[0].startSequence, 21);
+  assert.equal(admitted[0].previewOrder, undefined);
+  assert.equal(preview.page(page(0, 'old'), [], admitted, new Map()).tools[0].phase, 'running');
+});
+
+test('early open model text retains its ordinal seat across later canonical tool admission', () => {
+  const user = {
+    messageId: 'user',
+    field: 'body',
+    role: 'user',
+    text: 'go',
+    position: { sourceSequence: 1, itemIndex: 0 },
+  };
+  const early = {
+    messageId: 'early',
+    field: 'body',
+    role: 'assistant',
+    text: 'start',
+    modelPart: { stepId: 'step', ordinal: 0 },
+    preview: { stepOrder: 1, ordinal: 0, revision: 2 },
+  };
+  const tool = {
+    messageId: 'tool',
+    field: 'body',
+    role: 'tool_call',
+    text: '{}',
+    position: { sourceSequence: 20, itemIndex: 0 },
+    modelPart: { stepId: 'step', ordinal: 1 },
+  };
+  const later = {
+    messageId: 'later',
+    field: 'body',
+    role: 'assistant',
+    text: 'tail',
+    modelPart: { stepId: 'step', ordinal: 2 },
+    preview: { stepOrder: 1, ordinal: 2, revision: 2 },
+  };
+  assert.deepEqual(
+    orderProcessRows([user, tool, early, later]).map((row) => row.messageId),
+    ['user', 'early', 'tool', 'later'],
+  );
+  const canonicalEarly = {
+    ...early,
+    preview: undefined,
+    position: { sourceSequence: 25, itemIndex: 0 },
+  };
+  assert.deepEqual(
+    orderProcessRows([user, tool, canonicalEarly, later]).map((row) => row.messageId),
+    ['user', 'early', 'tool', 'later'],
+  );
 });

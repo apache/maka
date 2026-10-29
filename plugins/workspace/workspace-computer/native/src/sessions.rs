@@ -1564,6 +1564,20 @@ mod tests {
         }
 
         tokio::time::timeout(Duration::from_secs(10), async {
+            let directory = tempfile::tempdir().unwrap();
+            let root_owner = maka_event_log::root::RootOwner::create(
+                &directory.path().join("root"),
+                &maka_event_log::root::RootNamespaces {
+                    ownership: directory.path().join("ownership"),
+                    control: directory.path().join("control"),
+                },
+            )
+            .unwrap();
+            let store = Arc::new(
+                maka_event_log::RootStore::open(Arc::new(root_owner))
+                    .await
+                    .unwrap(),
+            );
             for (already_retired, cancel_before_observation, late_failure) in [
                 (false, false, false),
                 (true, false, false),
@@ -1572,20 +1586,6 @@ mod tests {
                 (true, false, true),
                 (false, true, true),
             ] {
-                let directory = tempfile::tempdir().unwrap();
-                let root_owner = maka_event_log::root::RootOwner::create(
-                    &directory.path().join("root"),
-                    &maka_event_log::root::RootNamespaces {
-                        ownership: directory.path().join("ownership"),
-                        control: directory.path().join("control"),
-                    },
-                )
-                .unwrap();
-                let store = Arc::new(
-                    maka_event_log::RootStore::open(Arc::new(root_owner))
-                        .await
-                        .unwrap(),
-                );
                 let tasks = tokio_util::task::TaskTracker::new();
                 let owner = Arc::new(Computer {
                 popup_provenance: None,
@@ -1715,8 +1715,8 @@ mod tests {
                 assert_eq!(owner.sessions.close().await.is_err(), late_failure);
                 drop(entry);
                 drop(owner);
-                store.shutdown().await.unwrap();
             }
+            store.shutdown().await.unwrap();
         })
         .await
         .unwrap();
@@ -1758,6 +1758,7 @@ mod tests {
                     tools: None,
                     title: "fixture".into(),
                     title_is_manual: false,
+                    pinned: false,
                     labels: vec![],
                     workspace: binding,
                     permissions: WorkspacePermissions {
@@ -2102,6 +2103,7 @@ mod tests {
                         compaction_prompt: None,
                         title: "browser authority fixture".into(),
                         title_is_manual: false,
+                        pinned: false,
                         labels: vec![],
                         workspace: binding,
                         permissions: WorkspacePermissions {

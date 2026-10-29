@@ -427,6 +427,7 @@ impl Owner {
                                 tools: basis.allowed_tools.clone(),
                                 title: fire.title.clone(),
                                 title_is_manual: true,
+                                pinned: false,
                                 labels: vec![],
                                 workspace,
                                 permissions: boundary.permissions.clone(),

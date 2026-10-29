@@ -26,6 +26,7 @@ pub mod computer;
 pub mod credentials;
 pub mod filesystem;
 pub mod http;
+pub mod model_preparation;
 pub mod permissions;
 pub mod process;
 pub mod revision;

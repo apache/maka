@@ -18,9 +18,8 @@
  */
 
 use crate::StoreError;
-use futures_util::TryStreamExt;
 use rusqlite::{Connection, functions::FunctionFlags};
-use sqlx::{Row, SqliteConnection};
+use sqlx::SqliteConnection;
 
 /// Incremental normalization preserves whitespace across delta boundaries while
 /// retaining at most 96 Unicode characters, including a truncation ellipsis.
@@ -128,64 +127,18 @@ pub(super) async fn project(
     if !visible {
         return Ok(());
     }
-    let starts = sqlx::query(
-        "SELECT sequence, catalog_time(json_extract(event_json, '$.recorded_at')),
-            json_extract(event_json, '$.fact.event.data.id'),
-            json_extract(event_json, '$.fact.event.data.text_kind') = 'text', event_id
-         FROM event_log INDEXED BY catalog_part_starts
-         WHERE json_extract(event_json, '$.invocation.session_id') = ?1
-         AND invocation_id = ?2 AND json_extract(event_json, '$.fact.step_id') = ?3
-         AND kind = 'model_observed'
-         AND json_extract(event_json, '$.fact.event.kind') = 'part_started'
-         AND sequence < ?4 ORDER BY sequence",
-    )
-    .bind(session)
-    .bind(invocation)
-    .bind(&step)
-    .bind(boundary)
-    .fetch_all(&mut *connection)
-    .await?;
-    for (ordinal, row) in starts.into_iter().enumerate() {
-        let start: i64 = row.try_get(0)?;
-        let timestamp: i64 = row.try_get(1)?;
-        let part: String = row.try_get(2)?;
-        let is_text: bool = row.try_get(3)?;
-        let message_id: String = row.try_get(4)?;
-        let mut preview = Preview::default();
-        if is_text {
-            let mut rows = sqlx::query(
-                "SELECT json_extract(event_json, '$.fact.event.data.text')
-                 FROM event_log INDEXED BY catalog_partial_deltas
-                 WHERE invocation_id = ?1 AND json_extract(event_json, '$.fact.step_id') = ?2
-                 AND json_extract(event_json, '$.fact.event.data.id') = ?3
-                 AND kind = 'model_observed'
-                 AND json_extract(event_json, '$.fact.event.kind') = 'part_delta'
-                 AND sequence > ?4 AND sequence < ?5 ORDER BY sequence",
-            )
-            .bind(invocation)
-            .bind(&step)
-            .bind(part)
-            .bind(start)
-            .bind(boundary)
-            .fetch(&mut *connection);
-            while !preview.full {
-                let Some(row) = rows.try_next().await? else {
-                    break;
-                };
-                // Borrow each SQLite value; never concatenate or deserialize the
-                // complete stream. Once the prefix is full, stop reading deltas.
-                preview.push(row.try_get::<&str, _>(0)?);
-            }
-        }
-        sqlx::query("INSERT OR IGNORE INTO catalog_messages VALUES (?, ?, ?, ?, ?, ?)")
-            .bind(boundary)
-            .bind(ordinal as i64 + 1)
-            .bind(session)
-            .bind(timestamp)
-            .bind(preview.finish())
-            .bind(message_id)
-            .execute(&mut *connection)
-            .await?;
-    }
+    sqlx::query(
+        "WITH bodies AS (
+           SELECT b.ordinal,b.record,b.part,b.message_id FROM model_selected_parts s JOIN model_part_bodies b
+             ON b.event_id=s.body_event_id AND b.ordinal=s.ordinal WHERE s.sequence=?1 AND s.invocation_id=?3 AND s.step_id=?4
+           UNION ALL
+           SELECT b.ordinal,b.record,b.part,b.message_id FROM model_part_bodies b
+             WHERE b.invocation_id=?3 AND b.step_id=?4 AND b.source_kind='model_observed' AND b.source_sequence<?1
+         )
+         INSERT OR IGNORE INTO catalog_messages
+         SELECT ?1,ordinal+1,?2,catalog_time(json_extract(record,'$.started_at')),
+           CASE WHEN json_extract(part,'$.text_kind')='text' THEN catalog_preview(json_extract(part,'$.text')) END,
+           message_id FROM bodies WHERE json_extract(part,'$.kind')='text' ORDER BY ordinal",
+    ).bind(boundary).bind(session).bind(invocation).bind(&step).execute(connection).await?;
     Ok(())
 }

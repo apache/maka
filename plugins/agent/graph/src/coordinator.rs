@@ -224,7 +224,9 @@ impl Coordinator {
                 .commands
                 .events(intent.request.operation(), execution.after, through)
                 .await?;
-            execution.apply_page(page)?;
+            execution
+                .apply_page(page, self.commands.as_ref(), &intent.request.operation())
+                .await?;
         }
         if matches!(execution.observation.progress, Progress::Ended { .. })
             && execution.after == through
@@ -415,7 +417,9 @@ impl Coordinator {
                     execution.operator_id.clone(),
                     execution.observation.clone(),
                 );
-                return projection.observe(event);
+                return projection
+                    .observe(event, self.commands.as_ref(), &intent.request.operation())
+                    .await;
             }
         }
         Ok(None)

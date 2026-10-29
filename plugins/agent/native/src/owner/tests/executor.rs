@@ -1070,7 +1070,6 @@ async fn executor_service_invalid_progress_stops_original_request_without_false_
 }
 
 #[cfg(target_os = "macos")]
-#[path = "executor/acp.rs"]
 mod acp;
 
 #[tokio::test]

@@ -204,7 +204,7 @@ async fn native_text_and_tool_streams_cross_real_http_before_response_finishes()
             let step = builder.finish().unwrap();
             assert_eq!(observed_text, expected_text);
             assert!(step.parts.iter().any(|part| matches!(part,
-                maka_agent_facts::model::ModelPart::Text { text, .. } if text == &expected_text)));
+                maka_agent_facts::model::ModelPart::Text { text, .. } if text.chunks().collect::<String>() == expected_text)));
             let tool = step.tool_calls().next().expect("tool call");
             assert_eq!(tool.id, "tool-1");
             assert_eq!(tool.name, "echo");
@@ -799,7 +799,7 @@ async fn prepared_messages_wire_preserves_the_exact_tool_receipt_and_call_identi
                 ToolOutput::Text("cobalt-tool-receipt-73".into()),
             ));
         });
-        let reads = prepare_input(&mut input);
+        let reads = prepare_input(&mut input).await;
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
         let mut builder = StepBuilder::default();
@@ -946,7 +946,7 @@ async fn prepared_native_upload_never_opens_semantic_history() {
         input.provider.body_overlay = Some(serde_json::from_value(json!({"routing":"captured"})).unwrap());
         let messages = vec![Message::System { content: "captured instructions".into(), provider_options: None }, Message::user("persisted 中文\n\"body\""), Message::user("complete suffix")];
         input.prompt = messages.into();
-        let reads = prepare_input(&mut input);
+        let reads = prepare_input(&mut input).await;
         let executor = ModelExecutor::new(Duration::from_secs(10)).unwrap();
         let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
         while let Some(event) = stream.next().await { event.unwrap(); }

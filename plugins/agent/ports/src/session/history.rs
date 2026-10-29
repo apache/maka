@@ -396,9 +396,18 @@ pub struct HistorySource {
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Tool>")]
     pub tool: Option<Tool>,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPartIdentity {
+    pub step_id: String,
+    pub ordinal: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chunk {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_part: Option<ModelPartIdentity>,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

@@ -876,7 +876,9 @@ async fn verify_all_facts(
     let mut checkpoint = None;
     let mut combined_opening = None;
     let mut tools = BTreeMap::new();
+    let mut recorded_parts = CanonicalModelParts::default();
     for stored in &facts {
+        recorded_parts.observe(stored);
         assert!(invocations.contains(&stored.event.invocation.invocation_id));
         match &stored.event.fact {
             Fact::InvocationOpened { input, .. } => {
@@ -958,7 +960,10 @@ async fn verify_all_facts(
                 if invocation != &invocations[2] {
                     assert_eq!(purpose, &ModelPurpose::Main);
                     let index = invocations.iter().position(|id| id == invocation).unwrap();
-                    assert_eq!(model_text(output), compaction::main_answer(index, 2));
+                    assert_eq!(
+                        model_text(output, &recorded_parts),
+                        compaction::main_answer(index, 2)
+                    );
                     assert_eq!(output.finish_reason, ModelFinishReason::Stop);
                 }
             }
@@ -1435,6 +1440,7 @@ async fn serve_combined(
         "response_wire_bytes":0,"confirmed_results":0}),
     ));
     let mut after = initial_after;
+    let mut recorded_parts = CanonicalModelParts::default();
     let mut invocation = None;
     let mut mains = 0;
     let mut issued = 0;
@@ -1469,6 +1475,7 @@ async fn serve_combined(
                 .await
                 .unwrap();
             for stored in page.events {
+                recorded_parts.observe(&stored);
                 if let Some(invocation) = &invocation {
                     assert_eq!(&stored.event.invocation.invocation_id, invocation);
                 }
@@ -1540,7 +1547,7 @@ async fn serve_combined(
                             .find(|summary| summary.step_id == step_id)
                         {
                             assert!(!summary.completion_seen);
-                            summary_output(&output, &summary.text);
+                            summary_output(&output, &summary.text, &recorded_parts);
                             summary.completion_seen = true;
                         }
                     }
@@ -1767,6 +1774,7 @@ async fn verify_combined_facts(
     let through = fixture.through(session).await;
     let case = CASE;
     let mut after = initial_after;
+    let mut recorded_parts = CanonicalModelParts::default();
     let mut dispatched = BTreeMap::new();
     let mut settled = BTreeSet::new();
     let mut raw_bytes = 0;
@@ -1786,6 +1794,7 @@ async fn verify_combined_facts(
             .await
             .unwrap();
         for stored in page.events {
+            recorded_parts.observe(&stored);
             assert_eq!(stored.event.invocation.invocation_id, invocation);
             match &stored.event.fact {
                 Fact::ToolDispatched {
@@ -1840,7 +1849,7 @@ async fn verify_combined_facts(
                 Fact::ModelCompleted { step_id, output } => match purposes[step_id] {
                     ModelPurpose::Main => {
                         main_completions += 1;
-                        let text = model_text(output);
+                        let text = model_text(output, &recorded_parts);
                         if !text.is_empty() {
                             assert_eq!(text, FINAL);
                             assert_eq!(output.finish_reason, ModelFinishReason::Stop);
@@ -1854,7 +1863,7 @@ async fn verify_combined_facts(
                             .iter()
                             .find(|proof| proof["step_id"] == *step_id)
                             .unwrap();
-                        summary_output(output, proof["text"].as_str().unwrap());
+                        summary_output(output, proof["text"].as_str().unwrap(), &recorded_parts);
                         summary_completions += 1;
                     }
                 },

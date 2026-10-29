@@ -490,7 +490,22 @@ export const conversationMessages = {
     '分支對話已建立，可在對話清單中開啟。',
   ],
   'Fork from this turn': ['Fork from this turn', '从本轮创建分支', '從本輪建立分支'],
-  'Edit and resend': ['Edit and resend', '编辑后重新发送', '編輯後重新傳送'],
+  'This is a fork of {title}. The original conversation is unchanged.': [
+    'This is a fork of {title}. The original conversation is unchanged.',
+    '这是「{title}」的分支，原对话未改动。',
+    '這是「{title}」的分支，原對話未改動。',
+  ],
+  'Back to original': ['Back to original', '返回原对话', '返回原對話'],
+  'Edit and resend in a fork': [
+    'Edit and resend in a fork',
+    '在分支中编辑后重发',
+    '在分支中編輯後重新傳送',
+  ],
+  'Send or clear the draft first.': [
+    'Send or clear the draft first.',
+    '请先发送或清空草稿。',
+    '請先傳送或清空草稿。',
+  ],
   'Regenerate in a fork': ['Regenerate in a fork', '在分支中重新生成', '在分支中重新產生'],
   'This message has no text to edit.': [
     'This message has no text to edit.',
@@ -632,6 +647,7 @@ export const conversationMessages = {
     '網路：無額外存取權限',
   ],
   'New terminal': msg_terminalNew,
+  'Next conversation': ['Next conversation', '下一个对话', '下一個對話'],
   'No active item': ['No active item', '没有进行中的项目', '沒有進行中的項目'],
   'No matches.': ['No matches.', '没有匹配结果。', '沒有符合結果。'],
   'No model usage is recorded for this turn in this conversation. Copied and imported history does not add model charges.':
@@ -701,6 +717,7 @@ export const conversationMessages = {
     '此原始结果未包含原内容。',
     '此原始結果未包含原內容。',
   ],
+  'Previous conversation': ['Previous conversation', '上一个对话', '上一個對話'],
   Process: ['Process', '进程', '處理程序'],
   'Process group': ['Process group', '进程组', '處理程序群組'],
   'Process reference': msg_toolProcessRef,

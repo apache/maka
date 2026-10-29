@@ -268,7 +268,7 @@ impl Session {
         let application = record.application.clone();
         let window = record.window.retained().map(str::to_owned);
         record.state = MacApplicationState::Retiring { error: None };
-        let result = async {
+        let result: Result<(), ToolError> = async {
             application.release().await?;
             if let Some(handle) = window
                 && self.targets.contains_key(&handle)
@@ -604,7 +604,7 @@ impl Session {
             let capture = result.structured_content.as_ref()
                 .and_then(|value| value["capture_id"].as_str()).map(str::to_owned);
             let image = result.content.iter().find(|block| matches!(block, ContentBlock::Image { .. }))
-                .map(data_url).transpose()?;
+                .map(super::data_url).transpose()?;
             let state: WindowStateOutput = decode(result)?;
             let observed = application.observe().await?;
             if observed.id != id {

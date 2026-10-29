@@ -66,9 +66,19 @@ fn request(id: &str, step: &str, purpose: ModelPurpose, source: &ModelContextSou
 }
 
 fn completion(id: &str, step: &str, text: &str) -> EventWrite {
-    event(id, Fact::ModelCompleted { step_id: step.into(), output: serde_json::from_value(json!({
-        "parts":[{"kind":"text", "text_kind":"text", "text":text}], "finish_reason":"stop", "usage":{"input_tokens":10,"output_tokens":2}
-    })).unwrap() })
+    event(
+        id,
+        Fact::ModelCompleted {
+            step_id: step.into(),
+            output: fixtures::model_output(
+                id,
+                step,
+                json!({
+                    "parts":[{"kind":"text", "text_kind":"text", "text":text}], "finish_reason":"stop", "usage":{"input_tokens":10,"output_tokens":2}
+                }),
+            ),
+        },
+    )
 }
 
 async fn checkpoint(log: &EventLog, id: &str, mode: CheckpointMode) -> EventWrite {
@@ -93,7 +103,7 @@ async fn checkpoint(log: &EventLog, id: &str, mode: CheckpointMode) -> EventWrit
                 covered_through: source.source_evidence.high_water,
                 source_digest: source.source_evidence.digest,
                 previous_checkpoint_id: source.baseline.map(|b| b.event_id),
-                summary: TextSummary::from_model_step(output).unwrap(),
+                summary: fixtures::output_summary(output),
                 summary_step_id: step,
             },
         },
@@ -251,13 +261,9 @@ async fn midturn_checkpoint_excludes_covered_history_after_next_turn_and_reopen(
     log.close().await.unwrap();
 }
 
-#[path = "active_safety.rs"]
 mod active_safety;
-#[path = "latest.rs"]
 mod latest;
-#[path = "lineage.rs"]
 mod lineage;
-#[path = "provider_history.rs"]
 mod provider_history;
 
 #[tokio::test]
@@ -339,22 +345,40 @@ async fn active_cut_rejects_pending_child_and_changed_summary_repair_source() {
     log.append(&request("active", "repair", ModelPurpose::Summary, &source))
         .await
         .unwrap();
-    log.append(&event(
-        "active",
-        Fact::ModelObserved {
-            step_id: "repair".into(),
-            event: ModelEvent::PartDelta {
-                id: "partial".into(),
-                text: "private failed summary".into(),
-                provider_options: None,
+    let before_private = log.prefix(100, 65536).await.unwrap();
+    let rejected = log
+        .append(&event(
+            "active",
+            Fact::ModelObserved {
+                step_id: "repair".into(),
+                event: ModelObservation::Part(fixtures::record(
+                    "active",
+                    "repair",
+                    0,
+                    maka_agent_facts::model::ModelPart::Text {
+                        text_kind: maka_agent_facts::model::TextKind::Text,
+                        text: "private failed summary".into(),
+                        provider_options: None,
+                    },
+                )),
             },
-        },
-    ))
-    .await
-    .unwrap();
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        rejected
+            .to_string()
+            .contains("private summary output cannot be journaled")
+    );
+    assert_eq!(
+        log.prefix(100, 65536).await.unwrap().digest,
+        before_private.digest,
+        "private failed Summary prose cannot change the canonical repair source"
+    );
     log.append(&event(
         "active",
         Fact::ModelInterrupted {
+            partial: None,
             model_failure: None,
             diagnostic: None,
             step_id: "repair".into(),

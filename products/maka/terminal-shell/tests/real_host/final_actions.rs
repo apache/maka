@@ -163,8 +163,8 @@ async fn final_actions_use_original_turn_accounting_and_fork_before_a_later_acti
         view.resize(original_size.0, original_size.1);
         wait_mode_layout(&mut view).await;
         support::click_button(&mut view, "Fork from this turn").await;
-        let forked = wait_view(&mut view, |screen| screen.contains("Fork of NSH real Agent") && screen.contains("FINAL_A") && !screen.contains("ACTIVE_B")).await;
-        let listed = client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"Fork of NSH real Agent","position":{"kind":"start"}})).await.unwrap();
+        let forked = wait_view(&mut view, |screen| screen.contains("Fork · NSH real Agent") && screen.contains("FINAL_A") && !screen.contains("ACTIVE_B")).await;
+        let listed = client.query("agent", "list", json!({"filter":"all","scope":{"kind":"all"},"titleQuery":"Fork · NSH real Agent","position":{"kind":"start"}})).await.unwrap();
         assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
         let fork = &listed["sessions"][0];
         let fork_id = fork["id"].as_str().unwrap().to_owned();

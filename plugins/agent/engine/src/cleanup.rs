@@ -44,3 +44,8 @@ pub(crate) fn unconfirmed() -> crate::RunError {
     let _ = CURRENT.try_with(|evidence| evidence.0.store(true, Ordering::Release));
     crate::RunError::CleanupUnconfirmed
 }
+
+pub(crate) fn preparation_failed(error: std::io::Error) -> crate::RunError {
+    let _ = unconfirmed();
+    crate::RunError::PreparationCleanup(error)
+}

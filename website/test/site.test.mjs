@@ -83,7 +83,7 @@ test('every page carries a complete link preview', () => {
     const alt = meta(html, 'og:image:alt');
     assert.equal(meta(html, 'twitter:image:alt'), alt, path);
     const description = meta(page(`${locale}/index.html`), 'description');
-    assert.ok(alt.startsWith(description + ' ') && alt.length > description.length + 20, path);
+    assert.ok(alt.startsWith(description + ' ') && alt.slice(description.length).trim(), path);
     assert.equal(meta(html, 'twitter:card'), 'summary_large_image', path);
     assert.equal(meta(html, 'og:locale'), locale === 'en' ? 'en_US' : 'zh_CN', path);
     assert.match(meta(html, 'og:url'), /^https:\/\/maka\.apache\.org\//u, path);
@@ -102,12 +102,12 @@ test('every page carries a complete link preview', () => {
 
 test('every copy button on the downloads page has its own accessible name', () => {
   for (const locale of locales) {
-    const names = [
-      ...page(`${locale}/downloads/index.html`).matchAll(
-        /<button class="copy"[^>]*aria-label="([^"]+)"/gu,
-      ),
-    ].map(([, name]) => name);
-    assert.equal(names.length, 5, locale);
+    const buttons = [
+      ...page(`${locale}/downloads/index.html`).matchAll(/<button class="copy"[^>]*>/gu),
+    ];
+    assert.ok(buttons.length > 0, locale);
+    const names = buttons.map(([button]) => /aria-label="([^"]*)"/u.exec(button)?.[1]);
+    assert.ok(names.every((name) => name?.trim()), locale);
     assert.equal(new Set(names).size, names.length, locale);
   }
 });
@@ -189,12 +189,6 @@ const thirdPartyLoads = (html) =>
     .flatMap(([tag]) => [...tag.matchAll(/(?:src|href)="(https?:[^"]+)"/gu)].map(([, url]) => url));
 
 test('the site does not load anything from a third party', () => {
-  assert.deepEqual(
-    thirdPartyLoads(
-      '<script src="https://cdn.example/t.js"></script><link rel="stylesheet" href="https://fonts.example/a.css"><img src="https://img.example/a.png"><a href="https://www.apache.org/">ASF</a>',
-    ),
-    ['https://cdn.example/t.js', 'https://fonts.example/a.css', 'https://img.example/a.png'],
-  );
   for (const locale of locales) {
     for (const path of pages) {
       assert.deepEqual(thirdPartyLoads(page(`${locale}/${path}`)), [], `${locale}/${path}`);

@@ -22,8 +22,7 @@ use maka_config::ConfigurationStore;
 use maka_event_log::root::{RootNamespaces, RootOwner};
 use serde_json::json;
 use std::sync::Arc;
-#[path = "support/provider.rs"]
-mod provider_support;
+mod support;
 
 fn committed_basis(result: CatalogMutationResult) -> ConnectionVersionBasis {
     match result {
@@ -86,7 +85,7 @@ async fn edits_preserve_endpoint_ownership_and_removal_durably_cleans_only_its_c
     let unrelated = CredentialLocator::NetworkProxy {
         kind: PasswordKind::Password,
     };
-    provider_support::login(&store, &basis.connection_id, "fixture-key").await;
+    support::login(&store, &basis.connection_id, "fixture-key").await;
     basis.revision = store
         .catalog()
         .await

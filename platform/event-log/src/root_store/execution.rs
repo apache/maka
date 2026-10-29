@@ -97,6 +97,16 @@ impl Pins {
             registry.retain_unconfirmed(guards);
         }
     }
+    fn retain_original_material(&self, material: impl Send + Sync + 'static) {
+        let guards = self
+            .guards
+            .lock()
+            .unwrap()
+            .take()
+            .expect("unconfirmed resource retains its original guards");
+        let registry = guards.registry.clone();
+        registry.retain_unconfirmed(Arc::new((guards, material)));
+    }
 }
 
 /// Prepared admission can be cancelled before the physical worker starts.
@@ -180,6 +190,21 @@ impl InvocationEffectLease {
     pub fn retain_unconfirmed(mut self, message: String) {
         self.fail(message);
     }
+    pub(crate) fn retain_original_material(
+        mut self,
+        material: impl Send + Sync + 'static,
+        message: String,
+    ) {
+        self.lease
+            .take()
+            .expect("live effect lease")
+            .retain_original_material(material);
+        self.ticket
+            .take()
+            .expect("live effect ticket")
+            .complete(Err(message));
+        self.lifetime.cancellation.cancel();
+    }
     fn fail(&mut self, message: String) {
         if let Some(lease) = self.lease.take() {
             lease.retain_unconfirmed();
@@ -198,6 +223,53 @@ impl Drop for InvocationEffectLease {
     }
 }
 impl SessionStore {
+    pub(super) fn capture_source_log(&self) -> Result<(EventLog, SessionStore), StoreError> {
+        let mut lease = self.fork_execution()?;
+        let captured = (|| {
+            let owner = lease.store.owner()?;
+            let custody = lease
+                .store
+                .execution
+                .as_ref()
+                .ok_or(StoreError::ConnectionClosed)?
+                .custody()?;
+            Ok((
+                owner.scoped(custody).bind_session(self.id.clone()),
+                lease.store.clone(),
+            ))
+        })();
+        if captured.is_ok() {
+            drop(lease.pins.take());
+        } else {
+            lease.finish();
+        }
+        captured
+    }
+
+    pub(crate) fn source_invocation_effect(
+        &self,
+    ) -> Result<Option<InvocationEffectLease>, StoreError> {
+        let lifetime = self
+            .execution
+            .as_ref()
+            .ok_or(StoreError::ConnectionClosed)?
+            .guards
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(StoreError::ConnectionClosed)?
+            .invocation
+            .get()
+            .cloned();
+        lifetime
+            .map(|lifetime| self.fork_invocation_effect(&lifetime.invocation))
+            .transpose()
+    }
+
+    pub(crate) fn source_execution_lease(&self) -> Result<SessionExecutionLease, StoreError> {
+        self.fork_execution()
+    }
+
     fn invocation_lifetime(
         &self,
         invocation: &Invocation,
@@ -307,6 +379,12 @@ impl SessionExecutionLease {
         if let Some(pins) = self.pins.take() {
             pins.retain_unconfirmed();
         }
+    }
+    pub(crate) fn retain_original_material(mut self, material: impl Send + Sync + 'static) {
+        self.pins
+            .take()
+            .expect("live original resource lease")
+            .retain_original_material(material);
     }
 }
 impl Drop for SessionExecutionLease {

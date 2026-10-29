@@ -19,12 +19,10 @@
 
 //! Fixture-only prepared source. Semantic reads fail so live and loopback tests
 //! cannot accidentally exercise the explicit in-memory fallback path.
-use maka_agent_facts::model::prompt_source::{
-    Next, NextWire, NextWireMetadata, WireMetadata, WireMetadataCursor, WirePosition,
-};
+use maka_agent_facts::model::prompt_source::{Next, NextWire, WireMetadataCursor, WirePosition};
 use maka_model::{
     ModelError, ModelRequest,
-    prompt::{Message, Prompt, PromptCursor, PromptSource, WireChunk, WireCursor, WireSource},
+    prompt::{Message, Prompt, PromptCursor, PromptSource, WireCursor, WireSource},
 };
 use std::sync::{
     Arc,
@@ -51,7 +49,7 @@ impl Reads {
     }
 }
 struct Source {
-    chunks: Arc<Vec<WireChunk>>,
+    wire: Arc<dyn WireSource>,
     counters: Arc<Counters>,
 }
 struct FailedCursor;
@@ -71,86 +69,84 @@ impl PromptCursor for FailedCursor {
     }
 }
 struct Cursor {
-    chunks: Arc<Vec<WireChunk>>,
-    position: usize,
+    inner: Box<dyn WireCursor>,
     counters: Arc<Counters>,
 }
 impl WireCursor for Cursor {
+    fn budget(
+        &self,
+    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>> {
+        self.inner.budget()
+    }
     fn next(&mut self) -> NextWire<'_> {
         Box::pin(async move {
-            let Some(chunk) = self.chunks.get(self.position) else {
-                return Ok(None);
-            };
-            self.position += 1;
-            self.counters
-                .wire_bytes
-                .fetch_add(chunk.bytes.len(), Ordering::SeqCst);
-            Ok(Some(WireChunk {
-                bytes: chunk.bytes.clone(),
-                item_start: chunk.item_start,
-                item_end: chunk.item_end,
-                message_index: chunk.message_index,
-                metadata: chunk.metadata.clone(),
-            }))
-        })
-    }
-}
-struct MetadataCursor {
-    chunks: Arc<Vec<WireChunk>>,
-    position: usize,
-}
-impl WireMetadataCursor for MetadataCursor {
-    fn next(&mut self) -> NextWireMetadata<'_> {
-        Box::pin(async move {
-            while let Some(chunk) = self.chunks.get(self.position) {
-                let piece_index = self.position;
-                self.position += 1;
-                if let Some(metadata) = &chunk.metadata {
-                    return Ok(Some(WireMetadata {
-                        position: WirePosition {
-                            message_index: chunk.message_index,
-                            piece_index,
-                        },
-                        message_index: chunk.message_index,
-                        metadata: metadata.clone(),
-                    }));
-                }
+            let chunk = self.inner.next().await?;
+            if let Some(chunk) = &chunk {
+                self.counters
+                    .wire_bytes
+                    .fetch_add(chunk.bytes.len(), Ordering::SeqCst);
             }
-            Ok(None)
-        })
-    }
-}
-impl Source {
-    fn position(&self, start: usize) -> usize {
-        self.chunks
-            .iter()
-            .position(|chunk| chunk.message_index >= start)
-            .unwrap_or(self.chunks.len())
-    }
-    fn cursor(&self, position: usize) -> Box<dyn WireCursor> {
-        Box::new(Cursor {
-            chunks: self.chunks.clone(),
-            position,
-            counters: self.counters.clone(),
+            Ok(chunk)
         })
     }
 }
 impl WireSource for Source {
-    fn open(&self, start_message: usize) -> Box<dyn WireCursor> {
-        self.cursor(self.position(start_message))
+    fn source_identities(
+        &self,
+    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::SourceIdentityLookup>> {
+        self.wire.source_identities()
+    }
+    fn document_count(&self) -> usize {
+        self.wire.document_count()
+    }
+    fn document(
+        &self,
+        index: usize,
+        budget: Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudget>,
+    ) -> maka_agent_facts::model::prompt_source::NextWireDocument<'_> {
+        self.wire.document(index, budget)
+    }
+    fn budget_factory(
+        &self,
+    ) -> Option<Arc<dyn maka_agent_facts::model::prompt_source::source::SourceBudgetFactory>> {
+        self.wire.budget_factory()
+    }
+    fn acquire_budget(&self) -> maka_agent_facts::model::prompt_source::AcquireWireBudget<'_> {
+        self.wire.acquire_budget()
+    }
+    fn open(&self, start: usize) -> Box<dyn WireCursor> {
+        Box::new(Cursor {
+            inner: self.wire.open(start),
+            counters: self.counters.clone(),
+        })
     }
     fn open_at(&self, position: WirePosition) -> Option<Box<dyn WireCursor>> {
-        Some(self.cursor(position.piece_index))
-    }
-    fn open_metadata(&self, start_message: usize) -> Option<Box<dyn WireMetadataCursor>> {
-        Some(Box::new(MetadataCursor {
-            chunks: self.chunks.clone(),
-            position: self.position(start_message),
+        Some(Box::new(Cursor {
+            inner: self.wire.open_at(position)?,
+            counters: self.counters.clone(),
         }))
     }
+    fn open_metadata(&self, start: usize) -> Option<Box<dyn WireMetadataCursor>> {
+        self.wire.open_metadata(start)
+    }
+    fn prefix_identity(
+        &self,
+        count: usize,
+    ) -> maka_agent_facts::model::prompt_source::PrefixIdentity<'_> {
+        self.wire.prefix_identity(count)
+    }
+}
+fn resources() -> maka_model::ModelPreparationResources {
+    maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy {
+        staging_bytes: 8 * 1024 * 1024,
+        resident_bytes: 8 * 1024 * 1024,
+        progress_bytes: 256 * 1024,
+        work_bytes: 256 * 1024,
+    })
+    .unwrap()
 }
 
-pub(crate) fn prepare_input(input: &mut ModelRequest) -> Reads {
+pub(crate) async fn prepare_input(input: &mut ModelRequest) -> Reads {
     let messages = input
         .prompt
         .memory_messages()
@@ -165,19 +161,29 @@ pub(crate) fn prepare_input(input: &mut ModelRequest) -> Reads {
         })
         .unwrap_or_default();
     let logical = Prompt::from_messages(messages.clone());
-    let wire = maka_model::WireEncoding::new(
+    let encoding = maka_model::WireEncoding::new(
         input.language,
         &input.provider,
         &input.provider_options,
         &input.tools,
     )
-    .unwrap()
-    .prepare_group(messages, &maka_model::PreparationContext::default());
-    let identity = format!("fixture-wire-v1:{}:{}", logical.identity(), wire.codec);
-    let chunks = wire.chunks.collect::<Result<Vec<_>, _>>().unwrap();
+    .unwrap();
+    let format = encoding.format();
+    let codec = encoding.codec().to_owned();
+    let wire = encoding
+        .prepare_source(
+            Arc::new(
+                maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(
+                    &messages,
+                ),
+            ),
+            resources(),
+        )
+        .await
+        .unwrap();
     let counters = Arc::new(Counters::default());
     let source = Arc::new(Source {
-        chunks: Arc::new(chunks),
+        wire: wire.source,
         counters: counters.clone(),
     });
     input.prompt = Prompt::new(
@@ -187,7 +193,7 @@ pub(crate) fn prepare_input(input: &mut ModelRequest) -> Reads {
         logical.breakdown().clone(),
     )
     .with_normalization(input.provider.kind.clone())
-    .with_wire(wire.format, wire.codec, identity, source)
+    .with_wire(format, codec, wire.identity, source)
     .with_instructions(instructions);
     Reads(counters)
 }

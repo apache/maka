@@ -177,7 +177,12 @@ mod tests {
     use super::*;
     use maka_agent_facts::{
         event::{Fact, Invocation, InvocationInput, LogScope, RuntimeEvent, ToolOutcome},
-        model::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, ModelToolCall},
+        model::{
+            ModelFinishReason, ModelPart, ModelToolCall,
+            recorded::{
+                CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, RecordedPartRef,
+            },
+        },
         tool_call::{HostSdkParent, ToolCallIdentity},
     };
     use serde_json::json;
@@ -187,11 +192,15 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    #[test]
-    fn typed_host_sdk_ancestry_projects_beyond_the_former_depth_limit() {
-        let db = RawConnection::open_in_memory().unwrap();
-        db.execute_batch(&crate::schema::fixture(|kind, _| kind != "trigger"))
-            .unwrap();
+    #[tokio::test]
+    async fn typed_host_sdk_ancestry_projects_beyond_the_former_depth_limit() {
+        let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
+            kind != "trigger"
+        })))
+        .execute(&mut db)
+        .await
+        .unwrap();
         let invocation = Invocation {
             session_id: "session".into(),
             turn_id: "turn".into(),
@@ -231,10 +240,17 @@ mod tests {
                     title: None,
                 },
             );
-            db.execute(
-                "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
-                params![index + 1, event.id, "invocation", event.fact.kind(), event.fact.operation_id(), serde_json::to_string(&event).unwrap()],
-            ).unwrap();
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: Some(index + 1),
+                event_id: &event.id,
+                invocation_id: Some("invocation"),
+                kind: event.fact.kind(),
+                operation_id: event.fact.operation_id(),
+                json: &serde_json::to_string(&event).unwrap(),
+            })
+            .execute(&mut db)
+            .await
+            .unwrap();
         }
         let mut event = RuntimeEvent::new(
             invocation,
@@ -250,26 +266,39 @@ mod tests {
             sequence: 41,
             event,
         };
-        db.execute(
-            "INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)",
-            params![41, stored.event.id, "invocation", stored.event.fact.kind(), stored.event.fact.operation_id(), serde_json::to_string(&stored.event).unwrap()],
-        ).unwrap();
-
-        let result = ancestry(&db, "invocation", 41).unwrap();
-        assert_eq!(result.step, None);
-        assert_eq!(result.dispatch, 40);
-        assert_eq!(result.boundaries, (1..=41).collect::<BTreeSet<_>>());
-        let rows = project(&db, &stored).unwrap();
-        assert_eq!(rows.len(), 1);
-        let message = serde_json::to_value(&rows[0].message).unwrap();
-        assert_eq!(message["id"], "settlement");
-        assert_eq!(message["origin"], "host_sdk");
-        assert_eq!(message["parentOperationId"], "host-38");
-        assert_eq!(message["isError"], true);
-        assert_eq!(
-            message["content"],
-            json!({"kind":"text","text":"original host failure"})
-        );
+        crate::canonical_insert::insert(crate::canonical_insert::Record {
+            sequence: Some(41),
+            event_id: &stored.event.id,
+            invocation_id: Some("invocation"),
+            kind: stored.event.fact.kind(),
+            operation_id: stored.event.fact.operation_id(),
+            json: &serde_json::to_string(&stored.event).unwrap(),
+        })
+        .execute(&mut db)
+        .await
+        .unwrap();
+        db.run_on_worker(move |handle| {
+            // SAFETY: this callback exclusively borrows the worker; the non-owning
+            // wrapper and every statement are dropped before the callback returns.
+            let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }.unwrap();
+            let result = ancestry(&db, "invocation", 41).unwrap();
+            assert_eq!(result.step, None);
+            assert_eq!(result.dispatch, 40);
+            assert_eq!(result.boundaries, (1..=41).collect::<BTreeSet<_>>());
+            let rows = project(&db, &stored).unwrap();
+            assert_eq!(rows.len(), 1);
+            let message = serde_json::to_value(&rows[0].message).unwrap();
+            assert_eq!(message["id"], "settlement");
+            assert_eq!(message["origin"], "host_sdk");
+            assert_eq!(message["parentOperationId"], "host-38");
+            assert_eq!(message["isError"], true);
+            assert_eq!(
+                message["content"],
+                json!({"kind":"text","text":"original host failure"})
+            );
+        })
+        .await
+        .unwrap();
     }
 
     async fn boundary_work(siblings: usize) -> usize {
@@ -313,7 +342,7 @@ mod tests {
             },
             Fact::ModelRequested {
                 context_breakdown: None,
-                item_acceptance: false,
+                item_acceptance: true,
                 purpose: maka_agent_facts::context::ModelPurpose::Main,
                 context: None,
                 checkpoint_event_id: None,
@@ -327,17 +356,33 @@ mod tests {
                 route_identity: "".into(),
             },
         ];
-        facts.extend(calls.iter().cloned().map(|call| Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::ToolCall(call),
+        facts.extend(calls.iter().cloned().enumerate().map(|(ordinal, call)| {
+            Fact::ModelObserved {
+                step_id: "step".into(),
+                event: ModelObservation::Part(ModelPartRecord {
+                    ordinal: ordinal as u64,
+                    message_id: maka_agent_facts::tool_call::tool_use_id(
+                        &invocation.invocation_id,
+                        &format!("step:{}", call.id),
+                    ),
+                    started_at: std::time::UNIX_EPOCH,
+                    provider_part_id: None,
+                    part: std::sync::Arc::new(ModelPart::ToolCall { call }),
+                }),
+            }
         }));
         facts.push(Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: calls
                     .iter()
-                    .cloned()
-                    .map(|call| ModelPart::ToolCall { call })
+                    .enumerate()
+                    .map(|(ordinal, _)| {
+                        CompletionPart::Ref(RecordedPartRef {
+                            event_id: format!("fixture-part-{ordinal}"),
+                            ordinal: ordinal as u64,
+                        })
+                    })
                     .collect(),
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: Default::default(),
@@ -363,11 +408,25 @@ mod tests {
             },
         });
         for (index, fact) in facts.into_iter().enumerate() {
-            let event = RuntimeEvent::new(invocation.clone(), fact);
-            sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?,?)")
-                .bind(index as i64+1).bind(&event.id).bind(&invocation.invocation_id)
-                .bind(event.fact.kind()).bind(event.fact.operation_id())
-                .bind(serde_json::to_string(&event).unwrap()).execute(&mut connection).await.unwrap();
+            let mut event = RuntimeEvent::new(invocation.clone(), fact);
+            if let Fact::ModelObserved {
+                event: ModelObservation::Part(part),
+                ..
+            } = &event.fact
+            {
+                event.id = format!("fixture-part-{}", part.ordinal);
+            }
+            crate::canonical_insert::insert(crate::canonical_insert::Record {
+                sequence: Some(index as i64 + 1),
+                event_id: &event.id,
+                invocation_id: Some(&invocation.invocation_id),
+                kind: event.fact.kind(),
+                operation_id: event.fact.operation_id(),
+                json: &serde_json::to_string(&event).unwrap(),
+            })
+            .execute(&mut connection)
+            .await
+            .unwrap();
         }
         let steps = Arc::new(AtomicUsize::new(0));
         let observed = steps.clone();

@@ -75,7 +75,7 @@ impl Owner {
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        if runs.controls.contains_key(&source.session_id) {
+        if runs.busy(&source.session_id) {
             return Ok(None);
         }
         let session = match self.session(&source.session_id).await {
@@ -113,7 +113,7 @@ impl Owner {
             return Err("agent_closed".into());
         }
         let current = self.session(&source.session_id).await?;
-        if runs.controls.contains_key(&source.session_id)
+        if runs.busy(&source.session_id)
             || current.configuration != session.configuration
             || current.archived
         {
@@ -194,12 +194,12 @@ impl Owner {
         self: &Arc<Self>,
         admission: &PendingMessageAdmission,
     ) -> Result<bool, String> {
-        let mut runs = self.runs.lock().await;
         let session = &admission.invocation.session_id;
         let message = &admission.source.message.message_id;
         if admission.execution.owner != self.prefix || !self.owns(session) {
             return Err("agent_queue_owner_invalid".into());
         }
+        let ordered = self.runs.ordered(session).await;
         if self
             .store
             .session(session)
@@ -220,24 +220,37 @@ impl Owner {
         {
             return Ok(true);
         }
-        if let Some(original) = self
+        let original = self
             .store
             .session(session)
             .await
             .map_err(|error| error.to_string())?
             .message_admission(session, message)
             .await
-            .map_err(|_| "agent_queue_unavailable")?
+            .map_err(|_| "agent_queue_unavailable")?;
+        if let Some(original) = &original
+            && original != admission
         {
-            if original != *admission {
-                return Err("agent_message_identity_changed".into());
-            }
-        } else {
+            return Err("agent_message_identity_changed".into());
+        }
+        let cancellation = self.stop.child_token();
+        {
+            let mut runs = ordered.state().await;
             if runs.closing || self.stop.is_cancelled() {
-                return Err("agent_closed".into());
+                return if original.is_some() {
+                    Ok(true)
+                } else {
+                    Err("agent_closed".into())
+                };
             }
-            if runs.controls.contains_key(session) {
-                return Ok(false);
+            if runs.busy(session) {
+                return Ok(original.is_some());
+            }
+            runs.preparing.insert(session.clone(), cancellation.clone());
+        }
+        let accepted = async {
+            if original.is_some() {
+                return Ok(true);
             }
             let current = match self.session(session).await {
                 Ok(session) => session,
@@ -261,9 +274,17 @@ impl Owner {
                 .admit_message(admission.clone())
                 .await
                 .map_err(|_| "agent_admission_unknown")?;
+            Ok(true)
         }
-        // The durable queue preserves ordering with any original Session worker.
-        self.schedule_locked(&mut runs)
+        .await;
+        match accepted {
+            Ok(true) => {}
+            result => {
+                ordered.state().await.preparing.remove(session);
+                return result;
+            }
+        }
+        self.start_pending(session, ordered, cancellation)
             .await
             .map_err(public_error)?;
         Ok(true)

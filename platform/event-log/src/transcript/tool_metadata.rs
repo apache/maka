@@ -186,13 +186,7 @@ mod tests {
 
     async fn database() -> SqliteConnection {
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = crate::schema::fixture(|_, name| {
-            name.starts_with("transcript_directory")
-                || name.starts_with("transcript_failures")
-                || name.starts_with("directory_")
-        });
-        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
-            .execute(&mut db)
+        crate::transcript::bodycache::initialize(&mut db)
             .await
             .unwrap();
         db
@@ -211,12 +205,12 @@ mod tests {
         id: &str,
         value: Value,
     ) {
-        sqlx::query("INSERT INTO transcript_directory (source_sequence,item_index,session_id,turn_id,message_id,timestamp,role,has_thinking,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,tool_title,presentation,state_status)
+        sqlx::query("INSERT INTO transcript_directory (source_sequence,item_index,session_id,turn_id,message_id,timestamp,role,has_thinking,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,tool_title,presentation,state_status,context_eligible)
             SELECT ?1,0,?2,?3,?4,0,json_extract(?5,'$.type'),0,
             CASE json_extract(?5,'$.type') WHEN 'tool_call' THEN ?4 ELSE json_extract(?5,'$.toolUseId') END,
             json_extract(?5,'$.toolName'),json_extract(?5,'$.origin'),json_extract(?5,'$.parentToolCallId'),json_extract(?5,'$.parentOperationId'),
             json_type(?5,'$.args') IS NOT NULL,json_type(?5,'$.isError') IN ('true','false') AND json_type(?5,'$.content')='object',
-            json_extract(?5,'$.settlement'),json_extract(?5,'$.isError'),json_extract(?5,'$.content.kind'),json_extract(?5,'$.title'),json_extract(?5,'$.presentation'),json_extract(?5,'$.status')")
+            json_extract(?5,'$.settlement'),json_extract(?5,'$.isError'),json_extract(?5,'$.content.kind'),json_extract(?5,'$.title'),json_extract(?5,'$.presentation'),json_extract(?5,'$.status'),json_extract(?5,'$.type') IN ('tool_call','tool_result')")
             .bind(sequence).bind(session).bind(turn).bind(id).bind(serde_json::to_vec(&value).unwrap()).execute(db).await.unwrap();
     }
     #[tokio::test]
@@ -557,7 +551,8 @@ mod tests {
             ),
         ] {
             assert!(
-                plan.contains(&format!("USING INDEX {index} ({keys})")),
+                plan.contains(&format!("USING INDEX {index} ({keys})"))
+                    || plan.contains(&format!("USING COVERING INDEX {index} ({keys})")),
                 "{plan}"
             );
         }

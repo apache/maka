@@ -224,6 +224,23 @@ impl Foreground {
         }
     }
     async fn frame(&mut self, page: DeliveryPage) -> Result<(), Error> {
+        if let DeliveryPage::Preview { page } = &page {
+            if self.execution.is_none() {
+                self.refresh().await?;
+            }
+            let current = match page {
+                PreviewPage::Empty { .. } => true,
+                PreviewPage::Cut { invocation_id, .. } => self
+                    .execution
+                    .as_ref()
+                    .is_some_and(|execution| &execution.invocation_id == invocation_id),
+            };
+            if current {
+                let updates = self.projection.preview(page)?;
+                self.publish(updates).await?;
+            }
+            return Ok(());
+        }
         if let DeliveryPage::Events {
             events, next_after, ..
         } = page
@@ -242,15 +259,6 @@ impl Foreground {
                     continue;
                 }
                 match event.fact {
-                    DeliveryFact::PartStarted {
-                        message_id,
-                        step_id,
-                        part_id,
-                        text_kind,
-                    } => {
-                        self.parts
-                            .insert((step_id, part_id), (message_id, text_kind));
-                    }
                     DeliveryFact::ExecutorStarted { message_id } => {
                         self.parts.insert(
                             (event.invocation_id.clone(), "text".into()),
@@ -273,6 +281,23 @@ impl Foreground {
                         let updates = self.projection.append(&event.turn_id, message, kind, &text);
                         self.publish(updates).await?;
                     }
+                    DeliveryFact::PartCommitted {
+                        step_id,
+                        message_id,
+                        ..
+                    } => {
+                        self.projection.commit_preview(
+                            &event.invocation_id,
+                            &step_id,
+                            Some(&message_id),
+                        );
+                        catchup = true;
+                    }
+                    DeliveryFact::StepEnded { step_id, .. } => {
+                        self.projection
+                            .commit_preview(&event.invocation_id, &step_id, None);
+                        catchup = true;
+                    }
                     DeliveryFact::TranscriptChanged
                     | DeliveryFact::ToolInputReady { .. }
                     | DeliveryFact::ToolDispatched { .. }
@@ -281,14 +306,10 @@ impl Foreground {
                     | DeliveryFact::ProviderToolResult { .. }
                     | DeliveryFact::ExecutorToolStart { .. }
                     | DeliveryFact::ExecutorToolResult { .. }
-                    | DeliveryFact::StepEnded { .. }
                     | DeliveryFact::Ended { .. } => {
                         catchup = true;
                     }
                     _ => {}
-                }
-                if self.parts.len() > 4096 {
-                    return Err("ACP stream part limit exceeded".into());
                 }
             }
             if catchup {

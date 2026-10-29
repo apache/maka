@@ -29,7 +29,7 @@ use tokio::{io::AsyncBufReadExt, io::AsyncWriteExt, io::BufReader, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 use x11rb::protocol::xproto::ConnectionExt as _;
 
-#[path = "fixtures/linux_wheel.rs"]
+#[path = "repl_browser/linux_wheel.rs"]
 mod linux_wheel;
 
 async fn call(session: &mut Session, actor: &str, command: Value) -> Result<Value, ToolError> {

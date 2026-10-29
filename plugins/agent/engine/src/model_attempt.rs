@@ -20,17 +20,15 @@
 use maka_agent_facts::language::Language;
 
 use crate::prepared_prompt::PreparedPrompt;
-use crate::{
-    RunContext, RunError, RunInput, RunSettings, history,
-    runner::{append, digest},
-};
+use crate::{RunContext, RunError, RunInput, RunSettings, history, runner::digest};
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::ModelInterruption;
-use maka_agent_facts::model::ModelStep;
+use maka_agent_facts::model::ModelPart;
+use maka_agent_facts::model::assembly::{AttemptBinding, AttemptWriter, PartReceipt};
+use maka_agent_facts::model::recorded::{ModelObservation, RecordedPartRef};
 use maka_event_log::context::ContextView;
-use maka_model::prompt::Message;
-use maka_model::{ModelError, ModelEvent, ModelRequest, StepBuilder, ToolDefinition};
+use maka_model::{ModelError, ModelRequest, ToolDefinition};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -50,16 +48,31 @@ pub(super) enum Attempt<'a> {
     },
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "One result per request; keep the ordinary response inline without another allocation."
-)]
+pub(super) enum AttemptOutput {
+    Main(MainResponse),
+    Summary {
+        step_id: String,
+        summary: Result<
+            maka_agent_facts::context::TextSummary,
+            maka_agent_facts::context::SummaryDefect,
+        >,
+    },
+}
+
+pub(super) struct MainResponse {
+    pub local_call_ids: Vec<String>,
+    pub response_id: Option<String>,
+}
+
 pub(super) enum Outcome {
-    Response(ModelStep),
+    Response(MainResponse),
     FinishedByTool,
 }
-impl From<(String, ModelStep)> for Outcome {
-    fn from((_, output): (String, ModelStep)) -> Self {
+impl From<AttemptOutput> for Outcome {
+    fn from(output: AttemptOutput) -> Self {
+        let AttemptOutput::Main(output) = output else {
+            unreachable!("Main request returns Main attempt output");
+        };
         Self::Response(output)
     }
 }
@@ -68,11 +81,13 @@ impl From<(String, ModelStep)> for Outcome {
 pub(super) async fn prompt<W>(
     inner: &RunContext,
     input: &RunInput<W>,
-    source: &ContextView,
+    source: &Arc<ContextView>,
     cancellation: &CancellationToken,
     continuation_base: Option<u64>,
     current: &str,
     prior_unknown: bool,
+    system: Option<Arc<String>>,
+    purpose: ModelPurpose,
 ) -> Result<PreparedPrompt, RunError> {
     let route = route_identity(input)?;
     let mut selection = source.selection.clone();
@@ -84,11 +99,11 @@ pub(super) async fn prompt<W>(
             model: input.provider.model.clone(),
         });
     selection.prior_unknown = prior_unknown;
-    let prior = inner
-        .prepared_history
-        .lock()
-        .expect("prepared history lock poisoned")
-        .clone();
+    let overlay_bytes = PreparedPrompt::overlay_plan_bytes(
+        system.is_some(),
+        source.baseline.is_some(),
+        purpose == ModelPurpose::Summary,
+    );
     let body = history::prepare_view(
         &inner.log,
         selection,
@@ -96,42 +111,50 @@ pub(super) async fn prompt<W>(
         input.supports_vision,
         &input.provider.kind,
         cancellation,
-        prior.as_deref(),
+        inner.shared.preparation_resources.clone(),
+        overlay_bytes,
     )
     .await?;
-    *inner
-        .prepared_history
-        .lock()
-        .expect("prepared history lock poisoned") = Some(body.clone());
     let mut prompt = PreparedPrompt::from_history(body);
-    if let Some(baseline) = &source.baseline {
-        let label = match input.configuration.language {
-            Language::En => {
-                "Historical checkpoint, not a new user request. Reconcile the following messages with this snapshot, then continue the remaining work:\n"
-            }
-            Language::ZhCn => {
-                "历史检查点，不是新的用户请求。请结合后续消息更新此快照中的状态，然后继续尚未完成的工作：\n"
-            }
-            Language::ZhTw => {
-                "歷史檢查點，不是新的使用者請求。請結合後續訊息更新此快照中的狀態，然後繼續尚未完成的工作：\n"
-            }
-        };
-        let text = format!("{label}\n{}", baseline.checkpoint.summary.text);
-        prompt.prepend(Message::user(text));
+    let label = match input.configuration.language {
+        Language::En => {
+            "Historical checkpoint, not a new user request. Reconcile the following messages with this snapshot, then continue the remaining work:\n\n"
+        }
+        Language::ZhCn => {
+            "历史检查点，不是新的用户请求。请结合后续消息更新此快照中的状态，然后继续尚未完成的工作：\n\n"
+        }
+        Language::ZhTw => {
+            "歷史檢查點，不是新的使用者請求。請結合後續訊息更新此快照中的狀態，然後繼續尚未完成的工作：\n\n"
+        }
+    };
+    if let Err(error) = prompt
+        .initialize_overlays(
+            system,
+            source.clone(),
+            label,
+            purpose == ModelPurpose::Summary,
+        )
+        .await
+    {
+        prompt
+            .close()
+            .await
+            .map_err(crate::cleanup::preparation_failed)?;
+        return Err(error);
     }
-    let system_text = crate::request_composition::render_system(
+    Ok(prompt)
+}
+
+pub(super) fn rendered_system<W>(input: &RunInput<W>) -> Option<Arc<String>> {
+    crate::request_composition::render_system(
         input
             .configuration
             .system_prompt
             .as_ref()
             .map(|system| system.text.as_str()),
         &crate::request_composition::session_context(input),
-    );
-    prompt.set_system(system_text.map(|content| Message::System {
-        content,
-        provider_options: None,
-    }));
-    Ok(prompt)
+    )
+    .map(Arc::new)
 }
 
 pub(super) fn prior_unknown_notice(source: &ContextView, language: Language) -> String {
@@ -192,7 +215,7 @@ pub(super) async fn read_source(
     input: &RunSettings,
     prior_unknown: bool,
     cancellation: &CancellationToken,
-) -> Result<ContextView, RunError> {
+) -> Result<Arc<ContextView>, RunError> {
     // Only abandon the read reply. Its snapshot remains owned by the log's
     // independent reader until completion; no append or external effect is raced.
     tokio::select! {
@@ -210,14 +233,14 @@ pub(super) async fn read_source(
                     Some(&input.invocation.invocation_id),
                 ).await
             }
-        } => Ok(source?),
+        } => Ok(Arc::new(source?)),
     }
 }
 
 pub(super) async fn execute_main(
     inner: &Arc<RunContext>,
     input: &RunSettings,
-    context: ContextView,
+    context: Arc<ContextView>,
     prompt: PreparedPrompt,
     main: Main<'_>,
     cancellation: &CancellationToken,
@@ -229,7 +252,7 @@ pub(super) async fn execute_main(
         tools,
         prior_unknown,
     } = main;
-    let mut source = RequestSource::from(&context);
+    let mut source = RequestSource::from(context.as_ref());
     let mut high_water = source.evidence.high_water;
     drop(context);
     let mut retry = Some(prompt);
@@ -298,22 +321,22 @@ pub(super) async fn execute_main(
             if progressed {
                 // Accepted progress replaces the frozen retry prompt. Release it
                 // before materializing the next canonical source.
-                drop(retry.take());
+                close_retry(&mut retry).await?;
                 let context = read_source(inner, input, prior_unknown, cancellation).await?;
                 high_water = context.source_evidence.high_water;
-                source = RequestSource::from(&context);
-                let prompt = surface.apply(
-                    self::prompt(
-                        inner,
-                        input,
-                        &context,
-                        cancellation,
-                        continuation_base,
-                        &input.invocation.invocation_id,
-                        prior_unknown,
-                    )
-                    .await?,
-                );
+                source = RequestSource::from(context.as_ref());
+                let prompt = self::prompt(
+                    inner,
+                    input,
+                    &context,
+                    cancellation,
+                    continuation_base,
+                    &input.invocation.invocation_id,
+                    prior_unknown,
+                    surface.system(),
+                    ModelPurpose::Main,
+                )
+                .await?;
                 drop(context);
                 retry = Some(prompt);
             }
@@ -327,7 +350,25 @@ pub(super) async fn execute_main(
         }
     }
     .await;
+    let result = if result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed) {
+        result
+    } else {
+        match close_retry(&mut retry).await {
+            Ok(()) => result,
+            Err(error) => additional_failure(result, error),
+        }
+    };
     (high_water, result)
+}
+
+async fn close_retry(retry: &mut Option<PreparedPrompt>) -> Result<(), RunError> {
+    if let Some(prompt) = retry.take() {
+        prompt
+            .close()
+            .await
+            .map_err(crate::cleanup::preparation_failed)?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -341,7 +382,7 @@ pub(super) async fn execute_once(
     cancellation: &CancellationToken,
     progressed: &mut bool,
     retry: &mut Option<PreparedPrompt>,
-) -> Result<(String, ModelStep), RunError> {
+) -> Result<AttemptOutput, RunError> {
     let (purpose, lane, surface, tools) = match attempt {
         Attempt::Main(Main {
             lane,
@@ -363,6 +404,9 @@ pub(super) async fn execute_once(
             cancellation,
         )
         .await?;
+    if purpose == ModelPurpose::Main && retry.is_some() {
+        *retry = Some(prompt.clone());
+    }
     let prepared = prepare_request(
         input,
         prompt,
@@ -402,75 +446,62 @@ pub(super) async fn execute_once(
         )?;
     }
     use maka_agent_facts::event::EventSink;
-    inner.log.clone().commit(write).await?;
-    let result: Result<_, RunError> = async {
-        let stream = inner
-            .shared
-            .model
-            .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
-            .await?;
-        receive(
-            inner,
-            input,
-            &step_id,
+    let sequence = inner.log.clone().commit(write).await?;
+    let mut writer = AttemptWriter::new(
+        AttemptBinding {
+            invocation: input.invocation.clone(),
+            step_id: step_id.clone(),
             purpose,
-            stream,
-            tools
-                .filter(|_| item_acceptance)
-                .map(|tools| tools.clone().into_step(&step_id)),
-            progressed,
-            cancellation,
-            retry,
-        )
-        .await
-    }
-    .await;
-    let accepted = finish(
-        inner,
-        input,
-        step_id,
-        purpose,
-        result,
-        cancellation,
+        },
         item_acceptance,
-    )
-    .await?;
-    if !item_acceptance && let Some(tools) = tools {
-        // The successful request no longer needs its retry payload while tools run.
-        drop(retry.take());
-        use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
-        let mut step = tools.clone().into_step(&accepted.0);
-        let tool_cancellation = cancellation.child_token();
-        let mut running = FuturesUnordered::new();
-        for call in accepted
-            .1
-            .tool_calls()
-            .filter(|call| !call.provider_executed)
-        {
-            let future = step.dispatch(call.clone(), tool_cancellation.clone());
-            running.push(async move {
-                std::panic::AssertUnwindSafe(future)
-                    .catch_unwind()
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
-                            "tool panicked".into(),
-                        ))
-                    })
-            });
+    )?;
+    writer.fenced(sequence);
+    let finalizer = inner.attempts.register(writer.snapshot(), item_acceptance);
+    let result = match inner
+        .shared
+        .model
+        .stream_with_adapter(prepared.request, cancellation.clone(), lane, binding)
+        .await
+    {
+        Ok(stream) => {
+            receive(
+                inner,
+                writer,
+                &finalizer,
+                stream,
+                tools
+                    .filter(|_| item_acceptance)
+                    .map(|tools| tools.clone().into_step(&step_id)),
+                progressed,
+                cancellation,
+                retry,
+                tools.filter(|_| !item_acceptance),
+            )
+            .await
         }
-        let mut cleanup = Ok(());
-        while let Some(result) = running.next().await {
-            if let Err(error) = tool_result(result) {
-                tool_cancellation.cancel();
-                if cleanup.is_ok() {
-                    cleanup = Err(error);
-                }
-            }
+        Err(error) => {
+            finish(
+                inner,
+                writer,
+                &finalizer,
+                Err(error.into()),
+                cancellation,
+                None,
+                retry,
+            )
+            .await
         }
-        cleanup?;
+    };
+    let result = match result {
+        Err(error) if !finalizer.has_publication() => {
+            Err(seal_finalizer(inner, &finalizer, error).await)
+        }
+        other => other,
+    };
+    if finalizer.terminal_confirmed() {
+        inner.attempts.remove(&step_id);
     }
-    Ok(accepted)
+    result
 }
 
 pub(super) struct PreparedRequest {
@@ -564,58 +595,118 @@ pub(super) fn prepare_request<W>(
 #[allow(clippy::too_many_arguments)]
 async fn receive(
     inner: &Arc<RunContext>,
-    input: &RunSettings,
-    step_id: &str,
-    purpose: ModelPurpose,
+    writer: AttemptWriter,
+    finalizer: &crate::preview::Finalizer,
+    stream: maka_model::ModelStream,
+    tools: Option<maka_tools::StepTools<'_>>,
+    progressed: &mut bool,
+    cancellation: &CancellationToken,
+    retry: &mut Option<PreparedPrompt>,
+    completion_tools: Option<&maka_tools::RequestTools<'_>>,
+) -> Result<AttemptOutput, RunError> {
+    receive_with_confirmation(
+        inner,
+        writer,
+        finalizer,
+        stream,
+        tools,
+        progressed,
+        cancellation,
+        retry,
+        completion_tools,
+        |writes| async move { inner.log.append_batch(&writes).await },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn receive_with_confirmation<F, Fut>(
+    inner: &Arc<RunContext>,
+    mut writer: AttemptWriter,
+    finalizer: &crate::preview::Finalizer,
     mut stream: maka_model::ModelStream,
     mut tools: Option<maka_tools::StepTools<'_>>,
     progressed: &mut bool,
     cancellation: &CancellationToken,
     retry: &mut Option<PreparedPrompt>,
-) -> Result<ModelStep, RunError> {
+    completion_tools: Option<&maka_tools::RequestTools<'_>>,
+    confirm: F,
+) -> Result<AttemptOutput, RunError>
+where
+    F: FnOnce(Arc<[maka_agent_facts::event::EventWrite]>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u64>, maka_agent_facts::event::CommitError>>,
+{
     use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
-    use maka_agent_facts::tools::ToolError;
-    let mut builder = StepBuilder::for_step(step_id)?;
     let tool_cancellation = cancellation.child_token();
     let mut running = FuturesUnordered::new();
+    let mut preparing = FuturesUnordered::new();
+    let mut retired_prompt = None;
+    let binding = finalizer.snapshot().binding.clone();
     let result: Result<_, RunError> = async {
         loop {
             tokio::select! {
                 biased;
                 result = running.next(), if !running.is_empty() => { tool_result(result.unwrap())?; }
+                prepared = preparing.next(), if !preparing.is_empty() => {
+                    let prepared: maka_tools::PreparedCall<'_> = prepared.expect("nonempty preparation set")?;
+                    let published = catch_tool(prepared.publish(&[])).await?;
+                    running.push(catch_tool(published.completion).boxed());
+                }
                 event = stream.next() => {
                     let Some(event) = event else { break; };
-                    let observations = ready_observations(&mut builder, event, || {
+                    let observations = ready_observations(&mut writer, event, || {
                         stream.next().now_or_never().flatten()
                     });
                     use maka_agent_facts::event::{EventWrite, RuntimeEvent};
                     let writes = observations.events.iter().map(|event| {
-                        EventWrite::plain(RuntimeEvent::new(input.invocation.clone(), Fact::ModelObserved {
-                                step_id: step_id.to_owned(), event: event.clone(),
+                        EventWrite::plain(RuntimeEvent::new(binding.invocation.clone(), Fact::ModelObserved {
+                            step_id: binding.step_id.clone(), event: event.clone(),
                         }))
                     }).collect::<Result<Vec<_>, _>>()?;
+                    let writes: Arc<[EventWrite]> = writes.into();
+                    let latest = writer.snapshot();
+                    inner.attempts.publish(finalizer, latest.clone());
                     if !writes.is_empty() {
-                        inner.log.append_batch(&writes).await?;
+                        finalizer.freeze_prefix(latest, writes.clone());
                     }
-                    drop(observations.reservations);
-                    if tools.is_some() && observations.accepted_item {
-                        *progressed = true;
-                        // Any retry now rebuilds from accepted progress. Release
-                        // the obsolete prompt before dispatching dependent work.
-                        drop(retry.take());
-                    }
-                    // Every call's acceptance is durable before dispatch, even
-                    // when a later ready event failed validation or cancelled.
-                    for event in observations.events {
-                        if let ModelEvent::ToolCall(call) = event
+                    // Admit the complete batch in arrival order before polling preparation.
+                    for event in &observations.events {
+                        if let ModelObservation::Part(record) = event
+                            && let ModelPart::ToolCall { call } = record.part.as_ref()
                             && !call.provider_executed
                             && let Some(tools) = tools.as_mut()
                         {
-                            let future = tools.dispatch(call, tool_cancellation.clone());
-                            running.push(async move {
-                                std::panic::AssertUnwindSafe(future).catch_unwind().await
-                                    .unwrap_or_else(|_| Err(ToolError::CleanupUnconfirmed("tool panicked".into())))
-                            });
+                            preparing.push(catch_tool(tools.prepare(call.clone(), tool_cancellation.clone())).boxed());
+                        }
+                    }
+                    // One natural poll: a pending preparation never holds back model facts.
+                    let prepared = if preparing.is_empty() {
+                        None
+                    } else {
+                        preparing.next().now_or_never().flatten()
+                    };
+                    if let Some(prepared) = prepared {
+                        let prepared = prepared?;
+                        let published = catch_tool(prepared.publish(&writes)).await?;
+                        record_prefix(&mut writer, &writes, &published.prefix_sequences);
+                        if !writes.is_empty() {
+                            finalizer.receipt_prefix(&writes, writer.snapshot());
+                        }
+                        inner.attempts.publish(finalizer, writer.snapshot());
+                        // The receipt authorizes completion even when the ready model tail failed.
+                        running.push(catch_tool(published.completion).boxed());
+                    } else if !writes.is_empty() {
+                        let sequences = inner.log.append_batch(&writes).await?;
+                        record_prefix(&mut writer, &writes, &sequences);
+                        finalizer.receipt_prefix(&writes, writer.snapshot());
+                        inner.attempts.publish(finalizer, writer.snapshot());
+                    }
+                    drop(observations.reservations);
+                    let accepted_item = observations.events.iter().any(|event| matches!(event, ModelObservation::Part(_)));
+                    if tools.is_some() && accepted_item {
+                        *progressed = true;
+                        if retired_prompt.is_none() {
+                            retired_prompt = retry.take();
                         }
                     }
                     if let Some(error) = observations.error {
@@ -624,94 +715,191 @@ async fn receive(
                 }
             }
         }
-        builder.finish().map_err(Into::into)
+        Ok(())
     }.await;
     let stream_cleanup = stream.cancel_and_wait().await;
     if matches!(result, Err(ref error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
     {
         tool_cancellation.cancel();
     }
+    if finalizer.prefix().is_some()
+        || matches!(&result, Err(error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
+    {
+        // An uncertain publication must never be repeated as another T1.
+        preparing.clear();
+    }
+    let result = if stream_cleanup.is_err() {
+        tool_cancellation.cancel();
+        preparing.clear();
+        // The original transport may still read its backing; do not close it.
+        if retired_prompt.is_some() {
+            assert!(
+                retry.is_none(),
+                "accepted progress already retired the retry prompt"
+            );
+            *retry = retired_prompt.take();
+        }
+        additional_failure(result, crate::cleanup::unconfirmed())
+    } else {
+        result
+    };
+    let confirmation = match confirm_prefix(finalizer, confirm).await {
+        Ok(Some(cut)) => {
+            inner.attempts.publish(finalizer, cut);
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(error) => Err(
+            maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
+                "model prefix could not be confirmed: {error}"
+            ))
+            .into(),
+        ),
+    };
+    let mut result = match confirmation {
+        Ok(()) => {
+            finish(
+                inner,
+                writer,
+                finalizer,
+                result,
+                cancellation,
+                completion_tools,
+                retry,
+            )
+            .await
+        }
+        Err(error) => {
+            drop(writer);
+            match result {
+                Ok(()) => Err(error),
+                Err(original) => additional_failure(Err(original), error),
+            }
+        }
+    };
+    if finalizer.terminal_confirmed() {
+        inner.attempts.remove(&binding.step_id);
+        if let Err(error) = close_retry(&mut retired_prompt).await {
+            result = additional_failure(result, error);
+        }
+    }
     let mut cleanup = Ok(());
-    while let Some(result) = running.next().await {
-        if let Err(error) = tool_result(result) {
-            tool_cancellation.cancel();
-            if cleanup.is_ok() {
-                cleanup = Err(error);
+    while !preparing.is_empty() || !running.is_empty() {
+        tokio::select! {
+            prepared = preparing.next(), if !preparing.is_empty() => {
+                let published = match prepared.expect("nonempty preparation set") {
+                    Ok(prepared) => catch_tool(prepared.publish(&[])).await,
+                    Err(error) => Err(error),
+                };
+                match published {
+                    Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                    Err(error) => {
+                        tool_cancellation.cancel();
+                        preparing.clear();
+                        if cleanup.is_ok() { cleanup = Err(error.into()); }
+                    }
+                }
+            }
+            result = running.next(), if !running.is_empty() => {
+                if let Err(error) = tool_result(result.expect("nonempty completion set")) {
+                    tool_cancellation.cancel();
+                    preparing.clear();
+                    if cleanup.is_ok() { cleanup = Err(error); }
+                }
             }
         }
     }
-    stream_cleanup.map_err(|_| crate::cleanup::unconfirmed())?;
-    cleanup?;
-    let output = result?;
-    if purpose == ModelPurpose::Summary
-        && output.parts.iter().any(|part| {
-            matches!(
-                part,
-                maka_agent_facts::model::ModelPart::ToolCall { .. }
-                    | maka_agent_facts::model::ModelPart::ToolResult { .. }
-            )
-        })
-    {
-        return Err(maka_model::ModelError::Adapter("summary contains tool content".into()).into());
+    if let Err(error) = close_retry(&mut retired_prompt).await {
+        result = additional_failure(result, error);
     }
-    Ok(output)
+    if let Err(error) = cleanup {
+        result = additional_failure(result, error);
+    }
+    result
+}
+
+async fn catch_tool<T>(
+    future: impl std::future::Future<Output = Result<T, maka_agent_facts::tools::ToolError>>,
+) -> Result<T, maka_agent_facts::tools::ToolError> {
+    use futures_util::FutureExt;
+    std::panic::AssertUnwindSafe(future)
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| {
+            Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(
+                "tool panicked".into(),
+            ))
+        })
+}
+
+fn record_prefix(
+    writer: &mut AttemptWriter,
+    writes: &[maka_agent_facts::event::EventWrite],
+    sequences: &[u64],
+) {
+    for (write, &sequence) in writes.iter().zip(sequences) {
+        if let Fact::ModelObserved {
+            event: ModelObservation::Part(part),
+            ..
+        } = &write.event().fact
+        {
+            writer.recorded(PartReceipt {
+                part: RecordedPartRef {
+                    event_id: write.event().id.clone(),
+                    ordinal: part.ordinal,
+                },
+                sequence,
+            });
+        } else {
+            writer.fenced(sequence);
+        }
+    }
+}
+
+pub(super) fn additional_failure<T>(
+    result: Result<T, RunError>,
+    failure: RunError,
+) -> Result<T, RunError> {
+    match result {
+        Ok(_) => Err(failure),
+        Err(error) => {
+            let message = format!("{error}; additional attempt failure: {failure}");
+            if error.is_cleanup_unconfirmed() || failure.is_cleanup_unconfirmed() {
+                Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(message).into())
+            } else {
+                Err(maka_agent_facts::tools::ToolError::Persistence(message).into())
+            }
+        }
+    }
 }
 
 struct ReadyObservations {
-    events: Vec<ModelEvent>,
+    events: Vec<ModelObservation>,
     reservations: Vec<Arc<tokio::sync::OwnedSemaphorePermit>>,
-    accepted_item: bool,
     error: Option<ModelError>,
 }
 
-/// Take only the currently available prefix. A failed tail must not roll back
-/// earlier valid observations or cause us to consume events beyond the failure.
+/// Consume only the ready valid prefix; a failed tail cannot mutate its content.
 fn ready_observations(
-    builder: &mut StepBuilder,
+    writer: &mut AttemptWriter,
     first: Result<maka_model::Emission, ModelError>,
     mut next_ready: impl FnMut() -> Option<Result<maka_model::Emission, ModelError>>,
 ) -> ReadyObservations {
     let mut observations = ReadyObservations {
         events: Vec::new(),
         reservations: Vec::new(),
-        accepted_item: false,
         error: None,
     };
     let mut next = Some(first);
     while let Some(event) = next {
         match event.and_then(|emission| {
-            builder.push(emission.event.clone())?;
+            let events = writer.push(emission.event, std::time::SystemTime::now())?;
             if let Some(reservation) = emission.reservation {
                 observations.reservations.push(reservation);
             }
-            Ok(emission.event)
+            Ok(events)
         }) {
-            Ok(event) => {
-                observations.accepted_item |= builder.accepted_item().is_some();
-                // Provider chunk boundaries have no durable identity. Retain the
-                // existing 8 KiB text-observation budget after validating every
-                // original event, and never merge across metadata or other events.
-                if let (
-                    Some(ModelEvent::PartDelta {
-                        id,
-                        text,
-                        provider_options,
-                    }),
-                    ModelEvent::PartDelta {
-                        id: next_id,
-                        text: next_text,
-                        provider_options: next_options,
-                    },
-                ) = (observations.events.last_mut(), &event)
-                    && id.as_str() == next_id.as_str()
-                    && provider_options.as_ref() == next_options.as_ref()
-                    && text.len().saturating_add(next_text.len()) <= 8 * 1024
-                {
-                    text.push_str(next_text);
-                } else {
-                    observations.events.push(event);
-                }
-            }
+            Ok(events) => observations.events.extend(events),
             Err(error) => {
                 observations.error = Some(error);
                 break;
@@ -738,110 +926,385 @@ fn tool_result(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn finish(
     inner: &Arc<RunContext>,
-    input: &RunSettings,
-    step_id: String,
-    purpose: ModelPurpose,
-    result: Result<ModelStep, RunError>,
+    writer: AttemptWriter,
+    finalizer: &crate::preview::Finalizer,
+    result: Result<(), RunError>,
     cancellation: &CancellationToken,
-    item_acceptance: bool,
-) -> Result<(String, ModelStep), RunError> {
+    completion_tools: Option<&maka_tools::RequestTools<'_>>,
+    retry: &mut Option<PreparedPrompt>,
+) -> Result<AttemptOutput, RunError> {
+    let item_acceptance = finalizer.item_acceptance;
+    let result = result.and_then(|()| {
+        let output = writer.completed()?;
+        if output.binding.purpose == ModelPurpose::Summary
+            && output.parts().iter().any(|record| {
+                matches!(
+                    record.part.as_ref(),
+                    ModelPart::ToolCall { .. } | ModelPart::ToolResult { .. }
+                )
+            })
+        {
+            return Err(ModelError::Adapter("summary contains tool content".into()).into());
+        }
+        Ok(output)
+    });
     let output = match result {
         Ok(output) => output,
-        Err(RunError::Model(error)) => {
-            let status = match error {
-                maka_model::ModelError::CleanupUnconfirmed => {
-                    return Err(crate::cleanup::unconfirmed());
-                }
-                maka_model::ModelError::Cancelled => ModelInterruption::Cancelled,
-                maka_model::ModelError::TimedOut => ModelInterruption::TimedOut,
-                maka_model::ModelError::Adapter(_) | maka_model::ModelError::Http { .. } => {
-                    ModelInterruption::Failed
-                }
-                maka_model::ModelError::ContextOverflow { .. } => ModelInterruption::Failed,
-                maka_model::ModelError::Provider(ref failure)
-                    if failure.replay_safe()
-                        || (item_acceptance && failure.retained_output_safe()) =>
-                {
-                    ModelInterruption::RetryableFailure
-                }
-                maka_model::ModelError::Provider(ref failure)
-                    if failure.reason() == maka_model::ProviderFailureReason::TimedOut =>
-                {
-                    ModelInterruption::TimedOut
-                }
-                maka_model::ModelError::Provider(_) => ModelInterruption::Failed,
-            };
-            append(
-                inner,
-                &input.invocation,
-                Fact::ModelInterrupted {
-                    step_id: step_id.clone(),
-                    status,
-                    diagnostic: Some(error.to_string().chars().take(1024).collect()),
-                    model_failure: error.failure_cause(),
-                },
-            )
-            .await?;
-            return Err(error.into());
+        Err(error) => {
+            drop(writer);
+            return Err(seal_finalizer(inner, finalizer, error).await);
         }
-        Err(error) => return Err(error),
     };
-    use maka_agent_facts::event::EventWrite;
-    use maka_agent_facts::event::RuntimeEvent;
-    let incomplete = purpose == ModelPurpose::Main
+    drop(writer);
+    let summary = if output.binding.purpose == ModelPurpose::Summary {
+        use maka_agent_facts::context::TextSummary;
+        match TextSummary::from_parts(
+            output.finish_reason,
+            output.parts().iter().map(|record| record.part.as_ref()),
+        ) {
+            Ok(summary) => Some(summary),
+            Err(defect) => {
+                let error: RunError = ModelError::Adapter(defect.to_string()).into();
+                let cut = finalizer.snapshot();
+                let publication = interruption(&cut, &error, item_acceptance)?;
+                let crate::preview::PublicationSelection::New(publication) =
+                    finalizer.prepare(publication)
+                else {
+                    return Err(crate::cleanup::unconfirmed());
+                };
+                match inner.log.append(&publication).await {
+                    Ok(sequence) => {
+                        finalizer.receipt_terminal(&publication, sequence);
+                        inner.attempts.remove(&output.binding.step_id);
+                    }
+                    Err(seal) => return Err(seal_failure(error, seal)),
+                }
+                if cancellation.is_cancelled() {
+                    return Err(RunError::Cancelled);
+                }
+                return Ok(AttemptOutput::Summary {
+                    step_id: output.binding.step_id.clone(),
+                    summary: Err(defect),
+                });
+            }
+        }
+    } else {
+        None
+    };
+    use maka_agent_facts::event::{EventWrite, RuntimeEvent};
+    let step_id = output.binding.step_id.clone();
+    let incomplete = output.binding.purpose == ModelPurpose::Main
         && output.finish_reason == maka_agent_facts::model::ModelFinishReason::Length;
-    let mut writes = Vec::new();
+    let cancelled = cancellation.is_cancelled();
+    let defer_completion = completion_tools.is_some()
+        && output.binding.purpose == ModelPurpose::Main
+        && !item_acceptance
+        && !incomplete
+        && !cancelled
+        && output.parts().iter().any(|record| matches!(record.part.as_ref(), ModelPart::ToolCall { call } if !call.provider_executed));
+    let completion = EventWrite::plain(RuntimeEvent::new(
+        output.binding.invocation.clone(),
+        Fact::ModelCompleted {
+            step_id: step_id.clone(),
+            output: output.completion(),
+        },
+    ))?;
+    let crate::preview::PublicationSelection::New(completion) = finalizer.prepare(completion)
+    else {
+        return Err(crate::cleanup::unconfirmed());
+    };
+    let mut writes = vec![completion.clone()];
     if incomplete && !item_acceptance {
-        for call in output.tool_calls().filter(|call| !call.provider_executed) {
-            writes.push(EventWrite::plain(RuntimeEvent::new(
-                input.invocation.clone(),
-                Fact::ToolRejected {
-                    operation_id: format!("{step_id}:{}", call.id),
-                    call: maka_agent_facts::tool_call::ToolCallIdentity::provider(
-                        step_id.clone(),
-                        call.id.clone(),
-                    ),
-                    name: call.name.clone(),
-                    input: call.input.clone(),
-                    reason: maka_agent_facts::tool_call::ToolRejection::PreparationFailed {
-                        message: RunError::ModelIncomplete.to_string(),
+        for record in output.parts() {
+            if let ModelPart::ToolCall { call } = record.part.as_ref()
+                && !call.provider_executed
+            {
+                writes.push(EventWrite::plain(RuntimeEvent::new(
+                    output.binding.invocation.clone(),
+                    Fact::ToolRejected {
+                        operation_id: format!("{step_id}:{}", call.id),
+                        call: maka_agent_facts::tool_call::ToolCallIdentity::provider(
+                            step_id.clone(),
+                            call.id.clone(),
+                        ),
+                        name: call.name.clone(),
+                        input: call.input.clone(),
+                        reason: maka_agent_facts::tool_call::ToolRejection::PreparationFailed {
+                            message: RunError::ModelIncomplete.to_string(),
+                        },
                     },
-                },
-            ))?);
+                ))?);
+            }
         }
     }
-    writes.insert(
-        0,
-        EventWrite::plain(RuntimeEvent::new(
-            input.invocation.clone(),
-            Fact::ModelCompleted {
-                step_id: step_id.clone(),
-                output,
-            },
-        ))?,
-    );
-    inner.log.append_batch(&writes).await?;
+    if !defer_completion {
+        let sequences = inner.log.append_batch(&writes).await?;
+        finalizer.receipt_terminal(&completion, sequences[0]);
+        inner.attempts.remove(&step_id);
+    }
     if incomplete {
         return Err(RunError::ModelIncomplete);
     }
-    if cancellation.is_cancelled() {
+    if cancellation.is_cancelled() && !defer_completion {
         return Err(RunError::Cancelled);
     }
-    let Fact::ModelCompleted { output, .. } = writes.remove(0).into_event().fact else {
-        unreachable!("first write is the model completion");
+    if let Some(summary) = summary {
+        return Ok(AttemptOutput::Summary {
+            step_id,
+            summary: Ok(summary),
+        });
+    }
+    let response = MainResponse {
+        local_call_ids: output.local_call_ids(),
+        response_id: output.response_id.clone(),
     };
-    Ok((step_id, output))
+    if let Some(tools) = completion_tools {
+        use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
+        let mut step = tools.clone().into_step(&step_id);
+        let tool_cancellation = cancellation.child_token();
+        let mut preparing = FuturesUnordered::new();
+        let mut running = FuturesUnordered::new();
+        // Admit every call in arrival order before polling any preparation.
+        for record in output.parts() {
+            if let ModelPart::ToolCall { call } = record.part.as_ref()
+                && !call.provider_executed
+            {
+                preparing.push(
+                    catch_tool(step.prepare(call.clone(), tool_cancellation.clone())).boxed(),
+                );
+            }
+        }
+        drop(output);
+        let mut cleanup = Ok(());
+        if defer_completion {
+            // Only this writer owns the terminal prefix; pending siblings retain no body.
+            let prepared = preparing.next().now_or_never().flatten();
+            let sequence = match prepared {
+                Some(Ok(prepared)) => {
+                    let published = catch_tool(prepared.publish(&writes)).await?;
+                    let sequence = published.prefix_sequences[0];
+                    running.push(catch_tool(published.completion).boxed());
+                    sequence
+                }
+                Some(Err(error)) => {
+                    tool_cancellation.cancel();
+                    preparing.clear();
+                    let sequences = match inner.log.append_batch(&writes).await {
+                        Ok(sequences) => sequences,
+                        Err(flush) => return Err(seal_failure(error.into(), flush)),
+                    };
+                    cleanup = Err(error.into());
+                    sequences[0]
+                }
+                None => inner.log.append_batch(&writes).await?[0],
+            };
+            finalizer.receipt_terminal(&completion, sequence);
+            inner.attempts.remove(&step_id);
+        }
+        drop(writes);
+        drop(completion);
+        if let Err(error) = close_retry(retry).await {
+            tool_cancellation.cancel();
+            preparing.clear();
+            cleanup = additional_failure(cleanup, error);
+        }
+        while !preparing.is_empty() || !running.is_empty() {
+            tokio::select! {
+                prepared = preparing.next(), if !preparing.is_empty() => {
+                    let published = match prepared.expect("nonempty preparation set") {
+                        Ok(prepared) => catch_tool(prepared.publish(&[])).await,
+                        Err(error) => Err(error),
+                    };
+                    match published {
+                        Ok(published) => running.push(catch_tool(published.completion).boxed()),
+                        Err(error) => {
+                            tool_cancellation.cancel();
+                            preparing.clear();
+                            if cleanup.is_ok() { cleanup = Err(error.into()); }
+                        }
+                    }
+                }
+                result = running.next(), if !running.is_empty() => {
+                    if let Err(error) = tool_result(result.expect("nonempty completion set")) {
+                        tool_cancellation.cancel();
+                        preparing.clear();
+                        if cleanup.is_ok() { cleanup = Err(error); }
+                    }
+                }
+            }
+        }
+        cleanup?;
+    } else {
+        drop(output);
+        drop(writes);
+        drop(completion);
+    }
+    Ok(AttemptOutput::Main(response))
+}
+
+fn interruption(
+    cut: &maka_agent_facts::model::assembly::AttemptCut,
+    error: &RunError,
+    item_acceptance: bool,
+) -> Result<maka_agent_facts::event::EventWrite, RunError> {
+    let status = match error {
+        RunError::Cancelled | RunError::Model(ModelError::Cancelled) => {
+            ModelInterruption::Cancelled
+        }
+        RunError::Model(ModelError::TimedOut) => ModelInterruption::TimedOut,
+        RunError::Model(ModelError::Provider(failure))
+            if failure.replay_safe() || (item_acceptance && failure.retained_output_safe()) =>
+        {
+            ModelInterruption::RetryableFailure
+        }
+        RunError::Model(ModelError::Provider(failure))
+            if failure.reason() == maka_model::ProviderFailureReason::TimedOut =>
+        {
+            ModelInterruption::TimedOut
+        }
+        _ => ModelInterruption::Failed,
+    };
+    Ok(maka_agent_facts::event::EventWrite::plain(
+        maka_agent_facts::event::RuntimeEvent::new(
+            cut.binding.invocation.clone(),
+            Fact::ModelInterrupted {
+                step_id: cut.binding.step_id.clone(),
+                status,
+                diagnostic: Some(error.to_string().chars().take(1024).collect()),
+                model_failure: match error {
+                    RunError::Model(error) => error.failure_cause(),
+                    _ => None,
+                },
+                partial: cut.partial(),
+            },
+        ),
+    )?)
+}
+
+fn seal_failure(error: RunError, seal: impl std::fmt::Display) -> RunError {
+    let message = format!("{error}; model attempt could not be sealed: {seal}");
+    if error.is_cleanup_unconfirmed() {
+        maka_agent_facts::tools::ToolError::CleanupUnconfirmed(message).into()
+    } else {
+        maka_agent_facts::tools::ToolError::Persistence(message).into()
+    }
+}
+
+async fn confirm_prefix<F, Fut>(
+    finalizer: &crate::preview::Finalizer,
+    append: F,
+) -> Result<
+    Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>,
+    maka_agent_facts::event::CommitError,
+>
+where
+    F: FnOnce(Arc<[maka_agent_facts::event::EventWrite]>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u64>, maka_agent_facts::event::CommitError>>,
+{
+    let Some((cut, writes)) = finalizer.prefix() else {
+        return Ok(None);
+    };
+    let sequences = append(writes.clone()).await?;
+    let cut = Arc::new(cut.with_prefix_receipts(&writes, &sequences));
+    finalizer.receipt_prefix(&writes, cut.clone());
+    Ok(Some(cut))
+}
+
+async fn seal_finalizer(
+    inner: &RunContext,
+    finalizer: &crate::preview::Finalizer,
+    error: RunError,
+) -> RunError {
+    seal_finalizer_with(inner, finalizer, error, |writes| async move {
+        inner.log.append_batch(&writes).await
+    })
+    .await
+}
+
+async fn seal_finalizer_with<F, Fut>(
+    inner: &RunContext,
+    finalizer: &crate::preview::Finalizer,
+    error: RunError,
+    append: F,
+) -> RunError
+where
+    F: FnOnce(Arc<[maka_agent_facts::event::EventWrite]>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u64>, maka_agent_facts::event::CommitError>>,
+{
+    if finalizer.terminal_confirmed() {
+        return error;
+    }
+    match confirm_prefix(finalizer, append).await {
+        Ok(Some(cut)) => inner.attempts.publish(finalizer, cut),
+        Ok(None) => {}
+        Err(seal) => {
+            return maka_agent_facts::tools::ToolError::CleanupUnconfirmed(format!(
+                "{error}; model prefix could not be confirmed: {seal}"
+            ))
+            .into();
+        }
+    }
+    let Some(cut) = finalizer.unconfirmed_snapshot() else {
+        return error;
+    };
+    let publication = match finalizer.publication() {
+        Some(publication) => Ok(publication),
+        None => interruption(&cut, &error, finalizer.item_acceptance),
+    };
+    match publication {
+        Ok(publication) => {
+            let publication = match finalizer.prepare(publication) {
+                crate::preview::PublicationSelection::New(publication)
+                | crate::preview::PublicationSelection::Existing(publication) => publication,
+                crate::preview::PublicationSelection::Confirmed => return error,
+                crate::preview::PublicationSelection::PrefixPending => {
+                    return crate::cleanup::unconfirmed();
+                }
+            };
+            match inner.log.append(&publication).await {
+                Ok(sequence) => {
+                    finalizer.receipt_terminal(&publication, sequence);
+                    error
+                }
+                Err(seal) => seal_failure(error, seal),
+            }
+        }
+        Err(seal) => seal_failure(error, seal),
+    }
+}
+
+pub(super) async fn seal_unfinished_attempts<T>(
+    inner: &RunContext,
+    result: Result<T, RunError>,
+) -> Result<T, RunError> {
+    let unfinished = inner.attempts.unfinished();
+    if unfinished.is_empty() {
+        return result;
+    }
+    let mut error = result
+        .err()
+        .unwrap_or_else(|| RunError::Internal("model attempt returned without sealing".into()));
+    for finalizer in unfinished {
+        let binding = finalizer.binding();
+        error = seal_finalizer(inner, &finalizer, error).await;
+        if finalizer.terminal_confirmed() {
+            inner.attempts.remove(&binding.step_id);
+        }
+    }
+    Err(error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::ready_observations;
-    use maka_agent_facts::model::{ModelFinishReason, ModelPart, ModelStep, TextKind};
-    use maka_model::{ModelError, ModelEvent, StepBuilder};
-    use serde_json::{Value, json};
+    use maka_agent_facts::context::ModelPurpose;
+    use maka_agent_facts::event::Invocation;
+    use maka_agent_facts::model::assembly::{AttemptBinding, AttemptWriter};
+    use maka_agent_facts::model::recorded::CompletionPart;
+    use maka_agent_facts::model::{ModelEvent, ModelFinishReason, ModelPart, TextKind};
+    use serde_json::json;
 
     #[test]
     fn tool_state_persistence_failure_stops_the_model_loop() {
@@ -854,6 +1317,23 @@ mod tests {
         ));
     }
 
+    fn writer() -> AttemptWriter {
+        AttemptWriter::new(
+            AttemptBinding {
+                invocation: Invocation {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
+                },
+                step_id: "step".into(),
+                purpose: ModelPurpose::Main,
+            },
+            true,
+        )
+        .unwrap()
+    }
+
     fn started(id: &str) -> ModelEvent {
         ModelEvent::PartStarted {
             id: id.into(),
@@ -862,7 +1342,7 @@ mod tests {
         }
     }
 
-    fn delta(id: &str, text: &str, provider_options: Option<Value>) -> ModelEvent {
+    fn delta(id: &str, text: &str, provider_options: Option<serde_json::Value>) -> ModelEvent {
         ModelEvent::PartDelta {
             id: id.into(),
             text: text.into(),
@@ -877,34 +1357,14 @@ mod tests {
         }
     }
 
-    fn replay(events: &[ModelEvent]) -> ModelStep {
-        let mut builder = StepBuilder::default();
-        for event in events {
-            builder.push(event.clone()).unwrap();
-        }
-        builder
-            .push(ModelEvent::Finished {
-                reason: ModelFinishReason::Stop,
-                usage: Default::default(),
-                provider_options: None,
-            })
-            .unwrap();
-        builder.finish().unwrap()
-    }
-
-    fn batch(events: &[ModelEvent]) -> super::ReadyObservations {
-        let mut ready = events.iter().cloned().map(|event| Ok(event.into()));
-        ready_observations(&mut StepBuilder::default(), ready.next().unwrap(), || {
-            ready.next()
-        })
-    }
-
     #[tokio::test]
-    async fn coalesced_observations_retain_all_input_reservations_until_commit() {
+    async fn consumed_inputs_retain_reservations_until_the_publication_batch_settles() {
         use std::sync::Arc;
         let budget = Arc::new(tokio::sync::Semaphore::new(2));
-        let mut builder = StepBuilder::default();
-        builder.push(started("text")).unwrap();
+        let mut writer = writer();
+        writer
+            .push(started("text"), std::time::SystemTime::now())
+            .unwrap();
         let first = maka_model::Emission {
             event: delta("text", "one", None),
             reservation: Some(Arc::new(budget.clone().acquire_owned().await.unwrap())),
@@ -914,21 +1374,26 @@ mod tests {
             reservation: Some(Arc::new(budget.clone().acquire_owned().await.unwrap())),
         };
         let mut second = Some(Ok(second));
-        let batch = ready_observations(&mut builder, Ok(first), || second.take());
-        assert_eq!(batch.events, [delta("text", "one two", None)]);
+        let batch = ready_observations(&mut writer, Ok(first), || second.take());
         assert_eq!(
             budget.available_permits(),
             0,
-            "uncommitted observations own both inputs"
+            "publication batch owns both consumed inputs"
         );
+        let partial = writer.partial().unwrap();
+        let CompletionPart::Own(record) = &partial.parts[0] else {
+            panic!("unrecorded text is owned");
+        };
+        let ModelPart::Text { text, .. } = record.part.as_ref() else {
+            panic!("text part");
+        };
+        assert_eq!(text.chunks().collect::<String>(), "one two");
         drop(batch);
         assert_eq!(budget.available_permits(), 2);
-        // StepBuilder retains the answer, but no longer owns in-flight capacity.
-        builder.push(closed("text")).unwrap();
     }
 
     #[test]
-    fn ready_deltas_preserve_metadata_changes_and_other_event_boundaries() {
+    fn ready_metadata_preserves_original_response_and_final_part_options() {
         let original = vec![
             started("text"),
             delta(
@@ -948,8 +1413,8 @@ mod tests {
             ),
             ModelEvent::ResponseMetadata {
                 id: Some("response".into()),
-                model: None,
-                timestamp: None,
+                model: Some("model".into()),
+                timestamp: Some("timestamp".into()),
             },
             delta(
                 "text",
@@ -957,161 +1422,69 @@ mod tests {
                 Some(json!({"provider":{"signature":"changed"}})),
             ),
             closed("text"),
+            ModelEvent::Finished {
+                reason: ModelFinishReason::Stop,
+                usage: Default::default(),
+                provider_options: None,
+            },
         ];
-        let merged = batch(&original);
-        assert!(merged.error.is_none());
+        let mut writer = writer();
+        let mut ready = original.into_iter().map(|event| Ok(event.into()));
+        let batch = ready_observations(&mut writer, ready.next().unwrap(), || ready.next());
+        assert!(batch.error.is_none());
+        let completed = writer.completed().unwrap();
+        let ModelPart::Text {
+            text,
+            provider_options,
+            ..
+        } = completed.parts()[0].part.as_ref()
+        else {
+            panic!("text part");
+        };
+        assert_eq!(text.chunks().collect::<String>(), "one two three four");
         assert_eq!(
-            merged.events,
-            vec![
-                started("text"),
-                delta(
-                    "text",
-                    "one two",
-                    Some(json!({"provider":{"signature":"same"}}))
-                ),
-                original[3].clone(),
-                original[4].clone(),
-                original[5].clone(),
-                closed("text"),
-            ]
+            provider_options.as_deref(),
+            Some(&json!({"provider":{"signature":"changed"}}))
         );
-        let output = replay(&merged.events);
-        assert_eq!(output, replay(&original));
-        assert_eq!(
-            output.parts,
-            vec![ModelPart::Text {
-                text_kind: TextKind::Text,
-                text: "one two three four".into(),
-                provider_options: Some(json!({"provider":{"signature":"changed"}})),
-            }]
-        );
-    }
-
-    #[test]
-    fn ready_deltas_preserve_interleaved_parts() {
-        let original = vec![
-            started("a"),
-            started("b"),
-            delta("a", "first", None),
-            delta("b", "second", None),
-            delta("a", " third", None),
-            delta("a", " fourth", None),
-            closed("a"),
-            closed("b"),
-        ];
-        let merged = batch(&original);
-        assert!(merged.error.is_none());
-        assert_eq!(
-            merged.events,
-            vec![
-                started("a"),
-                started("b"),
-                delta("a", "first", None),
-                delta("b", "second", None),
-                delta("a", " third fourth", None),
-                closed("a"),
-                closed("b"),
-            ]
-        );
-        assert_eq!(replay(&merged.events), replay(&original));
-    }
-
-    #[test]
-    fn ready_deltas_keep_utf8_and_the_existing_text_byte_budget() {
-        for (first, expected_lengths) in [
-            ("x".repeat(8188), vec![8192, 2]),
-            ("x".repeat(8189), vec![8189, 6]),
-        ] {
-            let original = vec![
-                started("text"),
-                delta("text", &first, None),
-                delta("text", "😀", None),
-                delta("text", "é", None),
-                closed("text"),
-            ];
-            let merged = batch(&original);
-            assert!(merged.error.is_none());
-            let lengths: Vec<_> = merged
-                .events
-                .iter()
-                .filter_map(|event| match event {
-                    ModelEvent::PartDelta { text, .. } => Some(text.len()),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(lengths, expected_lengths);
-            assert_eq!(replay(&merged.events), replay(&original));
-        }
+        assert_eq!(completed.response_id.as_deref(), Some("response"));
+        assert_eq!(completed.model.as_deref(), Some("model"));
+        assert_eq!(completed.timestamp.as_deref(), Some("timestamp"));
+        assert!(batch.events.iter().any(|event| matches!(event, maka_agent_facts::model::recorded::ModelObservation::ResponseMetadata { id: Some(id), .. } if id == "response")));
     }
 
     #[test]
     fn ready_observations_keep_valid_prefix_before_invalid_tail() {
-        let valid = [
-            started("text"),
-            ModelEvent::PartDelta {
-                id: "text".into(),
-                text: "saved".into(),
-                provider_options: None,
-            },
+        let mut ready = [
+            delta("text", "saved", None),
             delta("text", " prefix", None),
             closed("text"),
-        ];
-        let mut ready = valid[1..].iter().cloned().map(Ok).chain([
-            Ok(ModelEvent::PartFinished {
-                id: "unknown".into(),
-                provider_options: None,
-            }),
-            Ok(started("must-not-be-read")),
-        ]);
-        let batch = ready_observations(
-            &mut StepBuilder::default(),
-            Ok(valid[0].clone().into()),
-            || ready.next().map(|result| result.map(Into::into)),
-        );
-        assert_eq!(
-            batch.events,
-            [
-                started("text"),
-                delta("text", "saved prefix", None),
-                closed("text")
-            ]
-        );
-        assert_eq!(replay(&batch.events), replay(&valid));
-        assert!(batch.accepted_item);
+            closed("unknown"),
+            started("must-not-be-read"),
+        ]
+        .into_iter();
+        let mut writer = writer();
+        let batch = ready_observations(&mut writer, Ok(started("text").into()), || {
+            ready.next().map(|event| Ok(event.into()))
+        });
         assert!(batch.error.is_some());
-        assert_eq!(ready.next().unwrap().unwrap(), started("must-not-be-read"));
-    }
-
-    #[test]
-    fn ready_observations_keep_prefix_on_cancellation_and_provider_failure() {
-        for error in [
-            ModelError::Cancelled,
-            ModelError::Adapter("provider failed".into()),
-        ] {
-            let event = started("saved");
-            let mut next = Some(Err(error));
-            let batch = ready_observations(
-                &mut StepBuilder::default(),
-                Ok(event.clone().into()),
-                || next.take(),
-            );
-            assert_eq!(batch.events, [event]);
-            assert!(batch.error.is_some());
-            assert!(!batch.accepted_item);
-        }
-    }
-
-    #[test]
-    fn ready_observations_flush_when_no_more_events_are_ready() {
-        let mut builder = StepBuilder::default();
-        let event = ModelEvent::Finished {
-            reason: ModelFinishReason::Stop,
-            usage: Default::default(),
-            provider_options: None,
+        assert!(
+            writer.completed().is_err(),
+            "invalid tail cannot produce successful completion"
+        );
+        let partial = writer.snapshot().partial().unwrap();
+        let CompletionPart::Own(record) = &partial.parts[0] else {
+            panic!("unrecorded valid prefix is owned");
         };
-        let batch = ready_observations(&mut builder, Ok(event.clone().into()), || None);
-        assert_eq!(batch.events, [event]);
-        assert!(batch.error.is_none());
-        builder.finish().unwrap();
+        assert_eq!(record.ordinal, 0);
+        assert_eq!(record.provider_part_id.as_deref(), Some("text"));
+        let ModelPart::Text { text, .. } = record.part.as_ref() else {
+            panic!("text part");
+        };
+        assert_eq!(text.chunks().collect::<String>(), "saved prefix");
+        assert!(batch.events.iter().any(|event| matches!(event, maka_agent_facts::model::recorded::ModelObservation::Part(part) if part.ordinal == 0)));
+        assert_eq!(ready.next(), Some(started("must-not-be-read")));
     }
 }
+
+#[cfg(test)]
+mod publication_tests;

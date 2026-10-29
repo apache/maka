@@ -211,7 +211,6 @@ async fn append(
         .await?;
         last = Some(sequence);
         super::project_execution(connection, sequence).await?;
-        crate::transcript::directory::record_source(connection, session, sequence).await?;
         sqlx::query("UPDATE session_imports SET records=records+1,bytes=?,conversation=conversation+? WHERE session_id=?")
                     .bind(bytes as i64).bind(i64::from(conversation)).bind(session).execute(&mut *connection).await?;
     }

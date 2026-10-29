@@ -306,6 +306,7 @@ impl Run {
             tools: Some(vec!["cua_repl".into(), "cua_reset".into()]),
             title: "Isolated native epoch".into(),
             title_is_manual: false,
+            pinned: false,
             labels: vec![],
             workspace: reference,
             permissions: WorkspacePermissions {
@@ -498,6 +499,7 @@ impl Run {
                 ToolCallIdentity::standalone(Uuid::new_v4().to_string()),
                 tool.into(),
                 input.clone(),
+                None,
                 cancellation,
                 move |cancel| {
                     Box::pin(async move {

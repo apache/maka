@@ -3818,33 +3818,15 @@ export type AgentDeliveryFact =
       completed: boolean;
     }
   | {
-      kind: 'part_started';
-      messageId: string;
+      kind: 'part_committed';
       stepId: string;
-      partId: string;
-      textKind: AgentContentKind;
+      messageId: string;
+      ordinal: number;
     }
   | {
       kind: 'delta';
       stepId: string;
       partId: string;
-      text: string;
-    }
-  | {
-      kind: 'part_finished';
-      stepId: string;
-      partId: string;
-    }
-  | {
-      kind: 'tool_input_started';
-      toolUseId: string;
-      stepId: string;
-      name: string;
-      providerExecuted: boolean;
-    }
-  | {
-      kind: 'tool_input_delta';
-      toolUseId: string;
       text: string;
     }
   | {
@@ -3896,12 +3878,12 @@ export type AgentDeliveryFact =
       kind: 'ended';
       failed: boolean;
     };
-export type AgentContentKind = 'text' | 'thinking';
 /**
  * Recorded Host settlement for presentation; returned is not business success.
  * Foreign/provider results do not establish this Host evidence.
  */
 export type ToolSettlement = 'returned' | 'failed' | 'unknown' | 'rejected';
+export type AgentContentKind = 'text' | 'thinking';
 export type AgentRunState = 'admitted' | 'running' | 'waiting_for_user';
 export type AgentDiagnosticPosition =
   | {
@@ -4044,6 +4026,10 @@ export type AgentDeliveryPage =
       events: AgentDelivery[];
     }
   | {
+      kind: 'preview';
+      page: AgentPreviewPage;
+    }
+  | {
       kind: 'queue';
       queue: AgentQueue;
     }
@@ -4054,6 +4040,37 @@ export type AgentDeliveryPage =
   | {
       kind: 'computer_apps';
       apps: AgentComputerApps;
+    };
+/**
+ * Current display material, independent of the durable Events cursor.
+ */
+export type AgentPreviewPage =
+  | {
+      kind: 'empty';
+      hostEpoch: string;
+    }
+  | {
+      kind: 'cut';
+      hostEpoch: string;
+      invocationId: string;
+      turnId: string;
+      stepId: string;
+      revision: number;
+      dependsOn: number;
+      first: boolean;
+      last: boolean;
+      parts: AgentPreviewPart[];
+    };
+export type AgentPreviewField =
+  | {
+      kind: 'text';
+      textKind: AgentContentKind;
+    }
+  | {
+      kind: 'tool_input';
+      toolUseId: string;
+      name: string;
+      providerExecuted: boolean;
     };
 /**
  * Trusted producer attribution, preserved independently of editable content.
@@ -5808,6 +5825,7 @@ export interface AgentSession {
   revision: number;
   updatedAt: number;
   archived: boolean;
+  pinned: boolean;
   hasUnread: boolean;
   /**
    * Exact durable visible tail accepted by markRead; independent of preview clocks.
@@ -7706,6 +7724,10 @@ export interface AgentDirectory {
 }
 export interface AgentMetadata {
   /**
+   * Omission preserves the conversation's position in the catalog.
+   */
+  pinned?: boolean | null;
+  /**
    * Changing collaboration is only allowed while the Session is idle.
    */
   collaborationMode?: CollaborationMode | null;
@@ -8308,6 +8330,19 @@ export interface AgentHistoryPrompt {
   position: HistoryRowPosition;
   text: string;
 }
+export interface AgentPreviewPart {
+  ordinal?: number | null;
+  messageId: string;
+  providerPartId?: string | null;
+  startedAt: number;
+  field: AgentPreviewField;
+  /**
+   * UTF-8 byte offset into the body, independent of JavaScript string length.
+   */
+  offset: number;
+  totalBytes: number;
+  text: string;
+}
 export interface AgentQueue {
   revision: number;
   entries: AgentQueueEntry[];
@@ -8342,6 +8377,7 @@ export interface AgentQueueMutation {
   edit: AgentQueueAction;
 }
 export interface AgentHistoryChunk {
+  modelPart?: ModelPartIdentity | null;
   /**
    * The original user input has quotes, directory references or inline references.
    * Present only on the first fragment; display text cannot reconstruct these references.
@@ -8370,6 +8406,10 @@ export interface AgentHistoryChunk {
   totalBytes: number;
   text: string;
   tool: HistoryTool | null;
+}
+export interface ModelPartIdentity {
+  stepId: string;
+  ordinal: number;
 }
 /**
  * Duration of a successfully adopted context checkpoint, in recorded milliseconds.

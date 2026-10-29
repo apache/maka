@@ -26,7 +26,7 @@ use maka_agent_facts::{
         CommitError, EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, LogScope,
         ModelInterruption, RuntimeEvent,
     },
-    model::{ModelFinishReason, ModelStep, ModelUsage},
+    model::{ModelFinishReason, ModelUsage, recorded::ModelCompletion},
     session::CopyPurpose,
 };
 use maka_event_log::{
@@ -126,7 +126,7 @@ fn complete(session: &str, invocation: &str, step: &str, tokens: u64) -> EventWr
         invocation,
         Fact::ModelCompleted {
             step_id: step.into(),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: vec![],
                 finish_reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
@@ -150,6 +150,7 @@ fn interrupted(session: &str, invocation: &str, step: &str) -> EventWrite {
             status: ModelInterruption::Failed,
             diagnostic: None,
             model_failure: None,
+            partial: None,
         },
     ))
 }

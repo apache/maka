@@ -41,6 +41,7 @@ import { keymap } from 'nsh';
 import {
   C,
   compact,
+  captionTextStyle,
   controlStyle,
   controlHoverStyle,
   controlFocusStyle,
@@ -50,6 +51,7 @@ import { Icon } from './Icon';
 import type { Browsing, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
 import {
+  hasForkPrefix,
   sessionActionTarget,
   type SessionAction,
   type SessionActionTarget,
@@ -128,6 +130,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     () => new Map(browser.sessions().map((session) => [session.id, session])),
   );
   const scopesById = computed(() => new Map(scopes().map((scope) => [scope.id, scope])));
+  const firstUnpinned = computed(() => browser.sessions().find((session) => !session.pinned)?.id);
+  const hasPinned = () => browser.sessions()[0]?.pinned === true;
   const rowIds = computed(() =>
     choosingWorkspace()
       ? scopes().map((scope) => scope.id)
@@ -464,129 +468,152 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 props.selected() === key() ||
                 actionsAnchor() === actionTrigger;
               return (
-                <View
-                  // A secondary click opens the row's actions, as its More button does.
-                  onContextMenu={
-                    session()
-                      ? inputAction(showActions, {
-                          session: sessionActionTarget(session()!),
-                          origin: props.selected(),
-                        })
-                      : undefined
-                  }
-                  style={{
-                    flexDirection: 'row',
-                    height: compact() ? 32 : 48,
-                    paddingVertical: compact() ? 0 : 2,
-                  }}
-                >
+                <View>
+                  <If
+                    when={
+                      hasPinned() &&
+                      (key() === browser.sessions()[0]?.id || key() === firstUnpinned())
+                    }
+                  >
+                    <Text
+                      style={{
+                        ...captionTextStyle,
+                        color: C.muted,
+                        paddingHorizontal: 8,
+                        paddingVertical: 4,
+                      }}
+                    >
+                      {session()?.pinned ? tr('Pinned') : tr('Conversations')}
+                    </Text>
+                  </If>
                   <View
-                    onMouseEnter={() => hovered.set(true)}
-                    onMouseLeave={() => hovered.set(false)}
+                    // A secondary click opens the row's actions, as its More button does.
+                    onContextMenu={
+                      session()
+                        ? inputAction(showActions, {
+                            session: sessionActionTarget(session()!),
+                            origin: props.selected(),
+                          })
+                        : undefined
+                    }
                     style={{
-                      flex: 1,
-                      minWidth: 0,
                       flexDirection: 'row',
-                      borderRadius: 8,
-                      ...(platform.isTerminal
-                        ? {}
-                        : {
-                            backgroundColor:
-                              props.selected() === key() || hovered() ? C.line : C.surface,
-                          }),
+                      height: compact() ? 32 : 48,
+                      paddingVertical: compact() ? 0 : 2,
                     }}
                   >
-                    <Button
-                      accessibilityLabel={tr('Open conversation {title}', {
-                        title: session()?.title || tr('Untitled conversation'),
-                      })}
-                      disabled={props.switching() || !session()}
-                      selected={props.selected() === key()}
-                      onPress={inputAction(select, { id: key(), origin: props.selected() })}
+                    <View
+                      onMouseEnter={() => hovered.set(true)}
+                      onMouseLeave={() => hovered.set(false)}
                       style={{
                         flex: 1,
                         minWidth: 0,
-                        paddingHorizontal: 8,
-                        justifyContent: 'center',
+                        flexDirection: 'row',
                         borderRadius: 8,
-                        backgroundColor: platform.isTerminal
-                          ? props.selected() === key()
-                            ? C.line
-                            : C.surface
-                          : 'transparent',
+                        ...(platform.isTerminal
+                          ? {}
+                          : {
+                              backgroundColor:
+                                props.selected() === key() || hovered() ? C.line : C.surface,
+                            }),
                       }}
-                      hoverStyle={platform.isTerminal ? { backgroundColor: C.line } : {}}
-                      focusStyle={{ backgroundColor: C.raised }}
                     >
-                      <View
-                        style={[
-                          { flexDirection: 'row', alignItems: 'center', gap: 8 },
-                          { pointerEvents: 'none' },
-                        ]}
+                      <Button
+                        accessibilityLabel={tr('Open conversation {title}', {
+                          title: session()?.title || tr('Untitled conversation'),
+                        })}
+                        disabled={props.switching() || !session()}
+                        selected={props.selected() === key()}
+                        onPress={inputAction(select, { id: key(), origin: props.selected() })}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          paddingHorizontal: 8,
+                          justifyContent: 'center',
+                          borderRadius: 8,
+                          backgroundColor: platform.isTerminal
+                            ? props.selected() === key()
+                              ? C.line
+                              : C.surface
+                            : 'transparent',
+                        }}
+                        hoverStyle={platform.isTerminal ? { backgroundColor: C.line } : {}}
+                        focusStyle={{ backgroundColor: C.raised }}
                       >
+                        <View
+                          style={[
+                            { flexDirection: 'row', alignItems: 'center', gap: 8 },
+                            { pointerEvents: 'none' },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              {
+                                color:
+                                  props.selected() === key() || session()?.hasUnread
+                                    ? C.accent
+                                    : C.text,
+                                flex: 1,
+                              },
+                              { numberOfLines: 1 },
+                            ]}
+                          >
+                            {session()?.title || tr('Untitled conversation')}
+                          </Text>
+                          <If when={session()?.hasUnread}>
+                            <Icon name="unread" color={C.accent} />
+                          </If>
+                        </View>
                         <Text
                           style={[
-                            {
-                              color:
-                                props.selected() === key() || session()?.hasUnread
-                                  ? C.accent
-                                  : C.text,
-                              flex: 1,
-                            },
+                            { color: C.muted, fontSize: 12, lineHeight: 16 },
                             { numberOfLines: 1 },
                           ]}
                         >
-                          {session()?.title || tr('Untitled conversation')}
-                        </Text>
-                        <If when={session()?.hasUnread}>
-                          <Icon name="unread" color={C.accent} />
-                        </If>
-                      </View>
-                      <Text
-                        style={[
-                          { color: C.muted, fontSize: 12, lineHeight: 16 },
-                          { numberOfLines: 1 },
-                        ]}
-                      >
-                        {session()?.activity === 'working'
-                          ? `${sessionStatusCaption.working} · `
-                          : session()?.activity === 'waiting'
-                            ? `${sessionStatusCaption.waiting} · `
+                          {session()?.activity === 'working'
+                            ? `${sessionStatusCaption.working} · `
+                            : session()?.activity === 'waiting'
+                              ? `${sessionStatusCaption.waiting} · `
+                              : ''}
+                          {/* Forks renamed or titled before the prefix still read as forks. */}
+                          {session()?.branch && !hasForkPrefix(session()!.title)
+                            ? `${tr('Fork')} · `
                             : ''}
-                        {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
-                          session()?.workspace.path}
-                      </Text>
-                    </Button>
-                    <Button
-                      ref={(node) => {
-                        actionTrigger = node;
-                      }}
-                      accessibilityLabel={tr('Actions for {title}', {
-                        title: session()?.title || tr('Untitled conversation'),
-                      })}
-                      disabled={props.switching() || !session()}
-                      onPress={
-                        session()
-                          ? inputAction(showActions, {
-                              session: sessionActionTarget(session()!),
-                              origin: props.selected(),
-                            })
-                          : undefined
-                      }
-                      style={{
-                        width: 32,
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        borderRadius: 8,
-                        opacity: actionsShown() ? 1 : 0,
-                      }}
-                      hoverStyle={controlHoverStyle()}
-                      // Closing the menu returns focus here, and a click elsewhere
-                      // keeps it, so the desktop shows focus as the icon alone.
-                      focusStyle={platform.isTerminal ? controlFocusStyle() : { opacity: 1 }}
-                    >
-                      <Icon name="more" color={C.muted} />
-                    </Button>
+                          {session()?.workspace.path.split('/').filter(Boolean).at(-1) ||
+                            session()?.workspace.path}
+                        </Text>
+                      </Button>
+                      <Button
+                        ref={(node) => {
+                          actionTrigger = node;
+                        }}
+                        accessibilityLabel={tr('Actions for {title}', {
+                          title: session()?.title || tr('Untitled conversation'),
+                        })}
+                        disabled={props.switching() || !session()}
+                        onPress={
+                          session()
+                            ? inputAction(showActions, {
+                                session: sessionActionTarget(session()!),
+                                origin: props.selected(),
+                              })
+                            : undefined
+                        }
+                        style={{
+                          width: 32,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: 8,
+                          opacity: actionsShown() ? 1 : 0,
+                        }}
+                        hoverStyle={controlHoverStyle()}
+                        // Closing the menu returns focus here, and a click elsewhere
+                        // keeps it, so the desktop shows focus as the icon alone.
+                        focusStyle={platform.isTerminal ? controlFocusStyle() : { opacity: 1 }}
+                      >
+                        <Icon name="more" color={C.muted} />
+                      </Button>
+                    </View>
                   </View>
                 </View>
               );

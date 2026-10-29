@@ -35,10 +35,10 @@ fn at(mut event: RuntimeEvent, millis: u64) -> RuntimeEvent {
 async fn execution_projection_is_bounded_and_catalog_revision_tracks_committed_facts() {
     use maka_agent_facts::event::LogScope;
     use maka_agent_facts::event::TerminalStatus;
-    use maka_agent_facts::model::ModelEvent;
     use maka_agent_facts::model::ModelPart;
-    use maka_agent_facts::model::ModelStep;
     use maka_agent_facts::model::TextKind;
+    use maka_agent_facts::model::recorded::ModelCompletion;
+    use maka_agent_facts::model::recorded::ModelObservation;
     use maka_event_log::sessions::SessionExecutionState;
 
     let directory = tempfile::tempdir().unwrap();
@@ -125,10 +125,10 @@ async fn execution_projection_is_bounded_and_catalog_revision_tracks_committed_f
                     invocation.clone(),
                     Fact::ModelObserved {
                         step_id: "step".into(),
-                        event: ModelEvent::PartStarted {
-                            id: "thinking".into(),
-                            text_kind: TextKind::Thinking,
-                            provider_options: None,
+                        event: ModelObservation::ResponseMetadata {
+                            id: None,
+                            model: None,
+                            timestamp: None,
                         },
                     },
                 ),
@@ -147,10 +147,9 @@ async fn execution_projection_is_bounded_and_catalog_revision_tracks_committed_f
                 invocation.clone(),
                 Fact::ModelObserved {
                     step_id: "step".into(),
-                    event: ModelEvent::PartDelta {
-                        id: "part".into(),
-                        text: "x".repeat(9 * 1024 * 1024),
-                        provider_options: None,
+                    event: ModelObservation::ProviderOptions {
+                        provider_part_id: Some("thinking".into()),
+                        options: std::sync::Arc::new(json!({"opaque":"x".repeat(9 * 1024 * 1024)})),
                     },
                 },
             ))
@@ -168,12 +167,16 @@ async fn execution_projection_is_bounded_and_catalog_revision_tracks_committed_f
                     invocation.clone(),
                     Fact::ModelCompleted {
                         step_id: "step".into(),
-                        output: ModelStep {
-                            parts: vec![ModelPart::Text {
-                                text_kind: TextKind::Thinking,
-                                text: "private thinking".into(),
-                                provider_options: None,
-                            }],
+                        output: ModelCompletion {
+                            parts: owned_parts(
+                                &invocation.invocation_id,
+                                "step",
+                                vec![ModelPart::Text {
+                                    text_kind: TextKind::Thinking,
+                                    text: "private thinking".into(),
+                                    provider_options: None,
+                                }],
+                            ),
                             finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                             usage: Default::default(),
                             provider_options: None,
@@ -307,4 +310,35 @@ async fn execution_projection_is_bounded_and_catalog_revision_tracks_committed_f
             .revision,
         1
     );
+}
+
+fn owned_parts(
+    invocation: &str,
+    step: &str,
+    parts: Vec<maka_agent_facts::model::ModelPart>,
+) -> Vec<maka_agent_facts::model::recorded::CompletionPart> {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, part)| {
+            let message_id = match &part {
+                ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                    invocation,
+                    &format!("{step}:{}", call.id),
+                ),
+                _ => uuid::Uuid::new_v4().to_string(),
+            };
+            CompletionPart::Own(ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id,
+                started_at: std::time::UNIX_EPOCH + std::time::Duration::from_millis(2000),
+                provider_part_id: None,
+                part: std::sync::Arc::new(part),
+            })
+        })
+        .collect()
 }

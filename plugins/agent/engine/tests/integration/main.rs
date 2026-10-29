@@ -53,6 +53,7 @@ mod support {
     pub(crate) mod http;
     pub(crate) mod image_projection;
     pub(crate) mod invocation;
+    pub(crate) mod model_records;
     pub(crate) mod recovery;
     pub(crate) mod recovery_session;
     pub(crate) mod store;

@@ -33,6 +33,62 @@ use std::sync::{Arc, atomic::Ordering};
 use support::*;
 use tokio_util::sync::CancellationToken;
 
+#[tokio::test]
+async fn preparation_reserves_admission_order_and_publication_defers_effects() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        EventLog::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let invocation = invocation("prepared-order");
+    let finish = call("finish", "direct", json!({"n": 1}));
+    let after = call("after", "echo", json!({"n": 2}));
+    accepted(&log, &invocation, &[finish.clone(), after.clone()]).await;
+    let effect = Arc::new(Effect::default());
+    let run = RunTools::new(
+        maka_agent_facts::language::Language::En,
+        log.clone(),
+        invocation.clone(),
+        catalog(effect.clone()),
+        ToolMode::Direct,
+        CodeExecutor::new(CellLimits::default()).unwrap(),
+        maka_tools::availability::LoadedTools::temporary().unwrap(),
+    );
+    let mut step = run
+        .capture(".", CancellationToken::new())
+        .await
+        .unwrap()
+        .into_step(&invocation.invocation_id);
+    let before = log.prefix(32, 64 * 1024).await.unwrap();
+    let first = step.prepare(finish, CancellationToken::new());
+    let second = step.prepare(after, CancellationToken::new());
+    let second = second.await.unwrap();
+    let first = first.await.unwrap();
+    assert_eq!(
+        log.prefix(32, 64 * 1024).await.unwrap().digest,
+        before.digest
+    );
+    assert_eq!(effect.0.load(Ordering::SeqCst), 0);
+    let rejected = second.publish(&[]).await.unwrap();
+    assert!(matches!(
+        rejected.completion.await,
+        Err(ToolError::Failed(_))
+    ));
+    let accepted = first.publish(&[]).await.unwrap();
+    assert_eq!(effect.0.load(Ordering::SeqCst), 0);
+    assert!(!step.finished());
+    assert_eq!(accepted.completion.await.unwrap(), json!({"n": 1}));
+    assert_eq!(effect.0.load(Ordering::SeqCst), 1);
+    assert!(step.finished());
+    let prefix = log.prefix(32, 64 * 1024).await.unwrap();
+    assert!(prefix.events.iter().any(|stored| matches!(
+        &stored.event.fact,
+        Fact::ToolRejected { call, reason: ToolRejection::ExclusiveConflict, .. }
+            if call == &ToolCallIdentity::provider(invocation.invocation_id.clone(), "after".into())
+    )));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order() {
     let directory = tempfile::tempdir().unwrap();
@@ -210,7 +266,15 @@ async fn provider_preflight_rejects_before_t1_and_exclusivity_follows_call_order
         let step_id = &invocation.invocation_id;
         let mut step = request.into_step(step_id);
         for (call, reason) in expectations {
-            let result = step.invoke(&call, token.clone()).await;
+            let result = async {
+                step.prepare(call.clone(), token.clone())
+                    .await?
+                    .publish(&[])
+                    .await?
+                    .completion
+                    .await
+            }
+            .await;
             let prefix = log.prefix(200, 1024 * 1024).await.unwrap();
             let facts: Vec<_> = prefix
                 .events
@@ -347,7 +411,13 @@ async fn nested_preflight_is_effect_free_and_diagnostics_are_successful_parent_v
             .await
             .unwrap()
             .into_step(&invocation.invocation_id)
-            .invoke(&call, CancellationToken::new())
+            .prepare(call.clone(), CancellationToken::new())
+            .await
+            .unwrap()
+            .publish(&[])
+            .await
+            .unwrap()
+            .completion
             .await
             .unwrap();
         assert_eq!(value["state"], "completed");

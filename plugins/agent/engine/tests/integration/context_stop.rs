@@ -54,6 +54,12 @@ async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
             )
             .await
             .unwrap();
+        let delta = serde_json::json!({"id":"summary","object":"chat.completion.chunk","created":1,"model":"test",
+            "choices":[{"index":0,"delta":{"content":"private unfinished summary"},"finish_reason":null}]});
+        summary
+            .write_all(format!("data: {delta}\n\n").as_bytes())
+            .await
+            .unwrap();
         seen.send(()).unwrap();
         let mut bytes = Vec::new();
         let _ = summary.read_to_end(&mut bytes).await;
@@ -96,11 +102,29 @@ async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
             .count(),
         1
     );
+    let summary_step = stopped
+        .iter()
+        .find_map(|event| match &event.event.fact {
+            Fact::ModelRequested {
+                step_id,
+                purpose: maka_agent_facts::context::ModelPurpose::Summary,
+                ..
+            } => Some(step_id),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        !stopped.iter().any(|event| matches!(&event.event.fact,
+        Fact::ModelObserved { step_id, event } if step_id == summary_step
+            && !matches!(event, maka_agent_facts::model::recorded::ModelObservation::Finished { .. }))),
+        "cancelled private summary prose must not become durable history"
+    );
     assert!(stopped.iter().any(|event| matches!(
         event.event.fact,
         Fact::ModelInterrupted {
             status: ModelInterruption::Cancelled,
             model_failure: None,
+            partial: None,
             ..
         }
     )));

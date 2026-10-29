@@ -19,15 +19,19 @@
 
 use super::provider_stream::request;
 use maka_agent_facts::model::ToolInput;
-use maka_model::prompt::{AssistantPart, Message, WireGroup};
-use maka_model::{PreparationContext, ProviderKind, WireEncoding};
+use maka_model::prompt::{AssistantPart, Message};
+use maka_model::{FrozenWire, ProviderKind, WireEncoding};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
-fn items(group: WireGroup) -> Vec<Value> {
+async fn items(wire: &FrozenWire) -> Vec<Value> {
+    let mut cursor = wire.source.open(0);
     let mut items = Vec::new();
     let mut bytes = Vec::new();
-    for chunk in group.chunks {
-        let chunk = chunk.unwrap();
+    while let Some(chunk) = cursor.next().await.unwrap() {
+        if chunk.bytes.is_empty() {
+            continue;
+        }
         if chunk.item_start {
             assert!(bytes.is_empty());
         }
@@ -41,8 +45,8 @@ fn items(group: WireGroup) -> Vec<Value> {
     items
 }
 
-#[test]
-fn captured_wire_encoding_replays_after_request_inputs_and_partial_cursor_are_dropped() {
+#[tokio::test]
+async fn captured_wire_encoding_replays_after_request_inputs_and_partial_cursor_are_dropped() {
     for (kind, expected) in [
         (
             ProviderKind::OpenaiChatCompletions,
@@ -66,21 +70,18 @@ fn captured_wire_encoding_replays_after_request_inputs_and_partial_cursor_are_dr
         )
         .unwrap();
         drop(input);
-        let context = PreparationContext::default();
-        let mut partial = encoding
-            .prepare_group(vec![Message::user("hello")], &context)
-            .chunks;
-        assert!(partial.next().unwrap().is_ok());
+        let wire=encoding.prepare_source(Arc::new(maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(&[Message::user("hello")])),resources()).await.unwrap();
+        let mut partial = wire.source.open(0);
+        assert!(partial.next().await.unwrap().is_some());
         drop(partial);
         for _ in 0..2 {
-            let group = encoding.prepare_group(vec![Message::user("hello")], &context);
-            assert_eq!(items(group), vec![expected.clone()]);
+            assert_eq!(items(&wire).await, vec![expected.clone()]);
         }
     }
 }
 
-#[test]
-fn captured_anthropic_wire_encoding_keeps_hosted_tool_alias_after_catalog_changes() {
+#[tokio::test]
+async fn captured_anthropic_wire_encoding_keeps_hosted_tool_alias_after_catalog_changes() {
     use maka_agent_facts::tools::ProviderTool;
     let mut input = request(ProviderKind::Anthropic, "http://localhost/v1".into());
     input.tools[0].name = "Research".into();
@@ -108,12 +109,33 @@ fn captured_anthropic_wire_encoding_keeps_hosted_tool_alias_after_catalog_change
         }],
         provider_options: None,
     }];
+    let wire = encoding
+        .prepare_source(
+            Arc::new(
+                maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(
+                    &messages,
+                ),
+            ),
+            resources(),
+        )
+        .await
+        .unwrap();
     for _ in 0..2 {
         assert_eq!(
-            items(encoding.prepare_group(messages.clone(), &PreparationContext::default())),
+            items(&wire).await,
             vec![
                 json!({"type":"server_tool_use","id":"search-1","name":"web_search","input":{"query":"Maka"}})
             ]
         );
     }
+}
+
+fn resources() -> maka_model::ModelPreparationResources {
+    maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy {
+        staging_bytes: 8 * 1024 * 1024,
+        resident_bytes: 8 * 1024 * 1024,
+        progress_bytes: 256 * 1024,
+        work_bytes: 256 * 1024,
+    })
+    .unwrap()
 }

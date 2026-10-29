@@ -19,6 +19,7 @@
 
 mod copy;
 pub(crate) mod history;
+pub(crate) mod identity;
 mod read;
 mod records;
 pub(crate) mod references;
@@ -152,8 +153,8 @@ pub(crate) async fn commit_in_transaction(
         return Ok(existing);
     }
     sqlx::query(
-        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload)
-        VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload, lookup_digest)
+        VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&artifact.session_id)
     .bind(&artifact.id)
@@ -161,6 +162,7 @@ pub(crate) async fn commit_in_transaction(
     .bind(encoded)
     .bind(digest)
     .bind(bytes)
+    .bind(identity::artifact_lookup_digest(&artifact.session_id, &artifact.id).as_slice())
     .execute(&mut *connection)
     .await?;
     advance(connection, &artifact.session_id).await?;

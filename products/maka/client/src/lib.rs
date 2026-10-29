@@ -23,7 +23,7 @@ pub use journal::{
     Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
     UploadReference,
 };
-use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
+use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding, Resources};
 use maka_host_runtime::application::{
     host::{Client as HostClient, LocalCall},
     transport::{Description, wire::Reply},
@@ -192,6 +192,8 @@ struct Scope {
     children: Mutex<BTreeMap<Uuid, Client>>,
     requests_changed: Notify,
     shutdown: CancellationToken,
+    opening_stop: CancellationToken,
+    openings: Arc<Resources>,
 }
 struct Request {
     id: Uuid,
@@ -244,6 +246,8 @@ impl Client {
             children: Mutex::new(BTreeMap::new()),
             requests_changed: Notify::new(),
             shutdown: CancellationToken::new(),
+            opening_stop: CancellationToken::new(),
+            openings: Arc::default(),
         })))
     }
     /// Capture a UI consumer's declared bindings in an owned child session. Its
@@ -276,6 +280,8 @@ impl Client {
             children: Mutex::new(BTreeMap::new()),
             requests_changed: Notify::new(),
             shutdown: self.0.shutdown.child_token(),
+            opening_stop: CancellationToken::new(),
+            openings: Arc::default(),
         }));
         let owner = self.0.host.lock().await;
         self.0.children.lock().await.insert(id, child.clone());
@@ -333,30 +339,59 @@ impl Client {
         resources: Attachments,
         operation: Option<Uuid>,
     ) -> Result<(Arc<Request>, Description)> {
-        // Opening and registration share the anchor lock with shutdown. Once closing
-        // fences admission, its snapshot includes every previously opened request.
-        let host = self.0.host.lock().await;
-        if self.0.closing.load(Ordering::Acquire) {
-            return Err("client scope is closing".into());
+        let (opened, opening) = tokio::sync::oneshot::channel();
+        {
+            let host = self.0.host.lock().await;
+            if self.0.closing.load(Ordering::Acquire) {
+                return Err("client scope is closing".into());
+            }
+            let description = host.catalogue().describe(endpoint)?.clone();
+            let call = host.call(endpoint, method.into(), input, resources);
+            let mut ticket = self.0.openings.reserve().map_err(error)?;
+            ticket.start();
+            let client = self.clone();
+            // The scope retains physical opening work even if its caller disappears.
+            tokio::spawn(async move {
+                let result = tokio::select! {
+                    biased;
+                    () = client.0.opening_stop.cancelled() => Err("client scope is closing".into()),
+                    result = call => result,
+                };
+                let result = match result {
+                    Ok(call) => {
+                        let request = Arc::new(Request {
+                            id: Uuid::new_v4(),
+                            operation,
+                            observation_ended: AtomicBool::new(false),
+                            stop: CancellationToken::new(),
+                            state: Mutex::new(State {
+                                call,
+                                phase: Phase::New,
+                            }),
+                        });
+                        if client.0.closing.load(Ordering::Acquire) {
+                            request.stop.cancel();
+                        }
+                        client
+                            .0
+                            .requests
+                            .lock()
+                            .await
+                            .insert(request.id, request.clone());
+                        Ok((request, description))
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(Ok((request, _))) = opened.send(result) {
+                    request.observation_ended.store(true, Ordering::Release);
+                    client.0.requests_changed.notify_waiters();
+                }
+                ticket.complete(Ok(()));
+            });
         }
-        let description = host.catalogue().describe(endpoint)?.clone();
-        let call = host.call(endpoint, method.into(), input, resources).await?;
-        let request = Arc::new(Request {
-            id: Uuid::new_v4(),
-            operation,
-            observation_ended: AtomicBool::new(false),
-            stop: CancellationToken::new(),
-            state: Mutex::new(State {
-                call,
-                phase: Phase::New,
-            }),
-        });
-        self.0
-            .requests
-            .lock()
+        opening
             .await
-            .insert(request.id, request.clone());
-        Ok((request, description))
+            .map_err(|_| "client channel opening cleanup remains unconfirmed".to_owned())?
     }
     async fn release_if_clean(&self, request: &Request, state: &State) {
         if state.call.binding_retired() {
@@ -1059,8 +1094,10 @@ impl Client {
     /// stop immediately; original mutations retain this session until they settle.
     pub async fn retire(&self) -> Result<()> {
         self.0.closing.store(true, Ordering::Release);
+        self.0.opening_stop.cancel();
         let reads: Vec<_> = {
             let _host = self.0.host.lock().await;
+            self.0.openings.settle().await.map_err(error)?;
             self.0
                 .requests
                 .lock()
@@ -1100,7 +1137,12 @@ impl Client {
     pub async fn close(&self) -> Result<()> {
         self.0.closing.store(true, Ordering::Release);
         self.0.shutdown.cancel();
+        self.0.opening_stop.cancel();
         let mut host = self.0.host.lock().await;
+        for request in self.0.requests.lock().await.values() {
+            request.stop.cancel();
+        }
+        self.0.openings.settle().await.map_err(error)?;
         let children: Vec<_> = self.0.children.lock().await.values().cloned().collect();
         for child in &children {
             let _ = Box::pin(child.close()).await;

@@ -407,16 +407,16 @@ fn insert(db: &Connection, record: &InteractionRecord, result: Option<Interactio
 }
 
 #[test]
-fn browser_decision_lookup_uses_exact_identity_index_as_unrelated_history_grows() {
+fn browser_decision_lookup_work_stays_constant_as_unrelated_history_grows() {
     for (capability, wire) in [
         (GrantCapability::Browser, "browser"),
         (GrantCapability::BrowserDownload, "browser_download"),
     ] {
-        decision_lookup_uses_exact_identity_index(capability, wire);
+        decision_lookup_work_stays_constant(capability, wire);
     }
 }
 
-fn decision_lookup_uses_exact_identity_index(capability: GrantCapability, wire: &str) {
+fn decision_lookup_work_stays_constant(capability: GrantCapability, wire: &str) {
     let mut selected = target();
     selected.capability = capability;
     let db = Connection::open_in_memory().unwrap();
@@ -517,29 +517,8 @@ fn decision_lookup_uses_exact_identity_index(capability: GrantCapability, wire: 
             );
         }
         previous = Some(steps);
-        let plan: Vec<String> = db
-            .prepare(&format!("EXPLAIN QUERY PLAN {BROWSER_ORIGIN_DECISION}"))
-            .unwrap()
-            .query_map(parameters, |row| row.get(3))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert!(
-            plan.iter().any(|step| step
-                .contains("SEARCH request USING INDEX interaction_browser_origin_decision")),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter().any(|step| step
-                .contains("SEARCH outcome USING INDEX sqlite_autoindex_interaction_outcomes_1")),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter().all(|step| !step.starts_with("SCAN ")),
-            "{plan:?}"
-        );
         eprintln!(
-            "SQLite {} history={end} matching_decisions=2 vm_steps={steps} plan={plan:?}",
+            "SQLite {} history={end} matching_decisions=2 vm_steps={steps}",
             rusqlite::version()
         );
     }

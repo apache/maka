@@ -17,6 +17,11 @@
  * under the License.
  */
 
+pub use maka_capabilities::model_preparation::{
+    ActivePreparation, DirectoryLease, ModelPreparationResources, PreparationPolicy,
+    StagedPreparation, WorkLease,
+};
+
 mod delta;
 pub use maka_agent_facts::model::error::ModelError;
 pub use maka_agent_facts::model::error::ProviderFailure;
@@ -513,5 +518,5 @@ impl maka_agent_ports::model::Events for ChannelEvents {
 mod stream_tests;
 
 pub use adapters::wire::{
-    PreparationContext, WireEncoding, wire_message_metadata, wire_preparation_dependencies,
+    EncodedWire, FrozenWire, SummaryWireBound, WireEncoding, WirePlan, WireSink, WireWrite,
 };

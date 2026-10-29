@@ -28,6 +28,63 @@ pub struct Document {
     pub filename: Option<String>,
     pub media_type: String,
 }
+/// Source-backed request documents occupy an ordinal range without per-document allocation.
+#[derive(Debug, Clone)]
+pub struct DocumentReferences {
+    request: RequestDocuments,
+    received: Vec<Document>,
+}
+#[derive(Debug, Clone)]
+enum RequestDocuments {
+    Owned(Vec<Document>),
+    Deferred(usize),
+}
+#[derive(Debug, Clone, Copy)]
+enum DocumentReference<'a> {
+    Owned(&'a Document),
+    Deferred { index: usize },
+}
+impl Default for DocumentReferences {
+    fn default() -> Self {
+        Vec::new().into()
+    }
+}
+impl From<Vec<Document>> for DocumentReferences {
+    fn from(request: Vec<Document>) -> Self {
+        Self {
+            request: RequestDocuments::Owned(request),
+            received: Vec::new(),
+        }
+    }
+}
+impl DocumentReferences {
+    pub fn deferred(count: usize) -> Self {
+        Self {
+            request: RequestDocuments::Deferred(count),
+            received: Vec::new(),
+        }
+    }
+    pub(crate) fn push(&mut self, document: Document) {
+        self.received.push(document)
+    }
+    fn get(&self, index: usize) -> Option<DocumentReference<'_>> {
+        let count = match &self.request {
+            RequestDocuments::Owned(documents) => documents.len(),
+            RequestDocuments::Deferred(count) => *count,
+        };
+        if index < count {
+            return match &self.request {
+                RequestDocuments::Owned(documents) => {
+                    documents.get(index).map(DocumentReference::Owned)
+                }
+                RequestDocuments::Deferred(_) => Some(DocumentReference::Deferred { index }),
+            };
+        }
+        self.received
+            .get(index - count)
+            .map(DocumentReference::Owned)
+    }
+}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Citation {
@@ -79,7 +136,7 @@ impl Citation {
     pub fn is_web_search(&self) -> bool {
         matches!(self, Self::WebSearchResultLocation { .. })
     }
-    pub fn attachment(&self, documents: &[Document]) -> output::Citation {
+    pub fn attachment(&self, documents: &DocumentReferences) -> output::Citation {
         let extensions = metadata(serde_json::to_value(self).expect("citation is JSON"));
         let (source, text) = match self {
             Self::WebSearchResultLocation {
@@ -105,7 +162,26 @@ impl Citation {
             Self::PageLocation { document, .. }
             | Self::CharLocation { document, .. }
             | Self::ContentBlockLocation { document, .. } => {
-                let info = documents.get(document.document_index);
+                let reference = documents.get(document.document_index);
+                if let Some(DocumentReference::Deferred { index }) = reference {
+                    return output::Citation {
+                        source: output::Source::DeferredDocument {
+                            id: document
+                                .file_id
+                                .value()
+                                .cloned()
+                                .unwrap_or_else(|| document.document_index.to_string()),
+                            document_index: index,
+                            title: document.document_title.clone(),
+                            extensions,
+                        },
+                        text: document.cited_text.clone(),
+                    };
+                }
+                let info = reference.and_then(|reference| match reference {
+                    DocumentReference::Owned(document) => Some(document),
+                    DocumentReference::Deferred { .. } => None,
+                });
                 (
                     output::Source::Document {
                         id: document
@@ -134,7 +210,7 @@ impl Citation {
     /// consume an ID, and attachment identity never consumes generated IDs.
     pub fn source(
         &self,
-        documents: &[Document],
+        documents: &DocumentReferences,
         next_id: &mut dyn FnMut() -> String,
     ) -> Option<output::Source> {
         match self {
@@ -154,11 +230,22 @@ impl Citation {
     fn document_source(
         &self,
         location: &Location,
-        documents: &[Document],
+        documents: &DocumentReferences,
         next_id: &mut dyn FnMut() -> String,
         details: Value,
     ) -> Option<output::Source> {
-        let document = documents.get(location.document_index)?;
+        let reference = documents.get(location.document_index)?;
+        let document = match reference {
+            DocumentReference::Owned(document) => document,
+            DocumentReference::Deferred { index } => {
+                return Some(output::Source::DeferredDocument {
+                    id: next_id(),
+                    document_index: index,
+                    title: location.document_title.clone(),
+                    extensions: metadata(details),
+                });
+            }
+        };
         Some(output::Source::Document {
             id: next_id(),
             media_type: document.media_type.clone(),
@@ -169,5 +256,43 @@ impl Citation {
             filename: document.filename.clone(),
             extensions: metadata(details),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deferred_request_ordinals_and_received_documents_share_the_original_index_space() {
+        let count = 1_000_000;
+        let mut documents = DocumentReferences::deferred(count);
+        let citation = |document_index| Citation::PageLocation {
+            document: Location {
+                cited_text: "quote".into(),
+                document_index,
+                document_title: None,
+                file_id: Field::Missing,
+            },
+            start_page_number: 1,
+            end_page_number: 2,
+        };
+        let source = citation(count - 1)
+            .source(&documents, &mut || "source".into())
+            .unwrap();
+        assert!(
+            matches!(source,output::Source::DeferredDocument{document_index,..}if document_index==count-1)
+        );
+        documents.push(Document {
+            title: "received".into(),
+            filename: None,
+            media_type: "text/plain".into(),
+        });
+        let source = citation(count)
+            .source(&documents, &mut || "next".into())
+            .unwrap();
+        assert!(
+            matches!(source,output::Source::Document{title,media_type,..}if title=="received"&&media_type=="text/plain")
+        );
     }
 }

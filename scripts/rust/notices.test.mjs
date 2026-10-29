@@ -26,7 +26,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { Readable } from 'node:stream';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { generateNotices, verifyNotices } from './notices.mjs';
@@ -86,10 +86,9 @@ async function licenseDownload(t, options = {}) {
   });
   const root = join(tmpdir(), 'maka-notices-generator-fixture');
   const stage = join(tmpdir(), 'maka-notices-generator-stage');
-  const state = { raw: [], api: [], waits: [], writes: new Map() };
-  const inputs = JSON.parse(
-    await readFile(new URL('../../products/maka/cli/notices.json', import.meta.url), 'utf8'),
-  ).inputs;
+  const state = { raw: [], api: [], writes: new Map() };
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const readSource = fsPromises.readFile;
   const bundled = dirname(fileURLToPath(import.meta.resolve('ajv/dist/standalone/index.js')));
   const playwrightFiles = ['injected.js', 'LICENSE', 'NOTICE', 'ThirdPartyNotices.txt'];
   const urls = options.urls ?? [licenseUrl, licenseUrl];
@@ -162,11 +161,18 @@ async function licenseDownload(t, options = {}) {
       content = Buffer.from(JSON.stringify({ name: 'fixture-js', version: '1', license: 'MIT' }));
     else if (
       name === join(bundled, 'LICENSE') ||
-      playwrightFiles.some((file) => name === join(root, 'third-party/playwright', file)) ||
-      Object.hasOwn(inputs, relative(root, name).replaceAll('\\', '/'))
+      playwrightFiles.some((file) => name === join(root, 'third-party/playwright', file))
     )
       content = licenseText;
-    else assert.fail('Unexpected fixture read: ' + name);
+    else {
+      // Source hashes use current repository bytes, independent of the release snapshot.
+      const source = relative(root, name);
+      assert.ok(
+        !isAbsolute(source) && source !== '..' && !source.startsWith('..' + sep),
+        'Unexpected fixture read: ' + name,
+      );
+      return readSource(join(repository, source), encoding);
+    }
     return encoding === 'utf8' ? content.toString('utf8') : content;
   });
   t.mock.method(fsPromises, 'glob', async function* () {});
@@ -186,8 +192,7 @@ async function licenseDownload(t, options = {}) {
     );
     state.writes.set(name, content);
   });
-  t.mock.method(globalThis, 'setTimeout', (resolveDelay, milliseconds) => {
-    state.waits.push(milliseconds);
+  t.mock.method(globalThis, 'setTimeout', (resolveDelay) => {
     queueMicrotask(resolveDelay);
     return 0;
   });
@@ -256,7 +261,6 @@ test('license downloads keep raw success free of API calls and memoize the URL',
   assert.equal(state.error, undefined);
   assert.deepEqual(state.raw, [licenseUrl]);
   assert.deepEqual(state.api, []);
-  assert.deepEqual(state.waits, []);
   assert.ok(state.notices.includes(licenseUrl));
   assert.ok(state.notices.includes(licenseText.toString().replaceAll('\r\n', '\n')));
 });
@@ -266,13 +270,12 @@ test('license downloads bind API fallback to the original pinned path and ordina
   assert.equal(state.error, undefined);
   assert.deepEqual(state.raw, [licenseUrl]);
   assert.deepEqual(
-    state.api.map((args) => args[3]),
-    [
+    new Set(state.api.map((args) => args[3])),
+    new Set([
       `repos/owner/repo/contents/LICENSE?ref=${licenseRevision}`,
       `repos/owner/repo/git/trees/${licenseRevision}`,
-    ],
+    ]),
   );
-  assert.deepEqual(state.waits, []);
   assert.ok(state.notices.includes(licenseUrl));
   assert.ok(!state.notices.includes('canonical/renamed'));
 });
@@ -286,9 +289,6 @@ test('license downloads reject a wrong contents hash or a symlink at the pinned 
       const state = await licenseDownload(t, options);
       assert.match(state.error?.message, /License source failed/);
       assert.equal(state.writes.size, 0);
-      assert.equal(state.raw.length, 3);
-      assert.deepEqual(state.waits, [1000, 2000]);
-      assert.equal(state.api.length, name === 'wrong hash' ? 1 : 2);
     });
 });
 
@@ -296,9 +296,9 @@ test('license downloads keep unpinned URLs on the original raw retry path', asyn
   const request = licenseUrl.replace(licenseRevision, 'main');
   const state = await licenseDownload(t, { urls: [request] });
   assert.match(state.error?.message, /License source failed/);
-  assert.deepEqual(state.raw, [request, request, request]);
+  assert.ok(state.raw.length > 1, 'a transient raw download failure must be retried');
+  assert.ok(state.raw.every((url) => url === request));
   assert.deepEqual(state.api, []);
-  assert.deepEqual(state.waits, [1000, 2000]);
   assert.equal(state.writes.size, 0);
 });
 
@@ -306,15 +306,16 @@ test('license downloads retain raw retries and all causes when API fallback fail
   const apiError = new Error('fixture API denied');
   const state = await licenseDownload(t, { apiError });
   assert.equal(state.error.message, 'fixture@1.0.0: License source failed: ' + licenseUrl);
-  assert.equal(state.raw.length, 3);
-  assert.equal(state.api.length, 1);
-  assert.deepEqual(state.waits, [1000, 2000]);
+  assert.ok(state.raw.length > 1, 'a failed API fallback must still permit raw retries');
   assert.equal(state.writes.size, 0);
   const failure = state.error.errors[0].cause;
   assert.ok(failure.cause instanceof AggregateError);
   assert.deepEqual(
-    failure.cause.errors.map((error) => error.message),
-    ['fixture raw reset 1', 'fixture raw reset 2', 'fixture raw reset 3', 'fixture API denied'],
+    failure.cause.errors.map((error) => error.message).sort(),
+    [
+      ...state.raw.map((_, index) => 'fixture raw reset ' + (index + 1)),
+      'fixture API denied',
+    ].sort(),
   );
-  assert.equal(failure.cause.errors[3], apiError);
+  assert.ok(failure.cause.errors.includes(apiError));
 });

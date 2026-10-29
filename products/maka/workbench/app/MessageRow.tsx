@@ -63,6 +63,7 @@ export function MessageRow({
   onToolReading,
   finalActions,
   editMessage,
+  failureActions,
 }: {
   item: () => Row;
   /** How many identical failures this row stands for. */
@@ -80,6 +81,8 @@ export function MessageRow({
   finalActions?(row: () => Row, ownerKey: () => string): JSX.Element;
   /** An action on a user message, beside its copy button. */
   editMessage?(row: () => Row, ownerKey: () => string): JSX.Element;
+  /** An action beside a failure notice. */
+  failureActions?(row: () => Row): JSX.Element;
 }) {
   const rowKey = (row: Row) => ownerKey?.() ?? messageKey(row);
   return (
@@ -93,17 +96,15 @@ export function MessageRow({
         // no source view since its source is the same text.
         if (row().role === 'failure')
           return (
-            <Text
-              style={[
-                { ...secondaryTextStyle, color: C.warning, paddingVertical: 4 },
-                { userSelect: 'text' },
-              ]}
-            >
-              {row().text}
-              {(repeats?.() ?? 1) > 1
-                ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
-                : ''}
-            </Text>
+            <View style={{ gap: 4, paddingVertical: 4 }}>
+              <Text style={[{ ...secondaryTextStyle, color: C.warning }, { userSelect: 'text' }]}>
+                {row().text}
+                {(repeats?.() ?? 1) > 1
+                  ? ` · ${tr('Failed {count} times', { count: repeats!() })}`
+                  : ''}
+              </Text>
+              {failureActions?.(row)}
+            </View>
           );
         const expanded = viewState?.expanded ?? signal(false),
           sourceMode = viewState?.sourceMode ?? signal(false);

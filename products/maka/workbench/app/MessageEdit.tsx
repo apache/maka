@@ -20,11 +20,21 @@
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
+import { Button } from 'nsh/base';
 import { useHost } from './host';
 import { canRegenerateFromText, messageKey, type Position, type Row } from './history';
 import { readOriginal, type OriginalMessage } from './MessageCopy';
 import { forkTitle, type SessionAction } from './sessionLifecycle';
-import { C, IconButton } from './ui';
+import { Icon } from './Icon';
+import {
+  C,
+  captionTextStyle,
+  controlDisabledStyle,
+  controlFocusStyle,
+  controlHoverStyle,
+  controlStyle,
+  IconButton,
+} from './ui';
 
 const samePosition = (left: Position, right: Position) =>
   left.sourceSequence === right.sourceSequence && left.itemIndex === right.itemIndex;
@@ -128,12 +138,99 @@ export function MessageEdit(props: {
         </If>
         <If when={target() !== null}>
           <IconButton
-            label={props.regenerate ? tr('Regenerate in a fork') : tr('Edit and resend')}
+            label={props.regenerate ? tr('Regenerate in a fork') : tr('Edit and resend in a fork')}
             tooltip={pending() ? tr('Creating fork…') : undefined}
             icon={props.regenerate ? 'refresh' : 'edit'}
             disabled={pending()}
             onPress={inputAction(edit, target())}
           />
+        </If>
+      </View>
+    </If>
+  );
+}
+
+/**
+ * Send the opening message of a failed turn again in the same conversation.
+ * It only sends from an empty composer, so a draft is never replaced; the
+ * fork actions remain for changing the message first.
+ */
+export function TurnRetry(props: {
+  /** The user message that opened the failed turn. */
+  row(): Row | null;
+  sessionId: string;
+  through(): number;
+  /** Why the text cannot be sent now, or null. */
+  blocked(): string | null;
+  send(text: string): Promise<void>;
+}) {
+  const host = useHost();
+  const pending = signal(false);
+  const notice = createText();
+  let alive = true;
+  cleanup(() => {
+    alive = false;
+  });
+  const target = computed<Target | null>(
+    () => {
+      const row = props.row();
+      if (!row || row.role !== 'user' || row.field !== 'body' || !row.position || !row.turnId)
+        return null;
+      // Text replay must not drop attachments or structured references.
+      if (!canRegenerateFromText(row)) return null;
+      return {
+        sessionId: props.sessionId,
+        key: messageKey(row),
+        role: 'user',
+        position: { ...row.position },
+        through: row.metadataThrough ?? props.through(),
+        turnId: row.turnId,
+      };
+    },
+    { equals: sameTarget },
+  );
+  const owns = (original: Target) => alive && sameTarget(target(), original);
+  const retry = async (original: Target | null) => {
+    if (!original || !owns(original) || pending()) return;
+    notice.set(props.blocked() ?? '');
+    if (props.blocked()) return;
+    pending.set(true);
+    try {
+      const text = await readOriginal(host, original, () => owns(original));
+      if (text === null) return;
+      if (text === '') throw new UiError('This message has no text to edit.');
+      // The draft may have changed while the text was read.
+      const blocked = props.blocked();
+      if (blocked) {
+        notice.set(blocked);
+        return;
+      }
+      await props.send(text);
+    } catch (reason) {
+      if (owns(original)) notice.set(errorText(reason));
+    } finally {
+      if (alive) pending.set(false);
+    }
+  };
+  return (
+    <If when={target() !== null}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <Button
+          accessibilityLabel={tr('Retry')}
+          disabled={pending()}
+          onPress={inputAction(retry, target())}
+          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+          hoverStyle={controlHoverStyle()}
+          focusStyle={controlFocusStyle()}
+          disabledStyle={controlDisabledStyle}
+        >
+          <Icon name="refresh" color={C.accent} />
+          <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+        </Button>
+        <If when={notice()}>
+          <Text style={[{ ...captionTextStyle, color: C.muted }, { userSelect: 'text' }]}>
+            {notice()}
+          </Text>
         </If>
       </View>
     </If>

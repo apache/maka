@@ -32,6 +32,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod diagnostics;
+mod preview;
 
 pub(crate) struct Agent(pub Arc<Owner>);
 impl Handler for Agent {
@@ -545,6 +546,7 @@ impl Handler for Agent {
                             chunks: chunks
                                 .into_iter()
                                 .map(|chunk| HistoryChunk {
+                                    model_part: chunk.model_part,
                                     has_references: chunk.has_references,
                                     final_output: chunk.final_output,
                                     model: chunk.model,
@@ -977,6 +979,7 @@ impl Handler for Agent {
                         .await?
                         .subscribe_commits()
                         .map_err(|error| error.to_string())?;
+                    let mut preview = preview::Delivery::new(owner.preview_epoch());
                     let mut after = input.after;
                     let mut queue_revision = None;
                     let mut interactions_delivered = None;
@@ -1018,6 +1021,17 @@ impl Handler for Agent {
                             computer_apps_delivered = Some(apps);
                         }
                         owner.require_session(&input.session_id).await?;
+                        let mut reader = owner.preview_reader(&input.session_id).await;
+                        let current = reader
+                            .as_mut()
+                            .and_then(|reader| reader.borrow_and_update().clone());
+                        preview.current(current);
+                        if reader
+                            .as_ref()
+                            .is_some_and(|reader| reader.has_changed().is_err())
+                        {
+                            reader = None;
+                        }
                         let through = owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
@@ -1027,12 +1041,16 @@ impl Handler for Agent {
                         if after > through {
                             return Err("agent_cursor_invalid".into());
                         }
+                        let through = preview
+                            .initial_fence()
+                            .map_or(through, |fence| through.min(fence.max(after)));
                         let page = owner
                             .scoped_store(context.scope(), &input.session_id)
                             .await?
                             .session_stream_events(&input.session_id, after, through, 32, 48 * 1024)
                             .await
                             .map_err(|_| "agent_observation_unavailable")?;
+                        preview.committed(&page.events);
                         after = page.next_after.unwrap_or(page.through_sequence);
                         context
                             .emit(encode(DeliveryPage::Events {
@@ -1041,6 +1059,12 @@ impl Handler for Agent {
                                 events: page.events.into_iter().map(delivery).collect(),
                             })?)
                             .await?;
+                        if let Some(update) = preview.next(after)? {
+                            context
+                                .emit(encode(DeliveryPage::Preview { page: update })?)
+                                .await?;
+                            continue;
+                        }
                         if page.next_after.is_some() {
                             continue;
                         }
@@ -1048,6 +1072,12 @@ impl Handler for Agent {
                             biased;
                             _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
                             result = commits.changed() => result.map_err(|_| "agent_observation_closed")?,
+                            _ = async {
+                                match reader.as_mut() {
+                                    Some(reader) => { let _ = reader.changed().await; },
+                                    None => std::future::pending::<()>().await,
+                                }
+                            } => {},
                         }
                     }
                 }
@@ -1195,6 +1225,7 @@ pub(crate) fn summary_for(
         workspace: session.configuration.workspace,
         updated_at: session.updated_at,
         archived: session.archived,
+        pinned: session.configuration.pinned,
         has_unread: session.read_state.has_unread,
         tail_message_id: session.last_message.map(|message| message.tail_message_id),
     }
@@ -1222,46 +1253,14 @@ fn delivery(event: StoreStreamEvent) -> Delivery {
             step_id: event.invocation.invocation_id.clone(),
             completed: true,
         },
-        StreamFact::PartStarted {
+        StreamFact::ModelPartCommitted {
             step_id,
-            part_id,
-            text_kind,
-        } => DeliveryFact::PartStarted {
-            message_id: event.id,
+            message_id,
+            ordinal,
+        } => DeliveryFact::PartCommitted {
             step_id,
-            part_id,
-            text_kind: text_kind.into(),
-        },
-        StreamFact::PartDelta {
-            step_id,
-            part_id,
-            text,
-        } => DeliveryFact::Delta {
-            step_id,
-            part_id,
-            text,
-        },
-        StreamFact::PartFinished { step_id, part_id } => {
-            DeliveryFact::PartFinished { step_id, part_id }
-        }
-        StreamFact::ToolInputStarted {
-            step_id,
-            tool_call_id,
-            name,
-            provider_executed,
-        } => DeliveryFact::ToolInputStarted {
-            tool_use_id: model_tool_id(&step_id, &tool_call_id),
-            step_id,
-            name,
-            provider_executed,
-        },
-        StreamFact::ToolInputDelta {
-            step_id,
-            tool_call_id,
-            text,
-        } => DeliveryFact::ToolInputDelta {
-            tool_use_id: model_tool_id(&step_id, &tool_call_id),
-            text,
+            message_id,
+            ordinal,
         },
         StreamFact::ToolInputReady {
             step_id,

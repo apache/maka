@@ -34,7 +34,7 @@ tsc -p /tmp/maka-workbench-types/tsconfig.json --noEmit --skipLibCheck false
 
 该 example 从 UI 包使用的同一份 NSH 源码和原生 registry 生成声明。生成的 TypeScript 项目包含 `Bootstrap.tsx`、`App.tsx` 和 Computer 权限组件，也检查它们实际导入的文件。它不会连接 Host 或打开桌面。请使用尚不存在的输出目录，以及与当前 `nsh check` 工具链兼容的 TypeScript 编译器。
 
-[真实 Host 测试 fixture](../terminal-shell/tests/support/mod.rs) 对实际的 `maka/host` registry 调用 `nsh_core::element::declarations`，将 `host.d.ts` 写入 `MAKA_NSH_EVIDENCE` 指定的目录。可在仓库根目录运行 CI 同样选取的模型搜索测试来收集它：
+[真实 Host 测试 fixture](../terminal-shell/tests/real_host/support.rs) 对实际的 `maka/host` registry 调用 `nsh_core::element::declarations`，将 `host.d.ts` 写入 `MAKA_NSH_EVIDENCE` 指定的目录。可在仓库根目录运行 CI 同样选取的模型搜索测试来收集它：
 
 ```sh
 MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace \
@@ -42,3 +42,5 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 ```
 
 这会运行真实 Host 测试，不是独立的类型生成器，也不对应用做 TypeScript 类型检查。
+
+在会话操作菜单中选择 **置顶会话**，会话会出现在列表顶部的 **已置顶** 分组；选择 **取消置顶** 可恢复普通列表位置。Host 持久化这一选择，并在不同界面和重启后保持一致的分页顺序。

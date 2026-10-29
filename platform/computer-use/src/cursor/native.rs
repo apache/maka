@@ -28,7 +28,6 @@ use std::{
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
-#[path = "helper.rs"]
 mod helper;
 use super::{Color, Options, theme};
 

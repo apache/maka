@@ -75,6 +75,11 @@ impl Handler for CounterHandler {
         Box::pin(async move {
             match method.as_str() {
                 "read" if input["fail"] == true => Err("ordinary counter failure".into()),
+                "read" if input["holdUntilCancelled"] == true => {
+                    owner.started.notify_one();
+                    context.scope().cancellation.cancelled().await;
+                    Ok(Value::Null)
+                }
                 "read" => Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)})),
                 "uploadAttachment" => {
                     let file = context

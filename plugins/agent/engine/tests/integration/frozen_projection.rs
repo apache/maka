@@ -48,10 +48,7 @@ async fn settled(log: &SessionFixture, output: &ToolOutput) {
             source_scope: maka_agent_facts::event::LogScope::Session { id: "session".into() },
             source_high_water: 1, source_digest: "fixture".into(), input_digest: "fixture".into(),
             route_identity: "fixture".into() },
-        Fact::ModelCompleted { step_id: "step".into(), output: serde_json::from_value(json!({
-            "parts":[{"kind":"tool_call","call":{"id":"call","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}],
-            "finish_reason":"tool-calls","usage":{}
-        })).unwrap() },
+        Fact::ModelCompleted { step_id: "step".into(), output: crate::support::model_records::completion(prior.clone(), "step", serde_json::from_value::<Vec<maka_agent_facts::model::ModelPart>>(json!([{"kind":"tool_call","call":{"id":"call","name":"Read","input":{"kind":"json","data":{}},"provider_executed":false}}])).unwrap(), maka_agent_facts::model::ModelFinishReason::ToolCalls) },
         Fact::ToolDispatched { presentation: None,
         title: None, operation_id: "step:call".into(),
             call: ToolCallIdentity::provider("step".into(), "call".into()), name: "Read".into(), input: json!({}) },

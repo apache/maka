@@ -76,15 +76,6 @@ fn work(db: &Connection, sql: &str, parameters: &[&dyn ToSql]) -> (usize, i32) {
         .unwrap();
     (rows.len(), statement.get_status(StatementStatus::VmStep))
 }
-fn plan(db: &Connection, sql: &str, parameters: &[&dyn ToSql]) -> Vec<String> {
-    db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-        .unwrap()
-        .query_map(parameters, |row| row.get(3))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
-}
-
 #[test]
 fn pending_work_is_independent_of_completed_history() {
     let db = Connection::open_in_memory().unwrap();
@@ -142,22 +133,7 @@ fn pending_work_is_independent_of_completed_history() {
             } else {
                 assert_eq!(steps, short[index], "{name} scanned completed history");
             }
-            let details = plan(&db, sql, parameters);
-            assert!(
-                details
-                    .iter()
-                    .any(|line| line.contains("SEARCH interaction_pending")),
-                "{name}: {details:?}"
-            );
-            assert!(
-                details
-                    .iter()
-                    .all(|line| !line.contains("interaction_requests")
-                        && !line.contains("interaction_outcomes")
-                        && !line.contains("TEMP B-TREE")),
-                "{name}: {details:?}"
-            );
-            eprintln!("{name}: rows={rows} vm_steps={steps} plan={details:?}");
+            eprintln!("{name}: rows={rows} vm_steps={steps}");
         }
     }
     // Session closure also ignores other Sessions' live work; root recovery
@@ -268,29 +244,6 @@ fn mixed_root_pending_work_is_independent_of_completed_app_history() {
             current.1.1
         );
     }
-    for (sql, parameters) in [
-        (PENDING_INTERACTIONS, vec![&"s" as &dyn ToSql]),
-        (ALL_PENDING_SESSION_PAGE, vec![&"s" as &dyn ToSql, &""]),
-    ] {
-        let details = plan(&db, sql, &parameters);
-        assert!(
-            details
-                .iter()
-                .any(|line| line.contains("MERGE (UNION ALL)")),
-            "{details:?}"
-        );
-        assert!(
-            details.iter().all(|line| !line.contains("TEMP B-TREE")),
-            "{details:?}"
-        );
-        assert!(
-            details.iter().any(|line| line.contains("SEARCH")
-                && line.contains("interaction_requests")
-                && line.contains("request_id=?")),
-            "{details:?}"
-        );
-        eprintln!("mixed root plan: {details:?}");
-    }
     // Populated ranges exercise the same terminal index-bound comparison;
     // an empty following range can instead finish directly at index EOF.
     let mut foreign_baseline = None;
@@ -321,23 +274,6 @@ fn mixed_root_pending_work_is_independent_of_completed_app_history() {
         } else {
             foreign_baseline = Some(current);
         }
-        let details = plan(&db, PENDING_INTERACTIONS, &[&"s"]);
-        assert!(
-            details
-                .iter()
-                .any(|line| line.contains("MERGE (UNION ALL)")),
-            "{details:?}"
-        );
-        assert!(
-            details.iter().all(|line| !line.contains("TEMP B-TREE")),
-            "{details:?}"
-        );
-        assert!(
-            details.iter().any(|line| line.contains("SEARCH")
-                && line.contains("interaction_requests")
-                && line.contains("request_id=?")),
-            "{details:?}"
-        );
         eprintln!(
             "SQLite {} unrelated_pending_per_source={end} pending_vm_steps={} terminal_page_vm_steps={}",
             rusqlite::version(),

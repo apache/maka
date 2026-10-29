@@ -399,8 +399,21 @@ mod wake_language {
     use maka_graph::coordinator::{Coordinator, Operators};
     use std::sync::Mutex;
 
+    fn stored_copy(
+        row: &maka_agent_facts::event::StoredEvent,
+    ) -> maka_agent_facts::event::StoredEvent {
+        maka_agent_facts::event::StoredEvent {
+            sequence: row.sequence,
+            event: row.event.clone(),
+        }
+    }
+
     #[derive(Default)]
-    struct Host(Mutex<Vec<Submit>>);
+    struct Host(
+        Mutex<Vec<Submit>>,
+        Vec<(SessionOperation, maka_agent_facts::event::StoredEvent)>,
+        AtomicBool,
+    );
     #[allow(unused_variables)]
     impl Commands for Host {
         fn remove_session(
@@ -591,7 +604,20 @@ mod wake_language {
             '_,
             Result<Option<maka_agent_facts::event::StoredEvent>, CommandError>,
         > {
-            unreachable!("this test only submits supervisor wakes")
+            Box::pin(async move {
+                if self.2.swap(false, Ordering::SeqCst) {
+                    return Err(CommandError::Busy);
+                }
+                Ok(self
+                    .1
+                    .iter()
+                    .find(|(accepted, row)| {
+                        accepted == &operation
+                            && row.event.id == event_id
+                            && row.sequence <= through
+                    })
+                    .map(|(_, row)| stored_copy(row)))
+            })
         }
         fn changes(&self) -> Result<tokio::sync::watch::Receiver<u64>, CommandError> {
             unreachable!("this test only submits supervisor wakes")
@@ -651,6 +677,167 @@ mod wake_language {
             _target: &maka_graph::schedule::Target,
         ) -> BoxFuture<'_, Result<ChildSession, maka_graph::Error>> {
             unreachable!("supervisor wakes do not provision workers")
+        }
+    }
+
+    #[tokio::test]
+    async fn completed_model_parts_keep_order_budget_and_exact_history_after_a_read_retry() {
+        use maka_agent_facts::event::{Fact, InvocationOutcome, RuntimeEvent, StoredEvent};
+        use maka_agent_facts::model::recorded::{
+            CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, RecordedPartRef,
+        };
+        use maka_agent_facts::model::{ModelFinishReason, ModelPart, TextKind};
+        use maka_graph::projection::Execution;
+        for (body, expected, truncated) in [
+            ("中🙂".to_owned(), "head 中🙂 tail".to_owned(), false),
+            (
+                "中🙂".repeat(3000),
+                format!("head {}中", "中🙂".repeat(2339)),
+                true,
+            ),
+        ] {
+            let invocation = Invocation {
+                session_id: "child".into(),
+                turn_id: "turn".into(),
+                run_id: "run".into(),
+                invocation_id: "invocation".into(),
+            };
+            let operation = SessionOperation {
+                session_id: "child".into(),
+                operation_id: "accepted".into(),
+            };
+            let text = |ordinal, value: &str, kind| ModelPartRecord {
+                ordinal,
+                message_id: format!("part-{ordinal}"),
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: Arc::new(ModelPart::Text {
+                    text_kind: kind,
+                    text: value.into(),
+                    provider_options: None,
+                }),
+            };
+            let event = |sequence, id: &str, fact| {
+                let mut event = RuntimeEvent::new(invocation.clone(), fact);
+                event.id = id.into();
+                StoredEvent { sequence, event }
+            };
+            let observed = event(
+                3,
+                "original",
+                Fact::ModelObserved {
+                    step_id: "step".into(),
+                    event: ModelObservation::Part(text(1, &body, TextKind::Text)),
+                },
+            );
+            let completed = event(
+                4,
+                "complete",
+                Fact::ModelCompleted {
+                    step_id: "step".into(),
+                    output: ModelCompletion {
+                        parts: vec![
+                            CompletionPart::Own(text(0, "head ", TextKind::Text)),
+                            CompletionPart::Ref(RecordedPartRef {
+                                event_id: "original".into(),
+                                ordinal: 1,
+                            }),
+                            CompletionPart::Own(text(2, "private", TextKind::Thinking)),
+                            CompletionPart::Own(text(3, " tail", TextKind::Text)),
+                        ],
+                        finish_reason: ModelFinishReason::Stop,
+                        usage: Default::default(),
+                        provider_options: None,
+                        response_id: None,
+                        model: None,
+                        timestamp: None,
+                    },
+                },
+            );
+            let terminal = event(
+                5,
+                "terminal",
+                Fact::InvocationEnded {
+                    outcome: InvocationOutcome::Completed,
+                },
+            );
+            let earlier = event(
+                2,
+                "executor",
+                Fact::ExecutorCompleted {
+                    text: "earlier answer".into(),
+                },
+            );
+            let observation = Observation {
+                receipt: Receipt {
+                    invocation: invocation.clone(),
+                    message_id: "input".into(),
+                    content_digest: "digest".into(),
+                },
+                progress: Progress::Ended {
+                    outcome: InvocationOutcome::Completed,
+                },
+                through_sequence: 5,
+                terminal_event_id: Some("terminal".into()),
+                attention_id: None,
+            };
+            let host = Host(
+                Mutex::new(Vec::new()),
+                vec![(operation.clone(), stored_copy(&observed))],
+                AtomicBool::new(true),
+            );
+            let work = WorkId::new();
+            let operator = OperatorId::new();
+            let mut projection =
+                Execution::new(work.clone(), operator.clone(), observation.clone());
+            assert!(
+                projection
+                    .apply_page(
+                        EventPage {
+                            events: vec![
+                                earlier,
+                                stored_copy(&observed),
+                                stored_copy(&completed),
+                                stored_copy(&terminal)
+                            ],
+                            through_sequence: 5,
+                            next_after: None
+                        },
+                        &host,
+                        &operation
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                projection.after, 3,
+                "retry resumes after already projected facts"
+            );
+            projection
+                .apply_page(
+                    EventPage {
+                        events: vec![stored_copy(&completed), terminal],
+                        through_sequence: 5,
+                        next_after: None,
+                    },
+                    &host,
+                    &operation,
+                )
+                .await
+                .unwrap();
+            assert_eq!(projection.record_count, 3);
+            let terminal = projection.terminal.unwrap();
+            assert_eq!(terminal.text, expected);
+            assert_eq!(terminal.truncated, truncated);
+            let mut historical = Execution::new(work, operator, observation);
+            let exact = historical
+                .observe(completed, &host, &operation)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(exact.record_id, "complete");
+            assert_eq!(exact.text, expected);
+            assert_eq!(exact.truncated, truncated);
         }
     }
 

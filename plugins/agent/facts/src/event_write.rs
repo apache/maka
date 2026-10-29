@@ -65,9 +65,33 @@ impl EventWrite {
         match &event.fact {
             Fact::ModelCompleted { output, .. } => {
                 let mut ids = std::collections::HashSet::new();
-                for call in output.tool_calls() {
-                    if !ids.insert(call.id.as_str()) {
-                        return Err(CommitError::Rejected("duplicate tool call".into()));
+                let mut ordinals = std::collections::HashSet::new();
+                for part in &output.parts {
+                    let ordinal = match part {
+                        crate::model::recorded::CompletionPart::Own(record) => {
+                            if record.message_id.is_empty() {
+                                return Err(CommitError::Rejected(
+                                    "empty model message identity".into(),
+                                ));
+                            }
+                            if let crate::model::ModelPart::ToolCall { call } = record.part.as_ref()
+                                && !ids.insert(call.id.as_str())
+                            {
+                                return Err(CommitError::Rejected("duplicate tool call".into()));
+                            }
+                            record.ordinal
+                        }
+                        crate::model::recorded::CompletionPart::Ref(reference) => {
+                            if reference.event_id.is_empty() {
+                                return Err(CommitError::Rejected(
+                                    "empty model part reference".into(),
+                                ));
+                            }
+                            reference.ordinal
+                        }
+                    };
+                    if !ordinals.insert(ordinal) {
+                        return Err(CommitError::Rejected("duplicate model part ordinal".into()));
                     }
                 }
             }
@@ -328,7 +352,7 @@ impl EventWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall};
+    use crate::model::{ModelFinishReason, ModelPart, ModelToolCall};
     use serde_json::json;
 
     fn call(id: &str, name: &str, provider_executed: bool) -> ModelPart {
@@ -353,8 +377,22 @@ mod tests {
             },
             Fact::ModelCompleted {
                 step_id: "step".into(),
-                output: ModelStep {
-                    parts,
+                output: crate::model::recorded::ModelCompletion {
+                    parts: parts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ordinal, part)| {
+                            crate::model::recorded::CompletionPart::Own(
+                                crate::model::recorded::ModelPartRecord {
+                                    ordinal: ordinal as u64,
+                                    message_id: format!("part-{ordinal}"),
+                                    started_at: SystemTime::UNIX_EPOCH,
+                                    provider_part_id: None,
+                                    part: Arc::new(part),
+                                },
+                            )
+                        })
+                        .collect(),
                     finish_reason: ModelFinishReason::ToolCalls,
                     usage: Default::default(),
                     provider_options: None,

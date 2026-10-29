@@ -277,7 +277,7 @@ impl Session {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn data_url(block: &ContentBlock) -> Result<String, ToolError> {
     match block {
         ContentBlock::Image { data, mime_type } => Ok(format!("data:{mime_type};base64,{data}")),

@@ -48,7 +48,7 @@ against a loopback SSE fixture, verifies canonical output, and retains per-proce
 and system telemetry. Background-agent capacity probes distinguish requested
 sessions, actual active executions, confirmed completions and unknown outcomes.
 
-Terminal behavior uses the current [terminal-shell real Host tests](../../products/maka/terminal-shell/tests/real_host.rs), including the production PTY lifecycle. Run them through `cargo test -p maka-cli --no-default-features --test terminal_real_host`. Compare retained release artifacts with the same renderer, terminal protocol, viewport and workload; report input latency separately from frame encoding and output delivery.
+Terminal behavior uses the current [terminal-shell real Host tests](../../products/maka/terminal-shell/tests/real_host/main.rs), including the production PTY lifecycle. Run them through `cargo test -p maka-cli --no-default-features --test terminal_real_host`. Compare retained release artifacts with the same renderer, terminal protocol, viewport and workload; report input latency separately from frame encoding and output delivery.
 
 Long-task comparisons use retained release test executables from both revisions,
 with the same benchmark fixtures. Build `maka-event-log --test archive` and

@@ -106,6 +106,19 @@ export default {
           shortcut: 'mod+o',
           trigger: 'resume',
         },
+        find: {
+          kind: 'command',
+          title: {
+            fallback: 'Find in conversation',
+            translations: { 'zh-CN': '在对话中查找', 'zh-TW': '在對話中尋找' },
+          },
+          description: {
+            fallback: 'Search the messages in this conversation',
+            translations: { 'zh-CN': '搜索此对话中的消息', 'zh-TW': '搜尋此對話中的訊息' },
+          },
+          order: 15,
+          trigger: 'find',
+        },
         'new': {
           kind: 'command',
           title: {

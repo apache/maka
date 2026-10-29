@@ -31,10 +31,8 @@ use maka_agent_facts::execution::WorkspaceIdentity;
 
 #[path = "../continuation/fixtures.rs"]
 mod continuation;
-#[path = "lineage_checkpoint.rs"]
 mod lineage_checkpoint;
 
-#[path = "bundle.rs"]
 mod bundle;
 
 fn selected_ids(source: &ModelContextSource) -> Vec<String> {

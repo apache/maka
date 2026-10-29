@@ -27,11 +27,13 @@ use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::history::RowPosition;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ModelUsage;
 use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::recorded::{
+    CompletionPart, ModelCompletion, ModelObservation, ModelPartRecord, ModelPartial,
+    RecordedPartRef,
+};
 use maka_presentation::{Content, InvocationView, ProjectionError};
 use serde_json::json;
 use std::time::{Duration, UNIX_EPOCH};
@@ -78,65 +80,44 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
             input_digest: "input".into(),
             route_identity: "route".into(),
         },
-        Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::PartStarted {
-                id: "provider-part".into(),
-                text_kind: TextKind::Text,
-                provider_options: None,
-            },
-        },
-        Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::PartDelta {
-                id: "provider-part".into(),
-                text: "😀 hello".into(),
-                provider_options: options.clone(),
-            },
-        },
     ];
+    let record = record(
+        0,
+        "canonical-text",
+        ModelPart::Text {
+            text_kind: TextKind::Text,
+            text: "😀 hello".into(),
+            provider_options: options.map(Into::into),
+        },
+    );
     if matches!(
         outcome,
         InvocationOutcome::Completed | InvocationOutcome::HandoffPaused { .. }
     ) {
-        facts.extend([
-            Fact::ModelObserved {
-                step_id: "step".into(),
-                event: ModelEvent::PartFinished {
-                    id: "provider-part".into(),
-                    provider_options: None,
-                },
+        facts.push(Fact::ModelCompleted {
+            step_id: "step".into(),
+            output: ModelCompletion {
+                parts: vec![CompletionPart::Own(record)],
+                finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
+                usage,
+                provider_options: None,
+                response_id: None,
+                model: None,
+                timestamp: None,
             },
-            Fact::ModelObserved {
-                step_id: "step".into(),
-                event: ModelEvent::Finished {
-                    reason: maka_agent_facts::model::ModelFinishReason::Stop,
-                    usage: usage.clone(),
-                    provider_options: None,
-                },
-            },
-            Fact::ModelCompleted {
-                step_id: "step".into(),
-                output: ModelStep {
-                    parts: vec![ModelPart::Text {
-                        text_kind: TextKind::Text,
-                        text: "😀 hello".into(),
-                        provider_options: options,
-                    }],
-                    finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
-                    usage,
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
-            },
-        ]);
+        });
     } else {
         facts.push(Fact::ModelInterrupted {
             model_failure: None,
             diagnostic: None,
             step_id: "step".into(),
+            partial: Some(ModelPartial {
+                parts: vec![CompletionPart::Own(record)],
+                tool_inputs: vec![],
+                response_id: None,
+                model: None,
+                timestamp: None,
+            }),
             status: if matches!(outcome, InvocationOutcome::Cancelled { .. }) {
                 ModelInterruption::Cancelled
             } else {
@@ -159,8 +140,18 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
         .collect()
 }
 
+fn record(ordinal: u64, id: &str, part: ModelPart) -> ModelPartRecord {
+    ModelPartRecord {
+        ordinal,
+        message_id: id.into(),
+        started_at: UNIX_EPOCH + Duration::from_millis(1002),
+        provider_part_id: None,
+        part: std::sync::Arc::new(part),
+    }
+}
+
 #[test]
-fn completed_and_interrupted_rows_keep_overlay_identity_time() {
+fn completed_and_interrupted_rows_keep_record_identity_time() {
     let mut messages = Vec::new();
     for outcome in [
         InvocationOutcome::Completed,
@@ -206,24 +197,13 @@ fn completed_and_interrupted_rows_keep_overlay_identity_time() {
         let mut view = InvocationView::new();
         let mut replay = InvocationView::new();
         let mut rows = Vec::new();
-        let mut frozen = Vec::new();
-        for (index, stored) in events.iter().enumerate() {
+        for stored in &events {
             let next = view.push(stored).unwrap();
             let roundtrip = StoredEvent {
                 sequence: stored.sequence,
                 event: serde_json::from_slice(&serde_json::to_vec(&stored.event).unwrap()).unwrap(),
             };
             assert_eq!(next, replay.push(&roundtrip).unwrap());
-            if index == 3 {
-                assert!(
-                    next.is_empty(),
-                    "observation does not publish a mutable durable row"
-                );
-                frozen = view.overlay();
-                assert_eq!(frozen.len(), 1);
-                assert_eq!(frozen[0].id, events[2].event.id);
-                assert_eq!(frozen[0].ts, 1002);
-            }
             rows.extend(next);
         }
         assert!(view.overlay().is_empty());
@@ -231,13 +211,11 @@ fn completed_and_interrupted_rows_keep_overlay_identity_time() {
             .iter()
             .find(|row| matches!(row.message.content, Content::Assistant { .. }))
             .unwrap();
-        if let Content::Assistant { interrupted, .. } = &mut frozen[0].content {
-            assert!(!*interrupted, "live overlay is not a failed fragment");
-            *interrupted = matches!(outcome, InvocationOutcome::Failed { .. });
-        }
-        assert_eq!(
-            assistant.message, frozen[0],
-            "overlay and settled presentation keep the same content identity"
+        assert_eq!(assistant.message.id, "canonical-text");
+        assert_eq!(assistant.message.ts, 1002);
+        assert!(
+            matches!(&assistant.message.content, Content::Assistant { text, interrupted, .. }
+            if text == "😀 hello" && *interrupted == matches!(outcome, InvocationOutcome::Failed { .. }))
         );
         assert_eq!(rows[0].message.ts, 1000);
         assert!(
@@ -309,32 +287,21 @@ fn completed_and_interrupted_rows_keep_overlay_identity_time() {
                 class: "provider".into(),
                 message: None,
             });
-            if let Fact::ModelObserved {
-                event:
-                    ModelEvent::PartStarted {
-                        text_kind,
-                        provider_options,
-                        ..
-                    },
+            let Fact::ModelInterrupted {
+                partial: Some(partial),
                 ..
             } = &mut facts[2].event.fact
-            {
-                *text_kind = kind;
-                *provider_options = Some(options.clone());
-            }
-            let mut closed = StoredEvent {
-                sequence: facts[3].sequence + 1,
-                event: facts[3].event.clone(),
+            else {
+                unreachable!()
             };
-            closed.event.id = "part-closed".into();
-            closed.event.fact = Fact::ModelObserved {
-                step_id: "step".into(),
-                event: ModelEvent::PartFinished {
-                    id: "provider-part".into(),
-                    provider_options: None,
-                },
+            let CompletionPart::Own(record) = &mut partial.parts[0] else {
+                unreachable!()
             };
-            facts.insert(4, closed);
+            record.part = std::sync::Arc::new(ModelPart::Text {
+                text_kind: kind,
+                text: "😀 hello".into(),
+                provider_options: Some(options.clone().into()),
+            });
             let mut view = InvocationView::new();
             for fact in facts {
                 for row in view.push(&fact).unwrap() {
@@ -355,20 +322,23 @@ fn completed_and_interrupted_rows_keep_overlay_identity_time() {
 #[test]
 fn complete_text_is_retained_and_malformed_evidence_poisons_the_view() {
     let mut events = events(InvocationOutcome::Completed);
-    let mut view = InvocationView::new();
-    for event in &events[..3] {
-        view.push(event).unwrap();
-    }
-    let Fact::ModelObserved {
-        event: ModelEvent::PartDelta { text, .. },
-        ..
-    } = &mut events[3].event.fact
-    else {
+    let Fact::ModelCompleted { output, .. } = &mut events[2].event.fact else {
         unreachable!()
     };
-    *text = "x".repeat(1025);
-    view.push(&events[3]).unwrap();
-    assert!(view.overlay().iter().any(|message| matches!(&message.content, Content::Assistant {text,..} if text == &"x".repeat(1025))),"complete observed delta must survive");
+    let CompletionPart::Own(part) = &mut output.parts[0] else {
+        unreachable!()
+    };
+    part.part = std::sync::Arc::new(ModelPart::Text {
+        text_kind: TextKind::Text,
+        text: "x".repeat(1025).into(),
+        provider_options: None,
+    });
+    let mut view = InvocationView::new();
+    let rows: Vec<_> = events
+        .iter()
+        .flat_map(|event| view.push(event).unwrap())
+        .collect();
+    assert!(rows.iter().any(|row| matches!(&row.message.content, Content::Assistant {text,..} if text == &"x".repeat(1025))));
 
     let mut view = InvocationView::new();
     view.push(&events[0]).unwrap();
@@ -399,6 +369,7 @@ fn interrupted_request_without_output_has_a_durable_diagnostic_not_an_assistant_
                 step_id: "step".into(),
                 status: ModelInterruption::RetryableFailure,
                 diagnostic: Some("Responses WebSocket closed: fixture diagnostic".into()),
+                partial: None,
             },
         ),
     };
@@ -553,7 +524,6 @@ fn project_tool_fanout(
     count: usize,
     item_acceptance: bool,
     with_usage: bool,
-    _limit: usize,
 ) -> Vec<maka_presentation::Row> {
     use maka_agent_facts::model::{ModelFinishReason, ModelToolCall, ToolInput};
     use maka_agent_facts::tool_call::ToolCallIdentity;
@@ -574,6 +544,46 @@ fn project_tool_fanout(
     view.push(&request).unwrap();
     let mut sequence = request.sequence;
     let mut rows = Vec::new();
+    let calls: Vec<_> = (0..count)
+        .map(|index| ModelToolCall {
+            id: format!("call-{index}"),
+            name: "echo".into(),
+            input: ToolInput::Json(json!({"note":format!("input-{index}")})),
+            provider_options: None,
+            provider_executed: false,
+        })
+        .collect();
+    let records: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .map(|(ordinal, call)| {
+            record(
+                ordinal as u64,
+                &maka_presentation::tool_message_id("invocation", &format!("step:{}", call.id)),
+                ModelPart::ToolCall { call: call.clone() },
+            )
+        })
+        .collect();
+    let mut completion_parts = Vec::new();
+    for record in records {
+        if item_acceptance {
+            sequence += 1;
+            let event = RuntimeEvent::new(
+                invocation.clone(),
+                Fact::ModelObserved {
+                    step_id: "step".into(),
+                    event: ModelObservation::Part(record.clone()),
+                },
+            );
+            completion_parts.push(CompletionPart::Ref(RecordedPartRef {
+                event_id: event.id.clone(),
+                ordinal: record.ordinal,
+            }));
+            rows.extend(view.push(&StoredEvent { sequence, event }).unwrap());
+        } else {
+            completion_parts.push(CompletionPart::Own(record));
+        }
+    }
     let mut push = |fact| {
         sequence += 1;
         rows.extend(
@@ -584,21 +594,6 @@ fn project_tool_fanout(
             .unwrap(),
         );
     };
-    let calls: Vec<_> = (0..count)
-        .map(|index| ModelToolCall {
-            id: format!("call-{index}"),
-            name: "echo".into(),
-            input: ToolInput::Json(json!({"note":format!("input-{index}")})),
-            provider_options: None,
-            provider_executed: false,
-        })
-        .collect();
-    for call in &calls {
-        push(Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::ToolCall(call.clone()),
-        });
-    }
     let usage = if with_usage {
         ModelUsage {
             input_tokens: Some(7),
@@ -610,7 +605,7 @@ fn project_tool_fanout(
     };
     push(Fact::ModelObserved {
         step_id: "step".into(),
-        event: ModelEvent::Finished {
+        event: ModelObservation::Finished {
             reason: ModelFinishReason::ToolCalls,
             usage: usage.clone(),
             provider_options: None,
@@ -618,12 +613,8 @@ fn project_tool_fanout(
     });
     push(Fact::ModelCompleted {
         step_id: "step".into(),
-        output: ModelStep {
-            parts: calls
-                .iter()
-                .cloned()
-                .map(|call| ModelPart::ToolCall { call })
-                .collect(),
+        output: ModelCompletion {
+            parts: completion_parts,
             finish_reason: ModelFinishReason::ToolCalls,
             usage,
             provider_options: None,
@@ -654,7 +645,7 @@ fn project_tool_fanout(
 
 #[test]
 fn completion_accepted_fanout_projects_129_original_calls_and_results() {
-    let rows = project_tool_fanout(129, false, false, 1024 * 1024);
+    let rows = project_tool_fanout(129, false, false);
     let calls: Vec<_> = rows
         .iter()
         .filter_map(|row| match &row.message.content {
@@ -681,7 +672,7 @@ fn completion_accepted_fanout_projects_129_original_calls_and_results() {
 
 #[test]
 fn item_accepted_fanout_projects_257_calls_with_distinct_original_positions() {
-    let rows = project_tool_fanout(257, true, false, 1024 * 1024);
+    let rows = project_tool_fanout(257, true, false);
     let calls: Vec<_> = rows
         .iter()
         .filter(|row| matches!(row.message.content, Content::ToolCall { .. }))
@@ -724,103 +715,59 @@ fn item_accepted_fanout_projects_257_calls_with_distinct_original_positions() {
 }
 
 #[test]
-fn complete_text_metadata_survives_start_delta_and_finish() {
-    for stage in ["identity", "start", "delta", "finish"] {
-        let mut source = events(InvocationOutcome::Completed);
-        let mut view = InvocationView::new();
-        for event in source.iter().take(2) {
-            view.push(event).unwrap();
-        }
-        let options = Some(json!({"signature":"x".repeat(8192)}));
-        let index = match stage {
-            "identity" | "start" => 2,
-            "delta" => 3,
-            _ => 4,
-        };
-        if stage == "identity" {
-            let Fact::ModelObserved {
-                event: ModelEvent::PartStarted { id, .. },
-                ..
-            } = &mut source[index].event.fact
-            else {
-                unreachable!()
-            };
-            *id = "x".repeat(8192);
-        } else {
-            match &mut source[index].event.fact {
-                Fact::ModelObserved {
-                    event:
-                        ModelEvent::PartStarted {
-                            provider_options, ..
-                        }
-                        | ModelEvent::PartDelta {
-                            provider_options, ..
-                        }
-                        | ModelEvent::PartFinished {
-                            provider_options, ..
-                        },
-                    ..
-                } => *provider_options = options,
-                _ => unreachable!(),
-            }
-        }
-        for event in source.iter().take(index).skip(2) {
-            view.push(event).unwrap();
-        }
-        assert!(
-            view.push(&source[index]).is_ok(),
-            "{stage} complete metadata must remain available"
-        );
-    }
-
-    // Replacing one option does not retain every former value. Accepted text
-    // options still follow the original completion rather than a new equality rule.
+fn complete_text_preserves_large_identity_and_provider_metadata() {
     let mut source = events(InvocationOutcome::Completed);
-    let invocation = source[0].event.invocation.clone();
+    let Fact::ModelCompleted { output, .. } = &mut source[2].event.fact else {
+        unreachable!()
+    };
+    let CompletionPart::Own(part) = &mut output.parts[0] else {
+        unreachable!()
+    };
+    part.message_id = "x".repeat(8192);
+    part.part = std::sync::Arc::new(ModelPart::Text {
+        text_kind: TextKind::Text,
+        text: "body".into(),
+        provider_options: Some(std::sync::Arc::new(json!({"signature":"x".repeat(8192)}))),
+    });
+    output.parts.push(CompletionPart::Own(record(
+        1,
+        "canonical-source",
+        ModelPart::Source {
+            source: maka_agent_facts::model::ModelSource::Url {
+                id: "provider-source".into(),
+                url: "https://example.test/reference".into(),
+                title: Some("Reference".into()),
+                provider_options: None,
+            },
+        },
+    )));
     let mut view = InvocationView::new();
-    for event in source.iter().take(3) {
-        view.push(event).unwrap();
-    }
-    let mut sequence = source[2].sequence;
-    for _ in 0..8 {
-        sequence += 1;
-        view.push(&StoredEvent {
-            sequence,
-            event: RuntimeEvent::new(
-                invocation.clone(),
-                Fact::ModelObserved {
-                    step_id: "step".into(),
-                    event: ModelEvent::PartDelta {
-                        id: "provider-part".into(),
-                        text: String::new(),
-                        provider_options: Some(json!({"signature":"x".repeat(1024)})),
-                    },
-                },
-            ),
-        })
+    let rows: Vec<_> = source
+        .iter()
+        .flat_map(|event| view.push(event).unwrap())
+        .collect();
+    let assistant = rows
+        .iter()
+        .find(|row| matches!(row.message.content, Content::Assistant { .. }))
         .unwrap();
-    }
-    for event in source.iter_mut().skip(4).take(3) {
-        sequence += 1;
-        event.sequence = sequence;
-        if let Fact::ModelCompleted { output, .. } = &mut event.event.fact {
-            let ModelPart::Text { text, .. } = &mut output.parts[0] else {
-                unreachable!()
-            };
-            text.clear();
-        }
-        let rows = view.push(event).unwrap();
-        if matches!(event.event.fact, Fact::ModelCompleted { .. }) {
-            assert!(
-                matches!(&rows[0].message.content, Content::Assistant { text, provider_options, .. } if text.is_empty() && provider_options == &Some(json!({"vendor":{"signature":"signed"}})))
-            );
-        }
-    }
+    assert_eq!(assistant.message.id, "x".repeat(8192));
+    assert!(
+        matches!(&assistant.message.content, Content::Assistant { text, provider_options: Some(options), .. }
+        if text == "body" && options == &json!({"signature":"x".repeat(8192)}))
+    );
+    let source = rows
+        .iter()
+        .find(|row| row.message.id == "canonical-source")
+        .unwrap();
+    assert_eq!(source.message.ts, 1002);
+    assert!(
+        matches!(&source.message.content, Content::Assistant { text, .. } if text == "Source: Reference\nhttps://example.test/reference")
+    );
 }
 
 #[test]
 fn completion_usage_after_256_calls_has_a_distinct_original_position() {
-    let rows = project_tool_fanout(256, false, true, 1024 * 1024);
+    let rows = project_tool_fanout(256, false, true);
     let calls: Vec<_> = rows
         .iter()
         .filter(|row| matches!(row.message.content, Content::ToolCall { .. }))
@@ -829,14 +776,14 @@ fn completion_usage_after_256_calls_has_a_distinct_original_position() {
     assert_eq!(
         calls[0].position,
         RowPosition {
-            source_sequence: 270,
+            source_sequence: 14,
             item_index: 0
         }
     );
     assert_eq!(
         calls[255].position,
         RowPosition {
-            source_sequence: 270,
+            source_sequence: 14,
             item_index: 255
         }
     );
@@ -847,7 +794,7 @@ fn completion_usage_after_256_calls_has_a_distinct_original_position() {
     assert_eq!(
         usage.position,
         RowPosition {
-            source_sequence: 270,
+            source_sequence: 14,
             item_index: 256
         }
     );
@@ -866,59 +813,11 @@ fn completion_usage_after_256_calls_has_a_distinct_original_position() {
     assert_eq!(
         next.position,
         RowPosition {
-            source_sequence: 271,
+            source_sequence: 15,
             item_index: 0
         }
     );
     assert!(usage.position < next.position);
-}
-
-#[test]
-fn individually_fitting_calls_do_not_share_a_tool_payload_budget() {
-    for item_acceptance in [false, true] {
-        let rows = project_tool_fanout(16, item_acceptance, false, 1024);
-        let calls: Vec<_> = rows
-            .iter()
-            .filter(|row| matches!(row.message.content, Content::ToolCall { .. }))
-            .collect();
-        let results: Vec<_> = rows
-            .iter()
-            .filter(|row| matches!(row.message.content, Content::ToolResult { .. }))
-            .collect();
-        assert_eq!(calls.len(), 16);
-        assert_eq!(results.len(), 16);
-        for (index, (call, result)) in calls.iter().zip(&results).enumerate() {
-            assert!(
-                matches!(&call.message.content, Content::ToolCall { tool_name, args, .. }
-                if tool_name == "echo" && args == &json!({"note":format!("input-{index}")}))
-            );
-            assert!(
-                matches!(&result.message.content, Content::ToolResult { tool_use_id, content: maka_presentation::ToolContent::Text { text }, .. }
-                if tool_use_id == &call.message.id && text == &format!("fixture result call-{index}"))
-            );
-            assert_eq!(
-                call.position,
-                if item_acceptance {
-                    RowPosition {
-                        source_sequence: 13 + index as u64,
-                        item_index: 0,
-                    }
-                } else {
-                    RowPosition {
-                        source_sequence: 30,
-                        item_index: index as u64,
-                    }
-                }
-            );
-            assert_eq!(
-                result.position,
-                RowPosition {
-                    source_sequence: 32 + 2 * index as u64,
-                    item_index: 0
-                }
-            );
-        }
-    }
 }
 
 #[test]
@@ -927,6 +826,12 @@ fn complete_tool_parts_and_pending_records_remain_available() {
     use maka_agent_facts::tool_call::{ToolCallIdentity, ToolOrigin};
     for host_sdk in [false, true] {
         let mut source = events(InvocationOutcome::Completed);
+        if let Fact::ModelRequested {
+            item_acceptance, ..
+        } = &mut source[1].event.fact
+        {
+            *item_acceptance = true;
+        }
         let mut view = InvocationView::new();
         for event in source.iter().take(if host_sdk { 1 } else { 2 }) {
             view.push(event).unwrap();
@@ -947,24 +852,29 @@ fn complete_tool_parts_and_pending_records_remain_available() {
                     },
                 },
                 name: "echo".into(),
-                input,
+                input: input.clone(),
             }
         } else {
             Fact::ModelObserved {
                 step_id: "step".into(),
-                event: ModelEvent::ToolCall(ModelToolCall {
-                    id: "oversized".into(),
-                    name: "echo".into(),
-                    input: ToolInput::Json(input),
-                    provider_options: None,
-                    provider_executed: false,
-                }),
+                event: ModelObservation::Part(record(
+                    0,
+                    &maka_presentation::tool_message_id("invocation", "step:oversized"),
+                    ModelPart::ToolCall {
+                        call: ModelToolCall {
+                            id: "oversized".into(),
+                            name: "echo".into(),
+                            input: ToolInput::Json(input.clone()),
+                            provider_options: None,
+                            provider_executed: false,
+                        },
+                    },
+                )),
             }
         };
-        assert!(view.push(&source[2]).is_ok());
-        assert!(
-            view.push(&source[2]).is_err(),
-            "replayed evidence remains invalid"
-        );
+        let rows = view.push(&source[2]).unwrap();
+        assert!(rows.iter().any(
+            |row| matches!(&row.message.content, Content::ToolCall { args, .. } if args == &input)
+        ));
     }
 }

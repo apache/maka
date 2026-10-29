@@ -23,7 +23,10 @@ use maka_agent_facts::{
     event::{
         Fact, InvocationInput, InvocationOutcome, LogScope, RuntimeEvent, StoredEvent, ToolOutcome,
     },
-    model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall},
+    model::{
+        ModelFinishReason, ModelPart, ModelToolCall,
+        recorded::{CompletionPart, ModelCompletion, ModelPartRecord},
+    },
     tool_call::{ToolCallIdentity, ToolOrigin},
 };
 use rusqlite::{Connection as RawConnection, StatementStatus};
@@ -35,7 +38,11 @@ async fn database() -> SqliteConnection {
         sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE,
         invocation_id TEXT NOT NULL, kind TEXT NOT NULL, operation_id TEXT,
         event_json TEXT NOT NULL,
-        event_session TEXT GENERATED ALWAYS AS (json_extract(event_json,'$.invocation.session_id')) STORED
+        accounting_at REAL,
+        accounting_usage TEXT,
+        invocation_model TEXT,
+        accounting_tool TEXT,
+        event_session TEXT
     );
     CREATE INDEX invocation_kind ON event_log(invocation_id,kind,operation_id);
     CREATE VIEW runtime_events AS SELECT * FROM event_log;
@@ -44,14 +51,16 @@ async fn database() -> SqliteConnection {
         WHERE NOT EXISTS(SELECT 1 FROM imported_invocations i WHERE i.invocation_id=e.invocation_id);")
         .execute(&mut db).await.unwrap();
     let schema = crate::schema::fixture(|_, name| {
-        [
-            "context_obligations",
-            "context_safety_",
-            "context_execution_",
-            "context_independent_",
-        ]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
+        name.starts_with("model_part_")
+            || name == "model_selected_parts"
+            || [
+                "context_obligations",
+                "context_safety_",
+                "context_execution_",
+                "context_independent_",
+            ]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
     });
     sqlx::raw_sql(sqlx::AssertSqlSafe(schema))
         .execute(&mut db)
@@ -105,11 +114,30 @@ fn requested(step: &str) -> Fact {
     }
 }
 
-fn completed(step: &str, parts: Vec<ModelPart>) -> Fact {
+fn completed(invocation: &str, step: &str, parts: Vec<ModelPart>) -> Fact {
     Fact::ModelCompleted {
         step_id: step.into(),
-        output: ModelStep {
-            parts,
+        output: ModelCompletion {
+            parts: parts
+                .into_iter()
+                .enumerate()
+                .map(|(ordinal, part)| {
+                    let message_id = match &part {
+                        ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                            invocation,
+                            &format!("{step}:{}", call.id),
+                        ),
+                        _ => uuid::Uuid::now_v7().to_string(),
+                    };
+                    CompletionPart::Own(ModelPartRecord {
+                        ordinal: ordinal as u64,
+                        message_id,
+                        started_at: std::time::UNIX_EPOCH,
+                        provider_part_id: None,
+                        part: std::sync::Arc::new(part),
+                    })
+                })
+                .collect(),
             finish_reason: ModelFinishReason::Stop,
             usage: Default::default(),
             provider_options: None,
@@ -135,13 +163,21 @@ async fn append_worker(
         fact,
     );
     let json = serde_json::to_string(&event)?;
-    let inserted = sqlx::query("INSERT INTO event_log(event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,?,?,?)")
-        .bind(&event.id).bind(invocation).bind(event.fact.kind())
-        .bind(event.fact.operation_id()).bind(&json).execute(&mut *worker).await?;
+    let inserted = crate::canonical_insert::insert(crate::canonical_insert::Record {
+        sequence: None,
+        event_id: &event.id,
+        invocation_id: Some(invocation),
+        kind: event.fact.kind(),
+        operation_id: event.fact.operation_id(),
+        json: &json,
+    })
+    .execute(&mut *worker)
+    .await?;
     let stored = StoredEvent {
         sequence: u64::try_from(inserted.last_insert_rowid()).unwrap(),
         event,
     };
+    crate::model_items::record(worker, &stored).await?;
     crate::context::projection::record(worker, &stored, &json).await
 }
 
@@ -203,7 +239,7 @@ async fn recovery_work_depends_on_unfinished_work_not_completed_history() {
         append(&mut db, &id, opening()).await;
         append(&mut db, &id, ended("completed")).await;
         append(&mut db, "forever", requested(&id)).await;
-        append(&mut db, "forever", completed(&id, vec![])).await;
+        append(&mut db, "forever", completed("forever", &id, vec![])).await;
         if n == 99 {
             short = Some((
                 work(&mut db, UNFINISHED_INVOCATIONS, 16.into()).await,
@@ -242,6 +278,7 @@ async fn pending_call_recovery_preserves_accepted_input_and_unknown_effects() {
         &mut db,
         "run",
         completed(
+            "run",
             "step",
             vec![ModelPart::ToolCall {
                 call: ModelToolCall {
@@ -312,5 +349,4 @@ async fn pending_call_recovery_preserves_accepted_input_and_unknown_effects() {
     assert_eq!(work(&mut db, query, "run".to_owned().into()).await.0, 0);
 }
 
-#[path = "pagination_tests.rs"]
 mod pagination;

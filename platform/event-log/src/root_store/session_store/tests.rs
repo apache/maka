@@ -362,67 +362,6 @@ async fn foreign_process_cleanup_and_continuation_receipt_stay_private() {
 }
 
 #[tokio::test]
-async fn prepared_handles_and_wire_views_are_session_bound() {
-    let (_dir, root, a, b) = fixture().await;
-    let build = b
-        .prepare_model_view(
-            SemanticSelection {
-                session: b.id().into(),
-                lineage: None,
-                after: 0,
-                through: 0,
-                before: 1,
-                captured_through: 0,
-                replay: None,
-                prior_unknown: false,
-            },
-            "scope-test",
-            None,
-        )
-        .await
-        .unwrap();
-    assert!(a.prepared_dirty_groups(&build, None, 1).await.is_err());
-    assert!(a.finish_prepared(&build).await.is_err());
-    let view = b.finish_prepared(&build).await.unwrap();
-    assert!(a.prepared_semantic_group(&view, 0).await.is_err());
-    assert!(matches!(
-        a.prepared_view_group(&view, &PreparedGroup { id: "1".into() }).await,
-        Err(StoreError::InvalidTransition(reason)) if reason == "foreign Session resource"
-    ));
-    assert!(
-        a.prepare_wire_view(&view, WireFormat::Responses, "codec", None)
-            .await
-            .is_err()
-    );
-    let wire_build = b
-        .prepare_wire_view(&view, WireFormat::Responses, "codec", None)
-        .await
-        .unwrap();
-    assert!(a.finish_prepared_wire(&wire_build).await.is_err());
-    let wire = b.finish_prepared_wire(&wire_build).await.unwrap();
-    assert!(
-        a.prepared_wire_page(&wire, PreparedWireCursor::default(), 1)
-            .await
-            .is_err()
-    );
-    assert!(
-        a.prepared_wire_metadata_page(&wire, PreparedWireCursor::default(), 1)
-            .await
-            .is_err()
-    );
-    assert!(a.prepared_wire_prefix_identity(&wire, 0).await.is_err());
-    assert!(
-        b.prepared_wire_page(&wire, PreparedWireCursor::default(), 1)
-            .await
-            .unwrap()
-            .chunks
-            .is_empty()
-    );
-    drop((build, view, wire_build, wire));
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn copied_artifact_provenance_keeps_destination_visibility() {
     let (_dir, root, a, b) = fixture().await;
     let artifact = Artifact {
@@ -453,9 +392,11 @@ async fn copied_artifact_provenance_keeps_destination_visibility() {
                 .bind(&source)
                 .execute(&mut *db)
                 .await?;
-                sqlx::query("INSERT INTO session_history_artifacts VALUES(?,?,'original','copy')")
-                    .bind(target)
-                    .bind(source)
+                sqlx::query("INSERT INTO session_history_artifacts (session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,'original','copy',?,?)")
+                    .bind(&target)
+                    .bind(&source)
+                    .bind(crate::artifacts::identity::history_lookup_digest(&target,&source,"original").as_slice())
+                    .bind(crate::artifacts::identity::artifact_lookup_digest(&target,"copy").as_slice())
                     .execute(db)
                     .await?;
                 Ok(())

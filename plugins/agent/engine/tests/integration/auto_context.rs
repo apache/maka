@@ -25,7 +25,6 @@ use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
-use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -33,7 +32,6 @@ use std::sync::{
 use tokio::{net::TcpListener, sync::Barrier};
 use tokio_util::sync::CancellationToken;
 
-#[path = "auto_context/background.rs"]
 mod background;
 
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {
@@ -60,12 +58,14 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let observed = log.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             fixture::read_request(&mut socket).await;
             fixture::respond(&mut socket, "old-answer", "stop").await;
             let mut requests = Vec::new();
             let mut main = None;
+            let mut summary = None;
             for _ in 0..if expected { 2 } else { 1 } {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let request = fixture::read_request(&mut socket).await;
@@ -77,11 +77,35 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
                     .next()
                     .unwrap(),
                 ) {
-                    fixture::respond(&mut socket, fixture::SUMMARY, "stop").await;
+                    summary = Some(socket);
                 } else {
                     main = Some(socket);
                 }
                 requests.push(request);
+            }
+            if let Some(mut summary) = summary {
+                let mut commits = observed.subscribe_commits();
+                crate::context_overflow::overflow(main.as_mut().unwrap(), false).await;
+                // Keep the provider's Summary unfinished until the Main has
+                // durably announced that it is waiting for that same candidate.
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let prefix = observed.prefix(100, 128 * 1024).await.unwrap();
+                        if prefix.events.iter().any(|event| {
+                            event.event.invocation.invocation_id == "invocation-next"
+                                && matches!(event.event.fact, Fact::ContextCompactionWaiting)
+                        }) {
+                            break;
+                        }
+                        commits.changed().await.unwrap();
+                    }
+                })
+                .await
+                .expect("Main overflow waits for its pending Summary");
+                fixture::respond(&mut summary, fixture::SUMMARY, "stop").await;
+                let (mut resumed, _) = listener.accept().await.unwrap();
+                requests.push(fixture::read_request(&mut resumed).await);
+                main = Some(resumed);
             }
             fixture::respond(main.as_mut().unwrap(), "done", "stop").await;
             requests
@@ -116,7 +140,7 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
             )
         });
         assert_eq!(summaries.len(), usize::from(expected));
-        assert_eq!(mains.len(), 1);
+        assert_eq!(mains.len(), 1 + usize::from(expected));
         let output = mains[0]["max_tokens"].as_u64().unwrap();
         if matching {
             // Proactive work runs alongside the main request. Until adoption,
@@ -126,6 +150,13 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
             assert!((199_000..200_000).contains(&output));
         }
         let prefix = log.prefix(100, 128 * 1024).await.unwrap();
+        assert_eq!(
+            prefix
+                .events
+                .iter()
+                .any(|event| matches!(event.event.fact, Fact::ContextCompactionWaiting)),
+            expected
+        );
         assert_eq!(
             prefix
                 .events
@@ -149,6 +180,10 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
             );
             assert!(mains[0]["messages"].to_string().contains("question-next"));
             assert!(mains[0]["messages"].to_string().contains("old-answer"));
+            let resumed = mains[1]["messages"].to_string();
+            assert!(resumed.contains("summary-marker"));
+            assert!(resumed.contains("question-next"));
+            assert!(!resumed.contains("old-answer"));
         }
     }
 }

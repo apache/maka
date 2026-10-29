@@ -18,8 +18,8 @@
  */
 
 //! Opt-in release acceptance probes. H is canonical turns per Session, W is
-//! concurrent work, P is explicitly retained PreparedBuild leases. One Root and
-//! Engine survive every checkpoint; no raw database copies or replacement writer.
+//! concurrent work. One Root and Engine survive every checkpoint; no raw
+//! database copies or replacement writer.
 //! Sampling and fixture construction are outside reported operation intervals.
 //! JSON rows are streamed, never accumulated into a history-sized load-driver Vec.
 mod sampling;
@@ -30,11 +30,10 @@ use maka_agent_engine::{Engine, RunInput, RunWork};
 use maka_agent_facts::{
     context::{CompactOutcome, ModelPurpose, ModelRequestContext},
     event::{EventWrite, Fact, Invocation, InvocationOutcome, LogScope, RuntimeEvent},
-    model::{ModelEvent, ModelFinishReason, ModelUsage, TextKind, assembly::StepBuilder},
+    model::{ModelEvent, ModelFinishReason, ModelUsage, TextKind},
 };
 use maka_event_log::{
     SessionStore,
-    context::prepared::PreparedBuild,
     root::{RootNamespaces, RootOwner},
     root_store::RootStore,
 };
@@ -148,8 +147,8 @@ async fn seed(store: &SessionStore, start: usize, end: usize) {
                     provider_options: None,
                 },
             ];
-            let mut builder = StepBuilder::default();
-            let mut facts = vec![
+            let mut writer = crate::support::model_records::writer(invocation.clone(), &step, true);
+            let facts = [
                 Fact::InvocationOpened {
                     configuration: None,
                     input: maka_agent_facts::input::InvocationInput::Message {
@@ -176,21 +175,42 @@ async fn seed(store: &SessionStore, start: usize, end: usize) {
                     route_identity: "legacy".into(),
                 },
             ];
-            for event in observed {
-                builder.push(event.clone()).unwrap();
-                facts.push(Fact::ModelObserved {
-                    step_id: step.clone(),
-                    event,
-                });
-            }
-            facts.push(Fact::ModelCompleted {
-                step_id: step,
-                output: builder.finish().unwrap(),
-            });
-            facts.push(Fact::InvocationEnded {
-                outcome: InvocationOutcome::Completed,
-            });
             for fact in facts {
+                writes
+                    .push(EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap());
+            }
+            let first_observation = writes.len();
+            writes.extend(crate::support::model_records::observations(
+                &mut writer,
+                observed,
+            ));
+            let mut output = writer.completed().unwrap().completion();
+            // These bodies precede their references in the same atomic seed batch.
+            // Their real sequences are assigned by the store, never guessed here.
+            output.parts = writes[first_observation..]
+                .iter()
+                .filter_map(|write| match &write.event().fact {
+                    Fact::ModelObserved {
+                        event: maka_agent_facts::model::recorded::ModelObservation::Part(record),
+                        ..
+                    } => Some(maka_agent_facts::model::recorded::CompletionPart::Ref(
+                        maka_agent_facts::model::recorded::RecordedPartRef {
+                            event_id: write.event().id.clone(),
+                            ordinal: record.ordinal,
+                        },
+                    )),
+                    _ => None,
+                })
+                .collect();
+            for fact in [
+                Fact::ModelCompleted {
+                    step_id: step,
+                    output,
+                },
+                Fact::InvocationEnded {
+                    outcome: InvocationOutcome::Completed,
+                },
+            ] {
                 writes
                     .push(EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap());
             }
@@ -259,19 +279,14 @@ fn table_exists(db: &rusqlite::Connection, table: &str) -> bool {
 }
 // External read-only connections are test observers, never the production SQL
 // owners. Exact counts can scan metadata: they are deliberately outside timing.
-fn snapshot(root: &Path, held: usize) -> Value {
+fn snapshot(root: &Path) -> Value {
     let started = Instant::now();
     let mut paths = Vec::new();
     files(root, &mut paths);
     let mut totals = BTreeMap::<String, u64>::new();
     for path in paths {
         let name = path.file_name().unwrap().to_string_lossy();
-        let cache = path.components().any(|part| {
-            part.as_os_str()
-                .to_string_lossy()
-                .ends_with(".prepared-cache")
-        });
-        let kind = if cache { "prepared" } else { "canonical" };
+        let kind = "canonical";
         if name.ends_with(".sqlite") || name.ends_with(".sqlite-wal") {
             let suffix = if name.ends_with("-wal") {
                 "wal_bytes"
@@ -294,37 +309,7 @@ fn snapshot(root: &Path, held: usize) -> Value {
         let page_size = scalar(&db, "PRAGMA page_size");
         *totals.entry(format!("{kind}_free_bytes")).or_default() +=
             page_size * scalar(&db, "PRAGMA freelist_count");
-        if cache {
-            for (key, table) in [
-                ("heads", "context_prepared_heads"),
-                ("builds", "context_prepared_builds"),
-                ("wire_views", "context_prepared_wire_views"),
-                ("nodes", "context_prepared_nodes"),
-                ("groups", "context_prepared_groups"),
-                ("chunks", "context_prepared_chunks"),
-                ("refs", "context_prepared_refs"),
-                ("retire_queue", "context_prepared_retire"),
-            ] {
-                if table_exists(&db, table) {
-                    *totals.entry(key.into()).or_default() +=
-                        scalar(&db, &format!("SELECT COUNT(*) FROM {table}"));
-                }
-            }
-            if table_exists(&db, "context_prepared_refs") {
-                *totals.entry("zero_refs".into()).or_default() += scalar(
-                    &db,
-                    "SELECT COUNT(*) FROM context_prepared_refs WHERE refs=0",
-                );
-                *totals.entry("retiring_builds".into()).or_default() += scalar(
-                    &db,
-                    "SELECT COUNT(*) FROM context_prepared_builds WHERE retiring=1",
-                );
-                *totals.entry("head_weight".into()).or_default() += scalar(
-                    &db,
-                    "SELECT COALESCE(SUM(weight),0) FROM context_prepared_heads",
-                );
-            }
-        } else if table_exists(&db, "event_log") {
+        if table_exists(&db, "event_log") {
             *totals.entry("canonical_events".into()).or_default() +=
                 scalar(&db, "SELECT COUNT(*) FROM event_log");
         }
@@ -355,29 +340,16 @@ fn snapshot(root: &Path, held: usize) -> Value {
     })
     .ok()
     .map(|i| i.count());
-    json!({"rss_bytes":rss,"fd_count":fd_count,"harness_held_build_leases":held,"storage":totals,
+    json!({"rss_bytes":rss,"fd_count":fd_count,"storage":totals,
         "sampling_ms":started.elapsed().as_secs_f64()*1000.0,"sql_queue_backlog":null})
 }
-async fn sample(root: &Path, phase: &str, h: usize, w: usize, p: usize) -> Value {
+async fn sample(root: &Path, phase: &str, h: usize, w: usize) -> Value {
     let root = root.to_owned();
-    let metrics = tokio::task::spawn_blocking(move || snapshot(&root, p))
+    let metrics = tokio::task::spawn_blocking(move || snapshot(&root))
         .await
         .unwrap();
     emit(json!({"phase":phase,"progress":h,"work_concurrency":w,"metrics":metrics}));
     metrics
-}
-async fn settled(root: &Path, h: usize, w: usize, p: usize) -> Value {
-    for attempt in 0..300 {
-        let metrics = sample(root, "idle_sample", h, w, p).await;
-        if metrics["storage"]["retire_queue"].as_u64().unwrap_or(0) == 0
-            && metrics["storage"]["zero_refs"].as_u64().unwrap_or(0) == 0
-        {
-            return metrics;
-        }
-        assert!(attempt < 299, "prepared GC did not settle in 30 seconds");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    unreachable!()
 }
 
 async fn wave(engine: &Engine, stores: &[SessionStore], id: &str, compact: bool, measured: bool) {
@@ -455,7 +427,7 @@ async fn wave(engine: &Engine, stores: &[SessionStore], id: &str, compact: bool,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "release acceptance: fixed W/P, cumulative H in one Root/Engine"]
+#[ignore = "release acceptance: fixed W, cumulative H in one Root/Engine"]
 #[allow(clippy::assertions_on_constants)]
 async fn fixed_window_history() {
     let smoke = correctness_smoke();
@@ -464,7 +436,6 @@ async fn fixed_window_history() {
         "use --release or explicit MAKA_LONGEVITY_SMOKE=1"
     );
     let w = number("MAKA_LONGEVITY_W", 4);
-    let p = number("MAKA_LONGEVITY_P", 0);
     let repetitions = number("MAKA_LONGEVITY_REPETITIONS", 32);
     let checkpoints: Vec<usize> = std::env::var("MAKA_LONGEVITY_H")
         .unwrap_or("1000,5000,10000".into())
@@ -473,14 +444,13 @@ async fn fixed_window_history() {
         .collect();
     assert!(
         w > 0
-            && p <= w
             && repetitions > 0
             && !checkpoints.is_empty()
             && checkpoints.windows(2).all(|v| v[0] < v[1])
     );
     if smoke {
         assert!(
-            w <= 8 && p <= 1 && repetitions <= 2 && checkpoints.iter().all(|h| *h <= 16),
+            w <= 8 && repetitions <= 2 && checkpoints.iter().all(|h| *h <= 16),
             "correctness smoke must remain a tiny workload"
         );
     }
@@ -501,10 +471,9 @@ async fn fixed_window_history() {
         );
     }
     let seed_routes = seed_routes(&root_path, &stores);
-    let mut held: Vec<PreparedBuild> = Vec::with_capacity(p);
     let mut previous = 0;
     emit(
-        json!({"phase":"configuration","harness_sha256":source_fingerprint(),"sampling_sha256":sampling_fingerprint(),"scenario":"fixed_window_history","correctness_smoke":smoke,"root":root_path,"fixture_directory":dir.path(),"retain_fixture":retain,"fixture_state":"incomplete","provider_synchronization":"before_engine_run","w":w,"p":p,"h":checkpoints,"repetitions":repetitions,"seed_batch_turns":16,"seed_partition_groups":seed_routes,"compact_every":1000}),
+        json!({"phase":"configuration","harness_sha256":source_fingerprint(),"sampling_sha256":sampling_fingerprint(),"scenario":"fixed_window_history","correctness_smoke":smoke,"root":root_path,"fixture_directory":dir.path(),"retain_fixture":retain,"fixture_state":"incomplete","provider_synchronization":"before_engine_run","w":w,"h":checkpoints,"repetitions":repetitions,"seed_batch_turns":16,"seed_partition_groups":seed_routes,"compact_every":1000}),
     );
     for h in checkpoints {
         let setup = Instant::now();
@@ -512,38 +481,21 @@ async fn fixed_window_history() {
             let end = (start + 1000).min(h);
             // All partition groups finish before compaction or measured work.
             seed_partitioned(&stores, &seed_routes, start, end).await;
-            if held.is_empty() && p > 0 {
-                for (i, store) in stores.iter().take(p).enumerate() {
-                    let view = store.read_model_view(store.id(), None).await.unwrap();
-                    held.push(
-                        store
-                            .prepare_model_view(
-                                view.selection,
-                                &identity(store.id(), "held-build", i),
-                                None,
-                            )
-                            .await
-                            .unwrap(),
-                    );
-                }
-            }
             wave(&engine, &stores, &format!("compact-{end}"), true, false).await;
         }
         emit(
             json!({"phase":"setup_done","history_turns_per_session":h,"setup_ms":setup.elapsed().as_secs_f64()*1000.0,
                 "source_fences":source_fences(&stores)}),
         );
-        settled(&root_path, h, w, held.len()).await;
+        sample(&root_path, "idle_sample", h, w).await;
         for r in 0..repetitions {
             wave(&engine, &stores, &format!("measure-{h}-{r}"), false, true).await;
         }
-        let metrics = settled(&root_path, h, w, held.len()).await;
+        let metrics = sample(&root_path, "idle_sample", h, w).await;
         assert_eq!(metrics["storage"]["canonical_databases"], 9);
         assert!(
             metrics["storage"]["canonical_events"].as_u64().unwrap() >= 8 * h as u64 * w as u64
         );
-        assert!(metrics["storage"]["heads"].as_u64().unwrap_or(0) <= 9 * 256);
-        assert!(metrics["storage"]["head_weight"].as_u64().unwrap_or(0) <= 9 * 128 * 1024 * 1024);
         if retain {
             emit(
                 json!({"phase":"fixture_checkpoint","history_turns_per_session":h,"position":"after_measurement",
@@ -552,8 +504,7 @@ async fn fixed_window_history() {
         }
         previous = h;
     }
-    drop(held);
-    settled(&root_path, previous, w, 0).await;
+    sample(&root_path, "idle_sample", previous, w).await;
     engine.drain().await;
     let final_fences = source_fences(&stores);
     drop(stores);
@@ -563,7 +514,7 @@ async fn fixed_window_history() {
         emit(
             json!({"phase":"fixture_retained","scenario":"fixed_window_history","fixture_directory":dir.path(),
             "root":root_path,"state":"clean_closed","includes":"seed_compaction_and_measured_events",
-            "w":w,"p":p,"history_turns_per_session":previous,"repetitions":repetitions,
+            "w":w,"history_turns_per_session":previous,"repetitions":repetitions,
             "source_fences":final_fences,"partition_groups":seed_routes}),
         );
     }
@@ -629,7 +580,7 @@ async fn same_run_steps() {
     }
     let partition_groups = seed_routes(&root_path, &stores);
     emit(
-        json!({"phase":"configuration","harness_sha256":source_fingerprint(),"sampling_sha256":sampling_fingerprint(),"scenario":"same_run_steps","correctness_smoke":smoke,"sqlite_stats":sqlite_stats,"root":root_path,"fixture_directory":dir.path(),"retain_fixture":retain,"fixture_state":"incomplete","provider_synchronization":"before_engine_run","sampling_boundary":"tool_after_model_completion","partition_groups":partition_groups,"w":w,"steps":steps,"held_build_leases":0}),
+        json!({"phase":"configuration","harness_sha256":source_fingerprint(),"sampling_sha256":sampling_fingerprint(),"scenario":"same_run_steps","correctness_smoke":smoke,"sqlite_stats":sqlite_stats,"root":root_path,"fixture_directory":dir.path(),"retain_fixture":retain,"fixture_state":"incomplete","provider_synchronization":"before_engine_run","sampling_boundary":"tool_after_model_completion","partition_groups":partition_groups,"w":w,"steps":steps}),
     );
     join_all(stores.iter().enumerate().map(|(index,store)| {
         let start_gate=start_gate.clone();let sample_gate=sample_gate.clone();let effects=effects.clone();let engine=&engine;
@@ -697,8 +648,7 @@ async fn same_run_steps() {
         }
     })).await;
     assert_eq!(effects.load(Ordering::Relaxed), w * steps);
-    sample(&root_path, "runs_completed_sample", steps, w, 0).await;
-    settled(&root_path, steps, w, 0).await;
+    sample(&root_path, "runs_completed_sample", steps, w).await;
     engine.drain().await;
     let final_fences = source_fences(&stores);
     drop(stores);

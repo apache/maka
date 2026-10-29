@@ -135,6 +135,7 @@ async fn frozen_catalog_prevents_unadvertised_or_invalid_effects_and_direct_only
             ),
             "echo".into(),
             json!({"n":2}),
+            None,
             CancellationToken::new(),
             effect,
         )
@@ -238,12 +239,25 @@ async fn discovery_loads_complete_schemas_without_running_effects() {
         );
         let mut step = request.into_step(&invocation.invocation_id);
         assert!(
-            step.invoke(&invalid, CancellationToken::new())
-                .await
-                .is_err()
+            async {
+                step.prepare(invalid.clone(), CancellationToken::new())
+                    .await?
+                    .publish(&[])
+                    .await?
+                    .completion
+                    .await
+            }
+            .await
+            .is_err()
         );
         let result = step
-            .invoke(&search, CancellationToken::new())
+            .prepare(search.clone(), CancellationToken::new())
+            .await
+            .unwrap()
+            .publish(&[])
+            .await
+            .unwrap()
+            .completion
             .await
             .unwrap();
         assert_eq!(result["activated"], json!(["direct", "echo"]));
@@ -374,8 +388,20 @@ async fn discovery_state_failure_after_successful_t2_is_fatal() {
     impl EventSink for RetireAfterSettlement {
         fn commit(self: Arc<Self>, write: EventWrite) -> CommitFuture {
             Box::pin(async move {
+                self.commit_with_prefix(&[], write)
+                    .await
+                    .map(|receipt| receipt.last_sequence)
+            })
+        }
+        fn commit_with_prefix(
+            self: Arc<Self>,
+            prefix: &[EventWrite],
+            write: EventWrite,
+        ) -> maka_agent_facts::event::PrefixCommitFuture {
+            let prefix = prefix.to_vec();
+            Box::pin(async move {
                 let settled = matches!(write.event().fact, Fact::ToolSettled { .. });
-                let committed = self.log.clone().commit(write).await?;
+                let committed = self.log.clone().commit_with_prefix(&prefix, write).await?;
                 if settled {
                     self.settlements.fetch_add(1, Ordering::SeqCst);
                     // Fail the subsequent preference write only after T2 is durable.
@@ -424,7 +450,15 @@ async fn discovery_state_failure_after_successful_t2_is_fatal() {
         .unwrap()
         .into_step(&invocation.invocation_id);
     assert!(matches!(
-        step.invoke(&search, CancellationToken::new()).await,
+        async {
+            step.prepare(search.clone(), CancellationToken::new())
+                .await?
+                .publish(&[])
+                .await?
+                .completion
+                .await
+        }
+        .await,
         Err(ToolError::Persistence(_))
     ));
     assert_eq!(sink.settlements.load(Ordering::SeqCst), 1);

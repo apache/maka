@@ -202,8 +202,8 @@ async fn retain_one(
     artifact.validate().map_err(invalid)?;
     let metadata = serde_json::to_string(&artifact)?;
     let copied = sqlx::query(
-        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload, canonical_at)
-         SELECT ?3, ?4, ?5, ?6, content_sha256, payload, canonical_at FROM artifacts
+        "INSERT INTO artifacts (session_id, id, created_at, record_json, content_sha256, payload, canonical_at, lookup_digest)
+         SELECT ?3, ?4, ?5, ?6, content_sha256, payload, canonical_at, ?8 FROM artifacts
          WHERE session_id = ?1 AND id = ?2 AND length(payload) = ?7",
     )
     .bind(source)
@@ -213,16 +213,19 @@ async fn retain_one(
     .bind(now as i64)
     .bind(metadata)
     .bind(artifact.size_bytes as i64)
+    .bind(super::identity::artifact_lookup_digest(target, &id).as_slice())
     .execute(&mut *tx)
     .await?;
     if copied.rows_affected() != 1 {
         return Err(StoreError::ArtifactConflict);
     }
-    sqlx::query("INSERT INTO session_history_artifacts VALUES (?, ?, ?, ?)")
+    sqlx::query("INSERT INTO session_history_artifacts (session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES (?, ?, ?, ?, ?, ?)")
         .bind(target)
         .bind(session_id)
         .bind(relative_path)
-        .bind(id)
+        .bind(&id)
+        .bind(super::identity::history_lookup_digest(target, session_id, relative_path).as_slice())
+        .bind(super::identity::artifact_lookup_digest(target, &id).as_slice())
         .execute(&mut *tx)
         .await?;
     advance(tx, target).await

@@ -631,7 +631,7 @@ async fn app_stop_controls_remain_independent_while_another_original_receipt_is_
             .unwrap();
             store
                 .append_computer_app_dispatch(
-                    &event,
+                    &[], &event,
                     std::slice::from_ref(&broad),
                     &target,
                     &display,

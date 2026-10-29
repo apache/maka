@@ -24,7 +24,10 @@ use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::LogScope;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
+use maka_agent_facts::model::{
+    ModelPart, TextKind,
+    recorded::{ModelObservation, ModelPartRecord},
+};
 use maka_event_log::{EventLog, StoreError, turns::InvocationState};
 
 #[tokio::test]
@@ -75,7 +78,7 @@ async fn turn_control_reads_survive_history_budget_exhaustion_and_reopen() {
             &EventWrite::plain(
                 (event(Fact::ModelRequested {
                     context_breakdown: None,
-                    item_acceptance: false,
+                    item_acceptance: true,
                     purpose: maka_agent_facts::context::ModelPurpose::Main,
                     context: None,
                     checkpoint_event_id: None,
@@ -98,11 +101,17 @@ async fn turn_control_reads_survive_history_budget_exhaustion_and_reopen() {
             &EventWrite::plain(
                 (event(Fact::ModelObserved {
                     step_id: "step".into(),
-                    event: ModelEvent::PartDelta {
-                        id: "text".into(),
-                        text: "x".repeat(8 * 1024 * 1024),
-                        provider_options: None,
-                    },
+                    event: ModelObservation::Part(ModelPartRecord {
+                        ordinal: 0,
+                        message_id: "large-text".into(),
+                        started_at: std::time::UNIX_EPOCH,
+                        provider_part_id: Some("text".into()),
+                        part: std::sync::Arc::new(ModelPart::Text {
+                            text_kind: TextKind::Text,
+                            text: "x".repeat(8 * 1024 * 1024).into(),
+                            provider_options: None,
+                        }),
+                    }),
                 }))
                 .clone(),
             )
@@ -145,6 +154,7 @@ async fn turn_control_reads_survive_history_budget_exhaustion_and_reopen() {
         log.append(
             &EventWrite::plain(
                 (event(Fact::ModelInterrupted {
+                    partial: None,
                     model_failure: None,
                     diagnostic: None,
                     step_id: "step".into(),

@@ -25,11 +25,12 @@ use maka_agent_facts::event::StoredEvent;
 use maka_agent_facts::event::ToolOutcome;
 use maka_agent_facts::model::ModelPart;
 use maka_agent_facts::model::TextKind;
+use maka_agent_facts::model::recorded::{CompletionPart, ModelObservation};
 use maka_agent_facts::tool_output::DurableToolProjection;
 use maka_agent_facts::tool_output::ProjectionPart;
-use maka_agent_ports::execution::EventPage;
 use maka_agent_ports::execution::Observation;
 use maka_agent_ports::execution::Progress;
+use maka_agent_ports::execution::{Commands, EventPage, SessionOperation};
 use serde::Serialize;
 use std::collections::VecDeque;
 
@@ -89,7 +90,12 @@ impl Execution {
         }
     }
 
-    pub fn apply_page(&mut self, page: EventPage) -> Result<(), Error> {
+    pub async fn apply_page(
+        &mut self,
+        page: EventPage,
+        commands: &dyn Commands,
+        operation: &SessionOperation,
+    ) -> Result<(), Error> {
         let through = self.observation.through_sequence;
         let next = page.next_after.unwrap_or(through);
         if page.through_sequence != through || next <= self.after || next > through {
@@ -111,14 +117,22 @@ impl Execution {
             previous = row.sequence;
         }
         for row in page.events {
-            self.observe(row)?;
+            let sequence = row.sequence;
+            self.observe(row, commands, operation).await?;
+            // A later exact read can fail; retries must not duplicate prior records.
+            self.after = sequence;
         }
         self.after = next;
         Ok(())
     }
 
     /// A single event projection is also used by exact historical lookups.
-    pub fn observe(&mut self, row: StoredEvent) -> Result<Option<Record>, Error> {
+    pub async fn observe(
+        &mut self,
+        row: StoredEvent,
+        commands: &dyn Commands,
+        operation: &SessionOperation,
+    ) -> Result<Option<Record>, Error> {
         if row.sequence <= self.after
             || row.sequence > self.observation.through_sequence
             || row.event.invocation.session_id != self.observation.receipt.invocation.session_id
@@ -137,17 +151,49 @@ impl Execution {
                 self.answer_truncated = truncated;
                 (vec![Facet::Text], text, truncated, false)
             }
-            Fact::ModelCompleted { output, .. } => {
+            Fact::ModelCompleted { step_id, output } => {
                 let mut text = String::new();
                 let mut truncated = false;
                 for part in &output.parts {
-                    if let ModelPart::Text {
-                        text_kind: TextKind::Text,
-                        text: part,
-                        ..
-                    } = part
-                    {
-                        append(&mut text, part, &mut truncated);
+                    match part {
+                        CompletionPart::Own(record) => {
+                            append_part(&mut text, record.part.as_ref(), &mut truncated)
+                        }
+                        CompletionPart::Ref(reference) => {
+                            let original = commands
+                                .event(
+                                    operation.clone(),
+                                    reference.event_id.clone(),
+                                    self.observation.through_sequence,
+                                )
+                                .await?
+                                .ok_or_else(|| {
+                                    Error::Persistence("completed model part is unavailable".into())
+                                })?;
+                            let Fact::ModelObserved {
+                                step_id: original_step,
+                                event: ModelObservation::Part(record),
+                            } = &original.event.fact
+                            else {
+                                return Err(Error::Persistence(
+                                    "completed model reference is not an original part".into(),
+                                ));
+                            };
+                            if original.event.id != reference.event_id
+                                || original.event.invocation != row.event.invocation
+                                || original_step != step_id
+                                || record.ordinal != reference.ordinal
+                                || original.sequence >= row.sequence
+                            {
+                                return Err(Error::Persistence(
+                                    "completed model reference changed identity".into(),
+                                ));
+                            }
+                            append_part(&mut text, record.part.as_ref(), &mut truncated);
+                        }
+                    }
+                    if truncated {
+                        break;
                     }
                 }
                 if text.is_empty() {
@@ -257,6 +303,22 @@ impl Execution {
 pub enum WorkspaceResult {
     Pending,
     Ready(Option<maka_agent_ports::execution::WorkspacePatch>),
+}
+
+fn append_part(target: &mut String, part: &ModelPart, truncated: &mut bool) {
+    if let ModelPart::Text {
+        text_kind: TextKind::Text,
+        text,
+        ..
+    } = part
+    {
+        for chunk in text.chunks() {
+            append(target, chunk, truncated);
+            if *truncated {
+                break;
+            }
+        }
+    }
 }
 
 fn append(target: &mut String, text: &str, truncated: &mut bool) {

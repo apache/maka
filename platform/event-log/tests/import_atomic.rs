@@ -599,7 +599,6 @@ async fn second_record_projection_failure_leaves_no_partial_import_after_reopen(
             "context_semantic_rows",
             "context_semantic_frontiers",
             "catalog_messages",
-            "transcript_directory",
         ] {
             assert_eq!(
                 inspect

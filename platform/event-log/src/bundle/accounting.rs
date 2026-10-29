@@ -21,8 +21,8 @@ use super::format::Record;
 use crate::StoreError;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::ModelObservation;
 use sqlx::SqliteConnection;
 
 /// The first provider usage fact fixes a request's valuation, if it was quoted.
@@ -87,7 +87,7 @@ pub(super) async fn validate(
             let usage = match usage_event.fact {
                 Fact::ModelCompleted { output, .. } => output.usage,
                 Fact::ModelObserved {
-                    event: ModelEvent::Finished { usage, .. },
+                    event: ModelObservation::Finished { usage, .. },
                     ..
                 } => usage,
                 _ => unreachable!(),

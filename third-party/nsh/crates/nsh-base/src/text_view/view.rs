@@ -1440,11 +1440,20 @@ impl Cx {
         let actions = computed(move || props.code_block_actions.get());
         let action_cx = self.clone();
         let action_key = key.to_owned();
+        let language = computed(move || code.get().language.unwrap_or_default());
+        // The language at the start, the actions at the end.
         let header = self
             .part(
                 view().flex_row().items_center().gap(px(4.0)),
                 Part::CodeBlockHeader,
             )
+            .child(self.part(
+                text(move || SharedString::from(language.get()))
+                    .select_none()
+                    .flex_1()
+                    .min_w(px(0.0)),
+                Part::CodeBlockLanguage,
+            ))
             .child(each(
                 actions,
                 |action: &TextViewCodeAction| action.id.clone(),

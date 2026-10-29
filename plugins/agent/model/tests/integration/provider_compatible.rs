@@ -192,7 +192,8 @@ async fn ordered_raw_reasoning_preserves_empty_fields_and_reopened_parts() {
             else {
                 panic!("text part")
             };
-            assert_eq!((*text_kind, actual.as_str()), (kind, text));
+            assert_eq!(*text_kind, kind);
+            assert!(actual.chunks().flat_map(str::bytes).eq(text.bytes()));
             assert_eq!(
                 provider_options
                     .as_ref()

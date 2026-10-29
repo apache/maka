@@ -21,6 +21,16 @@ import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const recallMessages = {
   'Search conversations': ['Search conversations', '搜索会话', '搜尋對話'],
+  'Find in conversation': ['Find in conversation', '在对话中查找', '在對話中尋找'],
+  'This conversation': ['This conversation', '此对话', '此對話'],
+  'All conversations': ['All conversations', '全部对话', '全部對話'],
+  'Including archived conversations.': [
+    'Including archived conversations.',
+    '包括已归档对话。',
+    '包括已封存對話。',
+  ],
+  'Search messages…': ['Search messages…', '搜索消息…', '搜尋訊息…'],
+  'No matching messages.': ['No matching messages.', '没有匹配的消息。', '沒有符合的訊息。'],
   'Close conversation search': ['Close conversation search', '关闭会话搜索', '關閉對話搜尋'],
   'Search conversation history': ['Search conversation history', '搜索会话历史', '搜尋對話歷史'],
   'Search every conversation you can read, including archived conversations.': [

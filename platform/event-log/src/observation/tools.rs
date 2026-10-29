@@ -22,6 +22,7 @@ use crate::{
     turns::{InvocationState, TurnBoundary},
 };
 use sqlx::Row;
+use std::collections::{BTreeMap, HashSet};
 
 /// Original replay starts for active tool display, never effect authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,71 +46,96 @@ pub(super) async fn read(
     {
         return Ok(Vec::new());
     }
-    // The caller's observation transaction owns the fence. Select identities
-    // and replay starts only, never accumulated arguments or complete results.
+    let invocation = &root.invocation.invocation_id;
     let rows = sqlx::query(SEEDS)
-        .bind(&root.invocation.invocation_id)
+        .bind(invocation)
+        .fetch_all(&mut *connection)
+        .await?;
+    let mut starts = BTreeMap::<String, i64>::new();
+    for row in rows {
+        let sequence = row.try_get(0)?;
+        starts
+            .entry(row.try_get(1)?)
+            .and_modify(|start| *start = (*start).min(sequence))
+            .or_insert(sequence);
+    }
+    let parts = sqlx::query(PROVIDER_PARTS)
+        .bind(invocation)
         .fetch_all(connection)
         .await?;
-    let mut result = Vec::new();
-    for row in rows {
-        let operation: String = row.try_get(1)?;
-        result.push(ToolStreamSeed {
-            tool_use_id: maka_agent_facts::tool_call::tool_use_id(
-                &root.invocation.invocation_id,
-                &operation,
-            ),
-            start_sequence: crate::sequence_number(row.try_get(0)?)?,
-        });
+    let mut provider_calls = BTreeMap::<String, i64>::new();
+    let mut provider_results = HashSet::new();
+    for part in parts {
+        let step: String = part.try_get("step_id")?;
+        let call: String = part.try_get("call_id")?;
+        let operation = format!("{step}:{call}");
+        if part.try_get::<bool, _>("settled")? {
+            provider_results.insert(operation);
+        } else {
+            let sequence = part.try_get("source_sequence")?;
+            provider_calls
+                .entry(operation)
+                .and_modify(|start| *start = (*start).min(sequence))
+                .or_insert(sequence);
+        }
     }
-    Ok(result)
+    for (operation, sequence) in provider_calls {
+        if !provider_results.contains(&operation) {
+            starts
+                .entry(operation)
+                .and_modify(|start| *start = (*start).min(sequence))
+                .or_insert(sequence);
+        }
+    }
+    let mut starts: Vec<_> = starts.into_iter().collect();
+    starts.sort_unstable_by(|(left_id, left), (right_id, right)| {
+        left.cmp(right).then_with(|| left_id.cmp(right_id))
+    });
+    starts
+        .into_iter()
+        .map(|(operation, sequence)| {
+            Ok(ToolStreamSeed {
+                tool_use_id: maka_agent_facts::tool_call::tool_use_id(invocation, &operation),
+                start_sequence: crate::sequence_number(sequence)?,
+            })
+        })
+        .collect()
 }
 
 const SEEDS: &str = r#"
-WITH starts AS (
-    SELECT e.sequence, e.operation_id AS operation, NULL AS step, 'native' AS source
-    FROM runtime_events e WHERE e.invocation_id = ?1 AND e.kind = 'tool_dispatched'
-    UNION ALL
-    SELECT e.sequence, json_extract(e.event_json,'$.fact.step_id') || ':' || json_extract(e.event_json,'$.fact.event.data.id'),
-        json_extract(e.event_json,'$.fact.step_id'), 'model'
-    FROM runtime_events e WHERE e.invocation_id = ?1 AND e.kind = 'model_observed'
-      AND json_extract(e.event_json,'$.fact.event.kind') IN ('tool_input_started','tool_call')
-      AND EXISTS (SELECT 1 FROM runtime_events request WHERE request.invocation_id=e.invocation_id
-          AND request.kind='model_requested' AND request.operation_id=json_extract(e.event_json,'$.fact.step_id')
-          AND json_extract(request.event_json,'$.fact.purpose')='main')
-    UNION ALL
-    SELECT e.sequence, json_extract(e.event_json,'$.fact.output.toolCallId'), NULL, 'executor'
-    FROM runtime_events e WHERE e.invocation_id = ?1 AND e.kind='executor_observed'
-      AND json_extract(e.event_json,'$.fact.output.type')='tool_start'
-), active AS (
-    SELECT operation, MIN(sequence) AS sequence FROM starts s
-    WHERE (
-        source IN ('native','model')
-        AND NOT EXISTS (SELECT 1 FROM runtime_events done WHERE done.invocation_id=?1
-            AND done.operation_id=s.operation AND done.kind IN ('tool_settled','tool_rejected'))
-        AND (source='native' OR
-            EXISTS (SELECT 1 FROM runtime_events admitted WHERE admitted.invocation_id=?1
-                AND admitted.operation_id=s.operation AND admitted.kind='tool_dispatched') OR (
-            NOT EXISTS (SELECT 1 FROM runtime_events result WHERE result.invocation_id=?1
-                AND result.kind='model_observed' AND json_extract(result.event_json,'$.fact.event.kind')='provider_tool_result'
-                AND json_extract(result.event_json,'$.fact.step_id') || ':' || json_extract(result.event_json,'$.fact.event.data.id')=s.operation)
-            AND NOT EXISTS (SELECT 1 FROM runtime_events failed WHERE failed.invocation_id=?1
-                AND failed.operation_id=s.step AND failed.kind='model_interrupted')
-            AND (NOT EXISTS (SELECT 1 FROM runtime_events done WHERE done.invocation_id=?1
-                    AND done.operation_id=s.step AND done.kind='model_completed') OR
-                EXISTS (SELECT 1 FROM runtime_events ready WHERE ready.invocation_id=?1
-                    AND ready.kind='model_observed' AND json_extract(ready.event_json,'$.fact.event.kind')='tool_call'
-                    AND json_extract(ready.event_json,'$.fact.step_id') || ':' || json_extract(ready.event_json,'$.fact.event.data.id')=s.operation
-                    AND NOT json_extract(ready.event_json,'$.fact.event.data.provider_executed')))
-        ))
-    ) OR (
-        source='executor'
-        AND NOT EXISTS (SELECT 1 FROM runtime_events done WHERE done.invocation_id=?1
-            AND (done.kind='executor_completed' OR (done.kind='executor_observed'
-                AND json_extract(done.event_json,'$.fact.output.type')='tool_result'
-                AND json_extract(done.event_json,'$.fact.output.toolCallId')=s.operation)))
-    )
-    GROUP BY operation
-)
-SELECT sequence, operation FROM active ORDER BY sequence
+SELECT CASE WHEN w.kind='tool'
+    THEN MIN(w.opened_at,COALESCE(call.opened_at,w.opened_at)) ELSE w.opened_at END,
+    w.operation_id
+FROM context_execution_work w INDEXED BY context_execution_live
+LEFT JOIN context_execution_work call ON call.invocation_id=w.invocation_id
+    AND call.kind='call' AND call.operation_id=w.operation_id
+    AND call.call_id='' AND call.call_name=''
+LEFT JOIN runtime_events source ON w.kind='call' AND source.sequence=w.opened_at
+LEFT JOIN context_execution_steps step ON step.invocation_id=w.invocation_id
+    AND step.operation_id=json_extract(source.event_json,'$.fact.step_id')
+WHERE w.invocation_id=?1 AND w.closed_at IS NULL
+    AND w.kind IN ('call','tool','executor_tool')
+    AND (w.kind!='call' OR (step.purpose='main'
+        AND (step.terminal_kind IS NULL OR step.terminal_kind!='model_interrupted')))
 "#;
+
+const PROVIDER_PARTS: &str = r#"
+SELECT p.source_sequence,p.step_id,
+    json_extract(e.event_json,'$.fact.event.data.part.kind')='tool_result' AS settled,
+    CASE json_extract(e.event_json,'$.fact.event.data.part.kind')
+        WHEN 'tool_call' THEN json_extract(e.event_json,'$.fact.event.data.part.call.id')
+        ELSE json_extract(e.event_json,'$.fact.event.data.part.id') END AS call_id
+FROM context_execution_work w INDEXED BY context_execution_live
+CROSS JOIN context_execution_steps step ON step.invocation_id=w.invocation_id
+    AND step.operation_id=w.operation_id AND step.purpose='main'
+CROSS JOIN model_part_records p ON p.invocation_id=w.invocation_id AND p.step_id=w.operation_id
+    AND p.record_kind='part'
+CROSS JOIN runtime_events e ON e.sequence=p.source_sequence AND e.kind='model_observed'
+WHERE w.invocation_id=?1 AND w.kind='model' AND w.closed_at IS NULL
+    AND (json_extract(e.event_json,'$.fact.event.data.part.kind')='tool_result'
+        OR (json_extract(e.event_json,'$.fact.event.data.part.kind')='tool_call'
+            AND json_extract(e.event_json,'$.fact.event.data.part.call.provider_executed')=1))
+"#;
+
+#[cfg(test)]
+mod tests;

@@ -590,6 +590,7 @@ impl Computer {
             },
             "cua_operation".into(),
             input,
+            None,
             cancellation,
             effect,
         )
@@ -1161,6 +1162,7 @@ mod tests {
                             },
                             "cua_operation".into(),
                             input,
+                            None,
                             cancellation,
                             PreparedEffect::new(move |_| {
                                 Box::pin(async move {

@@ -341,7 +341,7 @@ These checks prove comparison behavior only. They do not launch a desktop.
 
 Maka's [native tests](../tests/native.rs) cover WSL/Windows with an explicitly
 selected disposable fixture window and matching Windows helper. The
-[REPL/browser tests](../tests/repl_browser.rs) contain isolated Chrome and macOS
+[REPL/browser tests](../tests/repl_browser/main.rs) contain isolated Chrome and macOS
 fixture tests. Their ignored-test requirements and platform guards are the
 authority for execution prerequisites. A broad `cargo test` does not run those
 ignored tests.
