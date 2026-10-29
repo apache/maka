@@ -2386,7 +2386,7 @@ fn script_forwarder(realm: Realm) -> Package {
             let output = work.path().join("forwarder.mjs");
             let status = std::process::Command::new("node")
                 .arg(sdk.join("scripts/bundle.mjs"))
-                .arg(sdk.join("examples/forwarder.ts"))
+                .arg(root.join("platform/host-js/tests/fixtures/forwarder.ts"))
                 .arg(&output)
                 .current_dir(&root)
                 .status()

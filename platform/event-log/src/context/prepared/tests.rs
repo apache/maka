@@ -1023,6 +1023,11 @@ async fn mcp_role_boundary_and_selection_changes_bind_cached_wire_context() {
 
 #[tokio::test]
 async fn selected_group_members_seek_the_cluster_in_a_large_build() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     let mut db = SqliteConnection::connect("sqlite::memory:").await.unwrap();
     sqlx::query("ATTACH ':memory:' AS prepared_cache")
         .execute(&mut db)
@@ -1032,48 +1037,34 @@ async fn selected_group_members_seek_the_cluster_in_a_large_build() {
         .execute(&mut db)
         .await
         .unwrap();
-    sqlx::query("WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<7601) INSERT INTO context_prepared_dirty(build_id,group_sequence,done,leader_sequence) SELECT 'large',n,0,CASE WHEN n=78 THEN 77 ELSE NULL END FROM rows")
-        .execute(&mut db).await.unwrap();
-    // Re-prepare EXPLAIN across the schema change below; a cached statement
-    // can report its original plan even after the index has been dropped.
-    let plan = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "EXPLAIN QUERY PLAN {GROUP_MEMBERS_SQL}"
-    )))
-    .persistent(false)
-    .bind("large")
-    .bind(77i64)
-    .fetch_all(&mut db)
-    .await
-    .unwrap();
-    let details = plan
-        .iter()
-        .map(|row| row.get::<String, _>("detail"))
-        .collect::<Vec<_>>();
-    assert!(
-        details
-            .iter()
-            .any(|detail| detail.contains("context_prepared_group_members")),
-        "cluster lookup must use its expression index: {details:?}"
-    );
-    assert_eq!(members(&mut db, "large", 77).await.unwrap(), vec![77, 78]);
-    assert_eq!(members(&mut db, "large", 7601).await.unwrap(), vec![7601]);
-    sqlx::query("DROP INDEX context_prepared_group_members")
-        .execute(&mut db)
-        .await
-        .unwrap();
-    let unindexed = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "EXPLAIN QUERY PLAN {GROUP_MEMBERS_SQL}"
-    )))
-    .persistent(false)
-    .bind("large")
-    .bind(77i64)
-    .fetch_all(&mut db)
-    .await
-    .unwrap();
-    assert!(unindexed.iter().all(|row| {
-        !row.get::<String, _>("detail")
-            .contains("context_prepared_group_members")
-    }));
+    let steps = Arc::new(AtomicUsize::new(0));
+    let mut baseline = None;
+    for (start, end) in [(1_i64, 1000_i64), (1001, 10_000)] {
+        sqlx::query("WITH RECURSIVE rows(n) AS (VALUES(?1) UNION ALL SELECT n+1 FROM rows WHERE n<?2) INSERT INTO context_prepared_dirty(build_id,group_sequence,done,leader_sequence) SELECT 'large',n,0,CASE WHEN n=78 THEN 77 ELSE NULL END FROM rows")
+            .bind(start).bind(end).execute(&mut db).await.unwrap();
+        // Statement preparation must not enter only the first measurement.
+        let _warm = members(&mut db, "large", 77).await.unwrap();
+        let counter = steps.clone();
+        db.lock_handle()
+            .await
+            .unwrap()
+            .set_progress_handler(1, move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                true
+            });
+        steps.store(0, Ordering::Relaxed);
+        let selected = members(&mut db, "large", 77).await.unwrap();
+        db.lock_handle().await.unwrap().remove_progress_handler();
+        let current = steps.load(Ordering::Relaxed);
+        assert_eq!(selected, vec![77, 78]);
+        if let Some(previous) = baseline {
+            assert_eq!(current, previous, "cluster lookup scanned unrelated groups");
+        } else {
+            baseline = Some(current);
+        }
+        let last = u64::try_from(end).unwrap();
+        assert_eq!(members(&mut db, "large", last).await.unwrap(), vec![last]);
+    }
 }
 
 #[tokio::test]

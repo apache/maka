@@ -53,21 +53,87 @@ async fn approval(
         changes.changed().await.unwrap();
     }
 }
-#[tokio::test]
-async fn mcp_native_direct_and_code_mode_calls_share_approval_permissions_and_journal() {
-    tokio::time::timeout(Duration::from_secs(60), exercise_mcp_permissions())
-        .await
-        .unwrap();
+#[derive(Default)]
+struct Scenario {
+    enveloped: bool,
+    code: bool,
+    deny: bool,
+    read_only: bool,
+    preapproved: bool,
+    trusted_readonly: bool,
+    revoke: bool,
 }
-async fn exercise_mcp_permissions() {
-    for (enveloped, code, decision, read_only, preapproved, trusted_readonly, revoke) in [
-        (true, false, "allow", false, false, false, false),
-        (false, false, "deny", false, false, false, false),
-        (false, true, "allow", false, true, false, false),
-        (false, false, "allow", true, true, false, false),
-        (false, false, "allow", true, true, true, false),
-        (false, false, "allow", false, false, false, true),
-    ] {
+
+#[tokio::test]
+async fn mcp_permission_approval_preserves_enveloped_arguments() {
+    exercise_mcp_permissions(Scenario {
+        enveloped: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_denial_prevents_dispatch() {
+    exercise_mcp_permissions(Scenario {
+        deny: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_code_mode_preserves_result_and_origin() {
+    exercise_mcp_permissions(Scenario {
+        code: true,
+        preapproved: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_preapproval_does_not_override_read_only_workspace() {
+    exercise_mcp_permissions(Scenario {
+        read_only: true,
+        preapproved: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_trusted_read_only_tool_remains_callable() {
+    exercise_mcp_permissions(Scenario {
+        read_only: true,
+        preapproved: true,
+        trusted_readonly: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn mcp_permission_revocation_is_rechecked_after_approval() {
+    exercise_mcp_permissions(Scenario {
+        revoke: true,
+        ..Default::default()
+    })
+    .await;
+}
+
+async fn exercise_mcp_permissions(scenario: Scenario) {
+    let Scenario {
+        enveloped,
+        code,
+        deny,
+        read_only,
+        preapproved,
+        trusted_readonly,
+        revoke,
+    } = scenario;
+    let decision = if deny { "deny" } else { "allow" };
+    tokio::time::timeout(Duration::from_secs(60), async {
         let directory = tempfile::tempdir().unwrap();
         let record = directory.path().join("record");
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -201,7 +267,9 @@ async fn exercise_mcp_permissions() {
         }
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
-    }
+    })
+    .await
+    .expect("MCP permission scenario completes");
 }
 
 fn portable(record: &std::path::Path) -> Value {

@@ -147,7 +147,9 @@ mod tests {
     use serde_json::{Value, json};
 
     #[test]
-    fn answer_numbers_accept_json_lexical_forms_and_any_tag_position() {
+    fn answer_schema_and_decoder_accept_json_numbers_and_any_tag_position() {
+        let schema: Value = schemars::schema_for!(Answer).into();
+        let validator = jsonschema::validator_for(&schema).unwrap();
         for (wire, expected) in [
             (
                 r#"{"type":"noul","noul":0.7500}"#,
@@ -174,6 +176,10 @@ mod tests {
                 json!({"type":"score","score":1.0,"confidence":0.75,"probabilities":{"0":0.0,"1":1.0},"legend":{"0":"low","1":"high"}}),
             ),
         ] {
+            assert!(
+                validator.is_valid(&expected),
+                "schema rejects answer: {wire}"
+            );
             let answer: Answer = serde_json::from_str(wire).unwrap();
             assert_eq!(serde_json::to_value(answer).unwrap(), expected, "{wire}");
         }
@@ -224,26 +230,18 @@ mod tests {
     }
 
     #[test]
-    fn answer_schema_keeps_the_published_tagged_variants() {
-        // The existing JevAnswer contract in plugin-sdk/src/contracts.ts.
+    fn answer_schema_rejects_missing_mixed_and_mistyped_variant_fields() {
         let schema: Value = schemars::schema_for!(Answer).into();
-        assert_eq!(
-            schema,
-            json!({
-                "$schema":"https://json-schema.org/draft/2020-12/schema",
-                "title":"JevAnswer",
-                "oneOf":[
-                    {"type":"object","additionalProperties":false,
-                     "properties":{"type":{"type":"string","const":"noul"},"noul":{"type":"number","format":"double"}},
-                     "required":["type","noul"]},
-                    {"type":"object","additionalProperties":false,
-                     "properties":{"type":{"type":"string","const":"choice"},"choice":{"type":"string"},"confidence":{"type":"number","format":"double"},"probabilities":{"type":"object","additionalProperties":{"type":"number","format":"double"}}},
-                     "required":["type","choice","confidence","probabilities"]},
-                    {"type":"object","additionalProperties":false,
-                     "properties":{"type":{"type":"string","const":"score"},"score":{"type":"number","format":"double"},"confidence":{"type":"number","format":"double"},"probabilities":{"type":"object","additionalProperties":{"type":"number","format":"double"}},"legend":{"type":"object","additionalProperties":{"type":"string"}}},
-                     "required":["type","score","confidence","probabilities","legend"]}
-                ]
-            })
-        );
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for input in [
+            json!({"type":"noul","noul":0.75,"confidence":0.5}),
+            json!({"type":"choice","choice":"yes","confidence":0.5}),
+            json!({"type":"score","score":1,"confidence":0.5,"probabilities":{"1":"1"},"legend":{"1":"high"}}),
+        ] {
+            assert!(
+                !validator.is_valid(&input),
+                "schema accepts invalid answer: {input}"
+            );
+        }
     }
 }

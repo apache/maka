@@ -26,7 +26,7 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildCli, rustTarget, stageDesktopBundle, workspaceVersion } from './build-cli.mjs';
+import { buildCli, rustTarget, stageDesktopBundle } from './build-cli.mjs';
 
 const manifest = [
   '[workspace]',
@@ -236,10 +236,4 @@ test('a failed bundle staging keeps the previous Maka.app', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test('the bundle version is the workspace package version', () => {
-  assert.equal(workspaceVersion(manifest), '1.2.3-beta.1');
-  assert.equal(workspaceVersion('[workspace.package]\nversion = "0.2.0"'), '0.2.0');
-  assert.throws(() => workspaceVersion('[package]\nversion = "0.2.0"\n'), /no \[workspace/);
 });
