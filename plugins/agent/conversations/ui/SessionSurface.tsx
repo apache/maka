@@ -139,6 +139,12 @@ type OverlayTarget = {
   | { kind: 'compact'; owner: ConversationHandle; prompt?: string }
 );
 type Overlay = OverlayTarget & { instance: number };
+function unavailableSession(reason: unknown): boolean {
+  return (
+    reason === 'agent_session_unavailable' ||
+    (reason instanceof Error && reason.message === 'agent_session_unavailable')
+  );
+}
 type ActionContext = { instance: number | null; sessionId: string | null };
 type PendingRestore = {
   workspace: BrowserWorkspace;
@@ -348,6 +354,20 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     if (pendingSaveFailed())
       throw new UiError('The draft could not be saved; it has not been sent.');
   };
+  const readPendingSession = async () => {
+    const id = pendingCreated();
+    if (!id) return null;
+    try {
+      return await host.query('agent', 'observe', { sessionId: id });
+    } catch (reason) {
+      if (!unavailableSession(reason)) throw reason;
+      if (pendingCreated() !== id) return null;
+      pendingCreated.set(null);
+      if (backup?.created === id) backup = { ...backup, created: null };
+      if (pendingReady()) await flushPending();
+      return null;
+    }
+  };
   let finishPendingLoad = () => {};
   const pendingLoaded = new Promise<void>((resolve) => {
     finishPendingLoad = resolve;
@@ -376,6 +396,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           pendingText.set(state.text);
           pendingBackend.set(state.backend);
           pendingCreated.set(state.created);
+          try {
+            await readPendingSession();
+          } catch (reason) {
+            report(reason);
+          }
           pendingAccess.set(state.access);
           pendingRequests.set(state.requests);
           pendingModelChosen.set(state.modelChosen);
@@ -385,7 +410,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               return { id: file.id, name: meta.name, bytes: meta.bytes, file };
             }),
           );
-          backup = state;
+          backup = { ...state, created: pendingCreated() };
           backupFiles = files;
           if (state.backend) await pendingModel.refreshModel();
         }
@@ -681,6 +706,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           : (workspace.selection.segments.at(-1) ?? ''));
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
+        try {
+          await readPendingSession();
+        } catch (reason) {
+          report(reason);
+          return;
+        }
         if (pendingCreated()) {
           report(
             new UiError(
@@ -784,6 +815,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     else open({ kind: 'workspaces', sessionId });
   };
   const removeSelected = async (sessionId: string) => {
+    if (backup?.created === sessionId) {
+      backup = { ...backup, created: null };
+      if (pendingCreated() === sessionId) pendingCreated.set(null);
+      savePending();
+    }
     const scope = browsing.scope();
     if (scope.kind === 'workspace' && scope.sessionId === sessionId)
       browsing.setScope({ kind: 'all' });
@@ -959,20 +995,23 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               });
             let id = pendingCreated();
             if (id) {
-              const previous = await host.query('agent', 'observe', { sessionId: id });
-              const history = await host.query('agent', 'history', {
-                sessionId: id,
-                through: previous.through,
-                position: { kind: 'start' },
-                view: 'conversation',
-              });
-              const originals = await host.session(id).pending();
-              if (
-                history.chunks.some((row) => row.role === 'user') ||
-                (originals as unknown[]).length
-              ) {
-                await switchSession(id, { sessionId: null, instance: null });
-                return;
+              const previous = await readPendingSession();
+              id = pendingCreated();
+              if (id && previous) {
+                const history = await host.query('agent', 'history', {
+                  sessionId: id,
+                  through: previous.through,
+                  position: { kind: 'start' },
+                  view: 'conversation',
+                });
+                const originals = await host.session(id).pending();
+                if (
+                  history.chunks.some((row) => row.role === 'user') ||
+                  (originals as unknown[]).length
+                ) {
+                  await switchSession(id, { sessionId: null, instance: null });
+                  return;
+                }
               }
             }
             if (!id) {

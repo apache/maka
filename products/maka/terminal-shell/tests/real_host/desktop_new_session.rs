@@ -610,6 +610,56 @@ async fn desktop_creates_the_session_only_when_the_first_message_is_sent() {
         .unwrap();
     assert_eq!(retained["session"]["id"], failed_id);
     assert_eq!(retained["session"]["title"], "Other client's conversation");
+    let removed=super::support::mutate(&client,"changeSession",json!({"sessionId":failed_id,"expectedRevision":retained["session"]["revision"],"action":"remove"})).await;
+    assert_eq!(removed["kind"], "removed");
+    let old_target = platform.text_input_target().unwrap();
+    app.update(|cx| {
+        window
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .update(cx, |view, _, _| view.stop())
+            .unwrap();
+    });
+    bindings.close().await.unwrap();
+    client = fixture.client_at(&upload_gate.address).await;
+    bindings =
+        maka_workbench::bindings::Bindings::new(client.clone(), tokio::runtime::Handle::current());
+    let mut restarted =
+        maka_workbench::configuration(bindings.registry(None), tokio::runtime::Handle::current());
+    restarted.assets = Some(bindings.assets());
+    restarted.chunk_loader = Some(bindings.chunk_loader());
+    let (_deleted_foreground, foreground) = tokio::sync::watch::channel(true);
+    restarted.context = restarted
+        .context
+        .with(bindings.reload())
+        .with(maka_workbench::Foreground(foreground));
+    app.update(|cx| {
+        window
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .update(cx, |view, _, _| view.load_with_config(restarted))
+            .unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            platform.pump();
+            let (_, saved) = client.pending_draft().await.unwrap();
+            if saved["created"].is_null()
+                && platform
+                    .text_input_target()
+                    .is_some_and(|target| target != old_target)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("deleted first-send session still blocked the restored draft");
+    assert_input(&platform, "FAILED_FIRST_MESSAGE").await;
+
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
     let catalog = client
         .query("settings", "connections", json!({"kind":"start"}))
