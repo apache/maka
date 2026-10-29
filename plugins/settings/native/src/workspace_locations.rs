@@ -150,10 +150,7 @@ pub fn replace(
         rules.retain(|rule| {
             !(rule["scope"] == "subtree"
                 && rule["access"] == "write"
-                && (previous_paths.contains(&rule["path"])
-                    || previous.iter().any(|root| {
-                        serde_json::to_value(&root.path).ok().as_ref() == Some(&rule["path"])
-                    })))
+                && previous_paths.contains(&rule["path"]))
         });
         for root in roots {
             let path = Value::String(
