@@ -292,8 +292,11 @@ async fn begin(
     configuration["processes"]["filesystem"]["rules"] = Value::Array(
         roots
             .iter()
-            .map(|root| json!({"path": root.path, "scope": "subtree", "access": "write"}))
-            .collect(),
+            .map(|root| {
+                maka_fs_tools::workspace::project::host_path(&root.path)
+                    .map(|path| json!({"path": path, "scope": "subtree", "access": "write"}))
+            })
+            .collect::<Result<_, _>>()?,
     );
     let packages = tokio::task::spawn_blocking(packages).await??;
     let (sources, _, prepared) = author(configuration, &packages).await?;
@@ -575,6 +578,38 @@ async fn replace_workspace_locations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn initial_process_policy_accepts_normalized_workspace_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let store = launch::create(directory.path().join("host")).await.unwrap();
+        let (loaded, _) = prepare(
+            &store,
+            Roots::Configured(Some(vec![DirectoryRootSpec {
+                label: "Workspace".into(),
+                path: workspace.clone(),
+            }])),
+        )
+        .await
+        .unwrap();
+        for name in PROCESS_INSTANCES {
+            let settings: maka_workspace_api::processes::Configuration = serde_json::from_value(
+                serde_json::to_value(&loaded.source().input.instances[name].configuration.values)
+                    .unwrap(),
+            )
+            .unwrap();
+            settings.filesystem.compile().unwrap();
+            if name == "workspace-processes" {
+                assert_eq!(
+                    settings.filesystem.rules[0].path.canonicalize().unwrap(),
+                    workspace.canonicalize().unwrap(),
+                );
+            }
+        }
+        store.drain().await;
+    }
 
     #[tokio::test]
     async fn explicit_update_previews_and_applies_launch_drift_with_current_packages() {

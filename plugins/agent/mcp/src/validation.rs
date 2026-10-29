@@ -142,6 +142,10 @@ pub(crate) fn tools(
         if name.is_empty() || public_name.len() > 128 || selected.contains_key(&public_name) {
             return Err("MCP tool names are empty, too long or collide after normalization".into());
         }
+        let mut input_schema = tool.input_schema.as_ref().clone();
+        if !input_schema.contains_key("type") {
+            input_schema.insert("type".into(), Value::String("object".into()));
+        }
         let mut description = format!(
             "MCP server {} / {}.\n{}",
             configuration.name,
@@ -163,7 +167,7 @@ pub(crate) fn tools(
                 definition: ToolDefinition {
                     name: public_name,
                     description,
-                    input_schema: Value::Object(tool.input_schema.as_ref().clone()),
+                    input_schema: Value::Object(input_schema),
                     output_schema: None,
                     provider: None,
                     freeform: None,
@@ -181,4 +185,52 @@ pub(crate) fn tools(
         return Err("Configured MCP tool is absent from this server".into());
     }
     Ok(selected.into_values().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_schemas_default_missing_types_and_preserve_explicit_schemas() {
+        let configuration = serde_json::from_value(json!({
+            "name": "test",
+            "transport": {"type": "streamable_http", "url": "https://example.com/mcp"},
+        }))
+        .unwrap();
+        let remote = |name: &str, schema: Value| -> rmcp::model::Tool {
+            serde_json::from_value(json!({"name": name, "inputSchema": schema})).unwrap()
+        };
+        let admitted = tools(
+            &configuration,
+            vec![remote(
+                "missing",
+                json!({"properties": {"value": {"type": "integer"}}}),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            admitted[0].definition.input_schema,
+            json!({"type": "object", "properties": {"value": {"type": "integer"}}})
+        );
+
+        let choice = json!({
+            "type": "object",
+            "$ref": "#/$defs/Arguments",
+            "$defs": {"Arguments": {"type": "object"}},
+            "oneOf": [{"required": ["left"]}, {"required": ["right"]}],
+        });
+        let admitted = tools(&configuration, vec![remote("choice", choice.clone())]).unwrap();
+        assert_eq!(admitted[0].definition.input_schema, choice);
+        let admitted = tools(
+            &configuration,
+            vec![remote("scalar", json!({"type": "string"}))],
+        )
+        .unwrap();
+        assert_eq!(
+            admitted[0].definition.input_schema,
+            json!({"type": "string"})
+        );
+    }
 }

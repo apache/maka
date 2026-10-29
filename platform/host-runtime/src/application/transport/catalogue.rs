@@ -101,7 +101,7 @@ impl Catalogue {
     pub async fn read<R: AsyncRead + Unpin>(reader: R) -> Result<(Self, BufReader<R>)> {
         let mut reader = wire::Reader::new(reader);
         let catalogue: Self = reader.read().await?;
-        catalogue.validate()?;
+        let catalogue = catalogue.checked().await?;
         Ok((catalogue, reader.inner))
     }
     pub fn validate(&self) -> Result<()> {
@@ -121,8 +121,109 @@ impl Catalogue {
         }
         Ok(())
     }
+
+    /// Schema compilation must not occupy the async caller's poll stack.
+    pub(crate) async fn checked(self) -> Result<Self> {
+        tokio::task::spawn_blocking(move || {
+            self.validate()?;
+            Ok(self)
+        })
+        .await
+        .map_err(|error| format!("Host catalogue validation task: {error}"))?
+    }
     /// Only the trusted embedding publishes the actual captured catalogue.
     pub async fn write<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<()> {
         wire::write(writer, self).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_plugin_core::contract::{Method, MethodMode};
+    use serde_json::json;
+
+    #[test]
+    fn catalogue_validation_fits_a_constrained_caller_stack() {
+        const CHILD: &str = "MAKA_TEST_COLD_CATALOGUE";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "catalogue_validation_fits_a_constrained_caller_stack",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("catalogue_validation_fits_a_constrained_caller_stack")
+            );
+            return;
+        }
+        // Compile cold schemas in a subprocess so cache warming cannot hide the failure.
+        let mut schema = json!({"type":"string", "pattern":"^[a-z]{1,64}$"});
+        for _ in 0..24 {
+            schema = json!({"type":"object", "properties":{"next":schema}, "additionalProperties":false});
+        }
+        let catalogue = Catalogue {
+            endpoints: BTreeMap::from([(
+                "service".into(),
+                Description {
+                    provider: InstanceId(vec![Uuid::new_v4()]),
+                    export: "service".into(),
+                    registration_epoch: Some(Uuid::new_v4()),
+                    contract: Contract {
+                        name: "test.cold-catalogue".into(),
+                        version: 1,
+                        transport: Transport::Remote,
+                        interface: Interface::Service {
+                            methods: BTreeMap::from([(
+                                "query".into(),
+                                Method {
+                                    mode: MethodMode::Query,
+                                    input: schema.into(),
+                                    output: json!({"type":"null"}).into(),
+                                    progress: None,
+                                    resources: BTreeMap::new(),
+                                },
+                            )]),
+                        },
+                    },
+                },
+            )]),
+            startup_error: None,
+        };
+        std::thread::Builder::new()
+            .name("catalogue-caller".into())
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let mut checked = runtime.block_on(catalogue.checked()).unwrap();
+                assert!(checked.describe("service").is_ok());
+                let Interface::Service { methods } = &mut checked
+                    .endpoints
+                    .get_mut("service")
+                    .unwrap()
+                    .contract
+                    .interface
+                else {
+                    panic!()
+                };
+                methods.get_mut("query").unwrap().input = json!({"type":"invalid-type"}).into();
+                assert!(runtime.block_on(checked.checked()).is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

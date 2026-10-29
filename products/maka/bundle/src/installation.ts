@@ -85,58 +85,70 @@ export function installation(
   );
   add('questions', 'ask', 'AskUserQuestion', 'Ask the user for decisions needed to continue.');
   for (const [method, name, description] of [
-    ['read', 'UIRead', 'Read the current deployment source and immutable package identities.'],
-    ['readUi', 'UIReadCatalog', 'Read enabled UI plugin contributions for the shared workbench.'],
+    [
+      'read',
+      'PluginReadDeployment',
+      'Read the current deployment source and immutable package identities.',
+    ],
+    [
+      'readUi',
+      'PluginReadUiCatalog',
+      'Read enabled UI plugin contributions for the shared workbench.',
+    ],
     [
       'instances',
-      'UIInstances',
+      'PluginInstances',
       'Inspect Host, UI and composition instances in the current deployment.',
     ],
-    ['readDocument', 'UIReadDocument', 'Read the canonical deployment document before editing it.'],
+    [
+      'readDocument',
+      'PluginReadDeploymentDocument',
+      'Read the canonical deployment document before editing it.',
+    ],
     [
       'readPackage',
-      'UIReadPackage',
+      'PluginReadPackage',
       'Read a source file from an immutable installed plugin package.',
     ],
     [
       'installSource',
-      'UIInstallSource',
-      'Install plugin files into this deployment. Installation makes a package available; enable a UI instance with UIEditComposition to show it.',
+      'PluginInstallSource',
+      'Install plugin files into this deployment. Installation makes a package available; enable a UI instance with PluginEditComposition to show it.',
     ],
-    ['installUrl', 'UIInstallUrl', 'Install an immutable plugin package from a URL.'],
+    ['installUrl', 'PluginInstallUrl', 'Install an immutable plugin package from a URL.'],
     [
       'editComposition',
-      'UIEditComposition',
+      'PluginEditComposition',
       'Insert, remove or update Host, UI and composition instances using the observed source revision.',
     ],
     [
       'setEnabled',
-      'UISetEnabled',
+      'PluginSetEnabled',
       'Enable or disable an existing Host, UI or composition instance using the observed source revision.',
     ],
     [
       'readSettings',
-      'UIReadSettings',
+      'PluginReadSettings',
       'Read configuration fields and values for an existing instance.',
     ],
     [
       'configure',
-      'UIConfigure',
+      'PluginConfigure',
       'Update an instance configuration using its observed source revision.',
     ],
     [
       'bindingCandidates',
-      'UIBindingCandidates',
+      'PluginBindingCandidates',
       'Inspect compatible bindings in the current deployment.',
     ],
     [
       'packageSettings',
-      'UIPackageSettings',
+      'PluginPackageSettings',
       'Read the configuration fields for a selected Host, UI or composition entry.',
     ],
     [
       'replaceSource',
-      'UIReplaceSource',
+      'PluginReplaceDeployment',
       'Replace the canonical deployment source and package selection using its observed revision.',
     ],
   ] as const)

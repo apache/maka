@@ -173,3 +173,27 @@ HTTP 请求中有序且精确的图像、完整公开历史和清理结果。只
 [Host 对比工具](host-comparison/README.md)。工具通过真实公开客户端调用本地 SSE
 服务，逐字核验持久化结果，并保留进程和系统指标。后台 agent 容量测试分别记录
 请求的会话数、实际活跃执行数、已确认完成数及结果未确认的调用。
+
+## Windows State Root 所有权
+
+新 State Root 目录在创建时就明确指定当前账号为所有者，并设置私有 ACL。否则，提权后的 Windows 令牌可能默认将所有者设为 Administrators 组。已有目录在 Root 校验前保持原有权限；程序不会接管非空且无法识别的目录。
+
+旧 TypeScript 版和 Rust 版共用 `%LOCALAPPDATA%\Maka\state-root-owners` 与 `%LOCALAPPDATA%\Maka\runtime-hosts`。如果已有目录属于 Administrators，启动错误会报告路径、实际所有者和期望所有者的 SID。程序不会自动接管所有权。
+
+仅当你确认该目录是自己的 Maka 状态时，先停止本地全部 TypeScript 和 Rust Host。检查错误中的路径和目录内容，再在提权 PowerShell 中备份安全描述符，并只将该目录的所有者改为当前账号：
+
+```powershell
+$path = 'C:\Users\YOUR_ACCOUNT\AppData\Local\Maka\state-root-owners'
+$acl = Get-Acl -LiteralPath $path
+$acl | Format-List Owner,AccessToString
+if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544') {
+    throw 'This recovery step is only for a reviewed Administrators-owned directory.'
+}
+$backup = [System.IO.Path]::GetTempFileName()
+$acl.Sddl | Set-Content -LiteralPath $backup
+$acl.SetOwner([System.Security.Principal.WindowsIdentity]::GetCurrent().User)
+Set-Acl -LiteralPath $path -AclObject $acl
+Write-Output "Previous security descriptor: $backup"
+```
+
+重试启动；程序会校验目录，并将访问权限收紧为当前账号和 SYSTEM。后续若报告其他目录，应逐个检查，包括此前启动失败后遗留的空 Root。保留备份直到启动成功。不要删除或替换锁文件、递归接管状态目录，也不要修改无法确认来源的目录所有者。

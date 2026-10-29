@@ -57,6 +57,8 @@ mod support;
 mod terminal_workbench;
 #[path = "real_host/tool_cards.rs"]
 mod tool_cards;
+#[path = "real_host/tool_schemas.rs"]
+mod tool_schemas;
 #[path = "real_host/ui_plugins.rs"]
 mod ui_plugins;
 #[path = "real_host/workspace_locations.rs"]

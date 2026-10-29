@@ -197,3 +197,27 @@ still contributes to process peak RSS. The HTTP responder and checks run in the
 same process. This does not measure product pixel decoding, IPC, rendering, real
 model inference or energy. Expand image count and dimensions independently, and
 preserve failing cases when an existing boundary prevents exact delivery.
+
+## Windows State Root ownership
+
+New State Root directories are created with an explicit current-account owner and a private ACL. An elevated Windows token can otherwise default the owner to the Administrators group. Existing directories retain their permissions until Root validation; nonempty, unrecognized directories are not adopted.
+
+Older TypeScript and Rust installations share `%LOCALAPPDATA%\Maka\state-root-owners` and `%LOCALAPPDATA%\Maka\runtime-hosts`. If an existing directory is owned by Administrators, startup reports its path and the actual/expected owner SIDs. The program deliberately does not take ownership automatically.
+
+For a directory you recognize as your own Maka state, stop all local TypeScript and Rust Hosts before recovery. Review the path from the error and its contents, then use an elevated PowerShell to back up its security descriptor and change only that directory's owner to the current account:
+
+```powershell
+$path = 'C:\Users\YOUR_ACCOUNT\AppData\Local\Maka\state-root-owners'
+$acl = Get-Acl -LiteralPath $path
+$acl | Format-List Owner,AccessToString
+if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544') {
+    throw 'This recovery step is only for a reviewed Administrators-owned directory.'
+}
+$backup = [System.IO.Path]::GetTempFileName()
+$acl.Sddl | Set-Content -LiteralPath $backup
+$acl.SetOwner([System.Security.Principal.WindowsIdentity]::GetCurrent().User)
+Set-Acl -LiteralPath $path -AclObject $acl
+Write-Output "Previous security descriptor: $backup"
+```
+
+Retry startup; it will validate the directory and restrict access to the current account and SYSTEM. Review each subsequent reported directory separately, including an empty Root left by an earlier failed startup. Keep the backup until startup succeeds. Do not delete or replace lock files, recursively take ownership of state, or change the owner of an unrecognized directory.
