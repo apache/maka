@@ -473,7 +473,11 @@ impl Mounter {
         let view = self.views.get(id);
         let view = view.as_ref();
         match command {
-            Command::Focus => view.map_or((), crate::text_input::focus),
+            Command::Focus => {
+                if let Some(view) = view {
+                    crate::text_input::focus_view(surface, view);
+                }
+            }
             Command::Blur => match view {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
                 _ => crate::text_input::blur_all(surface),
@@ -540,6 +544,9 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::Insert { .. }
         | MountItem::Remove { .. }
         | MountItem::Delete { .. }
+        | MountItem::ProjectRoot { .. }
+        | MountItem::RetireListCell { .. }
+        | MountItem::ListCellRetired { .. }
         | MountItem::TrackStates { .. }
         | MountItem::Events { .. }
         | MountItem::AccessibilityLabel { .. }

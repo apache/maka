@@ -79,6 +79,8 @@ pub enum AppSource {
     Rust(Root),
     /// A JS bundle shipped with (or passed to) the app.
     Bundle(Bundle),
+    /// An embedding application's engine configuration.
+    Config(EngineConfig),
     /// A dev server (`ws://host:port/ws`); bundles are pushed on every
     /// rebuild.
     #[cfg(feature = "dev")]
@@ -289,6 +291,16 @@ impl AppView {
         self.surface.start(config);
     }
 
+    /// Loads an embedding application's engine configuration.
+    pub fn load_with_config(&self, config: EngineConfig) {
+        let access = match &config.app {
+            App::Js(bundle) => bundle.policy.access(),
+            App::Rust(_) => nsh_engine::Policy::default().access(),
+        };
+        self.surface.native.set_access(Arc::new(access));
+        self.surface.start(config);
+    }
+
     /// Where `asset:/` URIs resolve from now on.
     pub fn set_asset_base(&self, base: Option<AssetBase>) {
         self.options.borrow_mut().asset_base = base;
@@ -357,6 +369,8 @@ fn initial_environment() -> Environment {
         color_scheme: ColorScheme::Light,
         os: Os::Windows,
         idiom: Idiom::Desktop,
+        native_focus_scopes: true,
+        fallback_key_bindings: true,
         ..Environment::default()
     }
 }
@@ -418,6 +432,7 @@ fn run_on_this_thread(source: AppSource, options: AppOptions) -> std::process::E
     match source {
         AppSource::Rust(root) => view.load(App::Rust(root)),
         AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
+        AppSource::Config(config) => view.load_with_config(config),
         #[cfg(feature = "dev")]
         AppSource::DevServer(url) => crate::dev::start(&view, url),
     }

@@ -597,6 +597,7 @@ pub(crate) fn retire_cell(surface: &Rc<Surface>, cell: &NshView) {
                 x: at.0,
                 y: at.1,
                 button: 0,
+                buttons: input.mouse_buttons.get(),
                 pointer: match key {
                     Key::Mouse => 1,
                     Key::Touch(id) => id,
@@ -651,7 +652,13 @@ pub(crate) fn retire_cell(surface: &Rc<Surface>, cell: &NshView) {
         .filter(|view| !inside(view))
         .cloned()
         .collect();
-    set_hovered(surface, hovered);
+    set_hovered(
+        surface,
+        hovered,
+        at,
+        Modifiers::default(),
+        pressed_button(input.mouse_buttons.get()),
+    );
     if input
         .hover_item
         .borrow()
@@ -1146,7 +1153,8 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
             let (x, y) = input.last.get().unwrap_or((-1.0, -1.0));
             crate::scroll::key(surface, &event, x, y)
         }
-        || tab(surface, &event);
+        || tab(surface, &event)
+        || crate::keymap::fallback_key(surface, &event);
     if handled && event.modifiers.alt {
         input.alt_combo.set(true);
     }
@@ -1165,11 +1173,15 @@ fn tab(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     let mut fields = Vec::new();
     collect_fields(&crate::navigation::focus_scope(surface), &mut fields);
     let current =
-        crate::text_input::focused(surface).and_then(|f| fields.iter().position(|v| *v == f));
+        crate::text_input::focused_view(surface).and_then(|f| fields.iter().position(|v| *v == f));
     let Some(next) = input::tab_stop(current, fields.len(), m.shift, true) else {
         return false;
     };
-    crate::text_input::tab_to(&fields[next]);
+    if fields[next].kind() == ViewKind::Input {
+        crate::text_input::tab_to(&fields[next]);
+    } else {
+        crate::text_input::focus_view(surface, &fields[next]);
+    }
     true
 }
 
@@ -1180,7 +1192,10 @@ fn collect_fields(view: &NshView, out: &mut Vec<NshView>) {
         if s.style.hidden || s.concealed || s.props.pointer_events == PointerEvents::None {
             return;
         }
-        if s.kind == ViewKind::Input && !s.props.accessibility.state.disabled {
+        if !s.props.accessibility.state.disabled
+            && s.props.focusable != Some(false)
+            && (s.kind == ViewKind::Input || s.props.focusable == Some(true))
+        {
             out.push(view.clone());
         }
     }
@@ -1353,6 +1368,12 @@ fn down(
         return;
     };
     let touch = key != Key::Mouse;
+    if let Some(view) = chain(&hit.view).into_iter().find(|view| {
+        let state = view.state();
+        state.props.focusable == Some(true) && !state.props.accessibility.state.disabled
+    }) {
+        crate::text_input::focus_view(surface, &view);
+    }
     let mut item = None;
     if let Some(native) = hit.item.take() {
         let hosted = Item::Hosted(hit.view.clone(), native);

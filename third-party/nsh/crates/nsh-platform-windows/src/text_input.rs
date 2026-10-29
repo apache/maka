@@ -833,9 +833,12 @@ pub(crate) fn set_accessible_value(surface: &Rc<Surface>, view: &NshView, text: 
 
 /// The field that has the keyboard focus.
 pub(crate) fn focused(surface: &Surface) -> Option<NshView> {
+    focused_view(surface).filter(|view| view.state().input.is_some())
+}
+
+pub(crate) fn focused_view(surface: &Surface) -> Option<NshView> {
     let view = FOCUS.with(|f| f.borrow().get(&surface.key()).and_then(|f| f.view.clone()))?;
-    // A field the app removed loses the focus quietly (its node is gone).
-    if view.attached() && view.state().input.is_some() {
+    if view.attached() {
         return Some(view);
     }
     if let Some(input) = input_of(&view) {
@@ -858,7 +861,7 @@ fn window_active(surface: &Surface) -> bool {
 /// Moves the surface's focus to `view` (or nowhere), reporting the blur of
 /// the field that had it, then the focus of the new one.
 fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
-    let old = focused(surface);
+    let old = focused_view(surface);
     if old.as_ref() == view {
         return;
     }
@@ -876,14 +879,14 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
         send(surface, old, EventKind::Blur, || EventPayload::None);
         old.changed();
     }
-    if let Some(view) = view
-        && let Some(input) = input_of(view)
-    {
+    if let Some(view) = view {
         FOCUS.with(|f| f.borrow_mut().entry(surface.key()).or_default().view = Some(view.clone()));
-        input.focused.set(true);
-        input.active.set(window_active(surface));
-        input.wake_caret();
-        input.reveal();
+        if let Some(input) = input_of(view) {
+            input.focused.set(true);
+            input.active.set(window_active(surface));
+            input.wake_caret();
+            input.reveal();
+        }
         crate::input::set_state(surface, view, state::FOCUSED, true);
         send(surface, view, EventKind::Focus, || EventPayload::None);
         // The scroll views around bring the field into view.
@@ -1521,6 +1524,10 @@ pub(crate) fn focus(view: &NshView) {
     }
 }
 
+pub(crate) fn focus_view(surface: &Rc<Surface>, view: &NshView) {
+    set_focus(surface, Some(view));
+}
+
 /// `blur()`.
 pub(crate) fn blur(view: &NshView) {
     if let Some(surface) = surface_of(view)
@@ -2098,7 +2105,7 @@ mod blink {
             f.borrow()
                 .values()
                 .filter(|f| !f.inactive)
-                .filter_map(|f| f.view.clone())
+                .filter_map(|f| f.view.clone().filter(|view| input_of(view).is_some()))
                 .collect()
         })
     }

@@ -406,10 +406,15 @@ impl Surface {
     /// The native keyboard owner followed by its mounted ancestors.
     pub(crate) fn focus_path(&self) -> Vec<NodeId> {
         let mut current = crate::native::focused(self)
-            .or_else(|| crate::text_input::focused(self))
+            .or_else(|| crate::text_input::focused_view(self))
             .filter(NshView::attached);
         let mut path = Vec::new();
         while let Some(view) = current {
+            let state = view.state();
+            if state.style.hidden || state.concealed || state.props.pointer_events == nsh_core::PointerEvents::None {
+                return Vec::new();
+            }
+            drop(state);
             path.push(view.id());
             current = view.parent_view();
         }
