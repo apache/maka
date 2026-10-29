@@ -19,6 +19,7 @@
 
 import type {
   AgentHistoryAttachment,
+  AgentHistoryPage,
   HistoryCompaction,
   HistoryModel,
   HistoryTurnTiming,
@@ -54,6 +55,22 @@ export type Row = {
   startSequence?: number;
   closedAt?: number | null;
 };
+
+/** The opening user message, only when the loaded window proves the turn's start. */
+export function openingUserMessage(
+  rows: readonly Row[],
+  turnId: string | undefined,
+  before: AgentHistoryPage['before'] | undefined,
+): Row | null {
+  if (turnId === undefined) return null;
+  let precedingTurnLoaded = before === null;
+  for (const row of rows) {
+    if (row.turnId !== undefined && row.turnId !== turnId) precedingTurnLoaded = true;
+    if (row.role === 'user' && row.field === 'body' && row.turnId === turnId)
+      return precedingTurnLoaded ? row : null;
+  }
+  return null;
+}
 
 export function replayStartCursor(
   through: number,

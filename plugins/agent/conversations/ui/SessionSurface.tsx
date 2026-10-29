@@ -486,7 +486,13 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         'The conversation was deleted, but its latest draft is not saved. Return to the draft to check its status.',
       );
   };
-  const changeBrowsedSession = async (action: SessionAction, origin: string | null) => {
+  // Text a fork made to edit a message puts in its draft, taken once by its Conversation.
+  const prefills = new Map<string, string>();
+  const changeBrowsedSession = async (
+    action: SessionAction,
+    origin: string | null,
+    prefill?: string,
+  ): Promise<boolean> => {
     if (!alive || selected() !== origin || switching() || busy())
       throw new UiError('This conversation action is no longer current.');
     const owner = handle();
@@ -502,11 +508,16 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       throw new UiError('This conversation action is no longer current.');
     const source = { sessionId: origin, instance: overlay()?.instance ?? null };
     const result = await performSessionAction(control, action);
-    if (!alive) return;
+    if (!alive) return false;
+    let opened = false;
     if (result.kind === 'removed') await removeSelected(result.sessionId);
-    else if (result.kind === 'forked') await switchSession(result.session.id, source);
-    else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
+    else if (result.kind === 'forked') {
+      if (prefill !== undefined) prefills.set(result.session.id, prefill);
+      opened = await switchSession(result.session.id, source);
+      if (!opened) prefills.delete(result.session.id);
+    } else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
     await browsing.refresh();
+    return opened;
   };
   const stop = ({
     sessionId,
@@ -1028,6 +1039,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   foreground={foreground}
                   control={control}
                   fork={(action) => changeBrowsedSession(action, id())}
+                  edit={(action, text) => changeBrowsedSession(action, id(), text)}
+                  takePrefill={() => {
+                    const text = prefills.get(id()) ?? null;
+                    prefills.delete(id());
+                    return text;
+                  }}
                   commands={inputAction(invokeCommand, {
                     id: 'commands',
                     sessionId: id(),

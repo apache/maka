@@ -485,6 +485,12 @@ export const conversationMessages = {
     '分支對話已建立，可在對話清單中開啟。',
   ],
   'Fork from this turn': ['Fork from this turn', '从本轮创建分支', '從本輪建立分支'],
+  'Edit and resend': ['Edit and resend', '编辑后重新发送', '編輯後重新傳送'],
+  'This message has no text to edit.': [
+    'This message has no text to edit.',
+    '这条消息没有可编辑的文字。',
+    '這則訊息沒有可編輯的文字。',
+  ],
   'Form cancelled': ['Form cancelled', '表单已取消', '表單已取消'],
   'Form declined': ['Form declined', '已拒绝填写表单', '已拒絕填寫表單'],
   'Form request': ['Form request', '表单请求', '表單請求'],
