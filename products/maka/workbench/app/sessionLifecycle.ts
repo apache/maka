@@ -55,8 +55,14 @@ export class SessionRevisionConflict extends UiError {
   }
 }
 
-export const forkTitle = (title: string) =>
-  tr('Fork of {title}', { title: title || tr('Untitled conversation') });
+// A prefix stays visible when the sidebar truncates the title, and forking a
+// fork keeps a single prefix.
+export const hasForkPrefix = (title: string) =>
+  title.startsWith(tr('Fork · {title}', { title: '' }));
+export const forkTitle = (title: string) => {
+  const name = title || tr('Untitled conversation');
+  return hasForkPrefix(name) ? name : tr('Fork · {title}', { title: name });
+};
 
 // The captured Session is the user's original revision and labels. A conflict
 // requires another explicit action; never silently replace its CAS identity.
