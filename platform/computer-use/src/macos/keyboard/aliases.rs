@@ -50,6 +50,30 @@ enum ParseError<'a> {
     MissingOrdinary { _group: &'a str },
 }
 
+/// Native event-construction failures without associated values.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::macos) enum SynthesizedEventError {
+    InvalidParameter,
+    FailedToCreateSource,
+    FailedToTranslateKeyCodes,
+}
+
+impl SynthesizedEventError {
+    pub(in crate::macos) fn into_tool_error(self) -> ToolError {
+        let case = match self {
+            Self::InvalidParameter => "invalidParameter",
+            Self::FailedToCreateSource => "failedToCreateSource",
+            Self::FailedToTranslateKeyCodes => "failedToTranslateKeyCodes",
+        };
+        ToolError::Native(Box::new(maka_agent_facts::tools::NativeToolError {
+            name: "SkyComputerUseError".into(),
+            code: -10005,
+            error_name: "unknownError".into(),
+            message: format!("Computer Use server error -10005: {case}"),
+        }))
+    }
+}
+
 impl ParseError<'_> {
     fn into_tool_error(self) -> ToolError {
         let (domain, code) = match self {

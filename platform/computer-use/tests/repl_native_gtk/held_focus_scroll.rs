@@ -834,6 +834,7 @@ fn aggregate_checks(capture: &mut Value) -> Recorded<bool> {
 pub(super) fn tool_error(error: &ToolError) -> Value {
     let (kind, message) = match error {
         ToolError::Failed(message) => ("failed", message.as_str()),
+        ToolError::Native(error) => ("native", error.message.as_str()),
         ToolError::Io { message, .. } => ("io", message.as_str()),
         ToolError::Persistence(message) => ("persistence", message.as_str()),
         ToolError::OutcomeUnknown(message) => ("outcomeUnknown", message.as_str()),

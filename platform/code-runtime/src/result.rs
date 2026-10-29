@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_agent_facts::tools::ToolError;
+use maka_agent_facts::tools::{NativeToolError, ToolError};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
@@ -46,6 +46,8 @@ pub enum CellDiagnosticKind {
 pub struct CellDiagnostic {
     pub kind: CellDiagnosticKind,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<Box<NativeToolError>>,
 }
 
 impl CellDiagnostic {
@@ -53,6 +55,7 @@ impl CellDiagnostic {
         Self {
             kind,
             message: message.into(),
+            native: None,
         }
     }
     pub fn limit(message: impl Into<String>) -> Self {

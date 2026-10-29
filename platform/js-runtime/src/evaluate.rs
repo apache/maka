@@ -62,6 +62,7 @@ pub(crate) async fn evaluate(
         const stringify = JSON.stringify;
         const describe = String;
         const ErrorClass = Error;
+        class SkyComputerUseError extends ErrorClass {{}}
         const exitSignal = Object.freeze({{}});
         const check = (diagnostic) => {{
             if (!diagnostic) return;
@@ -135,7 +136,15 @@ pub(crate) async fn evaluate(
         const invoke = async (name, input) => {{
             const outcome = await call(name, input);
             if (outcome.ok) return outcome.value;
-            const error = new ErrorClass(outcome.error.message);
+            const native = outcome.error.native;
+            const error = native?.name === "SkyComputerUseError"
+                ? new SkyComputerUseError(outcome.error.message)
+                : new ErrorClass(outcome.error.message);
+            if (native !== undefined) {{
+                error.name = native.name;
+                error.code = native.code;
+                error.errorName = native.errorName;
+            }}
             remember(error, outcome.error);
             throw error;
         }};

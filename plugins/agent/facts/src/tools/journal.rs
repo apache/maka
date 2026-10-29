@@ -384,6 +384,7 @@ impl ToolJournal {
                     }
                     Err(
                         error @ (ToolError::Failed(_)
+                        | ToolError::Native(_)
                         | ToolError::Io { .. }
                         | ToolError::OutcomeUnknown(_)
                         | ToolError::OperationUnknown { .. }),
@@ -402,6 +403,9 @@ impl ToolJournal {
                             },
                             ToolError::Failed(message) => ToolOutcome::Failed {
                                 message: message.clone(),
+                            },
+                            ToolError::Native(error) => ToolOutcome::Failed {
+                                message: error.message.clone(),
                             },
                             _ => ToolOutcome::Failed {
                                 message: error.to_string(),

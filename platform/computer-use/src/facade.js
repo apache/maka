@@ -19,6 +19,7 @@
 
 // The enclosing bootstrap supplies call/emit; neither is exposed to model code.
 const ErrorClass = Error;
+class SkyComputerUseError extends ErrorClass {}
 const stringify = JSON.stringify;
 const parse = JSON.parse;
 const decodeTabMetadata = (row) => {
@@ -120,7 +121,19 @@ const audio = (value) => {
 const emitAudio = async (value) => output({ kind: 'media', content: audio(value) });
 const invoke = async (method, args = {}) => {
   const result = await call('cua', { method, ...args });
-  if (!result.ok) throw new ErrorClass(result.error.message);
+  if (!result.ok) {
+    const native = result.error.native;
+    const error =
+      native?.name === 'SkyComputerUseError'
+        ? new SkyComputerUseError(result.error.message)
+        : new ErrorClass(result.error.message);
+    if (native !== undefined) {
+      error.name = native.name;
+      error.code = native.code;
+      error.errorName = native.errorName;
+    }
+    throw error;
+  }
   return result.value;
 };
 class PlaywrightFileChooser {

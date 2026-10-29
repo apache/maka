@@ -918,6 +918,7 @@ fn tool_result(
         Ok(_)
         | Err(
             ToolError::Failed(_)
+            | ToolError::Native(_)
             | ToolError::Io { .. }
             | ToolError::OutcomeUnknown(_)
             | ToolError::OperationUnknown { .. },
