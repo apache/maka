@@ -1283,11 +1283,12 @@ pub(super) async fn prepare_fixed_tab(
     let result = scope
         .dispatch(async {
             enter_handoff_preparation(handoff_boundary.as_ref())?;
-            enter_fixed_ui(&dispatch).map_err(|error| *error)?;
+            enter_fixed_ui(&dispatch)?;
             scope
                 .control
                 .prepare_fixed_session_tab(tab_id, &policy, &ui)
                 .await
+                .map_err(Box::new)
         })
         .await;
     let reconciled = host

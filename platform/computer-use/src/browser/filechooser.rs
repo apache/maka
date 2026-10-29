@@ -262,10 +262,10 @@ impl Store {
             };
             if let Some(state) = retained.upgrade() {
                 let mut state = state.lock().expect("file chooser state poisoned");
-                if let Err(error) = &final_result {
-                    if uncertain(error) {
-                        state.failure.get_or_insert_with(|| error.clone());
-                    }
+                if let Err(error) = &final_result
+                    && uncertain(error)
+                {
+                    state.failure.get_or_insert_with(|| error.clone());
                 }
                 state.pending.remove(&id);
             }
@@ -419,10 +419,10 @@ impl Store {
         };
         let mut failure = None;
         for future in pending {
-            if let Err(error) = future.await {
-                if uncertain(&error) {
-                    failure.get_or_insert(error);
-                }
+            if let Err(error) = future.await
+                && uncertain(&error)
+            {
+                failure.get_or_insert(error);
             }
         }
         if let Some(error) = failure {
@@ -668,9 +668,7 @@ impl Browsers {
                 _ => Err(error),
             };
         }
-        Ok(crate::InvocationCompletion::pending(
-            async move { future.await },
-        ))
+        Ok(crate::InvocationCompletion::pending(future))
     }
 }
 
@@ -711,7 +709,7 @@ impl PreparedUpload {
     async fn control<T>(
         &self,
         pending: impl std::future::Future<
-            Output = Result<T, cua_driver_core::browser::ExtensionProviderError>,
+            Output = Result<T, Box<cua_driver_core::browser::ExtensionProviderError>>,
         >,
     ) -> Result<T, ToolError> {
         // UploadControl holds the same issued CallScope and its exact typed

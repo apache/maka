@@ -136,13 +136,14 @@ impl Tab {
             let height = viewport["clientHeight"]
                 .as_f64()
                 .ok_or_else(|| failed("browser screenshot viewport height unavailable"))?;
-            if scale <= 1.0 && width.round() > 0.0 && height.round() > 0.0 {
-                if let Some(data) = self
+            if scale <= 1.0
+                && width.round() > 0.0
+                && height.round() > 0.0
+                && let Some(data) = self
                     .viewport_screencast(width.round(), height.round(), cancellation)
                     .await?
-                {
-                    return Ok(data);
-                }
+            {
+                return Ok(data);
             }
             check_input(cancellation)?;
             params["clip"] = json!({

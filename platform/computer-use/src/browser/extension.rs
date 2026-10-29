@@ -462,7 +462,7 @@ const HANDOFF_RETIRED: u8 = 2;
 
 fn enter_handoff_preparation(
     boundary: Option<&Arc<AtomicU8>>,
-) -> Result<(), cua_driver_core::browser::ExtensionProviderError> {
+) -> Result<(), Box<cua_driver_core::browser::ExtensionProviderError>> {
     if let Some(phase) = boundary {
         phase
             .compare_exchange(
@@ -471,15 +471,15 @@ fn enter_handoff_preparation(
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             )
-            .map_err(
-                |_| cua_driver_core::browser::ExtensionProviderError::Refused {
+            .map_err(|_| {
+                Box::new(cua_driver_core::browser::ExtensionProviderError::Refused {
                     kind: "retired_handoff_reservation".into(),
                     message:
                         "explicit handoff reservation retired before entering Core preparation"
                             .into(),
                     details: None,
-                },
-            )?;
+                })
+            })?;
     }
     Ok(())
 }
@@ -1081,21 +1081,20 @@ impl CallScope {
         }
     }
 
-    async fn dispatch<T, F>(
+    async fn dispatch<T, E, F>(
         &self,
         future: F,
     ) -> Result<T, Box<cua_driver_core::browser::ExtensionProviderError>>
     where
-        F: std::future::Future<
-                Output = Result<T, cua_driver_core::browser::ExtensionProviderError>,
-            >,
+        F: std::future::Future<Output = Result<T, E>>,
+        E: Into<Box<cua_driver_core::browser::ExtensionProviderError>>,
     {
         let _control = self.controls.enter()?;
         let _dispatch = self.enter_retirement_dispatch();
         // Core records logical registration before transport admission on this
         // exact view. A completed local preflight refusal registers nothing;
         // a registered request keeps its duty regardless of its outcome.
-        future.await.map_err(Box::new)
+        future.await.map_err(Into::into)
     }
     async fn dispatch_retirement<F: std::future::Future>(&self, future: F) -> F::Output {
         let _dispatch = self.enter_retirement_dispatch();
@@ -3341,23 +3340,21 @@ impl Host {
         if let Some((operation, epoch)) = acquired {
             self.commit_handoff_transfer(&identity, owner, provider, operation, epoch)?;
         }
-        let previous_logical = acquired
-            .and_then(|_| logical_lease.as_ref())
-            .and_then(|logical| {
-                self.tabs
-                    .iter()
-                    .find(|(old, lease)| {
-                        **old != identity
-                            && lease.creator.owner == owner
-                            && lease.logical_lease.as_ref().is_some_and(|previous| {
-                                previous.chrome_session_id == logical.chrome_session_id
-                                    && previous.logical_lease_id == logical.logical_lease_id
-                                    && previous.host_session_id == logical.host_session_id
-                                    && previous.tab_id == logical.tab_id
-                            })
-                    })
-                    .map(|(old, lease)| ((*old).clone(), lease.extension_sequence))
-            });
+        let previous_logical = acquired.and(logical_lease.as_ref()).and_then(|logical| {
+            self.tabs
+                .iter()
+                .find(|(old, lease)| {
+                    **old != identity
+                        && lease.creator.owner == owner
+                        && lease.logical_lease.as_ref().is_some_and(|previous| {
+                            previous.chrome_session_id == logical.chrome_session_id
+                                && previous.logical_lease_id == logical.logical_lease_id
+                                && previous.host_session_id == logical.host_session_id
+                                && previous.tab_id == logical.tab_id
+                        })
+                })
+                .map(|(old, lease)| ((*old).clone(), lease.extension_sequence))
+        });
         let prior_sequence = self.tabs[&identity].extension_sequence.or_else(|| {
             previous_logical
                 .as_ref()
@@ -6412,7 +6409,11 @@ impl Browsers {
                 .dispatch(async {
                     enter_handoff_preparation(boundary.as_ref())?;
                     entered = true;
-                    scope.control.prepare_session_tab(id).await
+                    scope
+                        .control
+                        .prepare_session_tab(id)
+                        .await
+                        .map_err(Box::new)
                 })
                 .await;
             let preparation_not_dispatched = prepared.as_ref().err().is_some_and(|error| {

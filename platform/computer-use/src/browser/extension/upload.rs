@@ -361,11 +361,10 @@ impl UploadControl {
         &self,
         claim: &ExtensionPhysicalClaim,
         files: &[cua_driver_core::browser::ExtensionUploadFile],
-    ) -> Result<ExtensionUploadStage, cua_driver_core::browser::ExtensionProviderError> {
+    ) -> Result<ExtensionUploadStage, Box<cua_driver_core::browser::ExtensionProviderError>> {
         self.scope
             .dispatch(self.scope.control.begin_upload(claim, files))
             .await
-            .map_err(|error| *error)
     }
     pub(in crate::browser) async fn write_upload_chunk(
         &self,
@@ -375,7 +374,7 @@ impl UploadControl {
         bytes: &[u8],
     ) -> Result<
         cua_driver_core::browser::ExtensionUploadChunkAck,
-        cua_driver_core::browser::ExtensionProviderError,
+        Box<cua_driver_core::browser::ExtensionProviderError>,
     > {
         self.scope
             .dispatch(
@@ -384,26 +383,27 @@ impl UploadControl {
                     .write_upload_chunk(stage, index, offset, bytes),
             )
             .await
-            .map_err(|error| *error)
     }
     pub(in crate::browser) async fn retain_upload_for_selection(
         &self,
         stage: &ExtensionUploadStage,
-    ) -> Result<ExtensionRetainedUpload, cua_driver_core::browser::ExtensionProviderError> {
+    ) -> Result<ExtensionRetainedUpload, Box<cua_driver_core::browser::ExtensionProviderError>>
+    {
         self.scope
             .dispatch(self.scope.control.retain_upload_for_selection(stage))
             .await
-            .map_err(|error| *error)
     }
     pub(in crate::browser) async fn abandon_upload(
         &self,
         stage: &ExtensionUploadStage,
-    ) -> Result<ExtensionUploadAbandonAck, cua_driver_core::browser::ExtensionProviderError> {
+    ) -> Result<ExtensionUploadAbandonAck, Box<cua_driver_core::browser::ExtensionProviderError>>
+    {
         // Only the server's exact unexposed stage can be abandoned. This is
         // original cleanup custody, not admission for another effect or grant.
         self.scope
             .dispatch_retirement(self.scope.control.abandon_upload(stage))
             .await
+            .map_err(Box::new)
     }
 }
 impl Tab {

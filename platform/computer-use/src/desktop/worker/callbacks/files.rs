@@ -307,10 +307,10 @@ impl ParentCallbacks {
         id: u64,
         request: Request,
     ) -> Result<(), ToolError> {
-        if let Request::UploadPrepare { request } | Request::UploadCheck { request } = &request {
-            if request.document != *token.key.access.document() {
-                return Err(failed("Upload snapshot changed its bound document"));
-            }
+        if let Request::UploadPrepare { request } | Request::UploadCheck { request } = &request
+            && request.document != *token.key.access.document()
+        {
+            return Err(failed("Upload snapshot changed its bound document"));
         }
         let prepared = {
             let mut state = self.0.state.lock().unwrap();
@@ -592,7 +592,7 @@ impl ReadResource for InputResource {
 
 #[cfg(feature = "native-desktop")]
 impl WorkerCallbacks {
-    pub(super) fn prepare_upload(
+    pub(in crate::desktop::worker) fn prepare_upload(
         &self,
         identity: ScopeIdentity,
         invocation_id: u64,
@@ -679,7 +679,7 @@ impl WorkerCallbacks {
             }
         })
     }
-    pub(super) fn check_upload(
+    pub(in crate::desktop::worker) fn check_upload(
         &self,
         identity: ScopeIdentity,
         invocation_id: u64,
