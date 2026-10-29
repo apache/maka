@@ -68,6 +68,7 @@ impl Foreground {
             projection: Projection::default(),
             capabilities,
             after: observation.through,
+            history_through: observation.through,
             parts: HashMap::new(),
             user: Vec::new(),
         };
