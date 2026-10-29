@@ -62,6 +62,7 @@ import {
 import {
   acceptedSend,
   mergeChunks,
+  openingUserMessage,
   replayStartCursor,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
@@ -245,15 +246,12 @@ export function Conversation(props: ConversationProps) {
   const client = props.client;
   const sessionId = client.sessionId;
   const rows = signal<Row[]>([]);
-  // The first user message of a turn opened it; later ones in the same turn steered it.
   const opensTurn = (row: Row) => {
-    const first = rows().find(
-      (other) => other.role === 'user' && other.field === 'body' && other.turnId === row.turnId,
-    );
+    const first = openingUserMessage(rows(), row.turnId, historyWindow()?.before);
     return (
-      first === undefined ||
-      (first.position?.sourceSequence === row.position?.sourceSequence &&
-        first.position?.itemIndex === row.position?.itemIndex)
+      first !== null &&
+      first.position?.sourceSequence === row.position?.sourceSequence &&
+      first.position?.itemIndex === row.position?.itemIndex
     );
   };
   const live = signal<Row[]>([]);
