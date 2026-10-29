@@ -271,6 +271,7 @@ impl Bot {
         &self,
         session: &str,
         after: u64,
+        limit: usize,
     ) -> Result<(u64, Vec<BotMessage>, bool), StoreError> {
         let through = self
             .read::<Head>(&head_key(session))
@@ -278,6 +279,9 @@ impl Bot {
             .1
             .unwrap_or_default()
             .through;
+        if limit == 0 {
+            return Ok((through, vec![], false));
+        }
         let prefix = messages_prefix(session);
         let mut cursor = (after > 0).then(|| message_key(session, after));
         let mut messages = Vec::new();
@@ -296,17 +300,17 @@ impl Bot {
                             .map_err(|error| StoreError::Unavailable(error.to_string()))?,
                     );
                 }
-                if messages.len() > PAGE {
+                if messages.len() > limit {
                     break;
                 }
             }
-            if messages.len() > PAGE || page.next_after.is_none() {
+            if messages.len() > limit || page.next_after.is_none() {
                 break;
             }
             cursor = page.next_after;
         }
-        let more = messages.len() > PAGE;
-        messages.truncate(PAGE);
+        let more = messages.len() > limit;
+        messages.truncate(limit);
         Ok((through, messages, more))
     }
 }
@@ -590,7 +594,7 @@ impl Owner {
         let (through, messages, more) = match &session_id {
             Some(session) => self
                 .bot
-                .page(session, input.after)
+                .page(session, input.after, (input.limit as usize).min(PAGE))
                 .await
                 .map_err(|error| error.to_string())?,
             None => (0, vec![], false),

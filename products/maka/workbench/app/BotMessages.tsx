@@ -66,7 +66,9 @@ export function BotMessages(props: { sessionId: string; source: ComposerBotSourc
   };
   void (async () => {
     try {
-      if ((await props.source.botSession()) !== props.sessionId || !alive) return;
+      // A failed lookup must not put an error panel on an ordinary conversation.
+      const bot = await props.source.botSession().catch(() => null);
+      if (bot !== props.sessionId || !alive) return;
       const opened = await props.source.watch();
       if (!alive) {
         await opened.close();

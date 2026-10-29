@@ -471,6 +471,10 @@ async fn outbox_keeps_every_call_and_pages_by_cursor() {
         assert_eq!(second["messages"].as_array().unwrap().len(), 50);
         assert_eq!(second["messages"][49]["text"], "message 150");
         assert!(second["nextAfter"].is_null());
+        let head = f.query("botOutbox", json!({"limit":0})).await.unwrap();
+        assert_eq!(head["through"], 150);
+        assert_eq!(head["sessionId"], bot);
+        assert_eq!(head["messages"], json!([]));
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

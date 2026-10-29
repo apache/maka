@@ -306,6 +306,11 @@ export interface ServiceMethods {
          * Return messages with a sequence greater than this cursor, oldest first.
          */
         after?: number;
+        /**
+         * Most messages to return, at most 100. Zero reads only the head
+         * (`sessionId` and `through`).
+         */
+        limit?: number;
       };
       output: {
         enabled: boolean;
@@ -787,6 +792,11 @@ export interface ServiceMethods {
          * Return messages with a sequence greater than this cursor, oldest first.
          */
         after?: number;
+        /**
+         * Most messages to return, at most 100. Zero reads only the head
+         * (`sessionId` and `through`).
+         */
+        limit?: number;
       };
       output: {
         enabled: boolean;

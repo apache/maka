@@ -68,6 +68,14 @@ pub struct BotOutboxRead {
     /// Return messages with a sequence greater than this cursor, oldest first.
     #[serde(default)]
     pub after: u64,
+    /// Most messages to return, at most 100. Zero reads only the head
+    /// (`sessionId` and `through`).
+    #[serde(default = "default_limit")]
+    #[schemars(range(max = 100))]
+    pub limit: u32,
+}
+fn default_limit() -> u32 {
+    100
 }
 
 /// One message the Bot deliberately sent to its user.

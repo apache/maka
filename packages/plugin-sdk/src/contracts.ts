@@ -248,6 +248,15 @@ export const contracts = {
                 minimum: 0,
                 default: 0,
               },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
+              },
             },
             additionalProperties: false,
           },
@@ -22629,6 +22638,15 @@ export const contracts = {
                 format: 'uint64',
                 minimum: 0,
                 default: 0,
+              },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
               },
             },
             additionalProperties: false,

@@ -1470,10 +1470,9 @@ function projectComposerSession(
     },
     bot: {
       botSession: async () =>
-        (await host.query('agent', 'botOutbox', { after: Number.MAX_SAFE_INTEGER })).sessionId ??
-        null,
-      // The watch is a change signal only; its cursor skips the message pages.
-      watch: () => host.subscribe('agent', 'watchBotOutbox', { after: Number.MAX_SAFE_INTEGER }),
+        (await host.query('agent', 'botOutbox', { limit: 0 })).sessionId ?? null,
+      // The watch is a change signal only: it carries the head, not messages.
+      watch: () => host.subscribe('agent', 'watchBotOutbox', { limit: 0 }),
       read: (after) => host.query('agent', 'botOutbox', { after }),
     },
     queue: {
