@@ -122,10 +122,13 @@ export function MarkdownBody(props: {
               borderRadius: props.compact ? 8 : 12,
             },
             codeBlockCode: { ...codeTextStyle, color: color() },
-            // The desktop starts the actions where the code starts.
             codeBlockHeader: platform.isTerminal
               ? { color: C.muted }
               : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
+            // The desktop starts the language where the code starts.
+            codeBlockLanguage: platform.isTerminal
+              ? secondaryTextStyle
+              : { ...secondaryTextStyle, paddingLeft: 4 },
             tableCell: { ...readingStyle, color: color(), borderColor: C.line },
             tableHeaderCell: {
               ...readingStyle,

@@ -213,6 +213,7 @@ fn reply(markdown: Signal<SharedString>) -> impl IntoElement {
 | `listItemContent` | `ListItemContent` | 列表项的文档块组成的一列。 |
 | `codeBlock` | `CodeBlock` | 代码块：带边框的圆角框，标题行浮在代码之上。 |
 | `codeBlockHeader` | `CodeBlockHeader` | 代码块操作按钮（`codeBlockActions`）所在的行，浮在代码块右上角。 |
+| `codeBlockLanguage` | `CodeBlockLanguage` | 代码块标注的语言（```` ```rust ````），位于标题行开头；未标注时为空。 |
 | `codeBlockScroll` | `CodeBlockScroll` | 包住代码块代码的水平滚动视图。 |
 | `codeBlockCode` | `CodeBlockCode` | 代码块的代码（等宽，按原样）。 |
 | `code` | `Code` | 文本中的代码（等宽，带圆角底色）。 |
