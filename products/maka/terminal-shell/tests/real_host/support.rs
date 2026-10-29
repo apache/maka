@@ -1790,6 +1790,20 @@ impl ReplyGate {
             directory, target, "agent", "create", "mutation", false, None,
         )
     }
+    pub fn upload(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(
+            directory,
+            target,
+            "agent",
+            "uploadAttachment",
+            "mutation",
+            false,
+            None,
+        )
+    }
+    pub fn disconnect_send(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "send", "mutation", true, None)
+    }
     pub fn start(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation", false, None)
     }

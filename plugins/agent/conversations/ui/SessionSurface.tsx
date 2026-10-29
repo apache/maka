@@ -78,6 +78,7 @@ import {
   type Control,
   type ConversationAnchor,
   type ConversationHandle,
+  type FirstSend,
 } from './Conversation';
 import {
   RecallSearch,
@@ -677,7 +678,24 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   // Text a fork made to edit a message or regenerate a reply puts in its draft (and sends),
   // taken once by its Conversation.
-  const prefills = new Map<string, { text: string; send: boolean; files?: StagedFile[] }>();
+  const prefills = new Map<
+    string,
+    { text: string; send: boolean; files?: StagedFile[]; first?: FirstSend }
+  >();
+  const discardUnsent = async (id: string) => {
+    const observed = await host.query('agent', 'observe', { sessionId: id });
+    const result = await control('changeSession', {
+      sessionId: id,
+      expectedRevision: observed.session.revision,
+      action: 'remove',
+    });
+    if (result.kind !== 'removed')
+      throw new UiError('Conversation removal rejected: {reason}', {
+        reason: result.reason ?? result.kind,
+      });
+    if (pendingCreated() === id) pendingCreated.set(null);
+    await browsing.refresh();
+  };
   const stagePending = (
     read: () => Promise<{ files: StagedFile[]; text?: string | null }>,
     onText?: (text: string) => void,
@@ -787,7 +805,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       },
       submit(text: string, expected?: string) {
         const workspace = pendingWorkspace();
-        const files = pendingFiles().map((item) => item.file);
+        const staged = pendingFiles();
+        const files = staged.map((item) => item.file);
         const access = pendingAccess();
         const requests = pendingRequests();
         const editRevision = pendingEditRevision();
@@ -804,6 +823,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         )
           return;
         pendingSending.set(true);
+        const handoff = { finish: () => {} };
         void (async () => {
           try {
             error.set('');
@@ -887,7 +907,65 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                 reason: choice.reason ?? choice.kind,
               });
             requireUnchangedDraft();
-            prefills.set(id, { text, send: true, files });
+            const createdId = id;
+            const label = pendingWorkspaceLabel();
+            const handoffComplete = new Promise<void>((resolve) => {
+              handoff.finish = resolve;
+            });
+            let finished = false;
+            const first: FirstSend = {
+              finish(outcome, latestText, message, attachmentsUnchanged) {
+                if (finished) return;
+                finished = true;
+                if (
+                  outcome !== 'rejected' ||
+                  !attachmentsUnchanged ||
+                  !alive ||
+                  selected() !== createdId
+                ) {
+                  for (const file of files) file.dispose();
+                  return;
+                }
+                let transferred = false;
+                void (async () => {
+                  await handoffComplete;
+                  if (!alive || selected() !== createdId) {
+                    for (const file of files) file.dispose();
+                    return;
+                  }
+                  if (!(await shell()!.openSession(null)) || !alive || selected() !== null) {
+                    for (const file of files) file.dispose();
+                    return;
+                  }
+                  pendingWorkspace.set(workspace);
+                  pendingWorkspaceLabel.set(label);
+                  pendingText.set(latestText);
+                  pendingFiles.set(staged);
+                  transferred = true;
+                  pendingCreated.set(createdId);
+                  pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+                  pendingSending.set(true);
+                  try {
+                    await discardUnsent(createdId);
+                    error.set(
+                      message ||
+                        uiMessage(
+                          'This message was not sent. Your draft is kept; check the status below before trying again.',
+                        ),
+                    );
+                  } catch (reason) {
+                    report(reason);
+                  } finally {
+                    if (alive) pendingSending.set(false);
+                  }
+                  focusComposer();
+                })().catch((reason) => {
+                  if (!transferred) for (const file of files) file.dispose();
+                  report(reason);
+                });
+              },
+            };
+            prefills.set(id, { text, send: true, files, first });
             pendingHandoffSession.set(id);
             pendingHandoff = true;
             const switched = await switchSession(id, { sessionId: null, instance: null });
@@ -900,12 +978,26 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
             } else {
               prefills.delete(id);
               pendingHandoffSession.set(null);
+              try {
+                await discardUnsent(id);
+              } catch (reason) {
+                report(reason);
+              }
             }
           } catch (reason) {
             report(reason);
+            const created = pendingCreated();
+            if (created && !pendingCreateUncertain() && selected() === null) {
+              try {
+                await discardUnsent(created);
+              } catch (cleanupError) {
+                report(cleanupError);
+              }
+            }
           } finally {
             pendingHandoff = false;
             if (alive) pendingSending.set(false);
+            handoff.finish();
           }
         })();
       },

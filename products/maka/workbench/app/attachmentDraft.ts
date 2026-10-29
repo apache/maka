@@ -75,6 +75,7 @@ export function createAttachmentDraft(options: {
   // before CAS must not resurrect a file after removal or a successful send.
   const settled = new Map<string, 'pending' | 'saved'>();
   let alive = true;
+  let selections = 0;
   let subscription: UploadSubscription | null = null;
   const intakes = signal<Set<UploadIntake>>(new Set());
   let reading = false;
@@ -229,6 +230,7 @@ export function createAttachmentDraft(options: {
   const status = (value: unknown, focus = true) => {
     const update = attachmentStatus(value);
     if (!alive || !update || settled.has(update.operationId)) return;
+    if (focus && update.kind === 'reading') selections += 1;
     const original = originals().find((original) => original.id === update.operationId);
     if (original && (original.receipt || original.abandoned)) return;
     if (update.kind === 'reading') {
@@ -258,6 +260,7 @@ export function createAttachmentDraft(options: {
       (local && local.kind !== 'failed')
     )
       return;
+    selections += 1;
     if (original && !settled.has(original.id)) settled.set(original.id, 'pending');
     selecting.set(selecting().filter((item) => item.id !== target.id));
     files.set(files().filter((file) => file.id !== target.id));
@@ -315,15 +318,17 @@ export function createAttachmentDraft(options: {
     clearNotice() {
       if (alive) notice.set('');
     },
-    observeIntake(intake: UploadIntake, onText: (text: string) => void) {
+    observeIntake(intake: UploadIntake, onText: (text: string) => void, staged = false) {
       if (!alive) {
         intake.close();
         return;
       }
+      if (!staged) selections += 1;
       if (!watchFailed) error.set('');
       notice.set('');
       intakes.set(new Set([...intakes(), intake]));
       void (async () => {
+        let selectedFile = false;
         try {
           while (alive && intakes().has(intake)) {
             const value = await intake.next();
@@ -346,11 +351,17 @@ export function createAttachmentDraft(options: {
               typeof value.error === 'string'
             )
               notice.set(errorText(value.error));
-            else status(value, false);
+            else {
+              const update = attachmentStatus(value);
+              if (update && (update.kind === 'reading' || update.kind === 'uploading'))
+                selectedFile = true;
+              status(value, false);
+            }
           }
         } catch (reason) {
           if (alive) notice.set(errorText(reason));
         } finally {
+          if (!staged && !selectedFile) selections -= 1;
           const observing = new Set(intakes());
           if (observing.delete(intake)) intakes.set(observing);
           intake.close();
@@ -375,6 +386,9 @@ export function createAttachmentDraft(options: {
       attachments: [...files()],
       settledUploads: [...settled].filter(([, state]) => state === 'pending').map(([id]) => id),
     }),
+    selections: () => selections,
+    selecting: () => picker() || intakes().size > 0,
+    failed: () => intakes().size === 0 && rows().some((row) => row.kind === 'failed'),
     saved(snapshot: AttachmentEdit) {
       for (const id of snapshot.settledUploads) settled.set(id, 'saved');
     },

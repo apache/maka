@@ -194,7 +194,7 @@ type ConversationProps = {
     send: boolean,
   ): Promise<boolean>;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
-  takePrefill?(): { text: string; send: boolean; files?: StagedFile[] } | null;
+  takePrefill?(): { text: string; send: boolean; files?: StagedFile[]; first?: FirstSend } | null;
   commands(): void;
   visible(): boolean;
   foreground(): boolean;
@@ -207,6 +207,14 @@ type ConversationProps = {
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
   stopAction(): () => void;
+};
+export type FirstSend = {
+  finish(
+    outcome: 'accepted' | 'rejected' | 'unknown',
+    text: string,
+    message: string,
+    attachmentsUnchanged: boolean,
+  ): void;
 };
 type LivePart = {
   invocationId: string | null;
@@ -592,6 +600,10 @@ export function Conversation(props: ConversationProps) {
   // revision being sent. Edits made meanwhile show at once and are saved after.
   let holding = false;
   let heldDraft: (AttachmentEdit & { text: string }) | null = null;
+  const autoSend = signal<{ text: string; first?: FirstSend } | null>(null);
+  let firstSend: FirstSend | undefined;
+  let firstOperation: string | null = null;
+  let firstSelections = 0;
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -1461,6 +1473,14 @@ export function Conversation(props: ConversationProps) {
       heldDraft = edit;
       return;
     }
+    const first = autoSend();
+    if (first?.first) {
+      const firstText = first.text;
+      heldDraft = edit.text !== firstText ? edit : null;
+      pendingDraft = { ...edit, text: firstText };
+      startSave();
+      return;
+    }
     pendingDraft = edit;
     startSave();
   };
@@ -1674,8 +1694,33 @@ export function Conversation(props: ConversationProps) {
       return tr('Sending waits for the original receipt; it will not be replayed.');
     return '';
   };
-  const send = async (text: string, expectedBackend?: BackendIdentity) => {
-    if (!alive || (!text.trim() && attachments.files().length === 0)) return;
+  const sendOutcome = (reply: any): 'accepted' | 'rejected' | 'unknown' => {
+    if (acceptedSend(reply, sessionId)) return 'accepted';
+    const receipt = reply?.receipt;
+    return receipt?.kind === 'recorded' &&
+      receipt.outcome?.kind === 'returned' &&
+      receipt.outcome.value?.kind === 'rejected'
+      ? 'rejected'
+      : 'unknown';
+  };
+  const finishFirst = (outcome: 'accepted' | 'rejected' | 'unknown') => {
+    const first = firstSend;
+    firstSend = undefined;
+    firstOperation = null;
+    first?.finish(
+      outcome,
+      draft(),
+      error() || notice() || attachments.error() || attachments.notice(),
+      attachments.selections() === firstSelections && !attachments.selecting(),
+    );
+  };
+  const send = async (text: string, expectedBackend?: BackendIdentity, first?: FirstSend) => {
+    if (!alive) return;
+    first ??= firstOperation === null ? firstSend : undefined;
+    if (!text.trim() && attachments.files().length === 0) {
+      if (first) finishFirst('rejected');
+      return;
+    }
     if (sendBlockedReason()) {
       notice.set(
         uiMessage(
@@ -1684,16 +1729,20 @@ export function Conversation(props: ConversationProps) {
       );
       return;
     }
-    if (draft() !== text) changeDraft(text);
+    if (!first && draft() !== text) changeDraft(text);
     const epoch = editEpoch;
     const files = [...attachments.files()];
     sending.set(true);
     error.set('');
     holding = true;
+    let outcome: 'accepted' | 'rejected' | 'unknown' = 'rejected';
     try {
       const model = await selection(expectedBackend);
       if (!alive || model === null) return;
-      if (!(await projectMcp.check()) || !alive) return;
+      if (!(await projectMcp.check()) || !alive) {
+        outcome = 'unknown';
+        return;
+      }
       await flushDraft();
       if (!alive) return;
       if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
@@ -1708,9 +1757,12 @@ export function Conversation(props: ConversationProps) {
       // saving while confirmation waits and never inherit this send attempt.
       receiptsKnown.set(false);
       const operation = await reserveSend(client, draftRevision, model);
+      if (first) firstOperation = operation;
       const typedAhead = releaseHeld();
+      outcome = 'unknown';
       const sent = await confirmSend(client, operation);
       if (!alive) return;
+      outcome = sendOutcome(sent.reply);
       settleReply(sent.reply, text, epoch, files);
       // Text typed before the send was reserved continues the sent message in
       // the composer; once it is accepted, only the continuation stays. A
@@ -1733,6 +1785,7 @@ export function Conversation(props: ConversationProps) {
         report(reason);
       }
       if (alive) sending.set(false);
+      if (first && firstSend === first && outcome !== 'unknown') finishFirst(outcome);
     }
   };
 
@@ -1740,6 +1793,7 @@ export function Conversation(props: ConversationProps) {
     if (!alive || recovering() || sending()) return;
     recovering.set(true);
     const epoch = editEpoch;
+    let firstOutcome: 'accepted' | 'rejected' | 'unknown' = 'unknown';
     await flushDraft();
     if (!alive) return;
     try {
@@ -1758,6 +1812,7 @@ export function Conversation(props: ConversationProps) {
         }
         const reply = await recoverSend(client, original.id);
         if (!alive) return;
+        if (original.id === firstOperation) firstOutcome = sendOutcome(reply);
         settleReply(reply);
       }
       const stored = await loadDraft(client);
@@ -1770,6 +1825,7 @@ export function Conversation(props: ConversationProps) {
       report(reason);
     } finally {
       if (alive) recovering.set(false);
+      if (alive && firstOutcome !== 'unknown') finishFirst(firstOutcome);
     }
   };
 
@@ -1777,10 +1833,12 @@ export function Conversation(props: ConversationProps) {
     if (!alive || recovering() || sending()) return;
     recovering.set(true);
     const epoch = editEpoch;
+    let firstOutcome: 'accepted' | 'rejected' | 'unknown' = 'unknown';
     try {
       const original = await abandonSend(client, operationId);
       if (!alive) return;
       if (original.abandoned) {
+        if (operationId === firstOperation) firstOutcome = 'rejected';
         notice.set(
           uiMessage(
             'Unconfirmed attempt abandoned. The draft is kept; press Enter explicitly to send a new attempt.',
@@ -1789,6 +1847,7 @@ export function Conversation(props: ConversationProps) {
       } else if (original.reference) {
         const reply = await recoverSend(client, operationId);
         if (!alive) return;
+        if (operationId === firstOperation) firstOutcome = sendOutcome(reply);
         settleReply(reply);
         const stored = await loadDraft(client);
         if (!alive) return;
@@ -1802,6 +1861,7 @@ export function Conversation(props: ConversationProps) {
       report(reason);
     } finally {
       if (alive) recovering.set(false);
+      if (alive && firstOutcome !== 'unknown') finishFirst(firstOutcome);
     }
   };
 
@@ -2163,16 +2223,25 @@ export function Conversation(props: ConversationProps) {
 
   // A fork made to regenerate a reply sends its prefilled text once sending is possible,
   // unless the draft was changed first.
-  const autoSend = signal<string | null>(null);
   effect(() => {
-    const text = autoSend();
-    if (text === null || sendBlockedReason()) return;
+    const pending = autoSend();
+    if (pending?.first && attachments.failed()) {
+      untracked(() => {
+        autoSend.set(null);
+        finishFirst('rejected');
+      });
+      return;
+    }
+    if (pending === null || sendBlockedReason()) return;
     untracked(() => {
       autoSend.set(null);
-      if (draft() === text) void send(text);
+      if (pending.first || draft() === pending.text)
+        void send(pending.text, undefined, pending.first);
     });
   });
   cleanup(() => {
+    firstSend?.finish('unknown', draft(), error() || notice(), false);
+    firstSend = undefined;
     alive = false;
     historyIdentity = {};
     navigation.set(null);
@@ -2205,14 +2274,23 @@ export function Conversation(props: ConversationProps) {
         const prefill = props.takePrefill?.() ?? null;
         if (prefill && stored.text === '' && stored.attachments.length === 0) {
           changeDraft(prefill.text);
+          firstSend = prefill.first;
           try {
             for (const file of prefill.files ?? [])
-              attachments.observeIntake(client.beginStagedUpload(file), () => {});
+              attachments.observeIntake(client.beginStagedUpload(file), () => {}, !!prefill.first);
+          } catch (reason) {
+            report(reason);
+            firstSend?.finish('rejected', draft(), error(), true);
+            firstSend = undefined;
+            throw reason;
           } finally {
-            for (const file of prefill.files ?? []) file.dispose();
+            if (!prefill.first) for (const file of prefill.files ?? []) file.dispose();
           }
+          firstSelections = attachments.selections();
           props.focusComposer();
-          if (prefill.send) autoSend.set(prefill.text);
+          if (prefill.send) {
+            autoSend.set({ text: prefill.text, first: prefill.first });
+          }
         }
         void attachments.start();
         const operations = await pendingSends(client);
